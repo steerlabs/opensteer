@@ -1,28 +1,26 @@
+import { integrationAccessCeilingForRun } from "@opensteer/integration-core/effective-grants";
 import { pluginPolicyAllows } from "./plugin-settings-store.js";
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   RunIdSchema,
+  threadAccessModeAtMost,
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
   TriggerWatchActivationIdSchema,
   intersectResourceAccess,
-  lineageCompatibleForReuse,
-  threadInReach,
   OpensteerError,
   type ResourceAccessLevel,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 export interface ResourceAccessInput {
   readonly ownerUserId: UserId;
-  readonly workspaceId: WorkspaceId;
   readonly connectionId?: string;
   readonly threadId?: ThreadId | undefined;
   readonly agentBindingId?: string;
-  /** Explicit consent must already be filtered to its owner and active membership. */
   readonly explicitAccess?: ResourceAccessLevel | null;
   readonly connectionCeiling?: ResourceAccessLevel | null;
   readonly resource?: {
@@ -35,18 +33,21 @@ export async function resolveResourceAccess(
   database: Kysely<DatabaseSchema>,
   input: ResourceAccessInput,
 ) {
+  await assertPersonalOwner(database, input.ownerUserId);
   let threadId = input.threadId;
   if (!threadId && input.agentBindingId?.startsWith("run:")) {
-    const run = await database
-      .selectFrom("runs")
-      .select("threadId")
-      .where("id", "=", RunIdSchema.parse(input.agentBindingId.slice(4)))
-      .executeTakeFirst();
-    threadId = run?.threadId;
+    threadId = (
+      await database
+        .selectFrom("runs")
+        .select("threadId")
+        .where("id", "=", RunIdSchema.parse(input.agentBindingId.slice(4)))
+        .where("requestedBy", "=", input.ownerUserId)
+        .executeTakeFirst()
+    )?.threadId;
   }
   if (!threadId && input.agentBindingId?.startsWith("thread:"))
     threadId = ThreadIdSchema.parse(input.agentBindingId.slice(7));
-  if (!threadId && input.agentBindingId?.startsWith("trigger:")) {
+  if (!threadId && input.agentBindingId?.startsWith("trigger:"))
     threadId = (
       await database
         .selectFrom("triggerOccurrences")
@@ -59,8 +60,7 @@ export async function resolveResourceAccess(
         )
         .executeTakeFirst()
     )?.anchorThreadId;
-  }
-  if (!threadId && input.agentBindingId?.startsWith("watch:")) {
+  if (!threadId && input.agentBindingId?.startsWith("watch:"))
     threadId = (
       await database
         .selectFrom("triggerWatchActivations")
@@ -73,25 +73,22 @@ export async function resolveResourceAccess(
         )
         .executeTakeFirst()
     )?.anchorThreadId;
-  }
-  const workspace = await database
-    .selectFrom("workspaces")
-    .select(["kind", "createdBy"])
-    .where("id", "=", input.workspaceId)
-    .executeTakeFirst();
-  const main = workspace?.kind === "main" && workspace.createdBy === input.ownerUserId;
-  const root = threadId
+  const thread = threadId
     ? await database
-        .selectFrom("threads as asking")
-        .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-        .select(["root.inheritsMain", "asking.workspaceId", "asking.specialistId"])
-        .where("asking.id", "=", threadId)
+        .selectFrom("threads")
+        .select(["createdBy", "specialistId", "accessMode"])
+        .where("id", "=", threadId)
         .executeTakeFirst()
     : undefined;
+  if ((threadId && thread?.createdBy !== input.ownerUserId) || (input.agentBindingId && !threadId))
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Task authority is no longer available",
+    });
   const connection = input.connectionId
     ? await database
         .selectFrom("agentConnections")
-        .select("workspaceId")
+        .select("accessMode")
         .where("id", "=", input.connectionId)
         .where("userId", "=", input.ownerUserId)
         .where("revokedAt", "is", null)
@@ -99,89 +96,68 @@ export async function resolveResourceAccess(
         .where("expiresAt", ">", new Date())
         .executeTakeFirst()
     : undefined;
-  if (
-    input.connectionId &&
-    (!connection || (connection.workspaceId && connection.workspaceId !== input.workspaceId))
-  )
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Connection cannot access this Workspace",
-    });
-  const inheritsMain =
-    main &&
-    (input.connectionId
-      ? connection?.workspaceId === null
-      : root
-        ? root.workspaceId === input.workspaceId && root.inheritsMain
-        : !input.threadId && !input.agentBindingId);
-  // Owner Off and Main exclusion bind every agent, including connections without a Thread.
+  if (input.connectionId && !connection)
+    throw new OpensteerError({ code: "forbidden", message: "Connection access was revoked" });
+  const run = threadId
+    ? await database
+        .selectFrom("runs")
+        .select("accessMode")
+        .where("threadId", "=", threadId)
+        .where("requestedBy", "=", input.ownerUserId)
+        .where("status", "in", ["queued", "starting", "running", "waiting"])
+        .orderBy("createdAt", "desc")
+        .executeTakeFirst()
+    : undefined;
+  const runAccess = integrationAccessCeilingForRun(
+    connection?.accessMode ?? run?.accessMode ?? thread?.accessMode ?? "full-access",
+  );
   const agentRequester = Boolean(threadId || input.agentBindingId || input.connectionId);
-  const specialistId = root?.specialistId;
-  // A specialist adopts its caller's access; only its owner's live registration carries it.
   let specialistAllowed = true;
-  if (specialistId) {
+  if (thread?.specialistId) {
     const registration = await database
       .selectFrom("specialists")
-      .innerJoin(
-        "workspaceMemberships",
-        "workspaceMemberships.workspaceId",
-        "specialists.workspaceId",
-      )
-      .select("specialists.pluginId")
-      .where("specialists.removedAt", "is", null)
-      .where("specialists.id", "=", specialistId)
-      .where("specialists.workspaceId", "=", input.workspaceId)
-      .where("specialists.ownerUserId", "=", input.ownerUserId)
-      .where("workspaceMemberships.userId", "=", input.ownerUserId)
-      .where("workspaceMemberships.state", "=", "active")
+      .select("pluginId")
+      .where("id", "=", thread.specialistId)
+      .where("ownerUserId", "=", input.ownerUserId)
+      .where("removedAt", "is", null)
       .executeTakeFirst();
     specialistAllowed =
-      registration !== undefined &&
+      Boolean(registration) &&
       (!agentRequester ||
-        ((await pluginPolicyAllows(
-          database,
-          input.ownerUserId,
-          { kind: "specialist", pluginId: registration.pluginId, ownerUserId: input.ownerUserId },
-          main,
-        )) &&
-          (await pluginPolicyAllows(
-            database,
-            input.ownerUserId,
-            { kind: "plugin", pluginId: registration.pluginId },
-            main,
-          ))));
+        ((await pluginPolicyAllows(database, input.ownerUserId, {
+          kind: "specialist",
+          pluginId: registration!.pluginId,
+          ownerUserId: input.ownerUserId,
+        })) &&
+          (await pluginPolicyAllows(database, input.ownerUserId, {
+            kind: "plugin",
+            pluginId: registration!.pluginId,
+          }))));
   }
   let policyAllowed = true;
   if (agentRequester && input.resource && input.resource.type !== "browser-profile") {
-    const connection = await database
+    const resource = await database
       .selectFrom("integrationConnections")
       .select(["integrationDefinitionId", "connectionKind"])
       .where("id", "=", input.resource.id as DatabaseSchema["integrationConnections"]["id"])
       .where("ownerUserId", "=", input.ownerUserId)
       .executeTakeFirst();
-    if (connection?.integrationDefinitionId)
-      policyAllowed = await pluginPolicyAllows(
-        database,
-        input.ownerUserId,
-        {
-          kind: connection.connectionKind === "computer" ? "device-app" : "service",
-          definitionId: connection.integrationDefinitionId,
-        },
-        main,
-      );
+    if (resource?.integrationDefinitionId)
+      policyAllowed = await pluginPolicyAllows(database, input.ownerUserId, {
+        kind: resource.connectionKind === "computer" ? "device-app" : "service",
+        definitionId: resource.integrationDefinitionId,
+      });
   }
-  const access =
-    policyAllowed && specialistAllowed
-      ? intersectResourceAccess(
-          inheritsMain ? "read-write" : (input.explicitAccess ?? null),
-          input.connectionCeiling,
-        )
-      : null;
   return {
-    access,
+    runAccess,
+    access:
+      policyAllowed && specialistAllowed
+        ? intersectResourceAccess(
+            intersectResourceAccess(input.explicitAccess ?? null, input.connectionCeiling),
+            runAccess,
+          )
+        : null,
     specialistAllowed,
-    inheritsMain,
-    mainAccess: main ? (inheritsMain ? ("inherited" as const) : ("withheld" as const)) : null,
   };
 }
 
@@ -190,37 +166,20 @@ export async function assertLineageCompatibleReuse(
   callerId: ThreadId,
   targetId: ThreadId,
 ): Promise<void> {
-  const roots = await database
-    .selectFrom("threads as asking")
-    .innerJoin("threads as root", "root.id", "asking.lineageRootThreadId")
-    .select([
-      "asking.id",
-      "asking.specialistId",
-      "root.inheritsMain",
-      "asking.workspaceId",
-      "asking.lineageRootThreadId",
-    ])
-    .where("asking.id", "in", [callerId, targetId])
+  const rows = await database
+    .selectFrom("threads")
+    .select(["id", "createdBy", "specialistId", "accessMode"])
+    .where("id", "in", [callerId, targetId])
     .execute();
-  const caller = roots.find((row) => row.id === callerId);
-  const target = roots.find((row) => row.id === targetId);
-  if (caller?.specialistId && caller.specialistId !== target?.specialistId) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message:
-        "Specialists may only send reports to Threads outside their registration. Start a new task instead.",
-    });
-  }
+  const caller = rows.find((row) => row.id === callerId);
+  const target = rows.find((row) => row.id === targetId);
   if (
     !caller ||
     !target ||
-    !lineageCompatibleForReuse(caller, target) ||
-    !threadInReach(caller, target)
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message:
-        "This Thread's consent scope is incompatible with your lineage. Start a new task instead.",
-    });
-  }
+    caller.createdBy !== target.createdBy ||
+    !threadAccessModeAtMost(target.accessMode, caller.accessMode) ||
+    (caller.specialistId && caller.specialistId !== target.specialistId)
+  )
+    throw new OpensteerError({ code: "forbidden", message: "Start a new task for this work" });
+  await assertPersonalOwner(database, caller.createdBy);
 }

@@ -9,22 +9,13 @@ import type {
 } from "@opensteer/protocol";
 
 /**
- * Who hears that a session on one computer started or ended.
- *
- * Deliberately not the caller's Workspace: the people who need to know a
- * machine is being used are the people who decide whether it may be, and they
- * are usually nowhere near the Thread that connected. These are notifications
- * about a machine, never durable Workspace events, so they are addressed to
- * managers directly and never enter event replay.
- */
-/**
  * Tells every connected client that the computers list changed.
  *
  * The message names nothing — not the machine, not what happened to it —
  * because every client answers it by rereading the list, and the reread is
  * where authorization lives. That is exactly what lets this one go to everybody
  * while the two `host.machine.access.session.*` messages below, which carry
- * facts about one machine, stay addressed to that machine's managers.
+ * facts about one machine, stay addressed to that machine's owner.
  */
 export function notifyMachinesChanged(
   realtime: Pick<RealtimeHub, "broadcast">,
@@ -64,8 +55,11 @@ export interface MachineAccessNotifier {
     readonly endReason: ShellCloseReason;
     readonly runnerId: RunnerId;
     readonly session: ShellSessionSummary;
-  }): void;
-  started(input: { readonly runnerId: RunnerId; readonly session: ShellSessionSummary }): void;
+  }): Promise<void>;
+  started(input: {
+    readonly runnerId: RunnerId;
+    readonly session: ShellSessionSummary;
+  }): Promise<void>;
 }
 
 export function machineAccessNotifier(options: {
@@ -73,12 +67,16 @@ export function machineAccessNotifier(options: {
   readonly realtime: Pick<RealtimeHub, "connectedUserIds" | "sendToUsers">;
   readonly store: Pick<OpensteerStore, "effectiveMachineOwner" | "userById">;
 }): MachineAccessNotifier {
-  const deliver = (runnerId: RunnerId, message: Parameters<RealtimeHub["sendToUsers"]>[1]) => {
-    void (async () => {
-      const recipients = await machineManagers(options, runnerId);
-      if (recipients.length > 0)
-        options.realtime.sendToUsers(recipients, message, "machine.access");
-    })().catch(options.onError);
+  const deliver = async (
+    runnerId: RunnerId,
+    message: Parameters<RealtimeHub["sendToUsers"]>[1],
+  ): Promise<void> => {
+    try {
+      const recipients = await machineOwners(options, runnerId);
+      if (recipients.length) options.realtime.sendToUsers(recipients, message, "machine.access");
+    } catch (error) {
+      options.onError(error);
+    }
   };
   return {
     ended: ({ endReason, runnerId, session }) =>
@@ -93,34 +91,16 @@ export function machineAccessNotifier(options: {
   };
 }
 
-/**
- * The managers of one computer who are connected right now.
- *
- * Administrators are resolved against the live connections rather than the
- * user table: authorization is asked only about someone already listening, so
- * a Deployment with many administrators costs one lookup per open page and not
- * one per account.
- */
-async function machineManagers(
+async function machineOwners(
   options: {
-    readonly realtime: Pick<RealtimeHub, "connectedUserIds">;
-    readonly store: Pick<OpensteerStore, "effectiveMachineOwner" | "userById">;
+    realtime: Pick<RealtimeHub, "connectedUserIds">;
+    store: Pick<OpensteerStore, "effectiveMachineOwner" | "userById">;
   },
   runnerId: RunnerId,
 ): Promise<readonly UserId[]> {
-  const connected = options.realtime.connectedUserIds();
-  if (connected.length === 0) return [];
   const ownership = await options.store.effectiveMachineOwner(runnerId);
-  if (!ownership) return [];
-  const recipients = new Set<UserId>();
-  for (const userId of connected) {
-    if (userId === ownership.effectiveOwner) {
-      recipients.add(userId);
-      continue;
-    }
-    if (ownership.ownerKind !== "deployment") continue;
-    const user = await options.store.userById(userId);
-    if (user?.instanceRole === "administrator" && !user.disabledAt) recipients.add(userId);
-  }
-  return [...recipients];
+  const ownerId = ownership?.effectiveOwner;
+  if (!ownerId || !options.realtime.connectedUserIds().includes(ownerId)) return [];
+  const owner = await options.store.userById(ownerId);
+  return owner && !owner.disabledAt ? [ownerId] : [];
 }

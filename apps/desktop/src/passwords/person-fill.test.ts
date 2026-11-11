@@ -67,12 +67,12 @@ function fixture() {
 }
 
 describe("person fill authority", () => {
-  it("disables person fills for a legacy session", async () => {
+  it("disables person fills when the broker has no fill capability", async () => {
     const authority = new PasswordsPersonFillAuthority({} as PasswordsBrokerSession);
     const { input } = fixture();
     expect(await authority.accounts(input)).toEqual([]);
     expect(await authority.fill(input)).toBe("unavailable");
-    // The service keeps its methods but answers undefined after reconnecting at protocol 7.
+    // A disconnected broker can retain its method while returning no capability.
     const reconnected = Object.defineProperties({} as PasswordsBrokerSession, {
       fillAccounts: { get: () => undefined },
       fillBegin: { get: () => undefined },
@@ -155,7 +155,12 @@ describe("person fill authority", () => {
     authority.statusChanged({
       availability: "available",
       development: true,
-      broker: { personFill: "on", agentSignIns: "off", vault: "ready" },
+      broker: {
+        agentSignIns: "off",
+        personFill: "on",
+        personSave: "off",
+        vault: "ready",
+      },
     });
     expect((await authority.accounts(input))[0]?.ready).toBe(true);
   });
@@ -211,7 +216,12 @@ describe("person fill authority", () => {
         authority.statusChanged({
           availability: "available",
           development: true,
-          broker: { personFill: "off", agentSignIns: "on", vault: "ready" },
+          broker: {
+            agentSignIns: "on",
+            personFill: "off",
+            personSave: "off",
+            vault: "ready",
+          },
         });
       expect(broker.fillBegin.mock.calls[0]![1].aborted).toBe(true);
       grant.resolve({
@@ -284,7 +294,12 @@ describe("person fill authority", () => {
         authority.statusChanged({
           availability: "available",
           development: true,
-          broker: { personFill: "off", agentSignIns: "on", vault: "ready" },
+          broker: {
+            agentSignIns: "on",
+            personFill: "off",
+            personSave: "off",
+            vault: "ready",
+          },
         });
       if (end === "vault")
         broker.fillAccounts.mockResolvedValue({ fill: "not-set-up", accounts: [] });

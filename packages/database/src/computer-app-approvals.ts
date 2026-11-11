@@ -1,5 +1,6 @@
-import { machineOwnershipIn } from "./machine-ownership.js";
-import { lockRequestWorkspaces } from "./request-workspace-locks.js";
+import { ResolvedRequestSchema } from "@opensteer/core";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   OpensteerError,
   type AgentEvent,
@@ -8,7 +9,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import {
   computerAppIdentitiesEqual,
@@ -40,84 +40,17 @@ import {
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
-/*
- * One app on one Mac has at most one waiting approval, and every
- * `computer.app.access` Request that is waiting for that app names it. This
- * module is the only place those Requests are answered, so the rules live in
- * one spot:
- *
- * - Only a person declines: `Don't allow`, a decline from any client, a
- *   cancellation, the week running out, or removing the app or the Mac.
- * - A connection that appears or changes answers the Requests its access
- *   covers and leaves a wider approval, and the Threads waiting on it,
- *   waiting.
- * - A Workspace's grant is the widest access among the Requests answered for
- *   it, and an answer never lowers a grant it already holds; only an explicit
- *   edit does that.
- *
- * Every function here expects the caller to hold that Mac's approval scope,
- * taken after the complete Request Workspace set by `lockComputerApprovalScopeInTransaction`.
- */
-
-/** The Mac's approvals plus integration access its owners' connections can settle. */
-export async function discoverComputerRequestWorkspaces(
-  database: Kysely<DatabaseSchema>,
-  runnerId: RunnerId,
-): Promise<readonly WorkspaceId[]> {
-  const ownership = await machineOwnershipIn(database, runnerId);
-  const connections = await database
-    .selectFrom("integrationConnections")
-    .select("ownerUserId")
-    .distinct()
-    .where("runnerId", "=", runnerId)
-    .where("connectionKind", "=", "computer")
-    .execute();
-  const owners = [
-    ...new Set([
-      ...(ownership?.effectiveOwner ? [ownership.effectiveOwner] : []),
-      ...connections.map(({ ownerUserId }) => ownerUserId),
-    ]),
-  ];
-  const waiting = await database
-    .selectFrom("requests")
-    .select(["originatingWorkspaceId", "targetWorkspaceId"])
-    .distinct()
-    .where("status", "=", "pending")
-    .where((eb) =>
-      eb.or([
-        eb.and([
-          eb("kind", "=", "computer.app.access"),
-          eb(sql<string>`payload->>'runnerId'`, "=", runnerId),
-        ]),
-        ...(owners.length === 0
-          ? []
-          : [eb.and([eb("kind", "=", "integration.access"), eb("requestedBy", "in", owners)])]),
-      ]),
-    )
-    .execute();
-  return waiting.flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]);
-}
-
-/** Locks the complete Request Workspace set before the Mac's approval fence. */
 export async function lockComputerApprovalScopeInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly runnerId: RunnerId;
-    /** A Workspace this mutation writes that no waiting Request names yet. */
-    readonly workspaceIds?: readonly WorkspaceId[];
   },
 ): Promise<{
   readonly id: RunnerId;
   readonly name: string;
   readonly revokedAt: Date | null;
 }> {
-  const discover = async () => [
-    ...(input.workspaceIds ?? []),
-    ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-  ];
-  await lockRequestWorkspaces(transaction, await discover());
   const runner = await transaction
     .selectFrom("runners")
     .select(["id", "name", "revokedAt"])
@@ -125,9 +58,6 @@ export async function lockComputerApprovalScopeInTransaction(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!runner) throw new OpensteerError({ code: "not_found", message: "Computer not found" });
-  // A new ask may have committed while the Workspace or Mac fence was waiting.
-  // Request a rollback with the larger set before touching its Request or grant.
-  await lockRequestWorkspaces(transaction, await discover());
   return runner;
 }
 
@@ -173,7 +103,6 @@ export interface ComputerAppApprovalTask {
   readonly reason: string;
   readonly threadId: ThreadId;
   readonly threadTitle: string | null;
-  readonly workspaceId: WorkspaceId;
 }
 
 /**
@@ -251,8 +180,6 @@ export async function askForComputerAppApprovalInTransaction(
           reason: waiting.reason,
           threadId: waiting.threadId,
           threadTitle: waiting.threadTitle,
-          workspaceId: waiting.workspaceId,
-          workspaceName: waiting.workspaceName,
         }),
     access: widerIntegrationAccess(waiting.access, input.access),
   });
@@ -265,7 +192,6 @@ function taskFields(task: ComputerAppApprovalTask | null) {
     reason: task?.reason ?? null,
     threadId: task?.threadId ?? null,
     threadTitle: task?.threadTitle ?? null,
-    workspaceId: task?.workspaceId ?? null,
   };
 }
 
@@ -301,7 +227,7 @@ export async function declineComputerAppAccessRequestsInTransaction(
 /** The connection an approval produced or a change left, as a settlement reads it. */
 export interface SettledComputerConnection {
   readonly access: IntegrationAccess;
-  /** The grant's name in a Workspace: the app, as the Mac named it. */
+
   readonly alias: string;
   /** The full identity the connection now holds, which a waiting approval must name. */
   readonly app: ComputerAppIdentity | null;
@@ -312,27 +238,10 @@ export interface SettledComputerConnection {
   readonly ownerUserId: UserId;
 }
 
-/**
- * Answers what a connection that was just created or changed now covers.
- *
- * Every `computer.app.access` Request waiting on this app's approval whose
- * access the connection covers is fulfilled — but only when the connection is
- * the app that approval names, under the catalog it was issued under: a
- * change that kept an older identity (a same-access edit, or an
- * automatic grant on the connection as it is) answers nothing an approval for
- * the app as the Mac now resolves it is waiting for, and each project Workspace
- * among them gets the widest access its Requests asked for, never less than
- * a grant it already holds. The approval itself is used up when it was the
- * one consumed or when the connection covers all of it; otherwise it keeps
- * waiting with the Requests it still owes an answer. `reissueWaiting` gives
- * that remaining approval a new id — for an explicit reduction, after which
- * an answer to the wider request cannot widen the app back.
- * `alsoGrant` is the automatic ask's own Workspace, which has no Request.
- */
 export async function settleComputerAppApprovalInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
-    readonly alsoGrant?: { readonly access: IntegrationAccess; readonly workspaceId: WorkspaceId };
+    readonly alsoGrant?: { readonly access: IntegrationAccess };
     readonly additionalRequestIds: readonly RequestId[];
     readonly settlementActor?: RequestSettlementProvenance | null;
     readonly connection: SettledComputerConnection;
@@ -345,10 +254,9 @@ export async function settleComputerAppApprovalInTransaction(
   const waiting = await lockComputerAppSetupRequestInTransaction(transaction, input.scope);
   const requestEvents: AgentEvent[] = [];
   const requestIds: RequestId[] = [];
-  const wanted = new Map<WorkspaceId, IntegrationAccess>();
-  const want = (workspaceId: WorkspaceId, access: IntegrationAccess) => {
-    const held = wanted.get(workspaceId);
-    wanted.set(workspaceId, held ? widerIntegrationAccess(held, access) : access);
+  let wanted: IntegrationAccess | null = input.alsoGrant?.access ?? null;
+  const want = (access: IntegrationAccess) => {
+    wanted = wanted ? widerIntegrationAccess(wanted, access) : access;
   };
   const waitingRequests = waiting
     ? await transaction
@@ -375,28 +283,16 @@ export async function settleComputerAppApprovalInTransaction(
       !integrationAccessCovers(connection.access, request.payload.access)
     )
       continue;
-    const workspace = await transaction
-      .selectFrom("workspaces")
-      .select(["kind", "status"])
-      .where("id", "=", request.targetWorkspaceId)
-      .where("createdBy", "=", request.requestedBy)
-      .executeTakeFirst();
-    if (workspace?.status === "ready" && workspace.kind !== "main")
-      want(request.targetWorkspaceId, request.payload.access);
+    await assertPersonalOwner(transaction, request.requestedBy);
+    want(request.payload.access);
   }
-  if (input.alsoGrant) want(input.alsoGrant.workspaceId, input.alsoGrant.access);
   const grants: IntegrationGrant[] = [];
-  for (const [workspaceId, access] of [...wanted].sort(([a], [b]) => a.localeCompare(b))) {
+  if (wanted)
     grants.push(
-      await grantComputerAppWorkspaceInTransaction(transaction, {
-        ...connection,
-        access,
-        workspaceId,
-      }),
+      await grantComputerAppInTransaction(transaction, { ...connection, access: wanted }),
     );
-  }
-  // Linked computer access and Main integration access settle together. Fence
-  // their complete Request set in one order after all Workspace grants.
+  // Linked computer access and personal integration access settle together. Fence
+  // their complete Request set in one order after personal grants.
   const requestIdsToLock = [
     ...new Set([...waitingRequests.map(({ id }) => id), ...input.additionalRequestIds]),
   ];
@@ -430,16 +326,7 @@ export async function settleComputerAppApprovalInTransaction(
       if (request.payload.kind !== "computer.app.access") continue;
       if (request.requestedBy !== connection.ownerUserId) continue;
       if (!integrationAccessCovers(connection.access, request.payload.access)) continue;
-      const workspace = await transaction
-        .selectFrom("workspaces")
-        .select(["kind", "status"])
-        .where("id", "=", request.targetWorkspaceId)
-        .where("createdBy", "=", request.requestedBy)
-        .executeTakeFirst();
-      // A Workspace that went away while the Mac was being approved leaves
-      // nothing to grant into; the Request is cancelled by its own authority
-      // path rather than fulfilled against a Workspace that cannot hold a grant.
-      if (!workspace || workspace.status !== "ready") continue;
+      await assertPersonalOwner(transaction, request.requestedBy);
       const resolved = await resolveComputerAppAccessRequest(
         transaction,
         row,
@@ -468,8 +355,6 @@ export async function settleComputerAppApprovalInTransaction(
         runnerId: waiting.runnerId,
         threadId: waiting.threadId,
         threadTitle: waiting.threadTitle,
-        workspaceId: waiting.workspaceId,
-        workspaceName: waiting.workspaceName,
       });
       await relinkComputerAppAccessRequestsInTransaction(transaction, {
         from: waiting.id,
@@ -481,16 +366,9 @@ export async function settleComputerAppApprovalInTransaction(
   return { grants, reissuedSetupRequestId, requestEvents, requestIds };
 }
 
-/**
- * A Workspace's grant on an approved app, which an approval only ever widens.
- *
- * Two Threads of one Workspace asking for Notes, one to control it and one to
- * look, must leave that Workspace able to control it however the answers are
- * ordered; lowering a grant is the explicit edit's job, not an approval's.
- */
-async function grantComputerAppWorkspaceInTransaction(
+async function grantComputerAppInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  input: SettledComputerConnection & { readonly workspaceId: WorkspaceId },
+  input: SettledComputerConnection,
 ): Promise<IntegrationGrant> {
   await lockIntegrationGrantScopeInTransaction(transaction, input);
   const existing = await activeIntegrationGrantInTransaction(transaction, input);
@@ -503,7 +381,6 @@ async function grantComputerAppWorkspaceInTransaction(
     isDefault: existing?.isDefault ?? false,
     ownerUserId: input.ownerUserId,
     providerAuthorizations: {},
-    workspaceId: input.workspaceId,
   });
 }
 
@@ -519,18 +396,9 @@ async function linkedPendingRequests(
     .where("status", "=", "pending")
     .where(sql<string>`payload->>'setupRequestId'`, "in", [...setupRequestIds])
     .orderBy("id", "asc");
-  await lockRequestWorkspaces(
-    transaction,
-    (await pending.execute()).flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]),
-  );
   return pending.forNoKeyUpdate().execute();
 }
 
-/**
- * Gives one Request its terminal state, its continuation and the workspace
- * event an `integration.access` answer gets, because the Thread is waiting on
- * exactly the same kind of news. A null connection declines.
- */
 async function resolveComputerAppAccessRequest(
   transaction: Transaction<DatabaseSchema>,
   row: RequestRow,
@@ -558,7 +426,7 @@ async function resolveComputerAppAccessRequest(
     .returningAll()
     .executeTakeFirst();
   if (!resolvedRow) return null;
-  const request = requestFromRow(resolvedRow);
+  const request = ResolvedRequestSchema.parse(requestFromRow(resolvedRow));
   await transaction
     .insertInto("requestContinuations")
     .values({
@@ -571,13 +439,12 @@ async function resolveComputerAppAccessRequest(
     })
     .onConflict((conflict) => conflict.column("requestId").doNothing())
     .execute();
-  const event = await appendHostWorkspaceEvent(transaction, {
+  const event = await appendHostDeploymentEvent(transaction, {
     data: { request },
     environmentId: await requestOriginEnvironment(transaction, request),
     runId: request.originatingRunId,
     threadId: request.originatingThreadId,
     type: "request.resolved",
-    workspaceId: request.originatingWorkspaceId,
   });
   return {
     events: [

@@ -60,7 +60,9 @@
     "./test-support/tcpServer": "./src/tcpServer.test-support.ts",
     "./agentSkills": "./src/agentSkills.ts",
     "./test-support/agentSkills": "./src/agentSkills.test-support.ts",
-    "./appFrame": "./src/appFrame.ts"
+    "./appFrame": "./src/appFrame.ts",
+    "./files/models": "./src/files/models.ts",
+    "./files/native-fs-helper": "./src/files/native-fs-helper.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",
@@ -75,6 +77,7 @@
   "dependencies": {
     "mdast-util-from-markdown": "^2.0.3",
     "mdast-util-gfm": "^3.1.0",
-    "micromark-extension-gfm": "^3.0.0"
+    "micromark-extension-gfm": "^3.0.0",
+    "zod": "catalog:"
   }
 }

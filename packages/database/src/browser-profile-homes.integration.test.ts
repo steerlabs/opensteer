@@ -295,7 +295,7 @@ describeStore("browser profile homes", (it) => {
         workspaceId: run.workspace.id,
       });
       await fixture.database
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values({
           id: `${sessionId}-tab`,
           sessionId,
@@ -328,9 +328,10 @@ describeStore("browser profile homes", (it) => {
       await fixture.database.selectFrom("browserHistoryEntries").selectAll().execute(),
     ).toEqual([]);
     expect(await fixture.store.listActiveBrowserProfileGrants(run.userId)).toEqual([]);
-    expect(await fixture.database.selectFrom("workspaceTabs").select("closedAt").execute()).toEqual(
-      [{ closedAt: expect.any(Date) }, { closedAt: expect.any(Date) }],
-    );
+    expect(await fixture.database.selectFrom("personalTabs").select("closedAt").execute()).toEqual([
+      { closedAt: expect.any(Date) },
+      { closedAt: expect.any(Date) },
+    ]);
     expect(
       await fixture.database
         .selectFrom("browserProfileDeletions")

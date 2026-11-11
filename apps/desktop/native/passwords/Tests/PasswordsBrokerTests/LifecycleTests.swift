@@ -19,8 +19,8 @@ final class LifecycleTests: BrokerTestCase {
         "signin.request",
         Fixtures.request(
           id, session: session,
-          workspace: (
-            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
+          deployment: (
+            "dep_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
           ))
       ).result?[
         "accounts"]?[0])
@@ -37,8 +37,8 @@ final class LifecycleTests: BrokerTestCase {
         "signin.request",
         Fixtures.request(
           id, session: session,
-          workspace: (
-            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
+          deployment: (
+            "dep_00000000-0000-4000-8000-" + String(format: "%012d", session.count), session
           ))
       ).result?[
         "accounts"]?[0])
@@ -141,7 +141,7 @@ final class LifecycleTests: BrokerTestCase {
       try await desktop.call(
         "signin.request",
         Fixtures.request(
-          automatic, workspace: ("wsp_00000000-0000-4000-8000-000000000011", "bsn_waiting"))
+          automatic, deployment: ("dep_00000000-0000-4000-8000-000000000011", "bsn_waiting"))
       )
       .result?["decision"],
       .string("authorized"), "an allowed account signs in while locked")
@@ -173,8 +173,8 @@ final class LifecycleTests: BrokerTestCase {
         "signin.request",
         Fixtures.request(
           session: session,
-          workspace: (
-            "wsp_00000000-0000-4000-8000-" + String(format: "%012d", session == "bsn_2" ? 12 : 13),
+          deployment: (
+            "dep_00000000-0000-4000-8000-" + String(format: "%012d", session == "bsn_2" ? 12 : 13),
             session
           )))
     }
@@ -201,13 +201,13 @@ final class LifecycleTests: BrokerTestCase {
       same(
         try await request(
           desktop, UUID().uuidString.lowercased(), session: "bsn_wait_\(n)",
-          workspace: ("wsp_00000000-0000-4000-8000-" + String(format: "%012d", n + 20), "Other"))[
+          deployment: ("dep_00000000-0000-4000-8000-" + String(format: "%012d", n + 20), "Other"))[
             "decision"], .string("approve"), "waiting \(n)")
     }
     same(
       try await request(
         desktop, UUID().uuidString.lowercased(), session: "bsn_wait_5",
-        workspace: Fixtures.otherWorkspace),
+        deployment: Fixtures.otherDeployment),
       busy, "a fifth waiting for the person")
     var running: [String] = []
     for n in 1...6 {

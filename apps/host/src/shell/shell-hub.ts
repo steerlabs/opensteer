@@ -466,7 +466,6 @@ export class ShellHub implements ShellControlStreamHandler {
         startedAt: startedAt.toISOString(),
         threadId: scope.threadId,
         threadTitle: thread.title,
-        workspaceId: scope.workspaceId,
       };
       const session: ShellSession = {
         activating: false,

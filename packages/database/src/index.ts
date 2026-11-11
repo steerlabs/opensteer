@@ -76,3 +76,9 @@ export type { ChannelTopicPort } from "./team-topics-port.js";
 export { listEligibleBrowserRunners } from "./browser-home-store.js";
 export * from "./request-agent-response.js";
 export { deliverTaskQuestionNotice, cancelSettledTaskQuestionNotice } from "./thread-inbox.js";
+
+export * from "./private-resource-store.js";
+
+export * from "./personal-tab-store.js";
+
+export { reportFolderSkills, listPersonalSkillInventory } from "./folder-skill-inventory-store.js";

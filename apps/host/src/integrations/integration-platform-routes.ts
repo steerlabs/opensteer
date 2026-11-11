@@ -7,7 +7,7 @@ import {
   McpOAuthAttemptIdSchema,
   localMcpLaunchSecrets,
 } from "@opensteer/integration-core";
-import { OpensteerError, WorkspaceIdSchema, type DeploymentId, type UserId } from "@opensteer/core";
+import { OpensteerError, type DeploymentId, type UserId } from "@opensteer/core";
 import {
   hostApi,
   rpcSuccess,
@@ -22,7 +22,7 @@ import type { IntegrationDashboardService } from "./integration-dashboard-servic
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import type { McpOAuthService } from "./mcp-oauth-service.js";
 import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
-import { requireAdministrator, requireSession, requireSurface } from "./integration-rpc-context.js";
+import { requirePersonalSession, requireSurface } from "./integration-rpc-context.js";
 
 export interface IntegrationPlatformRpcOptions {
   readonly authenticator: HostAuthenticator;
@@ -49,25 +49,24 @@ export function createIntegrationPlatformRpcHandlers(
   | "integration.server.secrets.list"
 > {
   return {
-    "specialist.list": async (input, context) =>
+    "specialist.list": async (_input, context) =>
       rpcSuccess({
         specialists: await options.platform.store.specialists.list(
-          input.workspaceId,
-          requireSession(context).user.id,
+          (await requirePersonalSession(context, options.platform.store.connections)).user.id,
         ),
       }),
-    "plugin.list": async (input, context) => {
+    "plugin.list": async (_input, context) => {
       return rpcSuccess({
         plugins: await options.platform.store.plugins.listForUser(
-          requireSession(context).user.id,
-          input.workspaceId,
+          (await requirePersonalSession(context, options.platform.store.connections)).user.id,
         ),
       });
     },
     "integration.computer.policy.get": async (input, context) => {
       const { appApproval } = await options.platform.computerAppApprovals.computerUsePolicy({
         ...input,
-        ownerUserId: requireSession(context).user.id,
+        ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
+          .user.id,
       });
       return rpcSuccess({ appApproval });
     },
@@ -76,13 +75,15 @@ export function createIntegrationPlatformRpcHandlers(
         hostApi["integration.computer.apps.installed"].success.parse(
           await options.platform.computerAppApprovals.installedComputerApps({
             ...input,
-            actorUserId: requireSession(context).user.id,
+            actorUserId: (await requirePersonalSession(context, options.platform.store.connections))
+              .user.id,
           }),
         ),
       ),
     "integration.computer.session.stop": async (input, context) => {
       await options.platform.computerAppApprovals.stopComputerUseSession({
-        actorUserId: requireSession(context).user.id,
+        actorUserId: (await requirePersonalSession(context, options.platform.store.connections))
+          .user.id,
         sessionId: input.sessionId,
       });
       return rpcSuccess({});
@@ -91,13 +92,16 @@ export function createIntegrationPlatformRpcHandlers(
       rpcSuccess(
         await options.platform.computerAppApprovals.reviewComputerAppSetup({
           ...input,
-          ownerUserId: requireSession(context).user.id,
+          ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
+            .user.id,
         }),
       ),
     "integration.server.secrets.list": async (_input, context) =>
       rpcSuccess({
         servers: (
-          await options.platform.store.localMcp.withSecretsOwnedBy(requireSession(context).user.id)
+          await options.platform.store.localMcp.withSecretsOwnedBy(
+            (await requirePersonalSession(context, options.platform.store.connections)).user.id,
+          )
         ).map((server) => ({
           computer: server.runnerName,
           installationId: server.installationId,
@@ -110,15 +114,17 @@ export function createIntegrationPlatformRpcHandlers(
     "integration.computer.setup.list": async (_input, context) =>
       rpcSuccess({
         requests: (
-          await options.platform.store.listComputerAppSetupRequests(requireSession(context).user.id)
+          await options.platform.store.listComputerAppSetupRequests(
+            (await requirePersonalSession(context, options.platform.store.connections)).user.id,
+          )
         ).map((request) => ComputerAppSetupRequestViewSchema.parse(request)),
       }),
-    "integration.grants.list": async ({ workspaceId }, context) =>
+    "integration.grants.list": async (_input, context) =>
       rpcSuccess(
         hostApi["integration.grants.list"].success.parse({
           grants: await options.platform.store.listGrants({
-            ownerUserId: requireSession(context).user.id,
-            workspaceId,
+            ownerUserId: (await requirePersonalSession(context, options.platform.store.connections))
+              .user.id,
           }),
         }),
       ),
@@ -126,7 +132,7 @@ export function createIntegrationPlatformRpcHandlers(
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(
           await options.dashboard.platformDashboard(
-            requireSession(context).user.id,
+            (await requirePersonalSession(context, options.platform.store.connections)).user.id,
             requireSurface(context),
           ),
         ),
@@ -168,16 +174,11 @@ export async function handleIntegrationPlatformCommand(
   command: IntegrationPlatformCommand,
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
-  const owner = requireSession(context).user.id;
+  const owner = (await requirePersonalSession(context, options.platform.store.connections)).user.id;
   if (command.type === "plugin.list" || command.type === "specialist.list")
     return executeIntegrationPlatformCommand(options, command, context);
   const viewers = options.pluginsChanged
     ? await options.platform.store.settings.affectedViewers({
-        ...((command.type.startsWith("plugin.") || command.type.startsWith("specialist.")) &&
-        "workspaceId" in command &&
-        command.workspaceId !== undefined
-          ? { workspaceId: command.workspaceId }
-          : {}),
         ...(command.type === "integration.uninstall"
           ? { installationId: command.installationId }
           : {}),
@@ -194,11 +195,11 @@ async function executeIntegrationPlatformCommand(
   command: IntegrationPlatformCommand,
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
-  const session = requireSession(context);
+  const session = await requirePersonalSession(context, options.platform.store.connections);
   if (isIntegrationAdministrationCommand(command))
     return executeIntegrationAdministration(
       { platform: options.platform },
-      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+      { userId: session.user.id, isAdministrator: true },
       command,
       context.requestId,
     );
@@ -244,17 +245,13 @@ async function executeIntegrationPlatformCommand(
         decision: command.decision,
         secrets: command.secrets,
         actorUserId: session.user.id,
-        isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,
         authorize: async () => {
           const current = await options.authenticator.authenticateSession(context.headers, {
             mutation: true,
           });
-          if (
-            current.id !== session.id ||
-            current.user.id !== session.user.id ||
-            current.user.instanceRole !== session.user.instanceRole
-          )
+          await options.platform.store.connections.assertOwner(current.user.id);
+          if (current.id !== session.id || current.user.id !== session.user.id)
             throw new OpensteerError({
               code: "unauthorized",
               message: "Your session changed. Review this approval again.",
@@ -274,7 +271,6 @@ async function executeIntegrationPlatformCommand(
         ...command.input,
         settlementSessionId: session.id,
         actorUserId: session.user.id,
-        isAdministrator: session.user.instanceRole === "administrator",
         requestId: context.requestId,
       });
       return { connection, type: command.type };
@@ -303,21 +299,15 @@ async function executeIntegrationPlatformCommand(
     case "specialist.list":
       return {
         type: command.type,
-        specialists: await options.platform.store.specialists.list(
-          command.workspaceId,
-          session.user.id,
-        ),
+        specialists: await options.platform.store.specialists.list(session.user.id),
       };
     case "plugin.list":
       return {
         type: command.type,
-        plugins: await options.platform.store.plugins.listForUser(
-          session.user.id,
-          command.workspaceId,
-        ),
+        plugins: await options.platform.store.plugins.listForUser(session.user.id),
       };
     case "plugin.install": {
-      requireAdministrator(context);
+      await requirePersonalSession(context, options.platform.store.connections);
       const result = await options.platform.installAgentPlugin({
         actorUserId: session.user.id,
         directory: command.input.directory,
@@ -330,7 +320,7 @@ async function executeIntegrationPlatformCommand(
       });
     }
     case "integration.remoteMcp.install": {
-      requireAdministrator(context);
+      await requirePersonalSession(context, options.platform.store.connections);
       const installation = await options.platform.installRemoteMcp({
         actorUserId: session.user.id,
         description: command.input.description,
@@ -342,7 +332,7 @@ async function executeIntegrationPlatformCommand(
       return { installation, type: command.type };
     }
     case "integration.catalog.install": {
-      requireAdministrator(context);
+      await requirePersonalSession(context, options.platform.store.connections);
       const installation = await options.platform.installCatalogDefinition({
         actorUserId: session.user.id,
         definitionId: command.input.definitionId,
@@ -361,7 +351,6 @@ async function executeIntegrationPlatformCommand(
         installationId: input.installationId,
         isDefault: input.isDefault,
         ownerUserId: session.user.id,
-        workspaceId: WorkspaceIdSchema.parse(input.workspaceId),
       });
       return { grant, type: command.type };
     }

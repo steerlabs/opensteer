@@ -105,7 +105,7 @@ async function setup(surfaceState = true) {
       basicInput: true,
       surfaceState,
       targetedStreaming: true,
-      workspaceTabs: true,
+      personalTabs: true,
     },
   );
   cleanups.push(() => phone.close());
@@ -263,9 +263,9 @@ integration("session-scoped browser agent backends", () => {
     };
     await publish("suspended");
     const stranger = await f.host.store.createUser("No browser access");
-    await expect(
-      f.host.runtime.browser.activateWorkspaceTab(stranger, tabId),
-    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(f.host.runtime.browser.activatePersonalTab(stranger, tabId)).rejects.toMatchObject(
+      { code: "not_found" },
+    );
     const watchedError = new Promise<{ code: number; reason: string }>((resolve) =>
       viewer.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
     );
@@ -288,7 +288,7 @@ integration("session-scoped browser agent backends", () => {
     const activation = testRpcData(
       f.host.origin,
       "commands.dispatch",
-      { type: "workspace.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { type: "tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
       { headers: f.host.ownerHeaders },
     );
     const resume = await vi.waitFor(
@@ -309,7 +309,7 @@ integration("session-scoped browser agent backends", () => {
     await publish("live");
     f.phone.sendServer({ type: "cdp.result", requestId: resume.requestId, result: {} });
     expect(await activation).toMatchObject({
-      type: "workspace.tab.activate",
+      type: "tab.activate",
       tabId,
       session: { id: f.sessionId },
     });
@@ -323,7 +323,7 @@ integration("session-scoped browser agent backends", () => {
     const refused = testRpcRequest(
       f.host.origin,
       "commands.dispatch",
-      { type: "workspace.tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
+      { type: "tab.activate", tabId, idempotencyKey: crypto.randomUUID() },
       { headers: f.host.ownerHeaders },
     );
     const refusal = await vi.waitFor(
@@ -355,7 +355,7 @@ integration("session-scoped browser agent backends", () => {
     expect(
       (
         await f.host.store.database
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select("state")
           .where("id", "=", tabId)
           .executeTakeFirstOrThrow()
@@ -432,7 +432,7 @@ integration("session-scoped browser agent backends", () => {
       { timeout: 2000 },
     );
     const before = f.phone.receivedCommands().length;
-    const result = await f.host.runtime.browser.activateWorkspaceTab(f.host.ownerId, tabId);
+    const result = await f.host.runtime.browser.activatePersonalTab(f.host.ownerId, tabId);
     expect(
       (await browserRows(f.host.runtime.browser, f.host.ownerId, result.session.id)).lineage
         ?.tabs?.[0]?.state,

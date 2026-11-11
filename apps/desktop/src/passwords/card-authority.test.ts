@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { runInNewContext } from "node:vm";
@@ -30,7 +31,7 @@ async function fixture(select = false) {
   };
   const release = { released: true as const, value: "synthetic-card-canary" };
   const broker: PasswordsBrokerSession & PasswordsBrokerCardSession = {
-    protocolVersion: 7,
+    protocolVersion: 10,
     probe: vi.fn(),
     request: vi.fn(),
     approve: vi.fn(),
@@ -56,16 +57,15 @@ async function fixture(select = false) {
   await authority.control(
     {
       type: "login.authorize",
+      deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
       credential: "card",
       operationId: id,
       cardRef,
       site: "https://merchant.test",
-      workspaceId: createId("workspace"),
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
       requester: {
-        deploymentId: "personal",
+        deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
         deploymentName: "Personal",
-        workspaceName: "Main",
         threadTitle: "Checkout",
         reason: "Pay",
       },

@@ -61,13 +61,18 @@ export async function executeIntegrationAdministration(
         actorUserId: actor.userId,
       });
       return { type: command.type };
-    case "plugin.activation.set":
-      await options.platform.store.plugins.setActivation({
-        ...command,
-        administration,
-        actorUserId: actor.userId,
+    case "plugin.activation.set": {
+      const target = { kind: "plugin" as const, pluginId: command.pluginId };
+      const detail = await options.platform.store.settings.detail(actor.userId, target);
+      await options.platform.store.settings.setEnabled(actor.userId, {
+        type: "settings.plugin.enabled.set",
+        target,
+        enabled: command.active,
+        expectedRevision: detail.row.placement.revision,
+        idempotencyKey: command.idempotencyKey,
       });
       return { type: command.type };
+    }
     case "plugin.remove": {
       await options.platform.store.plugins.assertCanRemove(command.pluginId, actor);
       await options.platform.store.specialists.retirePlugin(command.pluginId);
@@ -110,7 +115,6 @@ export async function executeIntegrationAdministration(
         grantId: command.grantId,
         ownerUserId: actor.userId,
         requestId,
-        workspaceId: command.workspaceId,
       });
       return { type: command.type };
     case "integration.disconnect":

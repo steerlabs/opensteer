@@ -9,7 +9,7 @@ import type {
   BrowserTabRow,
   BrowserTabRecord,
 } from "@opensteer/protocol/browser-tabs";
-import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
+import type { BrowserGroupFacts, PersonalTabStreamRow } from "@opensteer/database";
 import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import type { UserId } from "@opensteer/core";
 
@@ -64,7 +64,7 @@ const tab: BrowserTabRow = {
 };
 function fixture(count = 1) {
   const facts: BrowserGroupFacts = { ...group, tabCount: count };
-  const durable = new Map<string, WorkspaceTabStreamRow>(
+  const durable = new Map<string, PersonalTabStreamRow>(
     Array.from({ length: count }, (_, index) => {
       const id = index ? (`surface_${index + 1}` as BrowserTabRow["id"]) : tabId;
       return [id, { ...tab, id, order: index, kind: "browser", groupId }];

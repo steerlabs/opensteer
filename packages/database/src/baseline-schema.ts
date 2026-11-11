@@ -1474,7 +1474,7 @@ create table browser_profiles (
   "owner_id" text not null,
   "name" text not null,
   "storage_state" text not null default 'unbound' check (storage_state in ('unbound', 'local')),
-  "storage_binding_version" text,
+  "storage_binding_version" integer check (storage_binding_version = 1),
   "storage_deployment_id" text,
   "storage_runner_id" text,
   "storage_instance_id" text,
@@ -1490,7 +1490,7 @@ create table browser_profiles (
 create table browser_profile_deletions (
   "deletion_id" text not null,
   "profile_id" text not null,
-  "binding_version" text not null,
+  "binding_version" integer not null check (binding_version = 1),
   "deployment_id" text not null,
   "runner_id" text not null,
   "storage_instance_id" text not null,
@@ -1500,7 +1500,8 @@ create table browser_profile_deletions (
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
   "deleted_at" timestamptz,
-  primary key ("deletion_id")
+  primary key ("deletion_id"),
+  unique ("profile_id")
 );
 
 create table browser_history_entries (
@@ -2508,4 +2509,19 @@ alter table personal_team_requests add unique(local_input_id);
 create index personal_team_requests_unpublished on personal_team_requests(team_deployment_id,created_at,request_id) where publication_state='pending';
 
 create unique index triggers_system_role on triggers(system_role) where system_role is not null;
+create table folder_skill_inventory (
+  folder_computer_id text not null references runners(id) on delete cascade,
+  folder_path text not null,
+  environment_id text not null references execution_environments(id) on delete cascade,
+  boot_id text not null,
+  connection_generation bigint not null,
+  connection_id text not null,
+  connection_lease_id text not null,
+  binding_generation integer not null,
+  scan_sequence bigint not null,
+  scanned_at timestamptz not null,
+  scan_status text not null check(scan_status in ('complete','failed')),
+  metadata jsonb not null,
+  primary key(folder_computer_id,folder_path)
+);
 `;

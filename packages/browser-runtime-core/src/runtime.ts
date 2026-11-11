@@ -761,7 +761,7 @@ export class BrowserRuntime implements NativePresentationSource {
               ? { devicePixelRatio: 1, ...claims.viewport }
               : this.initialViewport,
             rootPages: [rootPage],
-            ...(claims.workspaceTabRestoreVersion === 1 && claims.initialSurfaceId
+            ...(claims.tabRestoreVersion === 1 && claims.initialSurfaceId
               ? { initialSurfaceId: claims.initialSurfaceId }
               : {}),
           });
@@ -828,7 +828,7 @@ export class BrowserRuntime implements NativePresentationSource {
           this.sessions.set(claims.sessionId, active);
           this.sleeper.add(claims.sessionId, {
             ledger,
-            restoreVersion: claims.workspaceTabRestoreVersion,
+            restoreVersion: claims.tabRestoreVersion,
             blocked: (id) =>
               [...this.nativePresentations].some(
                 (p) => p.sessionId === claims.sessionId && p.surfaceId === id,

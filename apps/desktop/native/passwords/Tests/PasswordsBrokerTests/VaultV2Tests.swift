@@ -70,12 +70,12 @@ final class VaultV2Tests: BrokerTestCase {
     same(result?["accounts"], .array([]))
     let summaries = try await harness.vault.summaries(Authentication(reason: "test"))
     XCTAssertEqual(summaries.count, 1)
-    let key = GrantKey(deploymentId: "d", workspaceId: "w", site: "https://example.com")
-    let lookup = try await harness.vault.lookUp(withinSite: "https://example.com", grant: key, permissionVersion: 4)
+    let key = GrantKey(deploymentId: "d", site: "https://example.com")
+    let lookup = try await harness.vault.lookUp(withinSite: "https://example.com", grant: key, permissionVersion: 6)
     guard case .choose(let accounts) = lookup else { return XCTFail("passwordless login granted") }
     XCTAssertTrue(accounts.isEmpty)
     let person = try await harness.client("person", greet: false)
-    _ = try await person.hello(version: 8)
+    _ = try await person.hello(version: 10)
     same(try await person.call("fill.accounts", .object(["origin": .string("https://example.com")])).result,
       Wire.fillAccounts(.on))
   }

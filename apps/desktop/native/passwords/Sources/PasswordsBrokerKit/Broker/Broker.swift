@@ -223,15 +223,6 @@ public final class Broker: IPCServerDelegate {
 
   private func handle(_ method: Wire.Method, _ params: JSONValue, call: HeldCall) throws {
     guard let version = connections[call.connectionID]?.protocolVersion else { return }
-    if method.rawValue.hasPrefix("card."), version < 7 {
-      throw Wire.Failure.invalid("Card use needs version 7.")
-    }
-    if method.rawValue.hasPrefix("fill."), version < 8 {
-      throw Wire.Failure.invalid("Password filling needs version 8.")
-    }
-    if method.rawValue.hasPrefix("save."), version < 9 {
-      throw Wire.Failure.invalid("Saving passwords needs version 9.")
-    }
     switch method {
     case .saveBegin:
       let params = try Wire.SaveBeginParams(json: params)
@@ -279,9 +270,6 @@ public final class Broker: IPCServerDelegate {
     case .signInCommit:
       try commit(try Wire.TransactionParams(json: params), call: call)
     case .signInApprove:
-      guard version >= 6 else {
-        throw Wire.Failure.invalid("Update Opensteer to approve this sign-in.")
-      }
       try approve(try Wire.ApproveParams(json: params), call: call)
     case .signInRelease:
       try release(try Wire.ReleaseParams(json: params, protocolVersion: version), call: call)
@@ -768,7 +756,7 @@ public final class Broker: IPCServerDelegate {
       remember
       ? GrantChange(
         key: request.grantKey, login: .saved(id: login.id),
-        deploymentName: names.deployment, workspaceName: names.workspace,
+        deploymentName: names,
         permissionVersion: transaction.permissionVersion) : nil
     hold(transaction, .approve, call) { serial in
       do {
@@ -794,14 +782,8 @@ public final class Broker: IPCServerDelegate {
     }
   }
 
-  /// The Workspace and Deployment names a grant keeps for display.
-  private static func grantNames(_ request: Wire.SignInRequestParams) -> (
-    deployment: String, workspace: String
-  ) {
-    (
-      Display.name(request.deploymentName, unnamed: Copy.unnamedDeployment),
-      Display.name(request.workspaceName, unnamed: Copy.unnamedWorkspace)
-    )
+  private static func grantNames(_ request: Wire.SignInRequestParams) -> String {
+    Display.name(request.deploymentName, unnamed: Copy.unnamedDeployment)
   }
 
   /// Pins every authorization, including Only this time, without a field value.
@@ -839,7 +821,7 @@ public final class Broker: IPCServerDelegate {
     guard transaction.isPerson ? personFillSetting : agentSignInsSetting else {
       return reply(call, Wire.ReleaseResult.refused(.passwordsOff).json)
     }
-    guard params.destination != .app || (!transaction.isPerson && transaction.permissionVersion == 5) else {
+    guard params.destination != .app || (!transaction.isPerson && transaction.permissionVersion == 6) else {
       return reply(call, Wire.ReleaseResult.refused(.revoked).json)
     }
     let authority = transaction.authority
@@ -903,7 +885,7 @@ public final class Broker: IPCServerDelegate {
   }
 
   private func requestCard(_ request: Wire.SignInRequestParams, call: HeldCall) throws {
-    guard let version = connections[call.connectionID]?.protocolVersion, version >= 7 else { return }
+    guard connections[call.connectionID]?.protocolVersion == 10 else { return }
     guard transactions[request.transactionId] == nil else { throw Wire.Failure.invalid(Copy.signInMovedOn) }
     if let refusal = releaseRefusal { return answer(call, refusal) }
     let now = Date()
@@ -1183,7 +1165,6 @@ public final class Broker: IPCServerDelegate {
       ActivityEntry(
         at: Date(), site: request.siteHost, account: transaction.account,
         deployment: Display.clean(request.deploymentName, limit: 120),
-        workspace: Display.clean(request.workspaceName, limit: 120),
         thread: Display.clean(request.threadTitle, limit: 200), automatic: transaction.automatic,
         outcome: outcome, brand: card?.brand, lastFour: card?.lastFour))
     notify(.changed)

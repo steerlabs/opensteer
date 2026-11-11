@@ -33,9 +33,9 @@ class BrokerTestCase: XCTestCase {
   /// A greeted desktop's request, answered: the decision.
   func request(
     _ desktop: TestClient, _ id: String, site: String = "https://example.com", session: String = Fixtures.session,
-    workspace: (String, String) = Fixtures.workspace
+    deployment: (String, String) = Fixtures.deployment
   ) async throws -> JSONValue {
-    let reply = try await desktop.call("signin.request", Fixtures.request(id, site: site, session: session, workspace: workspace))
+    let reply = try await desktop.call("signin.request", Fixtures.request(id, site: site, session: session, deployment: deployment))
     return try XCTUnwrap(reply.result, "signin.request answered \(reply)")
   }
 

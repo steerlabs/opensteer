@@ -1,17 +1,11 @@
-import { deploymentPolicy, OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
+import { assertPersonalOwner } from "./private-resource-owner.js";
+import { OpensteerError, type RunnerId, type UserId } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 
 async function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId: UserId) {
-  const deployment = await database
-    .selectFrom("deployments")
-    .select("deploymentShape")
-    .where("singletonKey", "=", "primary")
-    .executeTakeFirst(databaseOperationOptions());
-  const mainOnly =
-    deployment !== undefined &&
-    deploymentPolicy(deployment.deploymentShape).browserHomesOnDeploymentComputers === "main-only";
+  await assertPersonalOwner(database, ownerId);
   return database
     .selectFrom("runners")
     .select(["id", "name", "kind", "ownerKind", "ownerUserId", "allowedModules"])
@@ -23,13 +17,13 @@ async function eligibleBrowserRunners(database: Kysely<DatabaseSchema>, ownerId:
         eb.and([
           eb("ownerKind", "=", "deployment"),
           eb("ownerUserId", "is", null),
-          eb.or([eb("kind", "=", "main"), eb.val(!mainOnly)]),
+          eb("kind", "=", "main"),
         ]),
       ]),
     );
 }
 
-/** Offline computers remain eligible; Workspace membership confers no computer authority. */
+/** Offline owner-enrolled computers remain eligible. */
 export async function listEligibleBrowserRunners(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,

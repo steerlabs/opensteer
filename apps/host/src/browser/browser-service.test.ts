@@ -33,7 +33,7 @@ import {
   type UserId,
   type WorkspaceId,
 } from "@opensteer/core";
-import type { BrowserHistoryStore, WorkspaceTabStore } from "@opensteer/database";
+import type { BrowserHistoryStore, PersonalTabStore } from "@opensteer/database";
 import {
   BrowserAttachTicketClaimsSchema,
   browserCaptureMaxTargets,
@@ -104,7 +104,7 @@ function runnerTarget(options: {
   readonly rasterDemand?: boolean;
   readonly editing?: boolean | 1 | 2 | undefined;
   readonly clipboard?: boolean | undefined;
-  readonly workspaceTabRestoreVersion?: boolean;
+  readonly tabRestoreVersion?: boolean;
   readonly environmentIds?: readonly EnvironmentId[];
   readonly label?: string;
   readonly runnerId?: RunnerId;
@@ -161,7 +161,7 @@ function runnerTarget(options: {
             personFill: options.personFill,
             cdpBoundary: true,
             surfaceState: options.surfaceState ? 1 : undefined,
-            workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
+            tabRestoreVersion: options.tabRestoreVersion ?? false,
             sharedControl: options.sharedControl ?? true,
             editing: options.editing === true ? 1 : options.editing || undefined,
             clipboard: options.clipboard,
@@ -2293,7 +2293,7 @@ describe("BrowserService", () => {
       connectTimeoutMs: 2000,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
-      workspaceTabs: {
+      personalTabs: {
         groupIds: async () => [],
         openTabs: async () => [],
         close,
@@ -2302,11 +2302,11 @@ describe("BrowserService", () => {
         read: async (_ownerId: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
           Array.isArray(id) ? [] : { id: groupId, tabs: [] },
         suspend: async () => undefined,
-      } as unknown as WorkspaceTabStore,
+      } as unknown as PersonalTabStore,
     });
     cleanups.push(() => service.close());
     sessionId = (await service.start({ fresh: true, ownerId, workspaceId })).session.id;
-    const closing = service.closeWorkspaceTab(ownerId, tabId);
+    const closing = service.closePersonalTab(ownerId, tabId);
     const settled = closing.then(
       () => "closed",
       () => "rejected",
@@ -2582,8 +2582,8 @@ describe("BrowserService", () => {
           keyId: "host-primary",
           privateKey: keys.privateKey,
         }),
-        targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: capable }),
-        workspaceTabs: {
+        targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: capable }),
+        personalTabs: {
           read: async () => [],
           openTabs: async () => [],
           list: async () => [],
@@ -2595,14 +2595,14 @@ describe("BrowserService", () => {
             closedIds: [],
           }),
           suspend: async () => undefined,
-        } as unknown as WorkspaceTabStore,
+        } as unknown as PersonalTabStore,
       });
       cleanups.push(() => service.close());
       const opened = await service.start({ fresh: true, ownerId, workspaceId });
-      expect(runtime.lastClaims()?.workspaceTabRestoreVersion).toBe(capable ? 1 : undefined);
-      expect(opened.session.workspaceTabRestoreVersion).toBe(capable ? 1 : undefined);
+      expect(runtime.lastClaims()?.tabRestoreVersion).toBe(capable ? 1 : undefined);
+      expect(opened.session.tabRestoreVersion).toBe(capable ? 1 : undefined);
       const bootstrap = await service.bootstrap(ownerId);
-      expect(bootstrap.workspaceTabRestoreVersion).toBe(1);
+      expect(bootstrap.tabRestoreVersion).toBe(1);
       if (capable) {
         runtime.publishTabs({
           surfaces: [
@@ -4856,7 +4856,7 @@ describe("BrowserService", () => {
     const bootstrap = await service.bootstrap(ownerId);
     expect(bootstrap.profileGrants).toHaveLength(100);
     expect(bootstrap).not.toHaveProperty("sessions");
-    expect(bootstrap).not.toHaveProperty("workspaceTabs");
+    expect(bootstrap).not.toHaveProperty("personalTabs");
     expect(Buffer.byteLength(JSON.stringify(bootstrap), "utf8")).toBeLessThanOrEqual(
       1 * 1_024 * 1_024,
     );
@@ -5802,7 +5802,7 @@ describe("BrowserService", () => {
 
 function freshService(options: {
   readonly surfaceState?: boolean | undefined;
-  readonly workspaceTabRestoreVersion?: boolean;
+  readonly tabRestoreVersion?: boolean;
   readonly history?: BrowserHistoryStore;
   readonly navigationAttribution?: boolean;
   readonly onHistoryChanged?: (ownerId: UserId, profileId: BrowserProfileId) => void;
@@ -5822,10 +5822,10 @@ function freshService(options: {
   readonly onWorkspaceEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
-  readonly workspaceTabs?: WorkspaceTabStore;
+  readonly personalTabs?: PersonalTabStore;
 }): BrowserService {
   const service = new BrowserService({
-    ...(options.workspaceTabs ? { workspaceTabs: options.workspaceTabs } : {}),
+    ...(options.personalTabs ? { personalTabs: options.personalTabs } : {}),
     ...nativeProfileOptions(),
     passkeys: options.passkeysEnabled === true,
     personal: options.personal === true,
@@ -5849,7 +5849,7 @@ function freshService(options: {
     targetResolver: runnerTarget({
       url: options.runtime.url,
       surfaceState: options.surfaceState,
-      workspaceTabRestoreVersion: options.workspaceTabRestoreVersion ?? false,
+      tabRestoreVersion: options.tabRestoreVersion ?? false,
       navigationAttributionVersion: options.navigationAttribution ?? options.history !== undefined,
       sharedControl: options.sharedControl ?? true,
       targetControl: options.targetControl ?? false,
@@ -7784,7 +7784,7 @@ it("records a retired Guest closed, saves its tabs and closes viewers gracefully
     keys,
     repository,
     runtime,
-    workspaceTabs: new Proxy(
+    personalTabs: new Proxy(
       { suspend, recordChanges },
       {
         get: (store, key) =>
@@ -7794,7 +7794,7 @@ it("records a retired Guest closed, saves its tabs and closes viewers gracefully
               ? store.recordChanges
               : async () => undefined,
       },
-    ) as unknown as WorkspaceTabStore,
+    ) as unknown as PersonalTabStore,
   });
   const opened = await service.start({ fresh: true, ownerId, workspaceId });
   const peer = new RecordingPeer("retired-viewer");
@@ -7831,14 +7831,14 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     ...profileStateOptions,
     repository,
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
-    targetResolver: runnerTarget({ url: runtime.url, workspaceTabRestoreVersion: true }),
-    workspaceTabs: {
+    targetResolver: runnerTarget({ url: runtime.url, tabRestoreVersion: true }),
+    personalTabs: {
       groupIds: async () => [],
       read: async () => [],
       openTabs: async () => [],
       recordChanges,
       suspend: async () => undefined,
-    } as unknown as WorkspaceTabStore,
+    } as unknown as PersonalTabStore,
   });
   cleanups.push(() => service.close());
   const opened = await service.start({ fresh: true, ownerId, workspaceId });
@@ -8265,7 +8265,7 @@ it("lets the runtime sleep an unviewed leftover only after its Run's durable hol
     runtime,
     repository,
     surfaceState: true,
-    workspaceTabRestoreVersion: true,
+    tabRestoreVersion: true,
   });
   const opened = await service.openAgentSession({
     ownerId,
@@ -8482,7 +8482,7 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
   const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
   const tabId = BrowserSurfaceIdSchema.parse("page-1");
   let sessionId: BrowserSessionId;
-  const workspaceTabs = {
+  const personalTabs = {
     get: async () => ({ id: tabId, groupId: sessionId, url: "about:blank", favicon: null }),
     session: async () => repository.session(sessionId),
     read: async (_owner: UserId, id: BrowserSessionId | readonly BrowserSessionId[]) =>
@@ -8497,14 +8497,14 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
     openTabs: async () => [],
     lineageForSession: async (id: BrowserSessionId) => id,
     suspend: async () => undefined,
-  } as unknown as WorkspaceTabStore;
+  } as unknown as PersonalTabStore;
   const service = freshService({
     keys,
     runtime,
     repository,
     surfaceState: true,
-    workspaceTabRestoreVersion: true,
-    workspaceTabs,
+    tabRestoreVersion: true,
+    personalTabs,
   });
   sessionId = (await service.start({ ownerId, workspaceId, fresh: true })).session.id;
   runtime.publishTabs({
@@ -8512,7 +8512,7 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
   });
   await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("suspended"));
   const before = runtime.receivedCommands().length;
-  const restored = service.restoreAgentWorkspaceTab(
+  const restored = service.restoreAgentPersonalTab(
     { ownerId, workspaceId, agentBindingId: "restoring-run" },
     tabId,
   );
@@ -8540,7 +8540,7 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
   expect(lastState()).toMatchObject({ personUsed: [] });
   runtime.publishTabs({ surfaces: [{ id: tabId, state: "live", active: true, title: "Awake" }] });
   await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("live"));
-  await service.activateWorkspaceTab(ownerId, tabId);
+  await service.activatePersonalTab(ownerId, tabId);
   await vi.waitFor(() => expect(lastState()).toMatchObject({ personUsed: [tabId] }), {
     timeout: 1000,
   });

@@ -5,7 +5,6 @@ import {
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import type { CallableIntegrationTool, IntegrationPlatformStore } from "@opensteer/database";
 import { integrationToolEffect } from "@opensteer/integration-core/effect";
@@ -23,7 +22,7 @@ const AddressingArgumentsSchema = z.object({
 });
 
 export interface IntegrationCallSubjectSources {
-  /** The gateway's own listing, cached per owner and Workspace, so a call is named as it resolves. */
+  /** The gateway's own listing, cached per owner, so a call is named as it resolves. */
   readonly listCallableTools: IntegrationPlatformService["listCallableTools"];
   readonly getComputerConnectionForCall: IntegrationPlatformStore["getComputerConnectionForCall"];
   /** A lookup that failed; the event is still recorded, without a subject. */
@@ -31,19 +30,18 @@ export interface IntegrationCallSubjectSources {
   readonly runRequester: (input: {
     readonly runId: RunId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }) => Promise<UserId | null>;
 }
 
 /**
  * What a Runner's `tool.started` for an integration gateway call addressed,
  * resolved exactly as the gateway resolves the call — from its cached listing
- * for the Run's owner and the event's Workspace — to that one grant and tool
+ * for the Run's owner and the task — to that one grant and tool
  * This is the one place the Host names a recorded call's subject.
  *
  * Undefined for every other event, and for an address that names nothing
  * this Run could reach — a hallucinated or revoked operation or another
- * Workspace's account. The record of such a call is the honest one: it
+ * person's account. The record of such a call is the honest one: it
  * addressed nothing, so it names nothing.
  *
  * It runs before the event commits, so a lookup that fails is reported and
@@ -64,14 +62,12 @@ export async function integrationCallSubject(
     const ownerUserId = await sources.runRequester({
       runId: event.runId,
       threadId: event.threadId,
-      workspaceId: event.workspaceId,
     });
     if (!ownerUserId) return undefined;
     const resolution = resolveOperation(
       await sources.listCallableTools({
         ownerUserId,
         threadId: event.threadId,
-        workspaceId: event.workspaceId,
       }),
       call.data.operation,
       call.data.account,

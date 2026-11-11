@@ -1,10 +1,12 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { withDatabaseTransaction } from "./connection.js";
+
 import { requestSettlementActor } from "./request-settlement.js";
-import { discoverRequestWorkspaces, withRequestWorkspaceLocks } from "./request-workspace-locks.js";
+
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import { randomUUID } from "node:crypto";
 import {
   OpensteerError,
@@ -13,7 +15,7 @@ import {
   type BrowserSourceId,
   type RequestId,
   type UserId,
-  type WorkspaceId,
+  type DeploymentId,
 } from "@opensteer/core";
 import type { BrowserSignInRequestResponse } from "@opensteer/protocol/browser-sources";
 import { sql, type Kysely, type Transaction } from "kysely";
@@ -40,7 +42,7 @@ export interface BrowserSourceRecord {
 export interface BrowserSiteGrantRecord {
   readonly id: string;
   readonly ownerId: UserId;
-  readonly workspaceId: WorkspaceId;
+  readonly deploymentId: DeploymentId;
   readonly site: string;
   readonly preferredSourceId: BrowserSourceId | null;
   readonly createdAt: Date;
@@ -52,7 +54,6 @@ export type BrowserSignInActor = "agent" | "owner" | "request";
 export interface BrowserSignInReceipt {
   readonly id: string;
   readonly ownerId: UserId;
-  readonly workspaceId: WorkspaceId;
   readonly site: string;
   readonly sourceId: BrowserSourceId;
   readonly sourceName: string;
@@ -65,7 +66,7 @@ export interface BrowserSignInReceipt {
 
 /** Why a sign-in that was exported must not be imported. */
 export type BrowserSignInFence =
-  "source-changed" | "grant-removed" | "workspace-unavailable" | "request-closed";
+  "source-changed" | "grant-removed" | "deployment-unavailable" | "request-closed";
 
 const sourceColumns = [
   "browserSources.id",
@@ -79,7 +80,7 @@ const sourceColumns = [
 const grantColumns = [
   "id",
   "ownerId",
-  "workspaceId",
+  "deploymentId",
   "site",
   "preferredSourceId",
   "createdAt",
@@ -88,7 +89,6 @@ const grantColumns = [
 const receiptColumns = [
   "id",
   "ownerId",
-  "workspaceId",
   "site",
   "sourceId",
   "sourceName",
@@ -101,7 +101,7 @@ const receiptColumns = [
 
 /**
  * Durable authority for Chrome sign-ins: which Chrome profiles are connected
- * (sources), which sites each Workspace may sign in to without asking (site
+ * (sources), which sites the person may sign in to without asking (site
  * grants), and what was signed in (receipts). A grant is not bound to a source,
  * so reconnecting Chrome keeps every site the person allowed.
  */
@@ -120,7 +120,7 @@ export class BrowserSourceStore {
     readonly remoteOrigin: string | null;
     readonly remoteGeneration: number | null;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       await lockPairings(transaction, input.ownerId);
       const now = new Date();
       await transaction
@@ -171,7 +171,7 @@ export class BrowserSourceStore {
     readonly routeGeneration: number | null;
     readonly replaces: { readonly sourceId: BrowserSourceId; readonly tokenHash: string } | null;
   }): Promise<BrowserSourceRecord> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const now = new Date();
       const prospective = await transaction
         .selectFrom("browserSourcePairings")
@@ -344,7 +344,7 @@ export class BrowserSourceStore {
   }
 
   /**
-   * Ends a connection. Grants stay: they belong to the Workspace, and a
+   * Ends a connection. Grants stay: they belong to the person, and a
    * preference for a revoked source is simply skipped when choosing one.
    */
   async revoke(input: {
@@ -362,29 +362,21 @@ export class BrowserSourceStore {
     return result.numUpdatedRows === 1n;
   }
 
-  /** Grants in Workspaces the owner can still use, so a lost membership hides its sites. */
   async listGrants(ownerId: UserId): Promise<readonly BrowserSiteGrantRecord[]> {
+    await assertPersonalOwner(this.#database, ownerId);
     return this.#database
       .selectFrom("browserSiteGrants")
-      .innerJoin("workspaces", "workspaces.id", "browserSiteGrants.workspaceId")
-      .innerJoin("workspaceMemberships", (join) =>
-        join
-          .onRef("workspaceMemberships.workspaceId", "=", "browserSiteGrants.workspaceId")
-          .onRef("workspaceMemberships.userId", "=", "browserSiteGrants.ownerId"),
-      )
-      .select(grantColumns.map((column) => `browserSiteGrants.${column}` as const))
-      .where("browserSiteGrants.ownerId", "=", ownerId)
-      .where("browserSiteGrants.revokedAt", "is", null)
-      .where("workspaceMemberships.state", "=", "active")
-      .where("workspaces.status", "=", "ready")
-      .orderBy("browserSiteGrants.createdAt", "asc")
+      .select(grantColumns)
+      .where("ownerId", "=", ownerId)
+      .where("revokedAt", "is", null)
+      .orderBy("createdAt", "asc")
       .limit(maxActiveSiteGrants)
       .execute();
   }
 
   async getGrant(input: {
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
   }): Promise<BrowserSiteGrantRecord | null> {
     return (
@@ -392,43 +384,39 @@ export class BrowserSourceStore {
         .selectFrom("browserSiteGrants")
         .select(grantColumns)
         .where("ownerId", "=", input.ownerId)
-        .where("workspaceId", "=", input.workspaceId)
+        .where("deploymentId", "=", input.deploymentId)
         .where("site", "=", input.site)
         .where("revokedAt", "is", null)
         .executeTakeFirst()) ?? null
     );
   }
 
-  /** Remembers a site for a Workspace, preferring one Chrome profile for it. */
+  /** Remembers a site for the person, preferring one Chrome profile for it. */
   async upsertGrant(input: {
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly preferredSourceId: BrowserSourceId;
   }): Promise<BrowserSiteGrantRecord> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async () => [input.workspaceId],
-      async (transaction) => {
-        await lockSiteGrants(transaction, input.ownerId);
-        return upsertGrantInTransaction(transaction, input, null);
-      },
-    );
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      await lockSiteGrants(transaction, input.ownerId);
+      return upsertGrantInTransaction(transaction, input, null);
+    });
   }
 
   async removeGrant(input: {
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
   }): Promise<boolean> {
-    return withDatabaseTransaction(this.#database, (transaction) =>
+    return withPersonalTransaction(this.#database, (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const result = await transaction
           .updateTable("browserSiteGrants")
           .set({ revokedAt: new Date() })
           .where("ownerId", "=", input.ownerId)
-          .where("workspaceId", "=", input.workspaceId)
+          .where("deploymentId", "=", input.deploymentId)
           .where("site", "=", input.site)
           .where("revokedAt", "is", null)
           .executeTakeFirst();
@@ -441,7 +429,7 @@ export class BrowserSourceStore {
    * The last check between exporting a sign-in and importing it, made
    * immediately before the import so every later commit step is expected to
    * succeed: the source must be the same live connection that exported, the
-   * Workspace must still be usable, a standing sign-in must still be allowed,
+   * personal deployment must still be available, a standing sign-in must still be allowed,
    * a Request must still be pending with its authority intact, and a sign-in
    * that remembers a new site must fit the owner's limit of allowed sites.
    */
@@ -449,7 +437,7 @@ export class BrowserSourceStore {
     readonly ownerId: UserId;
     readonly sourceId: BrowserSourceId;
     readonly sourceGeneration: number;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly sessionId: string;
     readonly requireGrant: boolean;
@@ -457,51 +445,42 @@ export class BrowserSourceStore {
     readonly requestId: RequestId | null;
     readonly settlementSessionId?: string;
   }): Promise<BrowserSignInFence | null> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => [
-        input.workspaceId,
-        ...(input.requestId
-          ? await discoverRequestWorkspaces(transaction, { requestId: input.requestId })
-          : []),
-      ],
-      async (transaction) => {
-        const source = await transaction
-          .selectFrom("browserSources")
-          .innerJoin("users", "users.id", "browserSources.ownerId")
-          .select("browserSources.generation")
-          .where("browserSources.id", "=", input.sourceId)
-          .where("browserSources.ownerId", "=", input.ownerId)
-          .where("browserSources.revokedAt", "is", null)
-          .where("users.disabledAt", "is", null)
-          .executeTakeFirst();
-        if (!source || source.generation !== input.sourceGeneration) return "source-changed";
-        if (!(await workspaceUsable(transaction, input.ownerId, input.workspaceId))) {
-          return "workspace-unavailable";
-        }
-        const grant = await transaction
-          .selectFrom("browserSiteGrants")
-          .select("id")
-          .where("ownerId", "=", input.ownerId)
-          .where("workspaceId", "=", input.workspaceId)
-          .where("site", "=", input.site)
-          .where("revokedAt", "is", null)
-          .executeTakeFirst();
-        if (input.requireGrant && !grant) return "grant-removed";
-        if (
-          input.requestId &&
-          !(await browserSignInRequestDeliverableInTransaction(transaction, {
-            ownerId: input.ownerId,
-            requestId: input.requestId,
-            scope: { sessionId: input.sessionId, site: input.site, workspaceId: input.workspaceId },
-          }))
-        ) {
-          return "request-closed";
-        }
-        if (input.rememberSite && !grant) await assertGrantCapacity(transaction, input.ownerId);
-        return null;
-      },
-    );
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const source = await transaction
+        .selectFrom("browserSources")
+        .innerJoin("users", "users.id", "browserSources.ownerId")
+        .select("browserSources.generation")
+        .where("browserSources.id", "=", input.sourceId)
+        .where("browserSources.ownerId", "=", input.ownerId)
+        .where("browserSources.revokedAt", "is", null)
+        .where("users.disabledAt", "is", null)
+        .executeTakeFirst();
+      if (!source || source.generation !== input.sourceGeneration) return "source-changed";
+      if (!(await personalDeploymentUsable(transaction, input.ownerId, input.deploymentId))) {
+        return "deployment-unavailable";
+      }
+      const grant = await transaction
+        .selectFrom("browserSiteGrants")
+        .select("id")
+        .where("ownerId", "=", input.ownerId)
+        .where("deploymentId", "=", input.deploymentId)
+        .where("site", "=", input.site)
+        .where("revokedAt", "is", null)
+        .executeTakeFirst();
+      if (input.requireGrant && !grant) return "grant-removed";
+      if (
+        input.requestId &&
+        !(await browserSignInRequestDeliverableInTransaction(transaction, {
+          ownerId: input.ownerId,
+          requestId: input.requestId,
+          scope: { sessionId: input.sessionId, site: input.site },
+        }))
+      ) {
+        return "request-closed";
+      }
+      if (input.rememberSite && !grant) await assertGrantCapacity(transaction, input.ownerId);
+      return null;
+    });
   }
 
   async getSignIn(input: {
@@ -527,7 +506,7 @@ export class BrowserSourceStore {
   async commitSignIn(input: {
     readonly invocationId: string;
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly sourceId: BrowserSourceId;
     readonly sourceName: string;
@@ -543,86 +522,75 @@ export class BrowserSourceStore {
     readonly replayed: boolean;
     readonly events: readonly AgentEvent[];
   }> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => [
-        input.workspaceId,
-        ...(input.requestId
-          ? await discoverRequestWorkspaces(transaction, { requestId: input.requestId })
-          : []),
-      ],
-      async (transaction) => {
-        await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-sign-in:${input.ownerId}:${input.invocationId}`}, 0))`.execute(
-          transaction,
-        );
-        const replay = await transaction
-          .selectFrom("browserSignIns")
-          .select(receiptColumns)
-          .where("ownerId", "=", input.ownerId)
-          .where("id", "=", input.invocationId)
-          .executeTakeFirst();
-        if (replay) {
-          assertSameSignIn(replay, input);
-          return { receipt: replay, replayed: true, events: [] };
-        }
-        await lockSiteGrants(transaction, input.ownerId);
-        const request = input.requestId
-          ? await fulfilBrowserSignInRequestInTransaction(transaction, {
-              requestId: input.requestId,
-              ...(input.settlementSessionId
-                ? { settlementSessionId: input.settlementSessionId }
-                : {}),
-              ownerId: input.ownerId,
-              response: {
-                outcome: "applied",
-                profileName: input.profileName,
-                sourceName: input.sourceName,
-              } satisfies BrowserSignInRequestResponse,
-              scope: {
-                sessionId: input.sessionId,
-                site: input.site,
-                workspaceId: input.workspaceId,
-              },
-            })
-          : null;
-        const now = new Date();
-        if (input.rememberSite) {
-          await upsertGrantInTransaction(
-            transaction,
-            { ...input, preferredSourceId: input.sourceId },
-            now,
-          );
-        } else {
-          await transaction
-            .updateTable("browserSiteGrants")
-            .set({ lastSignedInAt: now, preferredSourceId: input.sourceId })
-            .where("ownerId", "=", input.ownerId)
-            .where("workspaceId", "=", input.workspaceId)
-            .where("site", "=", input.site)
-            .where("revokedAt", "is", null)
-            .execute();
-        }
-        const receipt = await transaction
-          .insertInto("browserSignIns")
-          .values({
-            id: input.invocationId,
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-sign-in:${input.ownerId}:${input.invocationId}`}, 0))`.execute(
+        transaction,
+      );
+      const replay = await transaction
+        .selectFrom("browserSignIns")
+        .select(receiptColumns)
+        .where("ownerId", "=", input.ownerId)
+        .where("id", "=", input.invocationId)
+        .executeTakeFirst();
+      if (replay) {
+        assertSameSignIn(replay, input);
+        return { receipt: replay, replayed: true, events: [] };
+      }
+      await lockSiteGrants(transaction, input.ownerId);
+      const request = input.requestId
+        ? await fulfilBrowserSignInRequestInTransaction(transaction, {
+            requestId: input.requestId,
+            ...(input.settlementSessionId
+              ? { settlementSessionId: input.settlementSessionId }
+              : {}),
             ownerId: input.ownerId,
-            workspaceId: input.workspaceId,
-            site: input.site,
-            sourceId: input.sourceId,
-            sourceName: input.sourceName,
-            sessionId: input.sessionId,
-            profileName: input.profileName,
-            requestId: request ? request.request.id : null,
-            actor: input.actor,
-            createdAt: now,
+            response: {
+              outcome: "applied",
+              profileName: input.profileName,
+              sourceName: input.sourceName,
+            } satisfies BrowserSignInRequestResponse,
+            scope: {
+              sessionId: input.sessionId,
+              site: input.site,
+            },
           })
-          .returning(receiptColumns)
-          .executeTakeFirstOrThrow();
-        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
-        return { receipt, replayed: false, events: request?.events ?? [] };
-      },
-    );
+        : null;
+      const now = new Date();
+      if (input.rememberSite) {
+        await upsertGrantInTransaction(
+          transaction,
+          { ...input, preferredSourceId: input.sourceId },
+          now,
+        );
+      } else {
+        await transaction
+          .updateTable("browserSiteGrants")
+          .set({ lastSignedInAt: now, preferredSourceId: input.sourceId })
+          .where("ownerId", "=", input.ownerId)
+          .where("deploymentId", "=", input.deploymentId)
+          .where("site", "=", input.site)
+          .where("revokedAt", "is", null)
+          .execute();
+      }
+      const receipt = await transaction
+        .insertInto("browserSignIns")
+        .values({
+          id: input.invocationId,
+          ownerId: input.ownerId,
+          site: input.site,
+          sourceId: input.sourceId,
+          sourceName: input.sourceName,
+          sessionId: input.sessionId,
+          profileName: input.profileName,
+          requestId: request ? request.request.id : null,
+          actor: input.actor,
+          createdAt: now,
+        })
+        .returning(receiptColumns)
+        .executeTakeFirstOrThrow();
+      await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
+      return { receipt, replayed: false, events: request?.events ?? [] };
+    });
   }
 }
 
@@ -641,7 +609,7 @@ async function lockPairings(transaction: Transaction<DatabaseSchema>, ownerId: U
 
 /**
  * Serializes grant creation per owner so the owner-wide limit holds. Taken
- * after the complete Workspace set, matching sign-in commits.
+ * after the deployment event allocator, matching sign-in commits.
  */
 async function lockSiteGrants(transaction: Transaction<DatabaseSchema>, ownerId: UserId) {
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-site-grants:${ownerId}`}, 0))`.execute(
@@ -649,29 +617,17 @@ async function lockSiteGrants(transaction: Transaction<DatabaseSchema>, ownerId:
   );
 }
 
-async function workspaceUsable(
+async function personalDeploymentUsable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   ownerId: UserId,
-  workspaceId: WorkspaceId,
-  lock = false,
+  deploymentId: DeploymentId,
 ): Promise<boolean> {
-  let query = database
-    .selectFrom("workspaces")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "workspaces.id")
-    .innerJoin("users", "users.id", "workspaceMemberships.userId")
-    .select(["workspaces.kind", "workspaces.status", "workspaceMemberships.role"])
-    .where("workspaces.id", "=", workspaceId)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
-    .where("users.disabledAt", "is", null);
-  if (lock) query = query.forShare(["workspaces", "workspaceMemberships"]);
-  const workspace = await query.executeTakeFirst();
-  // Main belongs to its owner alone; a project Workspace to its members.
-  return (
-    workspace !== undefined &&
-    workspace.status === "ready" &&
-    (workspace.kind !== "main" || workspace.role === "owner")
-  );
+  try {
+    return (await assertPersonalOwner(database, ownerId)).deploymentId === deploymentId;
+  } catch (error) {
+    if (error instanceof OpensteerError) return false;
+    throw error;
+  }
 }
 
 async function assertGrantCapacity(
@@ -698,14 +654,14 @@ async function upsertGrantInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly preferredSourceId: BrowserSourceId;
   },
   signedInAt: Date | null,
 ): Promise<BrowserSiteGrantRecord> {
-  if (!(await workspaceUsable(transaction, input.ownerId, input.workspaceId, true))) {
-    throw new OpensteerError({ code: "forbidden", message: "Workspace is unavailable" });
+  if (!(await personalDeploymentUsable(transaction, input.ownerId, input.deploymentId))) {
+    throw new OpensteerError({ code: "forbidden", message: "Personal deployment is unavailable" });
   }
   const existing = await transaction
     .updateTable("browserSiteGrants")
@@ -714,7 +670,7 @@ async function upsertGrantInTransaction(
       ...(signedInAt ? { lastSignedInAt: signedInAt } : {}),
     })
     .where("ownerId", "=", input.ownerId)
-    .where("workspaceId", "=", input.workspaceId)
+    .where("deploymentId", "=", input.deploymentId)
     .where("site", "=", input.site)
     .where("revokedAt", "is", null)
     .returning(grantColumns)
@@ -726,7 +682,7 @@ async function upsertGrantInTransaction(
     .values({
       id: randomUUID(),
       ownerId: input.ownerId,
-      workspaceId: input.workspaceId,
+      deploymentId: input.deploymentId,
       site: input.site,
       preferredSourceId: input.preferredSourceId,
       lastSignedInAt: signedInAt,
@@ -739,16 +695,12 @@ async function upsertGrantInTransaction(
 function assertSameSignIn(
   receipt: BrowserSignInReceipt,
   input: {
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
     readonly sessionId: string;
   },
 ): void {
-  if (
-    receipt.workspaceId !== input.workspaceId ||
-    receipt.site !== input.site ||
-    receipt.sessionId !== input.sessionId
-  ) {
+  if (receipt.site !== input.site || receipt.sessionId !== input.sessionId) {
     throw new OpensteerError({
       code: "conflict",
       message: "This sign-in invocation belongs to a different site or session",

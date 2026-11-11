@@ -1947,6 +1947,20 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema extends KnowledgeTables {
+  folderSkillInventory: {
+    folderComputerId: RunnerId;
+    folderPath: string;
+    environmentId: EnvironmentId;
+    bootId: string;
+    connectionGeneration: number;
+    connectionId: string;
+    connectionLeaseId: string;
+    bindingGeneration: number;
+    scanSequence: number;
+    scannedAt: Timestamp;
+    scanStatus: "complete" | "failed";
+    metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
+  };
   teamMembers: TeamMemberTable;
   teamAccessState: TeamAccessStateTable;
   teamGroups: TeamGroupTable;

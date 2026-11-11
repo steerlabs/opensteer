@@ -7,14 +7,14 @@ import {
   AppFetchInputSchema,
   appFolderSegments,
   utf8Prefix,
-  type WorkspaceId,
+  type TaskFolder,
   type AppServerSpec,
   OpensteerError,
   appMaxBytes,
   type AgentEvent,
   type UserId,
 } from "@opensteer/core";
-import type { AppStore, OpensteerStore } from "@opensteer/database";
+import type { AppStore } from "@opensteer/database";
 import { createPrivateFileAtomically } from "@opensteer/shared/atomicPrivateFile";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import { prepareAppHtml, type AppTheme } from "@opensteer/shared/appFrame";
@@ -32,7 +32,7 @@ import {
 } from "./app-proxy.js";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
-import type { WorkspaceFilesService } from "../workspace/files/workspace-files-service.js";
+import type { FolderDirectoryPage } from "@opensteer/protocol";
 import type { z } from "zod";
 
 const unavailable = () =>
@@ -41,10 +41,16 @@ interface AppServiceOptions {
   readonly tunnels?: Pick<AppTunnelHub, "start" | "stop" | "connect" | "accept">;
   readonly dataDirectory: string;
   readonly apps: AppStore;
-  readonly store: Pick<OpensteerStore, "admitWorkspaceFiles">;
-  readonly files: Pick<WorkspaceFilesService, "list" | "download">;
+  readonly files: {
+    list(
+      folder: TaskFolder,
+      input: { parentKey: string; limit: number; cursor?: string },
+      signal: AbortSignal,
+    ): Promise<FolderDirectoryPage>;
+    download(folder: TaskFolder, key: string, signal: AbortSignal): Promise<Response>;
+  };
   readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
-  readonly tabsChanged?: (workspaceId: WorkspaceId) => Promise<void>;
+  readonly tabsChanged?: () => Promise<void>;
   readonly publishEvent: (event: AgentEvent) => void;
 }
 
@@ -64,19 +70,15 @@ export class AppService {
   }
   async setTabOpen(appId: string, userId: UserId, open: boolean) {
     const result = await this.#options.apps.setTabOpen(appId, userId, open);
-    await this.#notifyTabs(async () => result.workspaceId);
+    await this.#notifyTabs();
     return { appTabs: result.appTabs };
   }
-  #publishedTabsChanged(appId: string) {
-    return this.#notifyTabs(
-      async () => (await this.#options.apps.openTabWorkspace(appId))?.workspaceId,
-    );
+  async #publishedTabsChanged(appId: string) {
+    if (await this.#options.apps.tabIsOpen(appId)) await this.#notifyTabs();
   }
-  /** The change is committed, and the bootstrap poll repairs a lost notice. */
-  async #notifyTabs(workspace: () => Promise<WorkspaceId | undefined>) {
+  async #notifyTabs() {
     try {
-      const workspaceId = await workspace();
-      if (workspaceId) await this.#options.tabsChanged?.(workspaceId);
+      await this.#options.tabsChanged?.();
     } catch {
       return;
     }
@@ -89,18 +91,16 @@ export class AppService {
   ) {
     input = AppPublishInputSchema.parse(input);
     return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
-      const admission = await this.#options.store.admitWorkspaceFiles(
-        scope.workspaceId,
-        scope.requestedBy,
-      );
-      if (!admission) throw unavailable();
-      const { app: previous } = await this.#options.apps.authorize({
+      const { app: previous, publisher } = await this.#options.apps.authorize({
         ...scope,
         userId: scope.requestedBy,
         ...(input.appId ? { appId: input.appId } : {}),
-        sameWorkspace: true,
         fullAccess: input.start !== undefined,
       });
+      const folder: TaskFolder = {
+        computerId: publisher.folderComputerId,
+        path: publisher.folderPath,
+      };
       const replay = await this.#options.apps.publication(scope.runId, publishKey);
       if (replay) return publicationResult(replay);
       if (input.start !== undefined) {
@@ -109,17 +109,19 @@ export class AppService {
         } catch {
           throw new OpensteerError({
             code: "bad_request",
-            message: "Use an app folder relative to this Run's Workspace without traversal",
+            message: "Use an app folder relative to this task's folder without traversal",
           });
         }
         const server: AppServerSpec = {
-          environmentId: scope.environmentId,
-          folder: input.path,
+          folder: {
+            computerId: folder.computerId,
+            path: join(folder.path, ...appFolderSegments(input.path)),
+          },
           command: input.start,
         };
         const appId = input.appId ?? `app_${randomUUID()}`;
         const version = (previous?.latestVersion ?? 0) + 1;
-        const spec = this.#runtimeSpec(appId, version, server, admission.workspace);
+        const spec = this.#runtimeSpec(appId, version, server);
         try {
           await this.#tunnels().start(spec, AbortSignal.timeout(30_000));
         } catch (error) {
@@ -162,7 +164,7 @@ export class AppService {
           code: "bad_request",
           message: "Publish an HTML file (.html or .htm)",
         });
-      // Files drivers resolve these opaque path segments against the identity-bound Workspace root.
+      // Files drivers resolve these opaque path segments against the admitted task folder.
       const segments = input.path.replace(/^\.\//u, "").split("/");
       if (
         segments.some(
@@ -172,7 +174,7 @@ export class AppService {
       )
         throw new OpensteerError({
           code: "bad_request",
-          message: "Use an HTML file path relative to this Run's Workspace",
+          message: "Use an HTML file path relative to this task's folder",
         });
       const signal = AbortSignal.timeout(30_000);
       let key = "";
@@ -181,7 +183,7 @@ export class AppService {
         let found = false;
         do {
           const page = await this.#options.files.list(
-            admission,
+            folder,
             { parentKey: key, limit: 500, ...(cursor ? { cursor } : {}) },
             signal,
           );
@@ -197,7 +199,7 @@ export class AppService {
         } while (cursor);
         if (!found) throw unavailable();
       }
-      const response = await this.#options.files.download(admission, key, signal);
+      const response = await this.#options.files.download(folder, key, signal);
       if (!response.ok) {
         await response.body?.cancel();
         throw unavailable();
@@ -229,7 +231,6 @@ export class AppService {
         sha256,
         sizeBytes: bytes.byteLength,
         publishKey,
-        workspaceId: scope.workspaceId,
         threadId: scope.threadId,
         runId: scope.runId,
         environmentId: scope.environmentId,
@@ -239,14 +240,7 @@ export class AppService {
         const old = previousVersion!;
         // The old server's generation is the one replaced by this publication.
         if (old.version.server)
-          await this.#stop(
-            this.#runtimeSpec(
-              previous.id,
-              result.version - 1,
-              old.version.server,
-              admission.workspace,
-            ),
-          );
+          await this.#stop(this.#runtimeSpec(previous.id, result.version - 1, old.version.server));
       }
       if (result.event) {
         this.#options.publishEvent(result.event);
@@ -340,14 +334,11 @@ export class AppService {
           false,
           input.originMode,
         );
-      // Workspace admission refuses deleted or deleting apps before a tunnel is opened.
-      if (
-        error instanceof OpensteerError &&
-        (error.code === "not_found" || error.reason === "workspace-deleting")
-      )
+      // Personal admission is checked again before opening a tunnel.
+      if (error instanceof OpensteerError && error.code === "not_found")
         return this.#errorResponse(
           404,
-          "This app is no longer available. Its Project may have been deleted.",
+          "This app is no longer available.",
           input.theme,
           input.headers.accept?.includes("text/html") ?? input.path === "/",
           input.originMode,
@@ -366,18 +357,8 @@ export class AppService {
     return this.#locks.run(appId, async () => {
       const current = await this.#options.apps.latest(appId, userId);
       if (!current.version.server) throw new AppTunnelError("This app no longer runs a server");
-      const admission = await this.#options.store.admitWorkspaceFiles(
-        current.app.workspaceId,
-        userId,
-      );
-      if (!admission) throw unavailable();
       return this.#tunnels().connect(
-        this.#runtimeSpec(
-          appId,
-          current.version.version,
-          current.version.server,
-          admission.workspace,
-        ),
+        this.#runtimeSpec(appId, current.version.version, current.version.server),
         signal,
       );
     });
@@ -387,15 +368,9 @@ export class AppService {
     return { apps: await this.#options.apps.list({ ...scope, userId: scope.requestedBy }) };
   }
 
-  async listForCaller(scope: {
-    readonly requestedBy: UserId;
-    readonly reach: import("@opensteer/core").ThreadReachScope;
-  }) {
+  async listForCaller(scope: { readonly requestedBy: UserId }) {
     return {
-      apps: await this.#options.apps.listReachable({
-        userId: scope.requestedBy,
-        reach: scope.reach,
-      }),
+      apps: await this.#options.apps.listOwned(scope.requestedBy),
     };
   }
 
@@ -429,17 +404,7 @@ export class AppService {
                 code: "bad_request",
                 message: "app_fetch requires a server app",
               });
-            const admission = await this.#options.store.admitWorkspaceFiles(
-              app.workspaceId,
-              scope.requestedBy,
-            );
-            if (!admission) throw unavailable();
-            const spec = this.#runtimeSpec(
-              app.id,
-              version.version,
-              version.server,
-              admission.workspace,
-            );
+            const spec = this.#runtimeSpec(app.id, version.version, version.server);
             return this.#tunnels().connect(spec, signal);
           }),
       });
@@ -486,57 +451,16 @@ export class AppService {
     this.#tunnels().accept(ticket, socket);
   }
 
-  async stopWorkspace(workspaceId: WorkspaceId): Promise<void> {
-    const servers = await this.#options.apps.serversForWorkspace(workspaceId);
-    await Promise.all(
-      servers.map(({ appId, version, server, backing }) =>
-        this.#locks.run(appId, async () => {
-          if (server)
-            await this.#stop(
-              this.#runtimeSpec(appId, version, server, { id: workspaceId, backing }),
-            );
-        }),
-      ),
-    );
-  }
   async #stop(spec: AppRuntimeSpec): Promise<void> {
     try {
       await this.#tunnels().stop(spec);
     } catch {
-      /* Best effort for promptness; durable Workspace destruction retries server teardown. */
+      /* The runtime also retires a replaced app generation. */
     }
   }
 
-  #runtimeSpec(
-    appId: string,
-    version: number,
-    server: AppServerSpec,
-    workspace: Pick<import("@opensteer/core").Workspace, "id" | "backing">,
-  ): AppRuntimeSpec {
-    const backing = workspace.backing;
-    if (backing.kind !== "local-directory")
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "App servers need a local Workspace",
-      });
-    if (!backing.storageAuthorityId || server.environmentId !== backing.ownerEnvironmentId)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "App servers must run on the computer holding this Workspace",
-      });
-    return {
-      appId,
-      version,
-      folder: server.folder,
-      command: server.command,
-      binding: {
-        bindingId: backing.bindingId,
-        generation: backing.generation,
-        storageAuthorityId: backing.storageAuthorityId,
-        ownerEnvironmentId: backing.ownerEnvironmentId,
-        workspaceId: workspace.id,
-      },
-    };
+  #runtimeSpec(appId: string, version: number, server: AppServerSpec): AppRuntimeSpec {
+    return { appId, version, folder: server.folder, command: server.command };
   }
   #tunnels() {
     if (!this.#options.tunnels) throw new AppTunnelError("App servers are unavailable");

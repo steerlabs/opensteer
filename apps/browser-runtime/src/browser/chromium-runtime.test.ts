@@ -2121,7 +2121,7 @@ for (const type of ["mousedown", "mouseup", "mousemove"]) {
       executablePath,
       headless: true,
     });
-    const claims = validClaims({ workspaceTabRestoreVersion: 1 });
+    const claims = validClaims({ tabRestoreVersion: 1 });
     const browser = await launcher.launch({
       initialViewport: { devicePixelRatio: 1, width: 800, height: 600 },
       partitionKey: `session:${claims.sessionId}`,

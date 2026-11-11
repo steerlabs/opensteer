@@ -3,7 +3,7 @@ import XCTest
 
 @testable import PasswordsBrokerKit
 
-/// Grant authority: Allow remembers an account for a Workspace and
+/// Grant authority: Allow remembers an account for a personal Deployment and
 /// site, and the next sign-in there needs no one.
 @MainActor
 final class GrantTests: BrokerTestCase {
@@ -14,10 +14,10 @@ final class GrantTests: BrokerTestCase {
   @discardableResult
   private func allow(
     _ desktop: TestClient, _ username: String, remember: Bool = true,
-    workspace: (String, String) = Fixtures.workspace
+    deployment: (String, String) = Fixtures.deployment
   ) async throws -> JSONValue {
     let id = UUID().uuidString.lowercased()
-    let decision = try await request(desktop, id, workspace: workspace)
+    let decision = try await request(desktop, id, deployment: deployment)
     guard case .array(let accounts)? = decision["accounts"],
       let account = accounts.first(where: { $0["username"] == .string(username) })
     else {
@@ -31,13 +31,13 @@ final class GrantTests: BrokerTestCase {
 
   /// A request answered: the credential's username, or nil when the person is asked.
   private func automaticUsername(
-    _ desktop: TestClient, workspace: (String, String) = Fixtures.workspace,
+    _ desktop: TestClient, deployment: (String, String) = Fixtures.deployment,
     site: String = "https://example.com"
   )
     async throws -> String?
   {
     let id = UUID().uuidString.lowercased()
-    let decision = try await request(desktop, id, site: site, workspace: workspace)
+    let decision = try await request(desktop, id, site: site, deployment: deployment)
     if decision["decision"] == .string("authorized") {
       let username = try await desktop.call(
         "signin.release", Fixtures.release(id, field: "username", origin: site)
@@ -51,7 +51,7 @@ final class GrantTests: BrokerTestCase {
   }
 
   /// G2, A7, P2: Allow writes the grant; the next request for the same
-  /// Deployment, Workspace and site is released with no prompt, and recorded
+  /// Deployment, personal Deployment and site is released with no prompt, and recorded
   /// as automatic.
   func testAllowRemembersAndTheNextRequestSignsInByItself() async throws {
     try await harness.ready(items: [Self.alex, Self.anna])
@@ -59,7 +59,6 @@ final class GrantTests: BrokerTestCase {
     try await allow(desktop, "alex@example.com")
     let grants = try harness.savedGrants()
     XCTAssertEqual(grants.map(\.key), [Fixtures.grantKey()])
-    XCTAssertEqual(grants.first?.workspaceName, "Main")
     XCTAssertEqual(grants.first?.deploymentName, "Personal")
 
     let asked = presence.askCount
@@ -77,20 +76,20 @@ final class GrantTests: BrokerTestCase {
     XCTAssertEqual(entries.last?.account, "a•••@example.com")
   }
 
-  /// G1: the grant answers only for its own Deployment, Workspace and site.
-  func testAGrantMatchesOnlyItsTriple() async throws {
+  /// G1: the grant answers only for its own Deployment, personal Deployment and site.
+  func testAGrantMatchesOnlyItsDeploymentAndSite() async throws {
     try await harness.ready(items: [
       Self.alex, Fixtures.login("example.org", username: "alex@example.com"),
     ])
     let desktop = try await harness.client()
     try await allow(desktop, "alex@example.com")
-    let otherWorkspace = try await automaticUsername(desktop, workspace: Fixtures.otherWorkspace)
-    XCTAssertNil(otherWorkspace, "another Workspace asks")
+    let otherInstallation = try await automaticUsername(desktop, deployment: Fixtures.otherDeployment)
+    XCTAssertNil(otherInstallation, "another personal Deployment asks")
     let otherSite = try await automaticUsername(desktop, site: "https://example.org")
     XCTAssertNil(otherSite, "another site asks")
     let id = UUID().uuidString.lowercased()
     let otherDeployment = try await desktop.call(
-      "signin.request", Fixtures.request(id, deploymentId: "dep_other")
+      "signin.request", Fixtures.request(id, deploymentId: "dep_00000000-0000-4000-8000-000000000009")
     ).result
     XCTAssertEqual(otherDeployment?["decision"], .string("approve"), "another Deployment asks")
     let matching = try await automaticUsername(desktop)
@@ -109,7 +108,7 @@ final class GrantTests: BrokerTestCase {
 
   /// G4: a cancelled authentication grants nothing.
 
-  /// G5: one account per Workspace and site. Two sign-ins offered accounts
+  /// G5: one account per personal Deployment and site. Two sign-ins offered accounts
   /// before either was allowed: the later Allow replaces the earlier.
   func testAllowForAnotherAccountReplacesTheGrant() async throws {
     try await harness.ready(items: [Self.alex, Self.anna])
@@ -130,8 +129,8 @@ final class GrantTests: BrokerTestCase {
     }
     let annaID = try XCTUnwrap(secondAccounts[1]?["id"]?.string)
     XCTAssertEqual(try harness.savedGrants().map(\.loginId), [annaID])
-    try await allow(desktop, "alex@example.com", workspace: Fixtures.otherWorkspace)
-    XCTAssertEqual(try harness.savedGrants().count, 2, "one per Workspace")
+    try await allow(desktop, "alex@example.com", deployment: Fixtures.otherDeployment)
+    XCTAssertEqual(try harness.savedGrants().count, 2, "one per personal Deployment")
     let next = try await automaticUsername(desktop)
     XCTAssertEqual(next, "anna@example.com")
   }
@@ -190,7 +189,7 @@ final class GrantTests: BrokerTestCase {
     XCTAssertTrue(try harness.savedGrants().isEmpty)
   }
 
-  /// G15: a Workspace or Deployment name with control
+  /// G15: a personal Deployment or Deployment name with control
   /// characters, or with nothing left to show once cleaned, is stored
   /// cleaned, and Allow and Save with "let agents use it" go through.
   func testGrantNamesAreCleaned() async throws {
@@ -201,7 +200,7 @@ final class GrantTests: BrokerTestCase {
       try await desktop.call(
         "signin.request",
         Fixtures.request(
-          id, workspace: (Fixtures.workspace.0, "Ma\u{7}in\u{85}Team"),
+          id, deployment: (Fixtures.deployment.0, "Ma\u{7}in\u{85}Team"),
           extra: ["deploymentName": .string("Per\u{1B}sonal")])
       ).result?["accounts"]?[0])
     same(
@@ -209,7 +208,6 @@ final class GrantTests: BrokerTestCase {
         .result?["decision"],
       .string("authorized"))
     let grant = try unwrap(try harness.savedGrants().first)
-    XCTAssertEqual(grant.workspaceName, "Ma in Team")
     XCTAssertEqual(grant.deploymentName, "Per sonal")
 
   }

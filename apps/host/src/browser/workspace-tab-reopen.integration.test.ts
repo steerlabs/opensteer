@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WorkspaceTabStore } from "@opensteer/database";
+import { PersonalTabStore } from "@opensteer/database";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -47,7 +47,7 @@ integration("Reopen closed workspace tab through the Host", () => {
         idempotencyKey: "browser",
         name: "Browser",
       }),
-      { agentReady: true, workspaceTabs: true, targetedStreaming: true },
+      { agentReady: true, personalTabs: true, targetedStreaming: true },
     );
     cleanups.push(() => runtime.close());
     await expect.poll(() => host.runtime.browser.available).toBe(true);
@@ -65,7 +65,7 @@ integration("Reopen closed workspace tab through the Host", () => {
     if (opened.type !== "browser.session.start") throw new Error("Unexpected start");
     const db = host.store.database;
     const sessionId = opened.session.id;
-    const tabs = new WorkspaceTabStore(db);
+    const tabs = new PersonalTabStore(db);
     const ownerId = (
       await db
         .selectFrom("browserSessions")
@@ -109,7 +109,7 @@ integration("Reopen closed workspace tab through the Host", () => {
       testRpcRequest(
         host.origin,
         "commands.dispatch",
-        { type: "workspace.tab.reopen", idempotencyKey: randomUUID() },
+        { type: "tab.reopen", idempotencyKey: randomUUID() },
         { headers: host.ownerHeaders },
       );
     const profileRefusal = await command();
@@ -140,21 +140,21 @@ integration("Reopen closed workspace tab through the Host", () => {
     const result = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "workspace.tab.reopen", idempotencyKey: reopenKey },
+      { type: "tab.reopen", idempotencyKey: reopenKey },
       { headers: host.ownerHeaders },
     );
     expect(
       await testRpcData(
         host.origin,
         "commands.dispatch",
-        { type: "workspace.tab.reopen", idempotencyKey: reopenKey },
+        { type: "tab.reopen", idempotencyKey: reopenKey },
         { headers: host.ownerHeaders },
       ),
     ).toMatchObject({
-      type: "workspace.tab.reopen",
-      tabId: result.type === "workspace.tab.reopen" ? result.tabId : "unexpected",
+      type: "tab.reopen",
+      tabId: result.type === "tab.reopen" ? result.tabId : "unexpected",
     });
-    if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected reopen");
+    if (result.type !== "tab.reopen") throw new Error("Unexpected reopen");
     expect(result.tabId).not.toBe(first);
     const restored = (await browserRows(host.runtime.browser, ownerId, sessionId)).lineage!;
     expect(restored.session).toMatchObject({

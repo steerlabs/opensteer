@@ -5,7 +5,7 @@ import {
 } from "@opensteer/browser-core";
 import {
   BrowserSurfaceIdSchema,
-  browserWorkspaceTabUrlMaxLength,
+  browserPersonalTabUrlMaxLength,
   type BrowserDialog,
   type BrowserNavigationCommitted,
   type BrowserSurface,
@@ -623,7 +623,7 @@ export class SurfaceLedger {
       id,
       state: surfaceState(record),
       title: record.title.slice(0, 256),
-      url: url.length <= browserWorkspaceTabUrlMaxLength ? url : "opensteer:unavailable-url",
+      url: url.length <= browserPersonalTabUrlMaxLength ? url : "opensteer:unavailable-url",
       icon: record.favicon ? createHash("sha256").update(record.favicon).digest("base64url") : null,
       order: record.order,
       openerId: record.openerId,
@@ -2295,7 +2295,7 @@ function surfaceAddress(record: Pick<SurfaceRecord, "live">): string {
 }
 
 function normalizeUrl(value: string): string {
-  return value.slice(0, browserWorkspaceTabUrlMaxLength);
+  return value.slice(0, browserPersonalTabUrlMaxLength);
 }
 
 function isLive(record: TabRecord): record is SurfaceRecord {

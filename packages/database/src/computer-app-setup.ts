@@ -1,6 +1,5 @@
-import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import { randomUUID } from "node:crypto";
-import type { RequestPresentation, RunnerId, UserId, ThreadId, WorkspaceId } from "@opensteer/core";
+import type { RequestPresentation, RunnerId, UserId, ThreadId } from "@opensteer/core";
 import {
   ComputerAppSetupRequestSchema,
   computerAppIdentityKey,
@@ -137,10 +136,6 @@ export async function relinkComputerAppAccessRequestsInTransaction(
     .where("status", "=", "pending")
     .where(sql<string>`payload->>'setupRequestId'`, "=", input.from)
     .orderBy("id", "asc");
-  await lockRequestWorkspaces(
-    transaction,
-    (await pending.execute()).flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]),
-  );
   const waiting = await pending.forNoKeyUpdate().execute();
   if (waiting.length === 0) return;
   const replacement = await transaction
@@ -217,8 +212,6 @@ export async function insertComputerAppSetupRequestInTransaction(
     readonly reason?: string | null;
     readonly server?: LocalMcpServerSetup | null;
     readonly threadId?: ThreadId | null;
-    readonly workspaceId?: WorkspaceId | null;
-    readonly workspaceName?: string | null;
     readonly threadTitle?: string | null;
     readonly access: IntegrationAccess;
     readonly app: ComputerAppIdentity | null;
@@ -234,18 +227,6 @@ export async function insertComputerAppSetupRequestInTransaction(
     .select("id")
     .where("singletonKey", "=", "primary")
     .executeTakeFirstOrThrow();
-  const workspaceName =
-    input.workspaceName !== undefined
-      ? input.workspaceName
-      : input.workspaceId
-        ? ((
-            await transaction
-              .selectFrom("workspaces")
-              .select("name")
-              .where("id", "=", input.workspaceId)
-              .executeTakeFirst()
-          )?.name.slice(0, 160) ?? null)
-        : null;
   return transaction
     .insertInto("computerAppSetupRequests")
     .values({
@@ -254,8 +235,6 @@ export async function insertComputerAppSetupRequestInTransaction(
       reason: input.reason ?? null,
       server: input.server ? jsonValue(input.server) : null,
       threadId: input.threadId ?? null,
-      workspaceId: input.workspaceId ?? null,
-      workspaceName,
       threadTitle: input.threadTitle ?? null,
       access: input.access,
       app: input.app === null ? null : jsonValue(input.app),

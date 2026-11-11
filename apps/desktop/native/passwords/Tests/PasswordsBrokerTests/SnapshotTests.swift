@@ -96,11 +96,11 @@ final class SnapshotTests: BrokerTestCase {
     try render(PasswordsWindowView(model: model), "window-2b-filled", size: size)
     model.windowClosed()
     let desktop = try await harness.client()
-    // Allowed for two Workspaces on github.com, then once more automatically.
-    for workspace in [Fixtures.workspace, Fixtures.otherWorkspace] {
+    // Allowed for two personal Deployments on github.com, then once more automatically.
+    for deployment in [Fixtures.deployment, Fixtures.otherDeployment] {
       let id = UUID().uuidString.lowercased()
       let account = try unwrap(
-        try await request(desktop, id, site: "https://github.com", workspace: workspace)[
+        try await request(desktop, id, site: "https://github.com", deployment: deployment)[
           "accounts"]?[0])
       _ = try await desktop.allow(Fixtures.approve(id, account, remember: true))
       _ = try await desktop.call(

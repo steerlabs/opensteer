@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { UserIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { UserIdSchema } from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
   IntegrationGrantSchema,
@@ -16,7 +16,6 @@ import {
 } from "./effective-grants.js";
 
 const ownerUserId = UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001");
-const workspaceId = WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002");
 const installation = IntegrationInstallationSchema.parse({
   createdAt: "2026-01-01T00:00:00.000Z",
   description: "Tests effective authority",
@@ -108,7 +107,25 @@ const computerConnection: EffectiveGrantConnection = {
 };
 
 describe("resolveEffectiveGrants", () => {
-  it("never lends a different member's explicit consent to the requester", () => {
+  it("requires explicit personal consent even for connected and connectionless tools", () => {
+    expect(
+      resolveEffectiveGrants(fixture({ tools: [providerTool, connectionlessTool] })).tools,
+    ).toEqual([]);
+  });
+
+  it("treats a revoked device ceiling as no authority", () => {
+    expect(
+      resolveEffectiveGrants(
+        fixture({
+          connections: [{ ...computerConnection, computerAccess: null }],
+          storedGrants: [storedGrant()],
+          tools: [computerReadTool, computerWriteTool],
+        }),
+      ).tools,
+    ).toEqual([]);
+  });
+
+  it("never lends a another person's explicit consent to the requester", () => {
     const grant = storedGrant({
       ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099"),
     });
@@ -143,48 +160,10 @@ describe("resolveEffectiveGrants", () => {
     expect(result.tools).toEqual([]);
   });
 
-  it("inherits active inventory in the Main Workspace with deterministic pseudo-grants", () => {
-    const input = fixture({
-      inheritedMainAccess: true,
-      storedGrants: [],
-      tools: [connectionlessTool, providerTool],
-    });
-    const first = resolveEffectiveGrants(input);
-    const second = resolveEffectiveGrants(input);
-
-    expect(first.tools.map(({ grant }) => grant.connectionId)).toEqual([null, connectionId]);
-    expect(first.tools[0]?.grant.alias).toBe("Fixture Integration");
-    expect(first.tools[1]?.grant.alias).toBe("Primary account");
-    expect(first.tools.map(({ grant }) => grant.id)).toEqual(
-      second.tools.map(({ grant }) => grant.id),
-    );
-  });
-
-  it("overlays aliases and defaults without adopting stored grant identity", () => {
-    const connectionOverlay = storedGrant({ alias: "  Work account  ", isDefault: true });
-    const connectionlessOverlay = storedGrant({
-      alias: "  Shared tools  ",
-      connectionId: null,
-      id: IntegrationGrantSchema.shape.id.parse("igr_00000000-0000-4000-8000-000000000010"),
-    });
-    const result = resolveEffectiveGrants(
-      fixture({
-        inheritedMainAccess: true,
-        storedGrants: [connectionOverlay, connectionlessOverlay],
-        tools: [connectionlessTool, providerTool],
-      }),
-    );
-
-    expect(result.tools[0]?.grant).toMatchObject({ alias: "Shared tools", isDefault: false });
-    expect(result.tools[1]?.grant).toMatchObject({ alias: "Work account", isDefault: true });
-    expect(result.tools[1]?.grant.id).not.toBe(connectionOverlay.id);
-  });
-
-  it("does not inherit disabled inventory or unusable provider authority", () => {
+  it("does not expose disabled inventory or unusable provider authority", () => {
     const result = resolveEffectiveGrants(
       fixture({
         connections: [{ ...connected, applicationSourceAvailable: false }],
-        inheritedMainAccess: true,
         installations: [{ ...installation, status: "disabled" }],
         storedGrants: [],
         tools: [connectionlessTool, providerTool],
@@ -207,11 +186,11 @@ describe("resolveEffectiveGrants", () => {
     expect(result.tools).toEqual([{ grant, tool: computerReadTool }]);
   });
 
-  it("keeps inherited access and tools below a read-only computer connection ceiling", () => {
+  it("keeps consent and tools below a read-only computer connection ceiling", () => {
     const result = resolveEffectiveGrants(
       fixture({
         connections: [computerConnection],
-        inheritedMainAccess: true,
+        storedGrants: [storedGrant()],
         tools: [computerReadTool, computerWriteTool],
       }),
     );
@@ -241,7 +220,7 @@ describe("resolveEffectiveGrants", () => {
             ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000099"),
           },
         ],
-        inheritedMainAccess: true,
+        storedGrants: [storedGrant()],
         tools: [computerReadTool],
       }),
     );
@@ -253,7 +232,7 @@ describe("resolveEffectiveGrants", () => {
     const result = resolveEffectiveGrants(
       fixture({
         connections: [{ ...computerConnection, status }],
-        inheritedMainAccess: true,
+        storedGrants: [storedGrant()],
         tools: [computerReadTool],
       }),
     );
@@ -267,12 +246,10 @@ function fixture(
 ): ResolveEffectiveGrantsInput {
   return {
     connections: [connected],
-    inheritedMainAccess: false,
     installations: [installation],
     ownerUserId,
     storedGrants: [],
     tools: [providerTool],
-    workspaceId,
     ...overrides,
   };
 }
@@ -289,7 +266,14 @@ function storedGrant(overrides: Partial<IntegrationGrant> = {}): IntegrationGran
     ownerUserId,
     revokedAt: null,
     status: "active",
-    workspaceId,
     ...overrides,
   });
 }
+
+it("intersects external writes with the Run access mode", async () => {
+  const { integrationAccessCeilingForRun } = await import("./effective-grants.js");
+  expect(integrationAccessCeilingForRun("approval-required")).toBe("read");
+  expect(integrationAccessCeilingForRun("auto-accept-edits")).toBe("read");
+  expect(integrationAccessCeilingForRun("auto")).toBe("read-write");
+  expect(integrationAccessCeilingForRun("full-access")).toBe("read-write");
+});

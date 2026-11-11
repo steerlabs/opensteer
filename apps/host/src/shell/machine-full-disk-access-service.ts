@@ -20,16 +20,16 @@ type FullAccessStore = Pick<OpensteerStore, "listReachableMachines"> & {
 
 export class MachineFullDiskAccessService {
   readonly #store: FullAccessStore;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #continuations: Pick<ContinuationService, "notify">;
 
   constructor(options: {
     readonly store: FullAccessStore;
-    readonly onWorkspaceEvent: (event: AgentEvent) => void;
+    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly continuations: Pick<ContinuationService, "notify">;
   }) {
     this.#store = options.store;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#continuations = options.continuations;
   }
 
@@ -76,13 +76,11 @@ export class MachineFullDiskAccessService {
         title: `Allow macOS Full Disk Access on ${machine.name}`,
         detail: input.reason,
       },
-      targetWorkspaceId: claims.workspaceId,
-      originatingWorkspaceId: claims.workspaceId,
       originatingThreadId: claims.threadId,
       originatingRunId: claims.runId,
       requestedBy: claims.requestedBy,
     });
-    for (const event of created.events) this.#onWorkspaceEvent(event);
+    for (const event of created.events) this.#onDeploymentEvent(event);
     return {
       kind,
       replayed: created.replayed,
@@ -97,14 +95,14 @@ export class MachineFullDiskAccessService {
     readonly response: RequestResponse;
   }) {
     const result = await this.#store.requests.declineMachineFullDiskAccessRequest(input);
-    for (const event of result.events) this.#onWorkspaceEvent(event);
+    for (const event of result.events) this.#onDeploymentEvent(event);
     this.#continuations.notify();
     return result;
   }
 
   async fulfillForMachine(machineId: RunnerId): Promise<void> {
     const result = await this.#store.requests.fulfillMachineFullDiskAccessRequests(machineId);
-    for (const event of result.events) this.#onWorkspaceEvent(event);
+    for (const event of result.events) this.#onDeploymentEvent(event);
     if (result.requests.length > 0) this.#continuations.notify();
   }
 }

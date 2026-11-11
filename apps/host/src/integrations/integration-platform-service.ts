@@ -128,7 +128,6 @@ import {
   refused,
   RequestResponseSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   type AgentEvent,
   type Request,
   type RequestId,
@@ -137,7 +136,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -368,14 +366,13 @@ export class IntegrationPlatformService {
   readonly #localSecrets: LocalMcpSecrets;
   readonly #personal: boolean;
   readonly #mcpOauth: Pick<McpOAuthService, "providerFor">;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onConnectionsChanged: () => void;
   readonly #onSettingsChanged: (input: {
     installationId?: string;
     ownerUserId?: UserId;
   }) => Promise<void>;
   readonly #onRequestsChanged: () => void;
-  readonly #deploymentName: string | null;
   readonly #isRunnerConnected: (runnerId: RunnerId) => boolean;
   readonly #computerUse: ComputerUseGateway | null;
   readonly computerRepl: ComputerReplService;
@@ -416,7 +413,6 @@ export class IntegrationPlatformService {
      * a Host built without it should answer rather than pretending.
      */
     readonly computerUse?: ComputerUseGateway | null;
-    readonly deploymentName?: string | null;
     /**
      * Whether this Run's engine renders MCP image content blocks. An engine
      * that does not gets the tree and a sentence saying the picture is not
@@ -435,7 +431,7 @@ export class IntegrationPlatformService {
     readonly longRequestHold?: (run: RunCapabilityClaims<string>) => Promise<boolean>;
     readonly definitions?: readonly IntegrationDefinition[];
     readonly mcpOauth: Pick<McpOAuthService, "providerFor">;
-    readonly onWorkspaceEvent: (event: AgentEvent) => void;
+    readonly onDeploymentEvent: (event: AgentEvent) => void;
     readonly onConnectionsChanged: () => void;
     readonly onSettingsChanged?: (input: {
       installationId?: string;
@@ -469,10 +465,9 @@ export class IntegrationPlatformService {
     ];
     this.#adapters = new Map(adapters.map((adapter) => [adapter.kind, adapter]));
     this.#credentialMaterializer = options.credentialMaterializer;
-    this.#deploymentName = options.deploymentName ?? null;
     this.#definitions = options.definitions ?? integrationDefinitions;
     this.#mcpOauth = options.mcpOauth;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onConnectionsChanged = options.onConnectionsChanged;
     this.#onSettingsChanged = options.onSettingsChanged ?? (async () => undefined);
     this.#onRequestsChanged = options.onRequestsChanged;
@@ -501,7 +496,6 @@ export class IntegrationPlatformService {
       computerApps: options.computerApps,
       computerUse: this.#computerUse,
       definitions: this.#definitions,
-      deploymentName: this.#deploymentName,
       installCatalogDefinition: (input) => this.installCatalogDefinition(input),
       listCallableTools: (scope) => this.listCallableTools(scope),
       listConnections: this.#listConnections,
@@ -712,14 +706,10 @@ export class IntegrationPlatformService {
     });
   }
 
-  async mainAccess(input: IntegrationRequester) {
-    return this.#store.mainAccess(input);
-  }
-
   /**
    * The one reaction to a connection gaining authority, whichever surface
    * finished the flow: discover the tools a provider connection now exposes,
-   * then settle every pending Main-target Request the connection satisfies.
+   * then settle every pending personal Request the connection satisfies.
    * Returns the Requests it fulfilled so the caller can resume their agents.
    */
   async connectionConnected(input: {
@@ -729,10 +719,10 @@ export class IntegrationPlatformService {
     if ((await this.#store.getConnectionKind(input)) === "provider-account") {
       await this.reconcileProviderConnectionTools(input);
     }
-    return this.fulfillSatisfiedMainAccessRequests(input);
+    return this.fulfillSatisfiedAccessRequests(input);
   }
 
-  async fulfillSatisfiedMainAccessRequests(input: {
+  async fulfillSatisfiedAccessRequests(input: {
     readonly connectionId: import("@opensteer/integration-core").IntegrationConnectionId;
     readonly ownerUserId: UserId;
   }): Promise<readonly RequestId[]> {
@@ -747,15 +737,6 @@ export class IntegrationPlatformService {
       if (detail.requestedConnectionId && detail.requestedConnectionId !== input.connectionId)
         continue;
       if (!detail.installationId) continue;
-      if (
-        (await this.#store.mainAccess({
-          ownerUserId: input.ownerUserId,
-          threadId: detail.request.originatingThreadId,
-          workspaceId: detail.request.targetWorkspaceId,
-        })) !== "inherited"
-      ) {
-        continue;
-      }
       const satisfied = await this.#store.isConnectionUsableForAccessRequest({
         connectionId: input.connectionId,
         installationId: detail.installationId,
@@ -785,7 +766,7 @@ export class IntegrationPlatformService {
             value: { connectionId: input.connectionId, decision: "fulfilled" },
           },
         });
-        for (const event of resolved.events) this.#onWorkspaceEvent(event);
+        for (const event of resolved.events) this.#onDeploymentEvent(event);
         fulfilled.push(resolved.request.id);
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "conflict") continue;
@@ -793,23 +774,6 @@ export class IntegrationPlatformService {
       }
     }
     return fulfilled;
-  }
-
-  async setPluginPlacement(
-    owner: UserId,
-    command: import("zod").infer<
-      typeof import("@opensteer/protocol").SettingsPluginPlacementCommandSchema
-    >,
-  ) {
-    const result = await this.#store.settings.setPlacement(
-      owner,
-      command,
-      await this.#authorizationSource.providerAuthorizations(owner),
-    );
-    if (command.target.kind === "specialist") {
-      await this.#store.specialists.finishPlacementRemovals(command.target.pluginId, owner);
-    }
-    return result;
   }
 
   async createGrant(input: Omit<CreateIntegrationGrantInput, "providerAuthorizations">) {
@@ -830,7 +794,6 @@ export class IntegrationPlatformService {
     readonly grantId: IntegrationGrant["id"];
     readonly ownerUserId: UserId;
     readonly requestId: string;
-    readonly workspaceId: WorkspaceId;
   }): Promise<void> {
     const grant = (await this.#store.listGrants(input)).find(({ id }) => id === input.grantId);
     const computer = grant?.connectionId
@@ -841,7 +804,7 @@ export class IntegrationPlatformService {
       : null;
     const revoke = async () => {
       await this.#store.revokeGrant(input);
-      // The Workspace's session on that app, or on that phone, ran on this
+      // The task's session on that app, or on that phone, ran on this
       // grant, so it ends with it rather than at its next call.
       const holding = computer
         ? computerUseHoldingOf(this.#definitions, {
@@ -858,7 +821,7 @@ export class IntegrationPlatformService {
             if (caller?.run)
               this.resetComputerGeneration(caller.run.runId, caller.run.bindingGeneration);
           }
-        this.#computerUse?.closeForConnection(computer.runnerId, holding, input.workspaceId);
+        this.#computerUse?.closeForConnection(computer.runnerId, holding);
       }
     };
     await (computer ? this.#computerApps.withRunnerAdmission(computer.runnerId, revoke) : revoke());
@@ -892,7 +855,7 @@ export class IntegrationPlatformService {
             response.optionId.slice("server:".length),
           ),
         });
-        for (const event of selected.events) this.#onWorkspaceEvent(event);
+        for (const event of selected.events) this.#onDeploymentEvent(event);
         return { grant: null, installation: null, request: selected.request };
       }
       if (response.kind === "choice" && response.optionId === "installed") {
@@ -911,7 +874,7 @@ export class IntegrationPlatformService {
           });
         }
         this.#invalidateInstallation(installed.installation.id);
-        for (const event of installed.requestEvents) this.#onWorkspaceEvent(event);
+        for (const event of installed.requestEvents) this.#onDeploymentEvent(event);
         return { grant: null, installation: installed.installation, request: installed.request };
       }
       if (pending.payload.kind !== "integration.access") {
@@ -962,7 +925,7 @@ export class IntegrationPlatformService {
       const resolved = computer
         ? await this.#computerApps.withRunnerAdmission(computer.runnerId, resolve)
         : await resolve();
-      for (const event of resolved.events) this.#onWorkspaceEvent(event);
+      for (const event of resolved.events) this.#onDeploymentEvent(event);
       return { grant: resolved.grant, installation: null, request: resolved.request };
     }
     if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
@@ -992,7 +955,7 @@ export class IntegrationPlatformService {
     });
     if (resolved.installation) this.#invalidateInstallation(resolved.installation.id);
     this.#publishRequestEvents(resolved.requestEvents);
-    for (const event of resolved.events) this.#onWorkspaceEvent(event);
+    for (const event of resolved.events) this.#onDeploymentEvent(event);
     return { grant: null, installation: resolved.installation, request: resolved.request };
   }
 
@@ -1059,8 +1022,6 @@ export class IntegrationPlatformService {
     readonly actorUserId: UserId;
     readonly directory: string;
     readonly threadId?: import("@opensteer/core").ThreadId;
-    readonly workspaceDirectory?: string;
-    readonly workspaceId?: import("@opensteer/core").WorkspaceId;
     readonly pluginId?: string;
     readonly requestId: string;
     /**
@@ -1076,36 +1037,13 @@ export class IntegrationPlatformService {
     let pluginId = input.pluginId;
     let currentPlugin:
       Awaited<ReturnType<IntegrationPlatformStore["plugins"]["list"]>>[number] | undefined;
-    if (input.workspaceId && !pluginId) {
-      // A plugin.json the loader can't read reports why below, in its own words.
+    if (pluginId) currentPlugin = (await this.#store.plugins.list()).find((p) => p.id === pluginId);
+    else if (input.threadId) {
       const name = await readAgentPluginName(input.directory);
-      const plugins = name === null ? [] : await this.#store.plugins.list(input.workspaceId);
-      const here = (plugin: (typeof plugins)[number]) =>
-        plugin.activations.some((a) => a.workspaceId === input.workspaceId);
-      if (plugins.some((p) => p.name === name && p.scope === "deployment" && here(p)))
-        throw new OpensteerError({
-          code: "conflict",
-          message:
-            "A person-installed plugin already uses that name here. Choose a more specific name.",
-        });
-      // Copies installed before updates existed: the one turned on here, else the newest.
-      currentPlugin = plugins
-        .filter(
-          (p) => p.name === name && p.scope === "workspace" && p.workspaceId === input.workspaceId,
-        )
-        .sort(
-          (a, b) =>
-            Number(here(b)) - Number(here(a)) || b.updatedAt.getTime() - a.updatedAt.getTime(),
-        )[0];
+      currentPlugin = (await this.#store.plugins.list()).find(
+        (p) => p.name === name && p.installedBy === input.actorUserId,
+      );
       pluginId = currentPlugin?.id;
-    } else if (pluginId) {
-      currentPlugin = (await this.#store.plugins.list()).find((p) => p.id === pluginId);
-      // Before the folder is read: an agent-made plugin's source is a Workspace folder, not a Host path.
-      if (currentPlugin?.scope === "workspace")
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Agent-made plugins update when an agent installs their folder again.",
-        });
     }
     const setupThreadId = input.threadId
       ? await this.#store.plugins.setupThread(input.threadId)
@@ -1181,12 +1119,7 @@ export class IntegrationPlatformService {
           await this.#store.plugins.update(
             {
               pluginId,
-              ...(input.workspaceId
-                ? {
-                    workspaceId: input.workspaceId,
-                    source: { workspaceDirectory: input.workspaceDirectory },
-                  }
-                : {}),
+              source: { directory: input.directory },
               ...version,
             },
             transaction,
@@ -1197,10 +1130,7 @@ export class IntegrationPlatformService {
               id: pluginId,
               name: plugin.manifest.name,
               actorUserId: input.actorUserId,
-              source: input.workspaceId
-                ? { workspaceDirectory: input.workspaceDirectory }
-                : { directory: input.directory },
-              ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+              source: { directory: input.directory },
               ...version,
             },
             transaction,
@@ -1261,7 +1191,7 @@ export class IntegrationPlatformService {
    * a person's names one or keeps it.
    */
   async #updateComputer(
-    input: { readonly runnerId?: RunnerId | undefined; readonly workspaceId?: unknown },
+    input: { readonly runnerId?: RunnerId | undefined; readonly threadId?: unknown },
     previousServers: readonly { readonly runnerId: RunnerId | null; readonly status: string }[],
   ): Promise<RunnerId | undefined> {
     // A removed server keeps the computer it last ran on; a current one says where the plugin is.
@@ -1274,7 +1204,7 @@ export class IntegrationPlatformService {
       previous !== null && (await this.#store.localMcp.computerName(previous)) !== null
         ? previous
         : undefined;
-    return input.workspaceId ? (kept ?? input.runnerId) : (input.runnerId ?? kept);
+    return input.threadId ? (kept ?? input.runnerId) : (input.runnerId ?? kept);
   }
 
   /** The computer a plugin's own servers run on: the one named, or the Main one. */
@@ -2627,7 +2557,6 @@ export class IntegrationPlatformService {
         retryable: true,
       });
     const ownerUserId = UserIdSchema.parse(callable.grant.ownerUserId);
-    const workspaceId = WorkspaceIdSchema.parse(callable.grant.workspaceId);
     const [placement, providerAuthorizations] = await Promise.all([
       this.#store.getComputerConnectionForCall({ connectionId, ownerUserId }),
       this.#authorizationSource.providerAuthorizations(ownerUserId),
@@ -2646,7 +2575,6 @@ export class IntegrationPlatformService {
             ownerUserId,
             providerAuthorizations,
             threadId: caller.threadId,
-            workspaceId,
           }),
         ]);
         const current = authority.find(
@@ -2682,7 +2610,7 @@ export class IntegrationPlatformService {
           connection.access === "read" || current.grant.access === "read" ? "read" : "read-write",
         );
       });
-    return { definition, operation, ownerUserId, workspaceId, placement, admit };
+    return { definition, operation, ownerUserId, placement, admit };
   }
 
   async #callComputerTool(
@@ -2910,7 +2838,6 @@ export class IntegrationPlatformService {
       await this.listCallableTools({
         ownerUserId: run.requestedBy,
         threadId: caller.threadId,
-        workspaceId: run.workspaceId,
       })
     ).find(
       (candidate) =>
@@ -3028,7 +2955,7 @@ export class IntegrationPlatformService {
         if (error === undefined) resolve();
         else reject(error);
       };
-      this.#onWorkspaceEvent(started);
+      this.#onDeploymentEvent(started);
     };
     try {
       if (operation !== "release")
@@ -3100,7 +3027,7 @@ export class IntegrationPlatformService {
           headline,
           performed,
         });
-        if (event) this.#onWorkspaceEvent(event);
+        if (event) this.#onDeploymentEvent(event);
       }
       const content: ReplContent[] = performed.map((text) => ({ type: "text", text }));
       if (result?.observation && args.emit !== false) {
@@ -3178,7 +3105,7 @@ export class IntegrationPlatformService {
             }),
             performed,
           });
-          if (event) this.#onWorkspaceEvent(event);
+          if (event) this.#onDeploymentEvent(event);
         })();
       }
       throw error;
@@ -3202,7 +3129,6 @@ export class IntegrationPlatformService {
       const rows = await this.listCallableTools({
         ownerUserId: caller.run.requestedBy,
         threadId: caller.threadId,
-        workspaceId: caller.run.workspaceId,
       });
       const entries = await Promise.all(
         rows
@@ -3286,7 +3212,7 @@ export class IntegrationPlatformService {
         .map((record) => record.done),
     );
     for (const event of await this.#store.computerOperations.finalize(runId))
-      this.#onWorkspaceEvent(event);
+      this.#onDeploymentEvent(event);
   }
 
   resetComputerGeneration(runId: RunId, generation: number): void {
@@ -3810,7 +3736,7 @@ export class IntegrationPlatformService {
   }
 
   #publishRequestEvents(events: readonly AgentEvent[]): void {
-    for (const event of events) this.#onWorkspaceEvent(event);
+    for (const event of events) this.#onDeploymentEvent(event);
     if (events.length > 0) this.#onRequestsChanged();
   }
 }

@@ -609,7 +609,6 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
       resolve: async () => ({ HOME: root, PATH: "/usr/bin:/bin", TMPDIR: path.join(root, "tmp") }),
     },
     releaseDirectory: path.join(resources, "personal-runtime"),
-    workspaceRoot: path.join(root, "workspaces"),
     restartBackoffMs: 100,
     restartResetAfterMs: 600_000,
     onStatus: (status) =>
@@ -879,11 +878,9 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   });
   const bootstrap = await api["bootstrap.get"]({});
   assert(bootstrap.ok, JSON.stringify(bootstrap));
-  assert(bootstrap.data.homeWorkspace);
   const opened = await api["commands.dispatch"]({
     type: "browser.session.start",
     idempotencyKey: randomUUID(),
-    workspaceId: bootstrap.data.homeWorkspace.id,
     input: { fresh: true, initialUrl: `${origin}/p`, reuseExisting: false },
   });
   assert(opened.ok && opened.data.type === "browser.session.start", JSON.stringify(opened));
@@ -988,7 +985,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
         );
         const send = window.webContents.send.bind(window.webContents);
         window.webContents.send = (channel: string, ...args: unknown[]) => {
-          if (channel.endsWith("workspaceTabCommand")) {
+          if (channel.endsWith("personalTabCommand")) {
             kit.workspaceCommands.push(args[0]);
             artifacts.event("workspace.command", args[0]);
           }

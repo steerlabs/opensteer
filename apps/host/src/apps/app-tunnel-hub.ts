@@ -15,7 +15,7 @@ export class AppTunnelError extends Error {
 }
 type Runners = Pick<
   RunnerRegistry,
-  "identityForEnvironment" | "requestApp" | "appConnectionSignal"
+  "identityForEnvironment" | "identityForRunner" | "requestApp" | "appConnectionSignal"
 >;
 interface Ticket {
   readonly accept: (socket: WebSocket) => void;
@@ -31,7 +31,7 @@ export class AppTunnelHub {
   async start(spec: AppRuntimeSpec, signal: AbortSignal): Promise<void> {
     check(
       await this.#runners.requestApp(
-        spec.binding.ownerEnvironmentId,
+        this.#environment(spec),
         { type: "host.app.start", requestId: randomUUID(), spec },
         signal,
       ),
@@ -40,7 +40,7 @@ export class AppTunnelHub {
   async stop(spec: AppRuntimeSpec): Promise<void> {
     check(
       await this.#runners.requestApp(
-        spec.binding.ownerEnvironmentId,
+        this.#environment(spec),
         { type: "host.app.stop", requestId: randomUUID(), spec },
         AbortSignal.timeout(30_000),
       ),
@@ -68,11 +68,12 @@ export class AppTunnelHub {
       else this.#counts.set(spec.appId, n - 1);
     };
     const ticket = randomBytes(32).toString("base64url");
-    const identity = this.#runners.identityForEnvironment(spec.binding.ownerEnvironmentId);
+    const environmentId = this.#environment(spec);
+    const identity = this.#runners.identityForEnvironment(environmentId);
     let stream: Duplex | undefined;
     let releaseOnClose = false;
     const connectionSignal = identity
-      ? this.#runners.appConnectionSignal(spec.binding.ownerEnvironmentId, identity.connectionId)
+      ? this.#runners.appConnectionSignal(environmentId, identity.connectionId)
       : AbortSignal.abort();
     const lifetime = AbortSignal.any([signal, connectionSignal]);
     const setup = AbortSignal.any([lifetime, AbortSignal.timeout(30_000)]);
@@ -92,14 +93,14 @@ export class AppTunnelHub {
       this.#tickets.set(ticket, {
         accept,
         valid: () => {
-          const current = this.#runners.identityForEnvironment(spec.binding.ownerEnvironmentId);
+          const current = this.#runners.identityForEnvironment(environmentId);
           return (
             !setup.aborted && !!current && sameRunnerConnectionFence(current.fence, identity.fence)
           );
         },
       });
       const result = await this.#runners.requestApp(
-        spec.binding.ownerEnvironmentId,
+        environmentId,
         { type: "host.app.connect", requestId: randomUUID(), spec, ticket },
         setup,
       );
@@ -127,6 +128,12 @@ export class AppTunnelHub {
         release();
       }
     }
+  }
+  #environment(spec: AppRuntimeSpec) {
+    const identity = this.#runners.identityForRunner(spec.folder.computerId);
+    const environmentId = identity?.environmentIds[0];
+    if (!environmentId) throw new AppTunnelError("The app's computer is not connected");
+    return environmentId;
   }
 }
 function check(result: RunnerAppResult): void {

@@ -18,7 +18,7 @@ final class IPCTests: BrokerTestCase {
         ])))
     same(
       try await desktop.call("status").result,
-      .object(["agentSignIns": .string("off"), "vault": .string("not-set-up")]))
+      .object(["agentSignIns": .string("off"), "vault": .string("not-set-up"), "personFill": .string("off"), "personSave": .string("off")]))
   }
 
   func testFirstFrameMustBeHello() async throws {
@@ -128,7 +128,7 @@ final class IPCTests: BrokerTestCase {
         "signin.probe",
         .object([
           "deploymentId": .string(Fixtures.deployment.0), "site": .string("https://example.com"),
-          "workspaceId": .string(Fixtures.workspace.0),
+          "workspaceId": .string(Fixtures.deployment.0),
         ]), "the probe carries only the site"
       ),
       ("signin.probe", .object(["site": .string("http://example.com")]), "probe site"),
@@ -154,7 +154,7 @@ final class IPCTests: BrokerTestCase {
       ("deploymentId", .string("")),
       ("deploymentName", .string(" Personal")),
       ("workspaceName", .string("Main ")),
-      ("workspaceId", .string("wsp_00000000-0000-0000-0000-000000000000")),
+      ("workspaceId", .string("dep_00000000-0000-0000-0000-000000000000")),
       ("workspaceId", .string("ws_00000000-0000-4000-8000-000000000003")),
       ("workspaceId", .integer(3)),
       ("reason", .string("")),
@@ -168,11 +168,11 @@ final class IPCTests: BrokerTestCase {
     for (method, params, why) in cases {
       same(try await desktop.call(method, params).errorCode, "invalid", why)
     }
-    let upperWorkspace = try await desktop.call(
+    let upperDeployment = try await desktop.call(
       "signin.request",
-      Fixtures.request(workspace: ("WSP_00000000-0000-4000-8000-00000000000A", "Main")))
+      Fixtures.request(deployment: ("DEP_00000000-0000-4000-8000-00000000000A", "Main")))
     XCTAssertNotNil(
-      upperWorkspace.result, "Workspace IDs match case-insensitively, as the Host's schema does")
+      upperDeployment.result, "personal Deployment IDs match case-insensitively, as the Host's schema does")
     XCTAssertEqual(presence.askCount, asked, "no refusal asked for anyone")
     XCTAssertFalse(desktop.isClosed, "refusals keep the connection")
   }

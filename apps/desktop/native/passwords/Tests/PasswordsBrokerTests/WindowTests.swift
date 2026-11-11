@@ -370,29 +370,29 @@ final class WindowTests: BrokerTestCase {
     XCTAssertTrue(remaining.isEmpty)
   }
 
-  /// U23, G14: each login says which Workspaces may use it, each with Remove.
+  /// U23, G14: each login says which personal Deployments may use it, each with Remove.
   func testLoginsShowWhereAgentsMayUseThem() async throws {
     try await harness.ready(items: [Fixtures.login()])
     let desktop = try await harness.client()
-    for workspace in [Fixtures.workspace, Fixtures.otherWorkspace] {
+    for deployment in [Fixtures.deployment, Fixtures.otherDeployment] {
       let id = UUID().uuidString.lowercased()
-      let account = try unwrap(try await request(desktop, id, workspace: workspace)["accounts"]?[0])
+      let account = try unwrap(try await request(desktop, id, deployment: deployment)["accounts"]?[0])
       _ = try await desktop.allow(Fixtures.approve(id, account, remember: true))
       _ = try await desktop.call("signin.cancel", Fixtures.transaction(id))
     }
     let window = try await shown()
     let login = try XCTUnwrap(window.visibleLogins.first)
-    XCTAssertEqual(login.grants.map(\.workspaceName), ["Main", "Side projects"])
+    XCTAssertEqual(login.grants.map(\.deploymentName), ["Personal", "Other Opensteer"])
     XCTAssertEqual(Copy.allowedIn("Main", site: nil), "Allowed for agents in: Main")
     XCTAssertEqual(
       Copy.allowedIn("Main", site: "example.org"), "Allowed for agents in: Main, on example.org")
     let asked = presence.askCount
     await window.removeGrant(try XCTUnwrap(login.grants.first))
     XCTAssertEqual(
-      window.visibleLogins.first?.grants.map(\.workspaceName), ["Side projects"],
+      window.visibleLogins.first?.grants.map(\.deploymentName), ["Other Opensteer"],
       "the list follows at once")
     XCTAssertEqual(presence.askCount, asked, "Remove asks nothing")
-    XCTAssertEqual(try harness.savedGrants().map(\.workspaceName), ["Side projects"])
+    XCTAssertEqual(try harness.savedGrants().map(\.deploymentName), ["Other Opensteer"])
   }
 
   /// W11: the visit covers the preview and the import's one commit.

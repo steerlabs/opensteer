@@ -9,14 +9,13 @@ export type VisibleLineageDatabase = Omit<DatabaseSchema, "browserSessions" | "b
   browserProfiles: Nullable<DatabaseSchema["browserProfiles"]>;
   lineages: DatabaseSchema["browserSessions"];
 };
-export type VisibleLineageTables =
-  "browserSessions" | "lineages" | "workspaces" | "runners" | "browserProfiles";
+export type VisibleLineageTables = "browserSessions" | "lineages" | "runners" | "browserProfiles";
 type VisibleLineage = Selectable<DatabaseSchema["browserSessions"]> & {
   revision: number;
   lineageCreatedAt: Date;
   retiredAt: Date | null;
 };
-export function visibleWorkspaceTabLineages(
+export function visiblePersonalTabLineages(
   database: Database,
   ownerId: UserId,
 ): SelectQueryBuilder<VisibleLineageDatabase, VisibleLineageTables, VisibleLineage> {
@@ -31,7 +30,6 @@ export function visibleWorkspaceTabLineages(
   return database
     .selectFrom(latest)
     .innerJoin("browserSessions as lineages", "lineages.id", "browserSessions.tabGroupId")
-    .innerJoin("workspaces", "workspaces.id", "browserSessions.workspaceId")
     .innerJoin("runners", "runners.id", "browserSessions.runnerId")
     .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
     .selectAll("browserSessions")
@@ -40,6 +38,5 @@ export function visibleWorkspaceTabLineages(
       "lineages.createdAt as lineageCreatedAt",
       "runners.revokedAt as retiredAt",
     ])
-    .where((eb) => ownedBrowserSession(eb, ownerId))
-    .where("workspaces.status", "not in", ["deleting", "deleted"]);
+    .where((eb) => ownedBrowserSession(eb, ownerId));
 }

@@ -26,7 +26,8 @@ import {
   OpensteerError,
   isLoopbackHostname,
   RunnerIdSchema,
-  WorkspaceIdSchema,
+  TaskFolderSchema,
+  type TaskFolder,
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
@@ -53,7 +54,7 @@ interface ChannelServiceOptions {
   readonly credentials: CredentialService;
   /** Named because an adopted channel message makes one work location dispatchable. */
   readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly onDeploymentEvent: (event: AgentEvent) => void;
   readonly relay: MessagingRelayHub;
   readonly runners: ChannelRunners;
   readonly store: OpensteerStore;
@@ -70,7 +71,7 @@ export class ChannelService {
   readonly #channels: ChannelStore;
   readonly #credentials: CredentialService;
   readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #relay: MessagingRelayHub;
   readonly #runners: ChannelRunners;
   readonly #store: OpensteerStore;
@@ -85,7 +86,7 @@ export class ChannelService {
     this.#channels = options.channels;
     this.#credentials = options.credentials;
     this.#onExecutionQueued = options.onExecutionQueued;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#relay = options.relay;
     this.#runners = options.runners;
     this.#store = options.store;
@@ -145,7 +146,7 @@ export class ChannelService {
     readonly createdBy: UserId;
     readonly provider: string;
     readonly routingMode: "dedicated" | "shared";
-    readonly workspaceId: string;
+    readonly folder: TaskFolder;
   }) {
     const provider = ChannelProviderSchema.parse(input.provider);
     const manifest = providerManifest(provider);
@@ -164,7 +165,7 @@ export class ChannelService {
         retryable: true,
       });
     }
-    const workspaceId = WorkspaceIdSchema.parse(input.workspaceId);
+    const folder = TaskFolderSchema.parse(input.folder);
     const credentials = providerCredentials(manifest, input.credentials);
     const inspection = InspectChannelConnectionResponseSchema.parse(
       await this.#relay.request(runnerId, "connection.inspect", {
@@ -210,7 +211,7 @@ export class ChannelService {
       credential,
       executionPolicy: { harness: "default", harnessInstanceId: null },
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      workspaceId,
+      folder,
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -237,7 +238,7 @@ export class ChannelService {
     readonly ownerHandles: readonly string[];
     readonly provider: string;
     readonly runnerId: string;
-    readonly workspaceId: string;
+    readonly folder: TaskFolder;
   }) {
     const provider = ChannelProviderSchema.parse(input.provider);
     const manifest = providerManifest(provider);
@@ -248,7 +249,7 @@ export class ChannelService {
       });
     }
     const runnerId = RunnerIdSchema.parse(input.runnerId);
-    const workspaceId = WorkspaceIdSchema.parse(input.workspaceId);
+    const folder = TaskFolderSchema.parse(input.folder);
     const ownerHandles = input.ownerHandles.map(ownerHandle);
     const carries = this.#relay
       .capabilities(runnerId)
@@ -321,7 +322,7 @@ export class ChannelService {
       executionPolicy: { harness: "default", harnessInstanceId: null },
       linkedExternalUserIds: ownerHandles,
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      workspaceId,
+      folder,
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -485,7 +486,7 @@ export class ChannelService {
     readonly createdBy: UserId;
     readonly executionPolicy: unknown;
     readonly selector: unknown;
-    readonly workspaceId: string;
+    readonly folder: TaskFolder;
   }) {
     return this.#channels.createBinding({
       accessPolicy: input.accessPolicy,
@@ -493,7 +494,7 @@ export class ChannelService {
       createdBy: input.createdBy,
       executionPolicy: input.executionPolicy,
       selector: input.selector,
-      workspaceId: WorkspaceIdSchema.parse(input.workspaceId),
+      folder: TaskFolderSchema.parse(input.folder),
     });
   }
 
@@ -745,7 +746,7 @@ export class ChannelService {
         });
         if (result.kind === "adopted") {
           this.#store.announceRevokedGrants(result.revokedGrants);
-          for (const event of result.events) this.#onWorkspaceEvent(event);
+          for (const event of result.events) this.#onDeploymentEvent(event);
           if (result.dispatchEnvironmentId) {
             this.#onExecutionQueued(result.dispatchEnvironmentId);
           }
@@ -783,8 +784,7 @@ export class ChannelService {
       linkCode: (code) =>
         `Verify this ${label} identity: ${verificationLocation} and enter **${code}**. The code expires in 1 hour. Send your message again after verifying.`,
       noRoute:
-        "This conversation is not routed to an Opensteer Workspace. Ask the person who connected this bot to add a route for it.",
-      notAMember: "You don't have access to the Workspace this conversation is routed to.",
+        "This conversation has no Messaging binding. Ask the person who connected this bot to add one.",
     };
   }
 

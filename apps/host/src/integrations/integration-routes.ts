@@ -19,7 +19,7 @@ import type { IntegrationDashboardService } from "./integration-dashboard-servic
 import type { IntegrationService } from "./integration-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import { registerOAuthCallbackRoute } from "./integration-authorization-routes.js";
-import { requireAdministrator, requireSession, requireSurface } from "./integration-rpc-context.js";
+import { requirePersonalSession, requireSurface } from "./integration-rpc-context.js";
 
 const ProviderParamsSchema = z.strictObject({ provider: IntegrationProviderSchema });
 
@@ -37,7 +37,7 @@ export function createIntegrationRpcHandlers(
 ): Pick<HostApiHandlers, "integrations.get" | "integration.repositoryAccess.check"> {
   return {
     "integration.repositoryAccess.check": async (input, context) => {
-      const session = requireSession(context);
+      const session = await requirePersonalSession(context, options.platform.store.connections);
       return rpcSuccess(
         await options.integrations.checkRepositoryAccess({
           connectionId: input.connectionId,
@@ -46,14 +46,10 @@ export function createIntegrationRpcHandlers(
       );
     },
     "integrations.get": async (_input, context) => {
-      const session = requireSession(context);
+      const session = await requirePersonalSession(context, options.platform.store.connections);
       return rpcSuccess(
         hostApi["integrations.get"].success.parse(
-          await options.dashboard.providerDashboard(
-            session.user.id,
-            session.user.instanceRole === "administrator",
-            requireSurface(context),
-          ),
+          await options.dashboard.providerDashboard(session.user.id, true, requireSurface(context)),
         ),
       );
     },
@@ -79,7 +75,9 @@ export async function handleIntegrationCommand(
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
   const result = await executeIntegrationCommand(options, command, context);
-  options.pluginsChanged?.([requireSession(context).user.id]);
+  options.pluginsChanged?.([
+    (await requirePersonalSession(context, options.platform.store.connections)).user.id,
+  ]);
   return result;
 }
 
@@ -88,18 +86,18 @@ async function executeIntegrationCommand(
   command: IntegrationCommand,
   context: HostApiServerContext,
 ): Promise<HostApiCommandOutput> {
-  const session = requireSession(context);
+  const session = await requirePersonalSession(context, options.platform.store.connections);
   if (command.type === "integration.disconnect")
     return disconnectIntegration(
       { platform: options.platform, integrations: options.integrations },
-      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+      { userId: session.user.id, isAdministrator: true },
       command.connectionId,
       context.requestId,
     );
   switch (command.type) {
     case "integration.providerApplication.save": {
       const application = await options.integrations.configureProviderApplication(command.input, {
-        isAdministrator: session.user.instanceRole === "administrator",
+        isAdministrator: true,
         requestId: context.requestId,
         userId: session.user.id,
       });
@@ -143,7 +141,7 @@ async function executeIntegrationCommand(
           status: command.input.status,
         },
         {
-          isAdministrator: session.user.instanceRole === "administrator",
+          isAdministrator: true,
           requestId: context.requestId,
           userId: session.user.id,
         },
@@ -151,7 +149,7 @@ async function executeIntegrationCommand(
       return { application, type: command.type };
     }
     case "integration.applicationSourceDefault.set":
-      requireAdministrator(context);
+      await requirePersonalSession(context, options.platform.store.connections);
       await options.integrations.setApplicationSourceDefault(
         { ...command.input, provider: command.provider },
         { requestId: context.requestId, userId: session.user.id },

@@ -1,3 +1,4 @@
+import type {} from "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import {
   BrowserActionRequestSchema,
@@ -7,7 +8,7 @@ import {
 } from "@opensteer/protocol/browser-actions";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import type { IncomingHttpHeaders } from "node:http";
-import type { EnvironmentId, UserId, WorkspaceId } from "@opensteer/core";
+import type { EnvironmentId, UserId } from "@opensteer/core";
 import { BrowserSessionIdSchema, type BrowserSessionId } from "@opensteer/protocol";
 import type { FastifyInstance } from "fastify";
 import type WebSocket from "ws";
@@ -43,7 +44,6 @@ interface CdpAuthority {
   readonly agentBindingId: string;
   readonly environmentId?: EnvironmentId;
   readonly ownerId: UserId;
-  readonly workspaceId: WorkspaceId;
 }
 
 interface CdpRouteOptions<Scope> {
@@ -83,7 +83,6 @@ export function registerAgentCdpBridge(
     authority: (scope: RunToolScope) => ({
       agentBindingId: `run:${scope.runId}`,
       ownerId: scope.requestedBy,
-      workspaceId: scope.workspaceId,
     }),
     browser,
     ownsSession: false,
@@ -128,7 +127,6 @@ export function registerTriggerCdpBridge(
       agentBindingId: `trigger:${scope.occurrenceId}`,
       environmentId: scope.environmentId,
       ownerId: scope.requestedBy,
-      workspaceId: scope.workspaceId,
     }),
     browser,
     ownsSession: true,
@@ -147,7 +145,6 @@ export function registerWatchCdpBridge(
       agentBindingId: `watch:${scope.activationId}`,
       environmentId: scope.environmentId,
       ownerId: scope.createdBy,
-      workspaceId: scope.workspaceId,
     }),
     browser,
     expiresAt: (scope) => scope.exp * 1_000,
@@ -366,7 +363,7 @@ function attachCdpSocket<Scope>(
           if (
             refreshed.agentBindingId !== authority.agentBindingId ||
             refreshed.ownerId !== authority.ownerId ||
-            refreshed.workspaceId !== authority.workspaceId
+            refreshed.ownerId !== authority.ownerId
           ) {
             throw new Error("CDP authorization scope changed");
           }

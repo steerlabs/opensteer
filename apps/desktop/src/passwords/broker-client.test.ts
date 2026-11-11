@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import path from "node:path";
@@ -31,15 +32,13 @@ const transactionId = "6f1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071";
 const syntheticPassword = "synthetic-password-7c1a";
 
 const requestParams = {
-  deploymentId: "dep_personal",
+  protocolVersion: 10 as const,
+  permissionVersion: 6 as const,
+  deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
   deploymentName: "Personal",
-  workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
   expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   reason: "Check the invoice",
   threadTitle: "Invoices",
-  workspaceName: "Home",
-  runtimeId: "desktop-browser",
-  sessionId: "bsn_00000000-0000-4000-8000-000000000007",
   site: "https://example.com",
   transactionId,
 };
@@ -47,7 +46,7 @@ const requestParams = {
 // Unix sockets and the kernel's peer credentials: this runs in the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
   it("negotiates v8 and validates person fill without changing v7 card payloads", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 8 });
+    const harness = await clientHarness({ clientProtocolVersion: 10 });
     const account = {
       id: transactionId,
       revision: 3,
@@ -60,7 +59,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     await expect(
       harness.client.call("fill.accounts", { origin: "https://example.com" }),
     ).resolves.toEqual({ fill: "on", accounts: [account] });
-    expect(harness.client.connection?.protocolVersion).toBe(8);
+    expect(harness.client.connection?.protocolVersion).toBe(10);
     await expect(
       harness.client.call("fill.accounts", { origin: "http://example.com" }),
     ).rejects.toMatchObject({ code: "invalid" });
@@ -75,42 +74,8 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     ).rejects.toMatchObject({ code: "malformed" });
   });
 
-  it("reconnects at v7 after a lower supported hello before sending a transaction", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 8, protocolVersion: 7 });
-    const connection = await harness.client.connect();
-    expect(connection.protocolVersion).toBe(7);
-    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
-      { client: { version: "9.9.9" }, protocolVersion: 8 },
-      { client: { version: "9.9.9" }, protocolVersion: 7 },
-    ]);
-    harness.broker.reply("card.request", () => ({ decision: "approve", cards: [] }));
-    const { runtimeId: _runtime, sessionId: _session, ...request } = requestParams;
-    await expect(
-      harness.client.call("card.request", { ...request, protocolVersion: 7, permissionVersion: 7 }),
-    ).resolves.toEqual({ decision: "approve", cards: [] });
-    await expect(
-      harness.client.call("fill.accounts", { origin: "https://example.com" }),
-    ).rejects.toMatchObject({ code: "invalid" });
-    expect(harness.broker.received("fill.accounts")).toEqual([]);
-    const requests = harness.broker.transcript.filter((entry) => entry.direction === "in");
-    expect(requests.map((entry) => entry.connection)).toEqual([1, 2, 2]);
-  });
-
-  it("reconnects at v8 after an older broker answers a v9 hello, and never sends save there", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 9, protocolVersion: 8 });
-    expect((await harness.client.connect()).protocolVersion).toBe(8);
-    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
-      { client: { version: "9.9.9" }, protocolVersion: 9 },
-      { client: { version: "9.9.9" }, protocolVersion: 8 },
-    ]);
-    await expect(harness.client.call("save.cancel", { transactionId })).rejects.toMatchObject({
-      code: "invalid",
-    });
-    expect(harness.broker.received("save.cancel")).toEqual([]);
-  });
-
   it("never repeats a broker's words about a save, which could carry the login", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 9 });
+    const harness = await clientHarness({ clientProtocolVersion: 10 });
     harness.broker.fail("save.begin", {
       code: "invalid",
       message: "hunter2 for person@example.com",
@@ -128,7 +93,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
   });
 
   it("withdraws a v8 presence check on abort on its original connection", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 8 });
+    const harness = await clientHarness({ clientProtocolVersion: 10 });
     const controller = new AbortController();
     const result = harness.client
       .call(
@@ -151,14 +116,8 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     expect(harness.broker.received("hello")).toHaveLength(1);
   });
 
-  it("never sends a card command on a legacy connection", async () => {
-    const harness = await clientHarness();
-    await expect(harness.client.call("card.probe", {})).rejects.toMatchObject({ code: "invalid" });
-    expect(harness.broker.transcript).toEqual([]);
-  });
-
   it("negotiates v7 and reads card choices without changing login replies", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 7 });
+    const harness = await clientHarness({ clientProtocolVersion: 10 });
     const card = {
       id: transactionId,
       revision: 1,
@@ -190,11 +149,11 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     await expect(
       harness.client.call("signin.probe", { site: requestParams.site }),
     ).resolves.toEqual({ passwords: "has-login" });
-    expect(harness.broker.received("hello")[0]?.params).toMatchObject({ protocolVersion: 7 });
+    expect(harness.broker.received("hello")[0]?.params).toMatchObject({ protocolVersion: 10 });
   });
 
   it("discards untrusted broker errors that could echo a card value", async () => {
-    const harness = await clientHarness({ clientProtocolVersion: 7 });
+    const harness = await clientHarness({ clientProtocolVersion: 10 });
     const canary = "synthetic-card-secret-canary";
     harness.broker.fail("card.probe", { code: "invalid", message: canary });
     const error = await harness.client.call("card.probe", {}).catch((failure: unknown) => failure);
@@ -228,7 +187,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
         loginId: transactionId,
         revision: 1,
         remember: false,
-        permissionVersion: 5 as const,
+        permissionVersion: 6 as const,
       }),
     ).resolves.toEqual(answer);
   });
@@ -257,13 +216,15 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
 
     await expect(harness.client.call("status", {})).resolves.toEqual({
       agentSignIns: "on",
+      personFill: "off",
+      personSave: "off",
       vault: "ready",
     });
     await harness.client.call("status", {});
 
     const frames = harness.broker.transcript.filter((entry) => entry.direction === "in");
     expect(frames.map((entry) => entry.frame)).toEqual([
-      { id: 1, method: "hello", params: { client: { version: "9.9.9" }, protocolVersion: 4 } },
+      { id: 1, method: "hello", params: { client: { version: "9.9.9" }, protocolVersion: 10 } },
       { id: 2, method: "status", params: {} },
       { id: 3, method: "status", params: {} },
     ]);
@@ -417,9 +378,18 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     harness.client.onStatusChanged((status) => seen.push(status));
     await harness.client.connect();
 
-    harness.broker.setStatus({ agentSignIns: "off", vault: "ready" });
+    harness.broker.setStatus({
+      agentSignIns: "off",
+      personFill: "off",
+      personSave: "off",
+      vault: "ready",
+    });
 
-    await vi.waitFor(() => expect(seen).toEqual([{ agentSignIns: "off", vault: "ready" }]));
+    await vi.waitFor(() =>
+      expect(seen).toEqual([
+        { agentSignIns: "off", personFill: "off", personSave: "off", vault: "ready" },
+      ]),
+    );
   });
 
   it("refuses a result its method's schema does not accept, without echoing it", async () => {
@@ -463,6 +433,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
       harness.client.call("signin.release", {
         transactionId: "not-a-uuid",
         field: "password",
+        kind: "browser",
         origin: "https://example.com",
       }),
     ).rejects.toMatchObject({ code: "invalid" });
@@ -481,7 +452,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
           loginId: transactionId,
           revision: 1,
           remember: false,
-          permissionVersion: 5 as const,
+          permissionVersion: 6 as const,
         },
         { signal: controller.signal },
       )
@@ -517,26 +488,56 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     harness.broker.answer("signin.request", { decision: "authorized", login });
     await expect(requested).resolves.toEqual({ decision: "authorized", login });
     await expect(
-      harness.client.release({ transactionId, field: "password", origin: "https://example.org" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "password",
+        origin: "https://example.org",
+      }),
     ).resolves.toEqual({ released: false, reason: "wrong-site" });
     await expect(
-      harness.client.release({ transactionId, field: "password", origin: "https://example.com" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "password",
+        origin: "https://example.com",
+      }),
     ).resolves.toEqual({ released: true, value: syntheticPassword });
     await expect(
-      harness.client.release({ transactionId, field: "totp", origin: "https://example.com" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "totp",
+        origin: "https://example.com",
+      }),
     ).resolves.toEqual({ released: true, value: "123456" });
     harness.broker.setLogin({ ...fakePasswordsLogin, revision: 2 });
     await expect(
-      harness.client.release({ transactionId, field: "password", origin: "https://example.com" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "password",
+        origin: "https://example.com",
+      }),
     ).resolves.toEqual({ released: false, reason: "revoked" });
     harness.broker.setLogin(fakePasswordsLogin);
     harness.broker.revokeGrants();
     await expect(
-      harness.client.release({ transactionId, field: "password", origin: "https://example.com" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "password",
+        origin: "https://example.com",
+      }),
     ).resolves.toEqual({ released: false, reason: "revoked" });
     await harness.client.cancel(transactionId);
     await expect(
-      harness.client.release({ transactionId, field: "password", origin: "https://example.com" }),
+      harness.client.release({
+        transactionId,
+        kind: "browser",
+        field: "password",
+        origin: "https://example.com",
+      }),
     ).resolves.toEqual({ released: false, reason: "ended" });
     expect(JSON.stringify(harness.log.mock.calls)).not.toContain(syntheticPassword);
   });
@@ -562,6 +563,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
       harness.client.call("signin.release", {
         transactionId,
         field: "password",
+        kind: "browser",
         origin: "https://example.com",
       }),
     ).rejects.toMatchObject({
@@ -586,7 +588,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
           loginId: transactionId,
           revision: 1,
           remember: false,
-          permissionVersion: 5 as const,
+          permissionVersion: 6 as const,
           transactionId,
         },
         { signal: new AbortController().signal },
@@ -603,7 +605,7 @@ describe.runIf(process.platform === "darwin")("PasswordsBrokerClient", () => {
     await expect(
       harness.client.call(
         "signin.release",
-        { transactionId, field: "password", origin: "https://example.com" },
+        { kind: "browser", transactionId, field: "password", origin: "https://example.com" },
         { connection: first.generation },
       ),
     ).rejects.toMatchObject({ code: "connection-lost" });
