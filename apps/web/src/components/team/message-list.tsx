@@ -1,0 +1,314 @@
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { Icon } from "../icon.js";
+import { AgentCardRow, type AgentCardActions } from "./agent-status-card.js";
+import { MessageRow, type MessageActions } from "./message-row.js";
+import type { AuthorView, MessageView, TimelineItem } from "./team-models.js";
+import { clockTime, dayLabel, sameDay } from "./team-time.js";
+
+/** Within this many pixels of the end, new rows follow; further up, the reader keeps their place. */
+const followDistance = 80;
+const groupWindowMs = 5 * 60_000;
+const readAfterMs = 1000;
+
+/**
+ * A channel's or DM's timeline. It opens at the first unread message, with
+ * its NEW line a third of the way down, or at the end; it follows new rows
+ * only while the reader is at the end, and keeps the row under their eye
+ * still while history loads above or a card changes.
+ */
+export function MessageList({
+  actions,
+  cardActions,
+  editingId = null,
+  firstUnreadId,
+  flashId = null,
+  hasOlder,
+  intro,
+  items,
+  label,
+  loadingOlder = false,
+  onEditingChange,
+  onLoadOlder,
+  onMarkRead,
+  onReadThrough,
+  openThreadId = null,
+}: {
+  readonly actions?: MessageActions | undefined;
+  readonly cardActions?: AgentCardActions | undefined;
+  readonly editingId?: string | null;
+  /** The NEW line goes above this message; it stays until the reader leaves. */
+  readonly firstUnreadId: string | null;
+  /** A deep link's message: scrolled to and flashed once. */
+  readonly flashId?: string | null;
+  readonly hasOlder: boolean;
+  /** The start of the channel, shown once there is nothing older. */
+  readonly intro?: ReactNode;
+  readonly items: readonly TimelineItem[];
+  readonly label: string;
+  readonly loadingOlder?: boolean;
+  readonly onEditingChange?: ((messageId: string | null) => void) | undefined;
+  readonly onLoadOlder?: (() => void) | undefined;
+  readonly onMarkRead?: (() => void) | undefined;
+  /** The newest message has been on screen for a second in a focused window. */
+  readonly onReadThrough?: ((messageId: string) => void) | undefined;
+  readonly openThreadId?: string | null;
+}) {
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const atEnd = useRef(true);
+  const anchor = useRef<{ readonly id: string; readonly top: number } | null>(null);
+  const lastId = useRef<string | null>(null);
+  const [newBelow, setNewBelow] = useState(0);
+  const [unreadAbove, setUnreadAbove] = useState(false);
+
+  const measure = useCallback(() => {
+    const list = scroller.current;
+    if (!list) return;
+    atEnd.current = list.scrollHeight - list.scrollTop - list.clientHeight < followDistance;
+    if (atEnd.current) setNewBelow(0);
+    const top = list.getBoundingClientRect().top;
+    const rows = list.querySelectorAll<HTMLElement>("[data-row-id]");
+    for (const row of rows) {
+      const box = row.getBoundingClientRect();
+      if (box.bottom > top) {
+        anchor.current = { id: row.dataset.rowId ?? "", top: box.top - top };
+        break;
+      }
+    }
+    const line = list.querySelector<HTMLElement>(".tlist__new");
+    setUnreadAbove(line ? line.getBoundingClientRect().bottom < top : false);
+    if (list.scrollTop < 240 && hasOlder && !loadingOlder) onLoadOlder?.();
+  }, [hasOlder, loadingOlder, onLoadOlder]);
+
+  // First paint: at the first unread or a deep link, else at the end.
+  useLayoutEffect(() => {
+    const list = scroller.current;
+    if (!list) return;
+    const target = flashId
+      ? list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(flashId)}"]`)
+      : list.querySelector<HTMLElement>(".tlist__new");
+    if (target) {
+      const offset = flashId ? list.clientHeight / 2 : list.clientHeight / 3;
+      list.scrollTop = target.offsetTop - offset;
+    } else {
+      list.scrollTop = list.scrollHeight;
+    }
+    const last = items.at(-1);
+    lastId.current = last ? itemId(last) : null;
+    measure();
+    // Only the first paint chooses where to open.
+  }, []);
+
+  // Every later change: follow at the end, otherwise hold the row under the eye.
+  useLayoutEffect(() => {
+    const list = scroller.current;
+    if (!list) return;
+    const last = items.at(-1);
+    const newest = last ? itemId(last) : null;
+    if (atEnd.current) {
+      list.scrollTop = list.scrollHeight;
+    } else {
+      const held = anchor.current;
+      const row = held
+        ? list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(held.id)}"]`)
+        : null;
+      if (held && row) {
+        const drift = row.getBoundingClientRect().top - list.getBoundingClientRect().top - held.top;
+        list.scrollTop += drift;
+      }
+      if (newest !== lastId.current && lastId.current !== null) {
+        const before = items.findIndex((item) => itemId(item) === lastId.current);
+        if (before >= 0) setNewBelow((count) => count + (items.length - 1 - before));
+      }
+    }
+    lastId.current = newest;
+  }, [items]);
+
+  // Read: the newest message on screen for a second while the window has focus.
+  const newest = items.at(-1);
+  const newestId = newest ? itemId(newest) : null;
+  useEffect(() => {
+    const list = scroller.current;
+    if (!list || !newestId || !onReadThrough) return;
+    const row = list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(newestId)}"]`);
+    if (!row) return;
+    let timer: number | undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        window.clearTimeout(timer);
+        if (entry?.isIntersecting && document.hasFocus())
+          timer = window.setTimeout(() => onReadThrough(newestId), readAfterMs);
+      },
+      { root: list, threshold: 0.6 },
+    );
+    observer.observe(row);
+    return () => {
+      observer.disconnect();
+      window.clearTimeout(timer);
+    };
+  }, [newestId, onReadThrough]);
+
+  const firstUnreadIndex = firstUnreadId
+    ? items.findIndex((item) => itemId(item) === firstUnreadId)
+    : -1;
+  const unreadCount =
+    firstUnreadIndex < 0 ? 0 : items.slice(firstUnreadIndex).filter(isMessage).length;
+  const firstUnread = firstUnreadIndex >= 0 ? items[firstUnreadIndex] : undefined;
+
+  const toEnd = () => {
+    const list = scroller.current;
+    if (!list) return;
+    list.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+  };
+  const toNewLine = () => {
+    const list = scroller.current;
+    const line = list?.querySelector<HTMLElement>(".tlist__new");
+    if (list && line)
+      list.scrollTo({ top: line.offsetTop - list.clientHeight / 3, behavior: "smooth" });
+  };
+
+  return (
+    <div className="tlist">
+      {unreadAbove && firstUnread && unreadCount > 0 ? (
+        <div className="tlist__jump tlist__jump--above">
+          <button className="tlist__jump-main" onClick={toNewLine} type="button">
+            <Icon name="arrow-up" />
+            {unreadCount} new since {clockTime(itemAt(firstUnread))}
+          </button>
+          {onMarkRead ? (
+            <button className="tlist__jump-side" onClick={onMarkRead} type="button">
+              Mark read
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+      <div
+        aria-label={label}
+        className="tlist__scroller"
+        onScroll={measure}
+        ref={scroller}
+        role="log"
+        tabIndex={-1}
+      >
+        <div className="tlist__rows">
+          {loadingOlder ? (
+            <p className="tlist__older">Loading earlier messages…</p>
+          ) : hasOlder ? null : (
+            intro
+          )}
+          {items.map((item, index) => {
+            const previous = index > 0 ? items[index - 1] : undefined;
+            const at = itemAt(item);
+            const newDay = !previous || !sameDay(itemAt(previous), at);
+            const newLine = index === firstUnreadIndex;
+            const id = itemId(item);
+            return (
+              <Fragment key={id}>
+                {newDay ? (
+                  <div className="tlist__day" role="separator">
+                    <span>{dayLabel(at)}</span>
+                  </div>
+                ) : null}
+                {newLine ? (
+                  <div aria-label="New messages" className="tlist__new" role="separator">
+                    <span>New</span>
+                  </div>
+                ) : null}
+                <div className="tlist__row" data-row-id={id}>
+                  {item.kind === "message" ? (
+                    <MessageRow
+                      actions={actions}
+                      editing={editingId === id}
+                      flash={flashId === id}
+                      grouped={!newDay && !newLine && joins(previous, item.message)}
+                      message={item.message}
+                      onEditingChange={(editing) => onEditingChange?.(editing ? id : null)}
+                      open={openThreadId === id}
+                    />
+                  ) : item.kind === "card" ? (
+                    <AgentCardRow actions={cardActions} request={item.request} />
+                  ) : (
+                    <SystemRow icon={item.icon} text={item.text} at={item.at} />
+                  )}
+                </div>
+              </Fragment>
+            );
+          })}
+        </div>
+      </div>
+      {newBelow > 0 ? (
+        <div className="tlist__jump tlist__jump--below">
+          <button className="tlist__jump-main" onClick={toEnd} type="button">
+            {newBelow} new
+            <Icon name="arrow-up" className="tlist__jump-down" />
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** A line the team wrote about itself: someone joined, a channel became people only. */
+export function SystemRow({
+  at,
+  icon = "user",
+  text,
+}: {
+  readonly at: string;
+  readonly icon?: "user" | "users" | "lock" | "pushpin" | undefined;
+  readonly text: string;
+}) {
+  return (
+    <div className="tsystem">
+      <span aria-hidden className="tsystem__mark">
+        <Icon name={icon} />
+      </span>
+      <span className="tsystem__text">
+        {text} · <time dateTime={at}>{clockTime(at)}</time>
+      </span>
+    </div>
+  );
+}
+
+export function itemId(item: TimelineItem): string {
+  return item.kind === "message"
+    ? item.message.id
+    : item.kind === "card"
+      ? `card:${item.request.id}`
+      : item.id;
+}
+
+function itemAt(item: TimelineItem): string {
+  return item.kind === "message"
+    ? item.message.at
+    : item.kind === "card"
+      ? item.request.askedAt
+      : item.at;
+}
+
+function isMessage(item: TimelineItem): boolean {
+  return item.kind === "message";
+}
+
+function authorKey(author: AuthorView): string {
+  return author.kind === "agent" ? `agent:${author.owner.id}` : `person:${author.person.id}`;
+}
+
+/** A run from one author, close in time, reads as one block. */
+export function joins(previous: TimelineItem | undefined, message: MessageView): boolean {
+  if (!previous || previous.kind !== "message") return false;
+  const before = previous.message;
+  return (
+    authorKey(before.author) === authorKey(message.author) &&
+    Date.parse(message.at) - Date.parse(before.at) < groupWindowMs &&
+    !(before.thread && before.thread.replyCount > 0) &&
+    !before.work
+  );
+}
