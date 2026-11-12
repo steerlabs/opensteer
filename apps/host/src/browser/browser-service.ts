@@ -1110,7 +1110,11 @@ export class BrowserService {
   }
 
   async closePersonalTab(ownerId: UserId, tabId: BrowserSurfaceId, person = true) {
-    const row = await this.#personalTabs?.close(ownerId, tabId, person);
+    let row = await this.#personalTabs?.close(ownerId, tabId, person);
+    if (!row) {
+      await this.flushPendingTabDescriptors();
+      row = await this.#personalTabs?.close(ownerId, tabId, person);
+    }
     if (!row) throw new OpensteerError({ code: "not_found", message: "Browser tab not found." });
     const marks = this.#personUseGroups.get(row.groupId);
     marks?.tabs.delete(tabId);
