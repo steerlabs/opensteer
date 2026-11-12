@@ -1075,7 +1075,7 @@ export async function createTwoHostLinkFixture() {
       const wrongVersion = await teamApp.inject({
         method: "GET",
         url: teamBinaryRoutes.download,
-        headers: { ...correct, [teamApiVersionHeader]: "999", authorization: "invalid" },
+        headers: { ...correct, [teamApiVersionHeader]: "0", authorization: "invalid" },
       });
       expect(wrongVersion.statusCode).toBe(426);
       const wrongRequest = await teamApp.inject({

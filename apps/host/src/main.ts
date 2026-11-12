@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
-import { stopHost } from "./runtime/host-stop.js";
+import { stopHost, stopHostOnAuthorityLoss } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
 
 export async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -14,6 +14,8 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
     delete environment.OPENSTEER_AUTH_SECRET_FILE;
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN;
     delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE;
+    delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST;
+    delete environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY;
     delete environment.OPENSTEER_NATIVE_MODEL_API_KEY_FILE;
   }
@@ -37,14 +39,14 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   runtime.app.log.info({ address }, "Opensteer Host listening");
 
   let closing = false;
-  const close = async (signal: string) => {
+  const close = (stop: () => Promise<void>) => {
     if (closing) return;
     closing = true;
-    await stopHost(runtime, signal);
+    void stop();
   };
-  process.once("SIGINT", () => void close("SIGINT"));
-  process.once("SIGBREAK", () => void close("SIGBREAK"));
-  process.once("SIGTERM", () => void close("SIGTERM"));
+  for (const signal of ["SIGINT", "SIGBREAK", "SIGTERM"] as const)
+    process.once(signal, () => close(() => stopHost(runtime, signal)));
+  void runtime.authorityLost.then((error) => close(() => stopHostOnAuthorityLoss(runtime, error)));
 }
 
 function safeRequestLog(request: { readonly method?: unknown; readonly url?: unknown }) {

@@ -25,6 +25,8 @@ packages/runner-auth/fixtures/agent-phone-vectors.json
 apps/agent-phone/app/src/test/resources/wire-fixture.json
 # Written by the passkey core's vector test (OPENSTEER_WRITE_PASSKEY_FIXTURE=1); prettier must not reshape it.
 packages/browser-runtime-core/src/test-support/fixtures/passkeys-vectors.json
+# Written by the team wire guard (OPENSTEER_UPDATE_TEAM_WIRE=1); prettier must not reshape it.
+packages/protocol/src/team-wire.snapshot.json
 
 # Native Expo phone decoder build output.
 apps/mobile/modules/*/android/build/

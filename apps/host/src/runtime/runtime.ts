@@ -1,3 +1,4 @@
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import { PersonalTabStore } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
@@ -374,6 +375,8 @@ export interface PersonalHostRuntime {
   readonly notifications: Pick<NotificationDispatcher, "drain">;
   readonly deployment: Deployment;
   readonly store: OpensteerStore;
+  /** Settles if this Host loses its Deployment database lock; it must then stop. */
+  readonly authorityLost: Promise<Error>;
   /** Observes the current execution lease pass without starting or draining work. */
   settleExecutionLeases(): Promise<number>;
   close(): Promise<void>;
@@ -388,6 +391,7 @@ export interface TeamHostRuntime {
   readonly app: FastifyInstance;
   readonly deployment: Deployment;
   readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
+  readonly authorityLost: Promise<Error>;
   close(): Promise<void>;
   closingStep(): string | undefined;
   listen(): Promise<string>;
@@ -561,7 +565,7 @@ export async function createHostRuntime(
     const initialOwnerEnrollment = {
       expiresAt: new Date(Date.now() + localSetupEnrollmentLifetimeMilliseconds),
       renewable: true,
-      token: localSetupToken,
+      tokenDigest: digestSecret(localSetupToken),
     };
     const hostAuthority = {
       canonicalOrigin: deployment.canonicalOrigin,
@@ -2740,6 +2744,7 @@ export async function createHostRuntime(
       notifications: notificationDispatcher,
       deployment,
       store,
+      authorityLost: authorityLease.lost,
       settleExecutionLeases: () => executionLeaseLoop.settled(),
       async close() {
         if (closed) return;

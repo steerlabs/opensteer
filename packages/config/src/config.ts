@@ -22,6 +22,7 @@ import {
   type RuntimeMode,
 } from "@opensteer/core";
 import { noFollowFlag } from "@opensteer/shared/privateFiles";
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
   closeSync,
   existsSync,
@@ -72,6 +73,11 @@ const positiveInteger = (defaultValue: number) =>
     z.number().int().positive(),
   );
 
+const optionalPositiveInteger = z.preprocess(
+  (value) => (value === undefined || value === "" ? undefined : Number(value)),
+  z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+);
+
 const booleanValue = (defaultValue: boolean) =>
   z.preprocess((value) => {
     if (value === undefined || value === "") return defaultValue;
@@ -118,6 +124,16 @@ const optionalEnrollmentToken = z.preprocess(
   z.string().trim().min(16).max(4_096).optional(),
 );
 
+/** `digestSecret` of a setup code, for a provisioner that never holds the code. */
+const optionalEnrollmentTokenDigest = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z
+    .string()
+    .trim()
+    .regex(/^[0-9a-f]{64}$/u, "Expected a lowercase hex SHA-256 digest")
+    .optional(),
+);
+
 // The app-held Personal owner claim is minted by the desktop as 32 random bytes;
 // a shorter value is a misconfiguration, not a weaker password.
 const optionalLocalOwnerClaimToken = z.preprocess(
@@ -154,6 +170,8 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_DEPLOYMENT_NAME: optionalDeploymentName,
   OPENSTEER_CREDENTIAL_KEY_PATH: optionalPath,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
+  OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: optionalEnrollmentTokenDigest,
+  OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: optionalPositiveInteger,
   OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_LIFETIME_SECONDS: positiveInteger(24 * 60 * 60),
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
@@ -233,7 +251,7 @@ export interface HostConfig {
     | undefined;
   readonly identity: {
     readonly initialOwnerEnrollment:
-      { readonly lifetimeSeconds: number; readonly token: string } | undefined;
+      { readonly lifetimeSeconds: number; readonly tokenDigest: string } | undefined;
     readonly localOwnerClaimToken?: string | undefined;
     readonly localPasswordEnabled: boolean;
     /**
@@ -260,6 +278,8 @@ export interface HostConfig {
   readonly maxConcurrentTriggerDispatches: number;
   readonly mode: RuntimeMode;
   readonly port: number;
+  /** Bytes all team files may hold together; unset is unlimited, the self-hosted default. */
+  readonly teamStorageLimitBytes?: number;
   /** The place's display name as its own Door shows it; presentation metadata, not identity. */
   readonly deploymentName?: string;
   /** Apex portal this Deployment belongs to, for the "back to the portal"
@@ -335,6 +355,9 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (!personal && (config.identity.localPasswordEnabled || config.identity.oidcConfigPath)) {
     throw new Error("A team Host uses Opensteer Account sign-in only");
   }
+  if (personal && config.teamStorageLimitBytes !== undefined) {
+    throw new Error("A team storage limit applies only to a team Host");
+  }
   if (!personal && config.initialMessagingRunnerEnrollmentToken) {
     throw new Error("A team Host cannot enroll Runners");
   }
@@ -395,6 +418,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     "OPENSTEER_AUTH_SECRET",
     "OPENSTEER_DATABASE_URL",
     "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN",
+    "OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST",
   ] as const) {
     const file = environment[`${name}_FILE`];
     if (!file) continue;
@@ -412,6 +436,18 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     }
   }
   const parsed = HostEnvironmentSchema.parse(values);
+  if (
+    parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN !== undefined &&
+    parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST !== undefined
+  )
+    throw new Error(
+      "Configure exactly one of OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN or OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST",
+    );
+  const initialOwnerTokenDigest =
+    parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST ??
+    (parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN === undefined
+      ? undefined
+      : digestSecret(parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN));
   const webDistributionValues = [
     parsed.OPENSTEER_WEB_DISTRIBUTION_DIRECTORY,
     parsed.OPENSTEER_WEB_DISTRIBUTION_MANIFEST,
@@ -571,13 +607,13 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
           }
         : undefined),
     identity: {
-      initialOwnerEnrollment: parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN
+      initialOwnerEnrollment: initialOwnerTokenDigest
         ? {
             lifetimeSeconds: Math.min(
               parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_LIFETIME_SECONDS,
               7 * 24 * 60 * 60,
             ),
-            token: parsed.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN,
+            tokenDigest: initialOwnerTokenDigest,
           }
         : undefined,
       localPasswordEnabled: personal ? parsed.OPENSTEER_LOCAL_PASSWORD_ENABLED : false,
@@ -593,6 +629,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     maxConcurrentTriggerDispatches: parsed.OPENSTEER_MAX_CONCURRENT_TRIGGER_DISPATCHES,
     mode: parsed.OPENSTEER_MODE,
     port: parsed.OPENSTEER_PORT,
+    ...(parsed.OPENSTEER_TEAM_STORAGE_LIMIT_BYTES === undefined
+      ? {}
+      : { teamStorageLimitBytes: parsed.OPENSTEER_TEAM_STORAGE_LIMIT_BYTES }),
     ...(deploymentName ? { deploymentName } : {}),
     ...(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER
       ? { personalAccountIssuer: new URL(parsed.OPENSTEER_PERSONAL_ACCOUNT_ISSUER) }

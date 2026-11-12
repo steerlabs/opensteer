@@ -4,6 +4,7 @@ import { createId } from "@opensteer/core";
 import {
   hostDiscoverySigningBytes,
   hostKeyFingerprint,
+  minimumTeamApiVersion,
   teamApiVersion,
 } from "@opensteer/deployment-authority";
 import { teamLinkUpdateSide, verifiedTeamDiscovery } from "./discovery.js";
@@ -58,8 +59,14 @@ describe("team discovery and route pinning", () => {
     expect(() =>
       verifiedTeamDiscovery({ ...descriptor, apiVersion: teamApiVersion + 1 }, offer),
     ).toThrow(expect.objectContaining({ details: { behind: "personal" } }));
-    expect(teamLinkUpdateSide(1, 2)).toBe("team");
-    expect(teamLinkUpdateSide(2, 1)).toBe("personal");
+    expect(
+      verifiedTeamDiscovery(
+        { ...descriptor, apiVersion: teamApiVersion + 1, minimumApiVersion: teamApiVersion },
+        offer,
+      ),
+    ).toMatchObject({ apiVersion: teamApiVersion + 1 });
+    expect(teamLinkUpdateSide(minimumTeamApiVersion - 1)).toBe("team");
+    expect(teamLinkUpdateSide(teamApiVersion + 1, teamApiVersion + 1)).toBe("personal");
   });
   it.each([
     "169.254.169.254",

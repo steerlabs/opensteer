@@ -9,6 +9,7 @@ import { type Deployment, type HostKeyFingerprint } from "@opensteer/core";
 import {
   HostDescriptorSchema,
   apiNegotiation,
+  minimumTeamApiVersion,
   teamApiVersionHeader,
 } from "@opensteer/deployment-authority";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
@@ -27,7 +28,11 @@ import {
   TeamIdentityAdmission,
   type OidcProviderConfiguration,
 } from "@opensteer/identity";
-import { personalWebBuildId, type HostApiHandlers } from "@opensteer/protocol";
+import {
+  personalWebBuildId,
+  teamIdentityRpcNames,
+  type HostApiHandlers,
+} from "@opensteer/protocol";
 import {
   officialOpensteerAccountProviderId,
   type HostAccountAdoptionBundle,
@@ -143,6 +148,7 @@ export async function createTeamHostRuntime(input: {
       hostKeyFingerprint,
       origin: deployment.canonicalOrigin,
       dataDirectory: config.dataDirectory,
+      storageLimitBytes: config.teamStorageLimitBytes,
       topics: teamChannelTopics,
       ensureKnowledge: async () => {
         credentials = await prepareKnowledgeExecutor(database);
@@ -248,7 +254,7 @@ export async function createTeamHostRuntime(input: {
       ...(config.identity.initialOwnerEnrollment
         ? {
             initialOwnerEnrollment: {
-              token: config.identity.initialOwnerEnrollment.token,
+              tokenDigest: config.identity.initialOwnerEnrollment.tokenDigest,
               expiresAt: new Date(
                 Date.now() + config.identity.initialOwnerEnrollment.lifetimeSeconds * 1000,
               ),
@@ -310,6 +316,7 @@ export async function createTeamHostRuntime(input: {
     app.get("/.well-known/opensteer", () =>
       HostDescriptorSchema.parse({
         ...apiNegotiation("team"),
+        minimumApiVersion: minimumTeamApiVersion,
         authority: envelope,
         bootstrapMethods: ["oidc"],
         capabilities: [
@@ -321,13 +328,7 @@ export async function createTeamHostRuntime(input: {
     const identityHandlers = createIdentityRpcHandlers(authenticator);
     const handlers: Partial<HostApiHandlers> = Object.fromEntries(
       Object.entries(identityHandlers).filter(([name]) =>
-        [
-          "auth.config",
-          "auth.native.complete",
-          "auth.oidc.begin",
-          "auth.signOut",
-          "sessions.list",
-        ].includes(name),
+        (teamIdentityRpcNames as readonly string[]).includes(name),
       ),
     );
     registerHostApi(app, authenticator, handlers, {
@@ -428,6 +429,7 @@ export async function createTeamHostRuntime(input: {
       app,
       deployment,
       team,
+      authorityLost: authorityLease.lost,
       listen: () => app.listen({ host: config.bindAddress, port: config.port }),
       closingStep: () => step,
       close: () =>

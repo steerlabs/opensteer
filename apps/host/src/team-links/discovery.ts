@@ -2,7 +2,7 @@ import {
   type HostDescriptor,
   HostDescriptorSchema,
   hostKeyFingerprint,
-  teamApiVersion,
+  teamApiCompatibility,
   verifyHostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
 import { OpensteerError } from "@opensteer/core";
@@ -11,13 +11,22 @@ import { linkError } from "../team-link-endpoint/contracts.js";
 
 export function teamLinkUpdateSide(
   advertised: number,
-  local = teamApiVersion,
+  advertisedMinimum?: number,
 ): "personal" | "team" | null {
-  return advertised === local ? null : advertised > local ? "personal" : "team";
+  const compatibility = teamApiCompatibility(advertised, advertisedMinimum);
+  return compatibility === "compatible"
+    ? null
+    : compatibility === "host-too-old"
+      ? "team"
+      : "personal";
 }
 
-export function teamLinkVersionError(advertised: number): OpensteerError {
-  const behind = teamLinkUpdateSide(advertised) ?? "team";
+/** A team server that refused this Host's version names the version it speaks. */
+export function teamLinkVersionError(
+  advertised: number,
+  advertisedMinimum?: number,
+): OpensteerError {
+  const behind = teamLinkUpdateSide(advertised, advertisedMinimum) ?? "personal";
   return new OpensteerError({
     code: "bad_request",
     reason: "unsupported-version",
@@ -42,7 +51,7 @@ export function verifiedTeamDiscovery(
     (hostInstanceId !== undefined && document.hostInstanceId !== hostInstanceId)
   )
     throw linkError();
-  const behind = teamLinkUpdateSide(descriptor.apiVersion);
-  if (behind !== null) throw teamLinkVersionError(descriptor.apiVersion);
+  if (teamLinkUpdateSide(descriptor.apiVersion, descriptor.minimumApiVersion) !== null)
+    throw teamLinkVersionError(descriptor.apiVersion, descriptor.minimumApiVersion);
   return descriptor;
 }

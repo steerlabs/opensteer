@@ -12,10 +12,12 @@ import {
   TeamMessageIdSchema,
 } from "@opensteer/core";
 import {
+  acceptsTeamApiVersion,
   apiNegotiation,
   apiVersionHeader,
   hostApiCompatibility,
   hostApiVersion,
+  minimumTeamApiVersion,
   teamApiVersion,
 } from "@opensteer/deployment-authority";
 import {
@@ -44,6 +46,25 @@ describe("team boundary contracts", () => {
     expect(hostApiCompatibility({ kind: "team", apiVersion: teamApiVersion + 1 })).toBe(
       "client-too-old",
     );
+    expect(
+      hostApiCompatibility({
+        kind: "team",
+        apiVersion: teamApiVersion + 1,
+        minimumApiVersion: teamApiVersion,
+      }),
+    ).toBe("compatible");
+    expect(
+      hostApiCompatibility({
+        kind: "team",
+        apiVersion: teamApiVersion + 2,
+        minimumApiVersion: teamApiVersion + 1,
+      }),
+    ).toBe("client-too-old");
+    expect(hostApiCompatibility({ kind: "team" })).toBe("host-too-old");
+    for (const stated of [String(minimumTeamApiVersion), teamApiVersion + 1, "999"])
+      expect(acceptsTeamApiVersion(stated)).toBe(true);
+    for (const stated of [undefined, "", "0", "01", "1.0", " 1", ["1"], minimumTeamApiVersion - 1])
+      expect(acceptsTeamApiVersion(stated)).toBe(false);
     expect(hostApiCompatibility({ kind: "personal", apiVersion: hostApiVersion - 1 })).toBe(
       "host-too-old",
     );

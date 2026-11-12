@@ -166,7 +166,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         await fetch(new URL("/.well-known/opensteer", target.origin))
       ).json();
       return mismatched.has(origin)
-        ? { ...descriptor, apiVersion: teamApiVersion + 1 }
+        ? { ...descriptor, apiVersion: teamApiVersion + 1, minimumApiVersion: teamApiVersion + 1 }
         : descriptor;
     });
     vi.spyOn(TeamLinkNetwork.prototype, "redeem").mockImplementation(

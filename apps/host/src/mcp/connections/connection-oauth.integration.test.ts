@@ -1,3 +1,4 @@
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -58,7 +59,10 @@ async function fixture() {
     publicOrigin: new URL(origin),
     secret: randomBytes(32).toString("base64url"),
     signupPolicy: "closed",
-    initialOwnerEnrollment: { token: enrollment, expiresAt: new Date(now + 60_000) },
+    initialOwnerEnrollment: {
+      tokenDigest: digestSecret(enrollment),
+      expiresAt: new Date(now + 60_000),
+    },
     localMachineOwner: { displayName: "Owner", email: "owner@opensteer.local" },
   });
   await identity.initialize();

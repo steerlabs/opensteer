@@ -6,7 +6,13 @@ import {
   createId,
 } from "@opensteer/core";
 import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
-import { MockTeamHost, mockTeamId, mockTeamUserId, mockTeamChannelId } from "./mock-team-host.js";
+import {
+  MockTeamHost,
+  mockTeamId,
+  mockTeamUserId,
+  mockTeamChannelId,
+  type MockTeamSocket,
+} from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
 import { createMemoryTeamPersistence } from "./persistence.js";
 import {
@@ -235,6 +241,53 @@ describe("team synchronization", () => {
     } finally {
       f.client.dispose();
       f.host.dispose();
+    }
+  });
+  it("spreads reconnects and backs off a socket that keeps failing", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost(),
+      sockets: MockTeamSocket[] = [];
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+      random: () => 0.5,
+    });
+    const bootstraps = () => host.calls.filter((name) => name === "team.bootstrap.get").length;
+    const reconnectsAfter = async (delayMs: number) => {
+      const count = sockets.length,
+        revalidated = bootstraps();
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(sockets).toHaveLength(count);
+      expect(bootstraps()).toBe(revalidated);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(count + 1);
+      expect(bootstraps()).toBe(revalidated + 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().connection).toBe("connected");
+    };
+    try {
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      for (const delayMs of [225, 450, 900]) {
+        sockets.at(-1)!.close();
+        await reconnectsAfter(delayMs);
+      }
+      sockets.at(-1)!.deliver({ type: "team.unknown" });
+      expect(client.getSnapshot().connection).toBe("offline");
+      await reconnectsAfter(1_800);
+      await vi.advanceTimersByTimeAsync(30_000);
+      sockets.at(-1)!.close();
+      await reconnectsAfter(225);
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
     }
   });
 });

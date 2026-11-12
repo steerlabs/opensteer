@@ -6,7 +6,12 @@ import {
   type TeamLinkId,
   type TeamSource,
 } from "@opensteer/core";
-import { teamApiVersion } from "@opensteer/deployment-authority";
+import {
+  acceptsTeamApiVersion,
+  minimumTeamApiVersion,
+  teamApiVersion,
+  teamApiVersionRefusal,
+} from "@opensteer/deployment-authority";
 import type {
   TeamBinaryUploadMetadataSchema,
   TeamFileSchema,
@@ -98,11 +103,15 @@ export function linkError(
   });
 }
 export function checkTeamVersion(value: unknown): void {
-  if (value !== String(teamApiVersion))
+  if (!acceptsTeamApiVersion(value))
     throw new OpensteerError({
       code: "bad_request",
       reason: "unsupported-version",
-      message: "Team API version mismatch",
-      details: { kind: "team", apiVersion: teamApiVersion },
+      message: teamApiVersionRefusal,
+      details: {
+        kind: "team",
+        apiVersion: teamApiVersion,
+        minimumApiVersion: minimumTeamApiVersion,
+      },
     });
 }
