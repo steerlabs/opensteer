@@ -329,6 +329,19 @@ export class MobileTeams {
     );
   }
 
+  /**
+   * The teams a computer of the reader's is in, as this phone last learnt, each
+   * with the session this phone holds for it (for its badge) if any.
+   */
+  teamsOn(
+    computerId: string,
+  ): readonly { readonly team: LinkedTeam; readonly session: TeamSessionClient | null }[] {
+    return (this.#memo?.computers[computerId] ?? []).map((team) => ({
+      team: { ...team, teamName: this.#names.get(team.teamId) ?? team.teamName },
+      session: this.#sessions.get(team.teamId) ?? null,
+    }));
+  }
+
   /** The computers of the reader's this phone knows to be in a team. */
   computersIn(teamId: string): readonly string[] {
     return Object.entries(this.#memo?.computers ?? {})

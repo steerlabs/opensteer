@@ -9,6 +9,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -36,7 +37,15 @@ import {
   touchTarget,
   deploymentPaint,
 } from "../theme.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import { useHostSelector } from "@opensteer/client/react";
+import type { TeamSessionClient } from "@opensteer/client/team";
+import { MentionCount, TeamTile } from "../team/team-marks.js";
+import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
+import {
+  useMobileClient,
+  useMobileState,
+  useSelectedHostClient,
+} from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -132,6 +141,7 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
               {detail}
             </AppText>
           )}
+          <ComputerSignals computerId={row.deploymentId} current={props.current} />
         </View>
       </Pressable>
       {row.signIn === "pairing-code" ? (
@@ -168,6 +178,95 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
         onRemove={remove}
         onSignOut={signOut}
       />
+    </View>
+  );
+});
+
+/**
+ * What a computer has waiting: the shown computer's Needs you count, and each
+ * team it is in with that team's mentions of the reader. Personal and work
+ * computers read alike, so switching to the other one is a glance away.
+ */
+function ComputerSignals(props: {
+  readonly computerId: string;
+  readonly current: boolean;
+}): ReactNode {
+  const teams = useMobileTeams();
+  useTeamsSnapshot();
+  const joined = teams.teamsOn(props.computerId);
+  const host = useSelectedHostClient();
+  if (joined.length === 0 && !(props.current && host !== null)) return null;
+  return (
+    <View style={styles.signals}>
+      {props.current && host !== null ? <NeedsYouCount host={host} /> : null}
+      {joined.map(({ team, session }) => (
+        <TeamSignal key={team.teamId} name={team.teamName} session={session} teamId={team.teamId} />
+      ))}
+    </View>
+  );
+}
+
+const selectNeedsYouCount = (snapshot: { readonly needsYou: { readonly count: number } | null }) =>
+  snapshot.needsYou?.count ?? 0;
+
+function NeedsYouCount(props: { readonly host: Parameters<typeof useHostSelector>[0] }): ReactNode {
+  const count = useHostSelector(props.host, selectNeedsYouCount);
+  if (count === 0) return null;
+  return (
+    <View
+      accessibilityLabel={count === 1 ? "1 task needs you" : `${count} tasks need you`}
+      style={styles.needsYou}
+    >
+      <Symbol name="exclamationmark.circle" size={11} tint={color.inkOnAmber} weight="bold" />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        role="caption"
+        style={styles.needsYouCount}
+      >
+        {String(count)}
+      </AppText>
+    </View>
+  );
+}
+
+const TeamSignal = memo(function TeamSignal(props: {
+  readonly name: string;
+  readonly session: TeamSessionClient | null;
+  readonly teamId: string;
+}): ReactNode {
+  const { session } = props;
+  const mentions = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+      [session],
+    ),
+    useCallback(
+      () =>
+        session
+          ?.getSnapshot()
+          .sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ?? 0,
+      [session],
+    ),
+  );
+  return (
+    <View
+      accessibilityLabel={
+        mentions > 0
+          ? `${props.name}, ${mentions} ${mentions === 1 ? "mention" : "mentions"}`
+          : props.name
+      }
+      style={styles.teamSignal}
+    >
+      <TeamTile size={16} team={{ id: props.teamId, name: props.name, imageUri: null }} />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="caption"
+        tone="soft"
+      >
+        {props.name}
+      </AppText>
+      <MentionCount count={mentions} />
     </View>
   );
 });
@@ -645,6 +744,24 @@ const styles = StyleSheet.create({
     paddingRight: space[4],
   },
   statusLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
+  needsYou: {
+    alignItems: "center",
+    backgroundColor: color.amber,
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[2],
+    paddingHorizontal: space[6],
+    paddingVertical: 1,
+  },
+  needsYouCount: { color: color.inkOnAmber, fontVariant: ["tabular-nums"], fontWeight: "700" },
+  signals: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space[8],
+    marginTop: space[2],
+  },
+  teamSignal: { alignItems: "center", flexDirection: "row", gap: space[4], maxWidth: "100%" },
   unavailable: {
     backgroundColor: color.surface,
     borderColor: color.line,
