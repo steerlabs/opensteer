@@ -1,7 +1,7 @@
 # Teams
 
-A team server is the same Host software with kind `team`, self-hosted for shared chat and
-knowledge. Each person's private Opensteer has kind `personal`; only that computer runs their
+A team server is the same Host software with kind `team`, for shared chat and knowledge. A team
+runs it themselves or has Opensteer run it for them ([hosted teams](hosted-teams.md)). Each person's private Opensteer has kind `personal`; only that computer runs their
 agent. Team owners and administrators gain no access to anyone's personal Opensteer, files,
 credentials or Mac. Families use the same team server. Operational steps live in the
 [team-server skill](../.agents/skills/team-server/SKILL.md).

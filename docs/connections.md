@@ -7,7 +7,8 @@ cannot depend on Node APIs. Start at [connections](../packages/client/src/connec
 [testing skill](../.agents/skills/testing/SKILL.md). Connect routes live under `opensteerapp.com`,
 beside [app origins](apps.md#origins), which reach a Deployment through a stateless Worker. Connect
 hostnames keep exact no-script routes so they skip it, and the Worker must be live before a Host
-that returns Connect app origins ships. The Account never provisions or hosts Deployments.
+that returns Connect app origins ships. The Account never hosts a person's Deployment; it only records which
+[hosted teams](hosted-teams.md) should exist.
 
 ## Route selection and lifetime
 
