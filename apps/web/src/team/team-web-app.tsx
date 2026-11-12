@@ -16,6 +16,7 @@ import { WorkspaceProvider } from "../components/workspace/workspace-context.js"
 import { TeamsProvider, createTeamWebAttachment, type TeamAttachment } from "./team-attachments.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { TeamRoutes } from "./team-routes.js";
+import { TeamDialogsProvider } from "./hosted-teams.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
 import { TeamSideFor, LeaveTeamDialog } from "./team-sidebar-sections.js";
 
@@ -193,7 +194,9 @@ function TeamWebSession({
     <ToastProvider>
       <TeamsProvider surface={surface}>
         <BrowserRouter>
-          <TeamWebShell landing={landing} team={attachment} userId={bootstrap.member.userId} />
+          <TeamDialogsProvider>
+            <TeamWebShell landing={landing} team={attachment} userId={bootstrap.member.userId} />
+          </TeamDialogsProvider>
         </BrowserRouter>
       </TeamsProvider>
     </ToastProvider>

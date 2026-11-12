@@ -28,7 +28,13 @@ import {
   MockTeamHost,
   TeamSessionClient,
   createMemoryTeamPersistence,
+  mockAccountEmail,
+  mockAccountSubject,
+  type MockTeamWorld,
 } from "@opensteer/client/team";
+import { TeamDialogsProvider } from "../../team/hosted-teams.js";
+import { TeamsRoute } from "../../team/join-route.js";
+import { SettingsTeamRoute } from "../settings/settings-shell.js";
 
 /**
  * The workspace contract over the moving mock world: each selection action
@@ -121,6 +127,8 @@ async function mount(
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
     /** One live mock team beside the person's own tasks, as a joined desktop has. */
     team?: boolean;
+    /** Hosted teams this app can create and join, in memory. */
+    world?: MockTeamWorld;
     /** The Host the last mount drew, as a page reload finds it. */
     sameHost?: boolean;
     shell?: Partial<
@@ -173,9 +181,20 @@ async function mount(
     root?.render(
       <Wrapper>
         <ToastProvider>
-          <TeamsProvider surface={{ kind: "preview", hostClient: sessionClient ?? client, teams }}>
+          <TeamsProvider
+            account={
+              options.world ? { subject: mockAccountSubject, email: mockAccountEmail } : null
+            }
+            surface={{
+              kind: "preview",
+              hostClient: sessionClient ?? client,
+              teams,
+              world: options.world,
+            }}
+          >
             <MemoryRouter initialEntries={[entry]}>
               <History />
+              <TeamDialogsProvider>
               <Routes>
                 <Route
                   element={
@@ -188,6 +207,7 @@ async function mount(
                 >
                   <Route index element={<HomeRoute />} />
                   <Route path="tasks/:threadId" element={<ThreadRoute />} />
+                  <Route path="teams" element={<TeamsRoute />} />
                   <Route path="teams/:teamId/*" element={<TeamRoutes />} />
                   <Route path="live" element={<LiveRedirect />} />
                   <Route path="automations" element={<AutomationsPage />} />
@@ -212,9 +232,11 @@ async function mount(
                     <Route path="account" element={<SettingsSectionRoute section="account" />} />
                     <Route path="plugins/*" element={<SettingsSectionRoute section="plugins" />} />
                     <Route path="devices/computers" element={<ComputersPage />} />
+                    <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
                   </Route>
                 </Route>
               </Routes>
+              </TeamDialogsProvider>
             </MemoryRouter>
           </TeamsProvider>
         </ToastProvider>

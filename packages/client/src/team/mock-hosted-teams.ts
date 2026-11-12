@@ -75,8 +75,11 @@ export class MockTeamWorld {
   /** The person's own Opensteer: off, joins wait as pending. */
   personalOnline = true;
   readonly sampleInviteUrl: string;
+  /** Multiplies every setup stage; 0 makes a new team ready at once. */
+  readonly #pace: number;
 
-  constructor() {
+  constructor(options: { readonly pace?: number } = {}) {
+    this.#pace = options.pace ?? 1;
     const invite = {
       selector: "Zq4tR8sampleInviteSelector00",
       verifier: "sampleInviteVerifierZq4tR8aaaaaaaa",
@@ -124,7 +127,7 @@ export class MockTeamWorld {
   }
 
   #view(team: MockHostedTeam): HostedTeamView {
-    const elapsed = Date.now() - team.startedAt;
+    const elapsed = this.#pace === 0 ? Infinity : (Date.now() - team.startedAt) / this.#pace;
     const stage = team.deleted
       ? "deleting"
       : elapsed < stages.reserving

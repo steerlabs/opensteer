@@ -36,6 +36,11 @@ import {
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
 import { z } from "zod";
+import { IssueTeamIdentityGrantRequestSchema } from "@opensteer/control-plane-protocol";
+import {
+  CreateHostedTeamRequestSchema,
+  HostedTeamIdSchema,
+} from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   IntegrationAuthorizationAttemptIdSchema,
   IntegrationAuthorizationReturnPortSchema,
@@ -1427,6 +1432,57 @@ export const DesktopTeamLinkDeliverySchema = z.strictObject({
 });
 export type DesktopTeamLinkDelivery = z.infer<typeof DesktopTeamLinkDeliverySchema>;
 
+/**
+ * Account's hosted-team calls, run in main where the Account session lives. Answers carry the
+ * Account's refusal reason, which an Electron rejection would drop.
+ */
+export const DesktopAccountTeamsCallSchema = z.discriminatedUnion("call", [
+  z.strictObject({ call: z.literal("availability"), slug: z.string().max(256) }),
+  z.strictObject({ call: z.literal("create"), request: CreateHostedTeamRequestSchema }),
+  z.strictObject({ call: z.literal("list") }),
+  z.strictObject({ call: z.literal("get"), id: HostedTeamIdSchema }),
+  z.strictObject({ call: z.literal("retry"), id: HostedTeamIdSchema }),
+  z.strictObject({ call: z.literal("delete"), id: HostedTeamIdSchema }),
+  z.strictObject({
+    call: z.literal("identity-grant"),
+    deploymentId: DeploymentIdSchema,
+    request: IssueTeamIdentityGrantRequestSchema,
+  }),
+]);
+export type DesktopAccountTeamsCall = z.infer<typeof DesktopAccountTeamsCallSchema>;
+export const DesktopAccountTeamsResultSchema = z.discriminatedUnion("ok", [
+  z.strictObject({ ok: z.literal(true), data: z.unknown() }),
+  z.strictObject({
+    ok: z.literal(false),
+    error: z.strictObject({
+      status: z.number().int().min(0).max(599),
+      reason: z.string().max(120).nullable(),
+      message: z.string().max(2_000),
+    }),
+  }),
+]);
+export type DesktopAccountTeamsResult = z.infer<typeof DesktopAccountTeamsResultSchema>;
+
+/**
+ * Entering a team natively: discovery verification, invite preview and the session exchange run in
+ * main, which keeps the issued team credential. Tokens never cross to the renderer.
+ */
+export interface DesktopTeamSessionsBridge {
+  verify(input: { readonly origin: string }): Promise<{
+    readonly authority: import("@opensteer/control-plane-protocol").HostAccountAdoptionAuthority;
+    readonly capabilities: readonly import("@opensteer/deployment-authority").HostCapability[];
+  }>;
+  previewInvite(input: {
+    readonly origin: string;
+    readonly invite: import("@opensteer/core").TeamInviteSecret;
+  }): Promise<import("./team-session.js").TeamInvitePreviewResponse>;
+  exchange(input: {
+    readonly origin: string;
+    readonly request: import("./team-session.js").TeamSessionExchangeRequest;
+  }): Promise<Pick<import("./team-session.js").TeamSessionExchangeResponse, "admitted" | "member">>;
+  forget(input: { readonly deploymentId: import("@opensteer/core").DeploymentId }): Promise<void>;
+}
+
 export const DesktopWebLinkRequestSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   userId: UserIdSchema,
@@ -1784,6 +1840,9 @@ export interface OpensteerDesktopBridge {
     startFresh(): Promise<void>;
   };
   teamLinkDelivery?(input: DesktopTeamLinkDelivery): Promise<void>;
+  /** Present only in the desktop app, signed in to Opensteer Account. */
+  accountTeams?(input: DesktopAccountTeamsCall): Promise<DesktopAccountTeamsResult>;
+  teamSessions?: DesktopTeamSessionsBridge;
   onTeamLink?(listener: (link: DesktopTeamLink) => void): () => void;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;

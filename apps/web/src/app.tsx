@@ -15,8 +15,14 @@ import { VoiceRoute } from "./components/voice-route.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { TeamsProvider, type TeamAttachment } from "./team/team-attachments.js";
+import {
+  mockAccountEmail,
+  mockAccountSubject,
+  type MockTeamWorld,
+} from "@opensteer/client/team";
 import { TeamRoutes } from "./team/team-routes.js";
-import { JoinTeamRoute } from "./team/join-route.js";
+import { JoinTeamRoute, TeamsRoute } from "./team/join-route.js";
+import { TeamDialogsProvider } from "./team/hosted-teams.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
 import { AutomationsPage } from "./components/automations/automations-page.js";
@@ -82,7 +88,7 @@ export function App({
   notificationTarget = null,
   onSetupOpened,
   openSetup = false,
-  previewTeams = null,
+  preview = null,
 }: {
   readonly mcpAuthorizationRequestId?: string | null;
   readonly onMcpAuthorizationClosed?: (() => void) | undefined;
@@ -102,8 +108,11 @@ export function App({
   readonly onSetupOpened?: (() => void) | undefined;
   /** This computer was set up in this window, so setup continues as the app opens. */
   readonly openSetup?: boolean;
-  /** The mock build's team sessions; never set against a real Host. */
-  readonly previewTeams?: readonly TeamAttachment[] | null;
+  /** The mock build's team sessions and hosted-teams world; never set against a real Host. */
+  readonly preview?: {
+    readonly teams: readonly TeamAttachment[];
+    readonly world: MockTeamWorld;
+  } | null;
 }) {
   const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   useEffect(
@@ -510,15 +519,26 @@ export function App({
     <ToastProvider>
       <DesktopUpdateFeedback />
       <TeamsProvider
+        account={
+          preview
+            ? { subject: mockAccountSubject, email: mockAccountEmail }
+            : deploymentAccess?.account.status === "signed-in" && deploymentAccess.account.subject
+              ? {
+                  subject: deploymentAccess.account.subject,
+                  email: deploymentAccess.account.email ?? null,
+                }
+              : null
+        }
         surface={
-          previewTeams
-            ? { kind: "preview", hostClient, teams: previewTeams }
+          preview
+            ? { kind: "preview", hostClient, teams: preview.teams, world: preview.world }
             : desktopBridge
               ? { kind: "desktop", hostClient, bridge: desktopBridge }
               : { kind: "personal-web", hostClient }
         }
       >
         <BrowserRouter>
+          <TeamDialogsProvider>
           <Routes>
             <Route
               element={
@@ -536,6 +556,7 @@ export function App({
               <Route index element={<HomeRoute />} />
               <Route path="tasks/:threadId" element={<ThreadRoute />} />
               <Route path="voice" element={<VoiceRoute />} />
+              <Route path="teams" element={<TeamsRoute />} />
               <Route path="teams/:teamId/*" element={<TeamRoutes />} />
               <Route path="join" element={<JoinTeamRoute />} />
               <Route path="live" element={<LiveRedirect />} />
@@ -607,6 +628,7 @@ export function App({
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
+          </TeamDialogsProvider>
         </BrowserRouter>
       </TeamsProvider>
     </ToastProvider>

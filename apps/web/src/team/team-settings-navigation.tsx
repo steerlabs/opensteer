@@ -25,9 +25,9 @@ export function TeamSettingsNavigation() {
       ))}
       <NavLink
         className={({ isActive }) => `settings-navigation__link${isActive ? " is-active" : ""}`}
-        to="/join"
+        to="/teams"
       >
-        Join a team
+        Create or join a team
       </NavLink>
     </div>
   );
