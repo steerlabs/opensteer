@@ -541,7 +541,7 @@ describe("Personal remote administration intents", () => {
                   },
                 )
               : fixture.access.revokeConnectResource({ session }, request);
-      await expect(invoke()).rejects.toThrow(/request failed/);
+      await expect(invoke()).rejects.toThrow(accountUnreachable);
       expect(lost, "The test never dropped an Account acknowledgement").toBe(true);
       const stored = await database
         .selectFrom("personalRemoteAccountLink")
@@ -642,7 +642,7 @@ describe("Personal remote administration intents", () => {
             operationId,
           },
         ),
-      ).rejects.toThrow(/request failed/);
+      ).rejects.toThrow(accountUnreachable);
       expect(
         await database
           .selectFrom("personalRemoteAccountLink")
@@ -705,7 +705,7 @@ describe("Personal remote administration intents", () => {
         { session },
         { state: "disabled", expectedAccessRoute: null, schemaVersion: 2 },
       ),
-    ).rejects.toThrow(/HTTP 409/);
+    ).rejects.toMatchObject(accountAnswered(409));
     const stored = await database
       .selectFrom("personalRemoteAccountLink")
       .selectAll()
@@ -811,9 +811,9 @@ describe("Personal remote administration intents", () => {
         return input.toString().endsWith("/activate") ? originalFetch(input, init) : refused();
       });
 
-      await expect(fixture.access.revokeConnectResource({ session }, request())).rejects.toThrow(
-        /HTTP 401/,
-      );
+      await expect(
+        fixture.access.revokeConnectResource({ session }, request()),
+      ).rejects.toMatchObject(accountAnswered(401));
       expect(paths).toEqual([
         "DELETE /v1/host/connect",
         "POST /v1/host/personal-account-link/activate",
@@ -831,7 +831,9 @@ describe("Personal remote administration intents", () => {
       await fixture.access.consumeAccountLink({ session }, fixture.completion);
       fixture.fetch.mockImplementation(async (input) => linkGone(input));
       await stuckReadyProjection();
-      await expect(fixture.access.publishAccountAuthority()).rejects.toThrow(/HTTP 401/);
+      await expect(fixture.access.publishAccountAuthority()).rejects.toMatchObject(
+        accountAnswered(401),
+      );
       expect(
         await database
           .selectFrom("personalRemoteAccountLink")
@@ -856,7 +858,7 @@ describe("Personal remote administration intents", () => {
             schemaVersion: 2,
           },
         ),
-      ).rejects.toThrow(`HTTP ${status}`);
+      ).rejects.toMatchObject(accountAnswered(status));
       expect(
         await database
           .selectFrom("personalRemoteAccountLink")
@@ -930,7 +932,7 @@ describe("Personal remote administration intents", () => {
         reject();
         await pending;
       }
-      expect(await pending).toMatchObject({ message: expect.stringContaining("HTTP 409") });
+      expect(await pending).toMatchObject(accountAnswered(409));
       expect(
         await database
           .selectFrom("personalRemoteAccountLink")
@@ -982,8 +984,10 @@ describe("Personal remote administration intents", () => {
             schemaVersion: 2,
           },
         ),
-      ).rejects.toThrow(
-        failure === "network" ? /request failed/ : failure === "HTTP 503" ? /HTTP 503/ : /HTTP 409/,
+      ).rejects.toMatchObject(
+        failure === "network"
+          ? { message: expect.stringMatching(accountUnreachable) }
+          : accountAnswered(failure === "HTTP 503" ? 503 : 409),
       );
       const journal = await database
         .selectFrom("personalRemoteAccountLink")
@@ -1048,7 +1052,7 @@ describe("Personal remote administration intents", () => {
             expect((await administration.status(session)).operation).toMatchObject({
               id: first.id,
               state: "failed",
-              detail: expect.stringMatching(/Recover.*unlink/i),
+              detail: expect.stringMatching(/Try again/u),
             });
             expect(changed).toHaveBeenCalledTimes(2); // Executor attachment and durable failure.
           },
@@ -1310,7 +1314,58 @@ describe("Personal remote administration intents", () => {
     }
   });
 
+  it("admits Connect and rotation only for an active link with no unlink pending, replays included", async () => {
+    const administration = service().administration;
+    const connect = { action: "configure", mode: "connect", privateOrigin: null } as const;
+    const refused = {
+      code: "conflict",
+      message: "Add this computer to your Opensteer account first.",
+    };
+    await expect(administration.request(session, connect, "no-link")).rejects.toMatchObject(
+      refused,
+    );
+    await seedAccountLink("activating");
+    await expect(administration.request(session, connect, "activating")).rejects.toMatchObject(
+      refused,
+    );
+    await database
+      .updateTable("personalRemoteAccountLink")
+      .set({ state: "active", accountOperation: { id: crypto.randomUUID(), kind: "unlink" } })
+      .execute();
+    await expect(
+      administration.request(session, { action: "rotate" }, "unlinking"),
+    ).rejects.toMatchObject(refused);
+    await expect(
+      database.selectFrom("personalRemoteAdministration").select("id").execute(),
+    ).resolves.toEqual([]);
+    await database
+      .updateTable("personalRemoteAccountLink")
+      .set({ accountOperation: null })
+      .execute();
+    const admitted = await administration.request(session, connect, "linked");
+    // A retry of an admitted request is the same request, whatever the link did since.
+    await database.deleteFrom("personalRemoteAccountLink").execute();
+    expect(await administration.request(session, connect, "linked")).toEqual(admitted);
+    // Recovering a failed Connect change is held to the same rule.
+    const executor = {};
+    const detach = administration.attachExecutor(executor);
+    try {
+      administration.release(admitted.id);
+      await administration.progress(executor, {
+        operationId: admitted.id,
+        state: "failed",
+        detail: "Couldn't reach Opensteer.",
+      });
+    } finally {
+      detach();
+    }
+    await expect(
+      administration.request(session, { action: "recover" }, "recover-unlinked"),
+    ).rejects.toMatchObject(refused);
+  });
+
   it("recovers the failed action with its original external idempotency identity", async () => {
+    await seedAccountLink("active");
     const administration = service().administration;
     const executor = {};
     const detach = administration.attachExecutor(executor);
@@ -1550,6 +1605,26 @@ describe("Personal remote administration intents", () => {
   });
 });
 
+async function seedAccountLink(state: "activating" | "active") {
+  const now = new Date();
+  await database
+    .insertInto("personalRemoteAccountLink")
+    .values({
+      singletonKey: "opensteer-account",
+      accountOperation: null,
+      challengeId: `phc_${crypto.randomUUID()}`,
+      grantId: `phg_${crypto.randomUUID()}`,
+      issuer: "https://accounts.opensteer.test",
+      hostCredential: `osc_${"a".repeat(43)}`,
+      linkGeneration: "n".repeat(43),
+      state,
+      subject: `acct_${crypto.randomUUID()}`,
+      linkedAt: now,
+      updatedAt: now,
+    })
+    .execute();
+}
+
 function linkChallenge() {
   return IssuePersonalHostAccountLinkChallengeResponseSchema.parse({
     completionFormat: "sealed-v1",
@@ -1635,4 +1710,11 @@ async function sealedLinkCompletion() {
     fetch,
     access: accessWithCompletion,
   };
+}
+
+const accountUnreachable = /Couldn't reach Opensteer/u;
+
+/** The Account answered with this status; its technical line stays out of the message. */
+function accountAnswered(status: number) {
+  return { request: expect.stringContaining(`HTTP ${status}`), status };
 }

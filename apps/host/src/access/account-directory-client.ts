@@ -33,7 +33,7 @@ import {
   type RevokeConnectResponse,
   type UnlinkPersonalHostRequest,
 } from "@opensteer/control-plane-protocol";
-import type { Deployment } from "@opensteer/core";
+import { OpensteerError, type Deployment } from "@opensteer/core";
 import type { AccountDirectoryProjection } from "@opensteer/database";
 import type { HostDiscoveryEnvelope } from "@opensteer/deployment-authority";
 
@@ -274,7 +274,12 @@ export class AccountDirectoryClient {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
-      throw new Error(`${label} API request failed`, { cause: error });
+      throw new OpensteerError({
+        cause: error,
+        code: "timeout",
+        message: accountUnreachableMessage,
+        retryable: true,
+      });
     }
     if (!response.ok) {
       let accountError;
@@ -285,7 +290,7 @@ export class AccountDirectoryClient {
         await response.body?.cancel();
       }
       throw new AccountRequestError({
-        message: `${label} API returned HTTP ${response.status}`,
+        request: `${label} API returned HTTP ${response.status}`,
         status: response.status,
         refusalReason: AccountOperationRefusalReasonSchema.safeParse(accountError?.reason).data,
         completedOperation:
@@ -298,19 +303,35 @@ export class AccountDirectoryClient {
   }
 }
 
-export class AccountRequestError extends Error {
+const accountUnreachableMessage = "Couldn't reach Opensteer. Check this Mac's internet connection.";
+
+/**
+ * The Account's answer, as an OpensteerError so the Host passes a sentence a
+ * person can read to whoever asked; `request` keeps the technical line for logs.
+ */
+export class AccountRequestError extends OpensteerError {
   readonly status: number;
+  readonly request: string;
   readonly refusalReason: AccountOperationRefusalReason | null;
   readonly completedOperation: ConnectOperationCompletion | undefined;
 
   constructor(options: {
-    readonly message: string;
+    readonly request: string;
     readonly status: number;
     readonly refusalReason?: AccountOperationRefusalReason | undefined;
     readonly completedOperation?: ConnectOperationCompletion | undefined;
   }) {
-    super(options.message);
+    const unavailable = options.status >= 500 || options.status === 429;
+    super({
+      code: unavailable ? "timeout" : "conflict",
+      message: unavailable
+        ? "Opensteer isn't answering right now. Try again in a few minutes."
+        : "Opensteer didn't accept this change. Try again.",
+      ...(options.refusalReason ? { reason: options.refusalReason } : {}),
+      retryable: unavailable,
+    });
     this.name = "AccountRequestError";
+    this.request = options.request;
     this.status = options.status;
     this.refusalReason = options.refusalReason ?? null;
     this.completedOperation = options.completedOperation;
@@ -335,11 +356,9 @@ export class AccountRequestError extends Error {
 }
 
 export class PersonalAccountLinkActivationExpiredError extends AccountRequestError {
-  readonly code = "personal-account-link-activation-expired";
-
   constructor() {
     super({
-      message: "The Personal Account-link activation result has expired.",
+      request: "The Personal Account-link activation result has expired.",
       status: 409,
       refusalReason: "personal-account-link-reservation-expired",
     });
@@ -348,11 +367,9 @@ export class PersonalAccountLinkActivationExpiredError extends AccountRequestErr
 }
 
 export class PersonalAccountLinkCancelledError extends AccountRequestError {
-  readonly code = "personal-account-link-cancelled";
-
   constructor() {
     super({
-      message: "The Personal Account-link reservation was cancelled.",
+      request: "The Personal Account-link reservation was cancelled.",
       status: 409,
       refusalReason: "personal-account-link-cancelled",
     });
@@ -361,11 +378,9 @@ export class PersonalAccountLinkCancelledError extends AccountRequestError {
 }
 
 export class PersonalAccountLinkNotFoundError extends AccountRequestError {
-  readonly code = "personal-account-link-not-found";
-
   constructor() {
     super({
-      message: "Opensteer Account holds no Personal Host link for this credential.",
+      request: "Opensteer Account holds no Personal Host link for this credential.",
       status: 404,
       refusalReason: "personal-account-link-not-found",
     });

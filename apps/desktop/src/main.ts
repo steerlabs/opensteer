@@ -135,7 +135,11 @@ import { DesktopPersonalAccountService } from "./account/personal-account-servic
 import { DesktopPersonalAccountMutationCoordinator } from "./account/personal-account-mutation.js";
 import { DesktopPersonalDirectoryProjection } from "./account/personal-directory-projection.js";
 import { DesktopPersonalHostRemoteAdapter } from "./supervisor/personal-host-remote-adapter.js";
-import { DesktopRemoteAdministrationExecutor } from "./connections/remote-administration-executor.js";
+import {
+  accountLinkProgressDetail,
+  DesktopRemoteAdministrationExecutor,
+  remoteAccessProgressDetail,
+} from "./connections/remote-administration-executor.js";
 import { ConnectOperationIdSchema } from "@opensteer/control-plane-protocol";
 import { DesktopPersonalRemoteAccessService } from "./connections/personal-remote-access.js";
 import { TailscaleShare, tailscaleCommand } from "./connections/tailscale.js";
@@ -833,9 +837,14 @@ async function runDesktop(
   const remoteAdministrationExecutor = new DesktopRemoteAdministrationExecutor({
     supervisor: desktopSupervisor,
     execute: async (operation, progress) => {
-      const detachRemote = personalRemote.subscribe((status) => progress(status.phase));
+      const report = (detail: string | null) => {
+        if (detail) progress(detail);
+      };
+      const detachRemote = personalRemote.subscribe((status) =>
+        report(remoteAccessProgressDetail(status.phase)),
+      );
       const detachAccount = personalAccount.subscribe((status) =>
-        progress(status.unlinkStep ?? status.status),
+        report(accountLinkProgressDetail(status)),
       );
       try {
         const intent = operation.intent;
@@ -843,8 +852,6 @@ async function runDesktop(
         if (intent.action === "recover" || operation.executionId !== operation.id)
           await personalAccount.recover();
         if (intent.action === "configure") {
-          if (intent.mode === "connect" && !(await personalHostRemote.status()).accountLink)
-            throw new Error("Link an Account from the device signing in before enabling Connect.");
           await personalRemote.configure({
             mode: intent.mode,
             privateOrigin: intent.privateOrigin,
@@ -863,6 +870,7 @@ async function runDesktop(
         detachAccount();
       }
     },
+    report: (error) => reportNonFatal("desktop.personal.remote-access.change-failed", error),
   });
   shutdown.add({
     component: "remote-access-intents",

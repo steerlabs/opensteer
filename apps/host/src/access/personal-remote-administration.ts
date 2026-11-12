@@ -136,7 +136,7 @@ export class PersonalRemoteAdministration {
             .updateTable("personalRemoteAdministration")
             .set({
               state: "failed",
-              detail: "Replaced by a request to turn remote access off",
+              detail: "Replaced by turning remote access off.",
               updatedAt: new Date(),
             })
             .where("id", "=", active.id)
@@ -157,6 +157,24 @@ export class PersonalRemoteAdministration {
                 .executeTakeFirst()
             : undefined;
         const recovering = previous?.state === "failed";
+        const effective = recovering ? previous.intent : intent;
+        if (
+          effective.action === "rotate" ||
+          (effective.action === "configure" && effective.mode === "connect")
+        ) {
+          // The same rule PersonalRemoteAccessService.configure applies when the intent runs.
+          const account = await transaction
+            .selectFrom("personalRemoteAccountLink")
+            .select(["state", "accountOperation"])
+            .where("singletonKey", "=", "opensteer-account")
+            .forShare()
+            .executeTakeFirst();
+          if (account?.state !== "active" || account.accountOperation?.kind === "unlink")
+            throw new OpensteerError({
+              code: "conflict",
+              message: "Add this computer to your Opensteer account first.",
+            });
+        }
         return PersonalRemoteAdministrationOperationSchema.parse(
           await transaction
             .insertInto("personalRemoteAdministration")
@@ -166,7 +184,7 @@ export class PersonalRemoteAdministration {
               requestedIntent: intent,
               requestedBy: session.user.id,
               idempotencyKey,
-              intent: recovering ? previous.intent : intent,
+              intent: effective,
               state: "pending",
               detail: null,
             })
@@ -217,8 +235,7 @@ export class PersonalRemoteAdministration {
           .updateTable("personalRemoteAdministration")
           .set({
             state: "failed",
-            detail:
-              "Opensteer Account recovery failed. Check your connection and Account status, then use Recover to retry or turn remote access Off before unlinking the Account.",
+            detail: "Couldn't finish the earlier change with your Opensteer account. Try again.",
             updatedAt: new Date(),
           })
           .where("id", "=", row.id)

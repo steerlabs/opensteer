@@ -240,7 +240,9 @@ describe("PersonalRemoteAccessService", () => {
       keys,
     });
 
-    await expect(service.removeAccountLink(ownerSession())).rejects.toThrow(/HTTP 401/);
+    await expect(service.removeAccountLink(ownerSession())).rejects.toMatchObject(
+      accountAnswered(401),
+    );
     expect(fixture.deleteLink).not.toHaveBeenCalled();
     expect(link.accountOperation).toMatchObject({ kind: "unlink" });
     expect(link.hostCredential).toBe(`osc_${"h".repeat(43)}`);
@@ -962,4 +964,11 @@ function fakeIdentity() {
 
 function liveSessionQuery() {
   return rowQuery({ id: createId("authSession"), deviceLabel: "Owner device", userAgent: null });
+}
+
+const accountUnreachable = /Couldn't reach Opensteer/u;
+
+/** The Account answered with this status; its technical line stays out of the message. */
+function accountAnswered(status: number) {
+  return { request: expect.stringContaining(`HTTP ${status}`), status };
 }

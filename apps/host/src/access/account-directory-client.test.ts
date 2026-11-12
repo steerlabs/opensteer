@@ -273,7 +273,7 @@ describe("AccountDirectoryClient", () => {
       failure = error;
     }
     expect(failure).toMatchObject({
-      message: "Host authority publication API returned HTTP 404",
+      request: "Host authority publication API returned HTTP 404",
     });
     expect(String(failure)).not.toContain(credential);
   });
@@ -317,21 +317,18 @@ describe("AccountDirectoryClient", () => {
     {
       code: "not_found",
       error: "PersonalAccountLinkNotFoundError",
-      errorCode: "personal-account-link-not-found",
       reason: "personal-account-link-not-found",
       status: 404,
     },
     {
       code: "conflict",
       error: "PersonalAccountLinkActivationExpiredError",
-      errorCode: "personal-account-link-activation-expired",
       reason: "personal-account-link-reservation-expired",
       status: 409,
     },
     {
       code: "conflict",
       error: "PersonalAccountLinkCancelledError",
-      errorCode: "personal-account-link-cancelled",
       reason: "personal-account-link-cancelled",
       status: 409,
     },
@@ -352,7 +349,7 @@ describe("AccountDirectoryClient", () => {
         challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(`phc_${crypto.randomUUID()}`),
         linkGeneration: AccountLinkGenerationSchema.parse("g".repeat(43)),
       }),
-    ).rejects.toMatchObject({ code: expected.errorCode, name: expected.error });
+    ).rejects.toMatchObject({ name: expected.error, refusalReason: expected.reason });
   });
 
   it("keeps an unreasoned activation refusal a transport failure", async () => {
@@ -369,7 +366,10 @@ describe("AccountDirectoryClient", () => {
         challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(`phc_${crypto.randomUUID()}`),
         linkGeneration: AccountLinkGenerationSchema.parse("g".repeat(43)),
       }),
-    ).rejects.toThrow(/returned HTTP 409/);
+    ).rejects.toMatchObject({
+      refusalReason: null,
+      request: expect.stringMatching(/returned HTTP 409/),
+    });
   });
 
   it("reports a Personal unlink the Account has no record of as not found", async () => {
@@ -396,8 +396,8 @@ describe("AccountDirectoryClient", () => {
         linkGeneration: AccountLinkGenerationSchema.parse("g".repeat(43)),
       }),
     ).rejects.toMatchObject({
-      code: "personal-account-link-not-found",
       name: "PersonalAccountLinkNotFoundError",
+      refusalReason: "personal-account-link-not-found",
     });
   });
 
@@ -414,7 +414,11 @@ describe("AccountDirectoryClient", () => {
         challengeId: PersonalHostAccountLinkChallengeIdSchema.parse(`phc_${crypto.randomUUID()}`),
         linkGeneration: AccountLinkGenerationSchema.parse("g".repeat(43)),
       }),
-    ).rejects.toThrow(/returned HTTP 503/);
+    ).rejects.toMatchObject({
+      message: "Opensteer isn't answering right now. Try again in a few minutes.",
+      refusalReason: null,
+      retryable: true,
+    });
   });
 
   it("rejects a Personal unlink acknowledgement for another Deployment", async () => {
@@ -489,7 +493,9 @@ describe("AccountDirectoryClient", () => {
     } catch (error) {
       failure = error;
     }
-    expect(failure).toMatchObject({ message: "Account directory API request failed" });
+    expect(failure).toMatchObject({
+      message: "Couldn't reach Opensteer. Check this Mac's internet connection.",
+    });
     expect(String(failure)).not.toContain(credential);
   });
 });
