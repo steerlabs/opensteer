@@ -126,6 +126,9 @@ integration.sequential("unified integration access Requests", () => {
         value: {
           connectionId: null,
           decision: "fulfilled",
+          access: "read-write",
+          alias: "Calendar",
+          isDefault: false,
         },
       },
     });
@@ -241,9 +244,7 @@ integration.sequential("unified integration access Requests", () => {
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
-    ).rejects.toMatchObject({
-      code: "conflict",
-    });
+    ).resolves.toEqual(prepared.approvalManifest);
     await expect(
       platform.requests.tryBindExistingIntegrationAccessInstallation({
         requestId: opened.request.id,
@@ -257,6 +258,12 @@ integration.sequential("unified integration access Requests", () => {
         status: "pending",
       },
     });
+    await expect(
+      platform.requests.loadIntegrationAccessInstallManifest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
   it("rejects fulfillment through a different account than the one requested", async ({
     storeFixture,
@@ -316,6 +323,9 @@ integration.sequential("unified integration access Requests", () => {
           value: {
             connectionId: otherConnectionId,
             decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
           },
         },
       }),
@@ -426,6 +436,9 @@ integration.sequential("unified integration access Requests", () => {
           value: {
             connectionId: null,
             decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
           },
         },
       });
@@ -503,6 +516,9 @@ integration.sequential("unified integration access Requests", () => {
           value: {
             connectionId: null,
             decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
           },
         },
       }),
@@ -557,6 +573,9 @@ integration.sequential("unified integration access Requests", () => {
         value: {
           connectionId: null,
           decision: "fulfilled",
+          access: "read-write",
+          alias: "Calendar",
+          isDefault: false,
         },
       },
     });

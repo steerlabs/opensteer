@@ -2248,6 +2248,7 @@ alter table agent_control_requests add constraint agent_control_requests_source_
 alter table auth_accounts add constraint auth_accounts_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 alter table auth_admissions add constraint auth_admissions_consumed_by_fkey FOREIGN KEY (consumed_by) REFERENCES users(id) ON DELETE RESTRICT;
 alter table auth_sessions add constraint auth_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+alter table notification_preview_keys add constraint notification_preview_keys_auth_session_id_fkey FOREIGN KEY (auth_session_id) REFERENCES auth_sessions(id) ON DELETE CASCADE;
 alter table auth_sso_providers add constraint auth_sso_providers_user_id_fkey FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 alter table browser_profiles add constraint browser_profiles_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE;
 alter table browser_session_attachments add constraint browser_session_attachments_owner_id_fkey FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE;

@@ -1,3 +1,4 @@
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { expect, it } from "vitest";
 import { AutomaticModelConfigSchema, emptyAutomaticModelConfig, createId } from "@opensteer/core";
 import { createDatabase, OpensteerStore } from "./index.js";
@@ -11,7 +12,7 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
       return { database, close: () => database.destroy() };
     });
     const store = new OpensteerStore(database);
-    const userId = await store.createUser("Automatic owner");
+    const { userId } = await personalFixtureOwner(database, clone.url);
     const otherId = await store.createUser("Other person");
     expect(await store.getAutomaticModelConfig(userId)).toEqual(emptyAutomaticModelConfig);
     const config = AutomaticModelConfigSchema.parse({
@@ -26,6 +27,9 @@ it.runIf(Boolean(process.env.OPENSTEER_TEST_DATABASE_URL))(
     expect(await store.setAutomaticModelConfig(userId, config)).toEqual(config);
     expect(await new OpensteerStore(database).getAutomaticModelConfig(userId)).toEqual(config);
     expect(await store.getAutomaticModelConfig(otherId)).toEqual(emptyAutomaticModelConfig);
+    await expect(store.setAutomaticModelConfig(otherId, config)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await store.setAutomaticModelConfig(userId, emptyAutomaticModelConfig);
     expect(await store.getAutomaticModelConfig(userId)).toEqual(emptyAutomaticModelConfig);
   },

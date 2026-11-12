@@ -113,7 +113,7 @@ integration("notification decision boundary", () => {
       return accountId;
     }
 
-    async function createFixture(suffix: string, voice = false): Promise<Fixture> {
+    async function createFixture(suffix: string, voice = false, worker = false): Promise<Fixture> {
       const personal = await personalFixtureOwner(database, databaseUrl);
       const { userId: ownerId, environmentId, runnerId } = personal;
       const harnessInstance = await store.createHarnessInstance({
@@ -126,10 +126,21 @@ integration("notification decision boundary", () => {
         sourceId: "native",
         stateKind: "isolated",
       });
+      const parent = worker
+        ? await store.createThread({
+            createdBy: ownerId,
+            environmentId,
+            harnessInstanceId: harnessInstance.id,
+            idempotencyKey: `parent-${suffix}`,
+            modelSelection,
+            title: `Parent ${suffix}`,
+          })
+        : null;
       const { thread } = await store.createThread({
         createdBy: ownerId,
         environmentId,
         harnessInstanceId: harnessInstance.id,
+        ...(parent ? { parentThreadId: parent.thread.id } : {}),
         purpose: voice ? "voice" : "task",
         idempotencyKey: `thread-${suffix}`,
         modelSelection,
@@ -742,6 +753,7 @@ integration("notification decision boundary", () => {
     observed.clear();
     publications.clear();
     readEvents.clear();
+    await personalFixtureOwner(database, databaseUrl);
     await directory.configureProvider({
       issuer: "https://accounts.opensteer.invalid",
       providerId: directoryProviderId,
@@ -905,7 +917,7 @@ integration("notification decision boundary", () => {
       async (seed, { storeFixture }) => {
         const { createFixture, setRunSeedAuthor, appendCompletedReply, text, decideCommitted } =
           storeFixture;
-        const fixture = await createFixture(`worker-${seed}`);
+        const fixture = await createFixture(`worker-${seed}`, false, true);
         await setRunSeedAuthor(fixture, seed);
         await appendCompletedReply(fixture, text("Done."));
         expect((await decideCommitted(fixture)).decided).toHaveLength(seed === "human" ? 1 : 0);
@@ -926,7 +938,7 @@ integration("notification decision boundary", () => {
           observedViews,
           decideCommitted,
         } = storeFixture;
-        const fixture = await createFixture(`request-continuation-${outcome}`);
+        const fixture = await createFixture(`request-continuation-${outcome}`, false, true);
         await startRequestRun(fixture);
         const opened =
           outcome === "system"
@@ -1038,7 +1050,7 @@ integration("notification decision boundary", () => {
           observedViews,
           decideCommitted,
         } = storeFixture;
-        const fixture = await createFixture(`live-answer-${person}`);
+        const fixture = await createFixture(`live-answer-${person}`, false, true);
         // End the fixture's initial human turn before the scheduled work begins.
         await startRequestRun(fixture);
         await finishRequestRun(fixture);
@@ -1146,7 +1158,7 @@ integration("notification decision boundary", () => {
         decideCommitted,
         database,
       } = storeFixture;
-      const fixture = await createFixture("worker-human-join");
+      const fixture = await createFixture("worker-human-join", false, true);
       await setRunSeedAuthor(fixture, "trigger");
       const joined = await appendReply(fixture, text("Please check this too."));
       await database
@@ -1167,7 +1179,7 @@ integration("notification decision boundary", () => {
     });
     it("does not notify for a failed Trigger-woken worker", async ({ storeFixture }) => {
       const { createFixture, setRunSeedAuthor, appendRunFailed, decideCommitted } = storeFixture;
-      const fixture = await createFixture("worker-failed");
+      const fixture = await createFixture("worker-failed", false, true);
       await setRunSeedAuthor(fixture, "trigger");
       await appendRunFailed(fixture, "Something failed.");
       expect((await decideCommitted(fixture)).decided).toEqual([]);
@@ -2104,7 +2116,7 @@ integration("notification decision boundary", () => {
           userId: fixture.ownerId,
         }),
       ).rejects.toMatchObject({
-        code: "not_found",
+        code: "forbidden",
       });
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
         "America/Los_Angeles",
@@ -2590,10 +2602,10 @@ integration("notification decision boundary", () => {
       await sql`
         insert into public.thread_inputs (
           actor_principal_id, authority_source, cancel_reason, causal_chain_id, delivered_at,
-          idempotency_key, membership_generation, message_id, policy, queue_rank, reply_target,
+          idempotency_key, message_id, policy, queue_rank, reply_target,
           request_fingerprint, requested_by, run_id, state, steer_command_id, thread_id, updated_at)
         select actor_principal_id, authority_source, 'withdrawn', causal_chain_id, null,
-          ${`withdrawn-${withdrawn.id}`}, membership_generation, ${withdrawn.id}, 'queue',
+          ${`withdrawn-${withdrawn.id}`}, ${withdrawn.id}, 'queue',
           queue_rank + 1000, reply_target, request_fingerprint, requested_by, null, 'cancelled',
           null, thread_id, now()
         from public.thread_inputs

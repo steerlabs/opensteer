@@ -2,10 +2,10 @@ import { createId, previewToolOutput } from "@opensteer/core";
 import { expect } from "vitest";
 import { describeStore, pendingEvent } from "./store.integration.test-support.js";
 describeStore("on-demand tool output", (it) => {
-  it("reads exact stored output only for an active member and the matching node", async ({
+  it("reads exact stored output only for the active personal owner and the matching node", async ({
     storeFixture,
   }) => {
-    const { store, startRunFixture } = storeFixture;
+    const { store, database, startRunFixture } = storeFixture;
     const f = await startRunFixture("tool-output");
     const text = "output 🙂\n".repeat(2000);
     await store.commitRunnerEvent({
@@ -136,5 +136,11 @@ describeStore("on-demand tool output", (it) => {
       cut: true,
       digest: expect.any(String),
     });
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", f.userId)
+      .execute();
+    expect(await store.toolOutputForOwner(input)).toBeNull();
   });
 });

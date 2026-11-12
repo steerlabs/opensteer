@@ -1,4 +1,3 @@
-import { createChannelId } from "@opensteer/channel-core";
 import { createId, ModelSelectionSchema } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -9,7 +8,11 @@ export async function seedPrivatePublisher(database: Kysely<DatabaseSchema>) {
   const threadId = createId("thread");
   const runId = createId("run");
   const harnessInstanceId = createId("harnessInstance");
-  const principalId = createChannelId("principal");
+  const { id: principalId } = await database
+    .selectFrom("principals")
+    .select("id")
+    .where("userId", "=", personal.userId)
+    .executeTakeFirstOrThrow();
   const messageId = createId("message");
   const causalChainId = createId("causalChain");
   const modelSelection = ModelSelectionSchema.parse({
@@ -18,9 +21,6 @@ export async function seedPrivatePublisher(database: Kysely<DatabaseSchema>) {
     providerId: "test-provider",
     options: {},
   });
-  await sql`insert into principals(id,kind,user_id,display_name) values(${principalId},'user',${personal.userId},'Alex')`.execute(
-    database,
-  );
   await sql`insert into harness_instances(id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id) values(${harnessInstanceId},${personal.environmentId},'codex','Codex','{}',1,'ready',true,true,'native')`.execute(
     database,
   );

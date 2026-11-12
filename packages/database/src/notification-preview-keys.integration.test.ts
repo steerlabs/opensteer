@@ -1,10 +1,10 @@
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { NotificationPreviewKeyStore } from "./notification-preview-key-store.js";
 import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 import { createDatabase } from "./connection.js";
-import { OpensteerStore } from "./store.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 
 // Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
@@ -16,8 +16,7 @@ integration("session-bound notification preview keys", () => {
       const database = createDatabase({ connectionString: clone.url, maxConnections: 4 });
       return { database, close: () => database.destroy() };
     });
-    const store = new OpensteerStore(database);
-    const userId = await store.createUser("Person");
+    const { userId } = await personalFixtureOwner(database, clone.url);
     const issuer = "https://accounts.preview.invalid";
     await new AccountDirectoryStore(database).configureProvider({
       issuer,
@@ -138,7 +137,7 @@ integration("session-bound notification preview keys", () => {
     );
   });
 
-  it("checks issuer and subject without Workspace membership and rolls back refusals", async () => {
+  it("checks issuer and subject for the personal owner and rolls back refusals", async () => {
     const f = await fixture();
     await expect(
       f.register({ ...f.input, accountId: `acct_${crypto.randomUUID()}` }),
