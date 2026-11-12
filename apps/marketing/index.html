@@ -454,12 +454,6 @@
         <rect x="1.500" y="8.900" width="13" height="4.600" rx="2.300" fill="currentColor" />
         <circle cx="11.700" cy="11.200" r="1.500" fill="#2a2840" />
       </symbol>
-      <symbol id="m-folder" viewBox="0 0 16 16">
-        <path
-          d="M1.800 4.300a1 1 0 0 1 1-1h3.400l1.400 1.500h5.600a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.800a1 1 0 0 1-1-1z"
-          fill="currentColor"
-        />
-      </symbol>
       <symbol id="m-compose" viewBox="0 0 16 16">
         <path
           d="M13.500 8.500v4a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1h4M12.300 2.200l1.500 1.500L8 9.500l-2 .500.500-2z"
@@ -628,12 +622,19 @@
       <section class="hero">
         <div class="hero__glow" aria-hidden="true"></div>
         <div class="wrap">
-          <h1 data-in style="--d: 0">Turn your computer into a team of <em>AI employees.</em></h1>
-          <p class="hero__sub" data-in style="--d: 1">
+          <a class="pill" href="#teams" data-in style="--d: 0"
+            ><b>New</b
+            ><span class="pill__long">Team channels: work alongside everyone's agents</span
+            ><span class="pill__short">Team channels</span><svg><use href="#m-chevr" /></svg
+          ></a>
+          <h1 data-in style="--d: 1">
+            Turn your computer into <br />a team of <em>AI employees.</em>
+          </h1>
+          <p class="hero__sub" data-in style="--d: 2">
             Give them real work in the apps and accounts already on your Mac, and steer it all from
             your phone. Nothing to set up.
           </p>
-          <div class="hero__ctas" data-in style="--d: 2">
+          <div class="hero__ctas" data-in style="--d: 3">
             <a
               class="btn btn--accent"
               href="https://github.com/steerlabs/opensteer/releases"
@@ -649,7 +650,7 @@
               ><svg><use href="#i-star" /></svg>Star on GitHub</a
             >
           </div>
-          <div class="rail" data-in style="--d: 3">
+          <div class="rail" data-in style="--d: 4">
             <span>Runs on the agents you already pay for</span>
             <div class="rail__set" id="rail" role="group" aria-label="Agent engines"></div>
           </div>
@@ -708,35 +709,25 @@
 
             <article class="tile reveal">
               <div>
-                <h3>Create specialists</h3>
+                <h3>It learns how you work</h3>
                 <p>
-                  Set up agents for the jobs you do over and over, each with its own skills and
-                  tools.
+                  Every night it looks back over the day's tasks and keeps what's worth remembering,
+                  in plain files on your Mac you can read and edit.
                 </p>
               </div>
               <div class="tile__viz">
-                <div class="deck" id="deck">
-                  <div class="spec">
-                    <div class="spec__head">
-                      <span class="mark" style="--c: #84b5e0">R</span>Researcher
-                    </div>
-                    <div class="spec__skills">
-                      <span>Web</span><span>Sources</span><span>Briefs</span>
-                    </div>
+                <div class="memory">
+                  <div class="memory__head">
+                    <svg><use href="#i-clock" /></svg>Nightly review<span class="chip">3 new</span>
                   </div>
-                  <div class="spec">
-                    <div class="spec__head">
-                      <span class="mark" style="--c: #71c6a5">E</span>Engineer
-                    </div>
-                    <div class="spec__skills">
-                      <span>Repos</span><span>Tests</span><span>Pull requests</span>
-                    </div>
+                  <div class="mem">
+                    <b>Prefers short replies, no greetings</b><span>from Inbox summary</span>
                   </div>
-                  <div class="spec">
-                    <div class="spec__head"><span class="mark">B</span>Bookkeeper</div>
-                    <div class="spec__skills">
-                      <span>Bank</span><span>Invoices</span><span>Spreadsheets</span>
-                    </div>
+                  <div class="mem">
+                    <b>Wants small PRs, with tests</b><span>from Checkout QA for 2.4</span>
+                  </div>
+                  <div class="mem">
+                    <b>Flies United, aisle seat</b><span>from Trip to Austin</span>
                   </div>
                 </div>
               </div>
@@ -789,32 +780,21 @@
 
             <article class="tile reveal">
               <div>
-                <h3>Work together</h3>
+                <h3>Just say it</h3>
                 <p>
-                  Your team and your agents share the work. Agents ask the right person when they
-                  need a decision.
+                  Tap the mic and say what you need, from your phone or your Mac. It turns into
+                  tasks, and you hear back when they're done.
                 </p>
               </div>
               <div class="tile__viz">
-                <div class="mini">
-                  <div class="msg">
-                    <span class="mark" style="--c: #c58af9">M</span>
-                    <div class="msg__body">
-                      <div class="msg__who"><b>Maya</b>Design</div>
-                      Can someone refund order 4471? The print came out wrong.
-                    </div>
+                <div class="voice">
+                  <div class="voice__wave" aria-hidden="true">
+                    <span class="orb"></span><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i
+                    ><i></i>
                   </div>
-                  <div class="msg">
-                    <span class="mark" style="--c: #78d9ec">S</span>
-                    <div class="msg__body">
-                      <div class="msg__who"><b>Support</b>agent</div>
-                      Refund is $240. Dev approves refunds, so it's waiting on Dev.
-                      <div>
-                        <span class="route"
-                          ><span class="dot dot--needs"></span>Needs you · Dev</span
-                        >
-                      </div>
-                    </div>
+                  <p class="voice__said">“Pay the Halcyon invoice and tell me when it's done.”</p>
+                  <div class="voice__task">
+                    <span class="dot dot--working"></span>New task<b>Pay the Halcyon invoice</b>
                   </div>
                 </div>
               </div>
@@ -871,63 +851,71 @@
       </section>
 
       <section class="section" id="teams">
-        <div class="wrap teams">
-          <div class="reveal">
+        <div class="wrap">
+          <div class="section__head reveal">
             <p class="eyebrow">For teams</p>
-            <h2>Give everyone <em>their own.</em></h2>
+            <h2>Bring your team. <em>They bring their agents.</em></h2>
             <p class="section__lede">
-              Each person on your team gets agents with exactly the access they should have. You
-              decide who can touch what, and it holds on every device.
+              Channels, DMs and threads, like the team chat you already know. Anyone can hand a
+              thread to their own agents. The work runs on their computer, and the answer lands back
+              in the channel.
             </p>
-            <div class="facts">
-              <div class="fact">
-                <svg><use href="#i-shield" /></svg>
-                <div>
-                  <b>Checked on every action</b
-                  ><span>Your server decides access, not the app on someone's phone.</span>
-                </div>
-              </div>
+          </div>
+
+          <div class="tstage reveal">
+            <p class="sr-only">
+              Demo: in the #support channel, Maya reports a double charge. Leo asks his agent to
+              check Stripe. His agent works on his MacBook, asks Leo's phone to approve the refund,
+              then replies in the thread. Priya then asks her own agent to log it in HubSpot.
+            </p>
+            <div id="teamStage" aria-hidden="true"></div>
+          </div>
+
+          <div class="tbelow">
+            <div class="facts reveal">
               <div class="fact">
                 <svg><use href="#i-users" /></svg>
                 <div>
-                  <b>Approvals reach the right person</b
-                  ><span>Refunds go to finance. Merges go to engineering.</span>
+                  <b>Everyone brings their own</b
+                  ><span
+                    >Each person's agents run on their own computer, with their own logins and the
+                    AI subscription they already pay for.</span
+                  >
+                </div>
+              </div>
+              <div class="fact">
+                <svg><use href="#i-lock" /></svg>
+                <div>
+                  <b>Only you can wake yours</b
+                  ><span
+                    >A teammate's message, or a pasted email, can't start work on your computer. You
+                    ask, and you approve.</span
+                  >
                 </div>
               </div>
               <div class="fact">
                 <svg><use href="#i-server" /></svg>
                 <div>
-                  <b>Self-host it</b
-                  ><span>Run it on your own server with Docker. Your data never leaves.</span>
+                  <b>The server holds the chat, not the work</b
+                  ><span
+                    >Your team server keeps channels, files and knowledge. It runs no agents and
+                    stores no passwords. Host it on any Mac or server.</span
+                  >
                 </div>
               </div>
             </div>
-          </div>
-          <div class="matrix-wrap reveal">
-            <div class="matrix-head">
-              <b>Acme team access</b
-              ><span class="chip"
-                ><span class="dot dot--done" style="width: 6px; height: 6px"></span>Live</span
-              >
-            </div>
-            <div class="matrix-scroll">
-              <table class="matrix" id="matrix">
-                <thead>
-                  <tr>
-                    <th>Person</th>
-                    <th>Browser</th>
-                    <th>Logins</th>
-                    <th>Files</th>
-                    <th>Shell</th>
-                    <th>Payments</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            <div class="matrix-note" id="matrixNote">
-              <svg><use href="#i-shield" /></svg
-              ><span>Flip a switch. It applies to the next thing their agents do.</span>
+            <div class="kcard reveal">
+              <h3>Knowledge everyone can use</h3>
+              <p>
+                Each channel keeps what the team knows, and agents look it up when they need it.
+                Mark a topic people only and agents can't touch it.
+              </p>
+              <div class="topics-head"><span>Topic</span><span>People only</span></div>
+              <div id="topics"></div>
+              <div class="knote" id="topicNote">
+                <svg><use href="#i-shield" /></svg
+                ><span>Flip a switch. It applies to the next thing anyone's agent does.</span>
+              </div>
             </div>
           </div>
         </div>
@@ -955,8 +943,11 @@
               >
             </div>
             <div class="start__card reveal">
-              <h3>On a server for your team</h3>
-              <p>Run the Host, its database and a Linux runner with Docker Compose.</p>
+              <h3>For your team</h3>
+              <p>
+                Run a team server on any Mac or your own server. Everyone joins from their own
+                Opensteer.
+              </p>
               <a
                 class="btn"
                 href="https://github.com/steerlabs/opensteer/blob/main/deploy/self-host/README.md"
