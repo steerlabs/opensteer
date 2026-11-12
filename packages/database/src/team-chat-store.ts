@@ -1313,20 +1313,16 @@ export class TeamChatStore {
         );
         requests = requests.where("threadRootId", "=", rootId);
       } else messages = messages.where("threadRootId", "is", null);
-      const owners = await requests
-        .clearSelect()
-        .select("ownerUserId")
-        .distinct()
-        .orderBy("ownerUserId")
+      const recentRequests = await requests
+        .orderBy("createdAt", "desc")
+        .orderBy("id")
         .limit(200)
         .execute();
-      const presence = {
-        ...base,
-        linkPresence: owners.map(({ ownerUserId }) => ({
+      const linkPresence = (rows: readonly { ownerUserId: UserId }[]) =>
+        [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200).map((ownerUserId) => ({
           ownerUserId,
           online: this.identity.agentOnline?.(ownerUserId) ?? false,
-        })),
-      };
+        }));
       if (input.sinceSeq !== null && BigInt(input.sinceSeq) <= BigInt(channel.changeSeq)) {
         const rows = await messages
           .where("changeSeq", ">", input.sinceSeq)
@@ -1340,7 +1336,8 @@ export class TeamChatStore {
           .execute();
         if (rows.length + statuses.length <= 200) {
           const cut = {
-            ...presence,
+            ...base,
+            linkPresence: linkPresence([...statuses, ...recentRequests]),
             type: "resumed" as const,
             changedRows: await teamMessageViews(
               t,
@@ -1361,12 +1358,11 @@ export class TeamChatStore {
         input.scope.kind === "thread" ? input.scope.rootId : undefined,
       );
       const cut = {
-        ...presence,
+        ...base,
+        linkPresence: linkPresence(recentRequests),
         type: "snapshot" as const,
         messages: page.messages,
-        requests: (await requests.orderBy("createdAt", "desc").limit(200).execute()).map(
-          teamRequestView,
-        ),
+        requests: recentRequests.map(teamRequestView),
         hasMore: page.hasMore,
       };
       while (!TeamConsistentCutSchema.safeParse(cut).success && cut.messages.length > 1) {

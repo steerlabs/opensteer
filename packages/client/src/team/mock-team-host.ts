@@ -314,22 +314,36 @@ export class MockTeamHost {
     const changed = messages.filter(
       (row) => since !== null && BigInt(row.changeSeq) > BigInt(since),
     );
+    const requests = this.requests
+      .filter(
+        (request) =>
+          request.channelId === scope.channelId &&
+          (scope.kind === "channel" || request.threadRootId === scope.rootId),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+    const recent = requests.slice(0, 200);
+    const statuses =
+      since === null ? [] : requests.filter((request) => BigInt(request.changeSeq) > BigInt(since));
+    const presence = (rows: readonly TeamAgentRequest[]) =>
+      [...new Set(rows.map((row) => row.ownerUserId))].slice(0, 200).map((ownerUserId) => ({
+        ownerUserId,
+        online:
+          this.linkPresence.find((entry) => entry.ownerUserId === ownerUserId)?.online ?? false,
+      }));
     const base = {
       channel,
       throughSeq: channel.changeSeq,
       subscriptionId,
       generation,
       scope,
-      requests: this.requests.filter(
-        (request) =>
-          request.channelId === scope.channelId &&
-          (scope.kind === "channel" || request.threadRootId === scope.rootId),
-      ),
-      linkPresence: this.linkPresence,
+      requests: recent,
+      linkPresence: presence(recent),
     };
     if (since !== null) {
       const delta = TeamConsistentCutSchema.safeParse({
         ...base,
+        requests: statuses,
+        linkPresence: presence([...statuses, ...recent]),
         type: "resumed",
         changedRows: changed,
         deletedIds: [],

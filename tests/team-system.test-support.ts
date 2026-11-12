@@ -295,7 +295,7 @@ export async function startTeamSystem(name = "Acme") {
 }
 
 export async function teamCondition<T>(
-  client: TeamSessionClient,
+  client: Pick<TeamSessionClient, "subscribe">,
   read: () => T | undefined,
   label: string,
   timeout = 15000,

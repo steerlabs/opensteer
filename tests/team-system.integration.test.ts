@@ -9,8 +9,9 @@ import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.
 import { TeamLinkNetwork } from "../apps/host/src/team-links/network.js";
 import {
   PersonalTeamLinks,
-  readTeamReply,
+  watchTeamReplyRead,
 } from "../packages/client/src/host/personal-team-links.js";
+import { PersonalTeamRequestsStore } from "../packages/database/src/personal-team-requests-store.js";
 import { HttpHostClient } from "../packages/client/src/host/host-session-client.js";
 import type { WebSocketClient } from "../packages/client/src/host/host-session-client.js";
 import { teamAgentIdentity } from "../packages/client/src/team/presentation.js";
@@ -33,6 +34,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
   let personalClient: HttpHostClient | undefined;
   const extraTeams: Awaited<ReturnType<typeof startTeamSystem>>[] = [];
   const releasePost = Promise.withResolvers<void>();
+  const releasePublication = Promise.withResolvers<void>();
+  let stopReplyRead: (() => void) | undefined;
   try {
     const maya = await team.setup();
     const session = await team.session(maya, "Maya's phone");
@@ -340,6 +343,17 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     await answer(approval.id, { kind: "choice", optionId: allow.id });
     console.info("Z4: waiting private question");
     const question = await nextRequest("form");
+    const originalPublication = PersonalTeamRequestsStore.prototype.publication;
+    vi.spyOn(PersonalTeamRequestsStore.prototype, "publication").mockImplementation(async function (
+      this: PersonalTeamRequestsStore,
+      ...args
+    ) {
+      if (args[1] === local.requestId && args[2] === "accepted" && args[3] !== null)
+        await withTimeout(releasePublication.promise, 30000, {
+          timeoutError: () => new Error("Local publication receipt barrier was not released"),
+        });
+      await originalPublication.call(this, ...args);
+    });
     const form = RequestPresentationSchema.parse(question.presentation);
     if (form.kind !== "form") throw new Error("Expected private question");
     await answer(question.id, {
@@ -400,6 +414,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
 
     console.info("Z4: reading local task");
     personalClient = new HttpHostClient({
+      refreshIntervalMs: 0,
       baseUrl: personal.hostOrigin,
       fetch: (url, init) =>
         fetch(url, {
@@ -416,12 +431,42 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
         }) as unknown as WebSocketClient,
     });
     await personalClient.load();
-    await readTeamReply(personalClient, {
+    await teamCondition(
+      personalClient,
+      () => personalClient!.getSnapshot().threadReadStates[local.localTaskId],
+      "Personal read state never arrived before the visible reply read",
+    );
+    const unresolved = Promise.withResolvers<void>();
+    const originalReplyTask = PersonalTeamRequestsStore.prototype.replyTask;
+    vi.spyOn(PersonalTeamRequestsStore.prototype, "replyTask").mockImplementation(async function (
+      this: PersonalTeamRequestsStore,
+      ...args
+    ) {
+      const result = await originalReplyTask.call(this, ...args);
+      if (args[1].replyMessageId === replyMessageId && result.taskId === null) unresolved.resolve();
+      return result;
+    });
+    stopReplyRead = watchTeamReplyRead(personalClient, {
       teamId: team.host.deployment.id,
       channelId,
       threadRootId: queued.id,
       replyMessageId,
     });
+    await withTimeout(unresolved.promise, 5000, {
+      timeoutError: () =>
+        new Error("Visible reply never attempted to read before receipt persistence"),
+    });
+    const beforeReceipt = personalClient.getSnapshot().threadReadStates[local.localTaskId];
+    expect(beforeReceipt?.readSequence).not.toBe(beforeReceipt?.unreadSequence);
+    releasePublication.resolve();
+    await teamCondition(
+      personalClient,
+      () => {
+        const state = personalClient!.getSnapshot().threadReadStates[local.localTaskId];
+        return state?.readSequence === state?.unreadSequence ? true : undefined;
+      },
+      "Durable publication did not retry the visible reply read",
+    );
     expect(personalClient.getSnapshot().threadReadStates[local.localTaskId]?.readSequence).toBe(
       personalClient.getSnapshot().threadReadStates[local.localTaskId]?.unreadSequence,
     );
@@ -614,6 +659,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     );
     expect((await personals[1]!.api["bootstrap.get"]({})).ok).toBe(true);
   } finally {
+    releasePublication.resolve();
+    stopReplyRead?.();
     releasePost.resolve();
     personalClient?.dispose();
     for (const personal of personals.reverse()) await personal.close();

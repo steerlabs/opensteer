@@ -2482,6 +2482,7 @@ export interface PersonalTeamRequestTable {
   publicationState: "pending" | "accepted" | "blocked";
   terminalState: "done" | "failed" | "stopped" | "cancelled" | null;
   acceptedMessageId: TeamMessageId | null;
+  explicitReply: Generated<boolean>;
   source: JsonColumn<TeamSource>;
   createdAt: Timestamp;
   finishedAt: NullableTimestamp;

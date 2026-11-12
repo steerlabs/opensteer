@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { readTeamReply } from "./personal-team-links.js";
+import { readTeamReply, watchTeamReplyRead } from "./personal-team-links.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 
 const teamId = "dep_00000000-0000-4000-8000-000000000001";
 const channelId = "tch_00000000-0000-4000-8000-000000000001";
@@ -67,5 +68,77 @@ describe("readTeamReply", () => {
     fake.getSnapshot = late.getSnapshot;
     expect(await readTeamReply(fake, origin)).toBe(true);
     expect(fake.markThreadRead).toHaveBeenCalledWith(taskId, "7");
+  });
+
+  it("retries an unresolved visible read on a receipt notice even when the notice arrives during lookup", async () => {
+    const fake = client({ readSequence: "3", unreadSequence: "9" }, null);
+    const attempted = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const marked = Promise.withResolvers<void>();
+    fake.threadTask.mockImplementationOnce(async () => {
+      attempted.resolve();
+      await withTimeout(release.promise, 1000, {
+        timeoutError: () => new Error("First visible read was not released"),
+      });
+      return { ok: true, data: { taskId: null, throughSequence: null } };
+    });
+    fake.markThreadRead.mockImplementation(async () => {
+      marked.resolve();
+      return undefined;
+    });
+    let snapshot = fake.getSnapshot();
+    const listeners = new Set<() => void>();
+    const watched = {
+      ...fake,
+      getSnapshot: () => snapshot,
+      subscribe: (listener: () => void) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+        };
+      },
+    };
+    const stop = watchTeamReplyRead(watched, origin);
+    try {
+      await withTimeout(attempted.promise, 1000, {
+        timeoutError: () => new Error("Visible reply never attempted its lookup"),
+      });
+      fake.threadTask.mockResolvedValue({ ok: true, data: { taskId, throughSequence: "7" } });
+      snapshot = client({ readSequence: "3", unreadSequence: "9" }).getSnapshot();
+      for (const listener of listeners) listener();
+      release.resolve();
+      await withTimeout(marked.promise, 1000, {
+        timeoutError: () => new Error("Receipt notice did not retry the visible reply"),
+      });
+      expect(fake.threadTask).toHaveBeenCalledTimes(2);
+      expect(fake.markThreadRead).toHaveBeenCalledWith(taskId, "7");
+    } finally {
+      release.resolve();
+      stop();
+    }
+  });
+
+  it("does not mark a reply whose lookup finishes after it leaves the focused view", async () => {
+    const fake = client({ readSequence: "3", unreadSequence: "9" });
+    const lookup = Promise.withResolvers<Awaited<ReturnType<typeof fake.threadTask>>>();
+    fake.threadTask.mockReturnValue(lookup.promise);
+    const listeners = new Set<() => void>();
+    const stop = watchTeamReplyRead(
+      {
+        ...fake,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+          };
+        },
+      },
+      origin,
+    );
+    stop();
+    lookup.resolve({ ok: true, data: { taskId, throughSequence: "7" } });
+    await lookup.promise;
+    expect(fake.markThreadRead).not.toHaveBeenCalled();
+    expect(listeners.size).toBe(0);
   });
 });

@@ -312,7 +312,7 @@ export function ThreadPane({
   readonly flashId?: string | null;
   readonly hasOlder?: boolean;
   readonly onLoadOlder?: (() => void) | undefined;
-  readonly onVisibleMessage?: ((id: string) => void) | undefined;
+  readonly onVisibleMessage?: ((id: string) => void | (() => void)) | undefined;
   readonly replies: readonly TimelineItem[];
   readonly root: MessageView;
 }) {

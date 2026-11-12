@@ -1,5 +1,5 @@
 import type { AesGcmCredentialVault } from "@opensteer/access/host";
-import type { DeploymentId, RunId, TaskFolder, UserId } from "@opensteer/core";
+import type { DeploymentId, RunId, TaskFolder, ThreadId, UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
@@ -24,9 +24,10 @@ export function createPersonalTeamLinkServices(options: {
   readonly runs: PersonalTeamRunPort;
   readonly attachments: PersonalTeamAttachmentPort;
   readonly admitFolder: (folder: TaskFolder) => Promise<TaskFolder>;
+  readonly onPublished: (taskId: ThreadId) => Promise<void>;
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
-  const requestsStore = new PersonalTeamRequestsStore(options.database);
+  const requestsStore = new PersonalTeamRequestsStore(options.database, options.onPublished);
   const folders = new PersonalTeamChannelFoldersStore(options.database);
   const vault = new PersonalTeamVault(options.credentialVault, options.database, options.ownerId);
   const network = new TeamLinkNetwork();

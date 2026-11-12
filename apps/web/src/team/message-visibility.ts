@@ -1,13 +1,16 @@
 export function observeTeamMessages(
   root: HTMLElement,
   rows: readonly HTMLElement[],
-  seen: (id: string) => void,
+  seen: (id: string) => void | (() => void),
 ): () => void {
   const visible = new Set<HTMLElement>();
   const timers = new Map<HTMLElement, ReturnType<typeof setTimeout>>();
+  const reads = new Map<HTMLElement, () => void>();
   const clear = () => {
     for (const timer of timers.values()) clearTimeout(timer);
     timers.clear();
+    for (const stop of reads.values()) stop();
+    reads.clear();
   };
   const schedule = () => {
     clear();
@@ -22,8 +25,10 @@ export function observeTeamMessages(
             document.hasFocus() &&
             document.visibilityState !== "hidden" &&
             row.dataset.rowId
-          )
-            seen(row.dataset.rowId);
+          ) {
+            const stop = seen(row.dataset.rowId);
+            if (stop) reads.set(row, stop);
+          }
         }, 1000),
       );
   };

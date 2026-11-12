@@ -65,7 +65,7 @@ export function MessageList({
   readonly hasOlder: boolean;
   readonly header?: ReactNode;
   readonly inThread?: boolean;
-  readonly onVisibleMessage?: ((id: string) => void) | undefined;
+  readonly onVisibleMessage?: ((id: string) => void | (() => void)) | undefined;
   /** The start of the channel, shown once there is nothing older. */
   readonly intro?: ReactNode;
   readonly items: readonly TimelineItem[];
