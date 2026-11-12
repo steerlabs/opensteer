@@ -14,7 +14,8 @@ import { channelPath } from "./team-paths.js";
  * a connect link links this Opensteer to the team so your agent can be asked.
  */
 export function JoinTeamRoute() {
-  const { hostClient } = useShell();
+  const { hostClient, snapshot } = useShell();
+  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
   const { links, reload, teams } = useTeams();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -76,6 +77,15 @@ export function JoinTeamRoute() {
         <button className="btn btn--primary" disabled={!text.trim() || state.busy} type="submit">
           {state.busy ? "Joining…" : "Continue"}
         </button>
+        {portalOrigin ? (
+          <p className="hero__subtitle">
+            No team yet?{" "}
+            <a href={`${portalOrigin}/teams/new`} rel="noreferrer" target="_blank">
+              Create a team
+            </a>{" "}
+            and Opensteer hosts it for you.
+          </p>
+        ) : null}
       </form>
     </div>
   );

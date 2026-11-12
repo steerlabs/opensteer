@@ -5,7 +5,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./hosted-teams": "./src/hosted-teams.ts"
   },
   "scripts": {
     "clean": "rm -rf dist *.tsbuildinfo",

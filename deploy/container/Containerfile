@@ -103,6 +103,7 @@ COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -170,6 +171,13 @@ RUN pnpm --filter @opensteer/control-plane build && \
     node scripts/verify-deployed-package.cjs apps/control-plane/package.json /output/control-plane/package.json
 
 
+FROM sources AS team-provisioner-build
+COPY apps/team-provisioner ./apps/team-provisioner
+RUN pnpm --filter @opensteer/team-provisioner build && \
+    pnpm --filter @opensteer/team-provisioner deploy --legacy --prod /output/team-provisioner && \
+    node scripts/verify-deployed-package.cjs apps/team-provisioner/package.json /output/team-provisioner/package.json
+
+
 FROM sources AS runner-build
 COPY apps/runner ./apps/runner
 RUN pnpm --filter @opensteer/runner build && \
@@ -230,6 +238,7 @@ COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -388,6 +397,16 @@ ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
 USER 10001:10001
 EXPOSE 4142
+CMD ["node", "dist/main.js"]
+
+FROM node-runtime AS team-provisioner
+WORKDIR /app
+COPY --from=team-provisioner-build --chown=10001:10001 /output/team-provisioner ./
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+USER 10001:10001
 CMD ["node", "dist/main.js"]
 
 FROM node-runtime AS runner
