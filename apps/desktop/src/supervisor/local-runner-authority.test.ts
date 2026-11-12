@@ -166,7 +166,7 @@ function catalogStore(deployments: DeploymentCatalog["deployments"]) {
   const catalog = DeploymentCatalogSchema.parse({
     deployments,
     revision: deployments.length ? 1 : 0,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: deployments[0]?.authority.document.deploymentId ?? null,
     updatedAt: deployments.length ? now : null,
   });

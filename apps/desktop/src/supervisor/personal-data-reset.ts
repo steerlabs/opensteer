@@ -140,8 +140,14 @@ export class PersonalDataReset {
   async #restoreOtherConnections(plan: PersonalOldDataState): Promise<void> {
     const catalog = plan.entries[2]!;
     const content = await this.#text(catalog.destination);
-    if (content !== undefined) {
-      const state = DeploymentCatalogSchema.parse(JSON.parse(content));
+    const decoded: unknown = content === undefined ? undefined : JSON.parse(content);
+    if (
+      typeof decoded === "object" &&
+      decoded !== null &&
+      "schemaVersion" in decoded &&
+      decoded.schemaVersion === DeploymentCatalogSchema.shape.schemaVersion.value
+    ) {
+      const state = DeploymentCatalogSchema.parse(decoded);
       const deployments = state.deployments.filter(
         ({ authority }) => authority.document.deploymentId !== plan.deploymentId,
       );

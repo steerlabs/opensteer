@@ -1,3 +1,4 @@
+import { DeploymentCatalogSchema } from "@opensteer/client/connections";
 import { DeploymentConnectionSchema } from "@opensteer/client/connections";
 import { hostApiVersion, hostKeyFingerprint } from "@opensteer/deployment-authority";
 import { hostApi, hostApiVersionHeader } from "@opensteer/protocol";
@@ -154,7 +155,7 @@ async function run(): Promise<void> {
           ],
           selectedDeploymentId: value.authority.document.deploymentId,
           revision: 1,
-          schemaVersion: 4,
+          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
           updatedAt: new Date().toISOString(),
         };
       },

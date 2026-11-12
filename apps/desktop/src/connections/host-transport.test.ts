@@ -649,7 +649,7 @@ describe("DesktopHostTransport", () => {
         load: async () => ({
           deployments: [selected],
           revision: 1,
-          schemaVersion: 4,
+          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
           selectedDeploymentId: selected.authority.document.deploymentId,
           updatedAt: "2026-08-11T10:00:00.000Z",
         }),
@@ -1197,7 +1197,7 @@ function catalogStore(
   let catalog = DeploymentCatalogSchema.parse({
     deployments,
     revision: deployments.length ? 1 : 0,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId,
     updatedAt: deployments.length ? "2026-08-11T10:00:00.000Z" : null,
   });
@@ -1214,7 +1214,7 @@ function catalogStore(
       catalog = DeploymentCatalogSchema.parse({
         deployments: nextDeployments,
         revision: catalog.revision + 1,
-        schemaVersion: 4,
+        schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
         selectedDeploymentId: nextSelectedDeploymentId,
         updatedAt: "2026-08-11T10:02:00.000Z",
       });

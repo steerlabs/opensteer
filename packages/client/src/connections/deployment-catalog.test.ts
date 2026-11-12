@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   MemoryPrivateFilesystem,
+  previousReleaseDeploymentCatalog,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testHostAuthorityKeys,
@@ -690,22 +691,29 @@ describe("DeploymentCatalogStore", () => {
     await expect(store.load()).rejects.toThrow("not valid JSON");
   });
 
-  it("discards another schema version without rewriting it", async () => {
-    const files = new MemoryPrivateFilesystem();
-    const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = persistedDeployment({ name: "Home" });
-    const oldCatalog = JSON.stringify({
-      deployments: [current],
-      revision: 1,
-      schemaVersion: 6,
-      selectedDeploymentId: current.authority.document.deploymentId,
-      updatedAt: "2026-08-11T10:00:00.000Z",
-    });
-    files.put(catalogPath, oldCatalog);
+  it.each(["previous", "future"])(
+    "discards a %s release’s catalog without rewriting it",
+    async (release) => {
+      const files = new MemoryPrivateFilesystem();
+      const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+      const current = persistedDeployment({ name: "Home" });
+      const oldCatalog = JSON.stringify(
+        release === "previous"
+          ? previousReleaseDeploymentCatalog
+          : {
+              deployments: [current],
+              revision: 1,
+              schemaVersion: 6,
+              selectedDeploymentId: current.authority.document.deploymentId,
+              updatedAt: "2026-08-11T10:00:00.000Z",
+            },
+      );
+      files.put(catalogPath, oldCatalog);
 
-    await expect(store.load()).resolves.toEqual(emptyDeploymentCatalog());
-    expect(files.text(catalogPath)).toBe(oldCatalog);
-  });
+      await expect(store.load()).resolves.toEqual(emptyDeploymentCatalog());
+      expect(files.text(catalogPath)).toBe(oldCatalog);
+    },
+  );
 });
 
 describe("Deployment connection schemas", () => {

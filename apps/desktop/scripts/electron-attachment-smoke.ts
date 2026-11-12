@@ -1,3 +1,4 @@
+import { DeploymentCatalogSchema } from "@opensteer/client/connections";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -149,7 +150,7 @@ async function run(): Promise<object> {
       load: async () => ({
         deployments: [connection],
         revision: 1,
-        schemaVersion: 4 as const,
+        schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
         selectedDeploymentId: deploymentId,
         updatedAt: now,
       }),
