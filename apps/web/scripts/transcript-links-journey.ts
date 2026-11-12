@@ -5,12 +5,12 @@
  *
  * Ways this journey can fail, each checked below:
  *  1. A file-path link replaces the app document or opens a page.
- *  2. A workspace-relative link navigates instead of staying words.
- *  3. A plain HTTPS click from Talk fails to open exactly one workspace tab
+ *  2. A relative file link navigates instead of staying words.
+ *  3. A plain HTTPS click fails to open exactly one tab beside the task
  *     at the exact address, loses the conversation, or opens a device page.
- *  4. A click from Work loses its covered place's default profile.
- *  5. A plain HTTP click does not follow the same workspace path as HTTPS.
- *  6. A modifier or middle click is intercepted or opens a workspace tab.
+ *  4. A click beside an existing tab loses its covered place's default profile.
+ *  5. A plain HTTP click does not follow the same path as HTTPS.
+ *  6. A modifier or middle click is intercepted or opens an Opensteer tab.
  *  7. Back/Forward or reload replays an already consumed arrival trigger.
  *  8. A narrow layout fails to open and show the new tab.
  *  9. A mail link stops being an outside link.
@@ -19,7 +19,7 @@
  *
  * Isolation failures covered in the existing interaction tests:
  * 12. Desktop web links call openExternalUrl, reject HTTP/autolinks, or let
- *     modifier or auxiliary clicks escape; web gestures or workspace-less
+ *     modifier or auxiliary clicks escape; web gestures or context-free
  *     links navigate.
  * 13. StrictMode opens twice, the navigate row switches to an existing tab,
  *     an unavailable result opens anyway, or a late answer steals a place.
@@ -42,7 +42,7 @@ const artifactDirectory = path.resolve(
   process.env.OPENSTEER_TRANSCRIPT_LINKS_E2E_ARTIFACT_DIR ??
     path.join(tmpdir(), "opensteer-transcript-links-e2e"),
 );
-const storageThreadPath = "/threads/thr_00000000-0000-4000-8000-000000000002";
+const storageTaskPath = "/tasks/thr_00000000-0000-4000-8000-000000000002";
 const documentKey = "__opensteerTranscriptJourneyDocument";
 
 const { checks, check, abort } = journeyChecks();
@@ -53,6 +53,8 @@ const { browser, origin } = web;
 
 try {
   const context = await browser.newContext({ viewport: { height: 900, width: 1280 } });
+  context.setDefaultTimeout(5_000);
+  context.setDefaultNavigationTimeout(10_000);
   const requests: { readonly url: string; readonly navigation: boolean; readonly page: string }[] =
     [];
   const pages = new Map<Page, string>();
@@ -82,9 +84,9 @@ try {
 
   /** A fresh copy of the app on `route`, with the reply on screen and its document tagged. */
   const open = async (route: string, replyText: string) => {
-    // Choose Talk before reloading: restoration runs after the transcript
+    // Expand the task before reloading: restoration runs after the transcript
     // appears. Use the chrome control because a live page can own the keyboard:
-    // a phone's sheet has Hide computer, and a docked chat has Expand under its name.
+    // a phone's sheet has Hide computer, and a docked task has Expand under its name.
     if (
       page.url().startsWith(`${origin}/`) &&
       (await page.locator(".workspace--work").isVisible())
@@ -93,40 +95,47 @@ try {
       if (await hide.isVisible()) await hide.click();
       else {
         await page.locator(".workspace--work .conv-header__menu").click();
-        await page.getByRole("button", { name: "Expand chat" }).click();
+        await page.getByRole("button", { name: "Expand", exact: true }).click();
       }
       await page.locator(".workspace--talk").waitFor();
     }
     await page.goto(`${origin}${route}`);
+    await waitForHost(page);
     const reply = page.locator(".md-prose").filter({ hasText: replyText });
     await reply.waitFor();
     await page.locator(".workspace--talk").waitFor();
+    await page.evaluate(() =>
+      (Reflect.get(window, "opensteerMock") as MockHostClient).scriptPlaces(),
+    );
     return { document: await markDocument(page), reply };
   };
-  const pictureReplyText = "Picked a tiger charging through snow";
   const sourcesReplyText = "storage mount guide";
 
-  await check("the incident's file link keeps the app on its page", async () => {
-    const { document, reply } = await open("/", pictureReplyText);
-    const label = reply.getByText("tiger-in-snow.jpg", { exact: true });
+  await check("an absolute file link keeps the app on its task", async () => {
+    const { document, reply } = await open(storageTaskPath, sourcesReplyText);
+    const label = reply.getByText("mount-sequence.png", { exact: true });
     const isLink = await label.evaluate((element) => element.closest("a") !== null);
     await label.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(artifactDirectory, "chat-reply.png") });
+    await page.screenshot({ path: path.join(artifactDirectory, "task-reply.png") });
     const before = requests.length;
     const opened = await clickWithoutOpening(page, label);
     const after = await documentState(page, document);
     const navigations = appNavigations(requests.slice(before));
-    await page.screenshot({ path: path.join(artifactDirectory, "chat-after-click.png") });
+    await page.screenshot({ path: path.join(artifactDirectory, "task-after-click.png") });
     const observed = { after, isLink, navigations, opened };
     expectThat(observed, navigations.length === 0, "the click navigated the app's document");
-    expectThat(observed, after.sameDocument && after.path === "/", "the app document changed");
+    expectThat(
+      observed,
+      after.sameDocument && after.path === storageTaskPath,
+      "the app document changed",
+    );
     expectThat(observed, after.rendered, "the app is no longer on screen");
     expectThat(observed, !isLink && !opened, "a file path was offered as a link");
     return observed;
   });
 
-  await check("a Workspace-relative file link keeps the app on its page", async () => {
-    const { document, reply } = await open(storageThreadPath, sourcesReplyText);
+  await check("a relative file link keeps the app on its page", async () => {
+    const { document, reply } = await open(storageTaskPath, sourcesReplyText);
     await reply.getByText("Mount sequence", { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(artifactDirectory, "sources-reply.png") });
     const label = reply.getByText("storage-contract.md", { exact: true });
@@ -138,7 +147,7 @@ try {
     const observed = { after, isLink, navigations, opened };
     expectThat(observed, navigations.length === 0, "the click navigated the app's document");
     expectThat(observed, after.sameDocument, "the app document changed");
-    expectThat(observed, after.path === storageThreadPath, "the app route changed");
+    expectThat(observed, after.path === storageTaskPath, "the app route changed");
     expectThat(observed, !isLink && !opened, "a file path was offered as a link");
     return observed;
   });
@@ -155,49 +164,49 @@ try {
       return profile.id;
     });
 
-  for (const { name, label, expected, work, narrow } of [
+  for (const { name, label, expected, besideTab, narrow } of [
     {
-      name: "HTTPS from Talk",
+      name: "HTTPS from a task",
       label: "storage mount guide",
       expected: https,
-      work: false,
+      besideTab: false,
       narrow: false,
     },
     {
-      name: "HTTPS from Work uses the covered tab's profile",
+      name: "HTTPS using the adjacent tab's profile",
       label: "storage mount guide",
       expected: https,
-      work: true,
+      besideTab: true,
       narrow: false,
     },
     {
-      name: "HTTP from Talk",
+      name: "HTTP from a task",
       label: "old mirror",
       expected: "http://mirror.storage.example/docs",
-      work: false,
+      besideTab: false,
       narrow: false,
     },
     {
       name: "phone-width HTTPS",
       label: "storage mount guide",
       expected: https,
-      work: false,
+      besideTab: false,
       narrow: true,
     },
     {
       name: "linked image",
       label: "Grant flow",
       expected: "https://storage.example/docs/grants",
-      work: false,
+      besideTab: false,
       narrow: false,
     },
   ]) {
-    await check(`${name} opens exactly one workspace tab at its exact URL`, async () => {
+    await check(`${name} opens exactly one tab beside the task at its exact URL`, async () => {
       await page.setViewportSize({ height: 900, width: narrow ? 390 : 1280 });
-      const { document, reply } = await open(storageThreadPath, sourcesReplyText);
+      const { document, reply } = await open(storageTaskPath, sourcesReplyText);
       let profileId = await usePersonal();
       let coveredKey: string | null = null;
-      if (work) {
+      if (besideTab) {
         const covered = (await mockTabs(page)).find(
           (tab) => tab.profileId && tab.profileId !== profileId,
         )!;
@@ -207,6 +216,7 @@ try {
         await page.locator(`.side-tab[data-place-key="${coveredKey}"] .side-tab__main`).click();
       }
       const beforeTabs = await mockTabs(page);
+      const beforeUrl = page.url();
       const before = requests.length;
       let devicePages = 0;
       const onPage = () => {
@@ -222,14 +232,16 @@ try {
             return snapshot.browserSessions.some(
               (session) =>
                 session.id === params.get("browser") &&
-                (session.browserTabs?.sessionTabs(session?.id) ?? []).some(
-                  (tab) =>
-                    tab.id === params.get("browserTab") &&
-                    (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-                      session.id,
-                      tab.id,
-                    )?.url === url,
-                ),
+                snapshot
+                  .browserTabs!.sessionTabs(session.id)
+                  .some(
+                    (tab) =>
+                      tab.id === params.get("browserTab") &&
+                      (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
+                        session.id,
+                        tab.id,
+                      )?.url === url,
+                  ),
             );
           },
           expected,
@@ -238,13 +250,14 @@ try {
         await page.locator(".browser-stage").waitFor();
         if (narrow) await page.locator(".browser-page-name").click();
         await page.locator(".browser-address input").waitFor();
-        await page.waitForTimeout(1_100);
         const tabs = await mockTabs(page);
         const added = tabs.filter((tab) => !beforeTabs.some((old) => old.id === tab.id));
         const after = await documentState(page, document);
         const navigations = appNavigations(requests.slice(before));
         const shown = await page.locator(".place").getAttribute("data-place-key");
-        const conversation = narrow ? true : await reply.isVisible();
+        const conversation = narrow
+          ? await page.locator(".thread__sheet-name").isVisible()
+          : await reply.isVisible();
         const address = await page.locator(".browser-address input").inputValue();
         const observed = {
           added,
@@ -260,7 +273,7 @@ try {
         expectThat(
           observed,
           after.sameDocument &&
-            after.path === storageThreadPath &&
+            after.path === storageTaskPath &&
             after.rendered &&
             navigations.length === 0,
           "the app document changed",
@@ -281,13 +294,16 @@ try {
         await page.screenshot({
           path: path.join(
             artifactDirectory,
-            `${narrow ? "narrow" : work ? "work" : label === "old mirror" ? "http" : "https"}-opened.png`,
+            `${narrow ? "narrow" : besideTab ? "beside-tab" : label === "old mirror" ? "http" : "https"}-opened.png`,
           ),
         });
         await page.goBack();
+        await page.waitForURL(beforeUrl);
+        await reply.waitFor();
         const back = await documentState(page, document);
         await page.goForward();
-        await page.waitForTimeout(1_100);
+        await page.waitForURL((url) => url.searchParams.get("browserTab") === added[0]!.id);
+        await page.locator(".browser-stage").waitFor();
         const forward = await documentState(page, document);
         const historyTabs = await mockTabs(page);
         const history = { back, forward, tabs: historyTabs };
@@ -299,11 +315,11 @@ try {
         expectThat(
           { ...observed, history },
           JSON.stringify(historyTabs) === JSON.stringify(tabs),
-          "Back/Forward changed the workspace tabs",
+          "Back/Forward changed the tabs beside the task",
         );
         await page.reload();
+        await waitForHost(page);
         await page.locator(".browser-stage, .start-page__input").waitFor();
-        await page.waitForTimeout(1_100);
         const reloaded = await mockTabs(page);
         expectThat(
           { ...observed, reloaded },
@@ -324,8 +340,8 @@ try {
 
   await page.setViewportSize({ height: 900, width: 1280 });
   for (const gesture of ["modifier", "middle"] as const) {
-    await check(`${gesture} click opens a device page and no workspace tab`, async () => {
-      const { document, reply } = await open(storageThreadPath, sourcesReplyText);
+    await check(`${gesture} click opens a device page and no Opensteer tab`, async () => {
+      const { document, reply } = await open(storageTaskPath, sourcesReplyText);
       const beforeTabs = await mockTabs(page);
       const before = requests.length;
       const opening = context.waitForEvent("page", { timeout: 5_000 }).catch(() => null);
@@ -357,7 +373,7 @@ try {
   await check(
     "an ambiguous computer refusal keeps its address, consumes arrival across history and reload, then a chip completes it",
     async () => {
-      const { reply } = await open(storageThreadPath, sourcesReplyText);
+      const { reply } = await open(storageTaskPath, sourcesReplyText);
       await page.evaluate(() => localStorage.clear());
       const beforeTabs = await mockTabs(page);
       await reply.getByRole("link", { name: "storage mount guide", exact: true }).click();
@@ -371,17 +387,43 @@ try {
       const consumed = await page.evaluate(() => history.state.usr);
       const chips = await page.getByRole("button", { name: /^Open on /u }).allTextContents();
       const refusalCount = (await mockTabs(page)).length;
-      await page.locator(".side-task .side-task__main").first().click();
+      const pendingUrl = page.url();
       await page.goBack();
-      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
+      await page.waitForURL((url) => !url.searchParams.has("panel"));
+      await reply.waitFor();
       await page.goForward();
-      await page.goBack();
+      await page.waitForURL(pendingUrl);
+      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
+      const historyTabs = await mockTabs(page);
+      expectThat(
+        { beforeTabs, historyTabs },
+        JSON.stringify(historyTabs) === JSON.stringify(beforeTabs),
+        "Back/Forward retried the refused opening",
+      );
+      // A choice on the pending tab completes that same address.
+      await page
+        .getByRole("button", { name: /^Open on /u })
+        .first()
+        .click();
+      await page.locator(".browser-address input").waitFor();
+      const chosenTabs = await mockTabs(page);
+      expectThat(
+        { beforeTabs, chosenTabs },
+        chosenTabs.length === beforeTabs.length + 1 && chosenTabs.some((tab) => tab.url === https),
+        "an explicit computer choice did not complete the open",
+      );
+      await page.screenshot({ path: path.join(artifactDirectory, "computer-choice-opened.png") });
+      // A fresh refusal lets reload recover the address without retrying it.
+      await open(storageTaskPath, sourcesReplyText);
+      await page.evaluate(() => localStorage.clear());
+      await reply.getByRole("link", { name: "storage mount guide", exact: true }).click();
+      await page.getByRole("alert").filter({ hasText: "Which computer" }).waitFor();
       await page.reload();
+      await waitForHost(page);
       await page.locator(".start-page__input").waitFor();
-      await page.waitForTimeout(1_100);
       const reloadAddress = await page.locator(".start-page__input").inputValue();
       const reloadedTabs = await mockTabs(page);
-      const autoRefusal = await page.locator(".start-page__refusal").count();
+      const autoRefusal = await page.getByRole("alert").count();
       const observed = {
         refusedAddress,
         reloadAddress,
@@ -418,13 +460,12 @@ try {
         tabs.length === beforeTabs.length + 1 && tabs.some((tab) => tab.url === https),
         "an explicit computer choice did not complete the open",
       );
-      await page.screenshot({ path: path.join(artifactDirectory, "computer-choice-opened.png") });
-      return { ...observed, tabs };
+      return { ...observed, chosenTabs, tabs };
     },
   );
 
   await check("a mail link stays a link the browser hands to its mail app", async () => {
-    const { reply } = await open(storageThreadPath, sourcesReplyText);
+    const { reply } = await open(storageTaskPath, sourcesReplyText);
     const link = reply.getByRole("link", { name: "storage@storage.example" });
     const observed = {
       href: await link.getAttribute("href"),
@@ -440,7 +481,7 @@ try {
 
   await check("images an agent names are never fetched, and keep their words", async () => {
     const before = requests.length;
-    const { reply } = await open(storageThreadPath, sourcesReplyText);
+    const { reply } = await open(storageTaskPath, sourcesReplyText);
     const fetched = requests
       .slice(before)
       .filter(({ url }) => /mount-sequence|grant-flow/u.test(url));
@@ -519,22 +560,21 @@ async function clickWithoutOpening(page: Page, target: Locator): Promise<boolean
 }
 
 async function mockTabs(page: Page) {
-  return page.evaluate(() =>
-    (Reflect.get(window, "opensteerMock") as MockHostClient)
-      .getSnapshot()
-      .browserSessions.flatMap((session) =>
-        (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => ({
-          id: tab.id,
-          sessionId: session.id,
-          profileId: session.profileId,
-          url:
-            (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
-              session.id,
-              tab.id,
-            )?.url ?? tab.site,
-        })),
-      ),
-  );
+  return page.evaluate(() => {
+    const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
+    return snapshot.browserSessions.flatMap((session) =>
+      snapshot.browserTabs!.sessionTabs(session.id).map((tab) => ({
+        id: tab.id,
+        sessionId: session.id,
+        profileId: session.profileId,
+        url:
+          (Reflect.get(window, "opensteerMock") as MockHostClient).browserViewerSurface(
+            session.id,
+            tab.id,
+          )?.url ?? tab.site,
+      })),
+    );
+  });
 }
 
 function frameOf(request: Request): Frame | null {
@@ -542,5 +582,19 @@ function frameOf(request: Request): Frame | null {
     return request.frame();
   } catch {
     return null;
+  }
+}
+
+async function waitForHost(page: Page): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () =>
+        (Reflect.get(window, "opensteerMock") as MockHostClient)?.getSnapshot().connection ===
+        "connected",
+      undefined,
+      { timeout: 5_000 },
+    );
+  } catch (error) {
+    throw new Error("The mock Host did not connect within 5 seconds.", { cause: error });
   }
 }

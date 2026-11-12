@@ -12112,7 +12112,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000002",
           "thr_00000000-0000-4000-8000-000000000002",
         ),
-        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
+        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\nThe local diagram is [mount-sequence.png](/Users/person/Opensteer/mount-sequence.png).\n\n![Mount sequence](/Users/person/Opensteer/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
         createdAt: "2026-08-09T13:08:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000007",
         kind: "message",
