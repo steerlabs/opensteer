@@ -19,12 +19,15 @@ import {
 it.each(["app", "phone"] as const)(
   "opens the Run's current %s through shared navigation",
   async (kind) => {
-    await mount("/");
+    await mount(
+      (host) =>
+        `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+    );
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     element<HTMLTextAreaElement>("[data-composer-input]").focus();
     const snapshot = client.getSnapshot();
-    const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+    const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
     const machine = snapshot.machines.find((machine) =>
       machine.computerUse?.sessions.some((session) => session.display === (kind === "phone")),
     )!;
@@ -39,7 +42,6 @@ it.each(["app", "phone"] as const)(
       client.receivePersonShow(
         PersonShowMessageSchema.parse({
           type: "host.show",
-          workspaceId: source.workspaceId,
           threadId: source.id,
           runId: session.runId,
           target: { place, runId: session.runId },
@@ -59,19 +61,21 @@ it.each(["app", "phone"] as const)(
 );
 
 it("routes an authorized unloaded Thread through the existing Thread route", async () => {
-  await mount("/");
+  await mount(
+    (host) =>
+      `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+  );
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   element<HTMLTextAreaElement>("[data-composer-input]").focus();
   const snapshot = client.getSnapshot();
-  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const threadId = createId("thread");
   await act(async () =>
     client.receivePersonShow(
       PersonShowMessageSchema.parse({
         type: "host.show",
         runId: createId("run"),
-        workspaceId: source.workspaceId,
         threadId: source.id,
         target: { threadId },
       }),
@@ -80,52 +84,48 @@ it("routes an authorized unloaded Thread through the existing Thread route", asy
   expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
 });
 
-it.each(["Chat", "task"])(
-  "shows a requested tab from %s while its composer has focus",
-  async (route) => {
-    await mount((host) =>
-      route === "Chat"
-        ? "/"
-        : `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
-    );
-    vi.spyOn(document, "hasFocus").mockReturnValue(true);
-    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-    const snapshot = client.getSnapshot();
-    const threadId =
-      route === "Chat" ? snapshot.homeThreadId! : history.at(-1)!.path.split("/").at(-1)!;
-    const place = pageTab();
-    if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-    const composer = element<HTMLTextAreaElement>("[data-composer-input]");
-    composer.focus();
-    expect(document.activeElement).toBe(composer);
-    const before = history.length;
-    await act(async () =>
-      client.receivePersonShow(
-        PersonShowMessageSchema.parse({
-          type: "host.show",
-          runId: createId("run"),
-          workspaceId: snapshot.threads.find((thread) => thread.id === threadId)!.workspaceId,
-          threadId,
-          target: { tabId: place.destination.kind === "browser" ? place.destination.tabId : null },
-        }),
-      ),
-    );
-    expect(history).toHaveLength(before + 1);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-  },
-);
+it.each(["task"])("shows a requested tab from a %s while its composer has focus", async () => {
+  await mount(
+    (host) =>
+      `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+  );
+  vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const snapshot = client.getSnapshot();
+  const threadId = history.at(-1)!.path.split("/").at(-1)!;
+  const place = pageTab();
+  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
+  const composer = element<HTMLTextAreaElement>("[data-composer-input]");
+  composer.focus();
+  expect(document.activeElement).toBe(composer);
+  const before = history.length;
+  await act(async () =>
+    client.receivePersonShow(
+      PersonShowMessageSchema.parse({
+        type: "host.show",
+        runId: createId("run"),
+        threadId,
+        target: { tabId: place.destination.kind === "browser" ? place.destination.tabId : null },
+      }),
+    ),
+  );
+  expect(history).toHaveLength(before + 1);
+  expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
+});
 
 it("leaves other focused work, hidden windows and other conversations alone without replaying Show", async () => {
-  await mount("/");
+  await mount(
+    (host) =>
+      `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+  );
   const focused = vi.spyOn(document, "hasFocus").mockReturnValue(true);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const snapshot = client.getSnapshot();
-  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
   const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
-    workspaceId: source.workspaceId,
     threadId: source.id,
     target: { threadId: target.id },
   });
@@ -164,7 +164,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
   await deliverIgnored();
   await act(async () => goTo!("/settings/ai-engines"));
   await deliverIgnored();
-  await act(async () => goTo!("/"));
+  await act(async () => goTo!(`/tasks/${source.id}`));
   const before = history.length;
   await act(async () => undefined);
   expect(history).toHaveLength(before);
@@ -173,18 +173,20 @@ it("leaves other focused work, hidden windows and other conversations alone with
 });
 
 it("keeps following its Run with a place over the conversation and the dock closed", async () => {
-  await mount("/");
+  await mount(
+    (host) =>
+      `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+  );
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const snapshot = client.getSnapshot();
-  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const source = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const show = (target: object) =>
     act(async () =>
       client.receivePersonShow(
         PersonShowMessageSchema.parse({
           type: "host.show",
           runId: createId("run"),
-          workspaceId: source.workspaceId,
           threadId: source.id,
           target,
         }),
@@ -200,17 +202,19 @@ it("keeps following its Run with a place over the conversation and the dock clos
 });
 
 it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {
-  await mount("/");
+  await mount(
+    (host) =>
+      `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
+  );
   // The person talks while another window or a page holds focus.
   vi.spyOn(document, "hasFocus").mockReturnValue(false);
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   const snapshot = client.getSnapshot();
-  const home = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const home = snapshot.threads.find((thread) => thread.purpose === "task")!;
   const target = snapshot.threads.find((thread) => thread.id !== home.id)!;
   const call = {
     threadId: createId("thread"),
     runId: createId("run"),
-    workspaceId: home.workspaceId,
   };
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);
