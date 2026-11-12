@@ -14,7 +14,7 @@ import {
 import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
-import { HomeRoute } from "./home-view.js";
+import { HomeRoute } from "./home/home-route.js";
 import { ThreadRoute } from "./thread-view.js";
 import { ToastProvider } from "./toast.js";
 
@@ -31,7 +31,7 @@ afterEach(() => {
 });
 
 /**
- * Chat with the tasks one of its turns handed out replaced by `tasks`, each
+ * A task with the tasks one of its turns handed out replaced by `tasks`, each
  * reading the given summary, and `waiting` as the questions on the reader.
  */
 async function chatWith(
@@ -48,7 +48,8 @@ async function chatWith(
   clients.push(client);
   const read = client.getSnapshot.bind(client);
   const base = read();
-  const home = base.homeThreadId!;
+  // The task that handed work out: its transcript holds the task lines.
+  const home = Object.values(base.assignments)[0]!.parentThreadId;
   const seeded = base.transcripts[home]!.find(
     (entry): entry is AssignmentEntry => entry.kind === "assignment",
   )!;
@@ -110,11 +111,11 @@ async function chatWith(
   await act(async () =>
     root.render(
       <ToastProvider>
-        <MemoryRouter initialEntries={["/"]}>
+        <MemoryRouter initialEntries={[`/tasks/${home}`]}>
           <Routes>
             <Route element={<AppShell hostClient={client} loadError={null} />}>
               <Route index element={<HomeRoute />} />
-              <Route path="threads/:threadId" element={<ThreadRoute />} />
+              <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -314,7 +315,7 @@ it("keeps an opened Done task in the sidebar and renders authoritative ask reord
   clients.push(client);
   await client.load();
   const base = client.getSnapshot();
-  const template = base.tasks!.entries.find(({ thread }) => thread.role === "work")!;
+  const template = base.tasks!.entries.find(({ thread }) => thread.purpose === "task")!;
   const first = {
     ...template,
     thread: {
@@ -368,7 +369,7 @@ it("keeps an opened Done task in the sidebar and renders authoritative ask reord
           <Routes>
             <Route element={<AppShell hostClient={client} loadError={null} />}>
               <Route index element={<div />} />
-              <Route path="threads/:threadId" element={<div />} />
+              <Route path="tasks/:threadId" element={<div />} />
             </Route>
           </Routes>
         </MemoryRouter>
