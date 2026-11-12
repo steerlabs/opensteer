@@ -2263,7 +2263,9 @@ export interface TeamInviteTable {
   id: TeamInviteId;
   selector: string;
   verifierHash: string;
-  maxUses: number;
+  /** Set only on reusable invites, which `team.invite.reset` creates; at most one is unrevoked. */
+  sealedVerifier: Buffer | null;
+  maxUses: number | null;
   usedCount: Generated<number>;
   expiresAt: Timestamp;
   revokedAt: NullableTimestamp;

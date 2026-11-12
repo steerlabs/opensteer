@@ -190,7 +190,7 @@ describe("fresh personal/team lineage", () => {
     expect(await catalog()).toEqual(before);
     expect(
       (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
-    ).toEqual([{ name: personalTeamBaselineName }]);
+    ).toEqual([{ name: personalTeamBaselineName }, { name: "0003_team_reusable_invites" }]);
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

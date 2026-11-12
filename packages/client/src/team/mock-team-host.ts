@@ -8,6 +8,9 @@ import {
   TeamChannelAccessSchema,
   TeamGroupSchema,
   TeamInviteSchema,
+  TeamCurrentInviteSchema,
+  type TeamCurrentInvite,
+  type TeamInvitePreviewResponse,
 } from "@opensteer/protocol";
 import type { TeamFileUpload } from "./files.js";
 import {
@@ -87,6 +90,7 @@ export class MockTeamHost {
   readonly linkPresence: TeamConsistentCut["linkPresence"] = [];
   readonly groups = new Map<string, z.infer<typeof TeamGroupSchema>>();
   readonly invites = new Map<string, z.infer<typeof TeamInviteSchema>>();
+  currentInvite: (TeamCurrentInvite & { selector: string; verifier: string }) | null = null;
   readonly #uploads = new Map<string, z.infer<typeof TeamFileSchema>>();
   readonly #directParticipants = new Map<string, string[]>();
   readonly #access = new Map<string, z.infer<typeof TeamChannelAccessSchema>>();
@@ -105,6 +109,23 @@ export class MockTeamHost {
   readonly userId: typeof mockTeamUserId;
   get socketCount(): number {
     return this.#sockets.size;
+  }
+  /** What `POST /v1/team/invites/preview` answers for the current mock invite. */
+  previewInvite(secret: { selector: string; verifier: string }): TeamInvitePreviewResponse {
+    const invite = this.currentInvite;
+    if (!invite || invite.selector !== secret.selector || invite.verifier !== secret.verifier)
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invite-invalid",
+        message: "This invite doesn't work",
+      });
+    if (Date.parse(invite.expiresAt) <= Date.now())
+      throw new OpensteerError({
+        code: "forbidden",
+        reason: "invite-expired",
+        message: "This invite has expired",
+      });
+    return { teamName: this.bootstrap.teamName, expiresAt: invite.expiresAt };
   }
   constructor(options: { teamId?: typeof mockTeamId; userId?: typeof mockTeamUserId } = {}) {
     this.teamId = options.teamId ?? mockTeamId;
@@ -414,6 +435,17 @@ export class MockTeamHost {
       return this.groups.get(hostApi[name].payload.parse(input).groupId);
     if (name === "team.invites.list")
       return { invites: [...this.invites.values()].slice(0, 50), hasMore: false };
+    if (name === "team.invite.current.get") {
+      const invite = this.currentInvite;
+      return {
+        invite:
+          invite &&
+          Date.parse(invite.expiresAt) > Date.now() &&
+          (invite.maxUses === null || invite.usedCount < invite.maxUses)
+            ? TeamCurrentInviteSchema.strip().parse(invite)
+            : null,
+      };
+    }
     if (name === "team.links.list") return { links: [] };
     if (name === "team.audit.page") return { audit: [], hasMore: false };
     if (name === "team.notices.page") return { notices: [], hasMore: false };
@@ -597,7 +629,35 @@ export class MockTeamHost {
       if (command.type === "team.invite.revoke") {
         const invite = this.invites.get(command.inviteId);
         if (invite) invite.revokedAt = new Date().toISOString();
+        if (this.currentInvite?.id === command.inviteId) this.currentInvite = null;
         return { type: command.type };
+      }
+      if (command.type === "team.invite.reset") {
+        if (this.currentInvite?.id !== command.id) {
+          const selector = mockSecret(32),
+            verifier = mockSecret(43),
+            createdAt = new Date();
+          this.currentInvite = {
+            ...TeamCurrentInviteSchema.parse({
+              id: command.id,
+              url: `https://acme.example/invite/${selector}#${verifier}`,
+              expiresInDays: command.expiresInDays,
+              expiresAt: new Date(
+                createdAt.getTime() + command.expiresInDays * 86_400_000,
+              ).toISOString(),
+              maxUses: command.maxUses,
+              usedCount: 0,
+              createdBy: this.userId,
+              createdAt: createdAt.toISOString(),
+            }),
+            selector,
+            verifier,
+          };
+        }
+        return {
+          type: command.type,
+          invite: TeamCurrentInviteSchema.strip().parse(this.currentInvite),
+        };
       }
       if (command.type === "team.channel.create") {
         const channel = TeamChannelSchema.parse({
@@ -947,4 +1007,11 @@ export class MockTeamHost {
     for (const socket of this.#sockets.keys()) socket.close();
     this.#sockets.clear();
   }
+}
+function mockSecret(length: number) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  return Array.from(
+    crypto.getRandomValues(new Uint8Array(length)),
+    (byte) => alphabet[byte & 63],
+  ).join("");
 }

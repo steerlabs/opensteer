@@ -46,6 +46,19 @@ before the command returns. Tests must assert **after the command returns**, not
 internal point. Removing a person cuts their link; already downloaded data stays on their Mac.
 The team audits agent reads, searches, posts and knowledge queries as well as admin actions.
 
+## Invites
+
+A team has one current reusable invite, `https://<team>/invite/<selector>#<verifier>`, that
+works for 1, 7 or 30 days with unlimited or capped uses. Reset revokes it and creates the next in
+one transaction. The Host verifies the verifier by digest and also seals it with a key derived
+from its auth secret, so any manager can show the same link on another device; rotating that
+secret leaves the link working but unshowable until a reset. The verifier travels only in the
+fragment and request bodies; the invite page drops it from history. Older single-use invites stay
+valid. Expiry, revocation and uses are checked inside the admission transaction, and a removed
+person gets back in only with an invite created after their removal. Browser sign-in and native
+session exchange both admit through `TeamInvitesStore.acceptInTransaction`
+([store](../packages/database/src/team-invites-store.ts)); add no second admission path.
+
 ## Transport and versions
 
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team

@@ -10,7 +10,7 @@ import {
   emptyTeamAccessEffects,
   requireTeam,
 } from "@opensteer/database/team-access";
-import { TeamInvitesStore } from "@opensteer/database/team-invites";
+import { TeamInvitesStore, assertTeamInviteUsable } from "@opensteer/database/team-invites";
 import { admitTeamMember, publishTeamMember } from "@opensteer/database/team-members";
 import { appendTeamAudit } from "@opensteer/database/team-audit";
 import type { Transaction } from "kysely";
@@ -92,16 +92,12 @@ export class TeamIdentityAdmission {
     if (record.purpose === "setup") requireTeam(!(await this.hasOwner()));
     else {
       requireTeam(record.purpose === "invitation");
-      const invite = await this.access.database
-        .selectFrom("teamInvites")
-        .selectAll()
-        .where("selector", "=", record.subjectSelector)
-        .executeTakeFirst();
-      requireTeam(
-        invite &&
-          !invite.revokedAt &&
-          invite.expiresAt > new Date() &&
-          invite.usedCount < invite.maxUses,
+      assertTeamInviteUsable(
+        await this.access.database
+          .selectFrom("teamInvites")
+          .selectAll()
+          .where("selector", "=", record.subjectSelector)
+          .executeTakeFirst(),
       );
     }
   }
