@@ -7,6 +7,7 @@ import { TeamLinkEndpoint } from "./endpoint.js";
 import { TeamLinkBinary } from "./binary.js";
 import type { TeamMachineDataPort, TeamMachineFilesPort } from "./contracts.js";
 import type { TeamLinkLifetimes } from "./lifetimes.js";
+import type { UserId } from "@opensteer/core";
 
 export function createTeamLinkEndpoint(options: {
   readonly teamName: string;
@@ -17,6 +18,7 @@ export function createTeamLinkEndpoint(options: {
   readonly lifetimes: TeamLinkLifetimes;
   readonly data: TeamMachineDataPort;
   readonly files: TeamMachineFilesPort;
+  readonly onPresence?: (ownerUserId: UserId, online: boolean) => void;
 }) {
   const links = new TeamEndpointLinks(options.database, options.access, options.teamName);
   const endpoint = new TeamLinkEndpoint({ ...options, links });

@@ -56,6 +56,7 @@ export const hostApiScopes = {
   "teams.links.list": "session",
   "teams.channelFolder.get": "session",
   "teams.threadTask.get": "session",
+  "teams.replyTask.get": "session",
   "team.mentions.page": "session",
   "team.pins.page": "session",
   "team.files.page": "session",

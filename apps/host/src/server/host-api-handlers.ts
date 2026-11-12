@@ -95,6 +95,7 @@ export function createHostApiHandlers(
     | "teams.links.list"
     | "teams.channelFolder.get"
     | "teams.threadTask.get"
+    | "teams.replyTask.get"
     | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"

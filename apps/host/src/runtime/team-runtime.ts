@@ -163,6 +163,7 @@ export async function createTeamHostRuntime(input: {
         },
         cancel: (linkId, requestId) => machine?.endpoint.cancel(linkId, requestId),
         close: (effects) => lifetimes.close(effects),
+        isOnline: (ownerUserId) => machine?.endpoint.isOnline(ownerUserId) ?? false,
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
@@ -198,6 +199,11 @@ export async function createTeamHostRuntime(input: {
       resolver: access,
       lifetimes,
       ...adapters,
+      onPresence: (ownerUserId, online) => {
+        void team.realtime
+          .linkPresenceChanged(ownerUserId, online)
+          .catch(() => report("team-presence"));
+      },
     });
     const admission = new TeamIdentityAdmission({
       access,

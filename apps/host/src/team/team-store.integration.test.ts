@@ -90,6 +90,84 @@ describe("team transaction authority", () => {
   async function rights(actor: TeamActor, id: Parameters<TeamAccessStore["channel"]>[2]) {
     return fixture.database.transaction().execute((t) => access.channel(t, actor, id));
   }
+  it("counts all authorized unread mentions independently of sidebar pages and changed channel filters", async () => {
+    const reader = await person("MentionReader");
+    const channels = await Promise.all(
+      Array.from({ length: 52 }, (_, i) =>
+        fixture.channel({
+          name: `mention-${i}`,
+          kind: "private",
+          access: [
+            { userId: reader.userId, level: "post" },
+            { userId: owner.userId, level: "post", manage: true },
+          ],
+        }),
+      ),
+    );
+    channels.sort((a, b) => a.channelId.localeCompare(b.channelId));
+    const first = await send(channels[0]!.channelId, "First mention", owner, [
+      { kind: "person", userId: reader.userId },
+    ]);
+    const last = await send(channels[51]!.channelId, "Last mention", owner, [
+      { kind: "person", userId: reader.userId },
+    ]);
+    const page = await chat.directory(reader, undefined, true);
+    expect(page.channels).toHaveLength(50);
+    expect(page.totalMentionCount).toBe(2);
+    expect(page.channels.reduce((sum, row) => sum + row.mentionCount, 0)).toBe(1);
+    expect((await chat.directory(reader, page.nextCursor!, true)).totalMentionCount).toBe(2);
+    expect(
+      (await chat.directory(reader, undefined, true, [channels[1]!.channelId])).totalMentionCount,
+    ).toBe(2);
+    await chat.readMarker(reader, channels[0]!.channelId, first.message.id);
+    expect((await chat.directory(reader, undefined, true)).totalMentionCount).toBe(1);
+    await chat.setAccess(owner, channels[51]!.channelId, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+    ]);
+    expect((await chat.directory(reader, undefined, true)).totalMentionCount).toBe(0);
+    expect(last.message.mentions).toHaveLength(1);
+  });
+
+  it("filters thread replies in SQL before search pagination and excludes inaccessible channels", async () => {
+    const reader = await person("ThreadSearchReader");
+    const c = await channel();
+    await chat.setAccess(owner, c.id, access.revision, [
+      { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+      { subject: { kind: "person", userId: reader.userId }, level: "read", manage: false },
+    ]);
+    const root = await send(c.id, "Needle root");
+    const reply = await send(c.id, "Needle reply", owner, [], root.message.id);
+    await access.contentWrite(owner, c.id, (t) =>
+      t
+        .insertInto("teamMessages")
+        .values(
+          Array.from({ length: 51 }, (_, i) => ({
+            channelId: c.id,
+            threadRootId: null,
+            authorUserId: owner.userId,
+            authorKind: "human" as const,
+            agentRequestId: null,
+            clientMessageId: randomUUID(),
+            bodyMarkdown: `Needle later root ${i}`,
+            plainText: `Needle later root ${i}`,
+            createdAt: new Date(),
+            editedAt: null,
+            deletedAt: null,
+            changeSeq: root.message.changeSeq,
+          })),
+        )
+        .execute(),
+    );
+    const hidden = await channel();
+    const hiddenRoot = await send(hidden.id, "Needle hidden root");
+    await send(hidden.id, "Needle hidden reply", owner, [], hiddenRoot.message.id);
+    const results = await chat.search(reader, { query: "Needle", threadsOnly: true });
+    expect(results.results.map((row) => row.message.id)).toEqual([reply.message.id]);
+    expect(results.hasMore).toBe(false);
+    expect(
+      (await chat.search(reader, { query: "Needle", threadsOnly: false })).results,
+    ).toHaveLength(50);
+  });
   it("resolves nested paths, read vs post, last path, public join and people-only", async () => {
     const member = await person("Sam");
     const c = await channel("public");
@@ -342,6 +420,34 @@ describe("team transaction authority", () => {
       { kind: "cancelled", state: "cancelled" },
     ]);
     stop();
+  });
+  it("notifies former managers when an admin replaces a restricted channel ACL with themselves", async () => {
+    const admin = await person("ReplacingAdmin", "admin");
+    const c = await channel();
+    await chat.setAccess(admin, c.id, access.revision, [
+      { subject: { kind: "person", userId: admin.userId }, level: "post", manage: true },
+    ]);
+    expect(
+      await fixture.database.selectFrom("teamNotices").select("recipientUserId").execute(),
+    ).toEqual([{ recipientUserId: owner.userId }]);
+  });
+
+  it("restores both participants' access to their immutable DM after re-admission", async () => {
+    const member = await person("ReturningMember");
+    const dm = await chat.openDm(owner, [member.userId]);
+    await send(dm.id, "Before departure");
+    await new TeamMembersStore(access).change(owner, member.userId, "remove");
+    await expect(chat.page(member, dm.id)).rejects.toThrow();
+    const invites = new TeamInvitesStore(access, "https://team.example.invalid");
+    const invitation = new URL((await invites.create(owner, createId("teamInvite"))).url);
+    await invites.accept(
+      member.userId,
+      invitation.pathname.split("/").pop()!,
+      invitation.hash.slice(1),
+    );
+    expect((await chat.openDm(member, [owner.userId])).id).toBe(dm.id);
+    expect((await chat.openDm(owner, [member.userId])).id).toBe(dm.id);
+    expect((await chat.page(member, dm.id)).messages[0]?.bodyMarkdown).toBe("Before departure");
   });
   it("bounds request context while preserving the original ask after a long thread", async () => {
     const c = await channel();

@@ -244,8 +244,9 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           .where("linkId", "=", linkId)
           .executeTakeFirstOrThrow();
         if (
-          current.state === input.state &&
-          JSON.stringify(current.steps) === JSON.stringify(steps)
+          (current.state === input.state &&
+            JSON.stringify(current.steps) === JSON.stringify(steps)) ||
+          (input.state === "cancelled" && current.finishedAt !== null)
         ) {
           requireTeam(
             await t
@@ -257,7 +258,7 @@ export class TeamRequestsStore implements TeamRequestStorePort {
           );
           return;
         }
-        const row = await this.#record(t, linkId, id);
+        const row = await this.#record(t, linkId, id, false, input.state === "cancelled");
         await lockTeamMessages(t, [row.threadRootId]);
         const { changeSeq } = await bumpTeamChannel(t, row.channelId);
         const terminal = ["failed", "stopped", "cancelled"].includes(input.state);

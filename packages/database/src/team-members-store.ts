@@ -179,6 +179,11 @@ export class TeamMembersStore {
               .execute();
             await transaction
               .deleteFrom("teamChannelMembers")
+              .where(
+                "channelId",
+                "in",
+                transaction.selectFrom("teamChannels").select("id").where("kind", "!=", "dm"),
+              )
               .where("subjectKind", "=", "person")
               .where("subjectId", "=", userId)
               .execute();

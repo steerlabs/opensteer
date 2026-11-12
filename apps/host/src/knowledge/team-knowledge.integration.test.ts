@@ -1,4 +1,5 @@
 import type { KnowledgeTopicId, TeamActor, UserId } from "@opensteer/core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { teamReadSchemas, type TeamCommandSchema, type TeamSqlInput } from "@opensteer/protocol";
@@ -221,6 +222,95 @@ async function waitingOnLock(t: Team) {
 // Skip outside the integration launcher, which supplies an isolated PostgreSQL clone.
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 integration("team knowledge", () => {
+  it.each(["rename", "archive", "restore"] as const)(
+    "fences a topic %s already admitted by a manager until commit before removing their grant",
+    async (action) => {
+      const t = await team();
+      const barrier = hold();
+      let paused = false;
+      const topic = t.lock.topic.bind(t.lock);
+      vi.spyOn(t.lock, "topic").mockImplementation(async (tx, actor, topicId) => {
+        const rights = await topic(tx, actor, topicId);
+        if (!paused && actor.userId === t.people.mira && topicId === t.topics.payroll) {
+          paused = true;
+          await withTimeout(barrier.pause(), 5000, {
+            timeoutError: () => new Error("Metadata barrier never released"),
+          });
+        }
+        return rights;
+      });
+      const command = t.command(
+        t.people.mira,
+        action === "rename"
+          ? { type: "team.knowledge.topic.rename", topicId: t.topics.payroll, name: "Updated" }
+          : {
+              type:
+                action === "archive"
+                  ? "team.knowledge.topic.archive"
+                  : "team.knowledge.topic.restore",
+              topicId: t.topics.payroll,
+            },
+      );
+      const outcome = reason(command);
+      await withTimeout(barrier.reached, 5000, {
+        timeoutError: () => new Error("Metadata never checked manager authority"),
+      });
+      let removed = false;
+      const removal = t
+        .command(t.people.ada, {
+          type: "team.knowledge.topic.access.set",
+          topicId: t.topics.payroll,
+          expectedRevision: "0" as never,
+          access: [{ subject: { kind: "person", userId: t.people.ada }, level: "manage" }],
+        })
+        .then(() => {
+          removed = true;
+        });
+      try {
+        await vi.waitFor(
+          async () => {
+            const { rows } = await sql<{
+              waiting: boolean;
+            }>`select exists(select 1 from pg_stat_activity where datname=current_database() and wait_event_type='Lock') as waiting`.execute(
+              t.database,
+            );
+            expect(removed || rows[0]?.waiting).toBe(true);
+          },
+          { timeout: 3000 },
+        );
+        expect(removed).toBe(false);
+      } finally {
+        barrier.release();
+        await removal;
+        await outcome;
+      }
+      expect(await outcome).toBe("allowed");
+      await expect(
+        t.command(t.people.mira, {
+          type: "team.knowledge.topic.rename",
+          topicId: t.topics.payroll,
+          name: "After removal",
+        }),
+      ).rejects.toThrow();
+    },
+  );
+
+  it("notifies the previous topic manager when an admin replaces every grant with themselves", async () => {
+    const t = await team();
+    await t.command(t.people.ada, {
+      type: "team.knowledge.topic.access.set",
+      topicId: t.topics.payroll,
+      expectedRevision: "0" as never,
+      access: [{ subject: { kind: "person", userId: t.people.ada }, level: "manage" }],
+    });
+    expect(
+      await t.database
+        .selectFrom("teamNotices")
+        .select("recipientUserId")
+        .where("recipientUserId", "=", t.people.mira)
+        .execute(),
+    ).toHaveLength(1);
+  });
   it("scopes each owner's agent to its ticket channel's topic and the attached topics it may use", async () => {
     const t = await team();
     const { support } = t.channels;
