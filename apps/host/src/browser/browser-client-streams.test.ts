@@ -155,6 +155,36 @@ function fixture(count = 1) {
 }
 afterEach(() => vi.useRealTimers());
 describe("BrowserClientStreams", () => {
+  it("bounds uncached bootstrap group reads while filling its byte-limited prefix", async () => {
+    const f = fixture();
+    const ids = Array.from(
+      { length: 150 },
+      (_, index) =>
+        `bsn_00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}` as typeof groupId,
+    );
+    vi.mocked(f.ports.groupIds).mockResolvedValue(ids);
+    vi.mocked(f.ports.readGroups).mockImplementation(async (_user, requested) =>
+      requested.map((id) => ({ ...f.facts, id, sessionId: id })).reverse(),
+    );
+    vi.mocked(f.ports.readTabs).mockImplementation(async (requested) =>
+      requested.map((id) => ({ ...f.durable.get(tabId)!, groupId: id, sessionId: id })),
+    );
+    try {
+      const prefix = await f.streams.source.bootstrap(alice);
+      expect(prefix.groups.complete).toBe(false);
+      expect(prefix.groups.rows.length).toBeGreaterThan(32);
+      expect(prefix.groups.rows.map((row) => row.id)).toEqual(
+        ids.slice(0, prefix.groups.rows.length),
+      );
+      expect(keyedStreamBytes(prefix)).toBeLessThan(128 * 1024);
+      const reads = vi.mocked(f.ports.readGroups).mock.calls;
+      expect(reads.length).toBeLessThanOrEqual(4);
+      expect(reads.flatMap(([, requested]) => requested).length).toBeLessThan(ids.length);
+    } finally {
+      f.streams.close();
+    }
+  });
+
   it("continues only a matching authorized bootstrap and falls back after changes or revocation", async () => {
     vi.useFakeTimers();
     const f = fixture(200);

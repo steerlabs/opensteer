@@ -457,28 +457,32 @@ export class BrowserRowSource {
       cached && !cached.held ? [...cached.groups.keys()] : await this.ports.groupIds(userId);
     let bytes = 0;
     let exhausted = true;
-    for (const id of ids) {
-      const row = cached && !cached.held ? cached.groups.get(id) : undefined;
-      let group = row;
-      if (!group) {
-        const read = (await this.ports.readGroups(userId, [id]))[0];
-        if (!read || (!current(read) && !read.tabCount)) continue;
-        facts.set(id, read);
-        const live = this.#live(read);
-        group = {
-          ...read,
-          tabCount: Math.max(read.tabCount, live?.records.size ?? 0),
-          inventoryRevision: live?.inventoryRevision ?? 0,
-          navigation: live?.navigation ?? false,
-          acting: live?.acting ?? false,
-          page: live?.page ?? null,
-        };
-      }
-      groups.set(id, group);
-      bytes += keyedStreamBytes(group) + 1;
-      if (bytes >= budget) {
-        exhausted = false;
-        break;
+    for (let offset = 0; offset < ids.length && exhausted; offset += 32) {
+      const batch = ids.slice(offset, offset + 32);
+      const missing = batch.filter((id) => !cached || cached.held || !cached.groups.has(id));
+      if (missing.length)
+        for (const read of await this.ports.readGroups(userId, missing)) facts.set(read.id, read);
+      for (const id of batch) {
+        let group = cached && !cached.held ? cached.groups.get(id) : undefined;
+        if (!group) {
+          const read = facts.get(id);
+          if (!read || (!current(read) && !read.tabCount)) continue;
+          const live = this.#live(read);
+          group = {
+            ...read,
+            tabCount: Math.max(read.tabCount, live?.records.size ?? 0),
+            inventoryRevision: live?.inventoryRevision ?? 0,
+            navigation: live?.navigation ?? false,
+            acting: live?.acting ?? false,
+            page: live?.page ?? null,
+          };
+        }
+        groups.set(id, group);
+        bytes += keyedStreamBytes(group) + 1;
+        if (bytes >= budget) {
+          exhausted = false;
+          break;
+        }
       }
     }
     const packedGroups = prefix(groups, budget, { complete: false });
