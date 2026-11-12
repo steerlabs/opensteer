@@ -29,6 +29,7 @@ import { requestAbortSignal } from "./request-abort-signal.js";
 export const hostApiScopes = {
   "folder.files.list": "session",
   "folder.files.preview": "session",
+  "attention.get": "session",
   "needsYou.get": "session",
   "team.bootstrap.get": "session",
   "team.sidebar.get": "session",

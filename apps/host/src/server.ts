@@ -1539,6 +1539,10 @@ export async function createHostServer(
         }),
       );
     },
+    "attention.get": async (_input, context) =>
+      rpcSuccess(
+        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
+      ),
     "needsYou.get": async (input, context) =>
       rpcSuccess(
         await needsYouPage(dependencies.store.database, {
@@ -1591,6 +1595,7 @@ export async function createHostServer(
     | "attachment.content"
     | "folder.files.list"
     | "folder.files.preview"
+    | "attention.get"
     | "needsYou.get"
     | "teams.links.list"
     | "teams.channelFolder.get"
