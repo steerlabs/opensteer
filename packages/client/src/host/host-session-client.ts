@@ -571,8 +571,7 @@ export class HttpHostClient {
     )
       throw new Error("The browser target is unavailable.");
     const url = new URL(
-      `/v1/browser-sessions/${encodeURIComponent(sessionId)}/connect`,
-      this.#baseUrl,
+      this.#webSocketUrl(`/v1/browser-sessions/${encodeURIComponent(sessionId)}/connect`),
     );
     if (mode === "watch") url.searchParams.set("mode", mode);
     const passkeys = this.browserPasskeys.optIn(
@@ -586,7 +585,7 @@ export class HttpHostClient {
       url.searchParams.set("autofill", "2");
     }
     url.searchParams.set("editing", "2");
-    return this.#webSocketFactory(url.toString().replace(/^http/, "ws"));
+    return this.#webSocketFactory(url.toString());
   }
   readonly #browserPopups = new Map<string, Set<(popupId: string) => void>>();
   readonly subscribeBrowserPopups = (

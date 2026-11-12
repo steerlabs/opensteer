@@ -36,7 +36,7 @@ import {
   type Request as OpensteerRequest,
   type Thread,
 } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import { sharedDisplayStreams } from "../integrations/phone-display-stream.js";
 import {
@@ -156,6 +156,9 @@ it("opts control viewers into basic input and exposes only the returned negotiat
     await client.load();
     const release = client.retainBrowserViewer(sessionId, surfaceId, { picture: false });
     const control = sockets.find(({ url }) => url.includes("/browser-sessions/"))!;
+    expect(new URL(control.url).searchParams.get(apiVersionQueryParameter)).toBe(
+      String(hostApiVersion),
+    );
     expect(new URL(control.url).searchParams.get("basicInput")).toBe("1");
     const target = client.browserFrames.editing!.target(sessionId, surfaceId);
     expect(target.get().input).toBe("none");
@@ -179,6 +182,9 @@ it("opts control viewers into basic input and exposes only the returned negotiat
     });
     const releaseWatch = client.retainBrowserWatch(sessionId, surfaceId);
     const watch = sockets.find(({ url }) => new URL(url).searchParams.get("mode") === "watch")!;
+    expect(new URL(watch.url).searchParams.get(apiVersionQueryParameter)).toBe(
+      String(hostApiVersion),
+    );
     expect(new URL(watch.url).searchParams.has("basicInput")).toBe(false);
     releaseWatch();
     release();
