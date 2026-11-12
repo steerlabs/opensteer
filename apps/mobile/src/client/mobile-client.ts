@@ -753,9 +753,9 @@ export class MobileClient {
    * Signs this phone in to one Deployment, by whichever door that Deployment
    * has, and attaches once the credential is held.
    *
-   * A team Host runs its own authorization server, so this hands the
-   * person to the system browser and the credential arrives through the
-   * registered callback. A Personal computer reached over Opensteer Connect
+   * A team Host runs its own authorization server. One that takes the Account's
+   * identity signs this phone in directly; any other hands the person to the
+   * system browser and the credential arrives through the registered callback. A Personal computer reached over Opensteer Connect
    * needs nobody at the keyboard: the Account signs a grant for this route and
    * the Host exchanges it for the session this phone keeps. A Personal computer
    * on its own private route needs a pairing code only the operator can carry,
@@ -769,9 +769,9 @@ export class MobileClient {
     await this.#clearSignOutSuppression(id);
     this.#sessionFailures.delete(id);
     if (connection.kind === "team") {
-      // The browser adapter waits for callback processing; the credential
-      // subscription publishes the independent team credential state.
-      await this.oauth.beginHostSignIn(connection);
+      // The credential subscription publishes the team credential state, whether the Account
+      // vouched for this phone or the browser adapter waited for the callback.
+      await this.oauth.signInTeam(connection);
       return;
     }
     const resolved = resolveConnection(connection, null, { authorization: null });
@@ -1337,7 +1337,7 @@ export class MobileClient {
   };
 
   async signInHost(connection: DeploymentConnection): Promise<void> {
-    await this.oauth.beginHostSignIn(connection);
+    await this.oauth.signInTeam(connection);
   }
 
   /** Forgets a Deployment this phone added itself. */

@@ -1,8 +1,15 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { createId, type AuthAdmissionId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  createId,
+  type AuthAdmissionId,
+  type TeamInviteSecret,
+  type UserId,
+} from "@opensteer/core";
 import {
   HostAccountAdoptionBundleSchema,
   type HostAccountAdoptionBundle,
+  type TeamIdentityAssertionClaims,
 } from "@opensteer/control-plane-protocol";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -13,7 +20,7 @@ import {
 import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { admitTeamMember, publishTeamMember } from "@opensteer/database/team-members";
 import { appendTeamAudit } from "@opensteer/database/team-audit";
-import type { Transaction } from "kysely";
+import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "@opensteer/database";
 import type {
   AccountAdoptionAccount,
@@ -22,6 +29,7 @@ import type {
   ConsumedAccountAdoptionProof,
   IssuedAccountAdoptionProof,
   OidcProviderConfiguration,
+  TeamIdentityAssertionVerifier,
 } from "./types.js";
 import { z } from "zod";
 
@@ -44,24 +52,99 @@ export interface TeamAdmissionProof {
   readonly subjectSelector: string;
   readonly consumedBy: UserId | null;
 }
+export interface TeamIdentityEntry {
+  readonly userId: UserId;
+  readonly generation: string;
+  /** True when this entry's invite made the person a member. */
+  readonly admitted: boolean;
+}
 export class TeamIdentityAdmission {
   readonly access: TeamAccessStore;
   readonly invites: TeamInvitesStore;
   readonly #authority: AccountAdoptionAuthority;
   readonly #verifier: AccountAdoptionGrantVerifier;
   readonly #install: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+  readonly #identityVerifier: TeamIdentityAssertionVerifier | undefined;
   constructor(options: {
     access: TeamAccessStore;
     invites: TeamInvitesStore;
     authority: AccountAdoptionAuthority;
     grantVerifier: AccountAdoptionGrantVerifier;
+    identityVerifier?: TeamIdentityAssertionVerifier;
     installAccountBundle: (bundle: HostAccountAdoptionBundle) => Promise<void>;
   }) {
     this.access = options.access;
     this.invites = options.invites;
     this.#authority = options.authority;
     this.#verifier = options.grantVerifier;
+    this.#identityVerifier = options.identityVerifier;
     this.#install = options.installAccountBundle;
+  }
+  /** Signature, issuer, audience and lifetime, then this exact Host: never a token's own word. */
+  async verifyIdentity(assertion: unknown): Promise<TeamIdentityAssertionClaims> {
+    if (!this.#identityVerifier)
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Team session exchange is unavailable",
+      });
+    const claims = await this.#identityVerifier.verify(assertion);
+    if (!sameAuthority(claims.authority, this.#authority)) refuseEntry("assertion-invalid");
+    return claims;
+  }
+  /**
+   * The one place an Account identity becomes a team session. An active member enters; anyone
+   * else enters only through `invite`, admitted as a member in the same transaction that spends
+   * the assertion, so a replayed assertion never enters twice.
+   */
+  async admitAccountIdentity(
+    claims: TeamIdentityAssertionClaims,
+    invite?: TeamInviteSecret,
+  ): Promise<TeamIdentityEntry> {
+    if (!invite)
+      return this.access.database.transaction().execute(async (t): Promise<TeamIdentityEntry> => {
+        const userId = await accountUser(t, claims);
+        const member = userId
+          ? await t
+              .selectFrom("teamMembers")
+              .select(["state", "generation"])
+              .where("userId", "=", userId)
+              .forShare()
+              .executeTakeFirst()
+          : undefined;
+        await spendAssertion(t, claims);
+        if (!userId || member?.state !== "active" || !(await enabled(t, userId)))
+          refuseEntry("not-a-member");
+        return { userId, generation: member.generation, admitted: false };
+      });
+    return this.access.mutate<TeamIdentityEntry>(
+      async (t) => {
+        const userId = (await accountUser(t, claims)) ?? (await createAccountUser(t, claims));
+        const current = await t
+          .selectFrom("teamMembers")
+          .select(["state", "generation"])
+          .where("userId", "=", userId)
+          .forNoKeyUpdate()
+          .executeTakeFirst();
+        if (!(await enabled(t, userId))) refuseEntry("not-a-member");
+        if (current?.state === "active") {
+          await spendAssertion(t, claims);
+          return {
+            value: { userId, generation: current.generation, admitted: false },
+            effects: emptyTeamAccessEffects,
+          };
+        }
+        await this.invites.requireSecretInTransaction(t, invite);
+        const member = await this.invites.acceptInTransaction(t, userId, invite.selector);
+        await spendAssertion(t, claims);
+        return {
+          value: { userId, generation: member.generation, admitted: true },
+          effects: emptyTeamAccessEffects,
+        };
+      },
+      async (t, value) => {
+        if (value.admitted) await publishTeamMember(t, value.userId);
+      },
+    );
   }
   async hasOwner() {
     return !!(await this.access.database
@@ -434,6 +517,123 @@ export class TeamIdentityAdmission {
       .execute();
   }
 }
+/** The Host user an Account subject signed in as, through the adopted Account provider. */
+async function accountUser(
+  t: Transaction<DatabaseSchema>,
+  claims: TeamIdentityAssertionClaims,
+): Promise<UserId | null> {
+  const provider = await t.selectFrom("accountDirectoryProvider").selectAll().executeTakeFirst();
+  if (!provider || provider.issuer !== claims.iss) refuseEntry("assertion-invalid");
+  const account = await t
+    .selectFrom("authAccounts")
+    .select("userId")
+    .where("providerId", "=", provider.providerId)
+    .where("accountId", "=", claims.sub)
+    .executeTakeFirst();
+  return account?.userId ?? null;
+}
+
+/** The same user and Account binding OIDC sign-in would create for this subject. */
+async function createAccountUser(
+  t: Transaction<DatabaseSchema>,
+  claims: TeamIdentityAssertionClaims,
+): Promise<UserId> {
+  const provider = await t
+    .selectFrom("accountDirectoryProvider")
+    .select("providerId")
+    .executeTakeFirstOrThrow();
+  if (await t.selectFrom("users").select("id").where("email", "=", claims.email).executeTakeFirst())
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Someone else on this team already uses that email address",
+    });
+  const now = new Date();
+  const userId = createId("user");
+  await t
+    .insertInto("users")
+    .values({
+      id: userId,
+      displayName: claims.displayName,
+      email: claims.email,
+      emailVerified: true,
+      image: null,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .execute();
+  await t
+    .insertInto("authAccounts")
+    .values({
+      id: createId("authAccount"),
+      accountId: claims.sub,
+      providerId: provider.providerId,
+      userId,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .execute();
+  return userId;
+}
+
+async function enabled(t: Transaction<DatabaseSchema>, userId: UserId) {
+  return !!(await t
+    .selectFrom("users")
+    .select("id")
+    .where("id", "=", userId)
+    .where("disabledAt", "is", null)
+    .executeTakeFirst());
+}
+
+/**
+ * One use per assertion, recorded until well past its expiry. The advisory lock serializes
+ * spenders, so a replay racing the first use still finds the record.
+ */
+async function spendAssertion(t: Transaction<DatabaseSchema>, claims: TeamIdentityAssertionClaims) {
+  const identifier = `team-identity-assertion:${claims.jti}`,
+    now = new Date();
+  await sql`select pg_advisory_xact_lock(hashtextextended(${"team-identity-assertion"}, 0))`.execute(
+    t,
+  );
+  await t
+    .deleteFrom("authVerifications")
+    .where("identifier", "like", "team-identity-assertion:%")
+    .where("expiresAt", "<", now)
+    .execute();
+  if (
+    await t
+      .selectFrom("authVerifications")
+      .select("id")
+      .where("identifier", "=", identifier)
+      .executeTakeFirst()
+  )
+    refuseEntry("assertion-invalid");
+  await t
+    .insertInto("authVerifications")
+    .values({
+      id: createId("authVerification"),
+      identifier,
+      value: "spent",
+      expiresAt: new Date((claims.exp + 60) * 1000),
+      createdAt: now,
+      updatedAt: now,
+    })
+    .execute();
+}
+
+const entryRefusals = {
+  "assertion-invalid": "Your Opensteer sign-in could not be verified. Try again.",
+  "not-a-member": "You're not a member of this team. Ask for an invite.",
+} as const;
+
+/** Reasons from `TeamEntryRefusalReasonSchema`, which an app branches on. */
+export function refuseEntry(reason: keyof typeof entryRefusals): never {
+  throw new OpensteerError({
+    code: reason === "assertion-invalid" ? "unauthorized" : "forbidden",
+    message: entryRefusals[reason],
+    reason,
+  });
+}
+
 function sameAuthority(
   a: {
     deploymentId: string;

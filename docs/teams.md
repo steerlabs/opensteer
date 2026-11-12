@@ -27,6 +27,17 @@ the agent can fetch older context. Audience/source descriptors accompany team co
 instructions never grant access. Publication uses that Run's final reply unless it already
 posted an explicit reply; reconnect recovers pending publication without rerunning failed work.
 
+## Entering a team
+
+The desktop and mobile apps enter a team advertising `team-session-exchange-v1` without a
+browser. Account signs a single-use assertion, valid for one minute, of who the person is for
+that exact team Host and app; it proves identity, never membership. The team Host verifies it
+against Account's published keys and, in one transaction, spends it and either signs in an active
+member or admits a newcomer through the invite sent beside it. It then issues the same native
+tokens a browser sign-in would. Older teams keep the browser sign-in. An invite re-admits a
+removed person only if it was created after their removal, on every admission path. A team just
+joined shows from its verified discovery until Account's directory lists it.
+
 ## Access and removal
 
 Channel membership and topic grants define access, including nested groups. Attaching a topic

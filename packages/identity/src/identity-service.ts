@@ -33,7 +33,9 @@ import {
   type AuthenticatedSession,
   type IdentityConfig,
   type NativeOAuthApplication,
+  type NativeOAuthClient,
   type NativeOAuthRegistrationMetadata,
+  type TeamInviteSecret,
   type PersonalRemoteSessionCredential,
   type PersonalRemoteSessionDelivery,
   type UserId,
@@ -43,6 +45,7 @@ import {
 } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
+import { refuseEntry } from "./team-admission.js";
 import { sso } from "@better-auth/sso";
 import {
   oauthProvider,
@@ -54,6 +57,7 @@ import { verifyJwsAccessToken } from "better-auth/oauth2";
 import { jwt } from "better-auth/plugins";
 import { compactVerify, createLocalJWKSet, decodeJwt, type JWTPayload } from "jose";
 import { sql, type Kysely, type Transaction } from "kysely";
+import { z } from "zod";
 import type {
   AccountAdoptionAccount,
   AccountAdoptionAuthority,
@@ -2059,6 +2063,127 @@ export class IdentityService {
     this.announceSessionsEnded([parsedId], afterResponse);
   }
 
+  /**
+   * A team's native sign-in without a browser: an Account identity assertion, plus an invite for
+   * anyone not yet a member, becomes the token set the browser flow would have issued to the
+   * application the assertion names.
+   */
+  async exchangeTeamSession(input: {
+    readonly assertion: unknown;
+    readonly invite?: TeamInviteSecret;
+    readonly userAgent: string | null;
+  }): Promise<{
+    readonly admitted: boolean;
+    readonly userId: UserId;
+    readonly tokens: NativeTokenResponse;
+  }> {
+    const team = this.#options.team;
+    if (!team || !this.#options.nativeOAuth)
+      throw new OpensteerError({ code: "not_found", message: "Team sign-in is unavailable" });
+    const claims = await team.verifyIdentity(input.assertion);
+    const client = this.#options.nativeOAuth.clients.find(
+      (candidate) => candidate.application === claims.surface,
+    );
+    if (!client) refuseEntry("assertion-invalid");
+    const entry = await team.admitAccountIdentity(claims, input.invite);
+    return {
+      admitted: entry.admitted,
+      userId: entry.userId,
+      tokens: await this.#issueNativeTokens(entry, client, input.userAgent),
+    };
+  }
+
+  /**
+   * Runs the authorization server's own code flow for a fresh generation-fenced session, so the
+   * tokens are indistinguishable from a browser sign-in's: same consent, hashing and refresh.
+   */
+  async #issueNativeTokens(
+    entry: { readonly userId: UserId; readonly generation: string },
+    client: NativeOAuthClient,
+    userAgent: string | null,
+  ): Promise<NativeTokenResponse> {
+    const origin = this.#options.publicOrigin;
+    const now = new Date();
+    const sessionId = createId("authSession");
+    const token = randomBytes(32).toString("base64url");
+    await this.#database
+      .insertInto("authSessions")
+      .values({
+        absoluteExpiresAt: new Date(now.getTime() + absoluteSessionMilliseconds),
+        createdAt: now,
+        deviceLabel: describeSessionDevice(userAgent).label,
+        expiresAt: new Date(now.getTime() + idleSessionSeconds * 1_000),
+        id: sessionId,
+        ipAddress: null,
+        lastSeenAt: now,
+        memberGeneration: entry.generation,
+        token,
+        updatedAt: now,
+        userAgent,
+        userId: entry.userId,
+      })
+      .executeTakeFirstOrThrow();
+    try {
+      const signed = `${token}.${createHmac("sha256", this.#options.secret).update(token).digest("base64")}`;
+      const cookie = `${origin.protocol === "https:" ? "__Host-opensteer.session" : localSessionCookieName}=${encodeURIComponent(signed)}`;
+      const verifier = randomBytes(48).toString("base64url");
+      const state = randomBytes(24).toString("base64url");
+      const [redirectUri] = client.redirectUris as readonly [string, ...string[]];
+      const authorize = new URL(`${internalAuthPath}/oauth2/authorize`, origin);
+      for (const [name, value] of Object.entries({
+        client_id: client.clientId,
+        code_challenge: createHash("sha256").update(verifier).digest("base64url"),
+        code_challenge_method: "S256",
+        prompt: "consent",
+        redirect_uri: redirectUri,
+        response_type: "code",
+        scope: nativeOAuthScopes.join(" "),
+        state,
+      }))
+        authorize.searchParams.set(name, value);
+      const consentPage = await nativeFlowUrl(
+        await this.#auth.handler(
+          new Request(authorize, { headers: { accept: "application/json", cookie } }),
+        ),
+      );
+      const callback = await nativeFlowUrl(
+        await this.#auth.handler(
+          new Request(new URL(`${internalAuthPath}/oauth2/consent`, origin), {
+            body: JSON.stringify({ accept: true, oauth_query: consentPage.search.slice(1) }),
+            headers: { "content-type": "application/json", cookie, origin: origin.origin },
+            method: "POST",
+          }),
+        ),
+      );
+      const code = callback.searchParams.get("code");
+      if (callback.searchParams.get("state") !== state || !code)
+        throw new Error("Native authorization returned no code");
+      const response = await this.#auth.handler(
+        new Request(new URL(`${internalAuthPath}/oauth2/token`, origin), {
+          body: new URLSearchParams({
+            client_id: client.clientId,
+            code,
+            code_verifier: verifier,
+            grant_type: "authorization_code",
+            redirect_uri: redirectUri,
+            resource: origin.origin,
+          }),
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          method: "POST",
+        }),
+      );
+      if (!response.ok) throw new Error(`Native token request returned HTTP ${response.status}`);
+      return NativeTokenResponseSchema.parse(await response.json());
+    } catch (error) {
+      await this.#database.deleteFrom("authSessions").where("id", "=", sessionId).execute();
+      throw new OpensteerError({
+        cause: error,
+        code: "internal",
+        message: "Team sign-in could not be completed",
+      });
+    }
+  }
+
   async exchangeTeamInvitation(selector: string, verifier: string, headers: Headers) {
     const team = this.#options.team;
     if (!team)
@@ -3028,6 +3153,22 @@ interface NativeTokenAnchor {
  */
 function storedNativeTokenDigest(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("base64url");
+}
+
+const NativeTokenResponseSchema = z.object({
+  access_token: z.string().min(16),
+  expires_in: z.number().int().positive(),
+  refresh_token: z.string().min(16),
+  scope: z.string().min(1),
+  token_type: z.literal("Bearer"),
+});
+export type NativeTokenResponse = z.infer<typeof NativeTokenResponseSchema>;
+
+/** The next step of an in-process native authorization, from its JSON redirect answer. */
+async function nativeFlowUrl(response: Response): Promise<URL> {
+  if (!response.ok) throw new Error(`Native authorization returned HTTP ${response.status}`);
+  const body = z.object({ url: z.string().min(1) }).parse(await response.json());
+  return new URL(body.url, "http://native-flow.invalid");
 }
 
 function nativeOAuthError(status: number, error: string, description: string): Response {

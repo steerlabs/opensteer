@@ -44,6 +44,7 @@ export const maxDeploymentCatalogBytes = 1 * 1_024 * 1_024;
 export const maxHostDiscoveryDocumentBytes = 64 * 1_024;
 
 const maxDeployments = 100;
+const pendingAccountDeploymentMs = 10 * 60_000;
 const defaultDiscoveryTimeoutMs = 10_000;
 const maximumDiscoveryTimeoutMs = 30_000;
 const boundedName = z
@@ -691,6 +692,8 @@ export class DeploymentCatalogStore {
   readonly #privateFiles: PrivateFilesystem;
   readonly #mutations = new MutationQueue();
   readonly #listeners = new Set<() => void>();
+  /** Joined teams Account's directory does not list yet, until when they stay anyway. */
+  readonly #pendingAccount = new Map<DeploymentId, number>();
 
   constructor(options: DeploymentCatalogStoreOptions) {
     this.#filePath = options.filePath;
@@ -763,6 +766,27 @@ export class DeploymentCatalogStore {
         updatedAt: now,
       };
     });
+  }
+
+  /**
+   * Shows a team this Account just joined before Account's directory lists it: membership is
+   * published to Account asynchronously. The entry is Account-sourced, so the directory takes it
+   * over once it lists the team; until then reconciliation keeps it for `lifetimeMs`.
+   */
+  async addPendingAccountDeployment(
+    deployment: DeploymentConnectionInput,
+    lifetimeMs = pendingAccountDeploymentMs,
+  ): Promise<DeploymentCatalog> {
+    if (deployment.source.kind !== "account")
+      throw new Error("A pending Account Deployment requires an Account source.");
+    const deploymentId = deployment.authority.document.deploymentId;
+    this.#pendingAccount.set(deploymentId, this.#now().getTime() + lifetimeMs);
+    try {
+      return await this.upsert(deployment);
+    } catch (error) {
+      this.#pendingAccount.delete(deploymentId);
+      throw error;
+    }
   }
 
   /** Commit a newly verified local authority and make it active in one durable write. */
@@ -929,9 +953,12 @@ export class DeploymentCatalogStore {
       );
       const retained = catalog.deployments.filter((stored) => {
         if (stored.source.kind === "manual") return true;
-        if (localManifest?.deploymentId === stored.authority.document.deploymentId) return true;
+        const storedId = stored.authority.document.deploymentId;
+        if (localManifest?.deploymentId === storedId) return true;
         if (!sameConnectionSource(stored.source, source)) return false;
-        const directory = directoryById.get(stored.authority.document.deploymentId);
+        const directory = directoryById.get(storedId);
+        if (directory) this.#pendingAccount.delete(storedId);
+        else return (this.#pendingAccount.get(storedId) ?? 0) > this.#now().getTime();
         return Boolean(
           directory &&
           directory.lifecycle === "active" &&

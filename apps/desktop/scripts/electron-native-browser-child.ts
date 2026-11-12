@@ -649,6 +649,7 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   const oauth = {
     abandonHostSignIn: () => undefined,
     beginHostSignIn: unavailable,
+    signInTeam: unavailable,
     hostCredentialState: unavailable,
     recoverHostAuthorization: unavailable,
     signOutHost: unavailable,

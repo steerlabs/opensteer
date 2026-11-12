@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
-import { type TeamActor, type TeamInviteId, type UserId } from "@opensteer/core";
-import { TeamInviteSchema } from "@opensteer/protocol";
+import { OpensteerError, type TeamActor, type TeamInviteId, type UserId } from "@opensteer/core";
+import { TeamInviteSchema, type TeamEntryRefusalReason } from "@opensteer/protocol";
 import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -83,33 +83,45 @@ export class TeamInvitesStore {
       .selectAll()
       .where("selector", "=", selector)
       .executeTakeFirst();
-    requireTeam(
-      row &&
-        equalSecretDigests(row.verifierHash, digestSecret(verifier)) &&
-        !row.revokedAt &&
-        row.expiresAt > new Date(),
-      "Invite unavailable",
-    );
+    if (!row || !equalSecretDigests(row.verifierHash, digestSecret(verifier)) || row.revokedAt)
+      refuseInvite("invite-invalid");
+    if (row.expiresAt <= new Date()) refuseInvite("invite-expired");
     return row;
+  }
+  /** Proves possession of the invite inside an admission transaction, before accepting it. */
+  async requireSecretInTransaction(
+    transaction: Transaction<DatabaseSchema>,
+    secret: { readonly selector: string; readonly verifier: string },
+  ) {
+    const row = await transaction
+      .selectFrom("teamInvites")
+      .select("verifierHash")
+      .where("selector", "=", secret.selector)
+      .executeTakeFirst();
+    if (!row || !equalSecretDigests(row.verifierHash, digestSecret(secret.verifier)))
+      refuseInvite("invite-invalid");
   }
   async acceptInTransaction(
     transaction: Transaction<DatabaseSchema>,
     userId: UserId,
     selector: string,
   ) {
-    await transaction
+    const previous = await transaction
       .selectFrom("teamMembers")
-      .select("userId")
+      .select(["state", "changedAt"])
       .where("userId", "=", userId)
       .forNoKeyUpdate()
-      .execute();
+      .executeTakeFirst();
     const invite = await transaction
       .selectFrom("teamInvites")
       .selectAll()
       .where("selector", "=", selector)
       .forNoKeyUpdate()
       .executeTakeFirst();
-    requireTeam(invite, "Invite unavailable");
+    if (!invite) refuseInvite("invite-invalid");
+    // Removal outlives every invite that already existed: only one made afterwards re-admits.
+    if (previous?.state === "removed" && invite.createdAt <= previous.changedAt)
+      refuseInvite("invite-invalid");
     const receipt = await transaction
       .selectFrom("teamInviteUses")
       .selectAll()
@@ -124,10 +136,9 @@ export class TeamInvitesStore {
       );
       return member;
     }
-    requireTeam(
-      !invite.revokedAt && invite.expiresAt > new Date() && invite.usedCount < invite.maxUses,
-      "Invite unavailable",
-    );
+    if (invite.revokedAt) refuseInvite("invite-invalid");
+    if (invite.expiresAt <= new Date()) refuseInvite("invite-expired");
+    if (invite.usedCount >= invite.maxUses) refuseInvite("invite-used-up");
     const member = await admitTeamMember(transaction, userId, "member");
     await transaction
       .insertInto("teamInviteUses")
@@ -200,4 +211,14 @@ export class TeamInvitesStore {
       };
     });
   }
+}
+
+const inviteRefusals = {
+  "invite-invalid": "This invite no longer works. Ask for a new one.",
+  "invite-expired": "This invite has expired. Ask for a new one.",
+  "invite-used-up": "This invite has been used up. Ask for a new one.",
+} as const satisfies Partial<Record<TeamEntryRefusalReason, string>>;
+
+function refuseInvite(reason: keyof typeof inviteRefusals): never {
+  throw new OpensteerError({ code: "forbidden", message: inviteRefusals[reason], reason });
 }
