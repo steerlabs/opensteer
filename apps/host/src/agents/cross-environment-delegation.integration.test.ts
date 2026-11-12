@@ -4,7 +4,7 @@ import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -1298,7 +1298,6 @@ integration("personal task delegation lifecycle", () => {
     const parentUpdates = await database
       .selectFrom("deploymentEvents")
       .select("data")
-      .where("threadId", "=", fixture.parentThreadId)
       .where("type", "=", "assignment.updated")
       .execute();
     expect(
@@ -1308,10 +1307,15 @@ integration("personal task delegation lifecycle", () => {
             assignment?: {
               id?: string;
               status?: string;
+              parentThreadId?: string;
             };
           }
         ).assignment;
-        return assignment?.id === silent.assignmentId && assignment.status === "completed";
+        return (
+          assignment?.id === silent.assignmentId &&
+          assignment.status === "completed" &&
+          assignment.parentThreadId === fixture.parentThreadId
+        );
       }),
     ).toBe(true);
     const after = await Promise.all([
@@ -2364,7 +2368,7 @@ integration("personal task delegation lifecycle", () => {
       modelSelection: testModelSelection,
       title: "Personal mattress shortlist",
     });
-    expect(thread.purpose).toBe("work");
+    expect(thread.purpose).toBe("task");
     const turn = await commands.enqueueThreadInput({
       content: [
         {
@@ -2407,7 +2411,7 @@ integration("personal task delegation lifecycle", () => {
   async function createFixture(
     options: { readonly lentDriverKind?: ReturnType<typeof HarnessIdSchema.parse> } = {},
   ) {
-    const path = await mkdtemp(join(tmpdir(), "personal-delegation-"));
+    const path = await realpath(await mkdtemp(join(tmpdir(), "personal-delegation-")));
     directories.push(path);
     const personal = await seedPersonalFixture(database, path);
     const {

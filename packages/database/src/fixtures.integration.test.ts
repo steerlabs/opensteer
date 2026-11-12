@@ -1,4 +1,6 @@
 import { sql } from "kysely";
+import { createId, emptyAutomaticModelConfig, emptyExecutionPreferences } from "@opensteer/core";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
@@ -28,6 +30,42 @@ it("seeds one private owner with the hosting computer and no team membership", a
       { id: fixture.userId },
     ]);
     expect((await sql`select * from team_members`.execute(database)).rows).toEqual([]);
+    expect(
+      await database
+        .selectFrom("personalSettings")
+        .select(["executionPreferences", "backgroundModelPreferences"])
+        .executeTakeFirstOrThrow(),
+    ).toEqual({
+      executionPreferences: emptyExecutionPreferences,
+      backgroundModelPreferences: emptyAutomaticModelConfig,
+    });
+    expect(
+      await database.selectFrom("principals").select(["kind", "userId"]).orderBy("kind").execute(),
+    ).toEqual([
+      { kind: "system", userId: null },
+      { kind: "user", userId: fixture.userId },
+    ]);
+    const otherId = createId("user");
+    await database
+      .insertInto("users")
+      .values({
+        id: otherId,
+        displayName: "Other",
+        email: "other@example.invalid",
+        emailVerified: true,
+      })
+      .execute();
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", fixture.userId)
+      .execute();
+    await expect(requirePersonalOwner(database, fixture.userId)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(requirePersonalOwner(database, otherId)).rejects.toMatchObject({
+      code: "forbidden",
+    });
   } finally {
     await database.destroy();
     await clone.drop();

@@ -345,7 +345,7 @@ integration("Background work", () => {
       engineArguments: ["--slow-follow-up-start", "--announce-before-answer"],
     },
   ])(
-    "interrupts a new turn that was still starting when its Runner stops the Run: $order",
+    "interrupts a new turn that was still starting when the person stops the Run: $order",
     {
       timeout: 120_000,
     },
@@ -360,8 +360,7 @@ integration("Background work", () => {
         async () => (await readFile(captureFile, "utf8")).split('"fakeTurn"').length - 1 === 2,
         "the new turn to be asked for",
       );
-      // A Runner that stops ends its Runs itself, there and then.
-      await active.restartRunner();
+      await active.interruptRun(threadId, runId);
       await settled(active, runId);
       // The turn that started after the stop was interrupted by its own id.
       const interrupted = parseCaptureJsonl<{

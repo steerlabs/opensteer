@@ -21,7 +21,8 @@ import { registerPersonalRemoteExecutor } from "./personal-remote-administration
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync } from "node:crypto";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, migrateToLatest, type DatabaseSchema } from "@opensteer/database";
+import { createDatabase, type DatabaseSchema } from "@opensteer/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 
@@ -30,11 +31,8 @@ if (!databaseUrl)
   throw new Error(
     "Run this file through pnpm test:integration so it receives an isolated database.",
   );
-const database = createDatabase({
-  applicationName: "remote-administration-test",
-  connectionString: databaseUrl,
-  maxConnections: 4,
-});
+let database: ReturnType<typeof createDatabase>;
+let clone: Awaited<ReturnType<typeof cloneTestDatabase>> | undefined;
 const keys = generateKeyPairSync("ed25519");
 const userId = createId("user");
 const session: AuthenticatedSession = {
@@ -75,7 +73,12 @@ function service(
 
 describe("Personal remote administration intents", () => {
   beforeAll(async () => {
-    await migrateToLatest(database);
+    clone = await cloneTestDatabase("host", { serverUrl: databaseUrl });
+    database = createDatabase({
+      applicationName: "remote-administration-test",
+      connectionString: clone.url,
+      maxConnections: 4,
+    });
     await database
       .insertInto("users")
       .values({
@@ -131,7 +134,11 @@ describe("Personal remote administration intents", () => {
       .execute();
   });
   afterAll(async () => {
-    await database.destroy();
+    try {
+      await database?.destroy();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("persists an owner's intent without an executor, gates execution until the reply, and resumes after restart", async () => {

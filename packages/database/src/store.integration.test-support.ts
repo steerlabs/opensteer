@@ -1,3 +1,5 @@
+import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
+export { testRunnerDescriptor } from "./runner-fixture.test-support.js";
 import { findActiveBrowserSessionForPerson } from "./browser-session-store.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
@@ -16,14 +18,14 @@ import {
   integrationDefinitionSummary,
 } from "@opensteer/integration-core";
 import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { createId, HarnessIdSchema, ThreadAccessModeSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import {
   HarnessInstanceCatalogSchema,
   type RunnerDescriptor,
   type RunnerModuleName,
 } from "@opensteer/protocol";
 import type { OpensteerStore } from "./store.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, expect, vi } from "vitest";
@@ -104,7 +106,9 @@ export async function createStoreFixture() {
       suffix: string,
       admission: PersonalRunFixturePort = personalRuns,
     ) {
-      const directory = await mkdtemp(join(tmpdir(), "opensteer-personal-fixture-"));
+      const directory = await realpath(
+        await mkdtemp(join(tmpdir(), "opensteer-personal-fixture-")),
+      );
       await ownTestDatabaseProducer(clone.url, async () => ({
         close: () => rm(directory, { recursive: true, force: true }),
       }));
@@ -253,7 +257,7 @@ export async function createStoreFixture() {
     async function enrollMessagingRunner(runnerId: RunnerId, name: string): Promise<void> {
       const tokenHash = `sha256:messaging-runner-${runnerId}`;
       await store.createRunnerEnrollment({
-        allowedModules: ["messaging"],
+        allowedModules: ["integrations", "messaging"],
         createdBy: null,
         expiresAt: new Date(Date.now() + 60_000),
         id: `ren_${randomUUID()}`,
@@ -548,6 +552,7 @@ export async function createStoreFixture() {
       await database
         .updateTable("runners")
         .set({
+          name,
           allowedModules: sql`${JSON.stringify([...new Set([...computer.allowedModules, "browser"])])}::jsonb`,
           moduleDescriptors: {
             ...computer.moduleDescriptors,
@@ -826,49 +831,6 @@ export async function enrollTestRunner(
     publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
     publicKeyPem,
   });
-}
-
-export function testRunnerDescriptor(input: {
-  readonly environmentId: ReturnType<typeof createId<"environment">>;
-  /** What this boot advertises; the full agents machine unless a caller says otherwise. */
-  readonly modules?: RunnerDescriptor["modules"];
-  readonly name: string;
-  readonly runnerId: ReturnType<typeof createId<"runner">>;
-  readonly runnerKind: "main" | "local" | "managed";
-}): RunnerDescriptor {
-  return {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: input.modules ?? {
-      agents: {
-        environmentIds: [input.environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            steering: true,
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-      },
-    },
-    name: input.name,
-    runnerId: input.runnerId,
-    runnerKind: input.runnerKind,
-    runtimeVersion: "test",
-  };
 }
 
 export function fingerprint(publicKey: KeyObject): string {

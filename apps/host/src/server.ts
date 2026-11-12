@@ -1,5 +1,5 @@
 import { TaskFolderSchema } from "@opensteer/core";
-import { personalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
+import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
 import type { FolderAdmissionService } from "./threads/folder-admission-service.js";
 import type { PersonalTeamLinks } from "./team-links/service.js";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
@@ -1169,9 +1169,9 @@ export async function createHostServer(
       const session = requireRpcSession(context),
         ownerId = session.user.id;
       await requirePersonalOwner(dependencies.store.database, ownerId);
+      const settings = await findPersonalSettings(dependencies.store.database);
       const environments = await dependencies.store.listEnvironmentsForUser(ownerId);
       const [
-        settings,
         visibleHarnesses,
         browser,
         identityConfig,
@@ -1181,11 +1181,19 @@ export async function createHostServer(
         machines,
         storedCatalogs,
       ] = await Promise.all([
-        personalSettings(dependencies.store.database),
         dependencies.store.listHarnessInstances({
           environmentIds: environments.map(({ id }) => id),
         }),
-        dependencies.browser.bootstrap(ownerId),
+        settings
+          ? dependencies.browser.bootstrap(ownerId)
+          : {
+              available: false,
+              groups: { rows: [], complete: true },
+              tabs: [],
+              placements: [],
+              profiles: [],
+              profileHomes: [],
+            },
         dependencies.authenticator.identity.configuration(),
         dependencies.store.getExecutionPreferences(ownerId),
         dependencies.store.getAutomaticModelConfig(ownerId),
@@ -1199,14 +1207,14 @@ export async function createHostServer(
           sessionId: session.id,
           personalSettings: settings,
           can: {
-            createTasks: true,
-            useVoice: true,
+            createTasks: settings !== null,
+            useVoice: settings !== null,
             manageComputers: true,
             managePrivateResources: true,
           },
           browser,
-          appTabs: await dependencies.apps.listTabs(ownerId),
-          latestPlaces: await dependencies.browser.latestPlaces(ownerId),
+          appTabs: settings ? await dependencies.apps.listTabs(ownerId) : [],
+          latestPlaces: settings ? await dependencies.browser.latestPlaces(ownerId) : [],
           environments: environments.map((environment) => {
             const runner = dependencies.runners.identityForEnvironment(environment.id);
             return {

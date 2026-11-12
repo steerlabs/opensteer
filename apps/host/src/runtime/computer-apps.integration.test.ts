@@ -479,7 +479,7 @@ integration("computer apps", () => {
   });
 
   it("serves an app from a non-Main computer on a Personal Deployment", async () => {
-    const host = await startMachineAccessWireHost(databaseUrl);
+    const host = await startMachineAccessWireHost(databaseUrl, { manualRunner: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       for (const close of closers) await close().catch(() => undefined);
