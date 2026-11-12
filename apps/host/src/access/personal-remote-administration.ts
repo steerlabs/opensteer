@@ -144,7 +144,8 @@ export class PersonalRemoteAdministration {
         } else if (active)
           throw new OpensteerError({
             code: "conflict",
-            message: "Another change is still in progress. Wait for it to finish, or turn this off.",
+            message:
+              "Another change is still in progress. Wait for it to finish, or turn this off.",
           });
         const previous =
           intent.action === "recover"
