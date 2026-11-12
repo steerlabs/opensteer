@@ -297,7 +297,9 @@ describe("composer drafts", () => {
     storage.setItem("opensteer:pending-send:v1:keep", "kept");
     const drafts = createComposerDraftStore(() => storage);
     drafts.update(task("a"), { text: "a" });
-    drafts.update(composerDraftKey({ ...scope, userId: "other" }, { kind: "task", draftId: "b" }), { text: "b" });
+    drafts.update(composerDraftKey({ ...scope, userId: "other" }, { kind: "task", draftId: "b" }), {
+      text: "b",
+    });
 
     drafts.clearAll();
 

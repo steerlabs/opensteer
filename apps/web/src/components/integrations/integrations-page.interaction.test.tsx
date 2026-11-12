@@ -690,9 +690,7 @@ describe("Settings says which integration an agent proposed wherever one is chos
     const before = sectionRows(container, "Agent access").length;
     await choose(integration, mockVapi.installationId);
     await click(buttonWithText(container, "Allow access"));
-    await vi.waitFor(() =>
-      expect(sectionRows(container, "Agent access")).toHaveLength(before + 1),
-    );
+    await vi.waitFor(() => expect(sectionRows(container, "Agent access")).toHaveLength(before + 1));
     const grants = sectionRows(container, "Agent access").filter((row) =>
       [...row.querySelectorAll(".chip")].some((chip) => chip.textContent === "Google Calendar"),
     );

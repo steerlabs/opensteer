@@ -306,11 +306,7 @@ function ResolvedView() {
         {endings.map(([label, request]) => (
           <section className="card card__form" key={request.id}>
             <span className="eyebrow eyebrow--micro">{label}</span>
-            <PasswordSignInRequestBody
-              client={client}
-              disabled={false}
-              request={request}
-            />
+            <PasswordSignInRequestBody client={client} disabled={false} request={request} />
           </section>
         ))}
       </div>

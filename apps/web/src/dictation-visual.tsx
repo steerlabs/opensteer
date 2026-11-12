@@ -136,7 +136,11 @@ function Fixture() {
           onSend={async () => {}}
           placeholder="What should Opensteer do?"
           variant={layout === "conversation" ? "conversation" : "work"}
-          attachments={{ client, scope: "dictation-visual", deploymentId: client.getSnapshot().deploymentId! }}
+          attachments={{
+            client,
+            scope: "dictation-visual",
+            deploymentId: client.getSnapshot().deploymentId!,
+          }}
           restore={{
             key: 1,
             text: "Please review before Friday.",

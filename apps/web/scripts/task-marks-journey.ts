@@ -196,8 +196,7 @@ try {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
       const snapshot = client.getSnapshot();
       const task = snapshot.threads.find(
-        (thread) =>
-          thread.listed && thread.purpose === "task" && thread.status === "idle",
+        (thread) => thread.listed && thread.purpose === "task" && thread.status === "idle",
       )!;
       const unread = snapshot.threadReadStates[task.id]?.unreadSequence;
       if (unread) await client.markThreadRead(task.id, unread);

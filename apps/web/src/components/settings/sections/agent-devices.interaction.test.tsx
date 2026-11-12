@@ -37,4 +37,3 @@ it("marks the computer Opensteer runs on", async () => {
     [...document.querySelectorAll(".chip")].filter((chip) => chip.textContent === "Runs Opensteer"),
   ).toHaveLength(1);
 });
-

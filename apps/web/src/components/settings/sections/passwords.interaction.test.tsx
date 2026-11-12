@@ -302,20 +302,19 @@ function page(
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: input.bridge ?? null,
-    desktopDeployment:
-      input.bridge
-        ? DesktopDeploymentSummarySchema.parse({
-            access: input.onThisComputer === false ? "connect" : "owner",
-            activeOrigin: origin,
-            canonicalOrigin: origin,
-            id: createId("deployment"),
-            kind: "personal",
-            lastUsedAt: null,
-            name: "Mac mini",
-            onThisComputer: input.onThisComputer ?? true,
-            routes: [{ kind: "canonical", origin, selected: true }],
-          })
-        : null,
+    desktopDeployment: input.bridge
+      ? DesktopDeploymentSummarySchema.parse({
+          access: input.onThisComputer === false ? "connect" : "owner",
+          activeOrigin: origin,
+          canonicalOrigin: origin,
+          id: createId("deployment"),
+          kind: "personal",
+          lastUsedAt: null,
+          name: "Mac mini",
+          onThisComputer: input.onThisComputer ?? true,
+          routes: [{ kind: "canonical", origin, selected: true }],
+        })
+      : null,
     executionPreferences: emptyExecutionPreferences,
     hostClient,
     localExecutionAction: null,

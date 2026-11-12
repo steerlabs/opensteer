@@ -1009,8 +1009,8 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     let closing = "";
     await mount((source) => {
       const read = source.getSnapshot;
-      closing = tabOrder(placeList(read())).find((item) => item.title === "Q4 roadmap – Linear")!.browser!
-        .sessionId;
+      closing = tabOrder(placeList(read())).find((item) => item.title === "Q4 roadmap – Linear")!
+        .browser!.sessionId;
       // One browser is closing and its saved tabs cannot open: they stay listed, dimmed.
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const snapshot = read();

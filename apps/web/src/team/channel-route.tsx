@@ -275,7 +275,7 @@ function ChannelScreenFor({
     const me = view.me;
     if (!me) return;
     // A message never posts half its files: it waits for every upload.
-    const files = await Promise.all([...uploads.current.values()]);
+    const files = await Promise.all(uploads.current.values());
     uploads.current.clear();
     setStaged([]);
     const message = teamMessage(input, me, view.members);

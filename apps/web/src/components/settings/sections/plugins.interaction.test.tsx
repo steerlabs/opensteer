@@ -94,11 +94,7 @@ async function mount(
     root!.render(
       <MemoryRouter initialEntries={[path]}>
         <ToastProvider>
-          {gmail ? (
-            <PluginAddSheet product={gmail} />
-          ) : (
-            <PluginsSection view={view} />
-          )}
+          {gmail ? <PluginAddSheet product={gmail} /> : <PluginsSection view={view} />}
         </ToastProvider>
       </MemoryRouter>,
     ),
@@ -536,5 +532,3 @@ it("releases a rejected switch attempt before the next click", async () => {
     throw new Error("Missing switch");
   expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
 });
-
-
