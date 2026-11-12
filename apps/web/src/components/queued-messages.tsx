@@ -69,12 +69,7 @@ export const QueuedMessages = memo(function QueuedMessages({
         className={busyId === id ? "queued__item queued__item--busy" : "queued__item"}
         key={id}
       >
-        <TranscriptMessage
-          message={entry}
-          queued
-          reveal={null}
-          viewerUserId={viewerUserId}
-        />
+        <TranscriptMessage message={entry} queued reveal={null} viewerUserId={viewerUserId} />
         <div className="queued__row">
           {item.canSteer ? (
             <button

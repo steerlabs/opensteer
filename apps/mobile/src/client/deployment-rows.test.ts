@@ -14,18 +14,19 @@ const attached: DeploymentFacts = { ...held, attachment: "connected" };
 
 describe("describeDeploymentRow", () => {
   it("calls a deployment with a held credential signed in, and nothing more", () => {
-    const row = describeDeploymentRow(testDeploymentConnection({}), held);
+    const row = describeDeploymentRow(testDeploymentConnection({ kind: "team" }), held);
 
     // "Connected" is a socket, and there is none: a credential in protected
     // storage says only that this phone could sign in without asking again.
     expect(row.status).toBe("signed-in");
-    expect(row.kindLabel).toBe("Server");
+    expect(row.kindLabel).toBe("Team");
     expect(row.origin).toBe("https://host.example.com");
   });
 
   it("does not call a deployment the Account lists Cloud, and marks it managed", () => {
     const row = describeDeploymentRow(
       testDeploymentConnection({
+        kind: "team",
         source: {
           issuer: "https://account.example.com",
           kind: "account",
@@ -36,14 +37,14 @@ describe("describeDeploymentRow", () => {
     );
 
     // The directory says who may reach a deployment, never who runs it.
-    expect(row.kindLabel).toBe("Server");
+    expect(row.kindLabel).toBe("Team");
     expect(row.accountManaged).toBe(true);
   });
 
   it("asks for a sign-in when no credential is held", () => {
-    expect(describeDeploymentRow(testDeploymentConnection({}), signedOut).status).toBe(
-      "needs-sign-in",
-    );
+    expect(
+      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), signedOut).status,
+    ).toBe("needs-sign-in");
   });
 
   it("calls a personal computer with no live route unavailable, credential or not", () => {
@@ -54,7 +55,7 @@ describe("describeDeploymentRow", () => {
   });
 
   it("puts what a verification found ahead of every other state", () => {
-    const connection = testDeploymentConnection({});
+    const connection = testDeploymentConnection({ kind: "team" });
 
     expect(
       describeDeploymentRow(connection, { ...attached, verification: "host-too-old" }).status,
@@ -67,7 +68,7 @@ describe("describeDeploymentRow", () => {
 
 describe("deployment status wording", () => {
   it("names the side that needs updating, rather than saying only that they differ", () => {
-    const connection = testDeploymentConnection({});
+    const connection = testDeploymentConnection({ kind: "team" });
 
     expect(
       deploymentStatusDetail(
@@ -83,8 +84,8 @@ describe("deployment status wording", () => {
 });
 
 describe("the door a row that needs a credential opens", () => {
-  it("sends a self-hosted deployment to its own authorization server", () => {
-    const row = describeDeploymentRow(testDeploymentConnection({}), signedOut);
+  it("sends a team to its own authorization server", () => {
+    const row = describeDeploymentRow(testDeploymentConnection({ kind: "team" }), signedOut);
 
     expect(row.status).toBe("needs-sign-in");
     expect(row.signIn).toBe("host-oauth");
@@ -116,9 +117,11 @@ describe("the door a row that needs a credential opens", () => {
   });
 
   it("offers no door where there is nothing to sign in to, or nothing to fix", () => {
-    expect(describeDeploymentRow(testDeploymentConnection({}), attached).signIn).toBeNull();
     expect(
-      describeDeploymentRow(testDeploymentConnection({}), {
+      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), attached).signIn,
+    ).toBeNull();
+    expect(
+      describeDeploymentRow(testDeploymentConnection({ kind: "team" }), {
         ...signedOut,
         verification: "client-too-old",
       }).signIn,

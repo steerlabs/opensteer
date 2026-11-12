@@ -668,7 +668,9 @@ export class MobileClient {
       // remembered — it was removed here, or dropped from the Account — and
       // forgetting it is the answer, not refusing to start.
       const listed = (await this.catalog.load()).deployments.some(
-        ({ authority }) => authority.document.deploymentId === remembered,
+        (connection) =>
+          isPersonalConnection(connection) &&
+          connection.authority.document.deploymentId === remembered,
       );
       if (listed) {
         await this.#operations.run(() => this.#activateSelectionLocally(remembered, false));
@@ -678,13 +680,14 @@ export class MobileClient {
     } else if (remembered === undefined && this.#pendingComputer === null) {
       await this.#operations.run(async () => {
         const catalog = await this.catalog.load();
-        if (this.#pendingComputer === null && catalog.deployments.length === 1) {
+        const personal = catalog.deployments.filter(isPersonalConnection);
+        if (this.#pendingComputer === null && personal.length === 1) {
           await this.#activateSelectionLocally(
-            catalog.deployments[0]!.authority.document.deploymentId,
+            personal[0]!.authority.document.deploymentId,
             true,
             () => this.#pendingComputer === null,
           );
-        } else if (catalog.deployments.length > 1) {
+        } else if (personal.length > 1) {
           await this.#selectionFile.write(null);
           this.#selectionPreference = null;
         }
@@ -710,18 +713,11 @@ export class MobileClient {
     await this.#startSelection(id, false);
   }
 
-  /**
-   * Opens a Deployment because the person chose it.
-   *
-   * Unlike `select`, this is allowed to open the system authorization browser
-   * for a self-hosted Host. Connect still uses its silent Account-grant
-   * exchange, and an explicit open also lifts the persisted sign-out suppression
-   * so the person's tap is a real retry.
-   */
+  /** Opens a computer and retries its Account-grant exchange after an explicit tap. */
   async openDeployment(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
     this.cancelOpenComputer();
-    const connection = this.#requireConnection(id);
+    this.#requirePersonalConnection(id, await this.catalog.load());
     const row = this.#state.rows.find((candidate) => candidate.deploymentId === id);
     await this.#clearSignOutSuppression(id);
     const force =
@@ -729,22 +725,9 @@ export class MobileClient {
       row === undefined ||
       (row.status !== "connected" && row.status !== "connecting" && row.status !== "reconnecting");
     const outcome = await this.#startSelection(id, force, {
-      establishPersonal: connection.kind !== "self-hosted" && row?.signIn === "account-grant",
-      requireFreshHostCredential: connection.kind === "self-hosted" && row?.signIn === "host-oauth",
+      establishPersonal: row?.signIn === "account-grant",
     });
     if (outcome.kind === "session-failed") throw outcome.error;
-    if (connection.kind !== "self-hosted" || outcome.kind !== "needs-credential") return;
-    await this.#operations.run(async () => {
-      if (
-        !this.#isCurrentSelection(id, outcome.attempt) ||
-        outcome.generation !== this.#fence.generation
-      ) {
-        return;
-      }
-      const verification = this.#verification.get(id);
-      if (verification !== undefined) return;
-      await this.oauth.beginHostSignIn(this.#requireConnection(id));
-    });
   }
 
   /** Re-resolves and rebuilds the selected attachment after an explicit retry. */
@@ -767,7 +750,7 @@ export class MobileClient {
    * Signs this phone in to one Deployment, by whichever door that Deployment
    * has, and attaches once the credential is held.
    *
-   * A self-hosted Host runs its own authorization server, so this hands the
+   * A team Host runs its own authorization server, so this hands the
    * person to the system browser and the credential arrives through the
    * registered callback. A Personal computer reached over Opensteer Connect
    * needs nobody at the keyboard: the Account signs a grant for this route and
@@ -777,14 +760,14 @@ export class MobileClient {
    */
   async signIn(deploymentId: DeploymentId | string): Promise<void> {
     const id = DeploymentIdSchema.parse(deploymentId);
-    const connection = this.#requireConnection(id);
+    const connection = this.#requireConnection(id, await this.catalog.load());
     const verification = this.#verification.get(id);
     if (verification !== undefined) throw new Error(verificationFailureDetail(verification));
     await this.#clearSignOutSuppression(id);
     this.#sessionFailures.delete(id);
-    if (connection.kind === "self-hosted") {
+    if (connection.kind === "team") {
       // The browser adapter waits for callback processing; the credential
-      // subscription owns attachment and publishes any authorization failure.
+      // subscription publishes the independent team credential state.
       await this.oauth.beginHostSignIn(connection);
       return;
     }
@@ -800,7 +783,7 @@ export class MobileClient {
    * Signs this phone out of one Deployment, keeping the Deployment itself.
    *
    * The credential is ended where it lives before it is dropped here. A
-   * self-hosted Host's revoke ends the session its token hangs from, so the
+   * team Host's revoke ends the session its token hangs from, so the
    * access token dies with the record rather than outliving it; a Personal
    * Deployment's header-delivered session is its own session on that Host and
    * is revoked through the Host's own command. Either way the row comes back
@@ -1377,7 +1360,14 @@ export class MobileClient {
   async reconcile(): Promise<void> {
     await this.oauth.reconcileCatalog();
     const catalog = await this.catalog.load();
-    if (catalog.selectedDeploymentId !== null) {
+    if (
+      catalog.selectedDeploymentId !== null &&
+      catalog.deployments.some(
+        (connection) =>
+          connection.authority.document.deploymentId === catalog.selectedDeploymentId &&
+          isPersonalConnection(connection),
+      )
+    ) {
       await this.select(catalog.selectedDeploymentId);
       return;
     }
@@ -1423,9 +1413,7 @@ export class MobileClient {
   ): Promise<number | null> {
     let catalog = await this.catalog.load();
     if (!current()) return null;
-    if (!catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)) {
-      throw new Error("That deployment is no longer in this app's list.");
-    }
+    this.#requirePersonalConnection(id, catalog);
     if (
       !force &&
       this.#attachedDeploymentId === id &&
@@ -1518,15 +1506,6 @@ export class MobileClient {
         return verification === "unreachable"
           ? { kind: "unroutable" }
           : { kind: "verification-failed", verification };
-      }
-      if (
-        options.requireFreshHostCredential === true ||
-        (this.#changingLogins.has(id) &&
-          resolution.selected.connection.kind === "self-hosted" &&
-          this.oauth.hostCredentialState(resolution.selected.connection).status !== "signed-in")
-      ) {
-        await this.#republish();
-        return { attempt, generation, kind: "needs-credential" };
       }
       let authorization = await this.#authorizationFor(resolution.selected.connection);
       if (!this.#isCurrentSelection(id, attempt)) return { kind: "superseded" };
@@ -1705,9 +1684,7 @@ export class MobileClient {
   ): Promise<void> {
     const catalog = await this.catalog.load();
     if (!current()) return;
-    if (!catalog.deployments.some(({ authority }) => authority.document.deploymentId === id)) {
-      throw new Error("That deployment is no longer in this app's list.");
-    }
+    this.#requirePersonalConnection(id, catalog);
     if (catalog.selectedDeploymentId !== id) await this.catalog.select(id);
     if (!current()) return;
     if (persist) await this.#selectionFile.write(id);
@@ -1724,7 +1701,7 @@ export class MobileClient {
   async #signOutNow(id: DeploymentId): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "self-hosted") await this.oauth.signOutHost(connection);
+      if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
         await this.#revokePersonalSession(connection);
         await this.sessions.clear(id);
@@ -1750,7 +1727,7 @@ export class MobileClient {
   async #removeNow(id: DeploymentId): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
-      if (connection.kind === "self-hosted") await this.oauth.signOutHost(connection);
+      if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
         await this.#revokePersonalSession(connection);
         await this.sessions.clear(id);
@@ -2147,6 +2124,12 @@ export class MobileClient {
           const selected = catalog.deployments.find(
             ({ authority }) => authority.document.deploymentId === catalog.selectedDeploymentId,
           );
+          if (selected !== undefined && !isPersonalConnection(selected)) {
+            await this.catalog.select(deploymentId);
+            const attempt = await this.#selectLocallyNow(deploymentId, true);
+            if (attempt !== null) void this.#attachSelection(deploymentId, attempt).catch(noop);
+            return;
+          }
           if (selected === undefined) {
             await this.#deselectNow();
             return;
@@ -2309,8 +2292,18 @@ export class MobileClient {
     return created;
   }
 
-  #requireConnection(deploymentId: DeploymentId): DeploymentConnection {
-    const connection = this.#state.catalog.deployments.find(
+  #requirePersonalConnection(id: DeploymentId, catalog: DeploymentCatalog): DeploymentConnection {
+    const connection = this.#requireConnection(id, catalog);
+    if (!isPersonalConnection(connection))
+      throw new Error("A team cannot be opened as a computer. Open it from your team list.");
+    return connection;
+  }
+
+  #requireConnection(
+    deploymentId: DeploymentId,
+    catalog: DeploymentCatalog = this.#state.catalog,
+  ): DeploymentConnection {
+    const connection = catalog.deployments.find(
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
     if (!connection) throw new Error("That deployment is no longer in this app's list.");
@@ -2551,7 +2544,6 @@ type Resolution =
 
 interface AttachmentOptions {
   readonly establishPersonal?: boolean;
-  readonly requireFreshHostCredential?: boolean;
 }
 
 type AttachmentOutcome =
@@ -2604,5 +2596,5 @@ export function operationDetail(error: unknown, fallback: string): string {
  * drawer and driven by its own session, and is never the selected Deployment.
  */
 export function isPersonalConnection(connection: DeploymentConnection): boolean {
-  return connection.authority.document.deploymentShape.kind !== "team";
+  return connection.authority.document.deploymentShape.kind === "personal";
 }

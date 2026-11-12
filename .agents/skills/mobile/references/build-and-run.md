@@ -22,7 +22,6 @@ ships, add `--configuration Release` to `run:ios` or `--variant release` to `run
 the in-memory Host in `@opensteer/client/mock`. Non-development builds refuse it ("This build cannot
 run") unless Metro's `__DEV__` is true or `EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE=development|preview`
 is set. Never set the profile on a build anyone but a developer installs.
-`EXPO_PUBLIC_OPENSTEER_MOCK_HOME=absent` starts with an empty personal task list, for the Home composer.
 Use a disposable [team server](../../team-server/SKILL.md) for team sign-in, linking and offline
 chat checks; personal mock mode does not prove these two-Host boundaries.
 `EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS=<scene>` adds the

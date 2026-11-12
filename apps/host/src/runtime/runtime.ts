@@ -2,6 +2,7 @@ import { PersonalTabStore } from "@opensteer/database";
 import { resolveAutomaticModels, personalExecution } from "../agents/automatic-models.js";
 import { automaticModelWants, DEFAULT_THREAD_ACCESS_MODE } from "@opensteer/core";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
+import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
 import { FolderFilesService } from "../threads/folder-files-service.js";
@@ -492,6 +493,7 @@ export async function createHostRuntime(
       });
     }
     const personalConfig = config.personal!;
+    let teamRunEvents: TeamRunEvents | undefined;
     let linkServices: ReturnType<typeof createPersonalTeamLinkServices> | undefined;
     let linkStarting: Promise<ReturnType<typeof createPersonalTeamLinkServices>> | undefined;
     const folders = {
@@ -1270,6 +1272,7 @@ export async function createHostRuntime(
         /* Observers cannot interrupt committed event publication. */
       }
       taskQuestions?.observe(event);
+      teamRunEvents?.observe(event);
       observeIntegrationInput?.(event);
       if (
         (event.type === "request.opened" || event.type === "request.resolved") &&
@@ -1728,7 +1731,7 @@ export async function createHostRuntime(
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
-            await initializeFolders();
+            if (await initializeFolders()) await ensureLinks();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
@@ -2245,7 +2248,7 @@ export async function createHostRuntime(
     const authenticator = new HostAuthenticator({
       identity,
       onAuthenticatedSession: async () => {
-        await initializeFolders();
+        if (await initializeFolders()) await ensureLinks();
       },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
@@ -2421,6 +2424,21 @@ export async function createHostRuntime(
         });
         await links.links.start();
         linkServices = links;
+        teamRunEvents = new TeamRunEvents({
+          publish: async (runId, steps) => {
+            const request = await links.requests.options.requests.forRun(runId);
+            if (!request) return;
+            const outcome = await links.requests.options.runs.outcome(request);
+            await links.requests.runChanged(
+              runId,
+              outcome.state === "working" || outcome.state === "needs_you"
+                ? { state: outcome.state, steps }
+                : undefined,
+            );
+          },
+          onError: () =>
+            app.log.warn("Team Run publication failed; the durable reply remains pending"),
+        });
         return links;
       })().finally(() => {
         linkStarting = undefined;
@@ -2700,6 +2718,7 @@ export async function createHostRuntime(
       },
       sweep: () => 0,
     });
+    if (await initializeFolders()) await ensureLinks();
     personalReconcileLoop.start();
     // An execution lease is the whole grace a Runner out of reach has, so an
     // expired one is noticed within a fraction of it, whether or not the
@@ -2773,7 +2792,11 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
-        await step("team links", () => linkServices?.links.stop());
+        await step("team Run publication", () => teamRunEvents?.close());
+        await step("team links", async () => {
+          await linkStarting;
+          await linkServices?.links.stop();
+        });
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
         await step("browser", () => browser.close());

@@ -13,7 +13,7 @@ the private `MOBILE_DEVICE_ID` and `MOBILE_SIGNING_TEAM`:
 ```sh
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
-unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME
+unset EXPO_PUBLIC_OPENSTEER_MOCK
 export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
 export EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN="https://app.opensteer.com"
 # Prebuilt React Native dependencies leave folly, glog and double-conversion unresolved

@@ -45,7 +45,6 @@ type shellAuthority struct {
 	StartedAt         string `json:"startedAt"`
 	ThreadID          string `json:"threadId"`
 	ThreadTitle       string `json:"threadTitle"`
-	WorkspaceID       string `json:"workspaceId"`
 }
 
 type shellSharePolicy struct {
@@ -252,7 +251,7 @@ func shellInitHasRequiredFields(content []byte) bool {
 	}
 	var authority map[string]json.RawMessage
 	if json.Unmarshal(top["authority"], &authority) != nil || !hasJSONFields(authority,
-		"callerMachineName", "policyRevision", "requestedBy", "runId", "sessionId", "startedAt", "threadId", "threadTitle", "workspaceId") {
+		"callerMachineName", "policyRevision", "requestedBy", "runId", "sessionId", "startedAt", "threadId", "threadTitle") {
 		return false
 	}
 	var policy map[string]json.RawMessage
@@ -271,7 +270,7 @@ func hasJSONFields(object map[string]json.RawMessage, names ...string) bool {
 
 func validateShellInit(init shellInit) error {
 	authority := init.Authority
-	if authority.SessionID == "" || authority.RunID == "" || authority.ThreadID == "" || authority.WorkspaceID == "" ||
+	if authority.SessionID == "" || authority.RunID == "" || authority.ThreadID == "" ||
 		authority.RequestedBy == "" || authority.CallerMachineName == "" || authority.StartedAt == "" ||
 		utf8.RuneCountInString(authority.ThreadTitle) > 240 || utf8.RuneCountInString(authority.CallerMachineName) > 160 || authority.PolicyRevision < 1 || init.HostKeyPath == "" || strings.ContainsRune(init.HostKeyPath, 0) {
 		return errors.New("shell init authority is invalid")

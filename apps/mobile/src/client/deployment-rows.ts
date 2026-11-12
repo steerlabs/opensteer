@@ -42,7 +42,7 @@ export type DeploymentStatus =
 /**
  * The door a Deployment that needs a credential opens.
  *
- * A self-hosted Host runs its own authorization server, so the person signs in
+ * A team Host runs its own authorization server, so the person signs in
  * through the system browser. A Personal computer reached over Opensteer
  * Connect needs nobody: the Account signs a grant for the route and the Host
  * exchanges it. A Personal computer on its own private route needs the one-use
@@ -101,7 +101,7 @@ export function describeDeploymentRow(
         ? null
         : sessionFailure === "pairing-required"
           ? "pairing-code"
-          : connection.kind === "self-hosted"
+          : connection.kind === "team"
             ? "host-oauth"
             : access.access === "connect"
               ? "account-grant"
@@ -139,13 +139,12 @@ export function deploymentSignInLabel(signIn: DeploymentSignIn): string {
  * The kind, in the words the product uses for it — and only the words its own
  * data supports. A Deployment listed by the Account directory is one somebody
  * gave that Account access to; the directory entry says who may reach it, never
- * who runs it, so nothing here may call it Cloud. `personal` and `development`
+ * who runs it, so nothing here may call it Cloud. `personal` and `team`
  * are facts the Host itself declares in its descriptor, and are used as such.
  */
 export function deploymentKindLabel(connection: DeploymentConnection): string {
   if (connection.kind === "personal") return "Personal computer";
-  if (connection.kind === "development") return "Development";
-  return "Server";
+  return "Team";
 }
 
 export function deploymentStatusLabel(status: DeploymentStatus): string {
