@@ -75,7 +75,14 @@ describe("team session lifecycle", () => {
         failureCode: null,
         changeSeq: "1",
       });
-      f.host.requests.push(request);
+      // Presence follows the owners of returned cards, so the unrelated owner has one too.
+      const other = TeamAgentRequestSchema.parse({
+        ...request,
+        id: createId("teamAgentRequest"),
+        ownerUserId: mockTeamUserId,
+        changeSeq: "2",
+      });
+      f.host.requests.push(request, other);
       f.host.linkPresence.push(
         { ownerUserId, online: true },
         { ownerUserId: mockTeamUserId, online: false },
@@ -85,8 +92,11 @@ describe("team session lifecycle", () => {
       f.client.selectThread(mockTeamChannelId, rootId);
       await vi.waitFor(
         () => {
-          expect(f.client.getSnapshot().channel?.requests).toEqual([request]);
-          expect(f.client.getSnapshot().thread?.requests).toEqual([request]);
+          for (const kind of ["channel", "thread"] as const) {
+            const requests = f.client.getSnapshot()[kind]?.requests ?? [];
+            expect(requests).toHaveLength(2);
+            expect(requests).toEqual(expect.arrayContaining([request, other]));
+          }
         },
         { timeout: 1000 },
       );
@@ -100,7 +110,7 @@ describe("team session lifecycle", () => {
           const linkOnline = new Map(
             timeline.linkPresence.map((row) => [row.ownerUserId, row.online]),
           );
-          expect(linkOnline.get(timeline.requests[0]!.ownerUserId)).toBe(online);
+          expect(linkOnline.get(ownerUserId)).toBe(online);
           expect(linkOnline.get(mockTeamUserId)).toBe(false);
           expect(timeline.requests).toBe(initial[kind]!.requests);
           expect(timeline.messages).toBe(initial[kind]!.messages);
