@@ -600,27 +600,49 @@ export class PersonalTabStore {
     });
   }
   async suspend(sessionId?: BrowserSessionId) {
-    const groups = await this.database
-      .selectFrom("personalTabs")
-      .select("groupId")
-      .distinct()
-      .where("closedAt", "is", null)
-      .where("state", "!=", "suspended")
-      .$if(sessionId !== undefined, (q) => q.where("sessionId", "=", sessionId!))
-      .orderBy("groupId")
-      .execute(databaseOperationOptions());
-    for (const { groupId } of groups)
-      await this.#turn(groupId, async (tx) => {
-        const result = await tx
-          .updateTable("personalTabs")
-          .set({ state: "suspended" })
-          .where("groupId", "=", groupId)
+    // Host shutdown suspends every group, inside its close budget: one transaction, not one per group.
+    await withPersonalTransaction(this.database, async (tx) => {
+      const groups = (
+        await tx
+          .selectFrom("personalTabs")
+          .select("groupId")
+          .distinct()
           .where("closedAt", "is", null)
           .where("state", "!=", "suspended")
           .$if(sessionId !== undefined, (q) => q.where("sessionId", "=", sessionId!))
-          .executeTakeFirst(databaseOperationOptions());
-        if (result.numUpdatedRows > 0n) await this.#bump(tx, groupId);
-      });
+          .execute(databaseOperationOptions())
+      ).map(({ groupId }) => groupId);
+      if (!groups.length) return;
+      await tx
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("id", "in", groups)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
+      await tx
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("groupId", "in", groups)
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
+      const changed = await tx
+        .updateTable("personalTabs")
+        .set({ state: "suspended" })
+        .where("groupId", "in", groups)
+        .where("closedAt", "is", null)
+        .where("state", "!=", "suspended")
+        .$if(sessionId !== undefined, (q) => q.where("sessionId", "=", sessionId!))
+        .returning("groupId")
+        .execute(databaseOperationOptions());
+      if (!changed.length) return;
+      await tx
+        .updateTable("browserSessions")
+        .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
+        .where("id", "in", [...new Set(changed.map(({ groupId }) => groupId))])
+        .execute(databaseOperationOptions());
+    });
   }
   async close(ownerId: UserId, id: string, person = true) {
     const row = await this.database

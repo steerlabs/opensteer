@@ -2,25 +2,16 @@
 
 ## Enrollment
 
-A computer is one Runner identity in one Deployment. Its enrollment grant caps modules on every
-reconnect, and advertising fewer does not reduce it; ordinary grants use
-[computerRunnerGrant](../apps/host/src/agents/runner-enrollment-grant.ts), phones an exact
-browser-and-integrations grant. Enabling execution or changing reach policy must not replace identity.
-Personal Opensteer executes tasks only on its hosting computer; other user-owned computers offer browser, integrations,
-messaging and shell, while phones offer browser and integrations. The supervised messaging service is Deployment-owned, not a lent
-computer. The hosting computer cannot be removed. An iPhone's enrollment profile is fixed and rechecked on
-every authentication, so a phone-shaped descriptor cannot claim Android's authority ([This iPhone's
-apps](mobile.md#this-iphones-apps)).
+A computer is one Runner identity in a Deployment. Enrollment caps its modules on every reconnect;
+advertising fewer does not reduce the grant, and presentation shape never grants authority.
+Execution policy changes preserve identity. Personal Opensteer executes tasks only on its hosting
+computer, which cannot be removed; phones never offer shell. Enrollment profiles live in
+[the grant policy](../apps/host/src/agents/runner-enrollment-grant.ts).
 
-Personal remote access gates route-admitted computers. A route generation change disconnects them
-but keeps identities and enrollments; fence admission against it both before and after registry
-insertion. The hosting computer and the colocated messaging service are never swept. Phone enrollment needs a live
-route. Only the hosting computer requires a loopback Host URL, and loopback in a model endpoint means the
-Runner's computer, not the viewer's or the Host's.
-
-Revocation is a bare close 4010 with no preceding `host.error`: the Runner stops reconnecting, and
-the desktop supervisor then forgets that slot's identity. Ordinary route or lease failures keep
-enrollment and retry, so keep this terminal signal distinct from transient refusals.
+Remote route changes disconnect route-admitted computers without deleting enrollment. The hosting
+computer and supervised services are not remote computers to sweep. Revocation is terminal and
+stops reconnecting; network and lease failures preserve identity. Loopback in an endpoint means
+the executing computer, never the viewer's.
 
 ## Runner and desktop
 
@@ -78,39 +69,31 @@ Program and loopback MCP servers run on the chosen computer, never with Host aut
 to the Deployment's hosting computer. Internet servers run through the Host over HTTPS, and Host
 loopback is refused. A Host-local program path never implies the files exist on another computer.
 
-The owner reviews the program, arguments, working directory and environment, or URL and headers,
-verbatim from any signed-in device. Those details are fetched only for that review and never ride in
-Request events, agent projections or client snapshots. Consent binds the launch digest, server and
-target Runner and is rechecked in admission; the Runner trusts that Host decision, with no local
-approval file. An offline computer starts nothing. A changed launch needs review again, except on a
-Personal Deployment: there an approved server's new launch on the same computer keeps consent unless
-it declares a new secret name, because a personal Runner runs agent commands as its owner with no
-isolation and review would cover code any agent there could already run. Team servers run no
-agents or personal plugin servers. A new, moved or declined server always asks.
+The owner reviews the exact launch and target computer from any signed-in device. Launch
+arguments, environment and headers appear only in that review, never shared events or agent
+snapshots. Consent is pinned and rechecked at admission; an offline computer starts nothing.
+
+An approved server's changed launch on the same computer keeps consent unless it adds secret
+names, because personal agents already run as that OS user without isolation. Team servers run no
+agents or plugin servers. A new, moved or declined server always asks.
 
 An agent-made plugin records its task folder, not a Host path, so only an agent updates it, by
 installing that folder again; Settings' Update and `plugin_manage` update person-installed plugins.
 
-A program server declares the secrets its owner must supply under
-`extensions["com.opensteer"].secrets` in `plugin.json`, because Agent Plugins forbids credentials in
-`env`. Only names and labels enter the launch and its digest. The owner enters values when allowing
-it and can change them without new consent; a new launch keeps values for names it still declares
-and deletes the rest. Consent and values belong to one computer. Values are
-sealed per server in their own table, never in a listing, Request event or snapshot, and the Host
-adds them only to the launch it sends. Session-end output quotes the server and becomes its status,
-so [the transport](../apps/host/src/integrations/computer-mcp-transport.ts) redacts the values. This
-keeps secrets out of chat, manifests and agent context, not from the program or a same-user shell.
+Program servers declare secret names, never values, in their plugin metadata. The owner supplies
+values through consent; new names require review, and consent and values belong to one computer.
+Lists, Requests and snapshots never contain them. Delivery exposes them only to the approved
+launch, and transport output must redact them. This protects chat and agent context, not a
+same-user shell or the launched program itself.
 
 Servers run with the MCP SDK's minimal inherited environment plus the launch's, in their own process
 group; ending a session, stream or Runner kills the whole tree, including descendants of launchers
 such as `npx`. A malformed or stalled transport ends that session, not the integrations stream.
 
-A server may ask the person for values during one tool call with MCP elicitation, in form mode only,
-such as a code a TV shows while pairing. The Host matches it to the single in-flight call from a Run
-on that client and declines otherwise, and declines on engines that can't hold a call for minutes.
-The answer goes only to that call: the `integration.input` Request, its command and events keep it
-redacted, it never reaches the engine, and a pending one has no waiter after a restart, so startup
-cancels it ([integration-input.ts](../apps/host/src/integrations/integration-input.ts)).
+MCP form elicitation belongs to one in-flight Run call and only works on engines qualified to hold
+it. The answer goes only to that call, never to engine context or durable events. Restart cancels
+pending input because its waiter no longer exists
+([integration input](../apps/host/src/integrations/integration-input.ts)).
 
 ## Devices that run no Opensteer
 

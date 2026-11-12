@@ -29,14 +29,11 @@ audit token against a designated Developer ID requirement; a team ID, PID, ances
 identity. Desktop verifies the server with the verifier sealed inside itself, never the writable
 installed copy, and the verifier exits before using any grant. Ad-hoc trust is development-only.
 
-Verify bundle integrity before trusting an installed version, and compare protocol before app
-version. Stop a verified live helper before replacing its bytes, matched by device and inode because
-LaunchServices can change path case. Install and launch share one lifecycle lock that is never
-unlinked. Readiness probes never install or prompt. Permission requests are one per person action,
-Screen Recording first; macOS may return before its dialog is answered, so a denial proves nothing
-and Settings must never open over the dialog. ScreenCaptureKit can need a fresh process after a
-grant; restart only while nothing is active. Stop, readiness and video stay responsive while an app
-hangs in AX, so blocking AX work stays off the main actor and binary media off JSON RPC.
+Verify integrity and protocol before replacing or using the helper; readiness must never install
+or prompt. Only a person action requests OS permission. macOS may return before its dialog is
+answered, so denial is not yet final and Settings must not cover it. ScreenCaptureKit can need a
+fresh process after a grant; restart only while nothing is active. Blocking AX work must not
+block Stop, readiness or video.
 
 ## Window groups and actions
 
@@ -118,11 +115,9 @@ removes it. Scripts are constant, with data passed as arguments, never interpola
 
 ## Runner and Host
 
-Bridge credentials never enter the startup environment, which same-user processes can read: desktop
-passes them privately, and the Runner strips them from `process.env` and disables
-inspector-by-signal. One authenticated bridge connection per slot owns its sessions. Each hop
-carries the remaining deadline, and outer grace exceeds inner grace. Giving up ends only that
-session; only close bypasses full work slots. Native errors never disclose paths.
+Bridge credentials travel privately, never in the startup environment that same-user processes
+can read. One authenticated bridge owns its sessions, and nested deadlines must leave outer
+cleanup time. Native errors must not disclose paths.
 
 Every app operation rechecks callable rows, digests, connection access, grant and Run capability
 immediately before Mac dispatch; `integration_call` refuses computer rows. The `computer` REPL guest
@@ -152,10 +147,8 @@ or size. Privacy suppression and login change clear pixels on every client. Medi
 selected Host route, even on the same Mac, and viewer frames never authorize an agent action.
 Diagnostics hold IDs and typed reasons, never media, window text, typed input or URLs.
 
-Mac video profiles negotiate at every hop; without confirmation a stream keeps the legacy shape
-(Baseline, 30 fps, 2.5 Mbps, periodic keys). The low-latency profile makes keys only on demand,
-because a periodic key on a scarce budget costs seconds of skipped frames. The Host caps the shared
-encoder by the driving viewer's link, else the slowest one.
+Video profiles require negotiation at every hop. On-demand keyframes avoid periodic stalls on
+scarce links, and the Host caps the shared encoder to its viewers' capacity.
 
 ## Negotiated Mac owner input
 

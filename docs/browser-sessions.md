@@ -19,15 +19,11 @@ restarts a finished Run. Failed automatic restoration waits for the person's Ret
 state never crosses sessions: Android's private on-disk profile is tombstoned before use, cleared
 when its last tab or session ends, and deleted at the next startup. Guest browsing is not RAM-only.
 
-Groups and tabs use one keyed-stream protocol. A client selects one carrier for its authorized
-catalog; a viewer receives only its addressed surface. A snapshot replaces the committed view only
-after its matching generation, end and count; changes apply in sequence. An unfinished snapshot
-never closes a tab. Durable closure requires an explicit remove from the runtime's committed
-stream, never an omission during assembly or browser teardown.
+Incomplete catalog snapshots never imply closure. Only committed explicit removal closes a tab;
+browser teardown and late updates cannot recreate or delete durable records.
 
-The Host's 20-second open budget sits inside the client's 25-second deadline, which covers first
-paint. An uncertain open retries with its original key and replays the recorded outcome, so it never
-starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
+The Host's open budget sits inside the client's deadline, including first paint. An uncertain open
+retries with its original key and replays the recorded outcome, so it never starts a second browser. Tickets, native creation and navigation are never blindly replayed. Tab
 groups grant no access, and agent reads reveal nothing of a group they only partly reach. Links
 opened with Opensteer as the macOS default browser start no agent.
 
@@ -37,15 +33,10 @@ using its memory budget and idle policy; missing Host state keeps it awake. Harn
 do not release a Run's hold. Watch alone never marks a tab as used by a person. Selecting a sleeping
 tab or explicitly resuming it as an agent wakes the existing record within its admitted session.
 
-Restore state stays in runtime memory and never enters a stream, row, database or log. Electron
-restores navigation history, the active entry, window scroll, ordinary form values and same-origin
-session storage. Password/file inputs, nested scroll and arbitrary application state are not
-promised. Playwright and phones retain the descriptor and reload its URL, so they promise no
-in-page state restoration. Ending the runtime loses in-memory restore state; the durable descriptor
-still permits reopening.
-
-A Run's place history moves at most once a second and always lands where the Run settles; its usage
-is written once per new tab or page, not on every switch between them.
+Restore state stays in runtime memory, never a database, stream or log. Electron can restore more
+in-page state than other engines; phones and Playwright promise only a descriptor and URL reload.
+Passwords, files and arbitrary app state are never promised. Ending a runtime loses that state,
+while the durable descriptor still permits reopening.
 
 ## Agent access and input
 
@@ -54,54 +45,31 @@ home and admits only what that browser advertises; it never substitutes another 
 abilities from a phone engine name. Host tab open, close, resume and context operations use the
 ordinary command channel even when the browser does not speak CDP; resume requires `surfaceState`.
 
-When Host discovery advertises `browser-backend-v1`, a Run negotiates its backend for one exact
-session; without it, the Run uses CDP. An advertised negotiation error never falls back.
-`cdpBoundary` selects CDP first, otherwise
-`agentActions` selects typed actions. Both require `sharedControl`. An attachment pins that choice,
-reaches only that session's pages and popups, and rechecks Run access and grants on every command.
-Requesting the other backend refuses `unsupported-operation`, not an upgrade request. Agent target
-selection never moves the person's focus.
+Backend negotiation pins one supported backend to an exact session. An advertised negotiation
+failure never falls back, and an attachment reaches only that session's pages and popups.
+Every command rechecks Run access and grants; target selection never moves the person's focus.
+The [browser action contract](../packages/protocol/src/browser-actions.ts) owns capability details.
+
 Input, navigation and geometry share a per-surface ordered lane; observations stay outside it, so an
 agent script waiting for a person's click cannot block that click. A lost answer after a key press
 or insertion is never replayed. Person activity is an observation, not an input gate, and never
 records keys or text.
 
-Typed actions expose bounded navigation, DOM-derived semantic reads, locators, native input,
-dialogs, viewport captures and optional staged-file selection, not CDP or arbitrary JavaScript.
-Document and geometry IDs fence stale actions; a dialog has its own one-use identity. Geometry
-advances with size, zoom, insets and the keyboard, never with scrolling, on every browser device:
-counting scrolls would send a message per frame and refuse agents' points mid-scroll. A lost answer
-after submission is `outcome-unknown`, never permission to retry a click or insertion. The wire is
-defined in [browser-actions](../packages/protocol/src/browser-actions.ts).
+Typed actions provide bounded semantic reads and native input, never arbitrary JavaScript.
+Document and geometry identities fence stale actions. Scroll must not advance geometry, which would
+invalidate points mid-scroll and send traffic every frame. A lost action answer is never permission
+to retry. The [wire contract](../packages/protocol/src/browser-actions.ts) owns operations.
 
-Browsers negotiate live/suspended surface state. Sleep releases the page lease without closing
-its record. A suspended tab keeps its last picture, or its named row, and addressed commands refuse
-`target-suspended`. Watching never wakes it. Selection and agent resume wake the same tab; older
-peers without surface-state negotiation retain their existing behavior.
+Suspended tabs refuse input. Watching never resumes, reloads or creates a view; selecting a sleeping
+tab resumes its existing surface instead of opening another record.
 
-A phone keeps at most two live views: its visible tab and one covered tab. The covered place belongs
-to an exact agent attachment or to people elsewhere. Each Android Harness connection owns its CDP
-router, permit and pipes, even when another connection belongs to the same Run; closing one never
-retires the other. An attachment may switch tabs after its prior input settles; agents may replace
-people, but another attachment cannot claim even the owner's already-live tab. People may
-replace another people-owned tab only when nobody receives its picture, preventing competing
-devices from repeatedly waking each other's tabs. Replacing retains the old page and fences queued
-input, never takes the phone's visible tab, and never reloads a retained page. Detaching retains an
-unwatched tab; a watched one passes to people until its last picture receiver leaves. Presenting it
-locally frees the covered place. Memory pressure may still discard retained pages.
-Native picture credit follows transport capacity, not enqueue acceptance or a viewer's ACK.
-Android admits no further capture while its socket still holds picture bytes; it captures the
-current page after drain rather than buffering old pictures. Native attachment revocation fences
-queued CDP writes and staging before side effects and releases debugging without a JavaScript round trip.
+Phone browsers have a bounded native view pool. Observation never resumes a suspended tab, and
+replacing a covered page must not take the phone's visible page or reload a retained one. Native
+attachment revocation fences queued writes and releases debugging without a JavaScript round trip.
+The [phone manager](../apps/mobile/src/phone-browser) owns allocation and resume sequencing.
 
-The phone marks its local presentation intent before asking the Host to reopen a saved tab. That
-resume needs no covered place, even while an agent owns the other live view. After a brief
-background, the Host creates a new session and the phone adopts surviving profile tabs without
-reloading; fresh local viewer admission still precedes presentation. The Host's initial and dormant
-surface list is authoritative for that profile lineage: omitted retired tabs are destroyed. Guest
-tabs have no saved lineage and end when their session loses its connection. Native local mounting
-revives a retained or discarded tab directly in the visible place; resuming it through the covered
-place first would incorrectly displace or be refused by an agent.
+Native picture credit follows transport capacity; after drain, capture the current page rather
+than buffer stale pictures.
 
 A failed navigation leaves Chromium's error document committed, and a surface's address stays the
 one it tried to reach, so a person sees where they meant to go and the catalog names a real origin.
@@ -188,17 +156,12 @@ Watch is passive: it may manage picture subscriptions and raster demand, but nev
 resize, input, touch the clipboard or CDP, or move state. Profile owners can always view their
 sessions, whatever the grants; Guest follows personal owner authority.
 
-A popup is another tab of its session. A background-tab opening, such as an unmodified middle-click,
-leaves every viewer on its opener. For a foreground opening, each viewer owns what it shows, so
-nothing about following is stored on the tab: the runtime tells the one viewer whose own input
-opened it, once, and that viewer moves as if it had chosen the row. Everyone else stays put. The
-ledger decides this when the popup registers, from the opener's latest person input.
-`Page.windowOpen` cannot decide it: a cross-site frame's event reaches only that frame's session, and
-a blocked attempt fires it too. The rule shares Chromium's user activation and its limit: an agent
-timer firing just after a person's input reads as theirs, as it does to Chromium. Any agent command
-after the input cancels the follow, which leaves the popup as a new row. Saved-login offers for a
-field a person activates, and offers to save a login a person typed, reach only that viewer by the
-same rule ([Filling for people](passwords.md#filling-for-people)), and Watch never receives them.
+A popup is another tab in its session. Only the viewer whose input opened a foreground popup
+follows it; everyone else stays put. `Page.windowOpen` cannot prove an opening, since it fires for
+blocked attempts and cross-site frame events arrive elsewhere. Attribution shares Chromium's
+user-activation limitation: an agent timer immediately after person input can look like theirs.
+An intervening agent command clears that attribution. Password offers use the same viewer-local
+routing, and Watch never receives them ([Passwords](passwords.md#filling-for-people)).
 
 ## Profile state
 
@@ -219,16 +182,11 @@ Removing a computer deletes its homed profiles in the same transaction. Their st
 terminal `unconfirmed`, not pending work and never a claim that files were erased. The removed device
 clears its own storage when it learns of removal; a phone also clears it at sign-out.
 
-A profile created by a caller that knows about homes always has one. A previous-release
-caller that cannot choose gets a profile that takes its home on first open; from then on it is fixed. The
-database also adopts a previous store's first storage binding as its home and enforces the same
-home/storage match for both writers. Offline homes refuse opens by name, without falling back.
-The first signed attach binds its storage root and engine on that home and publishes empty native files atomically; an engine-owned directory is never
-moved. The Host records initialization so missing established storage is distinguishable from
-never-created storage. A missing directory, root identity, sentinel or cookie mirror refuses to open
-and keeps what remains: never an empty replacement, another computer or Guest. There is no portable
-snapshot, sync or profile Vault key ([storage
-contract](../packages/protocol/src/browser-profile-storage.ts)).
+A profile's home and established storage identity are fixed. Missing directories, sentinels or
+cookie mirrors refuse open while preserving what remains; never create an empty replacement or
+fall back to another computer or Guest. An engine-owned directory never moves. There is no portable
+snapshot, sync or profile Vault key
+([storage contract](../packages/protocol/src/browser-profile-storage.ts)).
 
 Electron roots live under `sessionData`, outside disposable Runner slots, because the Network
 Service sandbox writes only there: a Session elsewhere looks usable but loses cookies. Eviction and
@@ -237,12 +195,9 @@ removes only tab restore records, only while no engine owns the directory. Elect
 cookies in an encrypted [mirror](../apps/desktop/src/browser/session-cookie-mirror.ts) with an
 OS-wrapped key. Engine upgrades must requalify cookie persistence.
 
-A live jar is still the browser's own, so a failed mirror save never closes pages or retires the
-profile: the mirror stays dirty and retries with backoff, and only a successful save confirms a
-cookie change. An owner retires only when its live jar cannot be trusted (Network Service loss), on
-deletion, or when its restore fails, and the next open replaces it. The runtime forgets a host once
-its engine close settles, whatever the outcome; engines guard directory reuse themselves, because
-Electron shares one Session per path and Chromium refuses a directory whose process exit is unproven.
+A mirror failure does not make the live browser jar untrustworthy: keep pages open and retry the
+save. Network Service loss can invalidate the live jar. Engines must prove directory ownership has
+ended before reuse; a settled close alone does not prove a Chromium process exited.
 
 ## Passkeys
 

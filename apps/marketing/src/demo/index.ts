@@ -1,7 +1,8 @@
 import "./demo.css";
-import { clamp, find, icon, reducedMotion, restart } from "../dom.js";
+import { clamp, find, icon, reducedMotion } from "../dom.js";
 import { AGENTS, type AgentId, ENGINES, engineOf, ORDER } from "./agents.js";
 import { createClock } from "./clock.js";
+import { glideRail } from "./rail.js";
 import { DESKTOP, LIVE, MAIN_SLOT } from "./geometry.js";
 import { desktop, group, macbook } from "./desktop.js";
 import { createPhone, PHONE } from "./phone.js";
@@ -103,16 +104,16 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     button.type = "button";
     button.className = "eng";
     button.setAttribute("aria-label", engine.name);
-    button.innerHTML = `${icon(engine.mark)}<span>${engine.name}</span>`;
+    button.innerHTML = `${icon(engine.mark)}<span class="eng__label"><span>${engine.name}</span></span>`;
     button.addEventListener("click", () => {
       const owner = ORDER.find((id) => AGENTS[id].engine === index);
       if (!owner) AGENTS[watched].engine = index;
       select(owner ?? watched, true);
-      restart(rail, "is-flash");
     });
     rail.appendChild(button);
     return button;
   });
+  glideRail(rail, engineButtons);
 
   const env: Env = {
     clock,

@@ -11,26 +11,16 @@ dictation rather than substitute a cloud recognizer. Availability must not promp
 the microphone, and a download never starts capture. Do not announce partial text, levels or timer
 ticks to assistive technology.
 
-One [DictationController](../packages/client/src/dictation/controller.ts) per runtime serves every
-composer. Its target includes Deployment, user, Thread and composer instance, so finishing commits
-into the original draft after navigation, and one composer cannot stop or discard another's session.
-Commands acknowledge admission; ordered, session-fenced events decide outcomes. Every accepted
-session ends exactly once, and a sequence gap fails while keeping received words. Native sends
-Apple's segments unchanged and only the controller joins them. Selections and wire bounds are
-UTF-16, and exceeding a bound fails rather than truncating
-([dictation.ts](../packages/protocol/src/dictation.ts)).
-
-The draft stays unchanged under preview. Typing or an IME start adopts the displayed text and
-releases dictation in the same handler. Completion inserts at the captured selection, or appends if
-the draft changed elsewhere; cancel discards tentative words, other endings keep them. Send awaits
-finalization, then rechecks ownership and send gates; failed finalization never sends. Leaving while
-starting cancels; leaving while listening stops and commits into the original draft without sending.
+A dictation session belongs to its original Deployment, user, Thread and composer. Navigation
+must not insert words into a different draft, and one composer cannot cancel another's session.
+Preview leaves the draft unchanged; cancel discards tentative words, while interruption keeps
+received text. Send waits for finalization and rechecks authority; failed finalization never sends.
+The [controller](../packages/client/src/dictation/controller.ts) owns draft and event sequencing.
 
 [apple-dictation](../packages/apple-dictation) owns capture, model reservations and teardown.
 Readiness comes from `SpeechTranscriber.installedLocales`, not `AssetInventory` status or
 `reservedLocales`: on macOS 26, idle-killing the speech service can empty the reservation view while
-installed models keep working. The microphone opens as soon as permission allows, and up to 10
-seconds of audio wait in memory while the recognizer prepares; overflow fails explicitly. Input
+installed models keep working. Audio may wait in bounded native memory while the recognizer prepares; overflow fails explicitly. Input
 device or format changes end capture; output route changes do not.
 
 On iPhone, dictation needs iOS 26 and the optional native module; Android hides the mic. Only a

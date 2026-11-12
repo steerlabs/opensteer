@@ -46,11 +46,10 @@ export const PHONE = `<div class="iphone" data-view="list">
     ${STATUS_BAR}
     <div class="ip-list">
       <div class="ip-dhead"><b>Opensteer</b>${icon("m-search")}</div>
-      ${nav(`<span class="orb"></span>`, "Chat")}
-      ${nav(icon("i-mic"), "Voice")}
       ${nav(icon("m-compose"), "New task")}
-      ${nav(icon("m-folder"), "Projects")}
+      ${nav(icon("i-mic"), "Voice")}
       ${nav(icon("i-clock"), "Automations")}
+      ${nav(`<span class="ip-team">A</span>`, `Acme<span class="ip-badge">3</span>`)}
       <div class="ip-sep"></div>
       <div class="ip-group">Working <span data-part="count"></span></div>
       <div data-part="working"></div>

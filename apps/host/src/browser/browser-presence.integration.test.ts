@@ -1403,6 +1403,20 @@ integration("Browser presence and conversation usage", () => {
             ) === true,
       ),
     );
+    // Each tab's activity flushes on its own timer: the burst's final page-y
+    // activity, which outranks page-x's, must land before the snapshot.
+    await until(() => {
+      const delivered = ofType(owner, "host.place-activity").map(
+        (message) => message.activity as { order: number; place: { surfaceId: string } },
+      );
+      const x = delivered.find((activity) => activity.place.surfaceId === "page-x");
+      return x &&
+        delivered.some(
+          (activity) => activity.place.surfaceId === "page-y" && activity.order > x.order,
+        )
+        ? true
+        : undefined;
+    });
     const latestBeforeExpiry = await host.runtime.browser.latestPlaces(host.ownerId);
     expect(latestBeforeExpiry).toEqual(
       expect.arrayContaining([

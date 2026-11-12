@@ -187,6 +187,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
   readonly #preloadPath: string;
   readonly #quit: () => void;
   readonly #onCreated: (window: ElectronAppWindow) => void;
+  readonly #log: DesktopWindowLog;
 
   constructor(
     config: DesktopConfiguration,
@@ -195,6 +196,7 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       readonly preloadPath: string;
       readonly quit: () => void;
       readonly onCreated?: (window: ElectronAppWindow) => void;
+      readonly log?: DesktopWindowLog;
       readonly policy?: DesktopAppOriginPolicy;
     },
   ) {
@@ -204,12 +206,14 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#preloadPath = options.preloadPath;
     this.#quit = options.quit;
     this.#onCreated = options.onCreated ?? (() => undefined);
+    this.#log = options.log ?? (() => undefined);
   }
 
-  async create(
+  create(
     onClosed: () => void,
     options: { readonly show: boolean },
-  ): Promise<ElectronAppWindow> {
+  ): { readonly window: ElectronAppWindow; readonly loaded: Promise<void> } {
+    const started = performance.now();
     const window = createElectronAppWindow(
       {
         backgroundColor: "#080808",
@@ -227,23 +231,32 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
     this.#onCreated(window);
     configureDesktopWindowNavigation(window.webContents, this.#policy);
     window.webContents.on("preload-error", (_event, preloadPath, error) => {
-      process.stdout.write(
-        `${JSON.stringify({ error: error.message, event: "desktop.preload.error", preloadPath })}\n`,
-      );
+      this.#log("desktop.preload.error", { error: error.message, preloadPath });
     });
     window.webContents.on("render-process-gone", (_event, { exitCode, reason }) => {
-      process.stdout.write(
-        `${JSON.stringify({ event: "desktop.renderer.gone", exitCode, reason })}\n`,
-      );
+      this.#log("desktop.renderer.gone", { exitCode, reason });
     });
     window.webContents.on("before-input-event", (event, input) => {
       if (!desktopQuitShortcut(input, process.platform)) return;
       event.preventDefault();
       this.#quit();
     });
-    window.webContents.once("did-finish-load", () => {
-      if (options.show && !window.isDestroyed()) window.show();
-    });
+    const reportLoad = (phase: "committed" | "dom-ready" | "finished" | "failed") => {
+      this.#log("desktop.window.load", {
+        phase,
+        elapsedMs: Math.round(performance.now() - started),
+      });
+    };
+    // Only the launch load is timed: the page reloads itself later.
+    const committed = () => reportLoad("committed");
+    const domReady = () => reportLoad("dom-ready");
+    window.webContents.once("did-navigate", committed);
+    window.webContents.once("dom-ready", domReady);
+    const settle = (phase: "finished" | "failed") => {
+      window.webContents.off("did-navigate", committed);
+      window.webContents.off("dom-ready", domReady);
+      reportLoad(phase);
+    };
     // Closing hides: the page keeps receiving the person's notifications.
     // Quitting destroys the window, which emits no `close`.
     window.on("close", (event) => {
@@ -251,17 +264,25 @@ export class ElectronWindowFactory implements DesktopWindowFactory {
       window.hide();
     });
     window.once("closed", onClosed);
-    try {
-      await window.webContents.loadURL(desktopAppEntryUrl);
-    } catch (error) {
-      window.destroy();
-      throw new Error("The desktop window could not load its bundled application.", {
-        cause: error,
-      });
-    }
-    return window;
+    if (options.show) window.show();
+    const loaded = window.webContents.loadURL(desktopAppEntryUrl).then(
+      () => settle("finished"),
+      (error: unknown) => {
+        settle("failed");
+        if (!window.isDestroyed()) window.destroy();
+        throw new Error("The desktop window could not load its bundled application.", {
+          cause: error,
+        });
+      },
+    );
+    return { window, loaded };
   }
 }
+
+type DesktopWindowLog = (
+  event: string,
+  fields: Readonly<Record<string, string | number | boolean>>,
+) => void;
 
 /** Explicit siblings let the application cover a live page when an overlay opens. */
 export interface ElectronAppWindow extends BaseWindow {

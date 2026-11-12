@@ -380,6 +380,37 @@ describe("native Chromium profiles", () => {
       }
     },
   );
+  it("reads a navigated document's media and skips a detached frame", async () => {
+    const f = await nativeCloseFixture();
+    const destroyed = new Error(
+      "frame.evaluate: Execution context was destroyed, most likely because of a navigation",
+    );
+    const main = {
+      evaluate: vi.fn().mockRejectedValueOnce(destroyed).mockResolvedValue(true),
+      isDetached: () => false,
+    } as unknown as Frame;
+    const child = {
+      evaluate: vi.fn().mockRejectedValue(new Error("Frame was detached")),
+      isDetached: () => true,
+    } as unknown as Frame;
+    const page = {
+      on: vi.fn(),
+      once: vi.fn(),
+      frames: () => [child, main],
+      mainFrame: () => main,
+    } as unknown as Page;
+    try {
+      const launched = await f.launcher.launch(nativeProfileRequest(f.directory));
+      vi.spyOn(f.context, "pages").mockReturnValue([page]);
+      expect(await launched.context.pages()[0]!.keepAwake?.()).toBe("media");
+      expect(main.evaluate).toHaveBeenCalledTimes(2);
+      expect(f.context.newCDPSession).not.toHaveBeenCalledWith(child);
+      await launched.close();
+    } finally {
+      f.exit();
+      await rm(f.directory, { recursive: true, force: true });
+    }
+  });
   it.each(["context", "browser"] as const)(
     "releases proven ownership after a %s protocol close failure",
     async (stage) => {
