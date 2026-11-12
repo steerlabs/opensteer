@@ -1,5 +1,6 @@
 import { isPublicIp, tlsServerName } from "@opensteer/access/host";
-import { TeamOriginSchema } from "@opensteer/core";
+import { OpensteerError, TeamOriginSchema } from "@opensteer/core";
+import { teamStorageFullMessage, teamStorageFullReason } from "@opensteer/database/team-files";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { TeamLinkViewSchema, type TeamLinkRedeemSchema } from "@opensteer/protocol";
 import { lookup } from "node:dns/promises";
@@ -83,6 +84,16 @@ export class TeamLinkNetwork {
             incoming.destroy();
             if (incoming.statusCode === 426) {
               reject(teamLinkVersionError(Number(incoming.headers[teamApiVersionHeader])));
+              return;
+            }
+            if (incoming.statusCode === 507) {
+              reject(
+                new OpensteerError({
+                  code: "resource_exhausted",
+                  reason: teamStorageFullReason,
+                  message: teamStorageFullMessage,
+                }),
+              );
               return;
             }
             reject(

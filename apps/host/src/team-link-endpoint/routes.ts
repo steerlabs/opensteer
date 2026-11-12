@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import "@fastify/websocket";
 import { OpensteerError } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import { teamStorageFullReason } from "@opensteer/database/team-files";
 import { teamBinaryRoutes } from "@opensteer/protocol";
 import { Readable } from "node:stream";
 import { checkTeamVersion, linkError, teamLinkRoutes } from "./contracts.js";
@@ -35,15 +36,24 @@ export async function registerTeamLinkRoutes(
       const version =
         error instanceof OpensteerError &&
         (error.reason === "unsupported-version" || error.reason === "api-version-mismatch");
+      const full = error instanceof OpensteerError && error.reason === teamStorageFullReason;
       const status = version
         ? 426
-        : error instanceof OpensteerError && error.code === "unauthorized"
-          ? 401
-          : 403;
+        : full
+          ? 507
+          : error instanceof OpensteerError && error.code === "unauthorized"
+            ? 401
+            : 403;
       void reply
         .code(status)
         .header(teamApiVersionHeader, String(teamApiVersion))
-        .send({ error: version ? "Team API version mismatch" : "Team request is unavailable" });
+        .send({
+          error: version
+            ? "Team API version mismatch"
+            : full
+              ? error.message
+              : "Team request is unavailable",
+        });
     });
     scope.addHook("onRequest", async (request) => {
       const values: string[] = [];

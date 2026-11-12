@@ -331,6 +331,12 @@ border:0;border-radius:var(--radius-sm);background:transparent;color:var(--muted
 transition:background-color var(--fast) var(--ease-out),color var(--fast) var(--ease-out)}
 .icon-btn:hover{background:var(--fill-quiet);color:var(--text)}
 .icon-btn .icon{stroke-width:3}
+.form{display:grid;gap:14px}
+.field{display:flex;align-items:center;min-height:var(--control);border:1px solid var(--rim-plate);border-radius:var(--radius-sm);background:var(--fill-quiet)}
+.field:focus-within{outline:2px solid var(--ember);outline-offset:2px}
+.field input{flex:1;width:0;min-width:0;height:var(--control);padding:0 2px 0 12px;border:0;background:transparent;color:var(--text);font:inherit;outline:none}
+.field__suffix{padding-right:12px;color:var(--muted);white-space:nowrap}
+.section-title{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.02em}
 
 /* Masthead */
 .masthead{display:flex;align-items:center;justify-content:space-between;gap:12px;

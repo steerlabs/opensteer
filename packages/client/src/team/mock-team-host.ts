@@ -1,5 +1,5 @@
 import { OpensteerError, type TeamChannelId, createId } from "@opensteer/core";
-import { teamApiVersion } from "@opensteer/deployment-authority";
+import { acceptsTeamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
   TeamAgentRequestSchema,
@@ -260,7 +260,7 @@ export class MockTeamHost {
   connect = (): MockTeamSocket => {
     const socket = new MockTeamSocket((frame) => {
       if (frame.type === "team.subscribe") {
-        if (frame.teamApiVersion !== teamApiVersion) {
+        if (!acceptsTeamApiVersion(frame.teamApiVersion)) {
           socket.close();
           return;
         }

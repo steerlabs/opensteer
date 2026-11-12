@@ -4,6 +4,7 @@ import { TeamChatStore } from "../packages/database/src/team-chat-store.js";
 import { teamChannelTopics } from "../packages/database/src/team-topics-store.js";
 import { startTeamSystem } from "./team-system.test-support.js";
 import { perfChannels } from "./team-performance.test-support.js";
+import { teamApiVersion } from "../packages/deployment-authority/src/authority.js";
 
 it("loads 50 sidebar channels with a bounded number of database round trips", async () => {
   const team = await startTeamSystem();
@@ -83,7 +84,7 @@ it("coalesces overlapping device snapshots while retaining each subscription ide
       peers.map((peer, index) =>
         peer.receive({
           type: "team.subscribe",
-          teamApiVersion: 1,
+          teamApiVersion,
           sidebar: false,
           subscriptionId: `device-${index}`,
           generation: index + 1,

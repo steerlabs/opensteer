@@ -1,10 +1,11 @@
 import { OpensteerError, type TeamActor, type TeamChannelId, type UserId } from "@opensteer/core";
 import {
-  TeamClientFrameSchema,
+  readTeamFrame,
+  TeamClientFrameViewSchema,
   type TeamConsistentCut,
   type TeamServerFrameSchema,
 } from "@opensteer/protocol";
-import { teamApiVersion } from "@opensteer/deployment-authority";
+import { acceptsTeamApiVersion, teamApiVersionRefusal } from "@opensteer/deployment-authority";
 import type { z } from "zod";
 import type { TeamChatStore } from "@opensteer/database/team-chat";
 import { teamReadableChannels, type TeamAccessStore } from "@opensteer/database/team-access";
@@ -148,14 +149,15 @@ export class TeamRealtimeHub {
           throw new OpensteerError({ code: "bad_request", message: "Invalid team frame" });
         if (
           raw.type === "team.subscribe" &&
-          (!("teamApiVersion" in raw) || raw.teamApiVersion !== teamApiVersion)
+          (!("teamApiVersion" in raw) || !acceptsTeamApiVersion(raw.teamApiVersion))
         )
           throw new OpensteerError({
             code: "conflict",
             reason: "api-version-mismatch",
-            message: "Team API version mismatch",
+            message: teamApiVersionRefusal,
           });
-        const frame = TeamClientFrameSchema.parse(raw);
+        const frame = readTeamFrame(TeamClientFrameViewSchema, raw);
+        if (!frame) return;
         peer.seen = Date.now();
         if (frame.type === "team.subscribe") {
           const subscription: Subscription = {

@@ -23,6 +23,17 @@ interface DatabaseConnectionOptions {
 }
 
 const databaseHolders = new WeakMap<Kysely<DatabaseSchema>, () => string>();
+const databasePools = new WeakMap<Kysely<DatabaseSchema>, Pool>();
+
+/**
+ * A raw session from the database's own pool, for a caller that must hold
+ * session state and see the session end: Kysely hides its client's events.
+ */
+export async function checkoutSession(database: Kysely<DatabaseSchema>): Promise<PoolClient> {
+  const pool = databasePools.get(database);
+  if (!pool) throw new Error("This database was not created by createDatabase");
+  return pool.connect();
+}
 
 /** Checkout sites only: SQL and connection credentials must never enter shutdown diagnostics. */
 export function databaseShutdownDetails(database: Kysely<DatabaseSchema>): string {
@@ -100,6 +111,7 @@ export function createDatabase(
     // it was written: `PLUGIN_ROOT` is not `PLUGINROOT`.
     plugins: [new CamelCasePlugin({ maintainNestedObjectKeys: true })],
   });
+  databasePools.set(database, pool);
   databaseHolders.set(database, () =>
     [...holders.values()]
       .map(

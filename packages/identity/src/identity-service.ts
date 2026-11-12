@@ -1,5 +1,7 @@
 import {
+  acceptsTeamApiVersion,
   teamApiVersion,
+  teamApiVersionRefusal,
   teamOidcStatePrefix,
   teamOAuthVersionParameter,
 } from "@opensteer/deployment-authority";
@@ -683,7 +685,7 @@ export class IdentityService {
   async #ensureInitialOwnerEnrollment(): Promise<void> {
     const enrollment = this.#options.initialOwnerEnrollment;
     if (!enrollment) return;
-    const tokenHash = digestSecret(enrollment.token);
+    const tokenHash = enrollment.tokenDigest;
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-enrollment");
       const existingAdministrator = this.#options.team
@@ -1809,11 +1811,8 @@ export class IdentityService {
     enrollmentToken: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly session: AuthenticatedSession }>> {
-    const configuredEnrollmentToken = this.#options.initialOwnerEnrollment?.token;
-    if (
-      !configuredEnrollmentToken ||
-      !equalSecretDigests(digestSecret(configuredEnrollmentToken), digestSecret(enrollmentToken))
-    ) {
+    const configuredDigest = this.#options.initialOwnerEnrollment?.tokenDigest;
+    if (!configuredDigest || !equalSecretDigests(configuredDigest, digestSecret(enrollmentToken))) {
       throw new OpensteerError({ code: "forbidden", message: "Local owner proof is invalid" });
     }
     const owner = this.#options.localMachineOwner;
@@ -1939,14 +1938,16 @@ export class IdentityService {
     const url = new URL(request.url);
     if (this.#options.team) {
       const state = url.searchParams.get("state"),
-        prefix = `${teamOidcStatePrefix}${teamApiVersion}.`;
-      if (!state?.startsWith(prefix))
+        version = state?.startsWith(teamOidcStatePrefix)
+          ? /^([0-9]+)\./u.exec(state.slice(teamOidcStatePrefix.length))?.[1]
+          : undefined;
+      if (!state || !version || !acceptsTeamApiVersion(version))
         throw new OpensteerError({
           code: "conflict",
           reason: "api-version-mismatch",
-          message: "Team API version mismatch",
+          message: teamApiVersionRefusal,
         });
-      url.searchParams.set("state", state.slice(prefix.length));
+      url.searchParams.set("state", state.slice(teamOidcStatePrefix.length + version.length + 1));
     }
     url.pathname = `${internalAuthPath}/sso/callback`;
     const response = await this.#auth.handler(

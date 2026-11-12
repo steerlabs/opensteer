@@ -462,6 +462,7 @@ const migrationProvider = {
       "0015_oauth_browser_binding": oauthBrowserBindingMigration,
       "0016_oauth_app_finish": oauthAppFinishMigration,
       "0017_team_notifications": teamNotificationsMigration,
+      "0018_hosted_teams": hostedTeamsMigration,
     };
   },
 };
@@ -533,5 +534,64 @@ const teamNotificationsMigration: Migration = {
         database,
       );
     }
+  },
+};
+
+/**
+ * Hosted team servers this Account asked Opensteer to run. A deleted row stays as a tombstone so
+ * its address is never handed to someone else; the creator link clears when that Account goes.
+ */
+export const hostedTeamsMigration: Migration = {
+  async up(database) {
+    await sql`
+      create table public.hosted_teams (
+        id uuid primary key,
+        slug text not null unique check (slug ~ '^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$'),
+        creator_account_id text references public.users(id) on delete set null,
+        state text not null check (state in ('active', 'suspended', 'deleted')),
+        setup_token_digest text check (setup_token_digest ~ '^[0-9a-f]{64}$'),
+        setup_generation integer not null check (setup_generation >= 1),
+        phase text not null check (phase in ('provisioning', 'ready', 'failed', 'suspended', 'deleted')),
+        host_image text check (length(host_image) <= 512),
+        observed_setup_generation integer not null default 0 check (observed_setup_generation >= 0),
+        status_message text check (length(status_message) <= 1000),
+        status_reported_at timestamptz,
+        suspended_reason text check (length(suspended_reason) <= 1000),
+        created_at timestamptz not null default now(),
+        updated_at timestamptz not null default now(),
+        deleted_at timestamptz,
+        check ((state = 'deleted') = (deleted_at is not null)),
+        check ((state = 'deleted') = (setup_token_digest is null))
+      )
+    `.execute(database);
+    // Any release may delete the creator's Account, including one that predates hosted teams;
+    // the database tombstones the team so it never outlives its Account.
+    await sql`
+      create function public.hosted_teams_tombstone_orphan() returns trigger
+      language plpgsql as $$
+      begin
+        new.state := 'deleted';
+        new.setup_token_digest := null;
+        new.deleted_at := coalesce(new.deleted_at, now());
+        new.updated_at := now();
+        return new;
+      end
+      $$
+    `.execute(database);
+    await sql`
+      create trigger hosted_teams_tombstone_orphan
+      before update of creator_account_id on public.hosted_teams
+      for each row
+      when (new.creator_account_id is null and old.creator_account_id is not null)
+      execute function public.hosted_teams_tombstone_orphan()
+    `.execute(database);
+    await sql`
+      create index hosted_teams_creator on public.hosted_teams (creator_account_id, created_at)
+      where state <> 'deleted'
+    `.execute(database);
+    await sql`
+      create index hosted_teams_pending on public.hosted_teams (created_at)
+      where state <> 'deleted' or phase <> 'deleted'
+    `.execute(database);
   },
 };

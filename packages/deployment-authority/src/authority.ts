@@ -41,7 +41,13 @@ export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
 /** Personal and team transports negotiate their own mandatory contract version. */
 export const hostApiVersion = 53;
-export const teamApiVersion = 1;
+/**
+ * The team API this tree speaks, and the oldest peer it still serves. See the
+ * compatibility policy in docs/teams.md before changing either; the wire
+ * snapshot test refuses a breaking schema change without a bump.
+ */
+export const teamApiVersion = 2;
+export const minimumTeamApiVersion = 2;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
 export const hostApiVersionHeader = "x-opensteer-api-version";
@@ -71,8 +77,28 @@ export function statesApiVersion(
   headers: Readonly<Record<string, string | readonly string[] | undefined>>,
   kind: z.infer<typeof DeploymentKindSchema>,
 ): boolean {
-  return headers[apiVersionHeader(kind)] === String(apiNegotiation(kind).apiVersion);
+  const stated = headers[apiVersionHeader(kind)];
+  return kind === "team"
+    ? acceptsTeamApiVersion(stated)
+    : stated === String(apiNegotiation(kind).apiVersion);
 }
+
+/**
+ * Whether a team peer's stated version is one this tree serves. A newer peer
+ * is admitted: it knows this side's version and keeps to its own minimum.
+ */
+export function acceptsTeamApiVersion(stated: unknown): boolean {
+  const version =
+    typeof stated === "number"
+      ? stated
+      : typeof stated === "string" && /^[1-9][0-9]{0,8}$/u.test(stated)
+        ? Number(stated)
+        : Number.NaN;
+  return Number.isSafeInteger(version) && version >= minimumTeamApiVersion;
+}
+
+/** What a team peer older than this tree serves is told. */
+export const teamApiVersionRefusal = `Update Opensteer: this team server needs team API version ${minimumTeamApiVersion} or newer.`;
 
 /**
  * Optional features a Host may or may not serve. A capability is never a
@@ -158,6 +184,8 @@ export type HostCapability = z.infer<typeof HostCapabilitySchema>;
 export const HostDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
   apiVersion: z.number().int().positive(),
+  /** Team Hosts only: the oldest team API version they still serve. */
+  minimumApiVersion: z.number().int().positive().optional(),
   authority: HostDiscoveryEnvelopeSchema,
   bootstrapMethods: z.array(HostBootstrapMethodSchema).max(4),
   capabilities: z.array(z.string().min(1).max(64)).max(64),
@@ -177,14 +205,29 @@ export type HostApiCompatibility = "client-too-old" | "compatible" | "host-too-o
 const NegotiatedDescriptorSchema = z.object({
   kind: DeploymentKindSchema,
   apiVersion: z.number().int().positive().optional(),
+  minimumApiVersion: z.number().int().positive().optional(),
 });
 
 export function hostApiCompatibility(descriptor: unknown): HostApiCompatibility {
   const parsed = NegotiatedDescriptorSchema.safeParse(descriptor);
+  if (parsed.success && parsed.data.kind === "team")
+    return teamApiCompatibility(parsed.data.apiVersion ?? 0, parsed.data.minimumApiVersion);
   const advertised = parsed.success ? parsed.data.apiVersion : undefined;
-  const expected = parsed.success ? apiNegotiation(parsed.data.kind).apiVersion : hostApiVersion;
-  if (advertised === undefined || advertised < expected) return "host-too-old";
-  if (advertised > expected) return "client-too-old";
+  if (advertised === undefined || advertised < hostApiVersion) return "host-too-old";
+  if (advertised > hostApiVersion) return "client-too-old";
+  return "compatible";
+}
+
+/**
+ * Whether this tree and a team peer overlap. A peer that predates
+ * `minimumApiVersion` serves only its own version.
+ */
+export function teamApiCompatibility(
+  peerVersion: number,
+  peerMinimum = peerVersion,
+): HostApiCompatibility {
+  if (peerVersion < minimumTeamApiVersion) return "host-too-old";
+  if (peerMinimum > teamApiVersion) return "client-too-old";
   return "compatible";
 }
 

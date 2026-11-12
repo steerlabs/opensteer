@@ -137,7 +137,7 @@ it.each(["personal", "team"] as const)(
         apiVersion: kind === "team" ? teamApiVersion : hostApiVersion,
         authority: { document: { deploymentShape: { kind } } },
       });
-      for (const version of ["999", "1&opensteer_api_version=1"]) {
+      for (const version of [kind === "team" ? "0" : "999", "1&opensteer_api_version=1"]) {
         const refused = await runtime.app.inject({
           method: "GET",
           url: `/v1/realtime?opensteer_api_version=${version}`,
@@ -157,8 +157,8 @@ it.each(["personal", "team"] as const)(
       expect(admitted.statusCode).toBe(401);
       if (kind === "team") {
         for (const url of [
-          "/v1/auth/oidc/callback?state=ost-team-api-2.fake",
-          "/v1/auth/native/oauth2/authorize?opensteer_team_api_version=2",
+          "/v1/auth/oidc/callback?state=ost-team-api-0.fake",
+          "/v1/auth/native/oauth2/authorize?opensteer_team_api_version=0",
         ]) {
           const refused = await runtime.app.inject({ method: "GET", url });
           expect(refused.statusCode).toBe(409);

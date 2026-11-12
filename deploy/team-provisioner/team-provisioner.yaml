@@ -1,0 +1,67 @@
+# The namespace and the provisioner's cluster permissions are platform objects owned by
+# opensteer-infra (kubernetes/prod/teams-1); this deploy changes only the provisioner itself.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: team-provisioner
+  namespace: opensteer-teams
+  annotations:
+    # The one Google identity Account's OPENSTEER_HOSTED_TEAMS_PROVISIONER_EMAIL admits.
+    iam.gke.io/gcp-service-account: team-provisioner@opensteer-prod.iam.gserviceaccount.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: team-provisioner
+  namespace: opensteer-teams
+  annotations:
+    # Lets the deploy refuse to replace a newer release with an older one.
+    opensteer.dev/source-revision: "@SOURCE_REVISION@"
+spec:
+  replicas: 1
+  # One provisioner at a time, so teams roll one at a time.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: team-provisioner
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: team-provisioner
+    spec:
+      serviceAccountName: team-provisioner
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: team-provisioner
+          image: "@PROVISIONER_IMAGE@"
+          env:
+            - { name: OPENSTEER_ACCOUNT_URL, value: https://accounts.opensteer.com }
+            - { name: OPENSTEER_TEAM_HOST_IMAGE, value: "@TEAM_HOST_IMAGE@" }
+            - { name: OPENSTEER_TEAM_GATEWAY_IMAGE, value: "@TEAM_GATEWAY_IMAGE@" }
+            # The same Postgres as deploy/team/compose.yaml.
+            - {
+                name: OPENSTEER_TEAM_POSTGRES_IMAGE,
+                value: "docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15",
+              }
+          ports:
+            - { name: readiness, containerPort: 8081 }
+          # Ready only after a whole reconcile pass succeeds, so a release that cannot reach
+          # Account or list teams fails its rollout and is rolled back.
+          readinessProbe:
+            httpGet: { path: /readyz, port: readiness }
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }

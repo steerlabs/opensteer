@@ -1365,6 +1365,29 @@ describeStore("PostgreSQL store", (it) => {
     const replacementLease = await acquireDeploymentAuthorityLease(database);
     await replacementLease.close();
   });
+  it("reports a lost authority session instead of silently running unfenced", async ({
+    storeFixture,
+  }) => {
+    const { database } = storeFixture;
+    const lease = await acquireDeploymentAuthorityLease(database);
+    const terminated = await sql<{ terminated: boolean }>`
+      select pg_terminate_backend(pid) as terminated from pg_locks
+      where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
+        and objid::bigint = hashtextextended('opensteer-deployment-authority', 0) & 4294967295
+    `.execute(database);
+    expect(terminated.rows).toEqual([{ terminated: true }]);
+    await expect(
+      Promise.race([
+        lease.lost,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("The lease never reported its lost session")), 5_000),
+        ),
+      ]),
+    ).resolves.toBeInstanceOf(Error);
+    await lease.close();
+    const replacementLease = await acquireDeploymentAuthorityLease(database);
+    await replacementLease.close();
+  });
   it("creates and pins a control-plane-provisioned Deployment identity", async ({
     storeFixture,
   }) => {

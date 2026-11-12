@@ -1,3 +1,4 @@
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import { delay } from "@opensteer/shared/delay";
 import { createHash, createHmac } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -1465,7 +1466,7 @@ integration("IdentityService", () => {
     const original = identityService({
       initialOwnerEnrollment: {
         expiresAt: originalExpiry,
-        token: "original-owner-token-with-entropy",
+        tokenDigest: digestSecret("original-owner-token-with-entropy"),
       },
     });
     await original.initialize();
@@ -1477,7 +1478,7 @@ integration("IdentityService", () => {
     await identityService({
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 7_200_000),
-        token: "original-owner-token-with-entropy",
+        tokenDigest: digestSecret("original-owner-token-with-entropy"),
       },
     }).initialize();
     const replay = await database
@@ -1491,7 +1492,7 @@ integration("IdentityService", () => {
       identityService({
         initialOwnerEnrollment: {
           expiresAt: new Date(Date.now() + 7_200_000),
-          token: "different-live-owner-token-with-entropy",
+          tokenDigest: digestSecret("different-live-owner-token-with-entropy"),
         },
       }).initialize(),
     ).rejects.toThrow("does not match durable Host state");
@@ -1503,7 +1504,7 @@ integration("IdentityService", () => {
     const rotatedToken = "rotated-owner-token-with-enough-entropy";
     const rotatedExpiry = new Date(Date.now() + 3_600_000);
     await identityService({
-      initialOwnerEnrollment: { expiresAt: rotatedExpiry, token: rotatedToken },
+      initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
     }).initialize();
     const rotated = await database
       .selectFrom("ownerEnrollments")
@@ -1527,7 +1528,7 @@ integration("IdentityService", () => {
       .where("id", "=", administratorId)
       .executeTakeFirstOrThrow();
     const completedIdentity = identityService({
-      initialOwnerEnrollment: { expiresAt: rotatedExpiry, token: rotatedToken },
+      initialOwnerEnrollment: { expiresAt: rotatedExpiry, tokenDigest: digestSecret(rotatedToken) },
     });
     await expect(completedIdentity.initialize()).resolves.toBeUndefined();
     await expect(
@@ -1546,7 +1547,7 @@ integration("IdentityService", () => {
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
         renewable: true,
-        token,
+        tokenDigest: digestSecret(token),
       },
       localMachineOwner: {
         displayName: "You",
@@ -1626,7 +1627,7 @@ integration("IdentityService", () => {
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
         renewable: true,
-        token,
+        tokenDigest: digestSecret(token),
       },
       localMachineOwner: {
         displayName: "You",
@@ -1725,7 +1726,7 @@ integration("IdentityService", () => {
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
         renewable: true,
-        token,
+        tokenDigest: digestSecret(token),
       },
       localMachineOwner: {
         displayName: "You",
@@ -1843,7 +1844,7 @@ integration("IdentityService", () => {
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
         renewable: true,
-        token,
+        tokenDigest: digestSecret(token),
       },
       localMachineOwner: {
         displayName: "You",
@@ -1894,7 +1895,7 @@ integration("IdentityService", () => {
     const identity = identityService({
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
-        token,
+        tokenDigest: digestSecret(token),
       },
     });
     await identity.initialize();
@@ -1910,7 +1911,7 @@ integration("IdentityService", () => {
     const identity = identityService({
       initialOwnerEnrollment: {
         expiresAt: new Date(Date.now() + 3_600_000),
-        token,
+        tokenDigest: digestSecret(token),
       },
     });
     await identity.initialize();

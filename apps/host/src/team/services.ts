@@ -9,7 +9,11 @@ import {
   TeamChannelIdSchema,
   type UserId,
 } from "@opensteer/core";
-import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import {
+  acceptsTeamApiVersion,
+  teamApiVersionHeader,
+  teamApiVersionRefusal,
+} from "@opensteer/deployment-authority";
 import {
   TeamCommandSchema,
   TeamBootstrapSchema,
@@ -39,11 +43,11 @@ import { TeamFileService } from "./file-service.js";
 import { TeamRealtimeHub } from "./realtime.js";
 
 export function assertTeamApiVersion(headers: Headers) {
-  if (headers.get(teamApiVersionHeader) !== String(teamApiVersion))
+  if (!acceptsTeamApiVersion(headers.get(teamApiVersionHeader)))
     throw new OpensteerError({
       code: "conflict",
       reason: "api-version-mismatch",
-      message: "Team API version mismatch",
+      message: teamApiVersionRefusal,
     });
 }
 export interface TeamServiceOptions {
@@ -55,6 +59,7 @@ export interface TeamServiceOptions {
   readonly hostKeyFingerprint: string;
   readonly origin: string;
   readonly dataDirectory: string;
+  readonly storageLimitBytes?: number | undefined;
   readonly topics: ChannelTopicPort;
   readonly ensureKnowledge: () => Promise<void>;
   readonly knowledge: {
@@ -104,7 +109,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     hostKeyFingerprint: options.hostKeyFingerprint,
   });
   const requests = new TeamRequestsStore(access, chat);
-  const files = new TeamFilesStore(access);
+  const files = new TeamFilesStore(access, { storageLimitBytes: options.storageLimitBytes });
   const fileService = new TeamFileService(files, access, options.dataDirectory);
   const realtime = new TeamRealtimeHub(access, chat);
   const outbox = new TeamOutboxStore(access, (userId, channelId) =>
@@ -159,6 +164,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
   });
   push();
   maintenance();
+  // A removal has committed; on failure the next maintenance pass frees its files.
+  const freeFiles = () =>
+    fileService.collectGarbage().catch(() => options.backgroundError("team-maintenance"));
   async function dispatch(actor: TeamActor, raw: unknown): Promise<unknown> {
     requireTeam(actor.kind === "human", "Human session required for team commands");
     const command = TeamCommandSchema.parse(raw);
@@ -211,6 +219,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
         break;
       case "team.message.delete":
         await chat.editOrDelete(actor, command.channelId, command.messageId, null);
+        await freeFiles();
         break;
       case "team.message.pin":
       case "team.message.unpin":
@@ -243,12 +252,14 @@ export async function startTeamServices(options: TeamServiceOptions) {
       }
       case "team.upload.cancel":
         await files.cancel(actor, command.blobId);
+        await freeFiles();
         break;
       case "team.member.role.set":
         await members.change(actor, command.userId, command.role);
         break;
       case "team.member.remove":
         await members.change(actor, command.userId, "remove");
+        await freeFiles();
         break;
       case "team.owner.transfer":
         await members.change(actor, command.userId, "owner");

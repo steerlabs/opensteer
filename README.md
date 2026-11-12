@@ -52,7 +52,8 @@ back in the channel.
 - **The server holds the chat, not the work.** Your team server keeps channels,
   files and knowledge. It runs no agents and stores no passwords.
 
-More in [Teams](docs/teams.md).
+More in [Teams](docs/teams.md). To run your own team server, follow the
+[team server guide](deploy/team/README.md): it runs the published images with Docker Compose.
 
 ## Security
 

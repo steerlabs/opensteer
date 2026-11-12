@@ -44,6 +44,8 @@ import {
   registerHostedOAuthBrokerRoutes,
 } from "../auth/hosted-oauth-broker-routes.js";
 import type { HostedOAuthBrokerService } from "../auth/hosted-oauth-broker-service.js";
+import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
+import { registerHostedTeamProvisionerRoutes } from "../hosted-teams/provisioner-routes.js";
 
 const maxHttpBodyBytes = 1 * 1_024 * 1_024;
 /** Every response from both vhosts, so no Opensteer hostname is ever downgraded. */
@@ -69,6 +71,11 @@ export async function createControlPlaneServer(
     readonly authenticator: ControlPlaneAuthenticator;
     readonly connectLifecycle: ConnectLifecycleService;
     readonly hostedOAuthBroker?: HostedOAuthBrokerService;
+    /** Teams Opensteer hosts, and the check that admits only their provisioner. */
+    readonly hostedTeams?: {
+      readonly store: HostedTeamStore;
+      readonly verifyProvisioner: (authorization: string | undefined) => Promise<void>;
+    };
     readonly desktopDownloadUrl?: string;
     readonly iosAppUrl?: string;
     readonly androidAppUrl?: string;
@@ -173,6 +180,7 @@ export async function createControlPlaneServer(
           ? { desktopDownloadUrl: dependencies.desktopDownloadUrl }
           : {}),
         fonts,
+        ...(dependencies.hostedTeams ? { hostedTeams: dependencies.hostedTeams.store } : {}),
         portalOrigin: dependencies.portalOrigin,
         portalSessions: dependencies.portalSessions,
         ...(dependencies.personalRemoteAccount
@@ -188,6 +196,12 @@ export async function createControlPlaneServer(
   pageFonts.register(app);
   registerControlPlaneRoutes(app, { ...dependencies, accountDeletion });
   registerNotificationRoutes(app, dependencies);
+  if (dependencies.hostedTeams) {
+    registerHostedTeamProvisionerRoutes(app, {
+      hostedTeams: dependencies.hostedTeams.store,
+      verifyProvisioner: dependencies.hostedTeams.verifyProvisioner,
+    });
+  }
   if (dependencies.hostedOAuthBroker) {
     registerHostedOAuthBrokerRoutes(app, {
       ...(dependencies.appleSignIn ? { appleSignIn: true } : {}),

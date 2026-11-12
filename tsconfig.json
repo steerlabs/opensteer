@@ -74,6 +74,9 @@
       "path": "./apps/channel-runtime"
     },
     {
+      "path": "./apps/team-provisioner"
+    },
+    {
       "path": "./apps/runner"
     },
     {

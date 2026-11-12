@@ -24,6 +24,8 @@ import {
 import { ControlPlaneNotificationStore } from "../notifications/notification-store.js";
 import { NotificationTokenCipher } from "../notifications/notification-token-cipher.js";
 import { ControlPlaneStore } from "../database/store.js";
+import { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
+import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
 
 const operationResultCleanupIntervalMilliseconds = 5 * 60 * 1_000;
 
@@ -105,6 +107,17 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
+        ...(config.hostedTeams
+          ? {
+              hostedTeams: {
+                store: new HostedTeamStore(database),
+                verifyProvisioner: googleServiceAccountVerifier({
+                  audience: config.publicOrigin.origin,
+                  email: config.hostedTeams.provisionerEmail,
+                }),
+              },
+            }
+          : {}),
         ...(config.iosAppUrl ? { iosAppUrl: config.iosAppUrl } : {}),
         ...(config.androidAppUrl ? { androidAppUrl: config.androidAppUrl } : {}),
         ...(config.desktopDownloadUrl ? { desktopDownloadUrl: config.desktopDownloadUrl } : {}),

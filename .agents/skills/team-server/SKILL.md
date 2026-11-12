@@ -17,14 +17,22 @@ then edit it for the test HTTPS origin. First-owner Account adoption needs a pub
 HTTPS origin (a public hostname or Tailscale Funnel); a private-only tailnet origin
 cannot pass Account's public proof fetch. No Connect for teams in v1.
 
-Complete setup.sh in this disposable checkout to provision secrets, then disable its updater
-as described in the recipe. For subsequent local test starts, use Compose directly:
+`setup.sh` provisions secrets and runs the newest published release of the configured
+channel; disable its updater as described in the recipe. To test unreleased source instead,
+do not run setup.sh again: create the secrets and run locally built images under a local version:
 
 ```sh
+bash deploy/team/secrets.sh init deploy/team/secrets
+for target in host team-gateway; do
+  docker build -f deploy/container/Containerfile --target "$target" \
+    --build-arg OPENSTEER_AGENT_PHONE_MODE=none \
+    --build-arg OPENSTEER_RELEASE_VERSION="$(node -p 'require("./package.json").version')" \
+    --build-arg OPENSTEER_SOURCE_REVISION="$(git rev-parse HEAD)" \
+    -t "ghcr.io/steerlabs/opensteer-team-${target#team-}:local" .
+done
+export OPENSTEER_TEAM_VERSION=local
 source deploy/team/common.sh
-identity
-compose build
-compose up -d --wait
+compose up -d --wait --pull never
 team_container_ids=$(compose ps -aq)
 ```
 
@@ -34,14 +42,11 @@ Keep volumes until evidence is collected. Never stop another test's stack by nam
 ## Renew first-owner setup
 
 The first-owner token expires 24 hours after initialization; restarting with the same
-token preserves that deadline. On an unclaimed disposable team only, replace the enrollment token file atomically
-with a fresh random value, then recreate the Host because Compose secrets mount the
-old file. Do not rotate auth, database or credential keys. In the same shell:
+token preserves that deadline. On an unclaimed disposable team only, replace the token
+and recreate the Host, because Compose secrets mount the old file. In the same shell:
 
 ```sh
-openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' > deploy/team/secrets/setup-token-next
-chmod 644 deploy/team/secrets/setup-token-next
-mv deploy/team/secrets/setup-token-next deploy/team/secrets/initial_owner_enrollment_token
+bash deploy/team/secrets.sh renew deploy/team/secrets
 compose up -d --force-recreate --wait host
 team_container_ids=$(compose ps -aq)
 ```

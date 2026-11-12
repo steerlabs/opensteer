@@ -250,6 +250,14 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
     topicId: KnowledgeTopicIdSchema,
   }),
 ]);
+/** The identity RPCs a team Host serves beside its own `team.*` reads and commands. */
+export const teamIdentityRpcNames = [
+  "auth.config",
+  "auth.native.complete",
+  "auth.oidc.begin",
+  "auth.signOut",
+  "sessions.list",
+] as const;
 export const teamReadSchemas = {
   "team.bootstrap.get": { input: z.strictObject({}), output: TeamBootstrapSchema },
   "team.sidebar.get": {

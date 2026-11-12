@@ -27,6 +27,8 @@ export const databaseLockOrder = [
   "team_channel_topics",
   "team_links",
   "team_messages",
+  // Serializes team file reservations against the storage limit.
+  "advisory:team-storage",
   "team_blobs",
   "team_message_attachments",
   "team_mentions",
@@ -262,6 +264,8 @@ export const databaseLockOrder = [
   "control-plane:deployment_credentials",
   "control-plane:deployment_connect",
   "control-plane:deployment_directory_entries",
+  // Deleting a hosted team removes the Deployment adopted at its address first.
+  "control-plane:hosted_teams",
   // OAuth client identity precedes cloud operation projection and token cleanup.
   "control-plane:oauth_clients",
   "control-plane:cloud_deployment_operations",
@@ -329,6 +333,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     "opensteer:account-directory-provider",
     "opensteer-deployment-identity",
     "personal-remote-access",
+    "team-storage",
   ] as const;
   if ((identities as readonly string[]).includes(key)) return `advisory:${key}`;
   let value: unknown;

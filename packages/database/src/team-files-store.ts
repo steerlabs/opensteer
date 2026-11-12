@@ -1,17 +1,26 @@
 import {
   createId,
+  OpensteerError,
   type TeamActor,
   type TeamAgentRequestId,
   type TeamBlobId,
   type TeamChannelId,
   type TeamMessageId,
 } from "@opensteer/core";
-import { TeamFileSchema, TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
-import type { Selectable, Transaction } from "kysely";
+import {
+  TeamFileSchema,
+  TeamBinaryUploadMetadataSchema,
+  teamPreviewMaxBytes,
+} from "@opensteer/protocol";
+import { sql, type ExpressionBuilder, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+
+export const teamStorageFullReason = "team-storage-full";
+export const teamStorageFullMessage =
+  "This team's file storage is full. Deleting messages with files frees space.";
 
 export function teamFileView(row: Selectable<TeamBlobTable>) {
   return TeamFileSchema.parse({
@@ -95,8 +104,11 @@ async function activeUploadRequest(
 
 export class TeamFilesStore {
   readonly access: TeamAccessStore;
-  constructor(access: TeamAccessStore) {
+  /** Bytes every team file may hold together, previews and unfinished uploads included. */
+  readonly #storageLimitBytes: number | undefined;
+  constructor(access: TeamAccessStore, options: { storageLimitBytes?: number | undefined } = {}) {
     this.access = access;
+    this.#storageLimitBytes = options.storageLimitBytes;
   }
   async begin(
     actor: TeamActor,
@@ -105,6 +117,11 @@ export class TeamFilesStore {
     requestId?: TeamAgentRequestId,
   ) {
     metadata = TeamBinaryUploadMetadataSchema.parse(metadata);
+    const image = metadata.mediaType.startsWith("image/");
+    requireTeam(
+      image === metadata.previewSizeBytes > 0,
+      "Only images carry a preview, and need one",
+    );
     return this.access.contentWrite(actor, channelId, async (t, a) => {
       requireTeam(a.post);
       await activeUploadRequest(t, this.access, actor, channelId, requestId);
@@ -127,6 +144,27 @@ export class TeamFilesStore {
           "Upload identity already names different bytes",
         );
         return prior;
+      }
+      if (this.#storageLimitBytes !== undefined) {
+        // A row reserves its bytes from begin until its files are removed from
+        // disk; an unfinished image holds the largest preview it may still send.
+        await sql`select pg_advisory_xact_lock(hashtextextended('team-storage', 0))`.execute(t);
+        const { used } = await t
+          .selectFrom("teamBlobs")
+          .select(
+            sql<string>`coalesce(sum(${sql.ref("sizeBytes")} + coalesce(${sql.ref("previewSizeBytes")}, case when ${sql.ref("state")} = 'uploading' and ${sql.ref("declaredType")} like 'image/%' then ${teamPreviewMaxBytes} else 0 end)), 0)`.as(
+              "used",
+            ),
+          )
+          .executeTakeFirstOrThrow();
+        const reserved = metadata.sizeBytes + (image ? teamPreviewMaxBytes : 0);
+        if (Number(used) + reserved > this.#storageLimitBytes)
+          throw new OpensteerError({
+            code: "resource_exhausted",
+            reason: teamStorageFullReason,
+            message: teamStorageFullMessage,
+            details: { limitBytes: this.#storageLimitBytes },
+          });
       }
       const id = createId("teamBlob");
       return t
@@ -197,7 +235,8 @@ export class TeamFilesStore {
       requireTeam(
         input.receivedBytes === Number(row.sizeBytes) &&
           input.sha256 === row.sha256 &&
-          input.previewSizeBytes <= 65536,
+          input.previewSizeBytes <=
+            (row.declaredType.startsWith("image/") ? teamPreviewMaxBytes : 0),
         "File size or digest mismatch",
       );
       const complete = await t
@@ -241,6 +280,54 @@ export class TeamFilesStore {
         .executeTakeFirst();
       requireTeam(!bound, "A sent attachment cannot be cancelled");
       await t.updateTable("teamBlobs").set({ state: "deleting" }).where("id", "=", id).execute();
+    });
+  }
+  /** Marks for removal unsent files no one can send any more: expired, or a removed member's. */
+  async abandonUnsent() {
+    const unbound = (e: ExpressionBuilder<DatabaseSchema, "teamBlobs">) =>
+      e.not(
+        e.exists(
+          e
+            .selectFrom("teamMessageAttachments as a")
+            .select("a.blobId")
+            .whereRef("a.blobId", "=", "teamBlobs.id"),
+        ),
+      );
+    await this.access.database.transaction().execute(async (t) => {
+      const candidates = await t
+        .selectFrom("teamBlobs")
+        .select("id")
+        .where("state", "!=", "deleting")
+        .where((e) =>
+          e.or([
+            e("expiresAt", "<", new Date()),
+            e.exists(
+              e
+                .selectFrom("teamMembers as m")
+                .select("m.userId")
+                .whereRef("m.userId", "=", "teamBlobs.uploaderUserId")
+                .where("m.state", "=", "removed"),
+            ),
+          ]),
+        )
+        .where(unbound)
+        .orderBy("id")
+        // An attach in flight holds its file; a later pass reconsiders it.
+        .forNoKeyUpdate()
+        .skipLocked()
+        .execute();
+      if (!candidates.length) return;
+      // A new statement sees any attach that committed before these locks were granted.
+      await t
+        .updateTable("teamBlobs")
+        .set({ state: "deleting" })
+        .where(
+          "id",
+          "in",
+          candidates.map((row) => row.id),
+        )
+        .where(unbound)
+        .execute();
     });
   }
   async authorized(actor: TeamActor, id: TeamBlobId, requestId?: TeamAgentRequestId) {

@@ -330,10 +330,18 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "packages/deployment-authority/src/authority.ts": {
     counts: {
-      kind: 2,
+      kind: 3,
+      "parsed.data.kind": 1,
     },
     reason:
-      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request; only team peers negotiate a version window.",
+  },
+  "packages/control-plane-protocol/src/hosted-teams.ts": {
+    counts: {
+      slug: 1,
+    },
+    reason:
+      "Reserved hosted-team addresses include words like team and personal; the check reads an address, not a Deployment kind.",
   },
   "packages/harness/src/types.ts": {
     counts: {

@@ -103,6 +103,7 @@ COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -170,6 +171,13 @@ RUN pnpm --filter @opensteer/control-plane build && \
     node scripts/verify-deployed-package.cjs apps/control-plane/package.json /output/control-plane/package.json
 
 
+FROM sources AS team-provisioner-build
+COPY apps/team-provisioner ./apps/team-provisioner
+RUN pnpm --filter @opensteer/team-provisioner build && \
+    pnpm --filter @opensteer/team-provisioner deploy --legacy --prod /output/team-provisioner && \
+    node scripts/verify-deployed-package.cjs apps/team-provisioner/package.json /output/team-provisioner/package.json
+
+
 FROM sources AS runner-build
 COPY apps/runner ./apps/runner
 RUN pnpm --filter @opensteer/runner build && \
@@ -202,6 +210,7 @@ COPY apps/control-plane/package.json /output/control-plane/package.json
 COPY apps/runner/package.json /output/runner/package.json
 COPY apps/browser-runtime/package.json /output/browser-runtime/package.json
 COPY apps/channel-runtime/package.json /output/channel-runtime/package.json
+COPY apps/team-provisioner/package.json /output/team-provisioner/package.json
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -210,7 +219,8 @@ RUN node scripts/stamp-release-package.cjs /output/host/package.json && \
     node scripts/stamp-release-package.cjs /output/control-plane/package.json && \
     node scripts/stamp-release-package.cjs /output/runner/package.json && \
     node scripts/stamp-release-package.cjs /output/browser-runtime/package.json && \
-    node scripts/stamp-release-package.cjs /output/channel-runtime/package.json
+    node scripts/stamp-release-package.cjs /output/channel-runtime/package.json && \
+    node scripts/stamp-release-package.cjs /output/team-provisioner/package.json
 
 # Web assets contain no native dependencies; compile with the builder's Node.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web-assets
@@ -230,6 +240,7 @@ COPY apps/host/package.json ./apps/host/package.json
 COPY apps/marketing/package.json ./apps/marketing/package.json
 COPY apps/mobile/package.json ./apps/mobile/package.json
 COPY apps/runner/package.json ./apps/runner/package.json
+COPY apps/team-provisioner/package.json ./apps/team-provisioner/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY evals/agent-tools/package.json ./evals/agent-tools/package.json
 COPY packages/access/package.json ./packages/access/package.json
@@ -390,6 +401,18 @@ USER 10001:10001
 EXPOSE 4142
 CMD ["node", "dist/main.js"]
 
+FROM node-runtime AS team-provisioner
+WORKDIR /app
+COPY --from=team-provisioner-build --chown=10001:10001 /output/team-provisioner ./
+COPY --from=package-stamps --chown=10001:10001 /output/team-provisioner/package.json ./package.json
+ARG OPENSTEER_RELEASE_VERSION
+ARG OPENSTEER_SOURCE_REVISION
+ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
+    OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+USER 10001:10001
+CMD ["node", "dist/main.js"]
+
 FROM node-runtime AS runner
 USER root
 RUN apt-get update && \
@@ -504,6 +527,17 @@ COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/loc
 
 FROM ${CADDY_IMAGE} AS gateway
 COPY deploy/gateway/Caddyfile /etc/caddy/Caddyfile
+COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
+COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+EXPOSE 80 443
+
+FROM ${CADDY_IMAGE} AS team-gateway
+# Hosted pods run Caddy unprivileged on :8080 under no_new_privs, which refuses to exec a
+# binary carrying file capabilities; self-host runs it as root and needs none.
+RUN setcap -r /usr/bin/caddy
+COPY deploy/team/Caddyfile /etc/caddy/Caddyfile
 COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
 COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json

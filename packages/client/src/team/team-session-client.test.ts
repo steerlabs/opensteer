@@ -6,7 +6,13 @@ import {
   createId,
 } from "@opensteer/core";
 import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
-import { MockTeamHost, mockTeamId, mockTeamUserId, mockTeamChannelId } from "./mock-team-host.js";
+import {
+  MockTeamHost,
+  mockTeamId,
+  mockTeamUserId,
+  mockTeamChannelId,
+  type MockTeamSocket,
+} from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
 import { createMemoryTeamPersistence } from "./persistence.js";
 import {
@@ -30,6 +36,40 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("keeps synchronizing through a newer team server's fields and frame types", async () => {
+    const host = new MockTeamHost(),
+      sockets: MockTeamSocket[] = [];
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1_000,
+      });
+      sockets[0]!.deliver({ type: "team.future", detail: { anything: true } });
+      sockets[0]!.deliver({
+        type: "team.presence",
+        people: [{ userId: mockTeamUserId, online: true, lastSeenAt: null }],
+        reason: "newer",
+      });
+      expect(client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        presence: { [mockTeamUserId]: true },
+      });
+      expect(sockets).toHaveLength(1);
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
   it("refreshes and notifies a dirty channel beyond the loaded sidebar page", async () => {
     const host = new MockTeamHost(),
       notify = vi.fn();
@@ -235,6 +275,53 @@ describe("team synchronization", () => {
     } finally {
       f.client.dispose();
       f.host.dispose();
+    }
+  });
+  it("spreads reconnects and backs off a socket that keeps failing", async () => {
+    vi.useFakeTimers();
+    const host = new MockTeamHost(),
+      sockets: MockTeamSocket[] = [];
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+      random: () => 0.5,
+    });
+    const bootstraps = () => host.calls.filter((name) => name === "team.bootstrap.get").length;
+    const reconnectsAfter = async (delayMs: number) => {
+      const count = sockets.length,
+        revalidated = bootstraps();
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(sockets).toHaveLength(count);
+      expect(bootstraps()).toBe(revalidated);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sockets).toHaveLength(count + 1);
+      expect(bootstraps()).toBe(revalidated + 1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(client.getSnapshot().connection).toBe("connected");
+    };
+    try {
+      await client.load();
+      await vi.advanceTimersByTimeAsync(0);
+      for (const delayMs of [225, 450, 900]) {
+        sockets.at(-1)!.close();
+        await reconnectsAfter(delayMs);
+      }
+      sockets.at(-1)!.deliver({ type: "team.cut" });
+      expect(client.getSnapshot().connection).toBe("offline");
+      await reconnectsAfter(1_800);
+      await vi.advanceTimersByTimeAsync(30_000);
+      sockets.at(-1)!.close();
+      await reconnectsAfter(225);
+    } finally {
+      client.dispose();
+      host.dispose();
+      vi.useRealTimers();
     }
   });
 });

@@ -1,14 +1,17 @@
 # Run a team
 
 Use a dedicated clone on a Linux server or family Mac with Docker Compose v2,
-Git, Bash, Node 24 and pnpm 10. Run `pnpm install --frozen-lockfile` in the clone first. On Mac, Docker Desktop or Colima must be running; the
+Git and Bash. On Mac, Docker Desktop or Colima must be running; the
 scheduled updater needs access to that same Docker context. This stack runs
-PostgreSQL, the team Host and Caddy. Agents run on each person's own Opensteer.
+PostgreSQL, the team Host and Caddy from the published
+`ghcr.io/steerlabs/opensteer-team-host` and `opensteer-team-gateway` images
+(linux/amd64 and linux/arm64). Agents run on each person's own Opensteer.
 
 Run `bash deploy/team/setup.sh`, edit the generated `deploy/team/config.env`,
 then run setup again. Use an HTTPS public hostname pointing to the machine
-with inbound ports 80 and 443 available. Setup builds before starting, installs
-hourly updates, then prints the private, one-time first-owner setup link.
+with inbound ports 80 and 443 available. Setup creates the secrets, checks out
+the newest release of the configured channel, pulls its images, starts them,
+installs hourly updates, then prints the private, one-time first-owner setup link.
 Open it, adopt the server through Opensteer Account, sign in and become owner.
 Later members join through invites. Do not send the setup link to other people.
 
@@ -38,9 +41,12 @@ through Funnel during setup. After adoption, disable Funnel and use
 private member access. There are no Connect routes for team servers in v1.
 
 Updates fetch tags from the cloned remote (`OPENSTEER_UPDATE_REMOTE`, default
-`origin`). `OPENSTEER_UPDATE_CHANNEL=stable` selects `desktop-vMAJOR.MINOR.PATCH`;
-`beta` selects `vMAJOR.MINOR.PATCH-insider`, matching release.yml's release tool.
-A failed build leaves the existing containers running. Results go to
+`origin`). `OPENSTEER_UPDATE_CHANNEL=stable` selects the newest
+`desktop-vMAJOR.MINOR.PATCH`; `beta` selects the newest
+`vMAJOR.MINOR.PATCH-insider`. The updater checks out that tag, so the Compose
+files match its images, and runs image version `MAJOR.MINOR.PATCH`. It never
+moves to an older version, so switching from Beta to Stable waits until Stable
+catches up. A failed pull leaves the existing containers running. Results go to
 `deploy/team/update.log`; rotate that file as part of server maintenance.
 A failed start is reported there; the next scheduled run retries the selected
 release. Keep the checkout clean. Back up the named database and Host volumes.

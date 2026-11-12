@@ -4,6 +4,7 @@ import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
+import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentCatalogSchema,
@@ -1778,7 +1779,7 @@ describe("joined team routing", () => {
           expect(input.url).toBe(origin + input.request.path);
           expect(input.authorization).toBe(`Bearer credential-${expectedDeploymentId}`);
           expect(input.request.headers).toMatchObject({
-            additional: { "x-opensteer-team-api-version": "1" },
+            additional: { [teamApiVersionHeader]: String(teamApiVersion) },
           });
           expect(input.request.headers.apiVersion).toBeUndefined();
         }
@@ -1788,8 +1789,8 @@ describe("joined team routing", () => {
         expect(sockets.at(-1)!.input).toMatchObject({
           deploymentId: expectedDeploymentId,
           authorization: `Bearer credential-${expectedDeploymentId}`,
-          url: origin.replace("https:", "wss:") + "/v1/realtime?opensteer_api_version=1",
-          headers: { "x-opensteer-team-api-version": "1" },
+          url: `${origin.replace("https:", "wss:")}/v1/realtime?opensteer_api_version=${teamApiVersion}`,
+          headers: { [teamApiVersionHeader]: String(teamApiVersion) },
         });
       }
       await transport.select({ deploymentId: other.authority.document.deploymentId });

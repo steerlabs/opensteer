@@ -58,3 +58,10 @@ export * from "./folders.js";
 export * from "./team-api.js";
 
 export * from "./needs-you.js";
+export {
+  readTeamFrame,
+  TeamClientFrameViewSchema,
+  TeamLinkClientFrameViewSchema,
+  TeamLinkServerFrameViewSchema,
+  TeamServerFrameViewSchema,
+} from "./team-views.js";
