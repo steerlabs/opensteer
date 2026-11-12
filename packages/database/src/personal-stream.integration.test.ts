@@ -56,8 +56,6 @@ async function fixture() {
         lineageRootThreadId: threadId,
         parentThreadId: null,
         purpose: "task",
-        folderComputerId: personal.runnerId,
-        folderPath: directory,
         teamId: null,
         channelId: null,
         threadRootId: null,

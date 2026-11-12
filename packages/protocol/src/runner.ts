@@ -1,4 +1,5 @@
 import { DelegationModelChoiceSchema } from "@opensteer/core";
+import { ComputerFolderSchema } from "@opensteer/core";
 import { RunnerSkillMetadataReportSchema } from "./runner-skill-metadata.js";
 import { HostAppRequestSchema, RunnerAppResultSchema } from "./apps.js";
 import { HostRunFileRequestSchema, RunnerRunFileResultSchema } from "./run-files.js";
@@ -54,7 +55,6 @@ import {
   TriggerProgramEventSchema,
   TriggerProgramSchema,
 } from "@opensteer/triggers/models";
-import { PersonalExecutionLocationSchema } from "./folders.js";
 import { z } from "zod";
 import { RunEgressPlanSchema } from "./access.js";
 import {
@@ -273,7 +273,7 @@ export const runExecuteInputsMax = 32;
 
 const ExecuteRunSchema = runnerCommandBase.extend({
   type: z.literal("run.execute"),
-  location: PersonalExecutionLocationSchema,
+  agentHome: ComputerFolderSchema,
   context: RunExecutionContextSchema,
   inputs: z
     .array(HarnessInputSchema)
@@ -296,7 +296,7 @@ export const WatchCapabilityPlanSchema = TriggerCapabilityPlanSchema.extend({
 });
 
 export const WatchReconcileActivationSchema = z.strictObject({
-  location: PersonalExecutionLocationSchema,
+  agentHome: ComputerFolderSchema,
   activationId: TriggerWatchActivationIdSchema,
   anchorThreadId: ThreadIdSchema,
   capabilities: z.strictObject({
@@ -323,7 +323,7 @@ export const TriggerExecutionContextSchema = z.strictObject({
 export type TriggerExecutionContext = z.infer<typeof TriggerExecutionContextSchema>;
 
 const ExecuteTriggerSchema = runnerCommandBase.extend({
-  location: PersonalExecutionLocationSchema,
+  agentHome: ComputerFolderSchema,
   context: TriggerExecutionContextSchema,
   type: z.literal("trigger.execute"),
 });
@@ -1767,7 +1767,6 @@ export const RunnerOperationalMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("runner.command-accepted"),
     commandId: CommandIdSchema,
     correlationId: CorrelationIdSchema,
-    folderPath: z.string().min(1).max(4_096).optional(),
   }),
   z.strictObject({
     ...fencedMessageBase,

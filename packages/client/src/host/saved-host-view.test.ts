@@ -8,13 +8,13 @@ import {
   savedViewScopeKey,
 } from "./saved-host-view.js";
 
-it("saves task subjects and folders without conversation content or authority", () => {
+it("saves task subjects without conversation content or authority", () => {
   const client = new MockHostClient({ latencyMs: 0 });
   try {
     const tasks = projectSavedTasks(client.getSnapshot());
     expect(tasks.length).toBeGreaterThan(0);
     for (const task of tasks) {
-      expect(Object.keys(task).sort()).toEqual(["folder", "glyph", "group", "id", "title"]);
+      expect(Object.keys(task).sort()).toEqual(["glyph", "group", "id", "title"]);
       expect(SavedTaskSchema.parse(task)).toEqual(task);
     }
     const serialized = JSON.stringify(tasks);

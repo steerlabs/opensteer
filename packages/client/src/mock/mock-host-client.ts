@@ -1368,62 +1368,6 @@ function mockAccountCatalog(harness: HarnessSummary, ready: boolean): HarnessIns
   });
 }
 
-interface MockFolderFile {
-  content: string | null;
-  path: string;
-  type: "directory" | "file";
-}
-
-const mockFolderFiles: readonly MockFolderFile[] = [
-  { content: null, path: "reports", type: "directory" },
-  {
-    content: "# August reconciliation\n\nPending review.",
-    path: "reports/august.md",
-    type: "file",
-  },
-  { content: null, path: "briefs", type: "directory" },
-  {
-    content:
-      "# Launch brief\n\nOpensteer runs tasks on your computer and connects your agent to team channels.",
-    path: "briefs/launch.md",
-    type: "file",
-  },
-  { content: null, path: "apps", type: "directory" },
-  { content: null, path: "apps/host", type: "directory" },
-  { content: null, path: "apps/web", type: "directory" },
-  { content: null, path: "docs", type: "directory" },
-  {
-    content:
-      "# Opensteer architecture\n\nThe Host owns durable product truth. Runners own execution. Files stay in their personal folders.",
-    path: "docs/architecture.md",
-    type: "file",
-  },
-  { content: null, path: "packages", type: "directory" },
-  { content: null, path: "packages/protocol", type: "directory" },
-  { content: null, path: "packages/protocol/src", type: "directory" },
-  {
-    content: "export interface HostClient {\n  subscribe(listener: () => void): () => void;\n}\n",
-    path: "packages/protocol/src/client.ts",
-    type: "file",
-  },
-  {
-    content: '{\n  "name": "opensteer",\n  "private": true\n}\n',
-    path: "package.json",
-    type: "file",
-  },
-];
-
-function encodeMockFileKey(path: string): string {
-  const binary = Array.from(new TextEncoder().encode(path.replaceAll("/", "\0")), (byte) =>
-    String.fromCharCode(byte),
-  ).join("");
-  return globalThis.btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
-}
-
-function mockFileForKey(key: string): MockFolderFile | undefined {
-  return mockFolderFiles.find((file) => encodeMockFileKey(file.path) === key);
-}
-
 interface ActiveMockRun {
   cancelled: boolean;
   id: string;
@@ -1941,12 +1885,6 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
-    "teams.channelFolder.get": async ({ teamId, channelId }) =>
-      rpcSuccess({
-        folder:
-          client.teamFolders.get(JSON.stringify([teamId, channelId])) ??
-          client.getSnapshot().personalSettings!.agentHome,
-      }),
     "teams.replyTask.get": async () => rpcSuccess({ taskId: null, throughSequence: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
       rpcSuccess(
@@ -1962,10 +1900,6 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
               )?.id ?? null,
         }),
       ),
-    "folder.files.list": async ({ folder, ...input }) =>
-      rpcSuccess(await client.listFolderFiles(folder, input)),
-    "folder.files.preview": async ({ folder, fileKey }) =>
-      rpcSuccess(await client.previewFolderFile(folder, fileKey)),
     "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
@@ -2604,12 +2538,6 @@ async function executeMockCommand(
     }
     case "teams.link.leave":
       client.teamLinks.delete(command.teamId);
-      for (const key of client.teamFolders.keys())
-        if (JSON.parse(key)[0] === command.teamId) client.teamFolders.delete(key);
-      return rpcSuccess({ type: command.type });
-    case "teams.channelFolder.set":
-      if (!client.teamLinks.has(command.teamId)) throw new Error("Team link missing.");
-      client.teamFolders.set(JSON.stringify([command.teamId, command.channelId]), command.folder);
       return rpcSuccess({ type: command.type });
 
     case "phone.tab.close":
@@ -3509,7 +3437,6 @@ function mockThread(thread: ThreadSummary): Thread {
     icon: thread.icon,
     ...(thread.color === null ? {} : { color: thread.color }),
     updatedAt: thread.updatedAt,
-    folder: thread.folder,
     teamOrigin: thread.teamOrigin,
   });
 }
@@ -4803,14 +4730,6 @@ export class MockHostClient implements HostClient {
     this.#state.dispose();
   }
 
-  listFolderFiles(
-    folder: import("@opensteer/core").TaskFolder,
-    input: { readonly parentKey: string },
-    _signal?: AbortSignal,
-  ) {
-    return this.#state.listFolderFiles(folder, input);
-  }
-
   load(): Promise<void> {
     return this.#state.load();
   }
@@ -4821,14 +4740,6 @@ export class MockHostClient implements HostClient {
 
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
     return Promise.resolve(this.#state.loadThreadInputQueue(threadId));
-  }
-
-  previewFolderFile(
-    _folder: import("@opensteer/core").TaskFolder,
-    fileKey: string,
-    _signal?: AbortSignal,
-  ) {
-    return this.#state.previewFolderFile(_folder, fileKey);
   }
 
   refresh(): Promise<void> {
@@ -5010,10 +4921,6 @@ export class MockHostClient implements HostClient {
       type: "run.interrupt",
     });
   }
-
-  folderFileDownloadUrl(_folder: import("@opensteer/core").TaskFolder, fileKey: string): string {
-    return this.#state.folderFileDownloadUrl(_folder, fileKey);
-  }
 }
 
 function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
@@ -5102,7 +5009,6 @@ interface MockPlugin {
 }
 class MockHostState {
   readonly teamLinks = new Map<string, PersonalTeamLink>();
-  readonly teamFolders = new Map<string, import("@opensteer/core").TaskFolder>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   openPhoneTab(machineId: string) {
     this.update({
@@ -6135,7 +6041,6 @@ class MockHostState {
           doneAt: null,
           doneReason: null,
           inputQueuePaused: false,
-          folder: this.snapshot.personalSettings!.agentHome,
           teamOrigin: null,
         };
         this.snapshot = { ...this.snapshot, threads: [...this.snapshot.threads, worker] };
@@ -6694,7 +6599,6 @@ class MockHostState {
       status: assignment.status,
       updatedAt: assignment.updatedAt,
       workerThread: {
-        folder: thread.folder,
         environmentId: thread.environmentId,
         id: thread.id,
         pendingRequests: (this.snapshot.requests[thread.id] ?? []).filter(
@@ -7788,68 +7692,6 @@ class MockHostState {
 
   async revokeSession(sessionId?: string): Promise<void> {
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
-  }
-
-  async listFolderFiles(
-    folder: import("@opensteer/core").TaskFolder,
-    input: { readonly parentKey: string },
-  ) {
-    await delay(Math.min(this.latencyMs, 180));
-    const { parentKey } = input;
-    const files = mockFolderFiles;
-    const parentPath =
-      parentKey === ""
-        ? ""
-        : files.find((file) => encodeMockFileKey(file.path) === parentKey)?.path;
-    if (parentPath === undefined) throw new Error("Folder not found.");
-    const prefix = parentPath === "" ? "" : `${parentPath}/`;
-    const entries = files
-      .filter((file) => {
-        if (!file.path.startsWith(prefix)) return false;
-        return !file.path.slice(prefix.length).includes("/");
-      })
-      .map((file) => {
-        const contentBytes = file.content ? new TextEncoder().encode(file.content).byteLength : 0;
-        const name = file.path.slice(prefix.length);
-        return {
-          executable: false,
-          hidden: name.startsWith("."),
-          key: encodeMockFileKey(file.path),
-          kind: file.type,
-          mode: file.type === "directory" ? 0o755 : 0o644,
-          modifiedAt: "2026-08-09T16:39:00.000Z",
-          name,
-          sizeBytes: contentBytes,
-        };
-      });
-    return {
-      cursor: null,
-      entries,
-      parentKey,
-      revision: `mock_revision_${encodeMockFileKey(folder.path)}_${parentKey || "root"}`,
-    };
-  }
-
-  async previewFolderFile(_folder: import("@opensteer/core").TaskFolder, fileKey: string) {
-    await delay(Math.min(this.latencyMs, 180));
-    const file = mockFileForKey(fileKey);
-    if (!file || file.type !== "file") throw new Error("File not found.");
-    const content = file.content ?? "";
-    return {
-      content,
-      metadata: {
-        contentType: "text/plain; charset=utf-8",
-        etag: `mock-${fileKey}`,
-        modifiedAt: "2026-08-09T16:39:00.000Z",
-        sizeBytes: new TextEncoder().encode(content).byteLength,
-        truncated: false,
-      },
-    };
-  }
-
-  folderFileDownloadUrl(_folder: import("@opensteer/core").TaskFolder, fileKey: string): string {
-    const content = mockFileForKey(fileKey)?.content ?? "";
-    return `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
   }
 
   async exchangeSetupToken(_token: string): Promise<void> {}
@@ -9919,9 +9761,6 @@ class MockHostState {
       this.snapshot.harnesses,
       input,
     );
-    const folder = input.folder ?? this.snapshot.personalSettings!.agentHome;
-    if (folder.computerId !== this.snapshot.personalSettings!.agentHome.computerId)
-      throw new Error("Tasks execute on the hosting computer.");
     const timestamp = this.now().toISOString();
     const thread: ThreadSummary = {
       id: this.nextId("thread"),
@@ -9943,7 +9782,6 @@ class MockHostState {
       inputQueuePaused: false,
       pendingRequests: 0,
       purpose: "task",
-      folder,
       teamOrigin: null,
       status: "idle",
       title: input.title?.trim() || "New task",
@@ -11267,7 +11105,7 @@ class MockHostState {
       text: "",
     };
     const reasoningSentences = [
-      "I should inspect the task folder before changing anything. ",
+      "I should inspect the files before changing anything. ",
       "One shell check plus a focused edit will keep the run small and verifiable.",
     ];
     for (const sentence of reasoningSentences) {
@@ -11808,7 +11646,7 @@ function buildAssistantReply(prompt: string, steered: readonly string[] = []): s
     "",
     `I worked through “${subject}” end to end on the main runner.`,
     "",
-    "- Inspected the task folder before changing anything",
+    "- Inspected the files before changing anything",
     "- Ran the checks in a sandboxed shell",
     "- Applied one focused patch and recorded it in this Thread",
     // A promoted message reached the Run mid-turn, so the reply says it was heard.
@@ -12838,7 +12676,6 @@ function createInitialSnapshot(): HostSnapshot {
 
     threads: withMockThreadMarks([
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12862,7 +12699,6 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T16:39:00.000Z",
       },
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12886,7 +12722,6 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T13:08:00.000Z",
       },
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12910,7 +12745,6 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-08T20:04:00.000Z",
       },
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12935,7 +12769,6 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-07T19:12:00.000Z",
       },
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12964,7 +12797,6 @@ function createInitialSnapshot(): HostSnapshot {
           [mockSlackLiveThreadId, "running", "Switch Slack to Opensteer"],
         ] as const
       ).map(([id, status, title]) => ({
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -12989,7 +12821,6 @@ function createInitialSnapshot(): HostSnapshot {
         deploymentId: "dep_00000000-0000-4000-8000-000000000001",
       })),
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
@@ -13013,7 +12844,6 @@ function createInitialSnapshot(): HostSnapshot {
         updatedAt: "2026-08-09T09:32:00.000Z",
       },
       {
-        folder: mockPersonalFolder,
         teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,

@@ -341,7 +341,7 @@ export class DesktopHostTransport extends HostTransport {
         input: parsed,
         offset: 0,
         outcome:
-          parsed.method === "GET" || parsed.body !== undefined
+          parsed.method === "GET"
             ? this.#downloadBinary(transport, attachmentKey, parsed, filePath, controller.signal)
             : null,
         ownerId,
@@ -363,8 +363,7 @@ export class DesktopHostTransport extends HostTransport {
     const parsed = DesktopHostBinaryWriteInputSchema.parse(input);
     const transfer = this.#ownedBinary(ownerId, parsed.transferId);
     this.#touchBinary(parsed.transferId, transfer);
-    if (transfer.input.method !== "POST" || transfer.input.body !== undefined)
-      throw new Error("This transfer cannot receive bytes.");
+    if (transfer.input.method !== "POST") throw new Error("This transfer cannot receive bytes.");
     if (transfer.size + parsed.bytes.byteLength > binaryByteLimit(transfer.input)) {
       throw new Error("The attachment exceeds the Desktop transfer limit.");
     }
@@ -377,8 +376,7 @@ export class DesktopHostTransport extends HostTransport {
     const parsed = DesktopHostBinaryTransferInputSchema.parse(input);
     const transfer = this.#ownedBinary(ownerId, parsed.transferId);
     this.#touchBinary(parsed.transferId, transfer);
-    if (transfer.input.method !== "POST" || transfer.input.body !== undefined)
-      throw new Error("This transfer cannot be finished.");
+    if (transfer.input.method !== "POST") throw new Error("This transfer cannot be finished.");
     this.#assertBinaryAttachment(transfer);
     try {
       const body = await openAsBlob(transfer.path);
@@ -478,7 +476,6 @@ export class DesktopHostTransport extends HostTransport {
       {
         expectedAttachmentKey: attachmentKey,
         expectedDeploymentId: input.expectedDeploymentId,
-        ...(input.body === undefined ? {} : { body: input.body }),
         headers: binaryHeaders(input),
         method: input.method,
         path: input.path,

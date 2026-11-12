@@ -171,7 +171,6 @@ export async function seedPersonal(
       type: "thread.create",
       environmentId: caller.environmentId,
       harnessInstanceId: caller.harnessInstanceId,
-      folder: host.agentHome,
       idempotencyKey: `benchmark:${key}`,
       title: `Benchmark task ${key}`,
       modelSelection: ModelSelectionSchema.parse({

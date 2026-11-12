@@ -83,7 +83,6 @@ const readers: Record<string, (tx: Transaction<DatabaseSchema>, f: Fixture) => P
   "create receipt": (tx, f) =>
     findThreadCreationByIdempotency(tx, {
       createdBy: f.userId,
-      folder: f.folder,
       environmentId: f.environmentId,
       harnessInstanceId: f.harnessInstance.id,
       idempotencyKey: "not-created",

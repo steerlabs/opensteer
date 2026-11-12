@@ -1,12 +1,14 @@
-import { TaskRuntimeFenceSchema } from "./folders.js";
+import { TaskRuntimeFenceSchema } from "./runner-identity.js";
 import { AppIdSchema } from "@opensteer/core";
 import { z } from "zod";
-import { TaskFolderSchema } from "@opensteer/core";
+import { ComputerFolderSchema } from "@opensteer/core";
 
 export const AppRuntimeSpecSchema = z.strictObject({
   appId: AppIdSchema,
   version: z.number().int().positive(),
-  folder: TaskFolderSchema,
+  /** The server's folder, which the Runner refuses unless it resolves inside `agentHome`. */
+  folder: ComputerFolderSchema,
+  agentHome: ComputerFolderSchema,
 
   command: z.string().min(1).max(16_384),
 });

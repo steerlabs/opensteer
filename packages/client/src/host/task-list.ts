@@ -36,7 +36,6 @@ export function taskMarkQuiet(row: Pick<TaskRow, "tone" | "unread">, done: boole
 
 export interface TaskRow {
   readonly threadId: string;
-  readonly folder: import("@opensteer/core").TaskFolder;
   readonly teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   readonly title: string;
   readonly icon: IconName | null;
@@ -62,7 +61,7 @@ export interface TaskRow {
   readonly askedAt: string;
 }
 
-export interface FolderTaskList {
+export interface TaskList {
   /**
    * Work under way: tasks waiting on the reader first, then the ones working
    * or waiting on someone else, each newest asked first.
@@ -77,8 +76,6 @@ export interface FolderTaskList {
   /** Whether the Host holds more of these tasks than this client has read. */
   readonly hasMore: boolean;
 }
-
-export type TaskList = FolderTaskList;
 
 /** Everything a task list is drawn from, and nothing else. */
 const taskListSourceKeys = [
@@ -119,7 +116,7 @@ export interface TaskListOptions {
    * reading it would move it to Done under the reader who just opened it, so
    * while it is open it stays where that list showed it.
    */
-  readonly previous?: Pick<FolderTaskList, "ready"> | null | undefined;
+  readonly previous?: Pick<TaskList, "ready"> | null | undefined;
 }
 
 export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}): TaskList {
@@ -130,22 +127,6 @@ export function taskList(snapshot: TaskListSource, options: TaskListOptions = {}
     options,
     Object.values(snapshot.doneTasks).flatMap(({ entries }) => entries),
   );
-}
-
-export function folderTaskList(
-  snapshot: TaskListSource,
-  folder: import("@opensteer/core").TaskFolder,
-  options: TaskListOptions = {},
-): FolderTaskList {
-  const list = taskList(snapshot, options);
-  const matches = (row: TaskRow) =>
-    row.folder.computerId === folder.computerId && row.folder.path === folder.path;
-  return {
-    ...list,
-    working: list.working.filter(matches),
-    ready: list.ready.filter(matches),
-    done: list.done.filter(matches),
-  };
 }
 
 /**
@@ -308,7 +289,6 @@ function rowOf(
   const surface = tone === "working" ? workingSurface(snapshot, thread.id) : null;
   return {
     threadId: thread.id,
-    folder: thread.folder,
     teamOrigin: thread.teamOrigin,
     title: held.title,
     icon: held.icon,
@@ -437,8 +417,6 @@ function stateWord(tone: TaskTone): string | null {
 export function sameTaskRow(left: TaskRow, right: TaskRow): boolean {
   return (
     left.threadId === right.threadId &&
-    left.folder.computerId === right.folder.computerId &&
-    left.folder.path === right.folder.path &&
     left.teamOrigin?.teamId === right.teamOrigin?.teamId &&
     left.teamOrigin?.channelId === right.teamOrigin?.channelId &&
     left.teamOrigin?.threadRootId === right.teamOrigin?.threadRootId &&

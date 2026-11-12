@@ -1,13 +1,11 @@
-import { TaskRuntimeFenceSchema } from "./folders.js";
+import { TaskRuntimeFenceSchema } from "./runner-identity.js";
 import { z } from "zod";
 import { IsoDateTimeSchema } from "@opensteer/core";
-import { TaskFolderSchema } from "@opensteer/core";
 const name = z.string().min(1).max(120);
-// Complete metadata replacement from the current authenticated storage owner. No paths or bodies.
+// Complete metadata replacement for the skills in Agent home, from the hosting Runner. No paths or bodies.
 export const RunnerSkillMetadataReportSchema = z.strictObject({
   ...TaskRuntimeFenceSchema.shape,
   type: z.literal("runner.skills.report"),
-  binding: TaskFolderSchema,
   scanSequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   scannedAt: IsoDateTimeSchema,
   result: z.discriminatedUnion("status", [

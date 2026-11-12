@@ -3,8 +3,6 @@ import { z } from "zod";
 import {
   ContentPartSchema,
   PlaceContentPartSchema,
-  TaskFolderSchema,
-  type TaskFolder,
   type ArtifactContentPart,
   type ContentPart,
   type PlaceContentPart,
@@ -50,8 +48,6 @@ const DraftSchema = z.object({
   refusal: z.string().optional(),
   text: z.string(),
   updatedAt: z.number(),
-  /** The folder a new task would start in. It can change; the draft stays the same draft. */
-  folder: TaskFolderSchema.optional().catch(undefined),
 });
 
 export type DraftFile = z.infer<typeof FileSchema>;
@@ -79,15 +75,12 @@ export interface ReturnedToDraft {
   readonly quote?: z.infer<typeof QuoteSchema> | null;
   /** Why it came back, shown when the draft is read. */
   readonly reason?: string;
-  /** Where its task was to start: sending may have emptied the draft that knew. */
-  readonly folder?: TaskFolder | undefined;
 }
 
 export interface TaskDraftRow {
   readonly draftId: string;
   readonly refused: boolean;
   readonly title: string;
-  readonly folder: TaskFolder | null;
 }
 
 /** What the sidebar shows of the drafts in one Deployment, for one person. */
@@ -262,7 +255,6 @@ export function createComposerDraftStore(
           refused: draft.refusal !== undefined,
           title: rowTitle(draft),
           updatedAt: draft.updatedAt,
-          folder: draft.folder ?? null,
         });
       }
     }
@@ -334,7 +326,6 @@ export function createComposerDraftStore(
         ...(returned.reason === undefined ? {} : { refusal: returned.reason }),
         text: returned.edit(draft.text),
         updatedAt: now(),
-        ...(returned.folder ? { folder: returned.folder } : {}),
       });
       publish();
     },

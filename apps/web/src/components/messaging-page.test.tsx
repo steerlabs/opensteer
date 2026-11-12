@@ -13,7 +13,6 @@ import {
   type ChannelDashboard,
   type ChannelAccessPolicy,
 } from "@opensteer/channel-core";
-import type { TaskFolder } from "@opensteer/core";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -101,18 +100,7 @@ describe("LinkIdentityForm", () => {
 });
 
 describe("AccountRoutes", () => {
-  it("creates a route from the channel ID, folder and access mode", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const snapshot = client.getSnapshot();
-    const agentHome = snapshot.personalSettings!.agentHome;
-    const support: TaskFolder = { computerId: agentHome.computerId, path: "/Users/ada/support" };
-    shell.value = {
-      hostClient: client,
-      snapshot: {
-        ...snapshot,
-        threads: [{ ...snapshot.threads[0]!, folder: support, purpose: "task" }],
-      },
-    };
+  it("creates a route from the channel ID and access mode", async () => {
     const created: { account: ChannelAccount; route: unknown }[] = [];
     const { container } = await mount(
       <AccountRoutes
@@ -128,13 +116,6 @@ describe("AccountRoutes", () => {
       button(container, "Add route").click();
     });
     await type(input(container), "C0123ABC");
-    // Agent home until another folder is chosen, from the folder chip.
-    await act(async () => button(container, "Agent home").click());
-    const supportRow = [
-      ...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
-    ].find((row) => row.textContent?.startsWith("support"));
-    if (!supportRow) throw new Error("Missing the support folder.");
-    await act(async () => supportRow.click());
     const [accessSelect] = [...container.querySelectorAll("select")];
     if (!accessSelect) throw new Error("Missing access select.");
     await select(accessSelect, "anyone");
@@ -155,7 +136,6 @@ describe("AccountRoutes", () => {
             directMessages: { allowedExternalUserIds: [], mode: "off" },
           },
           conversationId: "C0123ABC",
-          folder: support,
         },
       },
     ]);
@@ -384,7 +364,6 @@ function routeProps(
   return {
     account: account(),
     bindings: [],
-    folderName: (folder) => folder.path.split("/").at(-1) ?? folder.path,
     onAddRoute: async () => true,
     onRevokeRoute: () => undefined,
     onUpdateAccess: async () => true,
@@ -416,10 +395,6 @@ function binding(
     selector: { ...selector, conversationType: null, scopeId: null, threadId: null },
     status,
     updatedAt: "2026-01-01T00:00:00.000Z",
-    folder: {
-      computerId: "rnr_00000000-0000-4000-8000-000000000001",
-      path: "/Users/ada/Opensteer",
-    },
   });
 }
 

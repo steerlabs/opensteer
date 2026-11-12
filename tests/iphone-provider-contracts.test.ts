@@ -13,7 +13,7 @@ const baseDigests = {
   "apple-calendar": "Scd8aWIGu4M4WNeYlBfY2VmmKu3BDlEmtsubztyO78E",
   "apple-contacts": "S3UUcFG_nYQxmmuZ7V_KB3ksmR3zVEKsTBRy-FajfTY",
   "apple-reminders": "UziktIs5w2hTEcjUM-8FQLBL1PCmz7qMDZP4jJ5XAx4",
-  "apple-messages": "_0o8Mz3P1mWZ2PjQDCGMwn6A0QL7zUJSmHyj2-jXo7Q",
+  "apple-messages": "a9LzUS22O3LA-1fW4jh_cmNVP25un-8gmhJL5MrtS8I",
 };
 const newIds = ["iphone-location", "iphone-photos"] as const;
 

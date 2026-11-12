@@ -1,5 +1,6 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { randomUUID } from "node:crypto";
+import { isAbsolute, relative } from "node:path";
 import {
   AppIdSchema,
   AppSchema,
@@ -149,10 +150,11 @@ export class AppStore {
     const publisher = await this.database
       .selectFrom("threads")
       .innerJoin("runs", "runs.threadId", "threads.id")
+      .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
       .select([
         "threads.id",
-        "threads.folderComputerId",
-        "threads.folderPath",
+        "personalSettings.agentHomeComputerId",
+        "personalSettings.agentHomePath",
         "runs.accessMode",
         "runs.status",
       ])
@@ -172,7 +174,10 @@ export class AppStore {
         message: "App servers require a full-access Run",
       });
     const app = input.appId ? await this.get(input.appId, input.userId) : undefined;
-    return { publisher, app };
+    return {
+      app,
+      agentHome: { computerId: publisher.agentHomeComputerId, path: publisher.agentHomePath },
+    };
   }
   async list(input: {
     readonly threadId: ThreadId;
@@ -200,7 +205,7 @@ export class AppStore {
       id: row.id,
       title: row.title,
       kind: row.server ? ("server" as const) : ("html" as const),
-      ...(row.server ? { folder: row.server.folder, start: row.server.command } : {}),
+      ...(row.server ? { folder: row.server.folder.path, start: row.server.command } : {}),
       threadId: row.threadId,
       latestVersion: row.latestVersion,
       updatedAt: row.updatedAt.toISOString(),
@@ -235,7 +240,22 @@ export class AppStore {
       });
     return withPersonalTransaction(this.database, async (tx) => {
       const scoped = new AppStore(tx);
-      const { publisher } = await scoped.authorize({ ...input, fullAccess: Boolean(input.server) });
+      const { agentHome } = await scoped.authorize({
+        ...input,
+        fullAccess: Boolean(input.server),
+      });
+      if (input.server) {
+        const inside = relative(agentHome.path, input.server.folder.path);
+        if (
+          input.server.folder.computerId !== agentHome.computerId ||
+          inside.startsWith("..") ||
+          isAbsolute(inside)
+        )
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "App servers run in a folder inside Agent home",
+          });
+      }
       const run = await tx
         .selectFrom("runs")
         .select("status")
@@ -249,12 +269,6 @@ export class AppStore {
         });
       const replay = await scoped.publication(input.runId, input.publishKey);
       if (replay) return { ...replay, event: null };
-      const owner = await assertPersonalOwner(tx, input.userId);
-      if (input.server && input.server.folder.computerId !== owner.hostingComputerId)
-        throw new OpensteerError({
-          code: "bad_request",
-          message: "App servers run on the hosting computer",
-        });
       const appId = AppIdSchema.parse(input.appId ?? input.id ?? `app_${randomUUID()}`);
       let version = 1;
       const now = new Date();
@@ -299,8 +313,6 @@ export class AppStore {
           sizeBytes: input.sizeBytes ?? null,
           server: input.server ?? null,
           createdByRun: input.runId,
-          folderComputerId: input.server?.folder.computerId ?? publisher.folderComputerId,
-          folderPath: input.server?.folder.path ?? publisher.folderPath,
           publishKey: input.publishKey,
           createdAt: now,
         })

@@ -709,8 +709,6 @@ export interface ThreadTable {
   specialistId: Generated<string | null>;
 
   purpose: TaskPurpose;
-  folderComputerId: RunnerId;
-  folderPath: string;
   teamId: DeploymentId | null;
   channelId: TeamChannelId | null;
   threadRootId: TeamMessageId | null;
@@ -1736,8 +1734,6 @@ export interface ChannelAccountTable {
 }
 
 export interface ChannelBindingTable {
-  folderComputerId: RunnerId;
-  folderPath: string;
   id: ChannelBindingId;
   accountId: ChannelAccountId;
 
@@ -1914,8 +1910,6 @@ export interface AppTable {
   updatedAt: Timestamp;
 }
 export interface AppVersionTable {
-  folderComputerId: RunnerId | null;
-  folderPath: string | null;
   appId: string;
   version: number;
   sha256: string | null;
@@ -1942,9 +1936,8 @@ export interface AgentConnectionTable {
 }
 
 export interface DatabaseSchema extends KnowledgeTables {
-  folderSkillInventory: {
-    folderComputerId: RunnerId;
-    folderPath: string;
+  agentHomeSkillInventory: {
+    computerId: RunnerId;
     environmentId: EnvironmentId;
     bootId: string;
     connectionGeneration: number;
@@ -1979,7 +1972,6 @@ export interface DatabaseSchema extends KnowledgeTables {
   teamLinks: TeamLinkTable;
   teamAgentRequests: TeamAgentRequestTable;
   personalTeamLinks: PersonalTeamLinkTable;
-  personalTeamChannelFolders: PersonalTeamChannelFolderTable;
   personalTeamRequests: PersonalTeamRequestTable;
 
   personalSettings: PersonalSettingsTable;
@@ -2466,13 +2458,6 @@ export interface PersonalTeamLinkTable {
   credentialReference: string | null;
   createdAt: Timestamp;
   lastContactAt: NullableTimestamp;
-}
-export interface PersonalTeamChannelFolderTable {
-  teamDeploymentId: DeploymentId;
-  channelId: TeamChannelId;
-  computerId: RunnerId;
-  folderPath: string;
-  updatedAt: Timestamp;
 }
 export interface PersonalTeamRequestTable {
   teamDeploymentId: DeploymentId;

@@ -40,7 +40,7 @@ export const HostBootstrapMethodSchema = z.enum([
 export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
 /** Personal and team transports negotiate their own mandatory contract version. */
-export const hostApiVersion = 53;
+export const hostApiVersion = 54;
 /**
  * The team API this tree speaks, and the oldest peer it still serves. See the
  * compatibility policy in docs/teams.md before changing either; the wire

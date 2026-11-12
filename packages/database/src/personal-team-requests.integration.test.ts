@@ -48,7 +48,6 @@ describeStore("personal team reply watermark", (it) => {
         triggerMessageId: threadRootId,
         source,
         ownerId: personal.userId,
-        folder: personal.folder,
         execution: {
           environmentId: personal.environmentId,
           harnessInstanceId: personal.harnessInstance.id,

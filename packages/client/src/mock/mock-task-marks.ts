@@ -31,20 +31,15 @@ export function mockGeneratedTaskIcon(text: string): IconName {
   return subjects.find(([pattern]) => pattern.test(text))?.[1] ?? "document";
 }
 
-/** Errands and projects that exercise task marks alongside the existing demo journeys. */
+/** Errands that exercise task marks alongside the existing demo journeys. */
 export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snapshot): Snapshot {
   const template = snapshot.threads[0]!;
   const at = "2026-10-25T12:00:00.000Z";
-  const folders = ["Travel", "Home", "Money", "Health"].map((name) => ({
-    ...template.folder,
-    path: `/Users/person/${name}`,
-  }));
   const specs: readonly {
     id: string;
     title: string;
     icon: IconName | null;
     color: MarkColor;
-    folderIndex: number | null;
     status: ThreadSummary["status"];
     unread?: boolean;
     paused?: boolean;
@@ -54,7 +49,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Hyatt Seoul booking",
       icon: "hotel",
       color: "blue",
-      folderIndex: 0,
       status: "waiting",
     },
     {
@@ -62,7 +56,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Tokyo flights in May",
       icon: "plane",
       color: "lime",
-      folderIndex: 0,
       status: "running",
     },
     {
@@ -70,7 +63,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Weekly inbox triage",
       icon: "inbox",
       color: "magenta",
-      folderIndex: null,
       status: "running",
     },
     {
@@ -78,7 +70,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "find me a plumber who can come this week to fix the kitchen sink",
       icon: null,
       color: "teal",
-      folderIndex: null,
       status: "running",
     },
     {
@@ -86,7 +77,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Dentist cleaning",
       icon: "stethoscope",
       color: "purple",
-      folderIndex: 3,
       status: "waiting",
       paused: true,
     },
@@ -95,7 +85,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Q3 expense report",
       icon: "receipt",
       color: "green",
-      folderIndex: 2,
       status: "failed",
     },
     {
@@ -103,7 +92,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Blue loveseat shortlist",
       icon: "sofa",
       color: "sky",
-      folderIndex: 1,
       status: "idle",
       unread: true,
     },
@@ -112,7 +100,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Mom's birthday gift ideas",
       icon: "gift",
       color: "blue",
-      folderIndex: null,
       status: "idle",
     },
     {
@@ -120,7 +107,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Lisbon weekend plan",
       icon: "map",
       color: "lime",
-      folderIndex: 0,
       status: "idle",
     },
     {
@@ -128,7 +114,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
       title: "Global Entry renewal",
       icon: "shield",
       color: "magenta",
-      folderIndex: 0,
       status: "idle",
     },
   ];
@@ -138,7 +123,6 @@ export function seedMockTaskMarks<Snapshot extends HostSnapshot>(snapshot: Snaps
     title: spec.title,
     icon: spec.icon,
     color: spec.color,
-    folder: spec.folderIndex === null ? template.folder : folders[spec.folderIndex]!,
     purpose: "task",
     listed: true,
     parentThreadId: null,

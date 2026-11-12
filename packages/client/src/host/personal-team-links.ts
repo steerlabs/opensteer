@@ -2,12 +2,7 @@ import type { HostApiClient } from "@opensteer/protocol";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { HostClient } from "./client.js";
 import { compareSequence } from "@opensteer/core";
-import {
-  DeploymentIdSchema,
-  TeamChannelIdSchema,
-  TeamMessageIdSchema,
-  type TaskFolder,
-} from "@opensteer/core";
+import { DeploymentIdSchema, TeamChannelIdSchema, TeamMessageIdSchema } from "@opensteer/core";
 export class PersonalTeamLinks {
   readonly rpc: HostApiClient;
   constructor(rpc: HostApiClient) {
@@ -25,19 +20,6 @@ export class PersonalTeamLinks {
   }
   async leave(teamId: string): Promise<void> {
     unwrapRpcResult(await this.rpc["commands.dispatch"]({ type: "teams.link.leave", teamId }));
-  }
-  async folder(teamId: string, channelId: string): Promise<TaskFolder> {
-    return unwrapRpcResult(await this.rpc["teams.channelFolder.get"]({ teamId, channelId })).folder;
-  }
-  async setFolder(teamId: string, channelId: string, folder: TaskFolder): Promise<void> {
-    unwrapRpcResult(
-      await this.rpc["commands.dispatch"]({
-        type: "teams.channelFolder.set",
-        teamId,
-        channelId,
-        folder,
-      }),
-    );
   }
   async task(teamId: string, channelId: string, threadRootId: string) {
     return unwrapRpcResult(

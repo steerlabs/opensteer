@@ -361,37 +361,6 @@ export function ConnectOpensteerBody(props: {
 }
 
 /**
- * Once, above a team's composer after joining: how to ask your agent, and
- * where its work happens.
- */
-export function AskMyAgentHint(props: {
-  readonly folder: string;
-  readonly onDismiss: () => void;
-}): ReactNode {
-  return (
-    <View style={styles.hint}>
-      <AgentOrb size={20} />
-      <AppText role="caption" style={styles.hintText} tone="soft">
-        Tap{" "}
-        <AppText role="caption" style={styles.hintStrong}>
-          Ask my agent
-        </AppText>{" "}
-        or type @ to ask your agent here. It works on your computer, in {props.folder}, and replies
-        in the thread.
-      </AppText>
-      <Pressable
-        accessibilityLabel="Dismiss"
-        accessibilityRole="button"
-        hitSlop={10}
-        onPress={props.onDismiss}
-      >
-        <Symbol name="xmark" size={12} tint={color.muted} weight="semibold" />
-      </Pressable>
-    </View>
-  );
-}
-
-/**
  * Where the team's first owner lands after opening the setup link the server
  * printed and signing in: the team is theirs, and the next step is inviting
  * people.
@@ -461,17 +430,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[8],
     paddingVertical: space[8],
   },
-  hint: {
-    ...material.plate,
-    alignItems: "center",
-    borderRadius: radius.lg,
-    flexDirection: "row",
-    gap: space[10],
-    paddingHorizontal: space[12],
-    paddingVertical: space[10],
-  },
-  hintStrong: { color: color.ember, fontWeight: "600" },
-  hintText: { flex: 1 },
   iconDisc: {
     alignItems: "center",
     backgroundColor: color.surfaceRaised,

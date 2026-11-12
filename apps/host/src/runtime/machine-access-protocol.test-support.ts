@@ -975,7 +975,6 @@ async function createCallerThread(
       modelSelection: { modelId: "gpt-5.6-sol", options: { effort: "low" }, providerId: "openai" },
       title: input.title,
       type: "thread.create",
-      folder: host.agentHome,
     },
     { headers: host.ownerHeaders },
   );

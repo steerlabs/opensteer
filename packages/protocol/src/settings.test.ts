@@ -37,7 +37,6 @@ describe("Settings authority inputs", () => {
       connectionGeneration: 1,
       environmentId: createId("environment"),
       bindingGeneration: 1,
-      binding: { computerId: createId("runner"), path: "/tmp/fixture" },
       scanSequence: 1,
       scannedAt: "2026-11-03T12:00:00.000Z",
       result: { status: "complete", skills: [], warnings: [] },

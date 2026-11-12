@@ -18,7 +18,7 @@ Run non-interactive commands. A bare `ssh example-mac`, `ssh -t`, and anything t
 
 ## What runs, and as whom
 
-Commands run as that computer's Opensteer account, from that account's home directory, with its files, its logins, and its network — its `gh`, its `docker`, its VPN. That account and machine are not this Run's folder: nothing crosses between them unless you copy it.
+Commands run as that computer's Opensteer account, from that account's home directory, with its files, its logins, and its network — its `gh`, its `docker`, its VPN. That account and machine are separate from this Run: nothing crosses between them unless you copy it.
 
 Shared folders bound file transfer over sftp and scp, not commands. Where commands are allowed a command reaches whatever that account reaches; where they are off, the shares are all there is. `scp -O` is the exception on the transfer side: it uses the legacy protocol, which runs a remote command, so it needs commands allowed and is not bounded by the shares. Plain `scp` and `sftp` are.
 

@@ -88,7 +88,7 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                 Settings
               </Link>
             }
-            description="Connect your accounts, install integrations, and decide exactly which tools each project can use."
+            description="Connect your accounts, install integrations, and decide exactly which tools your agent can use."
             eyebrow="Connections"
             title="Integrations"
           />

@@ -14,7 +14,7 @@ import {
   type HostSnapshot,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
-import type { BrowserPageContentPart, TaskFolder, ThreadAccessMode } from "@opensteer/core";
+import type { BrowserPageContentPart, ThreadAccessMode } from "@opensteer/core";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useIsFocused } from "@react-navigation/native";
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
@@ -158,12 +158,9 @@ export function firstMessageBlocker(input: {
   /** Whether the Host is attached and has confirmed this reader. */
   readonly connected: boolean;
   readonly execution: FirstMessageExecution;
-  /** Where the task would work; null until the Host has said where Agent home is. */
-  readonly folder: TaskFolder | null;
 }): FirstMessageBlocker | null {
   const wait = (reason: string): FirstMessageBlocker => ({ choose: false, reason });
   const { blocked, blockedPlacement, placements, runnable, selection } = input.execution;
-  if (input.folder === null) return wait("Your agent's folder isn't ready yet.");
   if (!input.connected) return wait("Reconnect to send. What you write here is kept.");
   if (runnable.length === 0) {
     // An account getting ready, as one does after its computer starts, is
@@ -372,8 +369,6 @@ export function FirstMessageComposer(props: {
   readonly underHeader: boolean;
   /** Home's composer: with nothing written, its circle starts Voice. */
   readonly voice?: boolean;
-  /** Where the task will work: Home's folder chip, before the model pill. */
-  readonly folder?: ReactNode;
   /** Whose dismissals of a usage-limit line apply here. */
   readonly usageScope: { readonly deploymentId: string; readonly userId: string };
 }): ReactNode {
@@ -603,28 +598,25 @@ export function FirstMessageComposer(props: {
           <VoiceDock />
           <ComposerBar
             accessory={
-              <View style={styles.accessory}>
-                {props.folder ?? null}
-                <ComposerPills
-                  accessMode={props.execution.accessMode}
-                  accessModes={placement?.accessModes ?? null}
-                  disabledReason={held || sending ? "Wait for the current change to finish." : null}
-                  blockedReason={
-                    props.execution.accessReason ??
-                    (props.execution.blocked === null ? null : props.blocker?.reason)
-                  }
-                  driverKind={placement?.driverKind}
-                  engineName={
-                    placement?.engineName ??
-                    (selection === null ? "Choose engine" : "Unavailable engine")
-                  }
-                  model={model}
-                  modelLabel={props.selectionLabel}
-                  modelOptions={selection?.modelSelection.options ?? {}}
-                  onOpenModel={chooseManually}
-                  onPresent={noop}
-                />
-              </View>
+              <ComposerPills
+                accessMode={props.execution.accessMode}
+                accessModes={placement?.accessModes ?? null}
+                disabledReason={held || sending ? "Wait for the current change to finish." : null}
+                blockedReason={
+                  props.execution.accessReason ??
+                  (props.execution.blocked === null ? null : props.blocker?.reason)
+                }
+                driverKind={placement?.driverKind}
+                engineName={
+                  placement?.engineName ??
+                  (selection === null ? "Choose engine" : "Unavailable engine")
+                }
+                model={model}
+                modelLabel={props.selectionLabel}
+                modelOptions={selection?.modelSelection.options ?? {}}
+                onOpenModel={chooseManually}
+                onPresent={noop}
+              />
             }
             action={
               // With nothing typed the circle is voice where it exists, as in a
@@ -797,7 +789,6 @@ export function FirstMessageHeld(props: {
 }
 
 const styles = StyleSheet.create({
-  accessory: { alignItems: "center", flexDirection: "row", flexShrink: 1, gap: space[8] },
   content: { flexGrow: 1, gap: space[16] },
   example: {
     alignItems: "center",

@@ -69,9 +69,7 @@ function sameThreadsIgnoringActivityTime(
       left.title !== right.title ||
       left.icon !== right.icon ||
       left.color !== right.color ||
-      left.unread !== right.unread ||
-      left.folder.path !== right.folder.path ||
-      left.folder.computerId !== right.folder.computerId
+      left.unread !== right.unread
     ) {
       return false;
     }

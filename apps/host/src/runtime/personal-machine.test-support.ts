@@ -1,7 +1,7 @@
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { createId, type TaskFolder } from "@opensteer/core";
+import { createId, type ComputerFolder } from "@opensteer/core";
 import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import {
   cloneTestDatabase,
@@ -59,7 +59,7 @@ export async function enrollmentToken(
 
 export async function startPersonalMachineHost(input: {
   readonly databaseUrl: string;
-  readonly agentHome?: TaskFolder;
+  readonly agentHome?: ComputerFolder;
   readonly remoteAccess?: boolean;
   readonly browser?: Parameters<typeof startPersonalRuntime>[0]["browser"];
 }): Promise<MachineAccessHost> {

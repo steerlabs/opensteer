@@ -669,30 +669,3 @@ export function AgentUnavailable({
     </div>
   );
 }
-
-/** The one-time hint after joining: how to ask, and where the work happens. */
-export function AskAgentHint({
-  folderLabel,
-  onDismiss,
-}: {
-  readonly folderLabel: string;
-  readonly onDismiss: () => void;
-}) {
-  return (
-    <p className="ask-hint">
-      <AgentOrb size={16} />
-      <span>
-        Ask your agent in any channel with <b>Ask my agent</b> or{" "}
-        <span className="mention mention--agent">
-          <span aria-hidden className="mention__dot" />
-          @My agent
-        </span>
-        . It works on your computer, in your {folderLabel} folder unless you choose one for a
-        channel.
-      </span>
-      <button className="ask-hint__dismiss" onClick={onDismiss} type="button">
-        Got it
-      </button>
-    </p>
-  );
-}

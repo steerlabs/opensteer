@@ -1128,7 +1128,7 @@ describeStore("PostgreSQL store", (it) => {
     const { enrollMessagingRunner, store, database } = storeFixture;
     const personal = await storeFixture.createRunFixture("channel-owner");
     await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
-    const { userId, runnerId, environmentId, folder } = personal;
+    const { userId, runnerId, environmentId } = personal;
 
     const harness = personal.harnessInstance;
     const credential = {
@@ -1141,7 +1141,6 @@ describeStore("PostgreSQL store", (it) => {
     } as const;
     const channels = new ChannelStore(database);
     const configured = await channels.createConnection({
-      folder,
       accessPolicy: testChannelAccessPolicy("anyone"),
       account: {
         displayName: "Opensteer",
@@ -1189,7 +1188,6 @@ describeStore("PostgreSQL store", (it) => {
     } as const;
     await expect(
       channels.createConnection({
-        folder,
         accessPolicy: testChannelAccessPolicy("anyone"),
         account: {
           displayName: "Opensteer duplicate",
@@ -1223,7 +1221,6 @@ describeStore("PostgreSQL store", (it) => {
     });
     await expect(
       channels.createBinding({
-        folder,
         accessPolicy: testChannelAccessPolicy("anyone"),
         accountId: configured.account.id,
         createdBy: userId,
@@ -1500,7 +1497,6 @@ describeStore("PostgreSQL store", (it) => {
       provider: "channel:slack",
     } as const;
     const secondBot = await channels.createConnection({
-      folder,
       accessPolicy: testChannelAccessPolicy("anyone"),
       account: {
         displayName: "Research Bot",

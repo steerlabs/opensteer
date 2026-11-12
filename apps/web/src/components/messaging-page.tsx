@@ -12,7 +12,6 @@ import type {
   ChannelProviderManifest,
   ChannelRouteSelector,
 } from "@opensteer/channel-core";
-import type { TaskFolder } from "@opensteer/core";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
@@ -20,8 +19,6 @@ import {
 } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
 import { ComputerChannelSetup } from "./computer-channel-setup.js";
-import { FolderField } from "./folder-field.js";
-import { folderView } from "./home/folder-groups.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
@@ -45,8 +42,6 @@ interface LinkedIdentity {
 interface RouteDraft {
   accessPolicy: ChannelAccessPolicy;
   conversationId: string;
-  /** Null until chosen: Agent home. */
-  folder: TaskFolder | null;
 }
 
 interface ChannelDraft {
@@ -55,14 +50,12 @@ interface ChannelDraft {
   credentials: Record<string, string>;
   provider: string;
   routingMode: "dedicated" | "shared";
-  /** Null until chosen: Agent home. */
-  folder: TaskFolder | null;
 }
 
 /**
  * Messaging: the person's own Slack, Telegram or iMessage accounts, each of
- * whose conversations starts or continues a task for their agent in a folder
- * on the computer that runs tasks.
+ * whose conversations starts or continues a task for their agent on the
+ * computer that runs tasks.
  */
 export function MessagingPage({ embedded = false }: { readonly embedded?: boolean }) {
   const location = useLocation();
@@ -70,8 +63,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     ? decodeURIComponent(location.pathname.slice("/settings/messaging/".length))
     : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
-  const agentHome = snapshot.personalSettings?.agentHome ?? null;
-  const folderName = useFolderName();
   const [dashboard, setDashboard] = useState<ChannelDashboard | null>(null);
   const [view, setView] = useState<View>("overview");
   const [step, setStep] = useState(0);
@@ -90,7 +81,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     credentials: {},
     provider: "",
     routingMode: "dedicated",
-    folder: null,
   });
 
   const reload = useCallback(async () => {
@@ -119,22 +109,15 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
     return () => window.clearInterval(timer);
   }, [reload, view]);
 
-  const draftFolder = draft.folder ?? agentHome;
   const provider = dashboard?.providers.find(
     ({ provider }) => provider === (repairing?.provider ?? draft.provider),
   );
-  const routeSummary =
-    draft.routingMode === "dedicated"
-      ? "Every conversation starts tasks in this folder"
-      : "Shared bot with editable routes";
   const canContinue =
     step === 0
       ? Boolean(provider?.credentialFields.every((field) => draft.credentials[field.key]?.trim()))
-      : step === 1
-        ? draftFolder !== null
-        : step === 2 && draft.accessPolicy.channels.scope === "selected"
-          ? normalizeChannelIds(draft.channelInput).length > 0
-          : true;
+      : step === 2 && draft.accessPolicy.channels.scope === "selected"
+        ? normalizeChannelIds(draft.channelInput).length > 0
+        : true;
 
   function startProvider(manifest: ChannelProviderManifest) {
     setError(null);
@@ -168,7 +151,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
       if (canContinue) setStep((current) => current + 1);
       return;
     }
-    if (!draftFolder) return;
     setPending(true);
     setError(null);
     try {
@@ -181,7 +163,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
         provider: draft.provider,
         routingMode: draft.routingMode,
         type: "channel.connection.create",
-        folder: draftFolder,
       });
       if (result.type !== "channel.connection.create") throw new Error("Channel command mismatch.");
       setCreated(result);
@@ -309,8 +290,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
   /** Answers whether the route was created, so the card can close its form. */
   async function addRoute(account: ChannelAccount, route: RouteDraft): Promise<boolean> {
-    const folder = route.folder ?? agentHome;
-    if (!folder) return false;
     setPending(true);
     setError(null);
     try {
@@ -327,7 +306,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
           threadId: null,
         },
         type: "channel.binding.create",
-        folder,
       });
       if (result.type !== "channel.binding.create") throw new Error("Channel command mismatch.");
       await reload();
@@ -486,7 +464,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
                 : dashboard
             }
             error={error}
-            folderName={folderName}
             linkError={linkError}
             linked={linked}
             onAdd={() => {
@@ -512,7 +489,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 
         {view === "computer-setup" && provider ? (
           <ComputerChannelSetup
-            agentHome={agentHome}
             hostClient={hostClient}
             machines={snapshot.machines}
             onCancel={() => setView("providers")}
@@ -542,14 +518,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
             {step === 2 ? (
               <ChannelAccess draft={draft} provider={provider} setDraft={setDraft} />
             ) : null}
-            {step === 3 ? (
-              <ChannelReview
-                draft={draft}
-                provider={provider}
-                routeSummary={routeSummary}
-                {...(draftFolder ? { folderName: folderName(draftFolder) } : {})}
-              />
-            ) : null}
+            {step === 3 ? <ChannelReview draft={draft} provider={provider} /> : null}
             <div className="form-actions">
               {error ? (
                 <span aria-live="assertive" className="form-actions__error" role="alert">
@@ -633,7 +602,6 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
 export function ChannelOverview({
   dashboard,
   error,
-  folderName,
   linkError,
   linked,
   onAdd,
@@ -650,7 +618,6 @@ export function ChannelOverview({
 }: {
   dashboard: ChannelDashboard | null;
   error: string | null;
-  folderName: (folder: TaskFolder) => string;
   linkError: string | null;
   linked: LinkedIdentity | null;
   onAdd: () => void;
@@ -815,7 +782,6 @@ export function ChannelOverview({
                       bindings={dashboard.bindings.filter(
                         ({ accountId }) => accountId === account.id,
                       )}
-                      folderName={folderName}
                       key={account.id}
                       onAddRoute={onAddRoute}
                       onRevokeRoute={onRevokeRoute}
@@ -893,7 +859,7 @@ function ProviderPicker({
 function SetupProgress({ provider, step }: { provider: ChannelProviderManifest; step: number }) {
   return (
     <div aria-label={`${provider.label} setup progress`} className="wizard-steps">
-      {[provider.label, "Where it answers", "Who can use it", "Review"].map((label, index) => (
+      {[provider.label, "Bot role", "Who can use it", "Review"].map((label, index) => (
         <Fragment key={label}>
           {index > 0 ? <Icon name="chevron-right" /> : null}
           <span className={index === step ? "wizard-steps__step--active" : undefined}>
@@ -1016,11 +982,6 @@ function ChannelDestination({
   return (
     <div className="card">
       <div className="card__form">
-        <FolderField
-          folder={draft.folder}
-          hint="New conversations start tasks for your agent in this folder."
-          onChange={(folder) => setDraft({ ...draft, folder })}
-        />
         <div className="check-list" role="radiogroup" aria-label="Bot role">
           <label className="check-item">
             <input
@@ -1031,10 +992,10 @@ function ChannelDestination({
             />
             <span className="check-item__meta">
               <span className="check-item__label">
-                One folder <span className="chip chip--accent">Recommended</span>
+                One route <span className="chip chip--accent">Recommended</span>
               </span>
               <span className="check-item__detail">
-                Every conversation with this identity works in the chosen folder.
+                Every conversation with this identity follows the same access.
               </span>
             </span>
           </label>
@@ -1048,7 +1009,7 @@ function ChannelDestination({
             <span className="check-item__meta">
               <span className="check-item__label">Shared bot with routes</span>
               <span className="check-item__detail">
-                Route different conversations to different folders. You can add routes after setup.
+                Give different conversations their own access. You can add routes after setup.
               </span>
             </span>
           </label>
@@ -1080,21 +1041,16 @@ function ChannelAccess({
 function ChannelReview({
   draft,
   provider,
-  routeSummary,
-  folderName,
 }: {
   draft: ChannelDraft;
   provider: ChannelProviderManifest;
-  routeSummary: string;
-  folderName?: string;
 }) {
   const rows: { detail: string; title: string }[] = [
     { detail: `${provider.label} · verified on connect`, title: "Connected account" },
     {
-      detail: draft.routingMode === "dedicated" ? "One folder" : "Shared bot with routes",
+      detail: draft.routingMode === "dedicated" ? "One route" : "Shared bot with routes",
       title: "Bot role",
     },
-    { detail: `${folderName ?? "Agent home"} — ${routeSummary}`, title: "Where it works" },
     {
       detail: channelPolicySummary(
         accessPolicyFromDraft(draft.accessPolicy, draft.channelInput),
@@ -1541,7 +1497,6 @@ function SenderOptions() {
 export function AccountRoutes({
   account,
   bindings,
-  folderName,
   onAddRoute,
   onRevokeRoute,
   onUpdateAccess,
@@ -1550,7 +1505,6 @@ export function AccountRoutes({
 }: {
   account: ChannelAccount;
   bindings: readonly ChannelBinding[];
-  folderName: (folder: TaskFolder) => string;
   onAddRoute: (account: ChannelAccount, route: RouteDraft) => Promise<boolean>;
   onRevokeRoute: (bindingId: ChannelBinding["id"]) => void;
   onUpdateAccess: (binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) => Promise<boolean>;
@@ -1565,9 +1519,8 @@ export function AccountRoutes({
   const [route, setRoute] = useState<RouteDraft>({
     accessPolicy: channelRouteAccessPolicy(),
     conversationId: "",
-    folder: null,
   });
-  /** A dedicated bot has one route, to one folder: the Host refuses a second binding. */
+  /** A dedicated bot has one route: the Host refuses a second binding. */
   const dedicated = account.routingMode === "dedicated";
   return (
     <>
@@ -1575,17 +1528,16 @@ export function AccountRoutes({
         <Fragment key={binding.id}>
           <div className="card__row">
             <span className="card__row-glyph" aria-hidden="true">
-              <Icon name="folder" />
+              <Icon name="hash" />
             </span>
             <div className="card__row-body">
-              <span className="card__row-title" title={binding.folder.path}>
-                {folderName(binding.folder)}
+              <span className="card__row-title">
+                {routeSelectorLabel(binding.selector)}
                 {binding.status === "active" ? null : (
                   <span className="chip">{statusLabel(binding.status)}</span>
                 )}
               </span>
               <span className="card__row-detail">
-                {routeSelectorLabel(binding.selector)} ·{" "}
                 {channelPolicySummary(binding.accessPolicy, providerLabel)}
               </span>
               <span className="card__row-detail">
@@ -1691,7 +1643,7 @@ export function AccountRoutes({
         <div className="card__row-body">
           <span className="card__row-detail">
             {dedicated
-              ? `A dedicated bot has one route. Connect another ${providerLabel} identity to work in another folder.`
+              ? `A dedicated bot has one route. Connect another ${providerLabel} identity for different access.`
               : bindings.length
                 ? `${bindings.length} route${bindings.length === 1 ? "" : "s"} for ${account.displayName}.`
                 : `No routes yet for ${account.displayName}. Messages reach Opensteer only where a route matches.`}
@@ -1742,11 +1694,6 @@ export function AccountRoutes({
             />
             <span className="field__hint">Paste the channel link, or its provider ID.</span>
           </label>
-          <FolderField
-            folder={route.folder}
-            hint="Conversations here start tasks for your agent in this folder."
-            onChange={(folder) => setRoute({ ...route, folder })}
-          />
           <label className="field">
             <span className="field__label">Who can mention it</span>
             <select
@@ -1794,7 +1741,7 @@ function heading(view: View, step: number, providerLabel = "provider"): string {
   if (view === "success") return `${providerLabel} connection saved`;
   if (view === "repair") return `Fix ${providerLabel} setup`;
   return (
-    [`Connect ${providerLabel}`, "Choose a destination", "Set access", "Review the route"][step] ??
+    [`Connect ${providerLabel}`, "Choose a bot role", "Set access", "Review the route"][step] ??
     `Connect ${providerLabel}`
   );
 }
@@ -1811,7 +1758,7 @@ function subheading(view: View, step: number, providerLabel = "provider"): strin
   return (
     [
       `For a self-hosted deployment, bring a ${providerLabel} app you control.`,
-      "Choose the folder its tasks work in.",
+      "Choose one route or a shared bot with routes.",
       "Choose channel access and direct messages.",
       `You can add more specific routes later without reconnecting ${providerLabel}.`,
     ][step] ?? ""
@@ -1937,17 +1884,4 @@ export function normalizeChannelIds(value: string): string[] {
 
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Channel settings could not be loaded.";
-}
-
-/** A folder as a route names it: "Agent home", or its last part. */
-function useFolderName(): (folder: TaskFolder) => string {
-  const { snapshot } = useShell();
-  const agentHome = snapshot.personalSettings?.agentHome ?? null;
-  return (folder) =>
-    folderView(
-      folder,
-      agentHome,
-      (computerId) =>
-        snapshot.machines.find((machine) => machine.id === computerId)?.name ?? "This computer",
-    ).label;
 }

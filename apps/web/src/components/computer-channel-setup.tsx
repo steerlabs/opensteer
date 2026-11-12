@@ -1,9 +1,7 @@
 import { useState, type FormEvent } from "react";
 import type { ChannelProviderManifest } from "@opensteer/channel-core";
-import type { TaskFolder } from "@opensteer/core";
 import { mutationIdempotencyKey, type HostClient } from "@opensteer/client/host";
 import type { MachineSummary } from "@opensteer/protocol";
-import { FolderField } from "./folder-field.js";
 
 type Created = Extract<
   Awaited<ReturnType<HostClient["dispatch"]>>,
@@ -17,15 +15,12 @@ type Created = Extract<
  * the permission, and your own handles are how the bot knows it is you.
  */
 export function ComputerChannelSetup({
-  agentHome,
   hostClient,
   machines,
   onCancel,
   onCreated,
   provider,
 }: {
-  /** Where its tasks work until another folder is chosen. */
-  readonly agentHome: TaskFolder | null;
   readonly hostClient: Pick<HostClient, "dispatch">;
   readonly machines: readonly MachineSummary[];
   readonly onCancel: () => void;
@@ -40,8 +35,6 @@ export function ComputerChannelSetup({
   );
   const [runnerId, setRunnerId] = useState(eligible[0]?.id ?? "");
   const [handles, setHandles] = useState("");
-  const [chosenFolder, setChosenFolder] = useState<TaskFolder | null>(null);
-  const folder = chosenFolder ?? agentHome;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ownerHandles = handles
@@ -51,7 +44,7 @@ export function ComputerChannelSetup({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!runnerId || ownerHandles.length === 0 || !folder) return;
+    if (!runnerId || ownerHandles.length === 0) return;
     setPending(true);
     setError(null);
     try {
@@ -61,7 +54,6 @@ export function ComputerChannelSetup({
         provider: provider.provider,
         runnerId,
         type: "channel.connection.computer.create",
-        folder,
       });
       if (result.type !== "channel.connection.computer.create") {
         throw new Error("Channel command mismatch.");
@@ -110,11 +102,6 @@ export function ComputerChannelSetup({
               Your phone number with its country code, or your Apple account email. One per line.
             </span>
           </label>
-          <FolderField
-            folder={folder}
-            hint="Your messages start tasks for your agent in this folder."
-            onChange={setChosenFolder}
-          />
         </>
       )}
       <div className="form-actions">
@@ -128,7 +115,7 @@ export function ComputerChannelSetup({
         </button>
         <button
           className="btn btn--primary"
-          disabled={pending || !runnerId || ownerHandles.length === 0 || !folder}
+          disabled={pending || !runnerId || ownerHandles.length === 0}
           type="submit"
         >
           {pending ? "Checking…" : `Connect ${provider.label}`}

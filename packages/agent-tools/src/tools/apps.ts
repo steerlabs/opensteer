@@ -9,7 +9,7 @@ export const app_publish = defineAgentTool({
   name: "app_publish",
   title: "Publish an app",
   description:
-    "Show a task folder HTML file or server app inline and full-screen. Run-only. path names self-contained UTF-8 HTML, or a folder with start. Servers need full-access/local storage, listen on 127.0.0.1:$PORT and use relative URLs. Returns appId/version after verification. appId updates cards; HTML replaces/stops a server. Read opensteer:threads references/apps.md. Do not repeat the app in prose.",
+    "Show an Agent home HTML file or server app inline and full-screen. Run-only. path names self-contained UTF-8 HTML, or a folder with start. Servers need full-access/local storage, listen on 127.0.0.1:$PORT and use relative URLs. Returns appId/version after verification. appId updates cards; HTML replaces/stops a server. Read opensteer:threads references/apps.md. Do not repeat the app in prose.",
   input: AppPublishInputSchema.safeExtend({ operationKey: OperationKeySchema.optional() }),
   output: AppPublishOutputSchema,
   access: "write",

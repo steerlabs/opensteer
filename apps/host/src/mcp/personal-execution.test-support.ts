@@ -1,17 +1,17 @@
-import type { EnvironmentId, TaskFolder, UserId } from "@opensteer/core";
+import type { EnvironmentId, ComputerFolder, UserId } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
 import { requirePersonalOwner } from "@opensteer/database/personal-settings-store";
-import { FolderAdmissionService } from "../threads/folder-admission-service.js";
+import { PersonalExecution } from "../runtime/personal-execution.js";
 
-export function personalTestFolders(
+export function personalTestExecution(
   store: OpensteerStore,
   fixture: {
     readonly userId: UserId;
     readonly environmentId: EnvironmentId;
-    readonly agentHome: TaskFolder;
+    readonly agentHome: ComputerFolder;
   },
 ) {
-  return new FolderAdmissionService({
+  return new PersonalExecution({
     ownerId: fixture.userId,
     hostingComputerId: fixture.agentHome.computerId,
     environmentId: fixture.environmentId,

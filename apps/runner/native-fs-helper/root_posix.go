@@ -24,9 +24,9 @@ type filesystemRoot struct {
 
 var fsyncDirectory = unix.Fsync
 
-func openTaskFolderRoot(path string, requireMountBoundary bool) (*filesystemRoot, error) {
+func openFilesystemRoot(path string, requireMountBoundary bool) (*filesystemRoot, error) {
 	if path == "" || !filepath.IsAbs(path) || strings.ContainsRune(path, 0) || len(path) > 16*1024 {
-		return nil, userError("invalid-root", "Native filesystem task folder root is invalid")
+		return nil, userError("invalid-root", "Native filesystem root folder is invalid")
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -53,7 +53,7 @@ func openTaskFolderRoot(path string, requireMountBoundary bool) (*filesystemRoot
 		}
 		if uint64(parentStat.Dev) == uint64(stat.Dev) {
 			unix.Close(fd)
-			return nil, userError("root-not-mount", "Native filesystem task folder root is not an isolated mount boundary")
+			return nil, userError("root-not-mount", "Native filesystem root folder is not an isolated mount boundary")
 		}
 	}
 	return &filesystemRoot{containment: platformContainment, device: uint64(stat.Dev), fd: fd}, nil
@@ -106,15 +106,15 @@ func relativeParts(value string, allowRoot bool) ([]string, string, error) {
 		return nil, ".", nil
 	}
 	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsRune(value, 0) || len(value) > 4096 {
-		return nil, "", userError("invalid-path", "Path must be relative to the task folder")
+		return nil, "", userError("invalid-path", "Path must be relative to the root folder")
 	}
 	parts := strings.Split(value, "/")
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, "", userError("outside-workspace", "Path escapes the task folder")
+			return nil, "", userError("outside-workspace", "Path escapes the root folder")
 		}
 		if len(part) > 255 {
-			return nil, "", userError("invalid-path", "Task folder path component is too long")
+			return nil, "", userError("invalid-path", "Path component is too long")
 		}
 	}
 	return parts, strings.Join(parts, "/"), nil
@@ -217,7 +217,7 @@ func (root *filesystemRoot) assertSameDevice(stat unix.Stat_t) error {
 
 func (root *filesystemRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
 	if len(parts) == 0 {
-		return -1, "", userError("invalid-path", "Path must name a file inside the task folder")
+		return -1, "", userError("invalid-path", "Path must name a file inside the root folder")
 	}
 	duplicated, err := unix.Dup(root.fd)
 	if err != nil {
@@ -252,15 +252,15 @@ func (root *filesystemRoot) atomicWrite(parentFD nodeHandle, name string, conten
 	var target unix.Stat_t
 	if err := unix.Fstatat(int(parentFD), name, &target, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if fileType(uint32(target.Mode)) != "file" {
-			return "", userError("not-regular", "Task folder write target must be a regular file or a new path")
+			return "", userError("not-regular", "Write target must be a regular file or a new path")
 		}
 		if expected != nil && fileIdentityFromStat(target) != *expected {
-			return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
+			return "", userError("concurrent-modification", "File changed while replace_text was running")
 		}
 	} else if !errors.Is(err, unix.ENOENT) {
 		return "", err
 	} else if expected != nil {
-		return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
+		return "", userError("concurrent-modification", "File changed while replace_text was running")
 	}
 
 	random := make([]byte, 16)
@@ -301,15 +301,15 @@ func (root *filesystemRoot) atomicWrite(parentFD nodeHandle, name string, conten
 
 	if err := unix.Fstatat(int(parentFD), name, &target, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if fileType(uint32(target.Mode)) != "file" {
-			return "", userError("not-regular", "Task folder write target must be a regular file or a new path")
+			return "", userError("not-regular", "Write target must be a regular file or a new path")
 		}
 		if expected != nil && fileIdentityFromStat(target) != *expected {
-			return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
+			return "", userError("concurrent-modification", "File changed while replace_text was running")
 		}
 	} else if !errors.Is(err, unix.ENOENT) {
 		return "", err
 	} else if expected != nil {
-		return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
+		return "", userError("concurrent-modification", "File changed while replace_text was running")
 	}
 	if err := unix.Renameat(int(parentFD), temporary, int(parentFD), name); err != nil {
 		return "", err
@@ -374,15 +374,15 @@ func unlockDirectory(fd nodeHandle) { _ = unix.Flock(int(fd), unix.LOCK_UN) }
 func platformPublicError(err error) (string, string, bool) {
 	switch {
 	case errors.Is(err, unix.ENOENT):
-		return "not-found", "Task folder path does not exist", true
+		return "not-found", "Path does not exist", true
 	case errors.Is(err, unix.ELOOP):
-		return "symlink-denied", "Task folder paths containing symlinks are not available to Native tools", true
+		return "symlink-denied", "Paths containing symlinks are not available to Native tools", true
 	case errors.Is(err, unix.ENOTDIR):
-		return "unsafe-parent", "Task folder path contains a symlink or non-directory parent; paths containing symlinks are unavailable", true
+		return "unsafe-parent", "Path contains a symlink or non-directory parent; paths containing symlinks are unavailable", true
 	case errors.Is(err, unix.EXDEV):
 		return "cross-device", "Nested filesystem mounts are unavailable to Native tools", true
 	case errors.Is(err, unix.EACCES), errors.Is(err, unix.EPERM):
-		return "permission-denied", "Task folder path is not accessible", true
+		return "permission-denied", "Path is not accessible", true
 	case errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EINVAL):
 		return "helper-unavailable", "Native filesystem containment is unavailable on this system", true
 	default:

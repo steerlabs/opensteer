@@ -1492,7 +1492,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: "boot-trigger-lifecycle",
       runnerId: fixture.runnerId,
     });
-    expect(started.context.location.folder.computerId).toBe(fixture.runnerId);
+    expect(started.context.agentHome.computerId).toBe(fixture.runnerId);
     expect(started.context.revision.id).toBe(created.revision.id);
     await expect(
       triggers.assertActiveExecutionBinding({

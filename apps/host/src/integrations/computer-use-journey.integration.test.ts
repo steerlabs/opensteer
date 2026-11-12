@@ -1,4 +1,4 @@
-import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
+import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -29,7 +29,7 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type TaskFolder,
+  type ComputerFolder,
   type DeploymentId,
 } from "@opensteer/core";
 import {
@@ -404,13 +404,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       await commit({ ...outer, ordinal: 3, type: "run.completed", data: { status: "completed" } });
       await world.platform.endComputerRun(first.runId);
-      const second = await startRun(
-        world.store,
-        world.owner,
-        world.folder,
-        "Next turn",
-        first.threadId,
-      );
+      const second = await startRun(world.store, world.owner, "Next turn", first.threadId);
       const next = await world.gateway(second);
       expect(
         (await next.call("computer", { code: 'const p=await phone("Pixel 8"); await p.observe()' }))
@@ -1690,8 +1684,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           parts: [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
-      const otherFolder = await world.createFolder("Another task folder");
-      const other = await world.startRun("Other task", otherFolder);
+      const other = await world.startRun("Other task");
       await expect(
         places.assertUsable({
           ...scope,
@@ -1763,7 +1756,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         } as never,
         canRunHarness: () => true,
         commands,
-        folders: personalTestFolders(store, world.owner),
+        execution: personalTestExecution(store, world.owner),
         isEnvironmentConnected: () => true,
         onEvent: () => undefined,
         store,
@@ -4810,7 +4803,6 @@ async function createWorld(
   const persistence = new IntegrationPlatformStore(database);
   const connections = new IntegrationStore(database);
   const owner = await createOwner(store, randomUUID(), dataDirectory, options.ownerUserId);
-  const folder = owner.agentHome;
   // The Runner authenticates its transport; the Host authorizes owner decisions.
   const keys = generateKeyPairSync("ed25519");
 
@@ -5038,15 +5030,14 @@ async function createWorld(
       return insertComputer(name, "phone", stranger);
     },
     owner,
-    folder,
     persistence,
     connections,
     computerUse,
     hub,
     fakeMac,
     platform,
-    async startRun(title: string, target = folder) {
-      return startRun(store, owner, target, title);
+    async startRun(title: string) {
+      return startRun(store, owner, title);
     },
     /** Another Mac of the same owner, enrolled but not connected. */
     addMac: insertMac,
@@ -5089,11 +5080,6 @@ async function createWorld(
           connection.computer?.blockedAt ? "blocked" : connection.computer?.access,
         ]),
       );
-    },
-    async createFolder(name: string) {
-      const folder = { ...owner.agentHome, path: path.join(owner.agentHome.path, name) };
-      await mkdir(folder.path, { recursive: true });
-      return folder;
     },
     async requestById(id: string) {
       const request = await persistence.requests.get(id as never);
@@ -5233,7 +5219,7 @@ async function openGateway(
 }
 
 interface Owner {
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly deploymentId: DeploymentId;
   readonly agentRunnerId: RunnerId;
   readonly environmentId: EnvironmentId;
@@ -5298,7 +5284,6 @@ async function createOwner(
 async function startRun(
   store: OpensteerStore,
   owner: Owner,
-  folder: TaskFolder,
   title: string,
   existingThreadId?: ThreadId,
 ) {
@@ -5307,7 +5292,6 @@ async function startRun(
     ? { thread: { id: existingThreadId } }
     : await store.createThread({
         createdBy: owner.userId,
-        folder,
         environmentId: owner.environmentId,
         harnessInstanceId: owner.harnessInstanceId,
         idempotencyKey: `thread-${suffix}`,

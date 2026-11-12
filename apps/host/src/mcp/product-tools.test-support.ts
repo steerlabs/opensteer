@@ -375,7 +375,6 @@ export class ProductToolsTestClient {
     const product = new ProductToolHandlers({
       deploymentId: createId("deployment"),
       threads: new ThreadService({
-        folders: { admit: async (folder) => folder },
         store: options.store,
         commands,
         runners: {
@@ -396,7 +395,7 @@ export class ProductToolsTestClient {
       harnessAccessModes: () => ThreadAccessModeSchema.options,
       isEnvironmentConnected: () => true,
       onEvent: () => {},
-      folders: unavailableDefaults as never,
+      execution: unavailableDefaults as never,
       ...options,
       commands,
     });

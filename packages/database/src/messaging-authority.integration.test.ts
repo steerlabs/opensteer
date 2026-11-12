@@ -9,7 +9,7 @@ import { createDatabase } from "./connection.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
 
-it("fences Messaging folder edits, idempotent ingress and queued replies to current sender consent", async () => {
+it("fences Messaging binding edits, idempotent ingress and queued replies to current sender consent", async () => {
   const clone = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: clone.url });
   try {
@@ -29,7 +29,6 @@ it("fences Messaging folder edits, idempotent ingress and queued replies to curr
     const binding = await store.createBinding({
       accountId,
       createdBy: p.userId,
-      folder: p.agentHome,
       selector: {},
       executionPolicy: { harness: "default", harnessInstanceId: null },
       accessPolicy: {
@@ -41,14 +40,6 @@ it("fences Messaging folder edits, idempotent ingress and queued replies to curr
         },
       },
     });
-    await expect(
-      store.setFolder({
-        bindingId: binding.id,
-        expectedRevision: 1,
-        ownerUserId: p.userId,
-        folder: { computerId: createId("runner"), path: "/tmp/lent" },
-      }),
-    ).rejects.toThrow("hosting computer");
     const event = {
       accountExternalId: "bot",
       actor: { displayName: "Guest", externalUserId: "guest" },
@@ -93,19 +84,20 @@ it("fences Messaging folder edits, idempotent ingress and queued replies to curr
     expect(
       await database.transaction().execute((tx) => channelInputAuthorityIsCurrent(tx, p.messageId)),
     ).toBe(true);
-    const changed = await store.setFolder({
+    const accessPolicy = binding.accessPolicy;
+    const changed = await store.updateBinding({
       bindingId: binding.id,
       expectedRevision: 1,
       ownerUserId: p.userId,
-      folder: { ...p.agentHome, path: "/tmp/next" },
+      accessPolicy,
     });
     expect(changed.revision).toBe(2);
     await expect(
-      store.setFolder({
+      store.updateBinding({
         bindingId: binding.id,
         expectedRevision: 1,
         ownerUserId: p.userId,
-        folder: p.agentHome,
+        accessPolicy,
       }),
     ).rejects.toThrow("changed");
     expect(

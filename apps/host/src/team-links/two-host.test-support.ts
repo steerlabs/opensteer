@@ -13,7 +13,6 @@ import {
   SequenceSchema,
   type TeamAgentRequestId,
   type TeamMessageId,
-  type ThreadId,
   type TeamSource,
 } from "@opensteer/core";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
@@ -26,7 +25,6 @@ import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createDatabase } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
 import {
   TeamAgentRequestSchema,
   TeamLinkViewSchema,
@@ -196,7 +194,6 @@ export async function createTwoHostLinkFixture() {
   const remote = await links.redeem(redeemInput);
   const personalLinks = new PersonalTeamLinksStore(database);
   const requests = new PersonalTeamRequestsStore(database);
-  const folders = new PersonalTeamChannelFoldersStore(database);
   const vault = new PersonalTeamVault(
     new AesGcmCredentialVault(new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1)),
     database,
@@ -429,7 +426,7 @@ export async function createTwoHostLinkFixture() {
           .executeTakeFirst();
         const taskId = bound?.id ?? createId("thread");
         if (!bound)
-          await sql`insert into threads(id,lineage_root_thread_id,purpose,folder_computer_id,folder_path,team_id,channel_id,thread_root_id,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id) values(${taskId},${taskId},'task',${input.folder.computerId},${input.folder.path},${input.origin.teamId},${input.origin.channelId},${input.origin.threadRootId},true,'Team task','automatic','blue',${personal.environmentId},${harnessId},'{}',${personal.userId},${principalId})`.execute(
+          await sql`insert into threads(id,lineage_root_thread_id,purpose,team_id,channel_id,thread_root_id,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id) values(${taskId},${taskId},'task',${input.origin.teamId},${input.origin.channelId},${input.origin.threadRootId},true,'Team task','automatic','blue',${personal.environmentId},${harnessId},'{}',${personal.userId},${principalId})`.execute(
             tx,
           );
         else
@@ -518,7 +515,6 @@ export async function createTwoHostLinkFixture() {
   const publisher = new PersonalTeamRequests({
     links: personalLinks,
     requests,
-    folders,
     admission,
     runs: runPort,
     rpc: () => ({ call }),
@@ -617,7 +613,6 @@ export async function createTwoHostLinkFixture() {
     channelId,
     linkId,
     secret,
-    folders,
     links,
     startedContexts,
     get runCount() {
@@ -654,14 +649,6 @@ export async function createTwoHostLinkFixture() {
     teamRequest: async (id: TeamAgentRequestId) => rawView(await teamRequestRow(id)),
     inputCount: async () =>
       (await database.selectFrom("threadInputs").selectAll().execute()).length,
-    async taskFolder(taskId: ThreadId) {
-      const task = await database
-        .selectFrom("threads")
-        .selectAll()
-        .where("id", "=", taskId)
-        .executeTakeFirstOrThrow();
-      return { computerId: task.folderComputerId, path: task.folderPath };
-    },
     async editContext(instructions: string, text: string) {
       await team.database
         .updateTable("teamChannels")
@@ -958,10 +945,8 @@ export async function createTwoHostLinkFixture() {
         deploymentId: personal.deploymentId,
         installationLabel: "Fixture Mac",
         links: personalLinks,
-        folders,
         vault,
         requests: publisher,
-        admitFolder: async (folder) => folder,
         network: {
           async discover() {
             return descriptor;

@@ -37,7 +37,6 @@ afterEach(async () => {
 function fixture() {
   const thread = {
     id: createId("thread"),
-    folder: { computerId: createId("runner"), path: "/task" },
     purpose: "task",
     teamOrigin: null,
     lineageRootThreadId: createId("thread"),

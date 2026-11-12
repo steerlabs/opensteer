@@ -539,7 +539,6 @@ async function createComputerUseTask(store: OpensteerStore, suffix: string, dire
     admission = createPersonalRunFixturePort(store);
   const task = await admission.createTask({
     ownerId: personal.userId,
-    folder: personal.agentHome,
     suffix,
   });
   const started = await admission.startTask(task.threadId, "Start");
@@ -552,7 +551,6 @@ async function createComputerUseTask(store: OpensteerStore, suffix: string, dire
     runnerId: personal.runnerId,
     threadId: task.threadId,
     userId: personal.userId,
-    folder: personal.agentHome,
     deploymentId: personal.deploymentId,
   };
 }

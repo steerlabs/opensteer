@@ -72,10 +72,6 @@ const fixtureOwnerId = createId("user");
 let personalFixture: Awaited<
   ReturnType<typeof import("@opensteer/database/test-support/store").createStoreFixture>
 >;
-const personalFolder: import("@opensteer/core").TaskFolder = {
-  computerId: createId("runner"),
-  path: "/tmp/host-route-personal-home",
-};
 beforeAll(async () => {
   personalFixture = await (
     await import("@opensteer/database/test-support/store")
@@ -97,14 +93,13 @@ beforeAll(async () => {
       disabledAt: null,
     })
     .execute();
-  const seeded = await (
+  await (
     await import("@opensteer/database/test-support/personal")
   ).seedPersonalOwnerResources(personalFixture.database, {
     deploymentId: deployment.id,
     userId: fixtureOwnerId,
     path: "/tmp/host-route-personal-home",
   });
-  personalFolder.computerId = seeded.agentHome.computerId;
 });
 afterAll(async () => {
   await personalFixture?.close();
@@ -136,15 +131,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   ) as typeof complete.store;
   return createProductionHostServer({
     ...complete,
-    folders: {
-      canExecute: () => true,
-      resolve: async (_id: UserId, folder?: import("@opensteer/core").TaskFolder) => ({
-        environmentId: (await complete.store.listEnvironmentsForUser(fixtureOwnerId))[0]?.id,
-        folder: folder ?? personalFolder,
-      }),
-      assertAvailable: async () => undefined,
-      admit: async (folder: import("@opensteer/core").TaskFolder) => folder,
-    } as never,
+    execution: { canExecute: () => true },
     authenticator:
       authenticator instanceof HostAuthenticator
         ? authenticator
@@ -378,7 +365,6 @@ describe("Host signing keys", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
@@ -388,7 +374,7 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(53);
+      expect(discovery.json().apiVersion).toBe(54);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         kind: "personal",
@@ -642,7 +628,7 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
-      expect(hostApiVersion).toBe(53);
+      expect(hostApiVersion).toBe(54);
       for (const legacyHostApiVersion of [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
@@ -891,7 +877,6 @@ describe("rpc envelope", () => {
         },
       },
       type: "run.failed",
-      folder: personalFolder,
       purpose: "task",
       teamOrigin: null,
     };
@@ -1970,7 +1955,6 @@ describe("Optional subsystem registration", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
@@ -2004,7 +1988,6 @@ describe("Optional subsystem registration", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
@@ -2083,7 +2066,6 @@ describe("thread event history route", () => {
         pendingRequests: 0,
         status: "idle",
         title: "History",
-        folder: personalFolder,
         purpose: "task" as const,
         teamOrigin: null,
       }),
@@ -2122,7 +2104,6 @@ describe("thread event history route", () => {
       credentials: {} as never,
       discovery: testDiscovery,
       egress: {} as never,
-      files: {} as never,
       harnessAuthenticationCoordinator: {} as never,
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
@@ -2295,7 +2276,6 @@ describe("Thread input command boundary", () => {
     status: "idle" as const,
     title: "Boundary",
     updatedAt: now,
-    folder: personalFolder,
     purpose: "task" as const,
     teamOrigin: null,
   };
@@ -2564,7 +2544,6 @@ describe("durable harness catalogs", () => {
     /** An existing-CLI profile belongs to the machine; a private one does not. */
     readonly stateKind?: "ambient" | "isolated";
   }) {
-    const folder = { computerId: createId("runner"), path: "/tmp/host-catalog-folder" };
     const runnerId = createId("runner");
     const environment = {
       capabilities: [],
@@ -2603,7 +2582,6 @@ describe("durable harness catalogs", () => {
         status: "idle" as const,
         title: "Created",
         updatedAt: "2026-09-15T09:00:00.000Z",
-        folder,
         purpose: "task" as const,
         teamOrigin: null,
       },
@@ -2689,7 +2667,6 @@ describe("durable harness catalogs", () => {
           status: "idle" as const,
           title: "Moved",
           updatedAt: "2026-09-15T09:00:00.000Z",
-          folder,
           purpose: "task" as const,
           teamOrigin: null,
         },
@@ -2746,7 +2723,7 @@ describe("durable harness catalogs", () => {
       notificationState: {
         quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [
-          { folder, purpose: "task" as const, teamOrigin: null, muted: false, revision: "0" },
+          { purpose: "task" as const, teamOrigin: null, muted: false, revision: "0" },
         ],
       },
       listEnvironmentsForUser: async () => (options.visibleToUser === false ? [] : [environment]),
@@ -2812,7 +2789,6 @@ describe("durable harness catalogs", () => {
           status: "idle" as const,
           title: "Access",
           updatedAt: "2026-09-15T09:00:00.000Z",
-          folder,
           purpose: "task" as const,
           teamOrigin: null,
         },
@@ -2875,7 +2851,6 @@ describe("durable harness catalogs", () => {
         credentials: {} as never,
         discovery: testDiscovery,
         egress: {} as never,
-        files: {} as never,
         harnessAuthenticationCoordinator: new HarnessAuthenticationCoordinator({
           harnesses: store as never,
           runners: runners as never,
@@ -2885,7 +2860,6 @@ describe("durable harness catalogs", () => {
         runners: runners as never,
         store: store as never,
       } satisfies HostServerTestOverrides),
-      folder,
     };
   }
 
@@ -2991,7 +2965,6 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Auto on an engine that cannot",
         type: "thread.create",
-        folder: personalFolder,
       });
 
       expect(refused.statusCode).toBe(400);
@@ -3021,7 +2994,6 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Supervised",
         type: "thread.create",
-        folder: personalFolder,
       });
 
       expect(created.statusCode).toBe(200);
@@ -3129,7 +3101,6 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Disconnected Runner",
         type: "thread.create",
-        folder: personalFolder,
       });
       expect(created.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3152,7 +3123,6 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Never seen",
         type: "thread.create",
-        folder: personalFolder,
       });
       expect(refused.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3176,7 +3146,6 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Laptop is closed",
         type: "thread.create",
-        folder: personalFolder,
       });
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ error: { retryable: true } });
@@ -3951,7 +3920,6 @@ async function requestRouteServer(options: {
     credentials: {} as never,
     discovery: testDiscovery,
     egress: {} as never,
-    files: {} as never,
     harnessAuthenticationCoordinator: {} as never,
     realtime: testRealtime(),
     runnerAuthenticator: {} as never,

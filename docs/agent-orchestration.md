@@ -57,7 +57,7 @@ A filename is never a Host path, and unknown delivery never authorizes removing 
 Image input requires decoded valid bytes, native engine transport and confirmed model support;
 unknown support refuses rather than converting or switching models. Downloads recheck personal
 ownership or the Run's binding. Runner caches are disposable, hash-verified and outside private
-state and task folders.
+state and Agent home.
 
 ## Runs across connection loss and restarts
 
@@ -166,6 +166,16 @@ request approval. Browser presence shows authorized viewers only site and title,
 its owner, and page addresses never enter notification or channel summaries. Agent activity never
 navigates the person's selected place. See [Browser sessions](browser-sessions.md) and
 [Computer use](computer-use.md).
+
+## Agent home
+
+Every task, Trigger, Watch, bridge and team Run works in one folder: Agent home, on the hosting
+computer, fixed at first boot. Tasks have no folder of their own, because Opensteer is one
+person's agent rather than a coding workspace; an agent reaches another folder by its path. The
+Host owns the folder: it recreates a deleted one at boot and refuses to start if the stored path
+now resolves elsewhere. The Runner never creates it and refuses work unless the path still
+resolves to itself, so a swapped symlink cannot redirect a Run. Shared Messaging is the exception:
+it runs in a private temporary folder with no Agent home context.
 
 ## Personal memory
 

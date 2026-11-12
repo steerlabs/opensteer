@@ -744,9 +744,7 @@ qualification("local endpoint qualification", () => {
         expect(configured.unavailableReason).toBeUndefined();
         expect(configured.needsContextWindow).toBeUndefined();
         expect(configured.contextWindow).toBe(8_192);
-        const workspace = await stack.createFolder("Wire-only endpoint qualification");
         const threadId = await stack.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: configured.modelId,
             options: {},
@@ -814,7 +812,6 @@ qualification("local endpoint qualification", () => {
         expect(reset.needsContextWindow).toBe(true);
         await expect(
           stack.createThread({
-            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: reset.modelId,
               options: {},
@@ -898,9 +895,7 @@ qualification("local endpoint qualification", () => {
           contextWindow: 131_072,
         });
         expect(configured.acceptsImages).toBe(true);
-        const workspace = await stack.createFolder("Wire-only photo delivery");
         const threadId = await stack.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: configured.modelId,
             options: {},
@@ -1013,9 +1008,7 @@ qualification("local endpoint qualification", () => {
           const configured = await active.configureModel("local-vision:1", {
             contextWindow: 131_072,
           });
-          const workspace = await active.createFolder("Wire-only photos in one run");
           const threadId = await active.createThread({
-            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1266,9 +1259,7 @@ qualification("local endpoint qualification", () => {
           const configured = await stack.configureModel("local-vision:1", {
             contextWindow: 131_072,
           });
-          const workspace = await stack.createFolder("Wire-only small transport");
           const threadId = await stack.createThread({
-            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1375,9 +1366,7 @@ qualification("local endpoint qualification", () => {
           contextWindow: 12_288,
         });
         const selected = byId.get("local-ctx:1")!;
-        const workspace = await stack.createFolder("Keyed endpoint qualification");
         const threadId = await stack.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: selected.modelId,
             options: {},
@@ -1554,9 +1543,7 @@ qualification("local endpoint qualification", () => {
           nativeModelId: "local-chat",
         });
         evidence.initialSetupMethods = stack.initialCatalog.setupMethods;
-        const workspace = await stack.createFolder("Model server settings key");
         const threadId = await stack.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
@@ -1763,9 +1750,7 @@ qualification("local endpoint qualification", () => {
           expect(configured.unavailableReason).toBeUndefined();
           expect(configured.contextWindow).toBe(target.contextWindow);
           evidence.configuredContextWindow = configured.contextWindow;
-          const workspace = await stack.createFolder(`${engine.driverKind} local qualification`);
           const threadId = await stack.createThread({
-            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},

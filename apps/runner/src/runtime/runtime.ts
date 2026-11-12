@@ -42,7 +42,6 @@ import {
   type ThreadId,
   type TriggerOccurrenceId,
   type TriggerWatchActivationId,
-  type TaskFolder,
 } from "@opensteer/core";
 import {
   assertFreshProviderSessionContext,
@@ -85,12 +84,12 @@ import {
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
-import type { RunFolder, FolderAccessManager } from "../folders/task-folder.js";
+import type { AgentHomeAccess, AgentHomeWorkspace } from "../folders/agent-home.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
-import { type DiscoveredFolderSkills, discoverFolderSkills } from "../skills/folder-skills.js";
+import { type AgentHomeSkills, discoverAgentHomeSkills } from "../skills/agent-home-skills.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
 import { RunCredentials } from "../credentials/run-credentials.js";
@@ -149,7 +148,6 @@ export interface RunnerRuntimeOptions {
   readonly executionClock?: Clock;
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
-  readonly resolveAppFolder?: ConstructorParameters<typeof AppServerManager>[0]["resolveRoot"];
   readonly attachmentCache?: AttachmentCache;
   readonly agentSkills: AgentSkillBundle;
   readonly browserHarnessExecutable: string;
@@ -186,7 +184,7 @@ export interface RunnerRuntimeOptions {
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
   readonly programExecutor?: Pick<TriggerProgramExecutor, "execute">;
-  readonly folderManager: FolderAccessManager;
+  readonly agentHome: AgentHomeAccess;
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
@@ -269,7 +267,7 @@ interface ActiveRun {
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   readonly toolNodeIds: Map<string, ExecutionNodeId>;
-  primaryFolder?: RunFolder;
+  agentHome?: AgentHomeWorkspace;
   /**
    * What the engine reaches the Host and the browser through, while this Run
    * holds them; cut on interrupt. A Run that hands its engine on lets go of
@@ -411,37 +409,25 @@ export class RunnerRuntime {
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
-  readonly #folderManager: FolderAccessManager;
+  readonly #agentHome: AgentHomeAccess;
   #skillObserver:
-    | ((
-        folder: TaskFolder,
-        bindingGeneration: number,
-        scan: DiscoveredFolderSkills | undefined,
-      ) => Promise<void>)
-    | undefined;
-  observeFolderSkills(
+    ((bindingGeneration: number, scan: AgentHomeSkills | undefined) => Promise<void>) | undefined;
+  /** Hears every scan of Agent home's skills, so the Host's inventory follows what agents add. */
+  observeAgentHomeSkills(
     observer:
-      | ((
-          folder: TaskFolder,
-          bindingGeneration: number,
-          scan: DiscoveredFolderSkills | undefined,
-        ) => Promise<void>)
-      | undefined,
+      ((bindingGeneration: number, scan: AgentHomeSkills | undefined) => Promise<void>) | undefined,
   ): void {
     this.#skillObserver = observer;
   }
-  async #scanFolderSkills(
-    folder: TaskFolder,
-    bindingGeneration: number,
-  ): Promise<DiscoveredFolderSkills> {
-    let scan: DiscoveredFolderSkills;
+  async #scanAgentHomeSkills(path: string, bindingGeneration: number): Promise<AgentHomeSkills> {
+    let scan: AgentHomeSkills;
     try {
-      scan = await discoverFolderSkills(folder.path);
+      scan = await discoverAgentHomeSkills(path);
     } catch (error) {
-      await this.#skillObserver?.(folder, bindingGeneration, undefined).catch(() => undefined);
+      await this.#skillObserver?.(bindingGeneration, undefined).catch(() => undefined);
       throw error;
     }
-    await this.#skillObserver?.(folder, bindingGeneration, scan).catch(() => undefined);
+    await this.#skillObserver?.(bindingGeneration, scan).catch(() => undefined);
     return scan;
   }
 
@@ -504,7 +490,7 @@ export class RunnerRuntime {
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
       options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
-    this.#folderManager = options.folderManager;
+    this.#agentHome = options.agentHome;
     this.#watchSupervisor =
       options.watchSupervisor ??
       new WatchSupervisor({
@@ -514,7 +500,7 @@ export class RunnerRuntime {
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
         transport: { mode: this.#mode },
-        folderManager: options.folderManager,
+        agentHome: options.agentHome,
       });
     this.#sessions = new LiveSessionDirectory(options.bootId);
     this.#containment =
@@ -522,11 +508,7 @@ export class RunnerRuntime {
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
     this.appServers = new AppServerManager({
       privateDirectory: join(options.dataDirectory, "private", "app-servers"),
-      resolveRoot:
-        options.resolveAppFolder ??
-        (async () => {
-          throw new Error("App servers need a task folder");
-        }),
+      resolveRoot: (spec) => options.agentHome.folder(spec.folder, spec.agentHome),
       planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });
@@ -710,7 +692,7 @@ export class RunnerRuntime {
       active.settling ||
       active.abort.signal.aborted ||
       active.command.context.bindingGeneration !== execution.bindingGeneration ||
-      !active.primaryFolder
+      !active.agentHome
     )
       return Promise.reject(
         new RunFileError("This task execution has ended; retry from the current task."),
@@ -719,8 +701,7 @@ export class RunnerRuntime {
     if (!this.#canDeliverMessageAttachments(context.harness.driverKind) || !this.#attachmentCache)
       return Promise.reject(new RunFileError("This engine or machine cannot receive files."));
     const cache = this.#attachmentCache;
-    const workspacePath = active.primaryFolder.path;
-    const roots = this.#folderManager.writableRoots(active.primaryFolder);
+    const agentHomePath = active.agentHome.path;
     const lifetime = new AbortController();
     const linked = AbortSignal.any([
       signal,
@@ -731,7 +712,7 @@ export class RunnerRuntime {
     const task = (async () => {
       const directory = await cache.directory(context.threadId);
       linked.throwIfAborted();
-      return await work({ roots: [workspacePath, ...roots, directory], directory, signal: linked });
+      return await work({ roots: [agentHomePath, directory], directory, signal: linked });
     })();
     active.fileTasks.add(task);
     void task
@@ -2304,15 +2285,15 @@ export class RunnerRuntime {
 
   async #executeTriggerProgram(active: ActiveTriggerProgram): Promise<void> {
     const { context } = active.command;
-    let workspace: RunFolder | undefined;
+    let workspace: AgentHomeWorkspace | undefined;
     let output: TriggerExecutionOutput | undefined;
     let endpoints: ProgramEndpointSet | undefined;
     // An interrupted occurrence loses its tools at once, not when its process exits.
     const endAccess = () => endpoints?.revoke();
     active.abort.signal.addEventListener("abort", endAccess, { once: true });
     try {
-      workspace = await this.#folderManager.prepare({
-        location: active.command.location,
+      workspace = await this.#agentHome.prepare({
+        agentHome: active.command.agentHome,
         signal: active.abort.signal,
       });
       endpoints = await startProgramEndpoints({
@@ -2385,7 +2366,7 @@ export class RunnerRuntime {
   async #execute(active: ActiveRun): Promise<void> {
     const { command } = active;
     const { context } = command;
-    let workspace: RunFolder | undefined;
+    let workspace: AgentHomeWorkspace | undefined;
     let browserCdpRelay: BrowserCdpRelay | undefined;
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
@@ -2421,12 +2402,12 @@ export class RunnerRuntime {
         active.abort.abort(new Error("The Run's execution lease ran out without the Host"));
       }
       signal.throwIfAborted();
-      workspace = await this.#folderManager.prepare({
-        location: command.location,
+      workspace = await this.#agentHome.prepare({
+        agentHome: command.agentHome,
         personalContext: context.personalContext,
         signal: active.abort.signal,
       });
-      active.primaryFolder = workspace;
+      active.agentHome = workspace;
       const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
       const transport = { deploymentShape: this.#deploymentShape, mode: this.#mode };
       const credentials = new RunCredentials(context);
@@ -2488,9 +2469,7 @@ export class RunnerRuntime {
             context.providerSessionId,
           );
       if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
-      const writableRoots = [
-        ...new Set([...this.#folderManager.writableRoots(workspace), workingDirectory]),
-      ];
+      const writableRoots = [...new Set([workspace.path, workingDirectory])];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       if (
@@ -2515,7 +2494,7 @@ export class RunnerRuntime {
         if (!plugin || context.plugins.versions.length !== 1)
           throw new Error("Specialist requires exactly one pinned plugin");
         const pluginRoot = join(this.#privateStateDirectory, "plugins", plugin.digest);
-        const parent = join(workspace.agentHomePath, ".specialists");
+        const parent = join(workspace.path, ".specialists");
         await mkdir(parent, { recursive: true });
         if ((await lstat(parent)).isSymbolicLink())
           throw new Error("Specialist directory cannot be a symlink");
@@ -2538,13 +2517,9 @@ export class RunnerRuntime {
         };
       }
       const homeSkills = context.personalContext
-        ? await this.#scanFolderSkills(command.location.agentHome, context.bindingGeneration)
+        ? await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration)
         : { skills: [], warnings: [], digest: "personal-context-disabled" };
-      const folderSkills =
-        workspace.path === workspace.agentHomePath
-          ? homeSkills
-          : await this.#scanFolderSkills(command.location.folder, context.bindingGeneration);
-      for (const warning of new Set([...homeSkills.warnings, ...folderSkills.warnings])) {
+      for (const warning of new Set(homeSkills.warnings)) {
         this.#logger?.info(warning, {
           runId: context.runId,
         });
@@ -2558,9 +2533,6 @@ export class RunnerRuntime {
         ),
         integration: runSkills.skills,
         home: homeSkills.skills.filter(
-          (skill) => !context.plugins.skillPolicy?.disabledFullNames.includes(skill.fullName),
-        ),
-        folder: folderSkills.skills.filter(
           (skill) => !context.plugins.skillPolicy?.disabledFullNames.includes(skill.fullName),
         ),
       });
@@ -2591,7 +2563,7 @@ export class RunnerRuntime {
           machineAccessLaunch,
           providerSessionReference,
           skills,
-          folderSkillsDigest: `${homeSkills.digest}:${folderSkills.digest}`,
+          homeSkillsDigest: homeSkills.digest,
           runtimeBoundary: this.#harnessRuntimeBoundary.kind,
           workspacePath,
           writableRoots,
@@ -2754,7 +2726,7 @@ export class RunnerRuntime {
                 "plugins",
                 context.plugins.versions[0]!.digest,
               ),
-              PLUGIN_DATA: join(workspace.agentHomePath, ".specialists", context.specialistId),
+              PLUGIN_DATA: join(workspace.path, ".specialists", context.specialistId),
             }
           : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
@@ -2953,7 +2925,7 @@ export class RunnerRuntime {
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
       if (workspace && this.#skillObserver) {
-        await this.#scanFolderSkills(command.location.folder, context.bindingGeneration).catch(
+        await this.#scanAgentHomeSkills(workspace.path, context.bindingGeneration).catch(
           () => undefined,
         );
       }
@@ -3000,7 +2972,7 @@ export class RunnerRuntime {
           threadId: internalBinding.threadId,
         });
       }
-      delete active.primaryFolder;
+      delete active.agentHome;
       terminal ??= failureEvent("Runner execution ended unexpectedly", "runner_internal_error");
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)

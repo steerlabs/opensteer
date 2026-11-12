@@ -63,7 +63,6 @@ import {
   type RunnerId,
   type UserId,
   type ThreadId,
-  type TaskFolder,
 } from "@opensteer/core";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type {
@@ -136,7 +135,6 @@ export interface CreateChannelConnectionInput {
    */
   readonly linkedExternalUserIds?: readonly string[];
   readonly selector: unknown;
-  readonly folder: TaskFolder;
 }
 
 interface ClaimedIngress {
@@ -377,7 +375,7 @@ export class ChannelStore {
     ) {
       throw new OpensteerError({
         code: "bad_request",
-        message: "A dedicated messaging identity must use one account-wide folder binding",
+        message: "A dedicated messaging identity must use one account-wide binding",
       });
     }
     return withPersonalTransaction(this.#database, async (transaction) => {
@@ -392,7 +390,7 @@ export class ChannelStore {
           transaction,
         );
       }
-      await requireMessagingFolder(transaction, input.createdBy, input.folder);
+      await assertPersonalOwner(transaction, input.createdBy);
       if (input.connection.transportKind === "computer") {
         if (input.credential !== null) {
           throw new OpensteerError({
@@ -519,8 +517,6 @@ export class ChannelStore {
           selector: jsonValue(selector),
           status: "active",
           updatedAt: now,
-          folderComputerId: input.folder.computerId,
-          folderPath: input.folder.path,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -538,18 +534,17 @@ export class ChannelStore {
     readonly createdBy: UserId;
     readonly executionPolicy: unknown;
     readonly selector: unknown;
-    readonly folder: TaskFolder;
   }): Promise<ChannelBinding> {
     const selector = ChannelRouteSelectorSchema.parse(input.selector);
     const executionPolicy = ChannelExecutionPolicySchema.parse(input.executionPolicy);
     const accessPolicy = ChannelAccessPolicySchema.parse(input.accessPolicy);
     return withPersonalTransaction(this.#database, async (transaction) => {
-      await requireMessagingFolder(transaction, input.createdBy, input.folder);
+      await assertPersonalOwner(transaction, input.createdBy);
       const account = await ownedAccount(transaction, input.accountId, input.createdBy);
       if (account.routingMode === "dedicated") {
         throw new OpensteerError({
           code: "conflict",
-          message: "A dedicated messaging identity has exactly one folder binding",
+          message: "A dedicated messaging identity has exactly one binding",
         });
       }
       const existing = await transaction
@@ -576,8 +571,6 @@ export class ChannelStore {
           selector: jsonValue(selector),
           status: "active",
           updatedAt: new Date(),
-          folderComputerId: input.folder.computerId,
-          folderPath: input.folder.path,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -620,37 +613,6 @@ export class ChannelStore {
         });
       }
       await cancelStaleChannelInputs(transaction, input.bindingId, row.revision, now);
-      return channelBindingFromRow(row);
-    });
-  }
-
-  async setFolder(input: {
-    bindingId: ChannelBindingId;
-    expectedRevision: number;
-    ownerUserId: UserId;
-    folder: TaskFolder;
-  }): Promise<ChannelBinding> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
-      await requireMessagingFolder(transaction, input.ownerUserId, input.folder);
-      const binding = await ownedBinding(transaction, input.bindingId, input.ownerUserId);
-      if (binding.revision !== input.expectedRevision)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Messaging settings changed while they were being edited",
-        });
-      const row = await transaction
-        .updateTable("channelBindings")
-        .set({
-          folderComputerId: input.folder.computerId,
-          folderPath: input.folder.path,
-          revision: binding.revision + 1,
-          updatedAt: new Date(),
-        })
-        .where("id", "=", binding.id)
-        .where("revision", "=", input.expectedRevision)
-        .returningAll()
-        .executeTakeFirstOrThrow();
-      await cancelStaleChannelInputs(transaction, binding.id, row.revision, new Date());
       return channelBindingFromRow(row);
     });
   }
@@ -1556,7 +1518,6 @@ export class ChannelStore {
             .executeTakeFirst();
           const commandKey = `channel:${ingress.accountId}:${event.eventId}`;
           await lockCommandIdempotency(transaction, binding.createdBy, commandKey);
-          const observedFolder = binding.folder;
 
           // Thread Inbox steering locks a target Run before task rows.
           // Existing channel conversations participate in that same order so the
@@ -1577,7 +1538,7 @@ export class ChannelStore {
                 .execute();
             }
           }
-          await requireMessagingFolder(transaction, binding.createdBy, binding.folder);
+          const personal = await assertPersonalOwner(transaction, binding.createdBy);
           const specificHarnessId =
             binding.executionPolicy.harness === "specific"
               ? binding.executionPolicy.harnessInstanceId
@@ -1672,11 +1633,7 @@ export class ChannelStore {
             }
             return { identityId: null, kind: "ignored", reason: "no-route" };
           }
-          if (
-            lockedBinding.folderComputerId !== observedFolder.computerId ||
-            lockedBinding.folderPath !== observedFolder.path ||
-            lockedBinding.createdBy !== binding.createdBy
-          ) {
+          if (lockedBinding.createdBy !== binding.createdBy) {
             throw new ChannelAdmissionFenceChanged(
               "Channel route authority changed during discovery",
             );
@@ -1766,7 +1723,7 @@ export class ChannelStore {
             harnesses,
             specificHarnessId,
             userId: authority.userId,
-            computerId: binding.folder.computerId,
+            computerId: personal.hostingComputerId,
           });
           const insertThread = await prepareThreadInsertion(transaction, {
             createdBy: authority.userId,
@@ -1837,8 +1794,6 @@ export class ChannelStore {
             !thread ||
             thread.doneAt !== null ||
             thread.status === "archived" ||
-            thread.folderComputerId !== binding.folder.computerId ||
-            thread.folderPath !== binding.folder.path ||
             thread.environmentId !== placement.environmentId ||
             thread.harnessInstanceId !== placement.harnessInstanceId;
           const events: AgentEvent[] = [];
@@ -1847,8 +1802,6 @@ export class ChannelStore {
             const threadRow = await insertThread({
               accessMode: thread?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
               purpose: "task",
-              folderComputerId: binding.folder.computerId,
-              folderPath: binding.folder.path,
               teamId: null,
               channelId: null,
               threadRootId: null,
@@ -2433,19 +2386,6 @@ async function finishIgnored(
     .executeTakeFirstOrThrow();
 }
 
-async function requireMessagingFolder(
-  transaction: Transaction<DatabaseSchema>,
-  ownerId: UserId,
-  folder: TaskFolder,
-) {
-  const owner = await assertPersonalOwner(transaction, ownerId);
-  if (folder.computerId !== owner.hostingComputerId)
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Messaging tasks run on the hosting computer",
-    });
-}
-
 async function ownedAccount(
   transaction: Transaction<DatabaseSchema>,
   accountId: ChannelAccountId,
@@ -2571,10 +2511,8 @@ function integrationConnectionFromRow(
 }
 
 function channelBindingFromRow(row: Selectable<ChannelBindingTable>): ChannelBinding {
-  const { folderComputerId, folderPath, ...binding } = row;
   return ChannelBindingSchema.parse({
-    ...binding,
-    folder: { computerId: folderComputerId, path: folderPath },
+    ...row,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });

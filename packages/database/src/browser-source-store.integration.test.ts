@@ -64,7 +64,6 @@ integration.sequential("browser sign-in authority", () => {
       const port = createPersonalRunFixturePort(store);
       const task = await port.createTask({
         ownerId,
-        folder: personal.agentHome,
         suffix: randomUUID(),
       });
       const started = await port.startTask(task.threadId, "Start");

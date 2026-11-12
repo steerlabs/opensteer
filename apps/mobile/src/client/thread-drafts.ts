@@ -2,10 +2,8 @@ import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   ContentPartSchema,
   ModelSelectionSchema,
-  TaskFolderSchema,
   ThreadAccessModeSchema,
   type BrowserPageContentPart,
-  type TaskFolder,
 } from "@opensteer/core";
 import { homeDraftId } from "../home/home-draft.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-scope.js";
@@ -82,8 +80,6 @@ const DraftSchema = LegacyDraftSchema.extend({
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
-  /** The folder a new task's draft would start in. */
-  folder: TaskFolderSchema.optional(),
 });
 
 /**
@@ -121,7 +117,6 @@ const PendingThreadStartSchema = z.strictObject({
   modelSelection: ModelSelectionSchema,
   generateTitle: z.literal(true).optional(),
   title: z.string().min(1).max(200),
-  folder: TaskFolderSchema,
 });
 const PendingCommandSchema = LegacyPendingCommandSchema.extend({
   browserPage: BrowserPageSchema.optional(),
@@ -270,15 +265,6 @@ export interface ThreadDraftStore {
   ): Promise<boolean>;
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
-  /**
-   * Remembers the chosen folder; an empty draft waits for its first content write.
-   */
-  placeNewTaskDraft(
-    deploymentId: string,
-    userId: string,
-    draftId: string,
-    folder: TaskFolder,
-  ): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
   readPending(deploymentId: string, userId: string, threadId: string): PendingCommand | null;
@@ -330,7 +316,6 @@ export function createThreadDraftStore(options: {
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
   const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
-  const newTaskFolders = new Map<string, TaskFolder>();
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -353,7 +338,6 @@ export function createThreadDraftStore(options: {
       page: pageEdit === undefined ? entry?.page : (pageEdit.page ?? undefined),
       quote: quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined),
       text: textEdit?.text ?? entry?.text ?? "",
-      folder: entry?.folder ?? newTaskFolders.get(entryKey),
     };
     if (draftEmpty(fields)) return null;
     return DraftSchema.parse({
@@ -378,7 +362,6 @@ export function createThreadDraftStore(options: {
           ...fields,
           updatedAt: options.now().toISOString(),
           userId,
-          folder: newTaskFolders.get(entryKey) ?? fields.folder,
         }),
       );
   };
@@ -587,21 +570,6 @@ export function createThreadDraftStore(options: {
       publish();
     },
 
-    async placeNewTaskDraft(deploymentId, userId, draftId, folder): Promise<void> {
-      const entryKey = key(deploymentId, userId, newTaskDraftKey(draftId));
-      newTaskFolders.set(entryKey, folder);
-      const current = drafts.get(entryKey);
-      if (
-        !current ||
-        (current.folder?.computerId === folder.computerId && current.folder.path === folder.path)
-      )
-        return;
-      await mutate((nextDrafts) => {
-        const latest = nextDrafts.get(entryKey);
-        if (latest) putDraft(nextDrafts, entryKey, userId, { ...draftFields(latest), folder });
-      });
-    },
-
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
       return readVisibleDraft(deploymentId, userId, threadId);
     },
@@ -731,7 +699,6 @@ interface DraftFields {
   readonly page: ThreadDraft["page"] | undefined;
   readonly quote: ThreadDraft["quote"] | undefined;
   readonly text: string;
-  readonly folder: ThreadDraft["folder"] | undefined;
 }
 
 function draftFields(draft: ThreadDraft | undefined): DraftFields {
@@ -740,7 +707,6 @@ function draftFields(draft: ThreadDraft | undefined): DraftFields {
     page: draft?.page,
     quote: draft?.quote,
     text: draft?.text ?? "",
-    folder: draft?.folder,
   };
 }
 

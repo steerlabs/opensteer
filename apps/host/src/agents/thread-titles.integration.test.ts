@@ -1,12 +1,12 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
+import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import {
   testReadyHarnessCatalog,
   testRunnerDescriptor,
 } from "@opensteer/database/test-support/store";
 import { readPersonalResources } from "../browser/personal-snapshot.js";
-import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import {
   AgentEventSchema,
   createId,
@@ -125,7 +125,7 @@ integration.sequential("Thread title lifecycle", () => {
     const path = join(evidenceRoot, randomUUID());
     await mkdir(path, { recursive: true });
     const personal = await seedPersonalFixture(database, path);
-    const { userId, runnerId, environmentId, agentHome } = personal;
+    const { userId, runnerId, environmentId } = personal;
     const descriptor = testRunnerDescriptor({
       environmentId,
       runnerId,
@@ -148,7 +148,6 @@ integration.sequential("Thread title lifecycle", () => {
     const create = (options: { generateTitle?: true; title?: string } = {}) =>
       store.createThread({
         createdBy: userId,
-        folder: agentHome,
         environmentId,
         harnessInstanceId: harness.id,
         idempotencyKey: randomUUID(),
@@ -194,7 +193,6 @@ integration.sequential("Thread title lifecycle", () => {
     expect(chosen.thread).not.toHaveProperty("titleSource");
     const oldInput = {
       type: "thread.create",
-      folder: f.agentHome,
       environmentId: f.environmentId,
       harnessInstanceId: f.harness.id,
       idempotencyKey: randomUUID(),
@@ -650,7 +648,7 @@ integration.sequential("Thread title lifecycle", () => {
               throw new Error("Unexpected manage");
             },
           },
-          folders: personalTestFolders(store, f),
+          execution: personalTestExecution(store, f),
         });
         handle = (value) => service.handle("test-token", value);
       } else {
@@ -676,7 +674,7 @@ integration.sequential("Thread title lifecycle", () => {
           commands,
           isEnvironmentConnected: () => true,
           store,
-          folders: personalTestFolders(store, f),
+          execution: personalTestExecution(store, f),
           tokens: {
             authenticate: async () => claims,
           },
@@ -841,7 +839,6 @@ integration.sequential("Thread title lifecycle", () => {
     const key = randomUUID();
     const input = {
       createdBy: f.userId,
-      folder: f.agentHome,
       environmentId: f.environmentId,
       harnessInstanceId: f.harness.id,
       idempotencyKey: key,

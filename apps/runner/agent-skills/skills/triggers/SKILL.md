@@ -5,9 +5,9 @@ description: Create, inspect or repair durable schedules, webhooks and continuou
 
 # Opensteer Triggers
 
-Use a Trigger when work must happen later or continue durably. Its Node program runs with the anchor task's access ceiling and folder; creation does not run a model. Queue or delegate Thread work when judgment or action needs an agent.
+Use a Trigger when work must happen later or continue durably. Its Node program runs in Agent home with the anchor task's access ceiling; creation does not run a model. Queue or delegate Thread work when judgment or action needs an agent.
 
-Inspect existing Triggers before creating overlapping work. Reuse the owning task and folder, preserve the person's criteria, timing and pauses, and suppress unchanged or non-actionable updates unless requested. Confirm future execution before promising continuation, and verify actual effects before saying the automation works.
+Inspect existing Triggers before creating overlapping work. Reuse the owning task, preserve the person's criteria, timing and pauses, and suppress unchanged or non-actionable updates unless requested. Confirm future execution before promising continuation, and verify actual effects before saying the automation works.
 
 Triggers are personal. Timing controls require an anchor access mode no higher than yours; creation, code changes, manual runs and archiving require full access. Delegated work cannot raise that ceiling. Tell the person when creating or changing a Trigger. Opensteer owns the independent background memory jobs: pause or resume them, never archive or reprogram them.
 

@@ -6,7 +6,7 @@ export const plugin_install = defineAgentTool({
   name: "plugin_install",
   title: "Install a plugin",
   description:
-    "Install a task-folder-relative Agent Plugins 1.0 folder; symlinks refused. Full-access Run only. Call again on the same folder to update it. Returns installation, issues and specialist state. Skills are available to the owner; resource grants and local MCP launch approval need the person.",
+    "Install an Agent-home-relative Agent Plugins 1.0 folder; symlinks refused. Full-access Run only. Call again on the same folder to update it. Returns installation, issues and specialist state. Skills are available to the owner; resource grants and local MCP launch approval need the person.",
   input: z
     .strictObject({ directory: z.string().min(1).max(4096) })
     .safeExtend({ operationKey: OperationKeySchema.optional() }),

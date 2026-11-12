@@ -207,14 +207,6 @@ describe("composer drafts", () => {
     expect(drafts.read(task("a"))?.text).toBe("returned");
   });
 
-  it("puts a returned task back in the folder it was to start in", () => {
-    const storage = memoryStorage();
-    const drafts = createComposerDraftStore(() => storage);
-    const folder = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/code/app" };
-    drafts.handBack(task("a"), { edit: () => "words", folder: folder as never });
-    expect(drafts.index(scope).tasks[0]?.folder).toEqual(folder);
-  });
-
   it("lays a discarded draft back exactly as it was", () => {
     const storage = memoryStorage();
     const drafts = createComposerDraftStore(() => storage);

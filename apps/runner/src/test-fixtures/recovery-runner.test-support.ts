@@ -113,14 +113,12 @@ async function boot(input: Boot) {
     projectContinuationIdentity: providerContinuationIdentityProjector(
       createPrivateKey(input.continuationPrivateKey),
     ),
-    folderManager: {
+    agentHome: {
+      folder: async ({ path }) => path,
       prepare: async () => ({
-        cleanup: async () => undefined,
         instructions: "Read the durable workspace before answering.",
         path: input.mountedWorkspacePath,
-        agentHomePath: input.mountedWorkspacePath,
       }),
-      writableRoots: ({ path }) => [path],
     },
   });
   const identityStore = new FileRunnerIdentityStore({

@@ -651,8 +651,6 @@ integration("Browser presence and conversation usage", () => {
         options: { effort: "low" },
       }),
       title: "Voice initialization",
-
-      folder: host.agentHome,
     });
     expect(chat.thread.id).toBeDefined();
     const call = await host.store.startVoiceCall({

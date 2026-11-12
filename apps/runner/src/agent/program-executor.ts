@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import type { HarnessProcessLaunchWrapper } from "@opensteer/harness";
 import type { TriggerExecutionContext } from "@opensteer/protocol";
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
-import type { RunFolder } from "../folders/task-folder.js";
+import type { AgentHomeWorkspace } from "../folders/agent-home.js";
 import { triggerProgramRuntimeSource } from "./program-runtime.js";
 
 const streamByteLimit = 512 * 1_024;
@@ -49,7 +49,7 @@ export class TriggerProgramExecutor {
     readonly endpoints: ProgramEndpoints;
     readonly planLaunch: ProgramLaunchPlanner;
     readonly signal: AbortSignal;
-    readonly workspace: RunFolder;
+    readonly workspace: AgentHomeWorkspace;
   }): Promise<TriggerExecutionOutput> {
     const { context } = input;
     const programFile = resolve(
@@ -87,7 +87,7 @@ export class TriggerProgramExecutor {
       readonly endpoints: ProgramEndpoints;
       readonly planLaunch: ProgramLaunchPlanner;
       readonly signal: AbortSignal;
-      readonly workspace: RunFolder;
+      readonly workspace: AgentHomeWorkspace;
     };
     readonly privateExecutionRoot: string;
     readonly runtimeFile: string;

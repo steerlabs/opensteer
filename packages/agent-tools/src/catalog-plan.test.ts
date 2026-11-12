@@ -1,15 +1,7 @@
-import {
-  delegate_task,
-  thread_read,
-  thread_send,
-  trigger_write,
-  team_search,
-  sql,
-} from "./tools/index.js";
+import { thread_read, thread_send, trigger_write, team_search, sql } from "./tools/index.js";
 import { expect, it } from "vitest";
 import { z } from "zod";
 import { agentTools, platformGuideForRun, toolsFor, connectionInstructions } from "./index.js";
-import { createId } from "@opensteer/core";
 it("keeps the permanent team inventory out of ordinary tasks and every non-Run caller", () => {
   const names = (kind: "run" | "program" | "connection", teamBound: boolean) =>
     toolsFor({ kind, teamBound, accessMode: "full-access" }).map((t) => t.name);
@@ -21,12 +13,6 @@ it("keeps the permanent team inventory out of ordinary tasks and every non-Run c
   }
   for (const old of ["project_list", "project_create", "project_write"])
     expect(names("run", true)).not.toContain(old);
-  expect(
-    delegate_task.input.parse({
-      task: "work",
-      folder: { computerId: createId("runner"), path: "/chosen" },
-    }).folder?.path,
-  ).toBe("/chosen");
   expect(thread_read.input.safeParse({ threadId: "home" }).success).toBe(false);
   expect(
     thread_send.input.safeParse({ threadId: "home", delivery: "queue", message: "go" }).success,

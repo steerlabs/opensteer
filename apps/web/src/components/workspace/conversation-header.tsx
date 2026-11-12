@@ -545,8 +545,8 @@ function ConversationMenu({
 }
 
 /**
- * The head of a conversation-area page that is not a conversation yet — New
- * task, a project's page: its name, and the computer's toggle.
+ * The head of a conversation-area page that is not a conversation — New
+ * task, Voice, a team page: its name, and the computer's toggle.
  */
 export function AreaHeader({
   hostClient,

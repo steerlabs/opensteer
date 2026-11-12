@@ -39,7 +39,6 @@ import {
   IsoDateTimeSchema,
   KnowledgeTopicIdSchema,
   SequenceSchema,
-  TaskFolderSchema,
   TeamAudienceSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
@@ -150,7 +149,6 @@ export const TeamCommandResultViewSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("team.agent.request.cancel") }),
   z.object({ type: z.literal("teams.link.join"), link: PersonalTeamLinkViewSchema }),
   z.object({ type: z.literal("teams.link.leave") }),
-  z.object({ type: z.literal("teams.channelFolder.set") }),
   z.object({ type: z.literal("team.channel.archive") }),
   z.object({ type: z.literal("team.channel.restore") }),
   z.object({ type: z.literal("team.channel.join") }),
@@ -261,8 +259,6 @@ export const TeamTopicAccessViewSchema = z.object({
   can: TeamTopicCanViewSchema,
 });
 
-export const TaskFolderViewSchema = z.object({ ...TaskFolderSchema.shape });
-
 export const TeamFactInputViewSchema = z.object({ ...TeamFactInputSchema.shape });
 
 export const TeamFactViewSchema = TeamFactInputViewSchema.extend({
@@ -323,7 +319,6 @@ export const teamReadViews = {
   "team.agent.requests.get": z.object({ requests: z.array(TeamAgentRequestViewSchema).max(32) }),
   "team.links.list": z.object({ links: z.array(TeamLinkViewViewSchema).max(50) }),
   "teams.links.list": z.object({ links: z.array(PersonalTeamLinkViewSchema).max(100) }),
-  "teams.channelFolder.get": z.object({ folder: TaskFolderViewSchema }),
   "teams.threadTask.get": z.object({ taskId: ThreadIdSchema.nullable() }),
   "teams.replyTask.get": z.union([
     teamReadSchemas["teams.replyTask.get"].output.options[0].strip(),

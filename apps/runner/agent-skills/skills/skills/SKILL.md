@@ -1,17 +1,16 @@
 ---
 name: skills
-description: Maintain standing instructions, skills and scripts in the current task folder when preferences change or repeated work needs a reusable procedure.
+description: Maintain standing instructions, skills and scripts in Agent home when preferences change or repeated work needs a reusable procedure.
 ---
 
 # Durable instructions and skills
 
 Read existing instructions and relevant files first. Update the smallest useful source rather
-than creating a standard set of empty files. Facts about the person belong in the agent home's memory
-(`opensteer:memory`); this skill covers how work is done. Use ordinary file tools in the current task folder;
-Use the explicit task folder for work procedures and the agent home for personal instructions and memory.
+than creating a standard set of empty files. Work in Agent home with ordinary file tools. Facts about
+the person belong in its memory (`opensteer:memory`); this skill covers how work is done.
 
-- Keep mission, scope and confirmed standing rules in `AGENTS.md`. Link detailed procedures
-  rather than duplicating them. Preserve the person's authorization; tool failures do not
+- Keep confirmed standing rules in `AGENTS.md` where `opensteer:memory` says. Link detailed
+  procedures rather than duplicating them. Preserve the person's authorization; tool failures do not
   justify permanent approval requirements.
 - Put repeatable procedures requiring judgment in `skills/<name>/SKILL.md`. Describe the
   intended outcome, decision criteria and useful recovery paths. Put references beside it.
@@ -22,9 +21,9 @@ Use the explicit task folder for work procedures and the agent home for personal
   requirements.
 
 A skill's lowercase hyphenated local name must match its directory and frontmatter. Loose
-Folder skills use that bare name and cannot contain `:`. Plugin skills are invoked as
+skills in `skills/` use that bare name and cannot contain `:`. Plugin skills are invoked as
 `plugin:skill`, including bundled skills such as `opensteer:browser`. Two plugins can export
-the same local name; folder skills override agent-home skills of the same bare name; canonical sources load once. Start with YAML frontmatter:
+the same local name; canonical sources load once. Start with YAML frontmatter:
 
 ```markdown
 ---
@@ -52,9 +51,9 @@ obsolete instructions when the person's requirements change.
 ## Package a repeated procedure as a plugin
 
 When repeated work needs skills, scripts or MCP servers together, package it as an Agent Plugins
-1.0 folder inside the task folder: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
+1.0 folder inside Agent home: `plugin.json`, `skills/<name>/SKILL.md`, scripts, and an optional
 `mcp.json`. Test the scripts on disposable inputs and run the skill's steps before calling
-`plugin_install` with the folder's path relative to the task folder. Symlinks are refused. Its skills
+`plugin_install` with the folder's path relative to Agent home. Symlinks are refused. Its skills
 turn on here; connections still need grants, and local MCP servers need the computer owner's launch
 approval.
 
@@ -74,8 +73,8 @@ List models in preference order: an exact `{"engine", "model", "options"?}`, or
 `{"role": "light"}` (fast, cheap) or `{"role": "deep"}` (strongest), which stand for the person's
 own automatic model choices in AI settings. Prefer a role unless the work needs a particular
 model. A list never names an account; it runs on the person's eligible accounts. Use
-`fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist can
-use what the task folder gives its caller, so it declares no access. Test representative inputs and
+`fallback: "caller"` only when that cost is intended (the default is `"none"`). A specialist works
+within its caller's access, so it declares no access. Test representative inputs and
 check the outputs before `plugin_install`. Then call `delegate_task` with
 `specialist` set to its registration id or plugin name. Continue it with `threadId` to retain
 context. Instructions should name per-task outputs in `PLUGIN_DATA`, shared by this registration.

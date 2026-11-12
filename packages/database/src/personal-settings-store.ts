@@ -5,7 +5,7 @@ import {
   PersonalSettingsSchema,
   emptyAutomaticModelConfig,
   emptyExecutionPreferences,
-  type TaskFolder,
+  type ComputerFolder,
   type UserId,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
@@ -16,7 +16,7 @@ import { systemPrincipalId } from "./store-primitives.js";
 export async function initializePersonalSettings(
   transaction: Kysely<DatabaseSchema>,
   ownerId: UserId,
-  agentHome: TaskFolder,
+  agentHome: ComputerFolder,
 ) {
   const owner = await transaction
     .selectFrom("users")
@@ -81,27 +81,4 @@ export async function personalSettings(database: Kysely<DatabaseSchema>) {
 export async function requirePersonalOwner(database: Kysely<DatabaseSchema>, userId: UserId) {
   if ((await personalDeploymentOwner(database)) !== userId)
     throw new OpensteerError({ code: "forbidden", message: "The personal owner is required." });
-}
-
-export async function personalExecutionLocation(
-  database: Kysely<DatabaseSchema>,
-  threadId: import("@opensteer/core").ThreadId,
-) {
-  const [settings, thread] = await Promise.all([
-    personalSettings(database),
-    database
-      .selectFrom("threads")
-      .select(["folderComputerId", "folderPath"])
-      .where("id", "=", threadId)
-      .executeTakeFirstOrThrow(),
-  ]);
-  if (thread.folderComputerId !== settings.agentHome.computerId)
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Tasks can run only on the hosting computer.",
-    });
-  return {
-    folder: { computerId: thread.folderComputerId, path: thread.folderPath },
-    agentHome: settings.agentHome,
-  };
 }

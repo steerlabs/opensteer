@@ -10,7 +10,7 @@ import {
 } from "@opensteer/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
 import type { Kysely } from "kysely";
-import { FolderAdmissionService } from "../threads/folder-admission-service.js";
+import { PersonalExecution } from "./personal-execution.js";
 
 export async function initializePersonalState(
   database: Kysely<DatabaseSchema>,
@@ -19,7 +19,7 @@ export async function initializePersonalState(
     readonly agentHome: string;
   },
   realtime: Pick<RealtimeHub, "sendToUsers">,
-): Promise<FolderAdmissionService | null> {
+): Promise<PersonalExecution | null> {
   const ownerId = await personalDeploymentOwner(database);
   const hosting = await database
     .selectFrom("runners")
@@ -34,7 +34,8 @@ export async function initializePersonalState(
     .select("singletonKey")
     .where("singletonKey", "=", "personal")
     .executeTakeFirst();
-  if (!existing) await mkdir(config.agentHome, { recursive: true });
+  // Agent home comes back if it was deleted; a path that now resolves elsewhere is refused below.
+  await mkdir(config.agentHome, { recursive: true });
   const path = await realpath(config.agentHome);
   // Reconciliation runs this repeatedly; once settings exist it must not hold the
   // Deployment event fence that every personal writer queues behind.
@@ -54,7 +55,7 @@ export async function initializePersonalState(
       message: "Personal owner and agent home do not match durable Host state",
     });
   if (created) realtime.sendToUsers([ownerId], { type: "host.machines.changed" });
-  return new FolderAdmissionService({
+  return new PersonalExecution({
     hostingComputerId: hosting.id,
     ownerId,
     environmentId: config.environmentId,

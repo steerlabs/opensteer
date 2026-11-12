@@ -27,7 +27,7 @@ export async function assertActiveExecutionBinding(
 ): Promise<void> {
   const binding = await database
     .selectFrom("runs")
-    .innerJoin("threads", "threads.id", "runs.threadId")
+    .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
     .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
     .innerJoin("runners", "runners.id", "providerSessions.runnerId")
     .select([
@@ -37,7 +37,7 @@ export async function assertActiveExecutionBinding(
       "runs.status as runStatus",
       "runs.bindingGeneration as runBindingGeneration",
       "runs.threadId",
-      "threads.folderComputerId",
+      "personalSettings.agentHomeComputerId",
       "providerSessions.bindingGeneration",
       "providerSessions.harnessInstanceId as providerSessionHarnessInstanceId",
       "providerSessions.leaseExpiresAt",
@@ -56,7 +56,7 @@ export async function assertActiveExecutionBinding(
     binding.threadId !== input.threadId ||
     binding.requestedBy !== input.requestedBy ||
     binding.runnerId !== input.runnerId ||
-    binding.folderComputerId !== input.runnerId ||
+    binding.agentHomeComputerId !== input.runnerId ||
     binding.runnerBootId !== input.runnerBootId ||
     binding.revokedAt !== null ||
     binding.bindingGeneration !== input.bindingGeneration ||
@@ -127,14 +127,8 @@ export async function admitThreadExecution(
 } | null> {
   const row = await database
     .selectFrom("threads")
-    .innerJoin(
-      "personalSettings",
-      "personalSettings.agentHomeComputerId",
-      "threads.folderComputerId",
-    )
     .select("threads.environmentId")
     .where("threads.id", "=", threadId)
-    .where("personalSettings.ownerId", "=", userId)
     .executeTakeFirst();
   return row && (await executionEnvironmentIsAvailableToUser(database, row.environmentId, userId))
     ? row

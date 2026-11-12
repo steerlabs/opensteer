@@ -4,9 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
 import { MockPersonalHost } from "../mock/mock-personal-host.js";
 import { HttpHostClient } from "./host-session-client.js";
-import { TaskDrafts, taskDraftKey } from "./task-drafts.js";
 import type { PersonalStreamCheckpoint, PersonalStreamCache } from "./personal-stream-cache.js";
-import { taskFolderGroups, newTaskDefaults } from "./task-folders.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -120,51 +118,6 @@ it("restores an applied cut only for the same Deployment, viewer and epoch", asy
       [...f.host.sockets][0]?.sent.some((row) => JSON.parse(row).cursor?.afterSequence === "0"),
     ).toBe(true),
   );
-});
-it("keeps edits made while drafts load and purges only their viewer's partition", async () => {
-  let finish!: (value: unknown) => void;
-  const records = new Map<string, unknown>(),
-    scope = { deploymentId: createId("deployment"), userId: createId("user") },
-    target = { threadId: createId("thread") };
-  const writes: unknown[] = [];
-  const drafts = new TaskDrafts(scope, {
-    load: () =>
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-    save: async (_, value) => {
-      records.set(scope.userId, value);
-      writes.push(value);
-    },
-    remove: async () => {
-      records.delete(scope.userId);
-    },
-  });
-  const loading = drafts.load();
-  await drafts.set(target, "New edit");
-  finish({ [taskDraftKey(target)]: "Old saved edit" });
-  await loading;
-  expect(drafts.getSnapshot()[taskDraftKey(target)]).toBe("New edit");
-  records.set("another-viewer", { secret: "Keep" });
-  await drafts.remove();
-  expect(drafts.getSnapshot()).toEqual({});
-  expect(records.has(scope.userId)).toBe(false);
-  expect(records.has("another-viewer")).toBe(true);
-  expect(writes).toHaveLength(1);
-});
-it("keeps the agent-home folder first and derives task admission only from Host facts", () => {
-  const f = fixture(),
-    snapshot = f.host.client.getSnapshot(),
-    home = snapshot.personalSettings!.agentHome;
-  expect(taskFolderGroups(snapshot)[0]).toMatchObject({ folder: home, agentHome: true, tasks: [] });
-  const local = snapshot.environments[0]!;
-  const remote = { ...local, id: createId("environment"), can: { executeTasks: false } };
-  expect(newTaskDefaults({ ...snapshot, environments: [remote, local] }).environments).toEqual([
-    local,
-  ]);
-  expect(
-    newTaskDefaults({ ...snapshot, can: { ...snapshot.can!, createTasks: false } }).canCreate,
-  ).toBe(false);
 });
 it("restores absolute task versions so replay cannot undo a newer HTTP answer", async () => {
   const { ThreadStateProjection } = await import("./thread-state.js");

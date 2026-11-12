@@ -1,39 +1,23 @@
 import { describe, expect, it } from "vitest";
-import { createId } from "@opensteer/core";
 import { createTwoHostLinkFixture } from "./two-host.test-support.js";
 
 describe("personal to team link", () => {
-  it("converges duplicate delivery, reconnect and edited context; reuses the thread and freezes its folder", async () => {
+  it("converges duplicate delivery, reconnect and edited context, and reuses the thread", async () => {
     const f = await createTwoHostLinkFixture();
     try {
-      await expect(
-        f.folders.set(f.team.deploymentId, f.channelId, {
-          computerId: createId("runner"),
-          path: "/tmp/elsewhere",
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
       const first = await f.ask();
       await f.deliver(first);
       await f.deliver(first);
       expect(await f.inputCount()).toBe(1);
       const original = await f.local(first);
-      expect(await f.taskFolder(original.taskId)).toEqual(f.personal.agentHome);
-      await f.folders.set(f.team.deploymentId, f.channelId, {
-        ...f.personal.agentHome,
-        path: "/tmp/PRIVATE_SENTINEL/new-folder",
-      });
       await f.editContext("Revised instructions", "Edited question");
       await f.deliver(first);
       const second = await f.ask(first.threadRootId);
       await f.deliver(second);
       expect((await f.local(second)).taskId).toBe(original.taskId);
-      expect(await f.taskFolder(original.taskId)).toEqual(f.personal.agentHome);
       const third = await f.ask();
       await f.deliver(third);
-      expect(await f.taskFolder((await f.local(third)).taskId)).toEqual({
-        ...f.personal.agentHome,
-        path: "/tmp/PRIVATE_SENTINEL/new-folder",
-      });
+      expect((await f.local(third)).taskId).not.toBe(original.taskId);
       expect(await f.inputCount()).toBe(3);
       await f.run(first, "Public answer");
       expect(f.startedContexts.at(-1)?.instructionsMarkdown).toBe("Revised instructions");

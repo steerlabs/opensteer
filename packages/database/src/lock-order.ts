@@ -109,7 +109,7 @@ export const databaseLockOrder = [
   "integration_servers",
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
-  "folder_skill_inventory",
+  "agent_home_skill_inventory",
   "harness_instances",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
@@ -197,7 +197,6 @@ export const databaseLockOrder = [
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",
   "personal_team_links",
-  "personal_team_channel_folders",
   "machine_access_events",
   "machine_access_sessions",
   "advisory:personal-remote-access",

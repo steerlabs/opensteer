@@ -72,7 +72,10 @@ export * from "./private-resource-store.js";
 
 export * from "./personal-tab-store.js";
 
-export { reportFolderSkills, listPersonalSkillInventory } from "./folder-skill-inventory-store.js";
+export {
+  reportAgentHomeSkills,
+  agentHomeSkillInventory,
+} from "./agent-home-skill-inventory-store.js";
 
 export * from "./team-access-store.js";
 export * from "./team-members-store.js";

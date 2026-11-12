@@ -77,9 +77,6 @@ export function BrowserProfilesSection() {
             )}
           </div>
         </div>
-        <p className="settings-footnote">
-          Opensteer can use every profile. A project can only use the profiles you choose for it.
-        </p>
       </section>
     </>
   );
@@ -374,5 +371,3 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
     </div>
   );
 }
-
-/** Each project, on or off for this profile. Opensteer itself needs no choice. */

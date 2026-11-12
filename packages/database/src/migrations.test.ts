@@ -5,5 +5,5 @@ it("exposes the fresh, uniquely named Host baseline and the migrations after it"
     personalTeamBaselineName,
     "0002_browser_source_binding",
   ]);
-  expect(personalTeamBaselineName).toBe("0001_personal_team_baseline");
+  expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
 });

@@ -1,6 +1,6 @@
 # Plugin shape
 
-A device plugin is a folder in the task folder, named for the device:
+A device plugin is a folder in Agent home, named for the device:
 
 ```text
 main-bedroom-apple-tv/

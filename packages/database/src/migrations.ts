@@ -3,7 +3,7 @@ import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysel
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
-export const personalTeamBaselineName = "0001_personal_team_baseline";
+export const personalTeamBaselineName = "0002_personal_team_baseline";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
