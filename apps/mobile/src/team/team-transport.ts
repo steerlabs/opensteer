@@ -82,7 +82,11 @@ export function mockTeamTransport(
     const teamId = DeploymentIdSchema.parse(connection.authority.document.deploymentId);
     let host = hosts.get(teamId);
     if (host === undefined) {
-      host = new MockTeamHost({ teamId, userId: mockTeamReaderId });
+      host = new MockTeamHost({
+        teamId,
+        userId: mockTeamReaderId,
+        origin: connection.authority.document.canonicalOrigin,
+      });
       seedBusyTeam(host, {
         name: teamId === busyTeamIds[1] ? "Family" : "Acme",
         index: teamId === busyTeamIds[1] ? 2 : 1,

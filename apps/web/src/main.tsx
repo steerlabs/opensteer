@@ -153,26 +153,27 @@ async function renderOpensteer(): Promise<void> {
               }),
               link: null,
             });
-            if (search.get("mock-team") === "busy") {
-              const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
-              const family = new MockTeamHost({ teamId: busyTeamIds[1] });
-              seedBusyTeam(acme, { name: "Acme", index: 1 });
-              seedBusyTeam(family, { name: "Family", index: 2 });
-              preview = {
-                world: new MockTeamWorld(),
-                teams: [
-                  attach(acme, "https://chat.acme.example"),
-                  attach(family, "https://family.example"),
-                ],
-              };
-              return mockClient();
+            const seeded =
+              search.get("mock-team") === "busy"
+                ? [
+                    new MockTeamHost({
+                      teamId: busyTeamIds[0],
+                      origin: "https://chat.acme.example",
+                    }),
+                    new MockTeamHost({ teamId: busyTeamIds[1], origin: "https://family.example" }),
+                  ]
+                : search.has("mock-team")
+                  ? [new MockTeamHost({ origin: "https://chat.acme.example" })]
+                  : [];
+            if (seeded.length > 1) {
+              seedBusyTeam(seeded[0]!, { name: "Acme", index: 1 });
+              seedBusyTeam(seeded[1]!, { name: "Family", index: 2 });
             }
-            // Every preview can create and join hosted teams in memory.
+            // Every preview can create and join hosted teams in memory; the seeded teams are
+            // part of that world, so connecting an agent or leaving reaches them the same way.
             preview = {
-              world: new MockTeamWorld(),
-              teams: search.has("mock-team")
-                ? [attach(new MockTeamHost(), "https://chat.acme.example")]
-                : [],
+              world: new MockTeamWorld({ seeded: () => seeded }),
+              teams: seeded.map((team) => attach(team, team.origin)),
             };
             return mockClient();
             function mockClient() {

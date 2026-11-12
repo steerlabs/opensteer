@@ -50,7 +50,9 @@ export function createMobileTeamEntry(options: {
   readonly mockHosts: Map<string, MockTeamHost> | null;
 }): TeamEntry & { readonly world: MockTeamWorld | null } {
   const { client, teams } = options;
-  const world = options.mockHosts === null ? null : new MockTeamWorld();
+  const mockHosts = options.mockHosts;
+  // The seeded mock teams are part of the world, so connecting an agent reaches them too.
+  const world = mockHosts === null ? null : new MockTeamWorld({ seeded: () => mockHosts.values() });
   let settled: Promise<void> = Promise.resolve();
   if (world !== null && options.mockHosts !== null)
     settled = syncMockWorld(world, teams, client, options.mockHosts, (next) => {

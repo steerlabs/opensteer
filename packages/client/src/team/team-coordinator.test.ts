@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import type { HostedTeamSlug } from "@opensteer/control-plane-protocol/hosted-teams";
 import { MockTeamWorld } from "./mock-hosted-teams.js";
+import { MockTeamHost } from "./mock-team-host.js";
 import {
   createTeamCoordinator,
   TeamNeedsBrowserError,
@@ -211,6 +212,19 @@ describe("TeamCoordinator", () => {
     await until(() => opened.length === 1, "the team opened");
     await expect(coordinator.leaveTeam(opened[0]!)).rejects.toThrow(/last owner/u);
     expect(coordinator.getSnapshot().intents[0]?.state).toBe("connected");
+  });
+
+  it("connects the agent to a team the preview seeded outside the world", async () => {
+    const acme = new MockTeamHost({ origin: "https://chat.acme.example" });
+    const { coordinator, world } = track(start(new MockTeamWorld({ seeded: () => [acme] })));
+    const intent = await coordinator.connectAgent({
+      teamDeploymentId: DeploymentIdSchema.parse(acme.teamId),
+      origin: acme.origin,
+      personalDeploymentId: personal,
+    });
+    expect(intent.state).toBe("connected");
+    // Already shown by the preview itself, so the world doesn't list it a second time.
+    expect(world.joined()).toEqual([]);
   });
 
   it("disconnects only the agent", async () => {

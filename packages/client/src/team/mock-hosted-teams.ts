@@ -56,6 +56,8 @@ interface MockTeamRecord {
   host: MockTeamHost | null;
   /** The invite a non-member may join with. */
   readonly invite: TeamInviteSecret | null;
+  /** A team the preview shows by itself; it is reached through these ports but not listed. */
+  readonly seeded?: true;
 }
 
 const fingerprint = (seed: string) =>
@@ -78,8 +80,17 @@ export class MockTeamWorld {
   /** Multiplies every setup stage; 0 makes a new team ready at once. */
   readonly #pace: number;
 
-  constructor(options: { readonly pace?: number } = {}) {
+  readonly #seeded: () => Iterable<MockTeamHost>;
+
+  constructor(
+    options: {
+      readonly pace?: number;
+      /** Teams the preview already shows (`?mock-team`, mobile's seeded teams). */
+      readonly seeded?: () => Iterable<MockTeamHost>;
+    } = {},
+  ) {
     this.#pace = options.pace ?? 1;
+    this.#seeded = options.seeded ?? (() => []);
     const invite = {
       selector: "Zq4tR8sampleInviteSelector00",
       verifier: "sampleInviteVerifierZq4tR8aaaaaaaa",
@@ -109,9 +120,26 @@ export class MockTeamWorld {
 
   #publish(): void {
     this.#joined = [...this.#records.values()].flatMap((record) =>
-      record.host && record.host.bootstrap.member.state === "active" ? [record.host] : [],
+      record.host && !record.seeded && record.host.bootstrap.member.state === "active"
+        ? [record.host]
+        : [],
     );
     for (const listener of this.#listeners) listener();
+  }
+
+  /** Every team this world answers for, the preview's own seeded ones included. */
+  #reachable(): Map<string, MockTeamRecord> {
+    for (const host of this.#seeded())
+      if (!this.#records.has(host.origin))
+        this.#records.set(host.origin, {
+          verified: this.#verified(host.origin, DeploymentIdSchema.parse(host.teamId)),
+          name: host.bootstrap.teamName,
+          hostedTeamId: null,
+          host,
+          invite: null,
+          seeded: true,
+        });
+    return this.#records;
   }
 
   #verified(origin: string, deploymentId: DeploymentId): VerifiedTeam {
@@ -164,7 +192,7 @@ export class MockTeamWorld {
       const taken =
         slug === "taken" ||
         [...this.#teams.values()].some((team) => !team.deleted && team.view.slug === slug) ||
-        this.#records.has(hostedTeamOrigin(slug));
+        this.#reachable().has(hostedTeamOrigin(slug));
       return taken ? { available: false, reason: "taken" } : { available: true };
     },
     createHostedTeam: async (request) => {
@@ -224,7 +252,7 @@ export class MockTeamWorld {
   };
 
   #record(teamDeploymentId: DeploymentId): MockTeamRecord {
-    const record = [...this.#records.values()].find(
+    const record = [...this.#reachable().values()].find(
       (candidate) => candidate.verified.authority.deploymentId === teamDeploymentId,
     );
     if (!record?.host)
@@ -234,12 +262,12 @@ export class MockTeamWorld {
 
   readonly sessions: TeamSessionPort = {
     verify: async (origin) => {
-      const record = this.#records.get(origin);
+      const record = this.#reachable().get(origin);
       if (!record) throw new TypeError(`${new URL(origin).host} can’t be reached.`);
       return record.verified;
     },
     exchange: async (team, invite) => {
-      const record = this.#records.get(team.authority.canonicalOrigin);
+      const record = this.#reachable().get(team.authority.canonicalOrigin);
       if (!record) throw new TypeError("The team can’t be reached.");
       let admitted = false;
       if (!record.host) {
@@ -271,7 +299,7 @@ export class MockTeamWorld {
       return { admitted, member: record.host.bootstrap.member, team: record.verified };
     },
     previewInvite: async (team, invite) => {
-      const record = this.#records.get(team.authority.canonicalOrigin);
+      const record = this.#reachable().get(team.authority.canonicalOrigin);
       if (!record?.invite || record.invite.verifier !== invite.verifier)
         throw new TeamEntryRefusedError(
           "invite-invalid",
@@ -283,7 +311,7 @@ export class MockTeamWorld {
       };
     },
     restore: async ({ origin }) => {
-      const record = this.#records.get(origin);
+      const record = this.#reachable().get(origin);
       if (!record?.host)
         throw new TeamEntryRefusedError("not-a-member", "You're not a member of this team.");
     },
@@ -303,7 +331,7 @@ export class MockTeamWorld {
       );
     },
     forget: async (teamDeploymentId) => {
-      const record = [...this.#records.values()].find(
+      const record = [...this.#reachable().values()].find(
         (candidate) => candidate.verified.authority.deploymentId === teamDeploymentId,
       );
       if (!record?.host) return;
@@ -316,10 +344,10 @@ export class MockTeamWorld {
   readonly personal: PersonalTeamLinksPort = {
     join: async (_personal, offer) => {
       if (!this.personalOnline) return { kind: "offline" };
-      const origin = [...this.#records.keys()].find((candidate) =>
+      const origin = [...this.#reachable().keys()].find((candidate) =>
         offer.includes(new URL(candidate).host),
       );
-      const record = origin ? this.#records.get(origin) : undefined;
+      const record = origin ? this.#reachable().get(origin) : undefined;
       if (!record) throw new Error("That code isn’t for a team you’re in.");
       return {
         kind: "joined",
