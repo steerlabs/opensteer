@@ -407,14 +407,20 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     threadId: ThreadIdSchema,
     type: z.literal("thread.icon.set"),
   }),
-  z.strictObject({
-    content: MessageContentSchema,
-    delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
-    idempotencyKey: idempotencyKeySchema,
-    threadId: ThreadIdSchema,
-    type: z.literal("thread.sendMessage"),
-    quotedMessageId: MessageIdSchema.optional(),
-  }),
+  z
+    .strictObject({
+      content: MessageContentSchema,
+      delivery: ThreadInputPolicySchema.extract(["queue", "steer"]).optional().default("queue"),
+      freshContext: z.boolean().optional(),
+      idempotencyKey: idempotencyKeySchema,
+      threadId: ThreadIdSchema,
+      type: z.literal("thread.sendMessage"),
+      quotedMessageId: MessageIdSchema.optional(),
+    })
+    .refine((command) => !command.freshContext || command.delivery === "queue", {
+      message: "freshContext requires queue delivery",
+      path: ["freshContext"],
+    }),
   z.strictObject({
     assignmentId: AssignmentIdSchema,
     idempotencyKey: idempotencyKeySchema,

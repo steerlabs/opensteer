@@ -2620,6 +2620,8 @@ async function executeMockCommand(
       });
     }
     case "thread.sendMessage": {
+      if (command.freshContext && command.delivery !== "queue")
+        throw mockConflict("freshContext requires queue delivery.");
       const body = command.content
         .flatMap((part) => (part.type === "text" ? [part.text] : []))
         .join("\n");
@@ -2641,6 +2643,7 @@ async function executeMockCommand(
       const result = await client.sendMessage({
         body,
         content: command.content,
+        ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
         threadId: command.threadId,
         ...(command.quotedMessageId ? { quotedMessageId: command.quotedMessageId } : {}),
       });
@@ -6596,6 +6599,8 @@ class MockHostState {
     if (queue.steerRunId === null || queue.steerRunId !== expectedRunId) {
       throw mockConflict("This Run cannot accept steering. Your message remains queued.");
     }
+    if (queue.items.find((item) => item.input.messageId === messageId)?.input.freshContext)
+      throw mockConflict("A fresh-context input cannot be steered.");
     const item = this.takePendingInput(threadId, messageId);
     const input = ThreadInputSchema.parse({
       ...item.input,
@@ -6742,7 +6747,7 @@ class MockHostState {
         input: item.input,
         canCancel: true,
         canMove: true,
-        canSteer: steerRunId !== null,
+        canSteer: steerRunId !== null && !item.input.freshContext,
       })),
     });
   }
@@ -6804,6 +6809,17 @@ class MockHostState {
     readonly message: Message;
     readonly run: Run;
   } {
+    if (pending.input.freshContext) {
+      thread = {
+        ...thread,
+        providerSessionId: createId("providerSession"),
+        continuationIdentity: null,
+      };
+      this.snapshot = {
+        ...this.snapshot,
+        threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
+      };
+    }
     const timestamp = this.now().toISOString();
     const run: ActiveMockRun = {
       cancelled: false,
@@ -9908,7 +9924,7 @@ class MockHostState {
    * from the moment it is sent; the queue view is what hides it meanwhile.
    */
   async sendMessage(
-    input: SendMessageInput & { quotedMessageId?: string },
+    input: SendMessageInput & { quotedMessageId?: string; freshContext?: boolean },
   ): Promise<{ readonly input: ThreadInput; readonly message: Message; readonly run: Run | null }> {
     const body = input.body.trim();
     if (!body && !input.content?.some((part) => part.type !== "text"))
@@ -9983,6 +9999,7 @@ class MockHostState {
     const assignmentId = this.openAssignmentOf(thread.id)?.id ?? null;
     if (input.content) this.bindAttachments(input.content, thread.id, message.id);
     const threadInput: ThreadInput = ThreadInputSchema.parse({
+      ...(input.freshContext ? { freshContext: true } : {}),
       teamRequestId: null,
       teamSource: null,
       assignmentId,
@@ -10000,7 +10017,7 @@ class MockHostState {
     });
     const pending: PendingMockInput = { body, input: threadInput, message };
     this.generateThreadName(thread, body);
-    const joining = this.replyInProgress(thread, message.author);
+    const joining = input.freshContext ? null : this.replyInProgress(thread, message.author);
     if (joining) {
       // In a conversation the person's message joins the reply in progress
       // where it was sent, and the Host answers with the Run it joined: no
@@ -10163,7 +10180,17 @@ class MockHostState {
     );
     if (waiting.length === 0) return;
     let entries = this.snapshot.transcripts[thread.id] ?? [];
+    const barrierIndex = (this.threadInputQueues.get(thread.id) ?? []).findIndex(
+      (item) => item.input.freshContext,
+    );
+    const beforeBarrier = new Set(
+      (this.threadInputQueues.get(thread.id) ?? []).slice(
+        0,
+        barrierIndex < 0 ? undefined : barrierIndex,
+      ),
+    );
     for (const item of waiting) {
+      if (!beforeBarrier.has(item)) break;
       this.dropPendingInput(thread.id, item);
       run.joined.push(this.joinedInput(item, run));
       run.steered.push(item.body);

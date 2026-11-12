@@ -138,6 +138,7 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
 }
 export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInput {
   return ThreadInputSchema.parse({
+    ...(row.freshContext ? { freshContext: true } : {}),
     teamRequestId: row.teamRequestId,
     teamSource: row.teamSource,
     assignmentId: row.assignmentId,

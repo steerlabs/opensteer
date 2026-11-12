@@ -4,10 +4,11 @@ import {
   personalTeamBaselineName,
   threadVisitsMigrationName,
 } from "./migrations.js";
-it("exposes the baseline and forward visit migration", async () => {
+it("exposes the Host baseline followed by ordered incremental migrations", async () => {
   expect(Object.keys(await migrationProvider().getMigrations())).toEqual([
-    threadVisitsMigrationName,
     personalTeamBaselineName,
+    threadVisitsMigrationName,
+    "0004_thread_input_fresh_context",
   ]);
   expect(personalTeamBaselineName).toBe("0002_personal_team_baseline");
 });

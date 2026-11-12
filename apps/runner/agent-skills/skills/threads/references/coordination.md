@@ -14,7 +14,9 @@ Every delivered message has Host-authored identity separate from its content, ev
 - `queue`: asks the Thread to act; starts it if idle, else waits for a new turn.
 - `steer`: directs a Run now. Fails when no Run can be steered; use `queue` if it can wait.
 
-A `queue` or `steer` to a task in progress joins it, so its final reply reflects the change, and `assignmentId` names that task. When it is null no task was in progress and nothing returns on its own; use `delegate_task` with `threadId` to give a finished task more work.
+`freshContext: true` is queue-only: it waits for its own Run and starts a fresh model session while preserving the task transcript. For repeated checks, include criteria, asking-task or email destination and `automations/<trigger-id>/` state path in every wake. Check in code first and start child checks from the monitor task. Briefly say what happened; send real finds to the asking task with queue or email through a connected integration.
+
+An ordinary `queue` or `steer` to a task in progress joins it, so its final reply reflects the change, and `assignmentId` names that task. When it is null no task was in progress and nothing returns on its own; use `delegate_task` with `threadId` to give a finished task more work.
 
 `disposition` `steering`, `run-queued` and `pending` mean accepted, not read. `cancelled` means recorded but never run: the Thread is archived or execution authority is gone. Report that block instead of resending. Do not send receipts, status pings or acknowledgements.
 
@@ -24,6 +26,7 @@ Make each message stand alone, since the recipient may have moved on: what it an
 
 Use `delegate_task` for independent work needing durable history or continuation across Runs or restarts.
 
+- Keep reminders in the asking task. Give ongoing monitors a linked task with `trigger_write` `ownTask: true`; for a new listed task each run, have the program use `delegate_task` `standalone: true`.
 - A Thread works on one task at a time. Reuse a suitable task when its history helps.
 - Title a new task in two to five plain words naming the outcome, as the person would find it in their list, such as "Hyatt Seoul booking".
 - Send the concrete outcome and expected answer, not its standing role: a delegated Thread reads Agent home's AGENTS.md and skills.

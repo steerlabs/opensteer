@@ -77,7 +77,12 @@ proves every process belongs to one tree. Idle engines have no authority; reuse 
 session, authority, launch configuration, sandbox and tool plan. Windows does not qualify this
 containment. [The pool](../apps/runner/src/runtime/warm-engine-pool.ts) owns reuse.
 
-Each Run pins its ProviderSession before admission. Failed execution proves neither that a provider
+A queued `freshContext: true` input starts its own Run and rotates the provider session when
+that Run enters starting. Its transcript remains readable, but every reconstructed model history
+starts at the latest such boundary, including after failed startup, audience rotation or an engine
+switch. Cancelling a waiting wake sets no boundary; attempt recovery keeps its pinned session.
+
+Each Run pins its ProviderSession for dispatch. Failed execution proves neither that a provider
 conversation exists nor that none does: startup repeats only when earlier attempts prove it never
 happened, and resume returns the exact native reference, never a fresh conversation or replayed Host
 messages ([Runner runtime](../apps/runner/src/runtime/runtime.ts)).

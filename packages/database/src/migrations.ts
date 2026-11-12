@@ -9,6 +9,11 @@ export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
       return {
+        [personalTeamBaselineName]: {
+          async up(database) {
+            await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
+          },
+        },
         [threadVisitsMigrationName]: {
           async up(database) {
             await sql`update runs set completed_at = least(date_trunc('milliseconds', completed_at), date_trunc('milliseconds', now())) where completed_at is not null`.execute(
@@ -57,9 +62,14 @@ export function migrationProvider(): MigrationProvider {
             await sql`drop table thread_read_markers`.execute(database);
           },
         },
-        [personalTeamBaselineName]: {
+        "0004_thread_input_fresh_context": {
           async up(database) {
-            await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
+            await sql`alter table thread_inputs add column fresh_context boolean not null default false`.execute(
+              database,
+            );
+            await sql`create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer')`.execute(
+              database,
+            );
           },
         },
       };

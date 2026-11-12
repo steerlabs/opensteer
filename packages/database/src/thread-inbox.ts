@@ -1,3 +1,4 @@
+import { freshContextBoundary } from "./fresh-context.js";
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
@@ -263,7 +264,10 @@ export async function readThreadInputQueue(
         canCancel: own && thread.status !== "archived",
         canMove: own && thread.status !== "archived",
         canSteer: Boolean(
-          steerable && own && isDeepStrictEqual(row.replyTarget, active.replyTarget),
+          steerable &&
+          own &&
+          !row.freshContext &&
+          isDeepStrictEqual(row.replyTarget, active.replyTarget),
         ),
       };
     }),
@@ -412,7 +416,20 @@ async function claimFollowUps(
   readonly claimed: number;
   readonly events: readonly AgentEvent[];
 }> {
+  const barrier = await transaction
+    .selectFrom("threadInputs")
+    .select("queueRank")
+    .where("threadId", "=", thread.id)
+    .where("state", "=", "pending")
+    .where("policy", "=", "queue")
+    .where("freshContext", "=", true)
+    .orderBy("queueRank", "asc")
+    .limit(1)
+    .executeTakeFirst();
   const waiting = await conversationFollowUps(transaction, run, thread.id)
+    .$if(barrier !== undefined, (query) =>
+      query.where("threadInputs.queueRank", "<", barrier!.queueRank),
+    )
     .select("threadInputs.messageId")
     .orderBy("threadInputs.queueRank", "asc")
     .limit(input.limit)
@@ -905,6 +922,11 @@ export async function steerThreadInputInTransaction(
       throw idempotencyConflict(request.idempotencyKey);
     return replayThreadInput(transaction, row);
   }
+  if (row.freshContext)
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "A fresh-context input must start its own Run and cannot be steered.",
+    });
   // A stopped or cancelled Run keeps running until its Runner winds it down,
   // but it takes nothing new.
   const route = run.status === "running" ? await steerRoute(transaction, run.id) : null;
@@ -1303,6 +1325,26 @@ export async function claimRunInputBatch(
       message: "A Run must start with its queued work item",
     });
 
+  if (seed.freshContext) {
+    const providerSessionId = await ensureSelectedProviderSession(transaction, thread, {
+      freshRunId: run.id,
+      personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+    });
+    await transaction
+      .updateTable("runs")
+      .set({ providerSessionId })
+      .where("id", "=", run.id)
+      .execute();
+    run.providerSessionId = providerSessionId;
+  }
+  const seedMessage = await transaction
+    .selectFrom("messages")
+    .select("sequence")
+    .where("id", "=", seed.messageId)
+    .executeTakeFirstOrThrow();
+  const boundary = seed.freshContext
+    ? seedMessage.sequence
+    : await freshContextBoundary(transaction, run);
   // The Thread lock defines one snapshot for both first dispatch and retries.
   // Reports share delivery receipts with work, but never enter the work view.
   const throughSequence = (BigInt(thread.nextMessageSequence) - 1n).toString();
@@ -1403,6 +1445,7 @@ export async function claimRunInputBatch(
     readonly throughSequence: string | null;
   } | null = null;
   if (
+    !seed.freshContext &&
     run.providerSessionId &&
     !(await isMemoryPassWake(transaction, run.threadId, seed.authoritySource))
   ) {
@@ -1415,16 +1458,12 @@ export async function claimRunInputBatch(
       .limit(1)
       .executeTakeFirst();
     if (!priorAccepted) {
-      const seedMessage = await transaction
-        .selectFrom("messages")
-        .select("sequence")
-        .where("id", "=", seed.messageId)
-        .executeTakeFirstOrThrow();
       const history = transaction
         .selectFrom("messages")
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
         .where("messages.threadId", "=", run.threadId)
         .where("messages.sequence", "<", seedMessage.sequence)
+        .$if(boundary !== null, (query) => query.where("messages.sequence", ">=", boundary!))
         .where((expression) =>
           expression.or([
             expression("threadInputs.messageId", "is", null),
@@ -2358,6 +2397,11 @@ export async function enqueueThreadInputInTransaction(
     });
   }
   const policy = ThreadInputPolicySchema.parse(request.policy);
+  if (request.freshContext && policy !== "queue")
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "freshContext requires queue delivery.",
+    });
   if (request.teamRequest && (policy !== "queue" || request.source.kind !== "human"))
     throw new OpensteerError({
       code: "bad_request",
@@ -2369,12 +2413,14 @@ export async function enqueueThreadInputInTransaction(
       JSON.stringify(
         request.teamRequest
           ? {
+              ...(request.freshContext ? { freshContext: true } : {}),
               requestId: request.teamRequest.id,
               triggerMessageId: request.teamRequest.triggerMessageId,
             }
           : {
               content,
               policy,
+              ...(request.freshContext ? { freshContext: true } : {}),
               source: normalizedThreadInputSource(request.source),
               threadId: request.threadId,
               ...(request.requireUnassigned
@@ -2579,6 +2625,7 @@ export async function enqueueThreadInputInTransaction(
   // way: the message is accepted like any other, then handed over by the one
   // operation every moment of readiness shares.
   const conversational =
+    !request.freshContext &&
     (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
@@ -2588,6 +2635,7 @@ export async function enqueueThreadInputInTransaction(
   // message from its own requester, on the same engine and model, as a new
   // turn; anything else waits behind it.
   const joinsBackground =
+    !request.freshContext &&
     request.source.kind !== "channel" &&
     !request.teamRequest &&
     !activeRun?.teamRequestId &&
@@ -2739,6 +2787,7 @@ export async function enqueueThreadInputInTransaction(
       replyTarget: facts.replyTarget ? jsonValue(facts.replyTarget) : null,
       requestedBy: request.requestedBy,
       requestFingerprint,
+      ...(request.freshContext ? { freshContext: true } : {}),
       runId: steerRun?.id ?? null,
       state: executionValid ? (steer ? "claimed" : "pending") : "cancelled",
       steerCommandId,
@@ -3363,7 +3412,7 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
-  options: { readonly personalContext?: boolean } = {},
+  options: { readonly personalContext?: boolean; readonly freshRunId?: RunId } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
@@ -3380,14 +3429,18 @@ export async function ensureSelectedProviderSession(
       });
     }
     if (
-      options.personalContext === undefined ||
-      selected.personalContext === options.personalContext
+      !options.freshRunId &&
+      (options.personalContext === undefined ||
+        selected.personalContext === options.personalContext)
     )
       return selected.id;
     const active = await transaction
       .selectFrom("runs")
       .select("id")
       .where("providerSessionId", "=", selected.id)
+      .$if(options.freshRunId !== undefined, (query) =>
+        query.where("id", "!=", options.freshRunId!),
+      )
       .where("status", "in", nonTerminalRunStatuses)
       .executeTakeFirst();
     if (active)

@@ -5,12 +5,15 @@ import { createDatabase } from "./connection.js";
 import {
   MigrationLineageError,
   migrateToLatest,
+  migrationProvider,
   personalTeamBaselineName,
   threadVisitsMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { OpensteerStore } from "./store.js";
+import { createPersonalRunFixturePort } from "./personal-run-fixture.test-support.js";
 import { AccountDirectoryStore } from "./account-directory-store.js";
 
 let clone: TestDatabase;
@@ -66,6 +69,31 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
 }
 
 describe("fresh personal/team lineage", () => {
+  it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
+    const migrations = await migrationProvider().getMigrations();
+    delete migrations["0004_thread_input_fresh_context"];
+    await migrateToLatest(database, { getMigrations: async () => migrations });
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const store = new OpensteerStore(database);
+    const { thread } = await createPersonalRunFixturePort(store).createTask({
+      ownerId: userId,
+      suffix: "before-fresh-context",
+    });
+    const input = await store.enqueueThreadInput({
+      content: [{ type: "text", text: "Already queued" }],
+      idempotencyKey: "before-upgrade",
+      policy: "queue",
+      requestedBy: userId,
+      source: { kind: "human" },
+      threadId: thread.id,
+    });
+    await migrateToLatest(database);
+    for (const table of ["threadInputs", "threadWorkInputs"] as const) {
+      expect(
+        await database.selectFrom(table).select(["messageId", "freshContext"]).execute(),
+      ).toEqual([{ messageId: input.message.id, freshContext: false }]);
+    }
+  });
   it("projects Account ownership changes and fences an acknowledgement from before revocation", async () => {
     await migrateToLatest(database);
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
@@ -195,7 +223,7 @@ describe("fresh personal/team lineage", () => {
     expect(await catalog()).toEqual(before);
     expect(
       (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
-    ).toEqual([{ name: personalTeamBaselineName }, { name: threadVisitsMigrationName }]);
+    ).toEqual(Object.keys(await migrationProvider().getMigrations()).map((name) => ({ name })));
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

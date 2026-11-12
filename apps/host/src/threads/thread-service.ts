@@ -211,6 +211,7 @@ export class ThreadService {
           content: command.content,
           idempotencyKey: command.idempotencyKey,
           policy: command.delivery ?? "queue",
+          ...(command.freshContext !== undefined ? { freshContext: command.freshContext } : {}),
           requestedBy: actor.userId,
           source:
             actor.kind === "person"
