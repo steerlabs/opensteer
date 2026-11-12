@@ -301,7 +301,10 @@ function teamStatefulSet(
                 initialDelaySeconds: 60,
                 periodSeconds: 30,
               },
-              resources: { requests: { cpu: "100m", memory: "320Mi" }, limits: { memory: "768Mi" } },
+              resources: {
+                requests: { cpu: "100m", memory: "320Mi" },
+                limits: { memory: "768Mi" },
+              },
               securityContext: restricted(opensteerUid),
               volumeMounts: [
                 { name: "data", mountPath: "/data" },

@@ -45,7 +45,10 @@ describe("team Compose contract", () => {
       "reverse_proxy {$OPENSTEER_HOST_UPSTREAM:host:4310}",
     ]);
     // The Host serves the first-owner setup and invite pages; the web app must not shadow them.
-    const api = caddyfile.match(/@api path ([^\n]+)/u)?.[1]?.trim().split(/\s+/u);
+    const api = caddyfile
+      .match(/@api path ([^\n]+)/u)?.[1]
+      ?.trim()
+      .split(/\s+/u);
     expect(api).toEqual(expect.arrayContaining([teamSetupPagePath, `${teamInvitePagePrefix}*`]));
     const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
     const gatewayStage = containerfile.slice(
