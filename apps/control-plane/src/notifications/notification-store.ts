@@ -5,7 +5,7 @@ import {
   type HostNotificationPublication,
   type NotificationDevice,
   type NotificationDevicePlatform,
-  type PublishedNotificationKind,
+  type AccountNotificationKind,
   type RegisterNotificationDeviceRequest,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -48,7 +48,7 @@ export interface ClaimedNotificationDelivery {
   readonly deploymentId: DeploymentId;
   readonly deviceId: string;
   readonly expiresAt: Date;
-  readonly kind: PublishedNotificationKind;
+  readonly kind: AccountNotificationKind;
   readonly messageId?: string | null;
   readonly leaseToken: string;
   readonly notificationId: NotificationId;

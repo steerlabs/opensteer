@@ -464,6 +464,7 @@ const migrationProvider = {
       "0017_team_notifications": teamNotificationsMigration,
       "0018_hosted_teams": hostedTeamsMigration,
       "0019_hosted_team_bootstrap": hostedTeamBootstrapMigration,
+      "0020_team_ready_notifications": teamReadyNotificationsMigration,
     };
   },
 };
@@ -532,6 +533,19 @@ const teamNotificationsMigration: Migration = {
       drop constraint ${sql.id(`${table}_kind_check`)},
       add constraint ${sql.id(`${table}_kind_check`)} check(kind in ('reply-published','request-opened','run-failed','report-published','run-completed','run-interrupted','team-message','team-agent-needs-you','team-agent-completed','team-notice')),
       add constraint ${sql.id(`${table}_target_check`)} check((kind like 'team-%' and thread_id is null and team_target is not null) or(kind not like 'team-%' and thread_id is not null and team_target is null))`.execute(
+        database,
+      );
+    }
+  },
+};
+
+/** Account tells a hosted team's creator it is ready. Add-only: every earlier kind stays valid. */
+const teamReadyNotificationsMigration: Migration = {
+  async up(database) {
+    for (const table of ["notification_publications", "notification_deliveries"]) {
+      await sql`alter table ${sql.table(table)}
+      drop constraint ${sql.id(`${table}_kind_check`)},
+      add constraint ${sql.id(`${table}_kind_check`)} check(kind in ('reply-published','request-opened','run-failed','report-published','run-completed','run-interrupted','team-message','team-agent-needs-you','team-agent-completed','team-notice','team-ready'))`.execute(
         database,
       );
     }

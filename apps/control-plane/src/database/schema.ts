@@ -9,7 +9,7 @@ import type {
   HostedOAuthRefreshTransactionId,
   NotificationDevicePlatform,
   ProjectionGeneration,
-  PublishedNotificationKind,
+  AccountNotificationKind,
   TeamNotificationTarget,
 } from "@opensteer/control-plane-protocol";
 import type {
@@ -476,7 +476,7 @@ export interface NotificationPublicationTable {
     TeamNotificationTarget | null | undefined,
     TeamNotificationTarget | null
   >;
-  kind: PublishedNotificationKind;
+  kind: AccountNotificationKind;
   deliveries: Generated<number>;
   receivedAt: Timestamp;
 }
@@ -499,7 +499,7 @@ export interface NotificationDeliveryTable {
   >;
   requestId: string | null;
   messageId: string | null;
-  kind: PublishedNotificationKind;
+  kind: AccountNotificationKind;
   expiresAt: Timestamp;
   status: "pending" | "delivered" | "failed" | "dropped";
   attempts: Generated<number>;

@@ -339,6 +339,11 @@ async function expectBootstrapped(system: Awaited<ReturnType<typeof startHostedT
 
 it("sets up a hosted team from Account: owner, #general and directory, with nothing left to disclose", async () => {
   const system = await startHostedTeam();
+  // The creator's phone, which wants outcomes; it hears once the team is ready.
+  await sql`insert into notification_devices(id,account_id,installation_id,application,platform,token_ciphertext,token_hash,approvals_enabled,run_outcomes_enabled)
+    values(${crypto.randomUUID()},${system.creator},${"i".repeat(16)},'mobile','android','sealed',${"h".repeat(43)},true,true)`.execute(
+    system.accounts,
+  );
   expect(await system.stage()).toBe("reserving");
   expect((await system.report()).configuring).toBe(true);
   expect(await system.stage()).toBe("configuring");
@@ -360,6 +365,24 @@ it("sets up a hosted team from Account: owner, #general and directory, with noth
   ]);
   const descriptor = (await system.team.app.inject({ url: "/.well-known/opensteer" })).json();
   expect(descriptor.capabilities).toContain("team-hosted-bootstrap-v1");
+  const [general] = await system.hostDatabase.selectFrom("teamChannels").select("id").execute();
+  const pushes = await system.accounts
+    .selectFrom("notificationDeliveries")
+    .select(["kind", "deploymentId", "teamTarget", "status"])
+    .execute();
+  expect(pushes).toEqual([
+    {
+      kind: "team-ready",
+      deploymentId: system.team.deployment.id,
+      teamTarget: {
+        kind: "team-ready",
+        origin,
+        teamId: system.team.deployment.id,
+        channelId: general!.id,
+      },
+      status: "pending",
+    },
+  ]);
 });
 
 for (const [step, when] of [

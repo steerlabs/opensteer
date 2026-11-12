@@ -20,7 +20,7 @@ import {
   type HostedTeamStatusReport,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
-import type { DeploymentId } from "@opensteer/core";
+import { createId, type DeploymentId, type TeamChannelId } from "@opensteer/core";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import {
   sql,
@@ -629,7 +629,8 @@ export class HostedTeamOperator {
 
 /**
  * A team is ready once its Host has committed the creator as owner (the receipt) and that
- * membership has reached Account's directory, whatever happened to it there since.
+ * membership has reached Account's directory, whatever happened to it there since. The creator's
+ * phones hear about it.
  */
 export async function promoteReadyHostedTeams(
   transaction: DatabaseTransaction,
@@ -660,8 +661,67 @@ export async function promoteReadyHostedTeams(
           .where("accountId", "=", accountId),
       ),
     )
-    .executeTakeFirst();
-  return Number(promoted.numUpdatedRows);
+    .returning(["slug", "bootstrapReceipt"])
+    .execute();
+  for (const team of promoted)
+    await notifyTeamReady(transaction, {
+      accountId,
+      deploymentId,
+      origin: hostedTeamOrigin(team.slug as HostedTeamSlug),
+      channelId: HostedTeamBootstrapReceiptSchema.parse(team.bootstrapReceipt).generalChannelId,
+    });
+  return promoted.length;
+}
+
+/** How long a "your team is ready" push stays worth showing. */
+const teamReadyNotificationMilliseconds = 60 * 60_000;
+
+/** Queues a push to each of the creator's phones that wants outcomes, opening the team's #general. */
+async function notifyTeamReady(
+  transaction: DatabaseTransaction,
+  input: {
+    readonly accountId: ControlPlaneAccountId;
+    readonly deploymentId: DeploymentId;
+    readonly origin: string;
+    readonly channelId: TeamChannelId;
+  },
+) {
+  const devices = await transaction
+    .selectFrom("notificationDevices")
+    .select("id")
+    .where("accountId", "=", input.accountId)
+    .where("disabledAt", "is", null)
+    .where("runOutcomesEnabled", "=", true)
+    .execute();
+  if (devices.length === 0) return;
+  const now = new Date();
+  const notificationId = createId("notification");
+  await transaction
+    .insertInto("notificationDeliveries")
+    .values(
+      devices.map((device) => ({
+        notificationId,
+        deviceId: device.id,
+        deploymentId: input.deploymentId,
+        kind: "team-ready" as const,
+        threadId: null,
+        requestId: null,
+        messageId: null,
+        preview: null,
+        teamTarget: {
+          kind: "team-ready" as const,
+          origin: input.origin,
+          teamId: input.deploymentId,
+          channelId: input.channelId,
+        },
+        status: "pending" as const,
+        attempts: 0,
+        createdAt: now,
+        nextAttemptAt: now,
+        expiresAt: new Date(now.getTime() + teamReadyNotificationMilliseconds),
+      })),
+    )
+    .execute();
 }
 
 /**
