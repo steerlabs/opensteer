@@ -3,7 +3,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ThreadPlacementOption } from "@opensteer/client/host";
+import { HostClientRequestError, type ThreadPlacementOption } from "@opensteer/client/host";
 import type { AddHarnessAccount } from "../account-sign-in-dialog.js";
 import { SetupPage } from "./setup-page.js";
 
@@ -281,9 +281,11 @@ function desktopBridge(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function onThisMac(bridge: unknown, access: unknown) {
+function onThisMac(bridge: unknown, access: object) {
   shell.desktopBridge = bridge;
   shell.desktopDeployment = { kind: "personal", name: "Studio Mac", onThisComputer: true };
+  // The deployment this window views is the desktop's own personal one.
+  Object.assign(access, { personalSetup: { deploymentId: shell.snapshot.deploymentId } });
   shell.deploymentAccess = access;
 }
 
@@ -637,7 +639,12 @@ it("offers to try again when the phone's code could not be made", async () => {
   localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
   let failing = true;
   shell.hostClient.dispatch.mockImplementation(async () => {
-    if (failing) throw new Error("Opensteer is offline.");
+    if (failing)
+      throw new HostClientRequestError({
+        code: "unavailable",
+        message: "Opensteer is offline.",
+        status: 503,
+      });
     return {
       pairing: {
         code: `osp_${"b".repeat(43)}`,

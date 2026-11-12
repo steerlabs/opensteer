@@ -1,8 +1,10 @@
 import { useMemo } from "react";
 import {
   RemoteAccessPortError,
+  linkPersonalHostAccount,
   resumePersonalHostAccountLink,
   type HostClient,
+  type RemoteAccessLink,
   type RemoteAccessPort,
 } from "@opensteer/client/host";
 import {
@@ -11,6 +13,7 @@ import {
   type usePersonalRemoteAccess,
 } from "@opensteer/client/react";
 import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
+import type { DeploymentAccessSnapshot, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { useShell } from "../components/app-shell.js";
 import { deploymentNameFrom } from "../components/deployment-name.js";
 import { linkAccountThroughPortal } from "../components/settings/link-personal-account.js";
@@ -70,33 +73,118 @@ export function browserRemoteAccessPort(input: {
   };
 }
 
+type CourierBridge = Pick<OpensteerDesktopBridge, "signIn"> &
+  Required<
+    Pick<
+      OpensteerDesktopBridge,
+      "completePersonalAccountLink" | "issuePersonalAccountLinkChallenge"
+    >
+  >;
+
+/**
+ * The app viewing another computer: its own Account carries the link
+ * credentials, and the viewed computer's Host approves and completes the link.
+ * The app's own computer is never touched.
+ */
+export function courierRemoteAccessPort(input: {
+  readonly bridge: CourierBridge;
+  readonly hostClient: HostClient;
+  readonly name: string;
+  readonly status: PersonalRemoteAdministrationStatus | null;
+}): RemoteAccessPort {
+  const { bridge } = input;
+  return {
+    signIn: () => bridge.signIn(),
+    link: async ({ activating }) => {
+      if (activating) {
+        await resumePersonalHostAccountLink(input.hostClient);
+        return;
+      }
+      if (!input.status) throw new RemoteAccessPortError("Still checking. Try again in a moment.");
+      await linkPersonalHostAccount(
+        input.hostClient,
+        {
+          issuePersonalHostAccountLinkChallenge: (request) =>
+            bridge.issuePersonalAccountLinkChallenge(request),
+          completePersonalHostAccountLink: (_challengeId, request) =>
+            bridge.completePersonalAccountLink(request),
+        },
+        input.status.authorityEnvelope,
+        input.name,
+      );
+    },
+  };
+}
+
+/**
+ * Which half links the viewed computer. The desktop's own journal and link
+ * status describe only the desktop's own personal deployment.
+ */
+export function webRemoteAccessRoute(input: {
+  readonly bridge: OpensteerDesktopBridge | null;
+  readonly deploymentAccess: DeploymentAccessSnapshot | null;
+  readonly viewedDeploymentId: string | null;
+}):
+  | { readonly kind: "desktop"; readonly bridge: OpensteerDesktopBridge }
+  | { readonly kind: "courier"; readonly bridge: CourierBridge }
+  | { readonly kind: "browser" } {
+  const { bridge, deploymentAccess, viewedDeploymentId } = input;
+  if (!bridge) return { kind: "browser" };
+  const own =
+    viewedDeploymentId !== null &&
+    deploymentAccess?.personalSetup?.deploymentId === viewedDeploymentId;
+  if (own && supportsPersonalAccountLink(bridge)) return { kind: "desktop", bridge };
+  const { completePersonalAccountLink, issuePersonalAccountLinkChallenge } = bridge;
+  if (!own && completePersonalAccountLink && issuePersonalAccountLinkChallenge)
+    return {
+      kind: "courier",
+      bridge: {
+        completePersonalAccountLink: completePersonalAccountLink.bind(bridge),
+        issuePersonalAccountLinkChallenge: issuePersonalAccountLinkChallenge.bind(bridge),
+        signIn: bridge.signIn.bind(bridge),
+      },
+    };
+  return { kind: "browser" };
+}
+
 /** "Use from anywhere" for the computer this web or desktop window is attached to. */
 export function useWebRemoteAccess(
   remote: ReturnType<typeof usePersonalRemoteAccess>,
 ): RemoteAccessController {
   const { deploymentAccess, desktopBridge, desktopDeployment, hostClient, snapshot } = useShell();
-  const bridge = supportsPersonalAccountLink(desktopBridge) ? desktopBridge : null;
-  const link = usePersonalAccountLink(bridge, deploymentAccess);
+  const route = useMemo(
+    () =>
+      webRemoteAccessRoute({
+        bridge: desktopBridge,
+        deploymentAccess,
+        viewedDeploymentId: snapshot.deploymentId,
+      }),
+    [deploymentAccess, desktopBridge, snapshot.deploymentId],
+  );
+  const link = usePersonalAccountLink(
+    route.kind === "desktop" ? route.bridge : null,
+    deploymentAccess,
+  );
   const name = deploymentNameFrom(desktopDeployment, snapshot);
   const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
-  const port = useMemo(
-    () =>
-      bridge
-        ? desktopRemoteAccessPort(link)
-        : browserRemoteAccessPort({
-            hostClient,
-            name: name ?? "Opensteer",
-            portalOrigin,
-            status: remote.status,
-          }),
-    [bridge, hostClient, link, name, portalOrigin, remote.status],
-  );
+  const port = useMemo(() => {
+    if (route.kind === "desktop") return desktopRemoteAccessPort(link);
+    const common = { hostClient, name: name ?? "Opensteer", status: remote.status };
+    return route.kind === "courier"
+      ? courierRemoteAccessPort({ ...common, bridge: route.bridge })
+      : browserRemoteAccessPort({ ...common, portalOrigin });
+  }, [hostClient, link, name, portalOrigin, remote.status, route]);
+  const linkStatus: RemoteAccessLink | null =
+    route.kind === "desktop" ? (link.status?.status ?? null) : null;
   return useRemoteAccess({
     computerName: name,
     hostClient,
-    link: bridge ? (link.status?.status ?? null) : null,
+    link: linkStatus,
     port,
     remote,
-    signedIn: bridge && deploymentAccess ? deploymentAccess.account.status === "signed-in" : null,
+    signedIn:
+      route.kind !== "browser" && deploymentAccess
+        ? deploymentAccess.account.status === "signed-in"
+        : null,
   });
 }

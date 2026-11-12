@@ -8,39 +8,6 @@ import {
   CompletePersonalHostAccountLinkResponseSchema,
 } from "@opensteer/protocol";
 import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
-import type { ShellContext } from "../app-shell.js";
-
-export async function linkAccountFromWeb(
-  shell: ShellContext,
-  status: PersonalRemoteAdministrationStatus,
-  name: string,
-): Promise<void> {
-  const bridge = shell.desktopBridge;
-  if (bridge?.issuePersonalAccountLinkChallenge && bridge.completePersonalAccountLink) {
-    if (shell.deploymentAccess?.account.status !== "signed-in") {
-      await bridge.signIn();
-      throw new Error("Finish signing in in your browser, then press Turn on again.");
-    }
-    await linkPersonalHostAccount(
-      shell.hostClient,
-      {
-        issuePersonalHostAccountLinkChallenge: (input) =>
-          bridge.issuePersonalAccountLinkChallenge!(input),
-        completePersonalHostAccountLink: (_challengeId, input) =>
-          bridge.completePersonalAccountLink!(input),
-      },
-      status.authorityEnvelope,
-      name,
-    );
-    return;
-  }
-  await linkAccountThroughPortal({
-    authorityEnvelope: status.authorityEnvelope,
-    hostClient: shell.hostClient,
-    name,
-    portalOrigin: shell.snapshot.identityConfig?.portalOrigin ?? null,
-  });
-}
 
 /**
  * A plain browser links through the Account portal in a popup: the portal

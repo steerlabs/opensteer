@@ -92,7 +92,7 @@ describe("remoteAccessView", () => {
     {
       name: "Connect unavailable in this build",
       facts: facts({ status: status({ accountLink: null }, { accountIssuer: null }) }),
-      expected: { state: "connect-unavailable", primary: null },
+      expected: { state: "connect-unavailable", primary: null, privateNetwork: true },
     },
     {
       name: "off",
@@ -111,9 +111,14 @@ describe("remoteAccessView", () => {
       expected: { sentence: "Only this computer can use Opensteer." },
     },
     {
-      name: "off and signed out: Turn on signs in first",
+      name: "off and signed out: Turn on signs in first, and a private network needs no account",
       facts: facts({ signedIn: false, status: status({ accountLink: null }) }),
-      expected: { state: "off-signed-out", primary: { id: "turn-on" } },
+      expected: {
+        state: "off-signed-out",
+        primary: { id: "turn-on" },
+        advanced: [],
+        privateNetwork: true,
+      },
     },
     {
       name: "turning on, on this device",
@@ -174,7 +179,9 @@ describe("remoteAccessView", () => {
         address: "https://studio.connect.test",
         sentence: "Your phone and signed-in computers can open Studio Mac from anywhere.",
         primary: { id: "turn-off", label: "Turn off" },
-        secondary: [{ id: "reset-key" }, { id: "remove-link" }],
+        secondary: [],
+        advanced: [{ id: "reset-key" }, { id: "remove-link" }],
+        privateNetwork: true,
       },
     },
     {
@@ -187,7 +194,43 @@ describe("remoteAccessView", () => {
         address: "https://studio.tailnet.test",
         primary: { id: "add-device", label: "Add a device" },
         secondary: [{ id: "turn-off" }],
+        // Switching straight to the Account signs devices out, so it asks first.
+        advanced: [
+          { id: "use-account", confirm: expect.any(String) },
+          { id: "remove-link", confirm: expect.any(String) },
+        ],
+        privateNetwork: true,
       },
+    },
+    {
+      name: "on via private network, with nothing linked and no Account in this build",
+      facts: facts({
+        status: status(
+          { accountLink: null, mode: "private", route: route("https://studio.tailnet.test") },
+          { accountIssuer: null },
+        ),
+      }),
+      expected: { state: "on-private", advanced: [], privateNetwork: true },
+    },
+    {
+      name: "Add a device that failed says so and offers it again, while status stays readable",
+      facts: facts({
+        pairingError: "Pairing isn’t available right now.",
+        status: status({ mode: "private", route: route("https://studio.tailnet.test") }),
+      }),
+      expected: {
+        state: "add-device-failed",
+        tone: "attention",
+        sentence: "Pairing isn’t available right now.",
+        address: "https://studio.tailnet.test",
+        primary: { id: "add-device", label: "Try again" },
+        secondary: [{ id: "turn-off" }],
+      },
+    },
+    {
+      name: "off and linked: removing the link is under Advanced",
+      facts: facts(),
+      expected: { state: "off", advanced: [{ id: "remove-link" }], privateNetwork: true },
     },
     {
       name: "failed turn-on",
@@ -233,9 +276,31 @@ describe("remoteAccessView", () => {
       expected: { state: "change-failed", title: "Couldn’t remove" },
     },
     {
-      name: "a failed turn-on that came true anyway no longer stands",
-      facts: facts({ status: { ...on, operation: operation(connect, "failed") } }),
-      expected: { state: "on-connect" },
+      // Turning on commits the route before the Account publishes it.
+      name: "a turn-on that failed after the mode changed still stands",
+      facts: facts({
+        status: { ...on, operation: operation(connect, "failed", "Couldn’t reach Opensteer.") },
+      }),
+      expected: {
+        state: "change-failed",
+        title: "Couldn’t finish",
+        on: true,
+        sentence: "Couldn’t reach Opensteer.",
+        primary: { id: "try-again" },
+        secondary: [{ id: "turn-off" }],
+      },
+    },
+    {
+      // Turning off commits Off before cleaning up.
+      name: "a turn-off that failed after the mode changed still stands",
+      facts: facts({ status: status({}, { operation: operation(off, "failed", "No cleanup.") }) }),
+      expected: {
+        state: "change-failed",
+        title: "Couldn’t turn off",
+        on: false,
+        sentence: "No cleanup.",
+        primary: { id: "try-again" },
+      },
     },
     {
       name: "a link left activating",
@@ -244,6 +309,7 @@ describe("remoteAccessView", () => {
         state: "link-activating",
         primary: { id: "finish-adding", label: "Finish adding" },
         secondary: [{ id: "remove-link" }],
+        privateNetwork: true,
       },
     },
     {
@@ -261,7 +327,13 @@ describe("remoteAccessView", () => {
       facts: facts({
         status: status({}, { operation: operation({ action: "unlink" }, "running") }),
       }),
-      expected: { state: "removing-link", tone: "busy", primary: null },
+      expected: {
+        state: "removing-link",
+        tone: "busy",
+        primary: null,
+        advanced: [],
+        privateNetwork: false,
+      },
     },
     {
       name: "turning off keeps no other action",
@@ -280,11 +352,9 @@ describe("remoteAccessView", () => {
 
   it("asks before every action that signs devices out, and only those", () => {
     const view = remoteAccessView(facts({ status: on }));
-    expect([view.primary, ...view.secondary].map((action) => action?.confirm !== null)).toEqual([
-      true,
-      true,
-      true,
-    ]);
+    expect(
+      [view.primary, ...view.secondary, ...view.advanced].map((action) => action?.confirm !== null),
+    ).toEqual([true, true, true]);
     expect(remoteAccessView(facts()).primary?.confirm).toBeNull();
   });
 
@@ -435,6 +505,85 @@ describe("RemoteAccessRunner", () => {
     await expect(test.settled()).resolves.toEqual({ kind: "idle" });
     expect(signal?.aborted).toBe(true);
     expect(test.request).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing once stopped, even when the status it waited for arrives first", async () => {
+    const test = harness(facts({ status: null }));
+    test.runner.start("turn-on");
+    await vi.waitFor(() => expect(test.runner.getSnapshot()).toMatchObject({ step: "checking" }), {
+      timeout: 1_000,
+    });
+    test.set({ status: status() });
+    test.runner.stop();
+    // The resolved wait's continuation was queued first, so it has run after this.
+    await Promise.resolve();
+    expect(test.request).not.toHaveBeenCalled();
+    expect(test.runner.getSnapshot()).toEqual({ kind: "idle" });
+  });
+
+  it("turns off a turn-on the Host admits after Cancel, from status that doesn't show it yet", async () => {
+    const test = harness(facts());
+    let admit!: (operation: PersonalRemoteAdministrationOperation) => void;
+    test.request.mockImplementationOnce(
+      (intent) =>
+        new Promise((resolve) => {
+          test.requests.push(intent);
+          admit = resolve;
+        }),
+    );
+    test.runner.start("turn-on");
+    await vi.waitFor(() => expect(admit).toBeDefined(), { timeout: 1_000 });
+    // Cancel while the Host still decides; the status still says Off.
+    test.runner.start("turn-off");
+    expect(test.runner.getSnapshot()).toMatchObject({ goal: "turn-off", kind: "running" });
+    admit(operation(connect, "pending"));
+    await expect(test.settled()).resolves.toEqual({ kind: "idle" });
+    expect(test.requests).toEqual([connect, off]);
+  });
+
+  it("tries a change that failed after the mode changed again, as recover", async () => {
+    const unpublished = facts({ status: { ...on, operation: operation(connect, "failed") } });
+    const published = harness(unpublished);
+    published.runner.start(remoteAccessActionGoal("try-again", unpublished, { kind: "idle" })!);
+    await published.settled();
+    expect(published.requests).toEqual([{ action: "recover" }]);
+
+    const cleaned = harness(facts({ status: status({}, { operation: operation(off, "failed") }) }));
+    cleaned.runner.start("turn-off");
+    await cleaned.settled();
+    expect(cleaned.requests).toEqual([{ action: "recover" }]);
+  });
+
+  it("shows a refused private network address and sends the same one again", async () => {
+    const test = harness(facts());
+    test.request.mockRejectedValueOnce(
+      new HostClientRequestError({
+        code: "invalid_request",
+        message: "Use an HTTPS address.",
+        status: 400,
+      }),
+    );
+    test.runner.start("use-private", "https://studio.tailnet.test");
+    const failed = await test.settled();
+    expect(failed).toEqual({
+      goal: "use-private",
+      kind: "failed",
+      message: "Use an HTTPS address.",
+      privateOrigin: "https://studio.tailnet.test",
+    });
+    expect(remoteAccessView(facts(), failed)).toMatchObject({
+      state: "turn-on-failed",
+      sentence: "Use an HTTPS address.",
+      primary: { id: "try-again" },
+    });
+    test.runner.start("use-private", "https://studio.tailnet.test");
+    await test.settled();
+    const sent = {
+      action: "configure",
+      mode: "private",
+      privateOrigin: "https://studio.tailnet.test",
+    };
+    expect(test.request.mock.calls.map(([intent]) => intent)).toEqual([sent, sent]);
   });
 
   it("reports a step that never shows up instead of repeating it", async () => {

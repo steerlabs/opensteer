@@ -11,6 +11,7 @@ import {
   linkPersonalHostAccount,
 } from "./personal-remote-access.js";
 import { unwrapRpcResult } from "./host-session-client.js";
+import { HostClientRequestError } from "./client.js";
 
 it("shows persisted pending administration in the shared client and stops observation on disposal", async () => {
   const host = new MockHostClient({ latencyMs: 0 });
@@ -123,6 +124,44 @@ it("recovers a failed status read on Host reconnect without polling", async () =
     expect(detach).toHaveBeenCalledOnce();
     invalidate!();
     expect(read).toHaveBeenCalledTimes(2);
+  } finally {
+    stop();
+    mock.dispose();
+  }
+});
+
+it("keeps a refused pairing apart from status reads, in the Host's words or a plain sentence", async () => {
+  const mock = new MockHostClient({ latencyMs: 0 });
+  const status = unwrapRpcResult(await mock.rpc["personal.remoteAccess.get"]({}));
+  const dispatch = vi
+    .fn()
+    .mockRejectedValueOnce(
+      new HostClientRequestError({
+        code: "conflict",
+        message: "Turn on a private network first.",
+        status: 409,
+      }),
+    )
+    .mockRejectedValueOnce(new Error("ECONNRESET /Users/tim/secret"));
+  const client = {
+    rpc: { "personal.remoteAccess.get": async () => ({ ok: true, data: status }) },
+    dispatch,
+    subscribePersonalRemoteAccess: () => () => {},
+  } as unknown as import("./client.js").HostClient;
+  const resource = new PersonalRemoteAccessClient(client);
+  const stop = resource.start();
+  try {
+    await vi.waitFor(() => expect(resource.getSnapshot().status).toEqual(status), {
+      timeout: 1000,
+    });
+    await resource.pair();
+    expect(resource.getSnapshot()).toMatchObject({
+      actionError: "Turn on a private network first.",
+      error: null,
+      status,
+    });
+    await resource.pair();
+    expect(resource.getSnapshot().actionError).toBe("Something went wrong. Try again.");
   } finally {
     stop();
     mock.dispose();

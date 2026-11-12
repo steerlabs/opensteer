@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
 import { useShell } from "../../app-shell.js";
@@ -35,17 +35,18 @@ export interface RemoteAccessAction {
   readonly label: string;
   readonly run: () => void;
   readonly disabled?: boolean;
+  readonly detail?: string | null;
+  readonly destructive?: boolean;
 }
 
+/** What the shared view keeps under Advanced. */
 export interface RemoteAccessAdvanced {
-  /** Null when this build has no Opensteer Account to connect through. */
-  readonly method: "connect" | "private" | null;
-  readonly privateOrigin: string;
-  readonly usePrivateNetwork: ((origin: string) => void) | null;
-  readonly useAccount: (() => void) | null;
-  readonly resetKey: (() => void) | null;
-  readonly removeLink: (() => void) | null;
-  readonly busy: boolean;
+  readonly actions: readonly RemoteAccessAction[];
+  /** Typing a private network address; null when the view doesn't offer it. */
+  readonly privateNetwork: {
+    readonly origin: string;
+    readonly save: (origin: string) => void;
+  } | null;
 }
 
 export function RemoteAccessCard() {
@@ -147,58 +148,21 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
 }
 
 function Advanced({ advanced }: { readonly advanced: RemoteAccessAdvanced }) {
-  const id = useId();
-  const [choosingPrivate, setChoosingPrivate] = useState(false);
-  const [origin, setOrigin] = useState(advanced.privateOrigin);
-  const accountOffered = advanced.useAccount !== null || advanced.method === "connect";
-  const method = choosingPrivate || !accountOffered ? "private" : advanced.method;
+  const [origin, setOrigin] = useState(advanced.privateNetwork?.origin ?? "");
   return (
     <details className="settings-advanced">
       <summary>Advanced</summary>
       <div className="card">
-        {accountOffered ? (
-          <div className="card__row card__row--choice">
-            <span className="card__row-body">
-              <label className="card__row-title" htmlFor={`${id}-method`}>
-                How other devices connect
-              </label>
-              <span className="card__row-detail">
-                {method === "private"
-                  ? "Your own private network"
-                  : "Through your Opensteer Account"}
-              </span>
-            </span>
-            <span className="card__row-actions">
-              <select
-                className="settings-select"
-                disabled={advanced.busy}
-                id={`${id}-method`}
-                onChange={(event) => {
-                  if (event.currentTarget.value === "private") setChoosingPrivate(true);
-                  else {
-                    setChoosingPrivate(false);
-                    advanced.useAccount?.();
-                  }
-                }}
-                value={method ?? "private"}
-              >
-                <option value="connect">Opensteer Account</option>
-                <option value="private">Private network…</option>
-              </select>
-            </span>
-          </div>
-        ) : null}
-        {method === "private" && advanced.usePrivateNetwork ? (
+        {advanced.privateNetwork ? (
           <form
             className="card__row settings-remote__private"
             onSubmit={(event) => {
               event.preventDefault();
-              setChoosingPrivate(false);
-              advanced.usePrivateNetwork?.(origin.trim());
+              advanced.privateNetwork?.save(origin.trim());
             }}
           >
             <input
-              aria-label="Private HTTPS address"
+              aria-label="Private network address"
               className="text-input"
               onChange={(event) => setOrigin(event.target.value)}
               placeholder="https://my-mac.tailnet.ts.net"
@@ -206,47 +170,26 @@ function Advanced({ advanced }: { readonly advanced: RemoteAccessAdvanced }) {
               type="url"
               value={origin}
             />
-            <button className="btn" disabled={advanced.busy} type="submit">
-              Save
+            <button className="btn" type="submit">
+              Use this address
             </button>
           </form>
         ) : null}
-        {advanced.resetKey ? (
-          <div className="card__row">
+        {advanced.actions.map((action) => (
+          <div className="card__row" key={action.label}>
             <span className="card__row-body">
-              <span className="card__row-title">Reset connection key</span>
-              <span className="card__row-detail">
-                Only if you think it leaked. Your devices reconnect on their own.
-              </span>
+              <span className="card__row-detail">{action.detail}</span>
             </span>
             <button
-              className="btn"
-              disabled={advanced.busy}
-              onClick={advanced.resetKey}
+              className={action.destructive ? "settings-link settings-link--danger" : "btn"}
+              disabled={action.disabled}
+              onClick={action.run}
               type="button"
             >
-              Reset
+              {action.label}
             </button>
           </div>
-        ) : null}
-        {advanced.removeLink ? (
-          <div className="card__row">
-            <span className="card__row-body">
-              <span className="card__row-title">Remove from your Account</span>
-              <span className="card__row-detail">
-                Your devices stop reaching this computer from anywhere.
-              </span>
-            </span>
-            <button
-              className="settings-link settings-link--danger"
-              disabled={advanced.busy}
-              onClick={advanced.removeLink}
-              type="button"
-            >
-              Remove
-            </button>
-          </div>
-        ) : null}
+        ))}
       </div>
     </details>
   );
@@ -258,34 +201,15 @@ function useRemoteAccessCardModel(): RemoteAccessCardModel {
   const remote = usePersonalRemoteAccess(shell.hostClient);
   const controller = useWebRemoteAccess(remote);
   const { view } = controller;
-  const status = remote.status;
-  const access = status?.access ?? null;
-  const operation = status?.operation ?? null;
-  const busy =
-    remote.working ||
-    view.tone === "busy" ||
-    operation?.state === "pending" ||
-    operation?.state === "running";
-  const action = (offered: CoreAction | null): RemoteAccessAction | null =>
-    offered
-      ? {
-          label: offered.label,
-          run: () => {
-            if (offered.confirm && !window.confirm(offered.confirm)) return;
-            controller.act(offered.id);
-          },
-        }
-      : null;
-  const offered = (id: CoreAction["id"]) =>
-    [view.primary, ...view.secondary].find((candidate) => candidate?.id === id) ?? null;
-  // Rare, technical actions live under Advanced; the card keeps the one obvious choice.
-  const inAdvanced = new Set<CoreAction["id"]>(["reset-key", "remove-link"]);
-  const showAdvanced =
-    status !== null &&
-    (view.state === "connect-unavailable" ||
-      view.state === "on-connect" ||
-      view.state === "on-private" ||
-      view.state === "off");
+  const action = (offered: CoreAction): RemoteAccessAction => ({
+    label: offered.label,
+    detail: offered.detail,
+    destructive: offered.id === "remove-link",
+    run: () => {
+      if (offered.confirm && !window.confirm(offered.confirm)) return;
+      controller.act(offered.id);
+    },
+  });
   return {
     tone: toneOf[view.tone],
     title: view.title,
@@ -293,34 +217,23 @@ function useRemoteAccessCardModel(): RemoteAccessCardModel {
     address: view.address,
     steps:
       view.steps?.map((step) => ({ label: step.label, state: stepStateOf[step.state] })) ?? null,
-    primary: action(view.primary && !inAdvanced.has(view.primary.id) ? view.primary : null),
-    secondary: view.secondary
-      .filter((candidate) => !inAdvanced.has(candidate.id))
-      .map((candidate) => action(candidate)!),
+    primary: view.primary ? action(view.primary) : null,
+    secondary: view.secondary.map(action),
     pairing: controller.pairing,
     advanced:
-      showAdvanced && access
+      view.advanced.length > 0 || view.privateNetwork
         ? {
-            method: access.mode === "off" ? (status.accountIssuer ? "connect" : null) : access.mode,
-            privateOrigin:
-              access.mode === "private" ? (access.route?.document.route.origin ?? "") : "",
-            // A private network address is typed, not chosen, so it goes to the Host as-is.
-            usePrivateNetwork: (origin) => {
-              const warning = access.mode === "off" ? null : remoteAccessDisconnectWarning;
-              if (warning && !window.confirm(warning)) return;
-              void remote.request?.({
-                action: "configure",
-                mode: "private",
-                privateOrigin: origin,
-              });
-            },
-            useAccount:
-              status.accountIssuer && access.mode !== "connect"
-                ? () => controller.act("turn-on")
-                : null,
-            resetKey: action(offered("reset-key"))?.run ?? null,
-            removeLink: action(offered("remove-link"))?.run ?? null,
-            busy,
+            actions: view.advanced.map(action),
+            privateNetwork: view.privateNetwork
+              ? {
+                  origin: view.state === "on-private" ? (view.address ?? "") : "",
+                  // A private network address is typed, not chosen, so it goes to the Host as-is.
+                  save: (origin) => {
+                    if (view.on && !window.confirm(remoteAccessDisconnectWarning)) return;
+                    controller.setPrivateNetwork(origin);
+                  },
+                }
+              : null,
           }
         : null,
   };

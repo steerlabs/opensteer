@@ -74,8 +74,6 @@ function AccountSettingsContent(props: {
       });
   }, [client, host, isCurrent]);
 
-  const status = remote.status;
-
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
     if (accountInFlight.current) return;
     accountInFlight.current = true;
@@ -151,19 +149,14 @@ function AccountSettingsContent(props: {
       { text: label, style: "destructive", onPress: run },
     ]);
 
-  const request = (intent: Parameters<NonNullable<typeof remote.request>>[0]) => {
-    if (isCurrent()) void remote.request?.(intent);
-  };
-
   const act = (row: RemoteAccessRowAction) => {
     if (row.kind === "reload") {
       props.onReload();
       return;
     }
     if (row.kind === "private") {
-      setPrivateAddress(
-        status?.access.mode === "private" ? (status.access.route?.document.route.origin ?? "") : "",
-      );
+      const { view } = remoteAccess;
+      setPrivateAddress(view.state === "on-private" ? (view.address ?? "") : "");
       return;
     }
     const { action } = row;
@@ -274,7 +267,6 @@ function AccountSettingsContent(props: {
       ...remoteAccessSections(
         {
           view: remoteAccess.view,
-          status,
           computer,
           pairing: remoteAccess.pairing,
           now: Date.now(),
@@ -345,11 +337,11 @@ function AccountSettingsContent(props: {
                   onPress: () => {
                     const origin = privateAddress.trim();
                     setPrivateAddress(null);
-                    request({ action: "configure", mode: "private", privateOrigin: origin });
+                    if (isCurrent()) remoteAccess.setPrivateNetwork(origin);
                   },
                 },
               ],
-              footer: { text: remoteAccessDisconnectWarning },
+              ...(remoteAccess.view.on ? { footer: { text: remoteAccessDisconnectWarning } } : {}),
             },
           ]}
         />

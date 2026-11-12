@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { HostClient } from "../host/client.js";
 import { PersonalRemoteAccessClient } from "../host/personal-remote-access.js";
-const empty = { status: null, error: null, pairing: null, working: false } as const;
+const empty = {
+  status: null,
+  error: null,
+  actionError: null,
+  pairing: null,
+  working: false,
+} as const;
 const detachedSubscribe = () => () => {};
 const detachedSnapshot = () => empty;
 

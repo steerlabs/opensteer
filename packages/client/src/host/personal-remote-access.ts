@@ -1,5 +1,5 @@
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
-import type { HostClient } from "./client.js";
+import { HostClientRequestError, type HostClient } from "./client.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationStatus,
@@ -86,7 +86,10 @@ export async function resumePersonalHostAccountLink(
 
 export interface PersonalRemoteAccessClientSnapshot {
   readonly status: PersonalRemoteAdministrationStatus | null;
+  /** Reading the status failed. */
   readonly error: string | null;
+  /** The last request or pairing failed, in a sentence a person can read. */
+  readonly actionError: string | null;
   readonly pairing: IssuePersonalPairingCodeResponse | null;
   readonly working: boolean;
 }
@@ -97,6 +100,7 @@ export class PersonalRemoteAccessClient {
   #snapshot: PersonalRemoteAccessClientSnapshot = {
     status: null,
     error: null,
+    actionError: null,
     pairing: null,
     working: false,
   };
@@ -180,11 +184,16 @@ export class PersonalRemoteAccessClient {
 
   async #run(operation: () => Promise<void>): Promise<void> {
     if (this.#snapshot.working) return;
-    this.#set({ working: true, error: null });
+    this.#set({ working: true, actionError: null });
     try {
       await operation();
     } catch (error) {
-      this.#set({ error: error instanceof Error ? error.message : "Remote access change failed." });
+      this.#set({
+        actionError:
+          error instanceof HostClientRequestError
+            ? error.message
+            : "Something went wrong. Try again.",
+      });
     } finally {
       this.#set({ working: false });
     }

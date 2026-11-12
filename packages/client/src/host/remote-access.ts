@@ -28,6 +28,8 @@ export interface RemoteAccessFacts {
   /** Whether this device is signed in to the Opensteer account; null where linking signs in itself. */
   readonly signedIn: boolean | null;
   readonly computerName: string | null;
+  /** The last Add a device that failed, in a sentence; read errors stay in `statusUnreadable`. */
+  readonly pairingError?: string | null;
 }
 
 /**
@@ -55,6 +57,7 @@ export type RemoteAccessGoal =
   | "remove-link"
   | "finish-adding"
   | "repair-link"
+  | "use-private"
   | "recover";
 
 export type RemoteAccessRunStep = "checking" | "sign-in" | "link" | "resume" | "repair" | "request";
@@ -66,7 +69,13 @@ export type RemoteAccessRunState =
       readonly goal: RemoteAccessGoal;
       readonly step: RemoteAccessRunStep;
     }
-  | { readonly kind: "failed"; readonly goal: RemoteAccessGoal; readonly message: string };
+  | {
+      readonly kind: "failed";
+      readonly goal: RemoteAccessGoal;
+      readonly message: string;
+      /** The address a refused `use-private` asked for, so Try again sends it again. */
+      readonly privateOrigin?: string;
+    };
 
 export type RemoteAccessState =
   | "loading"
@@ -83,6 +92,7 @@ export type RemoteAccessState =
   | "on-private"
   | "turn-on-failed"
   | "change-failed"
+  | "add-device-failed"
   | "link-activating"
   | "link-needs-repair"
   | "linked-elsewhere";
@@ -96,6 +106,7 @@ export type RemoteAccessActionId =
   | "repair-link"
   | "remove-link"
   | "reset-key"
+  | "use-account"
   | "add-device";
 
 export interface RemoteAccessAction {
@@ -103,6 +114,8 @@ export interface RemoteAccessAction {
   readonly label: string;
   /** Ask this before acting: the change signs devices out. */
   readonly confirm: string | null;
+  /** One line under an Advanced action saying when to use it. */
+  readonly detail: string | null;
 }
 
 export interface RemoteAccessStep {
@@ -120,6 +133,10 @@ export interface RemoteAccessView {
   readonly on: boolean;
   readonly primary: RemoteAccessAction | null;
   readonly secondary: readonly RemoteAccessAction[];
+  /** Rare, technical actions every surface keeps under Advanced. */
+  readonly advanced: readonly RemoteAccessAction[];
+  /** Whether Advanced offers typing a private network address. */
+  readonly privateNetwork: boolean;
   readonly steps: readonly RemoteAccessStep[] | null;
   /** The address it is reachable at, when on. */
   readonly address: string | null;
@@ -132,7 +149,8 @@ const action = (
   id: RemoteAccessActionId,
   label: string,
   confirm: string | null = null,
-): RemoteAccessAction => ({ id, label, confirm });
+  detail: string | null = null,
+): RemoteAccessAction => ({ confirm, detail, id, label });
 const turnOn = action("turn-on", "Turn on");
 const turnOff = action("turn-off", "Turn off", remoteAccessDisconnectWarning);
 const cancel = action("cancel", "Cancel");
@@ -164,8 +182,15 @@ function intentGoal(intent: PersonalRemoteAdministrationOperation["intent"]): Re
   return "recover";
 }
 
-function goalIntent(goal: RemoteAccessGoal): PersonalRemoteAdministrationIntent | null {
+function goalIntent(
+  goal: RemoteAccessGoal,
+  privateOrigin: string | null,
+): PersonalRemoteAdministrationIntent | null {
   switch (goal) {
+    case "use-private":
+      return privateOrigin === null
+        ? null
+        : { action: "configure", mode: "private", privateOrigin };
     case "turn-on":
       return { action: "configure", mode: "connect", privateOrigin: null };
     case "turn-off":
@@ -186,21 +211,24 @@ function sameIntent(
   right: PersonalRemoteAdministrationIntent,
 ): boolean {
   if (left.action !== right.action) return false;
-  return left.action !== "configure" || (right.action === "configure" && left.mode === right.mode);
+  if (left.action !== "configure") return true;
+  return (
+    right.action === "configure" &&
+    left.mode === right.mode &&
+    (left.mode !== "private" || left.privateOrigin === right.privateOrigin)
+  );
 }
 
-/** A failed change that still says something true about the computer now. */
+/**
+ * The Host's latest change, when it failed. It stands until the Host replaces
+ * it, even when the mode already matches: turning on commits the route before
+ * the Account publishes it, and turning off commits Off before cleaning up, so
+ * either can fail after the mode changed.
+ */
 function standingFailure(
   status: PersonalRemoteAdministrationStatus,
 ): PersonalRemoteAdministrationOperation | null {
-  const operation = status.operation;
-  if (operation?.state !== "failed") return null;
-  const { intent } = operation;
-  const { access } = status;
-  if (intent.action === "configure") return access.mode === intent.mode ? null : operation;
-  if (intent.action === "rotate") return access.mode === "connect" ? operation : null;
-  if (intent.action === "unlink") return access.accountLink === null ? null : operation;
-  return operation;
+  return status.operation?.state === "failed" ? status.operation : null;
 }
 
 /** What `goal` needs next, from live state; `done` once nothing is left for this device. */
@@ -208,6 +236,7 @@ export function nextRemoteAccessStep(
   goal: RemoteAccessGoal,
   facts: RemoteAccessFacts,
   port: Pick<RemoteAccessPort, "repair" | "signIn">,
+  privateOrigin: string | null = null,
 ):
   | { readonly kind: "done" }
   | { readonly kind: "checking" }
@@ -225,12 +254,21 @@ export function nextRemoteAccessStep(
   // for it: an equivalent one is this goal in progress, and anything else
   // must finish (or be turned off) first.
   if (outstanding(status.operation) && goal !== "turn-off") return { kind: "done" };
+  const intent = goalIntent(goal, privateOrigin);
+  // Trying a failed change again keeps its identity, so a retried key reset
+  // or Connect setup is the same change to the Account, not a second one.
+  // It still has work left even when the mode already matches.
+  const failed = standingFailure(status);
+  const retry =
+    failed !== null &&
+    (goal === "recover" || (intent !== null && sameIntent(failed.intent, intent)));
+  if (goal === "recover" && !retry) return { kind: "done" };
   if (goal === "repair-link") {
     if (link !== "needs-repair") return { kind: "done" };
     return port.repair ? { kind: "repair" } : { kind: "blocked", message: repairSentence(name) };
   }
   if (goal === "turn-on" || goal === "finish-adding") {
-    if (goal === "turn-on" && status.access.mode === "connect") return { kind: "done" };
+    if (goal === "turn-on" && status.access.mode === "connect" && !retry) return { kind: "done" };
     if (goal === "turn-on" && status.accountIssuer === null)
       return { kind: "blocked", message: connectUnavailableSentence };
     if (link === "linked-elsewhere") return { kind: "blocked", message: elsewhereSentence(name) };
@@ -243,26 +281,28 @@ export function nextRemoteAccessStep(
     }
     if (goal === "finish-adding") return { kind: "done" };
   }
-  if (goal === "turn-off" && status.access.mode === "off" && !outstanding(status.operation))
-    return { kind: "done" };
-  if (goal === "turn-off" && outstanding(status.operation)) {
-    const { intent } = status.operation;
-    if (intent.action === "configure" && intent.mode === "off") return { kind: "done" };
+  if (goal === "turn-off") {
+    if (outstanding(status.operation)) {
+      const pending = status.operation.intent;
+      if (pending.action === "configure" && pending.mode === "off") return { kind: "done" };
+    } else if (status.access.mode === "off" && !retry) return { kind: "done" };
   }
-  if (goal === "remove-link" && status.access.accountLink === null && link !== "linked-elsewhere")
+  if (
+    goal === "use-private" &&
+    !retry &&
+    status.access.mode === "private" &&
+    status.access.route?.document.route.origin === privateOrigin
+  )
     return { kind: "done" };
-  const intent = goalIntent(goal);
+  if (
+    goal === "remove-link" &&
+    !retry &&
+    status.access.accountLink === null &&
+    link !== "linked-elsewhere"
+  )
+    return { kind: "done" };
   if (!intent) return { kind: "done" };
-  // Trying a failed change again keeps its identity, so a retried key reset
-  // or Connect setup is the same change to the Account, not a second one.
-  const failed = status.operation?.state === "failed" ? status.operation : null;
-  return {
-    kind: "request",
-    intent:
-      failed && (goal === "recover" || sameIntent(failed.intent, intent))
-        ? { action: "recover" }
-        : intent,
-  };
+  return { kind: "request", intent: retry ? { action: "recover" } : intent };
 }
 
 function computerName(facts: Pick<RemoteAccessFacts, "computerName">): string {
@@ -333,13 +373,18 @@ function view(
   title: string,
   sentence: string,
   options: Partial<
-    Pick<RemoteAccessView, "address" | "on" | "primary" | "secondary" | "steps">
+    Pick<
+      RemoteAccessView,
+      "address" | "advanced" | "on" | "primary" | "privateNetwork" | "secondary" | "steps"
+    >
   > = {},
 ): RemoteAccessView {
   return {
     address: options.address ?? null,
+    advanced: options.advanced ?? [],
     on: options.on ?? false,
     primary: options.primary ?? null,
+    privateNetwork: options.privateNetwork ?? false,
     secondary: options.secondary ?? [],
     state,
     steps: options.steps ?? null,
@@ -408,7 +453,7 @@ export function remoteAccessView(
           step === "link" ||
           step === "resume" ||
           step === "repair" ||
-          (goal !== "recover" && remoteAccessLink(facts) !== "linked");
+          ((goal === "turn-on" || goal === "finish-adding") && link !== "linked");
         const sentence =
           step === "sign-in"
             ? "Finish signing in to your Opensteer account."
@@ -437,9 +482,38 @@ export function remoteAccessView(
   }
   if (run.kind === "running" && run.step !== "checking") return busy(run.goal, null);
 
+  // Settled from here on: Advanced is open, and a private network can be set
+  // up without an Opensteer account.
+  const removeLink = action(
+    "remove-link",
+    "Remove from account",
+    remoteAccessDisconnectWarning,
+    "Your devices stop reaching this computer from anywhere.",
+  );
+  const linkedHere = access.accountLink !== null && link !== "linked-elsewhere";
+  const settled = (
+    state: RemoteAccessState,
+    tone: RemoteAccessView["tone"],
+    title: string,
+    sentence: string,
+    options: Parameters<typeof view>[4] = {},
+  ) =>
+    view(state, tone, title, sentence, {
+      address,
+      on,
+      privateNetwork: true,
+      ...options,
+    });
+
   const failure = (goal: RemoteAccessGoal, message: string): RemoteAccessView => {
-    if (goal === "turn-on" || (goal === "recover" && !on) || goal === "finish-adding")
-      return view("turn-on-failed", "attention", "Couldn’t turn on", message, {
+    if (
+      !on &&
+      (goal === "turn-on" ||
+        goal === "recover" ||
+        goal === "finish-adding" ||
+        goal === "use-private")
+    )
+      return settled("turn-on-failed", "attention", "Couldn’t turn on", message, {
         primary: tryAgain,
       });
     const title =
@@ -452,53 +526,83 @@ export function remoteAccessView(
             : goal === "repair-link"
               ? "Couldn’t repair"
               : "Couldn’t finish";
-    return view(
-      "change-failed",
-      "attention",
-      title,
-      on ? `${message} ${Name} can still be opened from anywhere.` : message,
-      { address, on, primary: tryAgain, secondary: goal === "turn-off" ? [] : stopping },
-    );
+    const stillOn =
+      on && (goal === "turn-off" || goal === "reset-key" || goal === "remove-link")
+        ? ` ${Name} can still be opened from anywhere.`
+        : "";
+    return settled("change-failed", "attention", title, `${message}${stillOn}`, {
+      primary: tryAgain,
+      secondary: goal === "turn-off" ? [] : stopping,
+    });
   };
   if (run.kind === "failed") return failure(run.goal, run.message);
   const failed = standingFailure(status);
   if (failed) return failure(intentGoal(failed.intent), failed.detail ?? somethingWentWrong);
 
-  const removeLink = action("remove-link", "Remove from account", remoteAccessDisconnectWarning);
   if (access.mode === "connect")
-    return view(
+    return settled(
       "on-connect",
       "on",
       "On",
       `Your phone and signed-in computers can open ${name} from anywhere.`,
       {
-        address,
-        on,
         primary: turnOff,
-        secondary: [
-          action("reset-key", "Reset connection key", remoteAccessDisconnectWarning),
+        advanced: [
+          action(
+            "reset-key",
+            "Reset connection key",
+            remoteAccessDisconnectWarning,
+            "Only if you think it leaked. Your devices reconnect on their own.",
+          ),
           removeLink,
         ],
       },
     );
-  if (access.mode === "private")
-    return view(
+  if (access.mode === "private") {
+    const addDevice = action("add-device", "Add a device");
+    const advanced = [
+      ...(status.accountIssuer === null
+        ? []
+        : [
+            action(
+              "use-account",
+              "Use your Opensteer account instead",
+              remoteAccessDisconnectWarning,
+              "Open it from anywhere without your own network.",
+            ),
+          ]),
+      ...(linkedHere ? [removeLink] : []),
+    ];
+    if (facts.pairingError)
+      return settled(
+        "add-device-failed",
+        "attention",
+        "Couldn’t add a device",
+        facts.pairingError,
+        {
+          primary: { ...addDevice, label: "Try again" },
+          secondary: [turnOff],
+          advanced,
+        },
+      );
+    return settled(
       "on-private",
       "on",
       "On",
       `Devices on your private network can open ${name} at this address.`,
-      { address, on, primary: action("add-device", "Add a device"), secondary: [turnOff] },
+      { primary: addDevice, secondary: [turnOff], advanced },
     );
+  }
   if (link === "linked-elsewhere")
-    return view("linked-elsewhere", "attention", "Another account", elsewhereSentence(name), {
+    return settled("linked-elsewhere", "attention", "Another account", elsewhereSentence(name), {
       primary: action("remove-link", "Remove link", remoteAccessDisconnectWarning),
     });
   if (link === "needs-repair")
-    return view("link-needs-repair", "attention", "Needs repair", repairSentence(name), {
+    return settled("link-needs-repair", "attention", "Needs repair", repairSentence(name), {
       primary: action("repair-link", "Repair"),
     });
   if (link === "activating")
-    return view(
+    return settled(
       "link-activating",
       "attention",
       "Almost done",
@@ -509,16 +613,20 @@ export function remoteAccessView(
       },
     );
   if (status.accountIssuer === null)
-    return view("connect-unavailable", "neutral", "Off", connectUnavailableSentence);
+    return settled("connect-unavailable", "neutral", "Off", connectUnavailableSentence);
+  const advanced = linkedHere ? [removeLink] : [];
   if (facts.signedIn === false && link !== "linked")
-    return view(
+    return settled(
       "off-signed-out",
       "neutral",
       "Off",
       `Only ${name} can use Opensteer. Turning this on asks you to sign in first.`,
-      { primary: turnOn },
+      { primary: turnOn, advanced },
     );
-  return view("off", "neutral", "Off", `Only ${name} can use Opensteer.`, { primary: turnOn });
+  return settled("off", "neutral", "Off", `Only ${name} can use Opensteer.`, {
+    primary: turnOn,
+    advanced,
+  });
 }
 
 /** The goal a view action starts, given the state it was offered in. */
@@ -529,6 +637,7 @@ export function remoteAccessActionGoal(
 ): RemoteAccessGoal | null {
   switch (id) {
     case "turn-on":
+    case "use-account":
       return "turn-on";
     case "turn-off":
     case "cancel":
@@ -555,10 +664,10 @@ export function remoteAccessActionGoal(
 const settleMilliseconds = 2 * 60_000;
 
 /**
- * Runs one goal's missing steps. Every await is followed by an abort check, so
- * stopping (or starting another goal) ends the steps not yet sent; a change
- * the Host already accepted is the Host's to finish and is never presented as
- * cancelled.
+ * Runs one goal's missing steps. The run checks for abort before every step
+ * and after every await, so stopping (or starting another goal) ends the steps
+ * not yet sent; a change the Host already accepted is the Host's to finish and
+ * is never presented as cancelled.
  */
 export class RemoteAccessRunner {
   #port: RemoteAccessPort;
@@ -571,6 +680,16 @@ export class RemoteAccessRunner {
   #facts: RemoteAccessFacts;
   #state: RemoteAccessRunState = idle;
   #run: AbortController | null = null;
+  /** A request the Host has not answered yet; it may still be admitted. */
+  #admitting: Promise<void> | null = null;
+  /**
+   * A change the Host admitted that the observed status does not show yet,
+   * with the operation the status showed before it.
+   */
+  #unseen: {
+    readonly before: string | null;
+    readonly operation: PersonalRemoteAdministrationOperation;
+  } | null = null;
 
   constructor(options: {
     readonly facts: RemoteAccessFacts;
@@ -597,20 +716,27 @@ export class RemoteAccessRunner {
   update(facts: RemoteAccessFacts, port: RemoteAccessPort = this.#port): void {
     this.#facts = facts;
     this.#port = port;
+    if (this.#unseen && operationId(facts) !== this.#unseen.before) this.#unseen = null;
     // A failure stops standing once what it tried is true anyway.
     if (
       this.#state.kind === "failed" &&
-      nextRemoteAccessStep(this.#state.goal, facts, this.#port).kind === "done"
+      nextRemoteAccessStep(
+        this.#state.goal,
+        this.#current(),
+        this.#port,
+        this.#state.privateOrigin ?? null,
+      ).kind === "done"
     )
       this.#set(idle);
     for (const waiter of this.#waiters) waiter();
   }
 
-  start(goal: RemoteAccessGoal): void {
+  /** `privateOrigin` is the address `use-private` sets. */
+  start(goal: RemoteAccessGoal, privateOrigin: string | null = null): void {
     this.#run?.abort();
     const controller = new AbortController();
     this.#run = controller;
-    void this.#execute(goal, controller.signal);
+    void this.#execute(goal, privateOrigin, controller.signal);
   }
 
   /** Ends the steps not yet sent. */
@@ -620,12 +746,32 @@ export class RemoteAccessRunner {
     this.#set(idle);
   }
 
-  async #execute(goal: RemoteAccessGoal, signal: AbortSignal): Promise<void> {
+  /** The observed facts, plus a change the Host admitted that they don't show yet. */
+  #current(): RemoteAccessFacts {
+    const unseen = this.#unseen;
+    const status = this.#facts.status;
+    if (!unseen || !status) return this.#facts;
+    return { ...this.#facts, status: { ...status, operation: unseen.operation } };
+  }
+
+  async #execute(
+    goal: RemoteAccessGoal,
+    privateOrigin: string | null,
+    signal: AbortSignal,
+  ): Promise<void> {
     const tried = new Set<RemoteAccessRunStep>();
     let step: RemoteAccessRunStep = "checking";
     try {
+      // A request still waiting on the Host may yet be admitted: decide only
+      // once it is answered, so Cancel turns off what it actually started.
+      if (this.#admitting) {
+        step = "request";
+        this.#set({ kind: "running", goal, step });
+        await abortable(this.#admitting, signal);
+      }
       for (;;) {
-        const next = nextRemoteAccessStep(goal, this.#facts, this.#port);
+        signal.throwIfAborted();
+        const next = nextRemoteAccessStep(goal, this.#current(), this.#port, privateOrigin);
         if (next.kind === "done") break;
         if (next.kind === "blocked") throw new RemoteAccessPortError(next.message);
         step = next.kind;
@@ -645,15 +791,14 @@ export class RemoteAccessRunner {
           );
         tried.add(next.kind);
         if (next.kind === "request") {
-          const before = this.#facts.status?.operation?.id ?? null;
-          await this.#request(next.intent);
+          await this.#send(next.intent);
           signal.throwIfAborted();
           // Busy until the Host's own state shows the change, so the view
           // never flashes back to what it was before.
           await this.#until(
             () =>
-              (this.#facts.status?.operation?.id ?? null) !== before ||
-              nextRemoteAccessStep(goal, this.#facts, this.#port).kind === "done",
+              this.#unseen === null ||
+              nextRemoteAccessStep(goal, this.#facts, this.#port, privateOrigin).kind === "done",
             signal,
           ).catch(() => signal.throwIfAborted());
           break;
@@ -676,7 +821,8 @@ export class RemoteAccessRunner {
           await this.#until(() => remoteAccessLink(this.#facts) !== from, signal);
         }
       }
-      if (!signal.aborted) this.#set(idle);
+      signal.throwIfAborted();
+      this.#set(idle);
     } catch (error) {
       if (signal.aborted) return;
       this.#set({
@@ -686,13 +832,35 @@ export class RemoteAccessRunner {
           step === "request" || error instanceof RemoteAccessPortError
             ? remoteAccessFailureMessage(error)
             : stepFailureSentence(step, computerName(this.#facts)),
+        ...(goal === "use-private" && privateOrigin !== null ? { privateOrigin } : {}),
       });
     } finally {
       if (this.#run?.signal === signal) this.#run = null;
     }
   }
 
+  /**
+   * Sends a change and remembers what the Host admitted until the observed
+   * status moves past it, whether or not the run that sent it is still going.
+   */
+  #send(intent: PersonalRemoteAdministrationIntent): Promise<void> {
+    const before = operationId(this.#facts);
+    const sent = this.#request(intent).then((operation) => {
+      if (operationId(this.#facts) === before) this.#unseen = { before, operation };
+    });
+    const admitting = sent.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#admitting = admitting;
+    void admitting.then(() => {
+      if (this.#admitting === admitting) this.#admitting = null;
+    });
+    return sent;
+  }
+
   #until(ready: () => boolean, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(signal.reason);
     if (ready()) return Promise.resolve();
     return new Promise<void>((resolve, reject) => {
       const finish = (settle: () => void) => {
@@ -719,4 +887,20 @@ export class RemoteAccessRunner {
     this.#state = state;
     for (const listener of this.#listeners) listener();
   }
+}
+
+function operationId(facts: RemoteAccessFacts): string | null {
+  return facts.status?.operation?.id ?? null;
+}
+
+function abortable(promise: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    void promise.then(() => {
+      signal.removeEventListener("abort", aborted);
+      resolve();
+    });
+  });
 }

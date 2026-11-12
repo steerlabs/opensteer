@@ -19,6 +19,8 @@ export interface RemoteAccessController {
   readonly view: RemoteAccessView;
   /** Runs an action the view offered. Ask its `confirm` first, if it has one. */
   readonly act: (action: RemoteAccessActionId) => void;
+  /** Sets up the private network address typed under Advanced (`view.privateNetwork`). */
+  readonly setPrivateNetwork: (origin: string) => void;
   /** Stops the steps not yet sent, as closing the view does. */
   readonly stop: () => void;
   readonly pairing: IssuePersonalPairingCodeResponse | null;
@@ -43,11 +45,12 @@ export function useRemoteAccess(input: {
     () => ({
       computerName,
       link,
+      pairingError: remote.actionError,
       signedIn,
       status: remote.status,
       statusUnreadable: remote.status === null && remote.error !== null,
     }),
-    [computerName, link, remote.error, remote.status, signedIn],
+    [computerName, link, remote.actionError, remote.error, remote.status, signedIn],
   );
   const hostClientRef = useRef(hostClient);
   hostClientRef.current = hostClient;
@@ -76,10 +79,14 @@ export function useRemoteAccess(input: {
         return;
       }
       const goal = remoteAccessActionGoal(action, facts, run);
-      if (goal) runner.start(goal);
+      if (goal) runner.start(goal, run.kind === "failed" ? (run.privateOrigin ?? null) : null);
     },
     [facts, pair, run, runner],
   );
+  const setPrivateNetwork = useCallback(
+    (origin: string) => runner.start("use-private", origin),
+    [runner],
+  );
   const stop = useCallback(() => runner.stop(), [runner]);
-  return { act, pairing: remote.pairing, stop, view };
+  return { act, pairing: remote.pairing, stop, setPrivateNetwork, view };
 }

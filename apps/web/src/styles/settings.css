@@ -446,17 +446,6 @@
   margin: 0 var(--space-2);
 }
 
-.settings-select {
-  min-height: var(--control-height);
-  padding: 0 var(--space-8);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-xs);
-  background: transparent;
-  color: var(--text);
-  font: inherit;
-  font-size: var(--text-md);
-}
-
 /* A brand mark or avatar in a row's title sits at text size. */
 .settings-layout .card__row-title > .provider-logo {
   width: 16px;
