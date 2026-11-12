@@ -18,6 +18,13 @@ export type InviteView =
       /** The Opensteer Account the reader joins as: "Tim Jang". */
       readonly joinAs: string;
       readonly joining: boolean;
+      /**
+       * The reader's computers, when there is more than one to choose from:
+       * the one chosen is whose agent the team can ask, and whose drawer the
+       * team joins.
+       */
+      readonly computers: readonly { readonly id: string; readonly name: string }[];
+      readonly computerId: string | null;
     }
   | {
       readonly kind: "no-longer-works";
@@ -37,6 +44,7 @@ export type InviteView =
  */
 export function JoinSheetBody(props: {
   readonly invite: InviteView;
+  readonly onChooseComputer: (computerId: string) => void;
   readonly onJoin: () => void;
   readonly onClose: () => void;
   readonly onOpenTeam: () => void;
@@ -73,6 +81,40 @@ export function JoinSheetBody(props: {
               posted in {invite.team.name}.
             </AppText>
           </View>
+          {invite.computers.length < 2 ? null : (
+            <View style={styles.choice}>
+              <AppText role="secondaryMedium" tone="muted">
+                Which computer joins?
+              </AppText>
+              <RowGroup>
+                {invite.computers.map((computer) => {
+                  const chosen = computer.id === invite.computerId;
+                  return (
+                    <Pressable
+                      accessibilityLabel={computer.name}
+                      accessibilityRole="radio"
+                      accessibilityState={{ checked: chosen, disabled: invite.joining }}
+                      disabled={invite.joining}
+                      key={computer.id}
+                      onPress={() => props.onChooseComputer(computer.id)}
+                      style={({ pressed }) => [styles.computer, pressed && styles.pressed]}
+                    >
+                      <Symbol name="laptopcomputer" size={18} tint={color.textSoft} />
+                      <AppText
+                        maxFontSizeMultiplier={controlFontScaleLimit}
+                        numberOfLines={1}
+                        role="body"
+                        style={styles.grow}
+                      >
+                        {computer.name}
+                      </AppText>
+                      {chosen ? <Symbol name="checkmark" size={16} tint={color.ember} /> : null}
+                    </Pressable>
+                  );
+                })}
+              </RowGroup>
+            </View>
+          )}
           <View style={styles.buttons}>
             <PrimaryButton
               busy={invite.joining}
@@ -401,6 +443,7 @@ const styles = StyleSheet.create({
   buttons: { gap: space[8] },
   center: { alignItems: "center", justifyContent: "center", minHeight: 240 },
   centerText: { textAlign: "center" },
+  choice: { gap: space[8] },
   computer: {
     alignItems: "center",
     flexDirection: "row",

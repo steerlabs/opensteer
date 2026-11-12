@@ -20,6 +20,9 @@ const modalWorkRoutes: ReadonlySet<string> = new Set([
   "AddPersonal",
   "AddServer",
   "DeploymentSwitcher",
+  // Joining a team from another computer selects it first; the sheet then
+  // leaves for that computer's Home itself.
+  "JoinTeam",
   "NotificationsIntro",
   "Settings",
 ]);

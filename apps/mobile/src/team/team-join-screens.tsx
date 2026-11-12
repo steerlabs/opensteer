@@ -1,7 +1,12 @@
 import type { VerifiedHostEndpoint } from "@opensteer/client/connections";
 import { HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import {
+  CommonActions,
+  StackActions,
+  useNavigation,
+  type StaticScreenProps,
+} from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Linking from "expo-linking";
 import { useCallback, useEffect, useState, type ReactNode } from "react";
@@ -32,7 +37,12 @@ export function JoinTeamScreen(
   if (link === null) return <PasteLink onLink={setLink} />;
   const intent = readTeamLinkIntent(link);
   if (intent === null)
-    return <PasteLink failure="That isn't a team link. Copy the whole link and try again." onLink={setLink} />;
+    return (
+      <PasteLink
+        failure="That isn't a team link. Copy the whole link and try again."
+        onLink={setLink}
+      />
+    );
   return <FollowLink intent={intent} key={link} />;
 }
 
@@ -46,8 +56,8 @@ function PasteLink(props: {
     <View style={styles.sheet}>
       <AppText role="displaySmall">Join a team</AppText>
       <AppText role="secondary" tone="muted">
-        Paste the invite link someone sent you, or the link a team's page shows for connecting
-        your Opensteer.
+        Paste the invite link someone sent you, or the link a team's page shows for connecting your
+        Opensteer.
       </AppText>
       <TextInput
         accessibilityLabel="Team link"
@@ -89,9 +99,15 @@ function Invite(props: {
 }): ReactNode {
   const { intent } = props;
   const navigation = useNavigation<Navigation>();
+  const client = useMobileClient();
   const teams = useMobileTeams();
   const state = useMobileState();
   const host = new URL(intent.origin).host;
+  // The computer in front joins unless the person picks another; the team
+  // lands in the drawer of the one that joined.
+  const shown = state.selection.deploymentId;
+  const [computerId, setComputerId] = useState<string | null>(shown);
+  const computers = state.rows.map((row) => ({ id: row.deploymentId, name: row.name }));
   const joinAs = state.account.account.identity?.email ?? "your Opensteer Account";
   const [invite, setInvite] = useState<InviteView>({ kind: "checking" });
   const [verified, setVerified] = useState<VerifiedHostEndpoint | null>(null);
@@ -116,6 +132,8 @@ function Invite(props: {
                   memberCount: null,
                   joinAs,
                   joining: false,
+                  computers: [],
+                  computerId: null,
                 },
           );
           return;
@@ -128,6 +146,8 @@ function Invite(props: {
           memberCount: null,
           joinAs,
           joining: false,
+          computers: [],
+          computerId: null,
         });
       },
       (error: unknown) => current && setInvite(inviteFailure(error, host, tile(host))),
@@ -139,8 +159,9 @@ function Invite(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attempt, intent.origin, teams]);
 
+  /** Opens the team's first channel; `movedTo` is the computer joining switched to. */
   const openTeam = useCallback(
-    async (teamId: string) => {
+    async (teamId: string, movedTo: string | null = null) => {
       const session = await teams.session(teamId);
       if (session.getSnapshot().bootstrap === null) await session.load(false);
       const channels = session.getSnapshot().sidebar?.channels ?? [];
@@ -148,26 +169,43 @@ function Invite(props: {
         channels.find((row) => row.channel.name === "general") ??
         channels.find((row) => row.channel.kind === "public") ??
         channels[0];
+      const channel =
+        first === undefined
+          ? null
+          : { name: "TeamChannel" as const, params: { teamId, channelId: first.channel.id } };
+      if (movedTo !== null) {
+        // The stack belonged to the other computer: start over on this one's Home.
+        const routes = [{ name: "Home" as const, params: { deploymentId: movedTo } }];
+        const reset = CommonActions.reset({
+          index: channel === null ? 0 : 1,
+          routes: channel === null ? routes : [...routes, channel],
+        });
+        navigation.dispatch({ payload: reset.payload ?? {}, type: reset.type });
+        return;
+      }
       navigation.goBack();
-      if (first !== undefined)
-        navigation.dispatch(
-          StackActions.push("TeamChannel", { teamId, channelId: first.channel.id }),
-        );
+      if (channel !== null) navigation.dispatch(StackActions.push(channel.name, channel.params));
     },
     [navigation, teams],
   );
+  const shownInvite: InviteView =
+    invite.kind === "ready" ? { ...invite, computers, computerId } : invite;
 
   return (
     <JoinSheetBody
-      invite={invite}
+      invite={shownInvite}
+      onChooseComputer={setComputerId}
       onClose={() => navigation.goBack()}
       onJoin={() => {
         if (invite.kind !== "ready") return;
         setInvite({ ...invite, joining: true });
-        void teams.join(intent, verified).then(
-          (teamId) => openTeam(teamId),
-          (error: unknown) => setInvite(inviteFailure(error, host, invite.team)),
-        );
+        const movedTo = computerId !== null && computerId !== shown ? computerId : null;
+        void (movedTo === null ? Promise.resolve() : client.select(movedTo))
+          .then(() => teams.join(intent, verified))
+          .then(
+            (teamId) => openTeam(teamId, movedTo),
+            (error: unknown) => setInvite(inviteFailure(error, host, invite.team)),
+          );
       }}
       onOpenTeam={() => {
         const team = teams.teamAt(intent.origin);
@@ -190,7 +228,10 @@ function inviteFailure(error: unknown, host: string, team: TeamTileView): Invite
   if (error instanceof TypeError) return { kind: "unreachable", host };
   const state = teamFailure(error);
   if (state === "update-app" || state === "update-server") return { kind: state, team };
-  return { kind: "failed", detail: error instanceof Error ? error.message : "Joining didn't finish." };
+  return {
+    kind: "failed",
+    detail: error instanceof Error ? error.message : "Joining didn't finish.",
+  };
 }
 
 /** A channel or message link: opened once the team says the reader may see it. */
@@ -202,7 +243,9 @@ function OpenPlace(props: {
   const teams = useMobileTeams();
   const team = teams.teamAt(intent.origin);
   const [failure, setFailure] = useState<string | null>(
-    team === null ? "That link is for a team this phone isn't in. Ask someone in it for an invite link." : null,
+    team === null
+      ? "That link is for a team this phone isn't in. Ask someone in it for an invite link."
+      : null,
   );
   useEffect(() => {
     if (team === null) return;
@@ -272,7 +315,11 @@ function AgentLink(props: {
       <ConnectOpensteerBody
         connect={{
           kind: "no-computer",
-          team: { id: props.intent.origin, name: new URL(props.intent.origin).host, imageUri: null },
+          team: {
+            id: props.intent.origin,
+            name: new URL(props.intent.origin).host,
+            imageUri: null,
+          },
         }}
         onClose={() => navigation.goBack()}
         onConnect={() => undefined}
