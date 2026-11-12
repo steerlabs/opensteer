@@ -21,7 +21,7 @@ import {
 } from "../desktop/web-links.js";
 import { lastBrowsingChoice, openWorkspaceWebLink } from "./workspace/start-page.js";
 import { DownloadFeedback } from "./browser/browser-downloads.js";
-import { provisionalThreadTitle, type TaskFolder } from "@opensteer/core";
+import { provisionalThreadTitle } from "@opensteer/core";
 import { useNativeBrowserOverlay } from "./native-browser-overlays.js";
 import {
   createContext,
@@ -125,12 +125,11 @@ export interface ShellContext {
   actionError: string | null;
   clearActionError: () => void;
   /**
-   * Starts a task in a folder and keeps its first message, words and files,
+   * Starts a task and keeps its first message, words and files,
    * for that task's composer to send when it opens. A refusal throws the
    * Host's reason, for the composer that asked to show.
    */
   createThreadAndSend: (
-    folder: TaskFolder,
     message: PendingSubmission,
     selection: ExecutionSelection,
     accessMode: ThreadAccessMode,
@@ -721,7 +720,6 @@ export function AppShell({
 
   const createThreadAndSend = useCallback(
     async (
-      folder: TaskFolder,
       message: PendingSubmission,
       selection: ExecutionSelection,
       accessMode: ThreadAccessMode,
@@ -740,7 +738,6 @@ export function AppShell({
           modelSelection: selection.modelSelection,
           generateTitle: true,
           title: provisionalThreadTitle(message.body || message.attachments[0]?.name || ""),
-          folder,
         });
         // The new Thread's own composer sends it, exactly as kept, when it
         // opens: one path for the first try, a lost answer and a refusal.

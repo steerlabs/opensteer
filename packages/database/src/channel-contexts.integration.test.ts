@@ -49,7 +49,6 @@ async function setup(f: StoreFixture, suffix: string) {
     .execute();
   const channels = new ChannelStore(f.database);
   const configured = await channels.createConnection({
-    folder: personal.agentHome,
     accessPolicy: accessPolicy("anyone"),
     account: { displayName: suffix, externalAccountId: suffix, routingMode: "dedicated" },
     connection: {
@@ -171,7 +170,6 @@ describeStore("personal Messaging conversation contexts", (it) => {
     expect(await f.store.getThreadForOwner(first.input.threadId, p.userId)).toMatchObject({
       createdBy: p.userId,
       parentThreadId: null,
-      folder: p.agentHome,
     });
     expect(
       await f.database
@@ -250,7 +248,6 @@ describeStore("personal Messaging conversation contexts", (it) => {
     expect(await f.store.getThreadForOwner(second.input.threadId, p.userId)).toMatchObject({
       lineageRootThreadId: second.input.threadId,
       parentThreadId: null,
-      folder: p.agentHome,
     });
     expect(
       await f.database

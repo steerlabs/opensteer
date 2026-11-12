@@ -2620,26 +2620,6 @@ export class HttpHostClient {
     return page;
   }
 
-  async listFolderFiles(
-    folder: import("@opensteer/core").TaskFolder,
-    input: { parentKey: string; cursor?: string; knownRevision?: string },
-    signal?: AbortSignal,
-  ) {
-    return unwrapRpcResult(
-      await this.rpc["folder.files.list"]({ folder, ...input }, signal ? { signal } : {}),
-    );
-  }
-
-  async previewFolderFile(
-    folder: import("@opensteer/core").TaskFolder,
-    fileKey: string,
-    signal?: AbortSignal,
-  ) {
-    return unwrapRpcResult(
-      await this.rpc["folder.files.preview"]({ folder, fileKey }, signal ? { signal } : {}),
-    );
-  }
-
   async startBrowser(
     deploymentId: string,
     identity: BrowserStartIdentity,
@@ -2758,7 +2738,6 @@ export class HttpHostClient {
       idempotencyKey: input.idempotencyKey ?? mutationIdempotencyKey("thread"),
       modelSelection: input.modelSelection,
       ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.folder ? { folder: input.folder } : {}),
       ...(input.generateTitle ? { generateTitle: true } : {}),
       title: input.title?.trim() || "New task",
     });
@@ -6022,7 +6001,6 @@ function toThreadSummary(
     color: thread.color ?? null,
     unread: false,
     updatedAt: thread.updatedAt,
-    folder: thread.folder,
     teamOrigin: thread.teamOrigin,
   };
 }

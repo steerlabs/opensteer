@@ -50,7 +50,7 @@ describe("NativeFsHelper", () => {
     });
   });
 
-  it("pins task folder identities through the native boundary", async () => {
+  it("pins root folder identities through the native boundary", async () => {
     const parent = await realpath(await temporaryDirectory("directory-authority"));
     const root = join(parent, "task-folder");
     const helper = new NativeFsHelper({ binary: builtHelper, rootPolicy: "managed-local" });

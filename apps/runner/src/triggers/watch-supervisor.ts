@@ -25,7 +25,7 @@ import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { RunnerMessageSink } from "../runtime/runtime.js";
-import type { RunFolder, FolderAccessManager } from "../folders/task-folder.js";
+import type { AgentHomeAccess, AgentHomeWorkspace } from "../folders/agent-home.js";
 import { triggerProgramRuntimeSource } from "../agent/program-runtime.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import type { ProgramLaunchPlanner } from "../agent/program-executor.js";
@@ -61,7 +61,7 @@ export interface WatchSupervisorOptions {
   /** Ends whatever an execution's program left running. */
   readonly terminate: (executionId: string) => Promise<unknown>;
   readonly transport: Pick<RunnerConfig, "mode">;
-  readonly folderManager: FolderAccessManager;
+  readonly agentHome: AgentHomeAccess;
 }
 
 const maximumProgramResponseBytes = 6 * 512 * 1_024 + 1_024;
@@ -77,7 +77,7 @@ export class WatchSupervisor {
   readonly #executionRoot: string;
   readonly #privateRoot: string;
   readonly #watches = new Map<TriggerWatchActivationId, ActiveWatch>();
-  readonly #folderManager: FolderAccessManager;
+  readonly #agentHome: AgentHomeAccess;
   readonly #statusTimer: NodeJS.Timeout;
   #closed = false;
   #privateRootPrepared = false;
@@ -92,7 +92,7 @@ export class WatchSupervisor {
     this.#transport = options.transport;
     this.#privateRoot = resolve(options.privateStateDirectory, "watches");
     this.#executionRoot = join(this.#privateRoot, "executions", randomUUID());
-    this.#folderManager = options.folderManager;
+    this.#agentHome = options.agentHome;
     this.#statusTimer = setInterval(() => {
       for (const active of this.#watches.values()) {
         if (active.observed === "running") void this.#report(active);
@@ -207,14 +207,14 @@ export class WatchSupervisor {
 
   async #run(active: ActiveWatch): Promise<void> {
     while (!active.abort.signal.aborted && active.observed !== "expired") {
-      let workspace: RunFolder | undefined;
+      let workspace: AgentHomeWorkspace | undefined;
       let materializationRoot: string | undefined;
       let programFile: string | undefined;
       try {
         active.observed = "starting";
         await this.#report(active);
-        workspace = await this.#folderManager.prepare({
-          location: active.desired.location,
+        workspace = await this.#agentHome.prepare({
+          agentHome: active.desired.agentHome,
           signal: active.abort.signal,
         });
         const program = await this.#cachedProgram(active);

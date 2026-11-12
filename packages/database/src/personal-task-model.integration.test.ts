@@ -168,7 +168,6 @@ async function fixture() {
         origin,
         requestId,
         triggerMessageId: TeamMessageIdSchema.parse(String(++nextMessage)),
-        folder: personal.agentHome,
         source,
         ownerId: personal.userId,
         execution,
@@ -489,7 +488,6 @@ it("owns independent memory jobs and includes ordinary and team tasks with captu
       parentThreadId: null,
       purpose: "background-job",
       listed: false,
-      folderPath: f.agentHome.path,
     });
     const context = await withPersonalTransaction(f.database, (tx) =>
       memoryPassWakeContext(tx, worker),
@@ -927,7 +925,6 @@ async function twoTeamsWithOneRequestId() {
     origin,
     requestId: first.requestId,
     triggerMessageId: TeamMessageIdSchema.parse("2"),
-    folder: f.agentHome,
     source: { ...f.source, teamId: otherTeamId },
     ownerId: f.userId,
     execution: f.execution,

@@ -26,7 +26,6 @@ import {
   taskRowLabel,
   taskTime,
   threadRequester,
-  folderTaskList,
 } from "./task-list.js";
 import { liveWork } from "./surfaces.js";
 
@@ -332,10 +331,7 @@ describe("taskList", () => {
       activeTasks: [fresh],
     };
     expect(titles(taskList(source).working)).toEqual(["Fresher"]);
-    expect(folderTaskList(source, thread.folder).running).toBe(1);
-    expect(folderTaskList(source, { ...thread.folder, path: "/another-folder" }).working).toEqual(
-      [],
-    );
+    expect(taskList(source).running).toBe(1);
     expect(liveWork(source).map((group) => group.title)).toEqual(["Fresher"]);
     const completed = {
       ...fresh,

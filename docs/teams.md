@@ -21,7 +21,7 @@ to team, channel, thread and owner, expiring seven days after first acceptance. 
 rechecks it. No link means no request; an offline computer leaves accepted work durably queued.
 
 Each ask is its own queued input and Run, not a steer. Asking again in the same team thread
-continues the same local task, whose folder stays fixed. A private follow-up has no team
+continues the same local task. A private follow-up has no team
 request authority. Channel instructions and recent thread context are read when the Run starts;
 the agent can fetch older context. Audience/source descriptors accompany team context, but
 instructions never grant access. Publication uses that Run's final reply unless it already

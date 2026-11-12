@@ -382,7 +382,6 @@ function searchIndex(
             harnessLabel: thread?.harnessLabel ?? "",
             runnerLabel: thread?.runnerLabel ?? "",
           },
-          row.folder.path,
           ask,
         ),
       };

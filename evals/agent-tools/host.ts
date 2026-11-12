@@ -72,7 +72,6 @@ export async function startFakeHost(testCase: EvalCase, workspace?: string) {
     parentThreadId: null,
     pendingRequests: 0,
     purpose: testCase.purpose,
-    folder: { computerId: scope.runnerId, path: workspace ?? "/eval/task" },
     teamOrigin: testCase.teamBound
       ? { teamId: createId("deployment"), channelId: createId("teamChannel"), threadRootId: "1" }
       : null,

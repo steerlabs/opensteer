@@ -529,8 +529,8 @@ function TurnView({
 }
 
 /**
- * Who speaks, when it is not the task itself: a project's work keeps the
- * project's own orb and name, and the orb is Opensteer's for its own
+ * Who speaks, when it is not the task itself: another task's work keeps
+ * that task's mark and name, and the orb is Opensteer's for its own
  * conversation and its platform notes. A task's own turns have no byline,
  * because the header above them already names the task.
  */

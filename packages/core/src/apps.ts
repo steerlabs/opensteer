@@ -1,4 +1,4 @@
-import { TaskFolderSchema } from "./personal.js";
+import { ComputerFolderSchema } from "./personal.js";
 import { z } from "zod";
 import { RunIdSchema, ThreadIdSchema } from "./ids.js";
 
@@ -23,7 +23,7 @@ export const AppSchema = z.object({
 export type OpensteerApp = z.infer<typeof AppSchema>;
 
 export const AppServerSpecSchema = z.strictObject({
-  folder: TaskFolderSchema,
+  folder: ComputerFolderSchema,
   command: z.string().min(1).max(16_384),
 });
 export type AppServerSpec = z.infer<typeof AppServerSpecSchema>;

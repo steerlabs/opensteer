@@ -1,7 +1,7 @@
 import { localFilesMaximumDirectoryOffset } from "@opensteer/shared/files/models";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { OpensteerError, type TaskFolder } from "@opensteer/core";
+import { OpensteerError, type ComputerFolder } from "@opensteer/core";
 import {
   FolderDirectoryPageSchema,
   FolderFileKeySchema,
@@ -48,17 +48,18 @@ function fileKey(segments: readonly string[]) {
     segments.flatMap((s, i) => [...(i ? [Buffer.from([0])] : []), Buffer.from(s, "base64url")]),
   ).toString("base64url");
 }
-export class FolderFilesService {
+/** Reads Agent home through the native helper's no-follow, root-pinned file operations. */
+export class AgentHomeFiles {
   readonly #lifetime = new AbortController();
   readonly options: {
-    readonly admit: (folder: TaskFolder) => Promise<TaskFolder>;
+    readonly agentHome: () => Promise<ComputerFolder>;
     readonly helperPath: string | undefined;
   };
-  constructor(options: FolderFilesService["options"]) {
+  constructor(options: AgentHomeFiles["options"]) {
     this.options = options;
   }
-  async #root(folder: TaskFolder, signal: AbortSignal) {
-    const admitted = await this.options.admit(folder);
+  async #root(signal: AbortSignal) {
+    const { path } = await this.options.agentHome();
     if (!this.options.helperPath)
       throw new OpensteerError({
         code: "folder_unavailable",
@@ -68,19 +69,18 @@ export class FolderFilesService {
       binary: this.options.helperPath,
       rootPolicy: "managed-local",
     });
-    const identity = await helper.directoryIdentity({ path: ".", root: admitted.path }, signal);
-    return { helper, root: admitted.path, expectedRootIdentity: identity };
+    const identity = await helper.directoryIdentity({ path: ".", root: path }, signal);
+    return { helper, root: path, expectedRootIdentity: identity };
   }
   async list(
-    folder: TaskFolder,
     input: { parentKey: string; limit: number; cursor?: string },
     signal = AbortSignal.timeout(15000),
   ): Promise<FolderDirectoryPage> {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
-    const { helper, ...root } = await this.#root(folder, signal);
+    const { helper, ...root } = await this.#root(signal);
     const segments = folderFileSegments(input.parentKey);
     const scope = createHash("sha256")
-      .update(JSON.stringify([folder, input.parentKey]))
+      .update(JSON.stringify([root.root, input.parentKey]))
       .digest("base64url");
     const cursor = input.cursor
       ? cursorSchema.parse(JSON.parse(Buffer.from(input.cursor, "base64url").toString("utf8")))
@@ -115,9 +115,9 @@ export class FolderFilesService {
       })),
     });
   }
-  async preview(folder: TaskFolder, key: string, signal = AbortSignal.timeout(15000)) {
+  async preview(key: string, signal = AbortSignal.timeout(15000)) {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
-    const { helper, ...root } = await this.#root(folder, signal);
+    const { helper, ...root } = await this.#root(signal);
     const result = await helper.filesReadRange(
       {
         ...root,
@@ -138,13 +138,9 @@ export class FolderFilesService {
       },
     };
   }
-  async download(
-    folder: TaskFolder,
-    key: string,
-    signal = AbortSignal.timeout(60000),
-  ): Promise<Response> {
+  async download(key: string, signal = AbortSignal.timeout(60000)): Promise<Response> {
     signal = AbortSignal.any([signal, this.#lifetime.signal]);
-    const { helper, ...root } = await this.#root(folder, signal);
+    const { helper, ...root } = await this.#root(signal);
     const result = await helper.filesDownload(
       { ...root, pathSegmentsBase64: folderFileSegments(key), offset: 0, length: 0 },
       signal,

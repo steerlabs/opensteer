@@ -1,10 +1,6 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import {
-  provisionalThreadTitle,
-  type BrowserPageContentPart,
-  type TaskFolder,
-} from "@opensteer/core";
+import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
 import {
   canRespondToRequests,
   accessModeConflict,
@@ -22,7 +18,6 @@ import { useNavigation } from "@react-navigation/native";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -54,7 +49,6 @@ import {
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice } from "../ui/primitives.js";
-import { FolderChip } from "../home/folder-chip.js";
 import { homeDraftId } from "../home/home-draft.js";
 
 /** Ways to begin, each a sentence the reader can send or edit. */
@@ -89,15 +83,8 @@ export function NewTaskPane(props: {
   readonly onStarted: (threadId: string) => boolean;
   /** Set where a transparent navigation bar lies over the top of the pane. */
   readonly underHeader: boolean;
-  /**
-   * Home: the folder this task will work in, chosen on its chip. Elsewhere the
-   * draft's own folder, else Agent home.
-   */
-  readonly home?: {
-    readonly folder: TaskFolder | null;
-    readonly onChooseFolder: () => void;
-    readonly folderLabel: string;
-  };
+  /** Home's composer: with nothing written, its circle starts Voice. */
+  readonly voice?: boolean;
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -117,11 +104,7 @@ function NewTask(props: {
   readonly onStarted: (threadId: string) => boolean;
   readonly underHeader: boolean;
   readonly userId: string;
-  readonly home?: {
-    readonly folder: TaskFolder | null;
-    readonly onChooseFolder: () => void;
-    readonly folderLabel: string;
-  };
+  readonly voice?: boolean;
 }): ReactNode {
   const navigation = useNavigation();
   const notifications = useMobileNotifications();
@@ -133,18 +116,7 @@ function NewTask(props: {
   const draftKey = newTaskDraftKey(draftId);
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
-  const folder =
-    props.home !== undefined
-      ? props.home.folder
-      : (draft?.folder ?? snapshot.personalSettings?.agentHome ?? null);
-  useLayoutEffect(() => {
-    if (folder !== null)
-      void drafts
-        .placeNewTaskDraft(deploymentId, userId, draftId, folder)
-        .catch((error: unknown) =>
-          setDraftFailure(operationDetail(error, "This draft could not be saved on this phone.")),
-        );
-  }, [deploymentId, draftId, drafts, folder, userId]);
+  const agentHome = snapshot.personalSettings?.agentHome.path ?? null;
   const text = draft?.text ?? "";
   const held = drafts.readPending(deploymentId, userId, draftKey);
   const input = useRef<TextInputInstance>(null);
@@ -178,7 +150,6 @@ function NewTask(props: {
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
     connected: canRespondToRequests(snapshot),
     execution,
-    folder,
   });
 
   const changeText = (next: string): void => {
@@ -219,7 +190,6 @@ function NewTask(props: {
         if (claimed === null) {
           const live = hostClient.getSnapshot();
           const liveExecution = firstMessageExecution(live);
-          if (folder === null) throw new Error("Your agent's folder isn't ready yet.");
           const chosen =
             requestedSelection === null
               ? liveExecution.selection
@@ -248,7 +218,6 @@ function NewTask(props: {
               idempotencyKey: mutationIdempotencyKey("thread"),
               generateTitle: true,
               title: provisionalThreadTitle(words || (staged.items[0]?.name ?? "")),
-              folder,
             },
             text: words,
             userId,
@@ -353,7 +322,6 @@ function NewTask(props: {
       staged,
       text,
       userId,
-      folder,
     ],
   );
 
@@ -363,14 +331,7 @@ function NewTask(props: {
     <FirstMessageComposer
       autoFocus={props.autoFocus}
       blocker={blocker}
-      {...(props.home === undefined
-        ? {}
-        : {
-            folder: (
-              <FolderChip label={props.home.folderLabel} onPress={props.home.onChooseFolder} />
-            ),
-            voice: true,
-          })}
+      voice={props.voice === true}
       held={held !== null}
       execution={execution}
       inputRef={input}
@@ -400,7 +361,11 @@ function NewTask(props: {
       underHeader={props.underHeader}
     >
       <FirstMessageInvitation
-        detail="Your agent works on this computer, in folders you choose."
+        detail={
+          agentHome === null
+            ? "Your agent works on this computer."
+            : `Your agent works on this computer, in ${agentHome}.`
+        }
         title="What should your agent do?"
       />
       {empty ? (

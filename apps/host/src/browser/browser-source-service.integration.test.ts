@@ -692,7 +692,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ? await store
           .createThread({
             createdBy: ownerId,
-            folder: personal.agentHome,
             environmentId: existing.environmentId,
             harnessInstanceId: existing.harnessInstanceId,
             modelSelection: testModelSelection,
@@ -700,7 +699,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
             idempotencyKey: suffix,
           })
           .then(({ thread }) => ({ threadId: thread.id }))
-      : await admission.createTask({ ownerId, folder: personal.agentHome, suffix });
+      : await admission.createTask({ ownerId, suffix });
     const started = await admission.startTask(task.threadId, "Start");
     return {
       runId: started.runId,

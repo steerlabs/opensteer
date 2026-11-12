@@ -31,7 +31,7 @@ import {
 } from "@opensteer/runner-client";
 import { cacheRunPlugins, prunePluginCache } from "./skills/plugin-cache.js";
 import { JsonRunnerLogger } from "./runtime/logger.js";
-import { TaskFolderManager } from "./folders/task-folder.js";
+import { AgentHomeManager } from "./folders/agent-home.js";
 import { verifyNodeExecutable } from "./runtime/node-executable.js";
 import { RunnerRuntime, type RunnerRuntimeOptions } from "./runtime/runtime.js";
 import { ExecutionContainment } from "./runtime/execution-containment.js";
@@ -197,7 +197,7 @@ export async function runRunnerDaemon(
 }
 
 /**
- * A computer that runs agents: its task folders, harnesses
+ * A computer that runs agents: Agent home, harnesses
  * and skills, plus the shell it offers.
  *
  * Shell degrades here rather than stopping the Runner, because a machine that
@@ -245,7 +245,7 @@ async function startAgentsRunner(input: {
   if (!environmentId) {
     throw new Error("This Runner's saved identity has no work location");
   }
-  const folderManager = new TaskFolderManager(identity.runnerId);
+  const agentHome = new AgentHomeManager(identity.runnerId);
   const execution = parseAgentExecutionConfig(environment);
   const attachmentBase = join(homedir(), ".cache", "opensteer", "runner-attachments");
   await ensurePrivateDirectory(attachmentBase);
@@ -316,8 +316,6 @@ async function startAgentsRunner(input: {
   pluginPruner.unref();
   const runtime = new RunnerRuntime({
     agentSkills,
-    resolveAppFolder: async (folder, signal) =>
-      (await folderManager.prepare({ location: { folder, agentHome: folder }, signal })).path,
     attachmentCache,
     browserHarnessExecutable: execution.browserHarnessExecutable,
     bootId,
@@ -340,7 +338,7 @@ async function startAgentsRunner(input: {
     nodeExecutable: config.nodeExecutable,
     privateStateDirectory: resolve(config.dataDirectory, "private", "harness-state"),
     projectContinuationIdentity: providerContinuationIdentityProjector(identity.privateKey),
-    folderManager,
+    agentHome,
   });
   return {
     agents: {
@@ -365,7 +363,7 @@ async function startAgentsRunner(input: {
 
 /**
  * A reach-only computer has only the auxiliary modules its platform can
- * actually serve. Nothing else starts — no task folders,
+ * actually serve. Nothing else starts — no Agent home,
  * harnesses or skills.
  *
  * Preparation cannot degrade every requested module away: that Runner would

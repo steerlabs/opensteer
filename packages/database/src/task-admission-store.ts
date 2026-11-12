@@ -7,7 +7,6 @@ import {
   type AgentEvent,
   type DeploymentId,
   type ExecutionSelection,
-  type TaskFolder,
   type TeamAgentRequestId,
   type TeamMessageId,
   type TeamSource,
@@ -17,7 +16,7 @@ import {
 import type { Kysely } from "kysely";
 import { enqueueRunnerControlInTransaction } from "./command-store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue, lockCommandIdempotency, threadPathLinks } from "./store-primitives.js";
@@ -30,7 +29,6 @@ interface TeamAdmissionInput {
   readonly origin: TeamTaskOrigin;
   readonly requestId: TeamAgentRequestId;
   readonly triggerMessageId: TeamMessageId;
-  readonly folder: TaskFolder;
   readonly source: TeamSource;
 }
 
@@ -91,12 +89,6 @@ export function admitTeamTaskRequest(
         code: "forbidden",
         message: "Connect your Opensteer to this team before asking your agent.",
       });
-    const settings = await personalSettings(transaction);
-    if (input.folder.computerId !== settings.agentHome.computerId)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Tasks can run only on the hosting computer.",
-      });
     const bound = await transaction
       .selectFrom("threads")
       .select("id")
@@ -110,7 +102,6 @@ export function admitTeamTaskRequest(
       const created = await createThreadInTransaction(transaction, {
         ...input.execution,
         createdBy: input.ownerId,
-        folder: input.folder,
         teamOrigin: input.origin,
         idempotencyKey: `team-task:${input.origin.teamId}:${input.origin.channelId}:${input.origin.threadRootId}`,
         title: `From ${input.source.audience.channelName}`,

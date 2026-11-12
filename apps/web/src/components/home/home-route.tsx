@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router";
-import { TaskFolderSchema, type TaskFolder, type ThreadAccessMode } from "@opensteer/core";
+import type { ThreadAccessMode } from "@opensteer/core";
 import {
   accessModeConflict,
   accountGettingReady,
   composerExecutionSelection,
   lastExecutionSelection,
-  newTaskDefaults,
   placementForSelection,
   type ExecutionSelection,
   type ThreadPlacementOption,
@@ -24,11 +23,9 @@ import {
 import { AreaHeader, NewTaskMark } from "../workspace/conversation-header.js";
 import { useWorkspace } from "../workspace/workspace-context.js";
 import { useComposerContext } from "../workspace/composer-context.js";
-import { FolderChip } from "./folder-picker.js";
-import { useFolderPicker } from "./use-folder-picker.js";
 import { TasksHome } from "./tasks-home.js";
 
-/** Home: what should your agent do, and the composer that starts it in a folder. */
+/** Home: what should your agent do, and the composer that starts it. */
 export function HomeRoute() {
   const { hostClient, snapshot } = useShell();
   const navigate = useNavigate();
@@ -40,6 +37,7 @@ export function HomeRoute() {
   const firstRun = (snapshot.tasks?.entries.length ?? 0) === 0 && snapshot.activeTasks.length === 0;
   return (
     <TasksHome
+      agentHome={snapshot.personalSettings?.agentHome.path ?? null}
       composer={<NewTaskComposer draftId={draftId} key={draftId} suggestion={suggestion} />}
       firstRun={firstRun}
       header={<AreaHeader hostClient={hostClient} mark={<NewTaskMark />} title="New task" />}
@@ -58,17 +56,6 @@ export function HomeRoute() {
 function useTaskDraftId(): string {
   const [params] = useSearchParams();
   return params.get("draft") ?? homeDraftId;
-}
-
-function folderFromKey(key: string | null): TaskFolder | null {
-  if (!key) return null;
-  try {
-    const [computerId, path] = JSON.parse(key) as unknown[];
-    const parsed = TaskFolderSchema.safeParse({ computerId, path });
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
 }
 
 function placeholderFor(
@@ -93,7 +80,6 @@ function NewTaskComposer({
   readonly suggestion: { readonly key: number; readonly text: string } | null;
 }) {
   const { nav } = useWorkspace();
-  const [params] = useSearchParams();
   const {
     createThreadAndSend,
     defaultPlacement,
@@ -110,22 +96,7 @@ function NewTaskComposer({
   const draftKey = composerDraftKeyFor(deploymentId, userId, { kind: "task", draftId });
   const context = useComposerContext({ auto: true, draftKey, hostClient });
   const placeContext = useMemo(() => ({ context, hostClient }), [context, hostClient]);
-  const defaults = newTaskDefaults(snapshot);
-  const agentHome = defaults.folder;
-  // The folder: the one this draft chose, then one the address names, then Agent home.
-  const [folder, setFolder] = useState<TaskFolder | null>(
-    () =>
-      (draftKey ? composerDrafts.read(draftKey)?.folder : undefined) ??
-      folderFromKey(params.get("folder")) ??
-      agentHome,
-  );
-  const named = params.get("folder");
-  useEffect(() => {
-    const chosen = folderFromKey(named);
-    if (chosen) setFolder(chosen);
-  }, [named]);
-  const current = folder ?? agentHome;
-  const folderPicker = useFolderPicker(current, setFolder);
+  const canCreate = snapshot.can?.createTasks === true;
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   const remembered = useMemo(
     () => lastExecutionSelection(executionPreferences),
@@ -148,7 +119,7 @@ function NewTaskComposer({
     () => (selection ? placementForSelection(placements, selection) : null),
     [placements, selection],
   );
-  const canCreateThread = defaults.canCreate && selection !== null && current !== null;
+  const canCreateThread = canCreate && selection !== null;
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const storageReady = useMemo(() => pendingStorageAvailable(), []);
   const accessConflict = selectedPlacement
@@ -177,9 +148,8 @@ function NewTaskComposer({
       idempotencyKey,
     }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey">,
   ) => {
-    if (!selection || !current) throw new Error("Choose an available model to start.");
+    if (!selection) throw new Error("Choose an available model to start.");
     const thread = await createThreadAndSend(
-      current,
       { attachments, body, ...(places.length > 0 ? { places } : {}), idempotencyKey },
       selection,
       accessMode,
@@ -193,7 +163,6 @@ function NewTaskComposer({
         autoFocus
         dictationScope={`${deploymentId}/${userId}/new-task`}
         disabled={!canCreateThread}
-        draftFolder={current ?? undefined}
         draftKey={draftKey}
         footerExtras={
           <ExecutionControls
@@ -219,10 +188,9 @@ function NewTaskComposer({
         }
         inputRef={inputRef}
         key={suggestion?.key ?? 0}
-        leadingFooter={folderPicker ? <FolderChip {...folderPicker} /> : null}
         onSend={startThread}
         placeContext={placeContext}
-        placeholder={placeholderFor(selection !== null, blockedPlacement, defaults.canCreate)}
+        placeholder={placeholderFor(selection !== null, blockedPlacement, canCreate)}
         sendBlocked={sendBlocked}
         sendLabel="Start task"
       />

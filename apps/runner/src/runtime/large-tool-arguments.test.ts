@@ -46,10 +46,7 @@ it("records a successful Codex command with large inline arguments without faili
   );
   const environmentId = createId("environment");
   const command = RunnerCommandSchema.parse({
-    location: {
-      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
     commandId: createId("command"),
     context: {
       accessMode: "full-access",
@@ -157,10 +154,9 @@ it("records a successful Codex command with large inline arguments without faili
     projectContinuationIdentity: providerContinuationIdentityProjector(
       generateKeyPairSync("ed25519").privateKey,
     ),
-    folderManager: {
-      writableRoots: () => [workspacePath],
+    agentHome: {
+      folder: async ({ path }) => path,
       prepare: async () => ({
-        agentHomePath: workspacePath,
         instructions: undefined,
         path: workspacePath,
       }),

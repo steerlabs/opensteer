@@ -9,7 +9,6 @@ import {
   MarkColorSchema,
   ThreadIdSchema,
   UserIdSchema,
-  TaskFolderSchema,
   IconNameSchema,
 } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
@@ -41,7 +40,6 @@ export const SavedViewScopeSchema = z.strictObject({
 });
 export type SavedViewScope = z.infer<typeof SavedViewScopeSchema>;
 export const SavedTaskSchema = z.strictObject({
-  folder: TaskFolderSchema,
   id: ThreadIdSchema,
   title: text(512),
   glyph: z.strictObject({
@@ -116,7 +114,6 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
       .filter(({ threadId }) => recent.has(threadId))
       .map((row) =>
         SavedTaskSchema.parse({
-          folder: row.folder,
           id: row.threadId,
           title: boundedSavedText(row.title, 512),
           glyph: { icon: row.icon, color: row.color ?? null },

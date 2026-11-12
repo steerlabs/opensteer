@@ -111,7 +111,7 @@ holds, and Cursor API keys are no substitute because model commands can read the
 environment. Never advertise a sign-in whose OAuth callback port a Runner cannot reach.
 
 On shared Runners, per-command isolation keeps model commands from private credential state, and
-Linux binds only this Run's profile, Thread state, task folder roots and launch directory. Native-user
+Linux binds only this Run's profile, Thread state, Agent home and launch directory. Native-user
 Runners omit both layers, because their owner owns the machine and credentials
 ([harness-sandbox.ts](../apps/runner/src/sandbox/harness-sandbox.ts)). Boot probes must prove
 isolation, and Runner death must end inspection subprocesses too.

@@ -5,7 +5,6 @@ import {
   OpensteerError,
   TimeZoneSchema,
   type AgentEvent,
-  type TaskFolder,
   type Thread,
   type TriggerOccurrenceId,
   type UserId,
@@ -29,10 +28,7 @@ export const memoryPassWaitingReason =
 interface MemoryPassServiceOptions {
   readonly store: OpensteerStore;
   readonly runners: Pick<RunnerRegistry, "isAvailable" | "canRunHarness" | "harnessAccessModes">;
-  readonly readAgentInstructions: (
-    folder: TaskFolder,
-    signal: AbortSignal,
-  ) => Promise<string | null>;
+  readonly readAgentInstructions: (signal: AbortSignal) => Promise<string | null>;
   readonly onEvent: (event: AgentEvent) => void;
   readonly onChanged: () => void;
   readonly onError: (error: unknown) => void;
@@ -89,10 +85,7 @@ export class MemoryPassService {
     if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 3))) return;
     let instructions: string | null;
     try {
-      instructions = await this.options.readAgentInstructions(
-        settings.agentHome,
-        AbortSignal.timeout(10_000),
-      );
+      instructions = await this.options.readAgentInstructions(AbortSignal.timeout(10_000));
     } catch (error) {
       this.options.onError(error);
       return;
@@ -156,14 +149,10 @@ export class MemoryPassService {
       .executeTakeFirst();
     if (!trigger?.systemRole || trigger.anchorThreadId !== worker.id) return undefined;
     const settings = await personalSettings(store.database);
-    if (
-      settings.ownerId !== trigger.createdBy ||
-      worker.folder.computerId !== settings.agentHome.computerId ||
-      worker.folder.path !== settings.agentHome.path
-    )
+    if (settings.ownerId !== trigger.createdBy)
       throw new OpensteerError({
         code: "forbidden",
-        message: "Memory jobs use the personal agent home.",
+        message: "Memory jobs belong to the personal owner.",
       });
     const { candidates } = await resolveAutomaticModels(
       { store, runners },

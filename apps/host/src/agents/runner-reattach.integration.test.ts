@@ -242,9 +242,7 @@ integration("Runs that outlive their connection", () => {
     };
   }
   async function thread(active: VerticalStack, title: string): Promise<ThreadId> {
-    const workspace = await active.createFolder(`${title} workspace`);
     return active.createThread({
-      folder: workspace,
       modelSelection,
       title,
     });
@@ -1245,14 +1243,11 @@ integration("Runs that outlive their connection", () => {
       maxConcurrentRuns: 2,
       scenario: "sibling-approval-race",
     });
-    const workspace = await active.createFolder("Shared workspace");
     const streaming = await active.createThread({
-      folder: workspace,
       modelSelection,
       title: "Streaming",
     });
     const asking = await active.createThread({
-      folder: workspace,
       modelSelection,
       title: "Asking",
     });

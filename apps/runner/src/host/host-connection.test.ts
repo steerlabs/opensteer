@@ -124,7 +124,7 @@ describe("AgentsWorkSession", () => {
         send: async (message) => void messages.push(message),
       });
       const runtime = {
-        observeFolderSkills: () => undefined,
+        observeAgentHomeSkills: () => undefined,
         subscribeHarnessPreparation: () => () => undefined,
         handleCommand: async (command: RunnerCommand) => {
           calls.push(command.type);
@@ -746,11 +746,11 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-browser-agents-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      folderManager: {
+      agentHome: {
+        folder: async ({ path }) => path,
         prepare: async () => {
           throw new Error("not used");
         },
-        writableRoots: () => [],
       },
     });
     const connection = new ReconnectingHostConnection({
@@ -938,9 +938,9 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-connection-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      folderManager: {
+      agentHome: {
+        folder: async ({ path }) => path,
         prepare: async () => Promise.reject(new Error("not used")),
-        writableRoots: () => ["/runner/workspaces"],
       },
     });
     // A reconcile no longer holds the connection, so calls arrive in the order
@@ -1938,9 +1938,9 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-reenroll-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      folderManager: {
+      agentHome: {
+        folder: async ({ path }) => path,
         prepare: async () => Promise.reject(new Error("not used")),
-        writableRoots: () => ["/runner/workspaces"],
       },
     });
     const pair = generateKeyPairSync("ed25519");
@@ -2283,9 +2283,9 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       privateStateDirectory: "/tmp/opensteer-engine-recheck-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      folderManager: {
+      agentHome: {
+        folder: async ({ path }) => path,
         prepare: async () => Promise.reject(new Error("not used")),
-        writableRoots: () => ["/runner/workspaces"],
       },
     });
     const pair = generateKeyPairSync("ed25519");

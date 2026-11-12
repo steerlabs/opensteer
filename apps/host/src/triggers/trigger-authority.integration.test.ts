@@ -5,7 +5,7 @@ import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
-import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
+import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -116,7 +116,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
   const runClaims = new Map<string, RunToolScope>();
   const occurrenceClaims = new Map<string, TriggerControlScope>();
   const watchClaims = new Map<string, WatchControlScope>();
-  let folders: ReturnType<typeof personalTestFolders>;
+  let execution: ReturnType<typeof personalTestExecution>;
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({
       maxInFlight: 8,
@@ -149,9 +149,10 @@ integration.sequential("Trigger authority through real Host services and Postgre
     commands,
     isEnvironmentConnected: () => true,
     store,
-    folders: {
-      resolve: (...args: Parameters<typeof folders.resolve>) => folders.resolve(...args),
-      canExecute: (id: Parameters<typeof folders.canExecute>[0]) => folders.canExecute(id),
+    execution: {
+      environmentFor: (ownerId: Parameters<typeof execution.environmentFor>[0]) =>
+        execution.environmentFor(ownerId),
+      canExecute: (id: Parameters<typeof execution.canExecute>[0]) => execution.canExecute(id),
     },
   };
   function triggerService(backing = triggerStore) {
@@ -515,7 +516,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         `A5 ${kind} delegates locally`,
         f.isolatedChild.id,
         "delegate_task",
-        "same folder and current access mode",
+        "current access mode",
         async () => {
           const response = await control.handle(token, {
             type: "thread.delegate",
@@ -1660,7 +1661,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         triggerControlTokens: {
           issue: () => "control",
         } as never,
-        folders: { assertAvailable: (folder) => folders.assertAvailable(folder) },
         teamRequestContext: async () => {
           throw new Error("Unexpected team request");
         },
@@ -1854,7 +1854,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
         browser: {
           hasBrowserProfiles: async () => false,
         },
-        folders: { assertAvailable: (folder) => folders.assertAvailable(folder) },
         browserCdpUrl: "wss://host.test",
         controlTokens: {
           issue: () => ({
@@ -2148,8 +2147,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const directory = join(evidenceRoot, randomUUID());
     await mkdir(directory, { recursive: true });
     const personal = await seedPersonalFixture(database, await realpath(directory));
-    const { userId: ownerId, runnerId, environmentId, agentHome } = personal;
-    folders = personalTestFolders(store, personal);
+    const { userId: ownerId, runnerId, environmentId } = personal;
+    execution = personalTestExecution(store, personal);
     await database
       .updateTable("runners")
       .set({
@@ -2183,7 +2182,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const { thread: root } = await store.createThread({
       accessMode: options.rootAccessMode ?? "auto",
       createdBy: ownerId,
-      folder: agentHome,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
@@ -2199,7 +2197,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ) {
       const result = await store.delegateThread({
         accessMode,
-        folder: agentHome,
         createdBy: ownerId,
         environmentId,
         harnessInstanceId: harness.id,
@@ -2227,7 +2224,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const { thread: specialist } = await store.createThread({
       accessMode: "full-access",
       createdBy: ownerId,
-      folder: agentHome,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
@@ -2237,7 +2233,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const { thread: unrelated } = await store.createThread({
       accessMode: "approval-required",
       createdBy: ownerId,
-      folder: agentHome,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),
@@ -2257,7 +2252,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const { thread: isolatedChild } = await store.delegateThread({
       accessMode: "auto",
       createdBy: ownerId,
-      folder: agentHome,
       environmentId,
       harnessInstanceId: harness.id,
       idempotencyKey: randomUUID(),

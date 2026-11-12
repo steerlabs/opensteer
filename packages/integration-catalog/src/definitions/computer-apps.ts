@@ -561,7 +561,7 @@ export const computerAppIntegrations = [
         },
         {
           description:
-            "Ask Messages to send text, files or both to one named conversation or address. A group is reachable only by conversationId. Text goes first, then each file in order. files are paths in this task's Workspace or its exported attachments; copy a file there first if it is elsewhere. {accepted: true} means Messages accepted the send, not that it was delivered.",
+            "Ask Messages to send text, files or both to one named conversation or address. A group is reachable only by conversationId. Text goes first, then each file in order. files are paths in Agent home or its exported attachments; copy a file there first if it is elsewhere. {accepted: true} means Messages accepted the send, not that it was delivered.",
           effect: "write",
           files: "send",
           inputSchema: {

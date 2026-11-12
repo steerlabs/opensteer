@@ -127,7 +127,6 @@ it.each(["memory-light", "memory-nightly"] as const)(
           workspace: {
             instructions: undefined,
             path: directory,
-            agentHomePath: directory,
           },
         });
         expect(output.status).toBe(

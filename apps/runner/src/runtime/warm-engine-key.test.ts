@@ -32,7 +32,7 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
     providerSessionReference: null,
     runtimeBoundary: "native-user",
     skills: undefined,
-    folderSkillsDigest: "home:folder",
+    homeSkillsDigest: "home:folder",
     workspacePath: "/task",
     writableRoots: ["/task", "/agent-home"],
   };
@@ -41,7 +41,7 @@ it("invalidates warm reuse for tool inventory, instructions, roots and discovere
   expect(warmEngineKey(input)).toBe(before);
   for (const change of [
     { ...input, instructions: "Changed home instructions" },
-    { ...input, folderSkillsDigest: "home:changed" },
+    { ...input, homeSkillsDigest: "home:changed" },
     { ...input, writableRoots: ["/task", "/another-home"] },
     {
       ...input,

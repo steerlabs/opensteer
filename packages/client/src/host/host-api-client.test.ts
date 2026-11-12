@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
+import { bufferedHostResponseTimeoutMs } from "../connections/host-response-deadline.js";
 import { createHttpHostApiClient } from "./host-api-client.js";
 
 describe("HTTP Host rpc response parsing", () => {
@@ -60,7 +61,7 @@ describe("HTTP Host rpc response parsing", () => {
 });
 
 describe("bounded Host rpc requests", () => {
-  it("sends a maximum valid file key and percent-expanded search in JSON bodies", async () => {
+  it("sends a percent-expanded search in a JSON body", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () =>
       Response.json(
         { error: { code: "forbidden", message: "No access.", retryable: false }, ok: false },
@@ -72,16 +73,13 @@ describe("bounded Host rpc requests", () => {
       fetch,
       onAuthenticationRequired: vi.fn(),
     });
-    const folder = { computerId: createId("runner"), path: "/tmp/project" };
-    await client["folder.files.list"]({ parentKey: "a".repeat(5_462), folder });
     await client["thread.messages.list"]({ threadId: createId("thread"), query: "界".repeat(256) });
-    expect(fetch).toHaveBeenCalledTimes(2);
-    for (const [url, init] of fetch.mock.calls) {
-      expect(new URL(url.toString()).search).toBe("");
-      expect(init?.method).toBe("POST");
-      expect(init?.headers).toMatchObject({ "content-type": "application/json" });
-    }
-    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).parentKey).toHaveLength(5_462);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(new URL(url.toString()).search).toBe("");
+    expect(init?.method).toBe("POST");
+    expect(init?.headers).toMatchObject({ "content-type": "application/json" });
+    expect(JSON.parse(String(init?.body)).query).toHaveLength(256);
   });
 
   it("refuses invalid payload before fetch with an operation-local error", async () => {
@@ -91,9 +89,9 @@ describe("bounded Host rpc requests", () => {
       fetch,
       onAuthenticationRequired: vi.fn(),
     });
-    const result = await client["folder.files.list"]({
-      parentKey: "a".repeat(5_463),
-      folder: { computerId: createId("runner"), path: "/tmp/project" },
+    const result = await client["thread.messages.list"]({
+      threadId: createId("thread"),
+      query: "a".repeat(257),
     });
     expect(result).toMatchObject({
       ok: false,
@@ -269,36 +267,6 @@ it("asks for sign-in as soon as a refusal's headers arrive, even if its body sta
   }
 });
 
-it("keeps the preview byte limit on the decoded stream", async () => {
-  const client = createHttpHostApiClient({
-    baseUrl: new URL("https://host.example"),
-    onAuthenticationRequired: vi.fn(),
-    fetch: async () =>
-      Response.json({
-        ok: true,
-        data: {
-          content: "🌺".repeat(131_073),
-          metadata: {
-            contentType: "text/plain",
-            etag: "mock",
-            modifiedAt: null,
-            sizeBytes: 524_292,
-            truncated: false,
-          },
-        },
-      }),
-  });
-  await expect(
-    client["folder.files.preview"]({
-      folder: { computerId: createId("runner"), path: "/tmp/project" },
-      fileKey: "file",
-    }),
-  ).resolves.toMatchObject({
-    ok: false,
-    error: { reason: "transport-response-too-large", retryable: false },
-  });
-});
-
 it("bounds an unavailable JS body stream with a size-scaled fallback", async () => {
   vi.useFakeTimers();
   try {
@@ -315,13 +283,10 @@ it("bounds an unavailable JS body stream with a size-scaled fallback", async () 
         } as Response;
       },
     });
-    const pending = client["folder.files.preview"]({
-      folder: { computerId: createId("runner"), path: "/tmp/project" },
-      fileKey: "file",
-    });
-    await vi.advanceTimersByTimeAsync(45_000);
+    const pending = client["auth.config"]({});
+    await vi.advanceTimersByTimeAsync(bufferedHostResponseTimeoutMs(16 * 1_024 * 1_024) - 1);
     expect(signal?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(512_000);
+    await vi.advanceTimersByTimeAsync(1);
     await expect(pending).resolves.toMatchObject({
       ok: false,
       error: { reason: "transport-timed-out", retryable: true },

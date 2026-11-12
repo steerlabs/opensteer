@@ -40,17 +40,7 @@ export async function assignmentSummaryInTransaction(
 ): Promise<AssignmentSummary> {
   const worker = await transaction
     .selectFrom("threads")
-    .select([
-      "environmentId",
-      "folderComputerId",
-      "folderPath",
-      "id",
-      "title",
-      "icon",
-      "color",
-      "status",
-      "pendingRequestCount",
-    ])
+    .select(["environmentId", "id", "title", "icon", "color", "status", "pendingRequestCount"])
     .where("id", "=", row.childThreadId)
     .executeTakeFirstOrThrow();
   const [currentRun, parentRun] = await Promise.all([
@@ -94,7 +84,6 @@ export async function assignmentSummaryInTransaction(
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     workerThread: {
-      folder: { computerId: worker.folderComputerId, path: worker.folderPath },
       environmentId: worker.environmentId,
       id: worker.id,
       pendingRequests: worker.pendingRequestCount,

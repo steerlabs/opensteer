@@ -2262,10 +2262,7 @@ function executeCommand(
 
   return {
     commandId,
-    location: {
-      folder: { computerId: createId("runner"), path: "/tmp/task" },
-      agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
     context: {
       personalContext: true,
       taskPurpose: "task",
@@ -2445,10 +2442,7 @@ function triggerCommand(environmentId: ReturnType<typeof createId<"environment">
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),
     environmentId,
-    location: {
-      folder: { computerId: createId("runner"), path: "/tmp/task" },
-      agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
     type: "trigger.execute",
   }) as Extract<
     RunnerCommand,

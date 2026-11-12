@@ -101,7 +101,6 @@ async function ensureVoiceThread(
       modelSelection,
       title: "Voice",
       purpose: "voice",
-      folder: settings.agentHome,
     },
     {
       unlisted: true,

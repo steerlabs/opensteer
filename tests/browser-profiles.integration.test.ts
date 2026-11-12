@@ -178,14 +178,11 @@ async function profileTurn(
   evidence: Evidence,
   plan: Record<string, unknown>,
   threadId?: ThreadId,
-  folder = stack.agentHome,
   onQueued?: Parameters<VerticalStack["sendMessage"]>[0]["onQueued"],
 ): Promise<{ report: Report; threadId: ThreadId }> {
   threadId ??= await stack.createThread({
     idempotencyKey: randomUUID(),
     title: "Browser profile journey",
-    folder,
-
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
       providerId: "openai",
@@ -239,8 +236,6 @@ async function fulfillNewProfile(
   people?: HttpHostClient[],
   laterWake = false,
 ) {
-  const folder = await stack.createFolder("Brex folder");
-
   let requestId!: RequestId;
   const originalWait = RequestHold.prototype.wait;
   const limit = laterWake
@@ -253,66 +248,59 @@ async function fulfillNewProfile(
     : undefined;
   let first: Awaited<ReturnType<typeof profileTurn>>;
   try {
-    first = await profileTurn(
-      stack,
-      evidence,
-      { request: true },
-      undefined,
-      folder,
-      async (runId) => {
-        const request = await vi.waitFor(
+    first = await profileTurn(stack, evidence, { request: true }, undefined, async (runId) => {
+      const request = await vi.waitFor(
+        async () => {
+          const rows = await stack.host.store.database
+            .selectFrom("requests")
+            .selectAll()
+            .where("originatingRunId", "=", runId)
+            .execute();
+          expect(rows, "profile tool did not open its Request").toHaveLength(1);
+          return rows[0]!;
+        },
+        { timeout: 10_000 },
+      );
+      requestId = request.id;
+      if (laterWake)
+        await vi.waitFor(
           async () => {
-            const rows = await stack.host.store.database
-              .selectFrom("requests")
-              .selectAll()
-              .where("originatingRunId", "=", runId)
-              .execute();
-            expect(rows, "profile tool did not open its Request").toHaveLength(1);
-            return rows[0]!;
+            const run = await stack.host.store.database
+              .selectFrom("runs")
+              .select("status")
+              .where("id", "=", runId)
+              .executeTakeFirstOrThrow();
+            expect(run.status, "hold limit did not stop the originating Run").toBe("interrupted");
           },
           { timeout: 10_000 },
         );
-        requestId = request.id;
-        if (laterWake)
-          await vi.waitFor(
-            async () => {
-              const run = await stack.host.store.database
-                .selectFrom("runs")
-                .select("status")
-                .where("id", "=", runId)
-                .executeTakeFirstOrThrow();
-              expect(run.status, "hold limit did not stop the originating Run").toBe("interrupted");
-            },
-            { timeout: 10_000 },
-          );
-        const resolved = await stack.api["commands.dispatch"]({
-          type: "request.respond",
-          requestId,
-          idempotencyKey: randomUUID(),
-          response: {
-            kind: "external",
-            value: { decision: "fulfilled", createProfile: { name: "Brex Ops" } },
+      const resolved = await stack.api["commands.dispatch"]({
+        type: "request.respond",
+        requestId,
+        idempotencyKey: randomUUID(),
+        response: {
+          kind: "external",
+          value: { decision: "fulfilled", createProfile: { name: "Brex Ops" } },
+        },
+      });
+      evidence.observations.push({ resolved });
+      if (!resolved.ok) throw new Error(resolved.error.message);
+      if (laterWake)
+        return vi.waitFor(
+          async () => {
+            const next = await stack.host.store.database
+              .selectFrom("runs")
+              .select("id")
+              .where("threadId", "=", request.originatingThreadId!)
+              .where("id", "!=", runId)
+              .executeTakeFirst();
+            expect(next, "Request answer did not wake the Thread").toBeDefined();
+            return next!.id;
           },
-        });
-        evidence.observations.push({ resolved });
-        if (!resolved.ok) throw new Error(resolved.error.message);
-        if (laterWake)
-          return vi.waitFor(
-            async () => {
-              const next = await stack.host.store.database
-                .selectFrom("runs")
-                .select("id")
-                .where("threadId", "=", request.originatingThreadId!)
-                .where("id", "!=", runId)
-                .executeTakeFirst();
-              expect(next, "Request answer did not wake the Thread").toBeDefined();
-              return next!.id;
-            },
-            { timeout: 10_000 },
-          );
-        return undefined;
-      },
-    );
+          { timeout: 10_000 },
+        );
+      return undefined;
+    });
     if (!laterWake) expect(first.report.request).toMatchObject({ requestId, status: "fulfilled" });
   } finally {
     limit?.mockRestore();
@@ -355,7 +343,6 @@ run("Browser profiles through a whole deployment", () => {
         request: { replay: true },
       },
       undefined,
-      stack.agentHome,
       async (runId) => {
         const request = await vi.waitFor(
           async () => {
@@ -445,67 +432,60 @@ run("Browser profiles through a whole deployment", () => {
     }
   });
 
-  journey(
-    "J2-authority home-folder, explicit-folder and delegated tool inventories",
-    async (evidence) => {
-      const { stack } = await profileDeployment();
-      const folder = await stack.createFolder("Folder authority");
-      const main = await profileTurn(stack, evidence, {});
-      const project = await profileTurn(stack, evidence, {}, undefined, folder);
-      const delegated = await profileTurn(stack, evidence, { delegate: folder }, main.threadId);
-      const childId = delegated.report.delegated!.threadId;
-      let child: Report | undefined;
-      await waitFor(async () => {
-        const snapshot = await stack.host.store.deploymentSnapshot();
-        const text = snapshot.messages
-          .filter((message) => message.threadId === childId && message.kind === "assistant")
-          .flatMap((message) => message.content)
-          .flatMap((part) => (part.type === "text" ? [part.text] : []))
-          .at(-1);
-        if (!text) return false;
-        child = reportSchema.parse(JSON.parse(text));
-        return true;
-      }, 30_000);
-      evidence.observations.push({ kind: "delegated", threadId: childId, report: child });
-      evidence.observations.push({
-        inventories: {
-          main: main.report.tools,
-          folder: project.report.tools,
-          delegated: child!.tools,
-        },
-      });
-      for (const [kind, report] of [
-        ["main", main.report],
-        ["folder", project.report],
-        ["delegated", child!],
-      ] as const) {
-        equal(
-          evidence,
-          `${kind} cannot create profiles`,
-          report.tools!.includes("browser_profile_create"),
-          false,
-        );
-        equal(
-          evidence,
-          `${kind} can request a profile`,
-          report.tools!.includes("browser_profile_request"),
-          true,
-        );
-        equal(
-          evidence,
-          `${kind} does not offer retired save`,
-          report.tools!.includes("browser_profile_save"),
-          false,
-        );
-        equal(
-          evidence,
-          `${kind} does not offer retired sign-in`,
-          report.tools!.includes("browser_sign_in"),
-          false,
-        );
-      }
-    },
-  );
+  journey("J2-authority task and delegated tool inventories", async (evidence) => {
+    const { stack } = await profileDeployment();
+    const main = await profileTurn(stack, evidence, {});
+    const delegated = await profileTurn(stack, evidence, { delegate: true }, main.threadId);
+    const childId = delegated.report.delegated!.threadId;
+    let child: Report | undefined;
+    await waitFor(async () => {
+      const snapshot = await stack.host.store.deploymentSnapshot();
+      const text = snapshot.messages
+        .filter((message) => message.threadId === childId && message.kind === "assistant")
+        .flatMap((message) => message.content)
+        .flatMap((part) => (part.type === "text" ? [part.text] : []))
+        .at(-1);
+      if (!text) return false;
+      child = reportSchema.parse(JSON.parse(text));
+      return true;
+    }, 30_000);
+    evidence.observations.push({ kind: "delegated", threadId: childId, report: child });
+    evidence.observations.push({
+      inventories: {
+        main: main.report.tools,
+        delegated: child!.tools,
+      },
+    });
+    for (const [kind, report] of [
+      ["main", main.report],
+      ["delegated", child!],
+    ] as const) {
+      equal(
+        evidence,
+        `${kind} cannot create profiles`,
+        report.tools!.includes("browser_profile_create"),
+        false,
+      );
+      equal(
+        evidence,
+        `${kind} can request a profile`,
+        report.tools!.includes("browser_profile_request"),
+        true,
+      );
+      equal(
+        evidence,
+        `${kind} does not offer retired save`,
+        report.tools!.includes("browser_profile_save"),
+        false,
+      );
+      equal(
+        evidence,
+        `${kind} does not offer retired sign-in`,
+        report.tools!.includes("browser_sign_in"),
+        false,
+      );
+    }
+  });
 
   journey(
     "J3 renamed Request outcome survives restart and names its exact profile",

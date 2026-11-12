@@ -1356,75 +1356,6 @@ label.action-row input {
   background-color: var(--fill-plate-hover);
 }
 
-/* Who should do it: Opensteer or a project, under the composer that will
-   start the task. */
-.assignee {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-8);
-  color: var(--muted);
-  font-size: var(--text-md);
-}
-
-.assignee__button {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  height: 28px;
-  padding: 0 var(--space-10);
-  border: 0;
-  border-radius: var(--radius-full);
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--text-sm);
-  white-space: nowrap;
-  transition:
-    border-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-}
-
-.assignee__button:hover,
-.assignee__button[aria-expanded="true"] {
-  color: var(--text);
-  background-color: var(--fill-quiet);
-}
-
-.assignee__button .brand__mark {
-  width: 14px;
-  height: 14px;
-}
-
-.assignee__button > svg {
-  width: 13px;
-  height: 13px;
-  color: var(--muted);
-}
-
-.assignee__name {
-  max-width: 16rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Short of room the chip keeps only its mark, so the model's name stays. */
-.assignee [data-folded] {
-  display: none;
-}
-
-.assignee__button:has([data-folded]) {
-  justify-content: center;
-  min-width: 32px;
-}
-
-.assignee-popover {
-  width: min(320px, calc(100vw - 20px));
-}
-
-.assignee-popover .brand__mark {
-  width: 16px;
-  height: 16px;
-}
-
 @media (max-width: 680px) {
   .transcript {
     padding: var(--space-18) calc(var(--space-14) + env(safe-area-inset-right, 0px)) var(--space-22)
@@ -2215,11 +2146,6 @@ fieldset.action-panel {
   }
   .execution-switch[data-on="true"] i {
     transform: translateX(16px);
-  }
-  .assignee__button {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0 var(--space-4);
   }
 }
 .exec-controls .exec-summary[data-folded] {

@@ -176,7 +176,6 @@ export async function channelInputAuthorityIsCurrent(
     accessPolicy: row.accessPolicy,
     revision: row.revision,
     status: row.status,
-    folder: { computerId: row.folderComputerId, path: row.folderPath },
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });

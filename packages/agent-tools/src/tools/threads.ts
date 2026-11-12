@@ -11,7 +11,6 @@ import {
   PlaceContentPartSchema,
   ThreadIdSchema,
   ThreadTitleSchema,
-  TaskFolderSchema,
 } from "@opensteer/core";
 
 import { z } from "zod";
@@ -93,7 +92,6 @@ export const thread_list = defineAgentTool({
     limit: z.number().int().min(1).max(50).default(25),
     parentThreadId: z.union([ThreadIdSchema, z.literal("self")]).optional(),
     query: z.string().trim().min(1).max(256).optional().describe("Search titles."),
-    folder: TaskFolderSchema.optional(),
   }),
   output: ThreadListOutputSchema,
   access: "read",
@@ -105,7 +103,7 @@ export const delegate_task = defineAgentTool({
   targetFields: ["threadId"],
   title: "Start or continue a task",
   description:
-    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Omit `folder` to use the current task's folder; connections default to agent home. An explicit folder selects computerId and absolute path. Existing tasks keep their folder. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
+    "Start one task, or continue a finished one with `threadId`, keeping its engine/model. Starting context is only `task` and `places`; no secrets. Keep `assignmentId` for status, wait or cancel. mode async returns admission; mode wait uses thread_wait with timeoutMs. Results reach Runs/programs automatically unless the assigner read them first; a task that ends with no reply wakes no one, so ask conditional checks to end that way when nothing merits passing on. Connections get no Assignment: wait on threadId. Change active work with thread_send.",
   input: z
     .strictObject({
       mode: z.enum(["async", "wait"]).default("async"),
@@ -147,20 +145,11 @@ export const delegate_task = defineAgentTool({
         .max(256)
         .optional()
         .describe("Ready specialist registration ID or plugin name."),
-      folder: TaskFolderSchema.optional().describe(
-        "New task folder on the hosting computer; omit when reusing threadId.",
-      ),
       threadId: ThreadIdSchema.optional().describe(
         "Finished task to continue; omit new-task selectors.",
       ),
     })
     .superRefine((input, context) => {
-      if (input.threadId && input.folder) {
-        context.addIssue({
-          code: "custom",
-          message: "Choose folder for a new task or threadId to reuse a task",
-        });
-      }
       if (input.threadId && (input.harnessInstanceId || input.model)) {
         context.addIssue({
           code: "custom",

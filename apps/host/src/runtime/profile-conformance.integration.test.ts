@@ -111,18 +111,11 @@ integration("Personal configuration conformance", () => {
     }
   });
 
-  it("uses its admitted task folder through a real Runner turn and durable completion", async () => {
+  it("runs a task through a real Runner turn and durable completion", async () => {
     const run = await dispatchCallerRun(host, caller, {
       key: "conformance",
       title: "Conformance task",
     });
-    expect(
-      await host.store.database
-        .selectFrom("threads")
-        .select(["folderComputerId", "folderPath"])
-        .where("id", "=", run.threadId)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ folderComputerId: host.hostingComputerId, folderPath: host.agentHome.path });
     await run.complete();
     expect(
       await host.store.database

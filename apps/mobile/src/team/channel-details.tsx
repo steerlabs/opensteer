@@ -19,7 +19,7 @@ import {
 } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { GroupNote, LinkRow, SwitchSettingRow } from "./settings-rows.js";
-import { AgentOrb, Avatar, PeopleOnlyBadge, peopleOnlySentence } from "./team-marks.js";
+import { Avatar, PeopleOnlyBadge, peopleOnlySentence } from "./team-marks.js";
 import type { ChannelHeaderView, MemberRowView } from "./team-models.js";
 
 export type NotifyLevel = "everything" | "mentions" | "nothing";
@@ -30,8 +30,6 @@ export interface ChannelDetailsActions {
   readonly onPinned: () => void;
   readonly onKnowledge: () => void;
   readonly onInstructions: () => void;
-  /** "Your agent here": the folder on the reader's own Opensteer that runs from here use. */
-  readonly onAgentFolder: () => void;
   readonly onNotify: () => void;
   readonly onEditAbout: () => void;
   readonly onSetPeopleOnly: (on: boolean) => void;
@@ -51,8 +49,6 @@ export function ChannelDetailsBody(props: {
   readonly channel: ChannelHeaderView;
   readonly canManage: boolean;
   readonly counts: { readonly files: number; readonly pinned: number };
-  /** The folder agent runs from here use on the reader's Opensteer; null where agents can't be asked. */
-  readonly agentFolder: string | null;
   readonly notify: NotifyLevel;
   /** Agents working here right now, named in the People only confirmation. */
   readonly workingAgents: number;
@@ -148,23 +144,6 @@ export function ChannelDetailsBody(props: {
           ),
         ].filter((row) => row !== null)}
       </RowGroup>
-      {props.agentFolder === null ? null : (
-        <View style={styles.group}>
-          <SectionLabel>Your agent here · on your Opensteer</SectionLabel>
-          <RowGroup>
-            {[
-              <LinkRow
-                key="folder"
-                label="Works in"
-                mark={<AgentOrb size={18} />}
-                onPress={actions.onAgentFolder}
-                value={props.agentFolder}
-              />,
-            ]}
-          </RowGroup>
-          <GroupNote>Changes apply to new asks. Only you see this.</GroupNote>
-        </View>
-      )}
       <View style={styles.group}>
         <SectionLabel>You</SectionLabel>
         <RowGroup>

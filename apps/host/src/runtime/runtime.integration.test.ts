@@ -165,7 +165,7 @@ integration("Host vertical slice", () => {
     dataDirectory = undefined;
   });
 
-  it("runs in a chosen folder and carries a Runner turn through durable projection", async () => {
+  it("runs in Agent home and carries a Runner turn through durable projection", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-integration-"));
     const hostPort = await freePort();
     const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
@@ -243,7 +243,6 @@ integration("Host vertical slice", () => {
       deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
-    const folderPath = await realpath(await mkdtemp(join(dataDirectory, "chosen-")));
     let harnessInstanceId = "";
     await waitForCondition(async () => {
       const connectedBootstrap = await testRpcData(
@@ -271,7 +270,6 @@ integration("Host vertical slice", () => {
         modelSelection: testModelSelection,
         title: "Do the work",
         type: "thread.create",
-        folder: { computerId: runnerId, path: folderPath },
       },
       { headers: authorization(accessToken) },
     );
@@ -371,7 +369,10 @@ integration("Host vertical slice", () => {
             type: "runner.command-accepted",
           }),
         );
-        expect(command.location.folder).toEqual({ computerId: runnerId, path: folderPath });
+        expect(command.agentHome).toEqual(
+          (await personalSettings(runtime!.store.database)).agentHome,
+        );
+        expect(command.agentHome.computerId).toBe(runnerId);
         runnerSocket?.send(
           JSON.stringify({
             ...fence,
@@ -883,12 +884,10 @@ integration("Host vertical slice", () => {
       runnerConnection.challenge,
     );
     const ownerId = await administratorId(runtime.store);
-    const folder = (
-      await vi.waitFor(() => personalSettings(runtime!.store.database), {
-        timeout: 5_000,
-        interval: 25,
-      })
-    ).agentHome;
+    await vi.waitFor(() => personalSettings(runtime!.store.database), {
+      timeout: 5_000,
+      interval: 25,
+    });
     // A driver the Runner reports as unavailable is not seeded a default
     // profile, and adding one is refused: an engine the Runner cannot run has
     // no source to validate against. This case's unavailable account is one
@@ -1000,7 +999,6 @@ integration("Host vertical slice", () => {
         modelSelection: testModelSelection,
         title: "Must not be created",
         type: "thread.create",
-        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1033,7 +1031,6 @@ integration("Host vertical slice", () => {
         ...createBody,
         idempotencyKey: "placement-claude",
         type: "thread.create",
-        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1131,7 +1128,6 @@ integration("Host vertical slice", () => {
         ...createBody,
         idempotencyKey: "placement-claude",
         type: "thread.create",
-        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1320,12 +1316,10 @@ integration("Host vertical slice", () => {
 
     try {
       const ownerId = await administratorId(runtime.store);
-      const folder = (
-        await vi.waitFor(() => personalSettings(runtime!.store.database), {
-          timeout: 5_000,
-          interval: 25,
-        })
-      ).agentHome;
+      await vi.waitFor(() => personalSettings(runtime!.store.database), {
+        timeout: 5_000,
+        interval: 25,
+      });
 
       await publication.entered;
       const harnesses = await runtime.store.listHarnessInstances({
@@ -1376,7 +1370,6 @@ integration("Host vertical slice", () => {
         idempotencyKey: "rejection-runtime-thread",
         modelSelection: testModelSelection,
         title: "Reject this dispatch",
-        folder,
       });
 
       realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
@@ -1523,12 +1516,10 @@ integration("Host vertical slice", () => {
     const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
 
     const ownerId = await administratorId(runtime.store);
-    const folder = (
-      await vi.waitFor(() => personalSettings(runtime!.store.database), {
-        timeout: 5_000,
-        interval: 25,
-      })
-    ).agentHome;
+    await vi.waitFor(() => personalSettings(runtime!.store.database), {
+      timeout: 5_000,
+      interval: 25,
+    });
 
     const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
@@ -1538,7 +1529,6 @@ integration("Host vertical slice", () => {
       idempotencyKey: "disconnect-runtime-thread",
       modelSelection: testModelSelection,
       title: "Disconnect me",
-      folder,
     });
     const commandPromise = waitForRunnerExecution(runnerSocket);
     const turn = await runtime.store.enqueueThreadInput({
@@ -1748,7 +1738,6 @@ integration("Host vertical slice", () => {
       },
       { sendToUsers: () => undefined },
     );
-    const folder = (await personalSettings(seedStore.database)).agentHome;
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -1764,7 +1753,6 @@ integration("Host vertical slice", () => {
       idempotencyKey: "restart-runtime-thread",
       modelSelection: testModelSelection,
       title: "Recover me",
-      folder,
     });
     const turn = await seedStore.enqueueThreadInput({
       content: [{ text: "The Host will restart after claiming this", type: "text" }],
@@ -1820,7 +1808,6 @@ integration("Host vertical slice", () => {
       idempotencyKey: "stranded-thread-state",
       modelSelection: testModelSelection,
       title: "Stranded projection",
-      folder,
     });
     await seedDatabase
       .updateTable("threads")

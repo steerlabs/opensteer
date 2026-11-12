@@ -15,7 +15,9 @@ export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRun
       const environment = await store.database
         .selectFrom("executionEnvironments")
         .select("id")
-        .where("runnerId", "=", input.folder.computerId)
+        .where("runnerId", "=", (eb) =>
+          eb.selectFrom("personalSettings").select("agentHomeComputerId"),
+        )
         .executeTakeFirstOrThrow();
       const harnessInstance = await store.createHarnessInstance({
         config: {},
@@ -31,7 +33,6 @@ export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRun
       });
       const { thread } = await store.createThread({
         createdBy: ownerId,
-        folder: input.folder,
         environmentId: environment.id,
         harnessInstanceId: harnessInstance.id,
         modelSelection: testModelSelection,

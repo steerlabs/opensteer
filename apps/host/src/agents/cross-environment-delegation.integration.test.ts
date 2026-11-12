@@ -3,7 +3,7 @@ import { OrchestratorCapabilitiesSchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
-import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
+import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -85,7 +85,7 @@ integration("personal task delegation lifecycle", () => {
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
-  let folders: ReturnType<typeof personalTestFolders>;
+  let execution: ReturnType<typeof personalTestExecution>;
   const directories: string[] = [];
   const service = new ProductToolsTestClient({
     placeContext: {
@@ -125,9 +125,9 @@ integration("personal task delegation lifecycle", () => {
         return claims;
       },
     } as unknown as RunToolTokenService,
-    folders: {
-      resolve: (...args) => folders.resolve(...args),
-      canExecute: (id) => folders.canExecute(id),
+    execution: {
+      environmentFor: (ownerId) => execution.environmentFor(ownerId),
+      canExecute: (id) => execution.canExecute(id),
     },
   });
   beforeAll(async () => {
@@ -274,7 +274,6 @@ integration("personal task delegation lifecycle", () => {
     } as const;
     const first = await commands.delegateThread({
       accessMode: "auto",
-      folder: fixture.agentHome,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -355,7 +354,6 @@ integration("personal task delegation lifecycle", () => {
     ] as const;
     const child = await commands.delegateThread({
       accessMode: "auto",
-      folder: fixture.agentHome,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -2041,7 +2039,7 @@ integration("personal task delegation lifecycle", () => {
       // One task waits on its Request with no Run left to serialize on; a
       // sibling keeps its Runner busy in the same worker Workspace.
       // Past the per-Run agent quota, so the parent Run delegates directly.
-      const task = await delegateFromParent(fixture, fixture.agentHome, `Research round ${round}`);
+      const task = await delegateFromParent(fixture, `Research round ${round}`);
       reached("task delegated");
       const worker = await activateRun(fixture, task.run.id);
       reached("task Run active");
@@ -2049,11 +2047,7 @@ integration("personal task delegation lifecycle", () => {
       reached("Request open");
       await end(worker, "completed");
       reached("task Run ended");
-      const sibling = await delegateFromParent(
-        fixture,
-        fixture.agentHome,
-        `Sibling round ${round}`,
-      );
+      const sibling = await delegateFromParent(fixture, `Sibling round ${round}`);
       reached("sibling delegated");
       const siblingWorker = await activateRun(fixture, sibling.run.id);
       reached("sibling Run active");
@@ -2414,15 +2408,10 @@ integration("personal task delegation lifecycle", () => {
     const path = await realpath(await mkdtemp(join(tmpdir(), "personal-delegation-")));
     directories.push(path);
     const personal = await seedPersonalFixture(database, path);
-    const {
-      userId,
-      environmentId: mainEnvironmentId,
-      runnerId: mainRunnerId,
-      agentHome,
-    } = personal;
+    const { userId, environmentId: mainEnvironmentId, runnerId: mainRunnerId } = personal;
     const lentEnvironmentId = mainEnvironmentId;
     const lentRunnerId = mainRunnerId;
-    folders = personalTestFolders(store, personal);
+    execution = personalTestExecution(store, personal);
     const mainHarness = await store.createHarnessInstance({
       config: {},
       driverKind: options.lentDriverKind ?? nativeDriver,
@@ -2444,7 +2433,6 @@ integration("personal task delegation lifecycle", () => {
       idempotencyKey: `delegation-parent-${randomUUID()}`,
       modelSelection: testModelSelection,
       title: "Release coordination",
-      folder: agentHome,
     });
     const turn = await commands.enqueueThreadInput({
       content: [
@@ -2828,14 +2816,9 @@ integration("personal task delegation lifecycle", () => {
   }
 
   /** The parent Run hands out work through the Host path an automation also uses. */
-  function delegateFromParent(
-    fixture: Fixture,
-    folder: import("@opensteer/core").TaskFolder,
-    title: string,
-  ) {
+  function delegateFromParent(fixture: Fixture, title: string) {
     return commands.delegateThread({
       accessMode: "auto",
-      folder,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -3037,7 +3020,6 @@ integration("personal task delegation lifecycle", () => {
         issue,
       } as never,
       triggers: {} as never,
-      folders: { assertAvailable: (folder) => folders.assertAvailable(folder) },
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
       },

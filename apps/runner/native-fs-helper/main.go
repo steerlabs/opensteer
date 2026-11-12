@@ -231,14 +231,14 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 	case "isolated-mount":
 		requireMountBoundary = input.Operation != "probe" && !allowNonMountRoot
 	case "managed-local":
-		// The Host authorizes the task folder; this helper enforces no-follow,
+		// The caller authorizes the root folder; this helper enforces no-follow,
 		// descriptor-relative traversal and same-device containment within it.
 	case "desktop-private":
 		return executeDesktopPrivate(input)
 	default:
 		return nil, userError("invalid-root-policy", "Native filesystem root policy is invalid")
 	}
-	root, err := openTaskFolderRoot(input.Root, requireMountBoundary)
+	root, err := openFilesystemRoot(input.Root, requireMountBoundary)
 	if err != nil {
 		return nil, err
 	}
@@ -628,7 +628,7 @@ func readRegularFile(fd nodeHandle, stat nodeStat) ([]byte, error) {
 	if stat.size > maxFileBytes {
 		return nil, userError("file-too-large", "Text file exceeds the 1 MiB limit")
 	}
-	file, err := duplicateNodeFile(fd, "task-folder-file")
+	file, err := duplicateNodeFile(fd, "root-file")
 	if err != nil {
 		return nil, err
 	}
@@ -650,13 +650,13 @@ func readDirectory(fd nodeHandle, maximum int) ([]string, bool, error) {
 	if maximum < 1 || maximum > 20000 {
 		return nil, false, userError("invalid-request", "Native filesystem directory bound is invalid")
 	}
-	file, err := duplicateNodeFile(fd, "task-folder-directory")
+	file, err := duplicateNodeFile(fd, "root-directory")
 	if err != nil {
 		return nil, false, err
 	}
 	// Read at most one entry beyond the caller's remaining traversal budget.
 	// This preserves deterministic sorting within the admitted window without
-	// allocating an entire million-inode task folder directory first.
+	// allocating an entire million-inode directory first.
 	entries, err := file.ReadDir(maximum + 1)
 	_ = file.Close()
 	if err != nil && !errors.Is(err, io.EOF) {

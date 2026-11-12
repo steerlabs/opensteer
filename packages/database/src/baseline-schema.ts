@@ -280,15 +280,6 @@ create table personal_team_links (
   primary key ("id")
 );
 
-create table personal_team_channel_folders (
-  "team_deployment_id" text not null,
-  "channel_id" text not null,
-  "computer_id" text not null,
-  "folder_path" text not null,
-  "updated_at" timestamptz not null default now(),
-  primary key ("team_deployment_id", "channel_id")
-);
-
 create table personal_team_requests (
   "team_deployment_id" text not null,
   "request_id" text not null,
@@ -353,8 +344,6 @@ create table apps (
 );
 
 create table app_versions (
-  "folder_computer_id" text,
-  "folder_path" text,
   "app_id" text not null,
   "version" integer not null,
   "sha256" text,
@@ -1060,8 +1049,6 @@ create table threads (
   "access_mode" text not null default 'full-access',
   "specialist_id" text,
   "purpose" text not null,
-  "folder_computer_id" text not null,
-  "folder_path" text not null,
   "team_id" text,
   "channel_id" text,
   "thread_root_id" bigint,
@@ -2087,8 +2074,6 @@ create table channel_access_grants (
 );
 
 create table channel_bindings (
-  "folder_computer_id" text not null,
-  "folder_path" text not null,
   "id" text not null,
   "account_id" text not null,
   "created_by" text not null,
@@ -2495,11 +2480,9 @@ alter table personal_settings add check (singleton_key = 'personal' and agent_ho
 alter table deployment_event_state add foreign key (deployment_id) references deployments(id);
 alter table deployment_event_state add check (sequence >= 0);
 alter table deployment_events add foreign key (deployment_id) references deployments(id);
-alter table threads add foreign key (folder_computer_id) references runners(id);
-alter table threads add check (folder_path <> '' and purpose in ('task','voice','background-job'));
+alter table threads add check (purpose in ('task','voice','background-job'));
 alter table threads add check ((team_id is null and channel_id is null and thread_root_id is null) or (team_id is not null and channel_id is not null and thread_root_id is not null and purpose = 'task'));
 create unique index threads_team_origin on threads(team_id,channel_id,thread_root_id) where team_id is not null;
-create index threads_folder_tasks on threads(folder_computer_id,folder_path,asked_at desc,id) where listed;
 create function opensteer_prevent_harness_instance_identity_change() returns trigger language plpgsql as $$
 begin
   if new.environment_id is distinct from old.environment_id
@@ -2536,17 +2519,17 @@ end $$;
 create trigger commands_execution_authority before insert or update of environment_id, thread_id, requested_by, type on commands
 for each row execute function opensteer_enforce_command_execution_authority();
 
-create function opensteer_keep_task_location() returns trigger language plpgsql as $$
+create function opensteer_keep_task_team_origin() returns trigger language plpgsql as $$
 begin
-  if row(old.folder_computer_id, old.folder_path, old.team_id, old.channel_id, old.thread_root_id)
-    is distinct from row(new.folder_computer_id, new.folder_path, new.team_id, new.channel_id, new.thread_root_id) then
-    raise exception 'A task folder and team origin never change' using errcode = '23514';
+  if row(old.team_id, old.channel_id, old.thread_root_id)
+    is distinct from row(new.team_id, new.channel_id, new.thread_root_id) then
+    raise exception 'A task''s team origin never changes' using errcode = '23514';
   end if;
   return new;
 end;
 $$;
-create trigger threads_keep_task_location before update of folder_computer_id, folder_path, team_id, channel_id, thread_root_id
-  on threads for each row execute function opensteer_keep_task_location();
+create trigger threads_keep_team_origin before update of team_id, channel_id, thread_root_id
+  on threads for each row execute function opensteer_keep_task_team_origin();
 
 create index deployment_events_thread_history on deployment_events(thread_id,sequence) where node_detail_id is null;
 create index deployment_events_node_detail on deployment_events(node_detail_id,sequence desc) where node_detail_id is not null;
@@ -2674,8 +2657,6 @@ alter table team_outbox add foreign key(message_id) references team_messages(id)
 alter table team_outbox add foreign key(notice_id) references team_notices(id);
 create index team_outbox_pending on team_outbox(created_at,id);
 alter table personal_team_links add unique(team_deployment_id);
-alter table personal_team_channel_folders add foreign key(team_deployment_id) references personal_team_links(team_deployment_id);
-alter table personal_team_channel_folders add foreign key(computer_id) references runners(id);
 alter table personal_team_requests add foreign key(team_deployment_id) references personal_team_links(team_deployment_id);
 alter table personal_team_requests add foreign key(local_task_id) references threads(id);
 alter table personal_team_requests add foreign key(local_input_id) references thread_inputs(message_id);
@@ -2685,9 +2666,8 @@ create index personal_team_requests_unpublished on personal_team_requests(team_d
 create index personal_team_requests_reply on personal_team_requests(team_deployment_id,accepted_message_id) where publication_state='accepted' and accepted_message_id is not null;
 
 create unique index triggers_system_role on triggers(system_role) where system_role is not null;
-create table folder_skill_inventory (
-  folder_computer_id text not null references runners(id) on delete cascade,
-  folder_path text not null,
+create table agent_home_skill_inventory (
+  computer_id text not null primary key references runners(id) on delete cascade,
   environment_id text not null references execution_environments(id) on delete cascade,
   boot_id text not null,
   connection_generation bigint not null,
@@ -2697,8 +2677,7 @@ create table folder_skill_inventory (
   scan_sequence bigint not null,
   scanned_at timestamptz not null,
   scan_status text not null check(scan_status in ('complete','failed')),
-  metadata jsonb not null,
-  primary key(folder_computer_id,folder_path)
+  metadata jsonb not null
 );
 
 alter table host_oauth_refresh_tokens add foreign key(session_id) references auth_sessions(id) on delete cascade;

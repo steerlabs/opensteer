@@ -2,7 +2,7 @@ import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
-import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
+import { personalTestExecution } from "../mcp/personal-execution.test-support.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -101,7 +101,7 @@ integration("agent-to-agent messaging round trip", () => {
       >(),
   };
   const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
-  let folders: ReturnType<typeof personalTestFolders>;
+  let execution: ReturnType<typeof personalTestExecution>;
   const service = new ProductToolsTestClient({
     computerUse,
     browserTabs,
@@ -140,9 +140,9 @@ integration("agent-to-agent messaging round trip", () => {
         return claims;
       },
     } as unknown as RunToolTokenService,
-    folders: {
-      resolve: (...args) => folders.resolve(...args),
-      canExecute: (id) => folders.canExecute(id),
+    execution: {
+      environmentFor: (ownerId) => execution.environmentFor(ownerId),
+      canExecute: (id) => execution.canExecute(id),
     },
   });
   beforeAll(async () => {
@@ -1447,8 +1447,8 @@ integration("agent-to-agent messaging round trip", () => {
     const path = join(evidenceRoot, randomUUID());
     await mkdir(path, { recursive: true });
     const personal = await seedPersonalFixture(database, path);
-    const { userId, runnerId, environmentId, agentHome } = personal;
-    folders = personalTestFolders(store, personal);
+    const { userId, runnerId, environmentId } = personal;
+    execution = personalTestExecution(store, personal);
     const harnessInstance = await store.createHarnessInstance({
       config: {
         model: "test",
@@ -1465,7 +1465,6 @@ integration("agent-to-agent messaging round trip", () => {
       expectedRevisions: new Map([[harnessInstance.id, harnessInstance.runtimeRevision]]),
     });
     const { thread: threadA } = await store.createThread({
-      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
@@ -1474,7 +1473,6 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Contract coordination",
     });
     const { thread: threadB } = await store.createThread({
-      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,

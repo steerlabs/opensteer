@@ -1,4 +1,3 @@
-import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { sql } from "kysely";
 import {
@@ -223,13 +222,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       await new PersonalTeamLinks(owned.runtime.api).join(code.data.offer);
     }
     const personal = personals[0]!;
-    const folder = {
-      computerId: personal.agentHome.computerId,
-      path: join(await realpath(team.directory), "remembered-private-folder"),
-    };
-    await mkdir(folder.path);
-    const personalLinks = new PersonalTeamLinks(personal.api);
-    await personalLinks.setFolder(team.host.deployment.id, channelId, folder);
     const ask = async (
       text: string,
       threadRootId: string | null = null,
@@ -298,10 +290,6 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       .where("teamId", "=", team.host.deployment.id)
       .execute();
     expect(tasks).toHaveLength(1);
-    expect(tasks[0]).toMatchObject({
-      folderPath: folder.path,
-      folderComputerId: folder.computerId,
-    });
     const nextRequest = (kind: "choice" | "form") =>
       personal.observe(
         async () => {
@@ -382,7 +370,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     });
     if (!page.ok) throw new Error(JSON.stringify(page.error));
     expect(JSON.stringify(page.data)).not.toContain("PRIVATE_ANSWER_Z4");
-    expect(JSON.stringify(page.data)).not.toContain(folder.path);
+    expect(JSON.stringify(page.data)).not.toContain(personal.agentHome.path);
     const request = await team.database
       .selectFrom("teamAgentRequests")
       .selectAll()

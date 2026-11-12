@@ -3,9 +3,9 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import {
-  listPersonalSkillInventory,
-  type PersonalSkillInventory,
-} from "./folder-skill-inventory-store.js";
+  agentHomeSkillInventory,
+  type AgentHomeSkillInventory,
+} from "./agent-home-skill-inventory-store.js";
 import { createId, OpensteerError, type UserId, RunnerIdSchema } from "@opensteer/core";
 import { pluginDeviceFromManifest } from "@opensteer/integration-core";
 import {
@@ -59,18 +59,18 @@ export async function pluginPolicyAllows(
   return setting?.enabled ?? true;
 }
 
-export type { PersonalSkillInventory } from "./folder-skill-inventory-store.js";
+export type { AgentHomeSkillInventory } from "./agent-home-skill-inventory-store.js";
 
 export class PluginSettingsStore {
   private readonly database: Kysely<DatabaseSchema>;
   private readonly inventory:
-    ((owner: UserId) => Promise<readonly PersonalSkillInventory[]>) | undefined;
+    ((owner: UserId) => Promise<AgentHomeSkillInventory | null>) | undefined;
   constructor(
     database: Kysely<DatabaseSchema>,
-    inventory?: (owner: UserId) => Promise<readonly PersonalSkillInventory[]>,
+    inventory?: (owner: UserId) => Promise<AgentHomeSkillInventory | null>,
   ) {
     this.database = database;
-    this.inventory = inventory ?? ((owner) => listPersonalSkillInventory(database, owner));
+    this.inventory = inventory ?? ((owner) => agentHomeSkillInventory(database, owner));
   }
 
   async affectedViewers(_input: {
@@ -146,7 +146,7 @@ export class PluginSettingsStore {
           .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
           .select(["integrationTools.name", "integrationServers.installationId"])
           .execute(),
-        this.inventory?.(owner) ?? Promise.resolve([]),
+        this.inventory?.(owner) ?? Promise.resolve(null),
       ]);
     const placement = (target: PluginTarget) => {
       const setting = settings.find((row) => row.targetKey === pluginTargetKey(target));
@@ -484,25 +484,15 @@ export class PluginSettingsStore {
 }
 
 export function projectLooseSkillRows(
-  inventory: readonly PersonalSkillInventory[],
+  inventory: AgentHomeSkillInventory | null,
   settings: readonly {
     readonly target: PluginTarget;
     readonly enabled: boolean;
     readonly revision: number;
   }[],
 ): PluginRow[] {
-  const ordered = [...inventory].sort(
-    (a, b) => Number(b.stale) - Number(a.stale) || a.observedAt.localeCompare(b.observedAt),
-  );
-  const skills = new Map(
-    ordered.flatMap((scan) =>
-      scan.skills.map(
-        (skill) =>
-          [skill.fullName, { ...skill, stale: scan.stale, scanStatus: scan.scanStatus }] as const,
-      ),
-    ),
-  );
-  return [...skills.values()].map((skill) => {
+  if (!inventory) return [];
+  return inventory.skills.map((skill) => {
     const target: PluginTarget = { kind: "skill", fullName: skill.fullName };
     const setting = settings.find((row) => pluginTargetKey(row.target) === pluginTargetKey(target));
     return {
@@ -514,7 +504,11 @@ export function projectLooseSkillRows(
       placement: { enabled: setting?.enabled ?? true, revision: setting?.revision ?? 0 },
       accountCount: 0,
       issues:
-        skill.scanStatus === "failed" ? ["waiting-setup"] : skill.stale ? ["waiting-device"] : [],
+        inventory.scanStatus === "failed"
+          ? ["waiting-setup"]
+          : inventory.stale
+            ? ["waiting-device"]
+            : [],
       contents: { skills: 1, tools: 0, specialists: 0 },
       permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
     };

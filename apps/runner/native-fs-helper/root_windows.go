@@ -55,7 +55,7 @@ var directoryMutexes = struct {
 	values map[windows.Handle]windows.Handle
 }{values: make(map[windows.Handle]windows.Handle)}
 
-func openTaskFolderRoot(rootPath string, requireMountBoundary bool) (*filesystemRoot, error) {
+func openFilesystemRoot(rootPath string, requireMountBoundary bool) (*filesystemRoot, error) {
 	cleaned, volumeRoot, err := validatedWindowsRootPath(rootPath)
 	if err != nil {
 		return nil, err
@@ -77,13 +77,13 @@ func openTaskFolderRoot(rootPath string, requireMountBoundary bool) (*filesystem
 	relative, err := filepath.Rel(volumeRoot, cleaned)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
 		root.close()
-		return nil, userError("invalid-root", "Native filesystem task folder root is outside its volume")
+		return nil, userError("invalid-root", "Native filesystem root folder is outside its volume")
 	}
 	if relative != "." {
 		for _, component := range strings.Split(relative, `\`) {
 			if !validWindowsComponent(component) {
 				root.close()
-				return nil, userError("invalid-root", "Native filesystem task folder root contains an invalid component")
+				return nil, userError("invalid-root", "Native filesystem root folder contains an invalid component")
 			}
 			next, openErr := root.openDirectoryAt(root.handle, component)
 			if openErr != nil {
@@ -96,23 +96,23 @@ func openTaskFolderRoot(rootPath string, requireMountBoundary bool) (*filesystem
 	}
 	if requireMountBoundary && !strings.EqualFold(cleaned, filepath.Clean(volumeRoot)) {
 		root.close()
-		return nil, userError("root-not-mount", "Native filesystem task folder root is not an isolated volume boundary")
+		return nil, userError("root-not-mount", "Native filesystem root folder is not an isolated volume boundary")
 	}
 	return root, nil
 }
 
 func validatedWindowsRootPath(rootPath string) (string, string, error) {
 	if rootPath == "" || !filepath.IsAbs(rootPath) || strings.ContainsRune(rootPath, 0) || len(rootPath) > 16*1024 {
-		return "", "", userError("invalid-root", "Native filesystem task folder root is invalid")
+		return "", "", userError("invalid-root", "Native filesystem root folder is invalid")
 	}
 	namespacePath := strings.ReplaceAll(rootPath, "/", `\`)
 	if hasWindowsDeviceNamespace(namespacePath) {
-		return "", "", userError("invalid-root", "Native filesystem task folder root uses an unsupported device namespace")
+		return "", "", userError("invalid-root", "Native filesystem root folder uses an unsupported device namespace")
 	}
 	cleaned := filepath.Clean(rootPath)
 	volume := filepath.VolumeName(cleaned)
 	if !validWindowsVolumeName(volume) {
-		return "", "", userError("invalid-root", "Native filesystem task folder root has no volume")
+		return "", "", userError("invalid-root", "Native filesystem root folder has no volume")
 	}
 	return cleaned, volume + `\`, nil
 }
@@ -171,7 +171,7 @@ func statOpenFile(file *os.File) (nodeStat, error) {
 }
 
 func (root *filesystemRoot) probe() error {
-	duplicate, err := duplicateNodeFile(root.handle, "task-folder-root-probe")
+	duplicate, err := duplicateNodeFile(root.handle, "root-root-probe")
 	if err == nil {
 		err = duplicate.Close()
 	}
@@ -183,15 +183,15 @@ func relativeParts(value string, allowRoot bool) ([]string, string, error) {
 		return nil, ".", nil
 	}
 	if value == "" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || strings.ContainsRune(value, 0) || len(value) > 4096 {
-		return nil, "", userError("invalid-path", "Path must be relative to the task folder")
+		return nil, "", userError("invalid-path", "Path must be relative to the root folder")
 	}
 	parts := strings.Split(value, "/")
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, "", userError("outside-workspace", "Path escapes the task folder")
+			return nil, "", userError("outside-workspace", "Path escapes the root folder")
 		}
 		if !validWindowsComponent(part) {
-			return nil, "", userError("invalid-path", "Task folder path component is invalid on Windows")
+			return nil, "", userError("invalid-path", "Path component is invalid on Windows")
 		}
 	}
 	return parts, strings.Join(parts, "/"), nil
@@ -335,7 +335,7 @@ func (root *filesystemRoot) openDirectoryAt(parent nodeHandle, name string) (nod
 	}
 	if stat.kind != "directory" {
 		closeNode(handle)
-		return windows.InvalidHandle, userError("unsafe-parent", "Task folder path contains a non-directory parent")
+		return windows.InvalidHandle, userError("unsafe-parent", "Path contains a non-directory parent")
 	}
 	if err := root.assertSameDevice(stat); err != nil {
 		closeNode(handle)
@@ -387,7 +387,7 @@ func statForHandle(handle windows.Handle, allowReparse bool) (nodeStat, error) {
 		return nodeStat{}, err
 	}
 	if information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 && !allowReparse {
-		return nodeStat{}, userError("symlink-denied", "Task folder paths containing reparse points are not available to Native tools")
+		return nodeStat{}, userError("symlink-denied", "Paths containing reparse points are not available to Native tools")
 	}
 	var identifier windowsFileIDInfo
 	if err := windows.GetFileInformationByHandleEx(
@@ -452,7 +452,7 @@ func (root *filesystemRoot) assertSameDevice(stat nodeStat) error {
 
 func (root *filesystemRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
 	if len(parts) == 0 {
-		return windows.InvalidHandle, "", userError("invalid-path", "Path must name a file inside the task folder")
+		return windows.InvalidHandle, "", userError("invalid-path", "Path must name a file inside the root folder")
 	}
 	var current windows.Handle
 	process := windows.CurrentProcess()
@@ -536,10 +536,10 @@ func (root *filesystemRoot) assertTargetIdentity(parent nodeHandle, name string,
 	stat, err := root.statNodeAt(parent, name)
 	if err == nil {
 		if stat.kind != "file" {
-			return userError("not-regular", "Task folder write target must be a regular file or a new path")
+			return userError("not-regular", "Write target must be a regular file or a new path")
 		}
 		if expected != nil && stat.identity != *expected {
-			return userError("concurrent-modification", "Task folder file changed while replace_text was running")
+			return userError("concurrent-modification", "File changed while replace_text was running")
 		}
 		return nil
 	}
@@ -547,7 +547,7 @@ func (root *filesystemRoot) assertTargetIdentity(parent nodeHandle, name string,
 		return err
 	}
 	if expected != nil {
-		return userError("concurrent-modification", "Task folder file changed while replace_text was running")
+		return userError("concurrent-modification", "File changed while replace_text was running")
 	}
 	return nil
 }
@@ -646,21 +646,21 @@ func platformPublicError(err error) (string, string, bool) {
 	err = normalizeWindowsError(err)
 	switch {
 	case isWindowsNotFound(err):
-		return "not-found", "Task folder path does not exist", true
+		return "not-found", "Path does not exist", true
 	case errors.Is(err, windows.ERROR_CANT_ACCESS_FILE):
-		return "symlink-denied", "Task folder paths containing reparse points are not available to Native tools", true
+		return "symlink-denied", "Paths containing reparse points are not available to Native tools", true
 	case errors.Is(err, windows.ERROR_DIRECTORY):
-		return "unsafe-parent", "Task folder path contains a reparse point or non-directory parent; reparse points are unavailable", true
+		return "unsafe-parent", "Path contains a reparse point or non-directory parent; reparse points are unavailable", true
 	case errors.Is(err, windows.ERROR_NOT_SAME_DEVICE):
 		return "cross-device", "Nested filesystem mounts are unavailable to Native tools", true
 	case errors.Is(err, windows.ERROR_ACCESS_DENIED), errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD):
-		return "permission-denied", "Task folder path is not accessible", true
+		return "permission-denied", "Path is not accessible", true
 	case errors.Is(err, windows.ERROR_INVALID_FUNCTION), errors.Is(err, windows.ERROR_INVALID_PARAMETER), errors.Is(err, windows.ERROR_NOT_SUPPORTED):
 		return "helper-unavailable", "Native filesystem containment is unavailable on this system", true
 	default:
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == windows.STATUS_REPARSE_POINT_ENCOUNTERED.Errno() {
-			return "symlink-denied", "Task folder paths containing reparse points are not available to Native tools", true
+			return "symlink-denied", "Paths containing reparse points are not available to Native tools", true
 		}
 		return "", "", false
 	}

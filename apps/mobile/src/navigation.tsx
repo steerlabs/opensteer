@@ -88,7 +88,6 @@ import {
 } from "./team/team-admin-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
 import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
-import { FolderPickerScreen } from "./home/folder-picker-screen.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
 import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
@@ -402,17 +401,6 @@ const RootStack = createNativeStackNavigator({
         title: "Connect your Opensteer",
       },
     },
-    // Where a new task works: from the folder chip on Home's composer.
-    FolderPicker: {
-      screen: FolderPickerScreen,
-      options: {
-        headerShown: false,
-        presentation: screenPresentations.FolderPicker,
-        sheetAllowedDetents: [0.6, 0.95],
-        sheetGrabberVisible: true,
-        title: "Folder",
-      },
-    },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
     SettingsSessionDetail: {
       screen: SettingsSessionDetailScreen,
@@ -633,12 +621,6 @@ type OpensteerRootParamList = {
   /** A team page link the person opened or pasted, or none for the paste field. */
   readonly JoinTeam: { readonly link?: string | undefined } | undefined;
   readonly ConnectOpensteer: { readonly teamId: string };
-  /** A new task's folder, or with a team channel named, the folder runs from it use. */
-  readonly FolderPicker: {
-    readonly deploymentId: string;
-    readonly teamId?: string | undefined;
-    readonly channelId?: string | undefined;
-  };
   readonly DoneTasks: { readonly deploymentId: string };
   readonly QuietlyMoved: { readonly deploymentId: string };
   readonly TeamHome: { readonly teamId: string };

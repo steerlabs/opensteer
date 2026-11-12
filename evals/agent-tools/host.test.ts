@@ -246,7 +246,7 @@ it("preserves production action validation before consuming mocks", async () => 
         "delegate_task",
         {
           task: "Two destinations",
-          folder: { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/other" },
+          harnessInstanceId: "hin_00000000-0000-4000-8000-000000000001",
           threadId: "thr_00000000-0000-4000-8000-000000000001",
         },
       ],

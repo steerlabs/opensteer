@@ -140,7 +140,6 @@ integration("Host, Runner, and Codex harness integration", () => {
       runTimeoutMs: 15_000,
     });
     const { host } = stack;
-    const workspace = await stack.createFolder("Vertical client workspace");
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
@@ -150,7 +149,6 @@ integration("Host, Runner, and Codex harness integration", () => {
         providerId: "openai",
       }),
       title: "Complete the request",
-      folder: workspace,
     });
     const turn = await stack.sendMessage({
       text: "Complete this deterministic integration request.",
@@ -217,10 +215,8 @@ integration("Host, Runner, and Codex harness integration", () => {
       nodes: [],
     });
 
-    expect(stack.folderPreparations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ location: expect.objectContaining({ folder: workspace }) }),
-      ]),
+    expect(stack.agentHomePreparations).toEqual(
+      expect.arrayContaining([expect.objectContaining({ agentHome: stack.agentHome })]),
     );
   });
   it("records what a Codex turn's own responses consumed, once each", async () => {

@@ -1,5 +1,5 @@
 import { threadAllowsPersonalContext } from "./run-personal-context.js";
-import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import {
@@ -2902,8 +2902,6 @@ async function resolveThreadInputFacts(
               "channelBindings.createdAt as bindingCreatedAt",
               "channelBindings.createdBy as bindingCreatedBy",
               "channelBindings.executionPolicy",
-              "channelBindings.folderComputerId",
-              "channelBindings.folderPath",
               "channelBindings.id as bindingId",
               "channelBindings.revision as currentBindingRevision",
               "channelBindings.selector",
@@ -2946,7 +2944,6 @@ async function resolveThreadInputFacts(
         createdAt: channelSource.bindingCreatedAt.toISOString(),
         createdBy: channelSource.bindingCreatedBy,
         executionPolicy: channelSource.executionPolicy,
-        folder: { computerId: channelSource.folderComputerId, path: channelSource.folderPath },
         id: channelSource.bindingId,
         revision: channelSource.currentBindingRevision,
         selector: channelSource.selector,
@@ -4819,7 +4816,6 @@ function canonicalDelegateThreadRequest(
     harnessInstanceId: input.harnessInstanceId,
     idempotencyKey: input.idempotencyKey,
     modelSelection: input.modelSelection,
-    ...(input.folder ? { folder: input.folder } : {}),
     origin: input.origin,
     task: input.task,
     ...(input.threadId
@@ -5101,14 +5097,6 @@ export async function delegateThreadInTransaction(
   if (existing) return existing;
 
   await requirePersonalOwner(transaction, input.createdBy);
-  const settings = await personalSettings(transaction);
-  const folder = input.folder ?? settings.agentHome;
-  if (folder.computerId !== settings.agentHome.computerId) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Tasks can run only on the computer hosting this personal Deployment",
-    });
-  }
   const observedTarget = input.threadId
     ? await transaction
         .selectFrom("threads")
@@ -5120,8 +5108,6 @@ export async function delegateThreadInTransaction(
           "purpose",
           "status",
           "inputQueuePaused",
-          "folderComputerId",
-          "folderPath",
         ])
         .where("id", "=", input.threadId)
         .executeTakeFirst()
@@ -5404,15 +5390,6 @@ export async function delegateThreadInTransaction(
         .executeTakeFirstOrThrow()
     : null;
   if (reusedRow) {
-    if (
-      input.folder &&
-      (reusedRow.folderComputerId !== folder.computerId || reusedRow.folderPath !== folder.path)
-    ) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "A task's folder cannot change. Start a new task in the selected folder.",
-      });
-    }
     await assertLineageCompatibleReuse(transaction, parent.id, reusedRow.id);
     if (input.specialistId && input.specialistId !== reusedRow.specialistId) {
       throw new OpensteerError({
@@ -5447,8 +5424,6 @@ export async function delegateThreadInTransaction(
         accessMode: ThreadAccessModeSchema.parse(input.accessMode),
         specialistId: input.specialistId ?? parent.specialistId,
         purpose: "task",
-        folderComputerId: folder.computerId,
-        folderPath: folder.path,
         teamId: null,
         channelId: null,
         threadRootId: null,

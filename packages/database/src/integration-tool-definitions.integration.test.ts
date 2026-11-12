@@ -78,7 +78,6 @@ integration.sequential("shared integration tool definitions E2E", () => {
     const ownerUserId = personal.userId;
     const task = await createPersonalRunFixturePort(store).createTask({
       ownerId: ownerUserId,
-      folder: personal.agentHome,
       suffix: "schemas",
     });
     const definitions: Record<string, Schema> = {};

@@ -202,11 +202,9 @@ integration("live streaming across the deployment", () => {
     temporary.push(scratch);
     const releaseFile = join(scratch, "release");
     const active = await start(releaseFile);
-    const folder = await active.createFolder("Live streaming");
     const threadId = await active.createThread({
       modelSelection,
       title: "Stream a long answer",
-      folder,
     });
     const early = await viewer(threadId);
     const queued = await active.queueMessage({
@@ -332,9 +330,7 @@ integration("live streaming across the deployment", () => {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-live-"));
     temporary.push(scratch);
     const active = await start(join(scratch, "release"));
-    const workspace = await active.createFolder("Interrupted stream");
     const threadId = await active.createThread({
-      folder: workspace,
       modelSelection,
       title: "Stop mid-answer",
     });
@@ -374,14 +370,11 @@ integration("live streaming across the deployment", () => {
     temporary.push(scratch);
     const releaseFile = join(scratch, "release");
     const active = await start(releaseFile, 2);
-    const workspace = await active.createFolder("Refusal isolation");
     const refusedThread = await active.createThread({
-      folder: workspace,
       modelSelection,
       title: "Refused",
     });
     const healthyThread = await active.createThread({
-      folder: workspace,
       modelSelection,
       title: "Healthy",
     });

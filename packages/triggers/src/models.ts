@@ -23,8 +23,8 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
  */
 export const triggerProgramContract = [
   "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
-  "with the anchor task folder as the working directory, so relative paths and relative imports",
-  "resolve from the task folder. The source must export one default function (async or not):",
+  "with Agent home as the working directory, so relative paths and relative imports",
+  "resolve from Agent home. The source must export one default function (async or not):",
   "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for computers and orchestrator_capabilities for engines and models.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
@@ -37,7 +37,7 @@ export const triggerProgramContract = [
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
   "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the owner.",
   "Supply a stable observationId with each watch call to thread_send or delegate_task; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
-  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in the task folder's own node_modules are available;",
+  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in Agent home's node_modules are available;",
   "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
   "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
   "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",

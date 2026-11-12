@@ -48,15 +48,15 @@ of you, say so plainly and get sign-off before breaking it.
   **Deployment** means one Host identity, with kind `personal` or `team`.
 - **Host**: `apps/host`. **Runner**: a process offering the modules its computer's grant allows.
   **Computer**: one enrolled Runner identity; tasks run only on the hosting computer.
-- **task**: a private durable agent conversation. Its **folder** is an immutable computer
-  and path; the default **agent home folder** is `~/Opensteer`. A **Run** is one turn.
+- **task**: a private durable agent conversation. Every task works in the **agent home folder**
+  (`~/Opensteer` on the hosting computer, fixed at first boot). A **Run** is one turn.
   **Voice** is a separate spoken entry. **Needs you** shows pending person decisions.
 - **your agent**: the person's one agent; only that person can wake it in a team.
   A **channel** is team-only chat; a **thread** is its one-level reply conversation.
   **people only** excludes agents from that channel or knowledge topic.
 - **link**: the authenticated connection from personal Opensteer to a team server.
   A **run ticket** is the team's scoped, expiring request, not a portable bearer token.
-- **Messaging bridge**: external messaging that starts or continues a task in a chosen folder.
+- **Messaging bridge**: external messaging that starts or continues a task.
 - **Request**: an answer, approval or sign-in a Run needs from a person.
 - **Engine**: an agent CLI driven through `packages/harness*`.
   **Agent Phone**: an Android phone made usable by agents through `apps/agent-phone`.

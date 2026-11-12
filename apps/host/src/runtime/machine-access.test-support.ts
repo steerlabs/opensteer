@@ -1,4 +1,4 @@
-import type { RunnerId, TaskFolder, UserId } from "@opensteer/core";
+import type { RunnerId, ComputerFolder, UserId } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import type { HostConfig } from "@opensteer/config";
 import type { PersonalHostRuntime } from "./runtime.js";
@@ -7,7 +7,7 @@ export interface MachineAccessHost {
   readonly api: HostApiClient;
   readonly ownerId: UserId;
   readonly hostingComputerId: RunnerId;
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly origin: URL;
   readonly remoteAccess: boolean;
   readonly runtime: PersonalHostRuntime;
@@ -19,11 +19,11 @@ export interface MachineAccessHost {
 }
 export interface MachineAccessFixtureOptions {
   readonly databaseUrl: string;
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly remoteAccess?: boolean;
   readonly startPersonal?: (input: {
     readonly databaseUrl: string;
-    readonly agentHome: TaskFolder;
+    readonly agentHome: ComputerFolder;
     readonly remoteAccess: boolean;
   }) => Promise<MachineAccessHost>;
 }

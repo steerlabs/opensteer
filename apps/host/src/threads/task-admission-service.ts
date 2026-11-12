@@ -20,12 +20,10 @@ import type {
   TeamTaskAdmission,
   TeamTaskAdmissionReceipt,
 } from "./task-admission.js";
-import type { FolderAdmissionService } from "./folder-admission-service.js";
 
 export class TaskAdmissionService implements TaskAdmissionPort {
   readonly options: {
     readonly database: Kysely<DatabaseSchema>;
-    readonly folders: Pick<FolderAdmissionService, "admit">;
     readonly execution: () => Promise<ExecutionSelection>;
     readonly publish: (events: readonly AgentEvent[]) => void;
     readonly revokeGrants: (grants: readonly RevokedRunGrant[]) => void;
@@ -50,20 +48,9 @@ export class TaskAdmissionService implements TaskAdmissionPort {
     await requirePersonalOwner(this.options.database, settings.ownerId);
     const prior = await findTeamTaskAdmission(this.options.database, input);
     if (prior) return prior;
-    const bound = await this.options.database
-      .selectFrom("threads")
-      .select(["folderComputerId", "folderPath"])
-      .where("teamId", "=", input.origin.teamId)
-      .where("channelId", "=", input.origin.channelId)
-      .where("threadRootId", "=", input.origin.threadRootId)
-      .executeTakeFirst();
-    const folder = await this.options.folders.admit(
-      bound ? { computerId: bound.folderComputerId, path: bound.folderPath } : input.folder,
-    );
     const admitted = await admitTeamTaskRequest(this.options.database, {
       ...input,
       source,
-      folder,
       ownerId: settings.ownerId,
       execution: await this.options.execution(),
     });

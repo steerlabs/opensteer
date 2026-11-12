@@ -43,7 +43,6 @@ export async function handleChannelCommand(
           createdBy: userId,
           provider: command.provider,
           routingMode: command.routingMode,
-          folder: command.folder,
         })),
         type: command.type,
       };
@@ -54,7 +53,6 @@ export async function handleChannelCommand(
           ownerHandles: command.ownerHandles,
           provider: command.provider,
           runnerId: command.runnerId,
-          folder: command.folder,
         })),
         type: command.type,
       };
@@ -73,7 +71,6 @@ export async function handleChannelCommand(
           createdBy: userId,
           executionPolicy: command.executionPolicy,
           selector: command.selector,
-          folder: command.folder,
         }),
         type: command.type,
       };

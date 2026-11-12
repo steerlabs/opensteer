@@ -26,7 +26,7 @@ import {
   planAgentSkills,
 } from "../../apps/runner/src/skills/agent-skills.js";
 import { resolveSkillPlan } from "../../apps/runner/src/skills/skill-plan.js";
-import { discoverFolderSkills } from "../../apps/runner/src/skills/folder-skills.js";
+import { discoverAgentHomeSkills } from "../../apps/runner/src/skills/agent-home-skills.js";
 import { voiceGuide } from "../../apps/host/src/agents/voice-tools.js";
 import { inputForCaseTurn, type EvalCase } from "./cases.js";
 import type { startFakeHost } from "./host.js";
@@ -109,23 +109,12 @@ export async function runEngine(input: {
       return { ...skill, path: destination };
     }),
   );
-  const workspaceSkills = await discoverFolderSkills(p.workspace);
   const skills = await resolveSkillPlan({
     bundled: selected,
     integration: [],
-    home: workspaceSkills.skills,
-    folder: c.folder ? (await discoverFolderSkills(join(p.workspace, c.folder))).skills : [],
+    home: (await discoverAgentHomeSkills(p.workspace)).skills,
   });
-  const taskPath = c.folder ? join(p.workspace, c.folder) : p.workspace;
-  await mkdir(taskPath, { recursive: true });
-  const instructions = [
-    `Agent home folder: ${p.workspace}`,
-    c.fixtures["AGENTS.md"],
-    c.folder ? c.fixtures[`${c.folder}/AGENTS.md`] : undefined,
-    c.teamContext,
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const instructions = [c.fixtures["AGENTS.md"], c.teamContext].filter(Boolean).join("\n\n");
   const guide =
     c.caller === "run"
       ? platformGuideForRun({ purpose: c.purpose, teamBound: c.teamBound }) +
@@ -183,7 +172,7 @@ export async function runEngine(input: {
     threadStateDirectory,
     skills,
     signal,
-    workspacePath: taskPath,
+    workspacePath: p.workspace,
     writableRoots: [p.workspace],
     wrapProcessLaunch: p.wrapProcessLaunch,
   };

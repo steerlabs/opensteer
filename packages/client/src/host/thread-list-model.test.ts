@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ModelSelectionSchema, createId } from "@opensteer/core";
+import { ModelSelectionSchema } from "@opensteer/core";
 
 import { filterThreads, formatRelativeTime } from "./thread-list-model.js";
 import type { ThreadSummary } from "./client.js";
@@ -18,7 +18,6 @@ const claudeModelSelection = ModelSelectionSchema.parse({
 
 const threads: ThreadSummary[] = [
   {
-    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
     teamOrigin: null,
     purpose: "task",
     doneAt: null,
@@ -48,7 +47,6 @@ const threads: ThreadSummary[] = [
     updatedAt: "2026-08-09T09:00:00.000Z",
   },
   {
-    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
     teamOrigin: null,
     purpose: "task",
     doneAt: null,
@@ -78,7 +76,6 @@ const threads: ThreadSummary[] = [
     updatedAt: "2026-08-09T10:00:00.000Z",
   },
   {
-    folder: { computerId: createId("runner"), path: "/Users/person/Opensteer" },
     teamOrigin: null,
     purpose: "task",
     doneAt: null,

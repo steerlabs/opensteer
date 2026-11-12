@@ -8,7 +8,6 @@ export const screenPresentations = {
   NewThread: "formSheet",
   JoinTeam: "formSheet",
   ConnectOpensteer: "formSheet",
-  FolderPicker: "formSheet",
   ThreadStep: "formSheet",
   RequestSheet: "formSheet",
   ConversationActivity: "formSheet",

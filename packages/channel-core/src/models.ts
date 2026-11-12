@@ -3,7 +3,6 @@ import {
   MessageContentSchema,
   MessageIdSchema,
   UserIdSchema,
-  TaskFolderSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -354,11 +353,9 @@ export const ChannelBindingSchema = z.strictObject({
   selector: ChannelRouteSelectorSchema,
   status: z.enum(["active", "paused", "revoked"]),
   updatedAt: IsoDateTimeSchema,
-  folder: TaskFolderSchema,
 });
 export const ChannelBindingViewSchema = z.object({
   ...ChannelBindingSchema.shape,
-  folder: z.object(TaskFolderSchema.shape),
   accessPolicy: ChannelAccessPolicyViewSchema,
   executionPolicy: ChannelExecutionPolicyViewSchema,
   selector: ChannelRouteSelectorViewSchema,

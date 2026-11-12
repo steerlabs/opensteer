@@ -31,16 +31,10 @@ function fixture(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const server = { folder: { computerId, path: "/fixture/task" }, command: "node server.js" };
-  const publisher = {
-    id: app.threadId,
-    accessMode: "full-access" as const,
-    status: "running" as const,
-    folderComputerId: computerId,
-    folderPath: "/fixture/task",
-  };
+  const agentHome = { computerId, path: "/fixture/home" };
+  const server = { folder: agentHome, command: "node server.js" };
   const apps = {
-    authorize: vi.fn(async () => ({ app, publisher })),
+    authorize: vi.fn(async () => ({ app, agentHome })),
     get: async () => app,
     latest: async () => ({ app, version: { version: 1, server } }),
   } as unknown as AppStore;

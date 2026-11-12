@@ -138,8 +138,8 @@ function runtimeFixture(input: {
       },
     },
     projectContinuationIdentity: (identity) => identity as never,
-    folderManager: {
-      writableRoots: () => ["/runner/workspaces"],
+    agentHome: {
+      folder: async ({ path }) => path,
       prepare: async ({ signal }) =>
         new Promise((_, rejectPromise) => {
           const abort = (): void => {
@@ -162,10 +162,7 @@ function runCommand(
   const runId = createId("run");
   const threadId = createId("thread");
   return {
-    location: {
-      folder: { computerId, path: "/runner/runs/control/workspace" },
-      agentHome: { computerId, path: "/runner/runs/control/workspace" },
-    },
+    agentHome: { computerId, path: "/runner/runs/control/workspace" },
     commandId: createId("command"),
     context: {
       environmentId,
@@ -184,10 +181,7 @@ function triggerCommand(
 ): Extract<RunnerCommand, { readonly type: "trigger.execute" }> {
   const occurrenceId = createId("triggerOccurrence");
   return {
-    location: {
-      folder: { computerId, path: "/runner/runs/control/workspace" },
-      agentHome: { computerId, path: "/runner/runs/control/workspace" },
-    },
+    agentHome: { computerId, path: "/runner/runs/control/workspace" },
     commandId: createId("command"),
     context: {
       executionGeneration: 1,

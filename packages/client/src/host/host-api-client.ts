@@ -3,10 +3,8 @@ import { bootstrapReadDiagnostics } from "./bootstrap-diagnostics.js";
 import {
   HostApiErrorSchema,
   AttachmentContentMetadataSchema,
-  FolderFilePreviewMetadataSchema,
   hostApi,
   hostApiVersionHeader,
-  folderFilePreviewMaxBytes,
   type HostApiClient,
   type HostApiHandlers,
   type HostApiServerContext,
@@ -171,20 +169,12 @@ async function request<Name extends keyof typeof hostApi>(
   }
   const diagnostic = name === "bootstrap.get" ? bootstrapReadDiagnostics.takeSummary() : undefined;
   const deadline = new HostResponseDeadline(call?.signal);
-  const maximumBytes = declaration.stream
-    ? name === "attachment.content"
-      ? attachmentMaxBytes
-      : folderFilePreviewMaxBytes
-    : name === "folder.files.preview"
-      ? folderFilePreviewMaxBytes * 6 + 16_384
-      : 16 * 1_024 * 1_024;
+  const maximumBytes = declaration.stream ? attachmentMaxBytes : 16 * 1_024 * 1_024;
   const headersTimeoutMs =
     name === "commands.dispatch" && "type" in payload && payload.type === "browser.tab.open"
       ? 25_000
       : options.bufferedResponses
-        ? bufferedHostResponseTimeoutMs(
-            name === "folder.files.preview" ? folderFilePreviewMaxBytes : maximumBytes,
-          )
+        ? bufferedHostResponseTimeoutMs(maximumBytes)
         : "binaryRequest" in declaration
           ? bufferedHostResponseTimeoutMs(
               call?.body instanceof Uint8Array
@@ -232,13 +222,7 @@ async function request<Name extends keyof typeof hostApi>(
     // The refusal is known from its status; a body that then stalls must not
     // turn a sign-in prompt into a transport error.
     if (response.status === 401) options.onAuthenticationRequired();
-    deadline.reset(
-      response.body
-        ? stallTimeoutMs
-        : bufferedHostResponseTimeoutMs(
-            name === "folder.files.preview" ? folderFilePreviewMaxBytes : maximumBytes,
-          ),
-    );
+    deadline.reset(response.body ? stallTimeoutMs : bufferedHostResponseTimeoutMs(maximumBytes));
     const bytes = await deadline.wait(
       readBoundedResponse(response, {
         maximumBytes,
@@ -250,22 +234,13 @@ async function request<Name extends keyof typeof hostApi>(
     call?.signal?.throwIfAborted();
     if (declaration.stream && response.ok) {
       const modified = response.headers.get("last-modified");
-      const metadata =
-        name === "attachment.content"
-          ? AttachmentContentMetadataSchema.parse({
-              contentType: response.headers.get("content-type") ?? "application/octet-stream",
-              etag: response.headers.get("etag") ?? "missing",
-              modifiedAt: modified ? new Date(modified).toISOString() : null,
-              sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
-              truncated: false,
-            })
-          : FolderFilePreviewMetadataSchema.parse({
-              contentType: response.headers.get("content-type") ?? "application/octet-stream",
-              etag: response.headers.get("etag") ?? "missing",
-              modifiedAt: modified ? new Date(modified).toISOString() : null,
-              sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
-              truncated: response.headers.get("x-opensteer-file-truncated") === "true",
-            });
+      const metadata = AttachmentContentMetadataSchema.parse({
+        contentType: response.headers.get("content-type") ?? "application/octet-stream",
+        etag: response.headers.get("etag") ?? "missing",
+        modifiedAt: modified ? new Date(modified).toISOString() : null,
+        sizeBytes: Number(response.headers.get("x-opensteer-file-size") ?? bytes.byteLength),
+        truncated: false,
+      });
       return {
         data: declaration.success.parse({
           bytes,
@@ -282,14 +257,6 @@ async function request<Name extends keyof typeof hostApi>(
       });
     const parsed = responseEnvelopes.get(name)!.safeParse(body);
     if (parsed.success) {
-      if (
-        name === "folder.files.preview" &&
-        parsed.data.ok &&
-        "content" in parsed.data.data &&
-        typeof parsed.data.data.content === "string" &&
-        new TextEncoder().encode(parsed.data.data.content).byteLength > folderFilePreviewMaxBytes
-      )
-        throw new HostTransportError("response-too-large");
       if (
         !parsed.data.ok &&
         ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")

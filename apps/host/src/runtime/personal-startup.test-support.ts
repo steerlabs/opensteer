@@ -7,7 +7,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { NetworkPartition } from "../agents/network-partition.test-support.js";
 import { RunnerWire } from "../agents/runner-wire.test-support.js";
 import type { VerticalStackOptions } from "../agents/vertical-stack.test-support.js";
-import type { FolderAccessManager } from "@opensteer/runner";
+import type { AgentHomeAccess } from "@opensteer/runner";
 import { HarnessIdSchema } from "@opensteer/core";
 import type { HarnessInstanceCatalog } from "@opensteer/protocol";
 import type { HostApiClient } from "@opensteer/protocol";
@@ -22,7 +22,7 @@ import {
   MessageContentSchema,
   type AgentEvent,
   type MessageId,
-  type TaskFolder,
+  type ComputerFolder,
 } from "@opensteer/core";
 import { parseHostConfig, parseRunnerConfig } from "@opensteer/config";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
@@ -33,7 +33,7 @@ import {
   loadAgentSkillBundle,
   ReconnectingHostConnection,
   RunnerRuntime,
-  TaskFolderManager,
+  AgentHomeManager,
 } from "@opensteer/runner";
 import { RunnerBootIdSchema } from "@opensteer/protocol";
 import { freePort } from "@opensteer/shared/test-support/loopbackPort";
@@ -51,11 +51,11 @@ export interface PersonalRuntime {
   readonly host: PersonalHostRuntime;
   readonly config: ReturnType<typeof parseHostConfig>;
   readonly directory: string;
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly runnerDataDirectory: string;
   readonly runner: RunnerRuntime | undefined;
   readonly network: NetworkPartition | RunnerWire;
-  readonly folderPreparations: readonly Parameters<FolderAccessManager["prepare"]>[0][];
+  readonly agentHomePreparations: readonly Parameters<AgentHomeAccess["prepare"]>[0][];
   readonly additionalHarnessInstanceIds: readonly HarnessInstanceId[];
   readonly initialCatalog: HarnessInstanceCatalog;
   observe<Value>(
@@ -83,7 +83,7 @@ export interface PersonalRuntime {
 }
 export async function startPersonalRuntime(input: {
   readonly databaseUrl: string;
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly engineArguments?: readonly string[];
   readonly vertical?: VerticalStackOptions;
   readonly hostLog?: (line: string) => void;
@@ -132,7 +132,7 @@ export async function startPersonalRuntime(input: {
   let network: NetworkPartition | RunnerWire | undefined;
   let child: ReturnType<typeof forkRunnerChild> | undefined;
   const childStops = new Set<() => Promise<void>>();
-  const folderPreparations: Parameters<FolderAccessManager["prepare"]>[0][] = [];
+  const agentHomePreparations: Parameters<AgentHomeAccess["prepare"]>[0][] = [];
   const accountIds: HarnessInstanceId[] = [];
   let runnerIntegrations: ReturnType<NonNullable<VerticalStackOptions["integrations"]>> | undefined;
   let initialCatalog: HarnessInstanceCatalog | undefined;
@@ -287,7 +287,7 @@ export async function startPersonalRuntime(input: {
       );
     const keys = await loadOrCreateHostKeys({ dataDirectory: join(directory, "host") });
     const bootId = RunnerBootIdSchema.parse(`rbt_${crypto.randomUUID()}`);
-    const folderManager = new TaskFolderManager(input.agentHome.computerId);
+    const agentHome = new AgentHomeManager(input.agentHome.computerId);
     runnerIntegrations = vertical?.integrations?.();
     const containment = new ExecutionContainment({ bootId, dataDirectory: config.dataDirectory });
     const earlierBoots = await containment.reapEarlierBoots();
@@ -332,12 +332,12 @@ export async function startPersonalRuntime(input: {
       nodeExecutable: process.execPath,
       privateStateDirectory: join(directory, "private", "harness-state"),
       projectContinuationIdentity: providerContinuationIdentityProjector(keys.privateKey),
-      folderManager: {
+      agentHome: {
         prepare: async (input) => {
-          folderPreparations.push(input);
-          return folderManager.prepare(input);
+          agentHomePreparations.push(input);
+          return agentHome.prepare(input);
         },
-        writableRoots: (folder) => folderManager.writableRoots(folder),
+        folder: (folder) => agentHome.folder(folder),
       },
     });
     const identityStore = new FileRunnerIdentityStore({
@@ -583,7 +583,7 @@ export async function startPersonalRuntime(input: {
       get runner() {
         return runner;
       },
-      folderPreparations,
+      agentHomePreparations,
       additionalHarnessInstanceIds: accountIds.slice(1),
       initialCatalog,
       observe,

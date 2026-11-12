@@ -1,4 +1,4 @@
-import { createId, type DeploymentId, type TaskFolder, type UserId } from "@opensteer/core";
+import { createId, type DeploymentId, type ComputerFolder, type UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
@@ -32,7 +32,7 @@ export async function seedPersonalFixture(database: Kysely<DatabaseSchema>, path
     userId,
     runnerId: settings.agentHomeComputerId,
     environmentId: environment.id,
-    agentHome: { computerId: settings.agentHomeComputerId, path } satisfies TaskFolder,
+    agentHome: { computerId: settings.agentHomeComputerId, path } satisfies ComputerFolder,
   };
 }
 
@@ -42,7 +42,7 @@ export async function seedPersonalOwnerResources(
 ) {
   const runnerId = createId("runner");
   const environmentId = createId("environment");
-  const agentHome: TaskFolder = { computerId: runnerId, path: input.path };
+  const agentHome: ComputerFolder = { computerId: runnerId, path: input.path };
   const descriptor = testRunnerDescriptor({
     runnerId,
     environmentId,

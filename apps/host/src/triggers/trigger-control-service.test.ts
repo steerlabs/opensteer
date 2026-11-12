@@ -25,7 +25,6 @@ const now = "2026-08-12T12:00:00.000Z";
 const ownerId = createId("user");
 const runnerId = createId("runner");
 const environmentId = createId("environment");
-const folder = { computerId: runnerId, path: "/tmp/trigger-fixture" };
 const threadId = createId("thread");
 const harnessInstanceId = createId("harnessInstance");
 const modelSelection = ModelSelectionSchema.parse({
@@ -88,7 +87,7 @@ describe("TriggerControlService", () => {
       }),
     );
   });
-  it("places delegated work in its admitted folder with the selected harness", async () => {
+  it("places delegated work in the owner environment with the selected harness", async () => {
     const targetEnvironmentId = environmentId;
     const targetHarnessId = createId("harnessInstance");
     const selectedHarnessId = createId("harnessInstance");
@@ -166,7 +165,6 @@ describe("TriggerControlService", () => {
       expect.objectContaining({
         environmentId: targetEnvironmentId,
         harnessInstanceId: selectedHarnessId,
-        folder,
         task: [
           {
             text: "Run this elsewhere",
@@ -365,8 +363,8 @@ function makeService(options: {
       store,
       tokens,
       onEvent: () => {},
-      folders: {
-        resolve: async (_owner, chosen) => ({ folder: chosen ?? folder, environmentId }),
+      execution: {
+        environmentFor: async () => environmentId,
         canExecute: (id) => id === environmentId,
       },
       triggers: {
@@ -414,7 +412,6 @@ function thread(): Thread {
     doneReason: null,
     icon: null,
     purpose: "task",
-    folder,
     teamOrigin: null,
     createdAt: now,
     createdBy: ownerId,

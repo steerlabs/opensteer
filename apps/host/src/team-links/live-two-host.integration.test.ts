@@ -91,7 +91,6 @@ it("uploads a real image and bounded preview from the personal Host and binds it
       },
       requestId: request.id,
       triggerMessageId: request.triggerMessageId,
-      folder: personal.agentHome,
       source: context.source,
       ownerId: personal.userId,
       execution: {

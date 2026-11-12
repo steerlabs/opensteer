@@ -5,11 +5,7 @@ import {
   mutationIdempotencyKey,
   unwrapRpcResult,
   type HostClient,
-  taskFolderKey,
-  type HostSnapshot,
 } from "@opensteer/client/host";
-import type { TaskFolder } from "@opensteer/core";
-import { folderLabel } from "../home/folder-label.js";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import { Alert } from "react-native";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -49,10 +45,6 @@ function Messaging({ host }: { readonly host: HostClient }) {
   const [providerId, setProvider] = useState<string | null>(null);
   const [repair, setRepair] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
-  // A bridge starts or continues tasks for your agent in one folder (Agent home by default).
-  const agentHome = host.getSnapshot().personalSettings?.agentHome ?? null;
-  const [folder, setFolder] = useState<TaskFolder | null>(agentHome);
-  const folders = bridgeFolders(host.getSnapshot());
   const [runnerId, setRunner] = useState("");
   const [handles, setHandles] = useState("");
   const [conversation, setConversation] = useState("");
@@ -145,15 +137,6 @@ function Messaging({ host }: { readonly host: HostClient }) {
           field.secret,
         ),
       );
-      rows.push(
-        ...folders.map((candidate) =>
-          button(
-            taskFolderKey(candidate),
-            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderLabel(candidate, agentHome)}`,
-            () => setFolder(candidate),
-          ),
-        ),
-      );
       const computer = provider.transportKinds.includes("computer");
       if (computer) {
         rows.push(
@@ -190,7 +173,6 @@ function Messaging({ host }: { readonly host: HostClient }) {
               type: "channel.connection.computer.create",
               provider: provider.provider,
               runnerId,
-              folder: folder ?? agentHome!,
               ownerHandles: handles
                 .split(",")
                 .map((v) => v.trim())
@@ -202,7 +184,6 @@ function Messaging({ host }: { readonly host: HostClient }) {
               type: "channel.connection.create",
               provider: provider.provider,
               credentials,
-              folder: folder ?? agentHome!,
               routingMode: shared ? "shared" : "dedicated",
               accessPolicy: policy(),
               idempotencyKey,
@@ -249,20 +230,10 @@ function Messaging({ host }: { readonly host: HostClient }) {
       ];
       rows.push(input("conversation", "Conversation ID", conversation, setConversation));
       rows.push(
-        ...folders.map((candidate) =>
-          button(
-            `place:${taskFolderKey(candidate)}`,
-            `${sameFolder(candidate, folder) ? "✓ " : ""}${folderLabel(candidate, agentHome)}`,
-            () => setFolder(candidate),
-          ),
-        ),
-      );
-      rows.push(
         button("bind", "Add route", () =>
           dispatch({
             type: "channel.binding.create",
             accountId: account.id,
-            folder: folder ?? agentHome!,
             selector: {
               conversationId: conversation.trim(),
               conversationType: null,
@@ -460,18 +431,4 @@ function Messaging({ host }: { readonly host: HostClient }) {
       </Sheet>
     </>
   );
-}
-
-/** Agent home, then the folders of the reader's recent tasks: where a bridge may work. */
-function bridgeFolders(snapshot: HostSnapshot): readonly TaskFolder[] {
-  const folders = new Map<string, TaskFolder>();
-  const home = snapshot.personalSettings?.agentHome;
-  if (home !== undefined) folders.set(taskFolderKey(home), home);
-  for (const { thread } of snapshot.tasks?.entries ?? [])
-    if (folders.size < 8) folders.set(taskFolderKey(thread.folder), thread.folder);
-  return [...folders.values()];
-}
-
-function sameFolder(left: TaskFolder, right: TaskFolder | null): boolean {
-  return right !== null && taskFolderKey(left) === taskFolderKey(right);
 }

@@ -7,12 +7,12 @@ const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
-it("loads bundled, plugin, home and folder skills, with folder-name precedence and canonical-source dedupe", async () => {
+it("loads bundled, plugin and Agent home skills, each canonical source once", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "skill-plan-")));
   roots.push(root);
-  const paths = ["bundled", "plugin", "home", "folder", "alias"].map((p) => join(root, p));
-  await Promise.all(paths.slice(0, 4).map((p) => mkdir(p)));
-  await symlink(paths[0]!, paths[4]!);
+  const paths = ["bundled", "plugin", "home", "alias"].map((p) => join(root, p));
+  await Promise.all(paths.slice(0, 3).map((p) => mkdir(p)));
+  await symlink(paths[0]!, paths[3]!);
   const skill = (path: string, fullName: string, plugin: string | null = null) => ({
     path,
     fullName,
@@ -22,10 +22,9 @@ it("loads bundled, plugin, home and folder skills, with folder-name precedence a
   const plan = await resolveSkillPlan({
     bundled: [skill(paths[0]!, "opensteer:memory", "opensteer")],
     integration: [skill(paths[1]!, "plugin:research", "plugin")],
-    home: [skill(paths[2]!, "research"), skill(paths[4]!, "memory-copy")],
-    folder: [skill(paths[3]!, "research")],
+    home: [skill(paths[2]!, "research"), skill(paths[3]!, "memory-copy")],
   });
-  expect(plan?.skills.map((s) => s.path)).toEqual([paths[0], paths[1], paths[3]]);
+  expect(plan?.skills.map((s) => s.path)).toEqual([paths[0], paths[1], paths[2]]);
   expect(plan?.skills.map((s) => s.fullName)).toEqual([
     "opensteer:memory",
     "plugin:research",

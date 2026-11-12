@@ -1,7 +1,7 @@
 import type { HostConfig } from "@opensteer/config";
 import type { HarnessRegistry, HarnessRuntimeBoundary } from "@opensteer/harness";
 import type {
-  FolderAccessManager,
+  AgentHomeAccess,
   PreparedIntegrationsModule,
   RunnerLogger,
   RunnerRuntimeOptions,
@@ -24,7 +24,7 @@ import type {
   MessageId,
   ModelSelection,
   RunId,
-  TaskFolder,
+  ComputerFolder,
   ThreadId,
 } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
@@ -38,7 +38,7 @@ export interface VerticalTurn {
 }
 export interface VerticalStack {
   readonly api: HostApiClient;
-  readonly agentHome: TaskFolder;
+  readonly agentHome: ComputerFolder;
   readonly sessionCookie: string;
   readonly hostOrigin: URL;
   readonly host: HostRuntime;
@@ -51,10 +51,9 @@ export interface VerticalStack {
   readonly wire?: RunnerWire;
   readonly runnerDataDirectory: string;
   readonly network: Pick<NetworkPartition, "block" | "drop" | "unblock">;
-  readonly folderPreparations: readonly Parameters<FolderAccessManager["prepare"]>[0][];
+  readonly agentHomePreparations: readonly Parameters<AgentHomeAccess["prepare"]>[0][];
   settledRunEvent(runId: RunId): import("@opensteer/protocol").PendingAgentEvent | undefined;
   crashRunner(beforeRestart?: () => Promise<void>): Promise<void>;
-  createFolder(name: string): Promise<TaskFolder>;
   /** A separate database/Deployment using this harness; closed with this fixture. */
   startAdditionalPersonal(): Promise<VerticalStack>;
   configureModel(
@@ -62,7 +61,6 @@ export interface VerticalStack {
     settings: { readonly contextWindow: number; readonly maxOutputTokens?: number } | null,
   ): Promise<HarnessModelDescriptor>;
   createThread(input: {
-    readonly folder?: TaskFolder;
     readonly generateTitle?: true;
     readonly idempotencyKey?: string;
     readonly modelSelection: ModelSelection;
@@ -110,7 +108,7 @@ export interface VerticalStack {
 }
 
 export interface VerticalStackOptions {
-  readonly agentHome?: TaskFolder;
+  readonly agentHome?: ComputerFolder;
   readonly startPersonal?: (options: VerticalStackOptions) => Promise<VerticalStack>;
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   readonly account?: HostConfig["account"];
@@ -268,7 +266,7 @@ export interface PersonalVerticalRuntime {
 
 /** Personal task admission and turn collection; the runtime collaborator owns Host/Runner startup. */
 export function createPersonalVerticalStack(
-  agentHome: TaskFolder,
+  agentHome: ComputerFolder,
   runtime: PersonalVerticalRuntime,
 ): Pick<
   VerticalStack,
@@ -313,7 +311,6 @@ export function createPersonalVerticalStack(
         environmentId: runtime.environmentId,
         harnessInstanceId: runtime.harnessInstanceId,
         modelSelection: input.modelSelection,
-        folder: input.folder ?? agentHome,
         title: input.title ?? "Fixture task",
       });
       if (!response.ok) throw new Error(response.error.message);

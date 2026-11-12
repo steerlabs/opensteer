@@ -6,10 +6,8 @@ import { runnerAgentToolsFailure, type EnvironmentId, type TriggerId } from "@op
 import type { TriggerStore } from "@opensteer/database";
 import type { RunnerIdentity, RunnerRegistry } from "@opensteer/orchestration";
 import type { WatchReconcileActivation } from "@opensteer/protocol";
-import { safeMessage } from "@opensteer/shared/safeMessage";
 import { WATCH_CAPABILITY_RENEWAL_MS, WATCH_START_RETRY_MS } from "@opensteer/triggers";
 import type { BrowserService } from "../browser/browser-service.js";
-import type { FolderAdmissionService } from "../threads/folder-admission-service.js";
 import type {
   WatchCapabilityScope,
   WatchCapabilityTokenService,
@@ -37,7 +35,6 @@ export interface WatchServiceOptions {
   readonly store: WatchStore;
   readonly runnerStore: TriggerProgramRunnerStore;
   readonly watchBrowserTokens: Pick<WatchBrowserTokenService, "issue">;
-  readonly folders: Pick<FolderAdmissionService, "assertAvailable">;
 }
 export class WatchService {
   readonly #browser: WatchServiceOptions["browser"];
@@ -50,7 +47,6 @@ export class WatchService {
   readonly #store: WatchStore;
   readonly #runnerStore: TriggerProgramRunnerStore;
   readonly #watchBrowserTokens: WatchServiceOptions["watchBrowserTokens"];
-  readonly #folders: WatchServiceOptions["folders"];
   readonly #lifetime = new AbortController();
   readonly #pending = new Map<EnvironmentId, Promise<void>>();
   readonly #knownEnvironments = new Set<EnvironmentId>();
@@ -70,7 +66,6 @@ export class WatchService {
     this.#store = options.store;
     this.#runnerStore = options.runnerStore;
     this.#watchBrowserTokens = options.watchBrowserTokens;
-    this.#folders = options.folders;
   }
   start(): void {
     if (this.#closed || this.#renewalTimer) return;
@@ -203,19 +198,6 @@ export class WatchService {
         triggerId: context.activation.triggerId,
         toolContractVersion: context.toolContractVersion,
       };
-      try {
-        await this.#folders.assertAvailable(context.location.folder);
-      } catch (error) {
-        unavailable.push({
-          activationId: context.activation.id,
-          executionGeneration: context.activation.executionGeneration,
-          reason: safeMessage(error, {
-            fallback: "The anchor task folder is unavailable",
-            maximumLength: 20_000,
-          }),
-        });
-        continue;
-      }
       const mcp = this.#controlTokens.issue(scope);
       const hasBrowser = await this.#browser.hasBrowserProfiles(context.activation.createdBy);
       const browserCdp = hasBrowser ? this.#watchBrowserTokens.issue(scope) : null;
@@ -237,7 +219,7 @@ export class WatchService {
         executionGeneration: context.activation.executionGeneration,
         revisionId: context.activation.revisionId,
         triggerId: context.activation.triggerId,
-        location: context.location,
+        agentHome: context.agentHome,
       });
     }
     await this.#runners.reconcileWatches(

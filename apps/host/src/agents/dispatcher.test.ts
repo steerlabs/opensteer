@@ -51,7 +51,6 @@ describe("HostCommandDispatcher Request responses", () => {
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
       },
-      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -109,7 +108,6 @@ describe("HostCommandDispatcher Request responses", () => {
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
       },
-      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -263,7 +261,6 @@ describe("HostCommandDispatcher specialist admission", () => {
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
       },
-      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90000,
       publicUrl: new URL("https://host.example"),
       runners: {
@@ -887,7 +884,6 @@ describe("HostCommandDispatcher model selection", () => {
       teamRequestContext: async () => {
         throw new Error("Unexpected team request");
       },
-      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -972,10 +968,7 @@ describe("HostCommandDispatcher model selection", () => {
         loadRunDispatchContext: async () => ({
           providerSessionStateLayout: "session",
           personalContext: true,
-          location: {
-            folder: { computerId, path: "/tmp/dispatcher" },
-            agentHome: { computerId, path: "/tmp/dispatcher" },
-          },
+          agentHome: { computerId, path: "/tmp/dispatcher" },
           history: [],
           historyWindow: {
             byteCount: 0,
@@ -1036,7 +1029,7 @@ describe("HostCommandDispatcher model selection", () => {
     };
   }
 });
-describe("HostCommandDispatcher folder admission", () => {
+describe("HostCommandDispatcher run planning", () => {
   it.each([null, "native-conversation"])(
     "plans a Run using its proven provider session (%s)",
     async (providerSessionReference) => {
@@ -1059,11 +1052,7 @@ describe("HostCommandDispatcher folder admission", () => {
         name: "Run computer",
         runnerId: createId("runner"),
       };
-      const location = {
-        folder: { computerId: identity.runnerId, path: "/tmp/dispatcher/task" },
-        agentHome: { computerId: identity.runnerId, path: "/tmp/dispatcher/home" },
-      };
-      const assertAvailable = vi.fn(async () => {});
+      const agentHome = { computerId: identity.runnerId, path: "/tmp/dispatcher/home" };
       const dispatch = vi.fn(async () => undefined);
       const command = {
         ...steerCommand(),
@@ -1080,7 +1069,6 @@ describe("HostCommandDispatcher folder admission", () => {
         teamRequestContext: async () => {
           throw new Error("Unexpected team request");
         },
-        folders: { assertAvailable },
         executionLeaseMs: 90_000,
         attachmentRunTokens: {
           issue: () => "attachment-token",
@@ -1157,7 +1145,7 @@ describe("HostCommandDispatcher folder admission", () => {
           loadRunDispatchContext: async () => ({
             providerSessionStateLayout: "session",
             personalContext: true,
-            location,
+            agentHome,
             history: [
               {
                 id: "old-failed-input",
@@ -1209,7 +1197,6 @@ describe("HostCommandDispatcher folder admission", () => {
         triggers: {} as never,
       });
       await dispatcher.dispatch(command, new AbortController().signal);
-      expect(assertAvailable).toHaveBeenCalledWith(location.folder);
       expect(dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
           context: expect.objectContaining({
@@ -1245,7 +1232,7 @@ describe("HostCommandDispatcher folder admission", () => {
             },
           }),
           type: "run.execute",
-          location,
+          agentHome,
         }),
         expect.any(AbortSignal),
         expect.objectContaining({
@@ -1272,7 +1259,6 @@ function steerDispatcher(input: {
     teamRequestContext: async () => {
       throw new Error("Unexpected team request");
     },
-    folders: { assertAvailable: async () => {} },
     executionLeaseMs: 90_000,
     attachmentRunTokens: {
       issue: () => "attachment-token",

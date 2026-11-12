@@ -52,8 +52,11 @@ function json(schema: z.core.$ZodType): JsonSchema {
 }
 
 function teamWire(): TeamWire {
+  // Only what a team Host serves: `teams.*` entries are the personal Host's own routes.
   const commands = new Set<string>([
-    ...TeamCommandSchema.options.map((option) => option.shape.type.value),
+    ...TeamCommandSchema.options
+      .map((option) => option.shape.type.value)
+      .filter((type) => type.startsWith("team.")),
     "notification.preview.register",
   ]);
   const commandOptions = (union: z.ZodType) =>
@@ -65,7 +68,10 @@ function teamWire(): TeamWire {
           : [];
       }),
     );
-  const rpcs = [...Object.keys(teamReadSchemas), ...teamIdentityRpcNames] as const;
+  const rpcs = [
+    ...Object.keys(teamReadSchemas).filter((name) => name.startsWith("team.")),
+    ...teamIdentityRpcNames,
+  ] as const;
   const declaration = (name: string) => hostApi[name as keyof typeof hostApi];
   return {
     teamApiVersion,

@@ -30,7 +30,6 @@ import {
   TriggerOccurrenceIdSchema,
   ThreadSchema,
   ThreadAccessModeSchema,
-  TaskFolderSchema,
 } from "@opensteer/core";
 import {
   TriggerViewSchema,
@@ -129,7 +128,6 @@ export const EnvironmentDiscoverySchema = z.object({
 });
 export type EnvironmentDiscovery = z.infer<typeof EnvironmentDiscoverySchema>;
 export const OrchestratorCapabilitiesSchema = EngineDiscoverySchema.extend({
-  folder: TaskFolderSchema,
   accessCeiling: ThreadAccessModeSchema,
   limits: z.object({
     maxDepth: z.number().int().nullable(),
@@ -159,7 +157,6 @@ export const ThreadDetailSchema = z.object({
   title: thread.title,
   status: thread.status,
   purpose: thread.purpose,
-  folder: thread.folder,
   teamOrigin: thread.teamOrigin,
   environmentId: thread.environmentId,
   harnessInstanceId: thread.harnessInstanceId,
@@ -184,7 +181,6 @@ export const ThreadSummarySchema = z.object({
   taskStatus: AssignmentStatusSchema.nullable(),
   title: z.string().nullable(),
   updatedAt: thread.updatedAt,
-  folder: TaskFolderSchema,
 });
 export const ThreadListOutputSchema = z.object({
   threads: z.array(ThreadSummarySchema).max(50),
@@ -203,7 +199,6 @@ export const TaskSchema = z.object({
   result: z.string().nullable(),
   pendingRequests: thread.pendingRequests,
   parentThreadId: ThreadIdSchema.nullable(),
-  folder: TaskFolderSchema,
   environmentId: EnvironmentIdSchema,
   createdAt: thread.createdAt,
   finishedAt: z.string().nullable(),
@@ -233,7 +228,7 @@ export const AppListOutputSchema = z.object({
       id: AppIdSchema,
       title: z.string(),
       kind: z.enum(["html", "server"]),
-      folder: z.string().optional(),
+      folder: z.string().optional().describe("Server app folder: an absolute path in Agent home."),
       start: z.string().optional(),
       threadId: ThreadIdSchema,
       latestVersion: z.number(),

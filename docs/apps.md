@@ -11,9 +11,8 @@ data or its viewing credentials. A client mounts one copy: moving or reloading a
 running state. Browser storage stays on one device and is unavailable on some routes, so
 cross-device data belongs in a server app.
 
-An HTML app is a self-contained document the Host stores. A server app runs from a folder in the
-publishing Run's immutable task folder, on its owning computer, and its folder
-holds source and data. Publishing verifies the start command before committing a version but never
+An HTML app is a self-contained document the Host stores. A server app runs from a folder inside
+Agent home on the hosting computer, and that folder holds source and data. Publishing verifies the start command before committing a version but never
 copies or rolls back files, so editing the folder can affect a running server. App versions record
 their owning computer and never move to the viewer's.
 

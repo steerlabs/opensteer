@@ -34,7 +34,7 @@ retained. This does not authorize approving an Opensteer Request or granting acc
 The broker owns keys, grants and release; desktop main owns browser checks and sealing; the Host
 owns personal admission and memory-only leases and stores neither vault data nor released values.
 Only the local personal Host can present the per-person consent key to the vault; team IDs and
-task folders never become consent identities.
+folders never become consent identities.
 
 Agents use `sign_in` for logins and `use_card` for checkout. Probes never prompt. For login
 requests given a Browser Session, the Host checks

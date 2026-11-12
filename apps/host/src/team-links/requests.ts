@@ -7,7 +7,6 @@ import {
   type TeamBlobId,
 } from "@opensteer/core";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import {
   TeamAgentRequestSchema,
@@ -31,7 +30,6 @@ export interface PersonalTeamRunPort {
 export interface PersonalTeamRequestsOptions {
   readonly links: PersonalTeamLinksStore;
   readonly requests: PersonalTeamRequestsStore;
-  readonly folders: PersonalTeamChannelFoldersStore;
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly rpc: (teamId: DeploymentId) => TeamLinkRpc;
@@ -63,7 +61,7 @@ export class PersonalTeamRequests {
     teamId: DeploymentId,
     value: { readonly request: TeamAgentRequest; readonly source: TeamSource },
   ): Promise<void> {
-    const { links, requests, admission, folders } = this.options;
+    const { links, requests, admission } = this.options;
     const link = await links.get(teamId);
     if (!link || !["active", "unreachable"].includes(link.state)) throw linkError();
     const request = TeamAgentRequestSchema.parse(value.request);
@@ -95,7 +93,6 @@ export class PersonalTeamRequests {
         requestId: request.id,
         triggerMessageId: request.triggerMessageId,
         source,
-        folder: await folders.get(teamId, request.channelId),
       });
       local = await requests.record({
         teamId,

@@ -21,8 +21,8 @@ import { useOptionalWorkspace } from "./workspace/workspace-context.js";
  * The reader's tasks as rows of one line: a mark for what the task is doing,
  * its title, and beside it only what the reader needs — "Needs you", where it
  * is working, a dot for something unread, when it stopped. Every row draws
- * what `taskList` says and nothing else, so the sidebar, search and a
- * project's page can never read differently.
+ * what `taskList` says and nothing else, so the sidebar and search can
+ * never read differently.
  */
 
 const selectSnapshot = (snapshot: HostSnapshot) => snapshot;

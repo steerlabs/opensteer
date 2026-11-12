@@ -53,7 +53,6 @@ export * from "./card-use.js";
 export * from "./team-chat.js";
 export * from "./team-link.js";
 export * from "./team-knowledge.js";
-export * from "./folders.js";
 
 export * from "./team-api.js";
 

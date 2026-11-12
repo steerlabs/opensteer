@@ -3278,7 +3278,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const channels = new ChannelStore(database);
     const sender = { allowedExternalUserIds: [], mode: "anyone" };
     const connectionInput: Parameters<ChannelStore["createConnection"]>[0] = {
-      folder: run.folder,
       accessPolicy: {
         channels: { conversationIds: [], scope: "all", sender },
         directMessages: sender,
@@ -6417,13 +6416,11 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
   const runs = createPersonalRunFixturePort(store);
   const task = await runs.createTask({
     ownerId: personal.userId,
-    folder: personal.agentHome,
     suffix,
   });
   const started = await runs.startTask(task.threadId, "Start the work");
   return {
     ...personal,
-    folder: personal.agentHome,
     harnessInstanceId: task.harnessInstance.id,
     modelSelection: task.thread.modelSelection,
     runId: started.runId,
@@ -6449,7 +6446,6 @@ async function startRunIn(
   const { thread } = await store.createThread({
     createdBy: context.userId,
     environmentId: context.environmentId,
-    folder: context.folder,
     harnessInstanceId: context.harnessInstanceId,
     idempotencyKey: suffix,
     modelSelection: context.modelSelection,

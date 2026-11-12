@@ -1,21 +1,14 @@
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
-import { refused, type TaskFolder } from "@opensteer/core";
-import type { FolderDirectoryPage } from "@opensteer/protocol";
+import { refused } from "@opensteer/core";
+import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 
 /** Read through the owning Runner's no-follow file operations, never a Host path. */
 export async function withFolderPluginPackage<T>(input: {
   directory: string;
-  folder: TaskFolder;
-  files: {
-    list(
-      folder: TaskFolder,
-      input: { parentKey: string; limit: number; cursor?: string },
-    ): Promise<FolderDirectoryPage>;
-    download(folder: TaskFolder, key: string): Promise<Response>;
-  };
+  files: Pick<AgentHomeFiles, "list" | "download">;
   install: (directory: string) => Promise<T>;
 }): Promise<T> {
   const segments = input.directory.replace(/^\.\//u, "").split("/");
@@ -23,10 +16,7 @@ export async function withFolderPluginPackage<T>(input: {
     isAbsolute(input.directory) ||
     segments.some((s) => !s || s === "." || s === ".." || s.includes("\\") || s.includes("\0"))
   )
-    throw refused(
-      "bad_request",
-      "Plugin directory must be a relative folder inside the task folder",
-    );
+    throw refused("bad_request", "Plugin directory must be a relative folder inside Agent home");
   const temporary = await mkdtemp(join(tmpdir(), "opensteer-plugin-"));
   let count = 0;
   let bytes = 0;
@@ -34,7 +24,7 @@ export async function withFolderPluginPackage<T>(input: {
     const parentKey = Buffer.from(parts.join("\0")).toString("base64url");
     let cursor: string | undefined;
     do {
-      const page = await input.files.list(input.folder, {
+      const page = await input.files.list({
         parentKey,
         limit: 500,
         ...(cursor ? { cursor } : {}),
@@ -60,7 +50,7 @@ export async function withFolderPluginPackage<T>(input: {
           bytes += entry.sizeBytes;
           if (bytes > 24 * 1024 * 1024)
             throw refused("bad_request", "Plugin package exceeds installation limit");
-          const response = await input.files.download(input.folder, entry.key);
+          const response = await input.files.download(entry.key);
           if (!response.ok) throw refused("conflict", "Could not read plugin file");
           const content = Buffer.from(
             await readBoundedResponse(response, {

@@ -24,7 +24,7 @@ export async function seedPrivatePublisher(database: Kysely<DatabaseSchema>) {
   await sql`insert into harness_instances(id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id) values(${harnessInstanceId},${personal.environmentId},'codex','Codex','{}',1,'ready',true,true,'native')`.execute(
     database,
   );
-  await sql`insert into threads(id,lineage_root_thread_id,purpose,folder_computer_id,folder_path,parent_thread_id,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id) values(${threadId},${threadId},'task',${personal.runnerId},${personal.agentHome.path},null,true,'Publisher','default','blue',${personal.environmentId},${harnessInstanceId},${JSON.stringify(modelSelection)}::jsonb,${personal.userId},${principalId})`.execute(
+  await sql`insert into threads(id,lineage_root_thread_id,purpose,parent_thread_id,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id) values(${threadId},${threadId},'task',null,true,'Publisher','default','blue',${personal.environmentId},${harnessInstanceId},${JSON.stringify(modelSelection)}::jsonb,${personal.userId},${principalId})`.execute(
     database,
   );
   await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content) values(${messageId},${threadId},1,'input',${principalId},'{}','{}')`.execute(

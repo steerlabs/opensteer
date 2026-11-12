@@ -1853,44 +1853,6 @@ a.team-row__main:hover {
   line-height: 1.5;
 }
 
-.ask-hint {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-10);
-  max-width: var(--composer-max-width);
-  margin: 0 auto var(--space-8);
-  padding: var(--space-10) var(--space-12);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
-  box-shadow: var(--edge-plate);
-  color: var(--text-soft);
-  font-size: var(--text-md);
-  line-height: 1.5;
-}
-
-.ask-hint > .chat-orb {
-  margin-top: 2px;
-}
-
-.ask-hint b {
-  color: var(--text);
-  font-weight: var(--weight-strong);
-}
-
-.ask-hint__dismiss {
-  flex: none;
-  padding: 0 var(--space-6);
-  border-radius: var(--radius-xs);
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.ask-hint__dismiss:hover {
-  color: var(--text);
-  background-color: var(--fill-quiet);
-}
-
 /* ---- Files, Pinned and Knowledge tabs ---- */
 
 .channel-tab {
@@ -2526,10 +2488,6 @@ a.team-row__main:hover {
   gap: var(--space-10);
 }
 
-.details-row--spread {
-  justify-content: space-between;
-}
-
 .details-switch {
   display: flex;
   align-items: flex-start;
@@ -2548,19 +2506,6 @@ a.team-row__main:hover {
   color: var(--text);
   font-size: var(--text-lg);
   font-weight: var(--weight-medium);
-}
-
-.details-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-4);
-  color: var(--muted);
-  font-size: var(--text-xs);
-}
-
-.details-tag svg {
-  width: 12px;
-  height: 12px;
 }
 
 .details-list {

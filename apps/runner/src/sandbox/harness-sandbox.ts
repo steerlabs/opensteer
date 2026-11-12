@@ -382,8 +382,8 @@ export class HarnessSandbox implements HarnessProcessSandbox {
   }
 
   /**
-   * Trigger and Watch programs use the engine's confinement: their task folder
-   * and private files, with other Runs' data masked.
+   * Trigger and Watch programs use the engine's confinement: Agent home
+   * and their private files, with other Runs' data masked.
    */
   async planProgram(program: ProgramSandboxPlan): Promise<HarnessProcessLaunchWrapper> {
     return this.#wrapper(await programSandboxMounts(this.#layout, program), program);

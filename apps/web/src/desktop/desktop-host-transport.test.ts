@@ -122,55 +122,6 @@ describe("Desktop Host renderer adapter", () => {
     expect(replacement.readyState).toBe(1);
   });
 
-  it("streams a file preview with a long key through a bounded POST body", async () => {
-    const bridge = {
-      hostBinaryOpen: vi.fn(async () => ({
-        ok: true,
-        data: { transferId: "00000000-0000-4000-8000-000000000001" },
-      })),
-      hostBinaryRead: vi.fn(async () => ({
-        ok: true,
-        data: {
-          bytes: new TextEncoder().encode("0123456789"),
-          contentType: "text/plain",
-          done: true,
-          etag: '"preview"',
-          fileSizeBytes: 100,
-          fileTruncated: true,
-          lastModified: null,
-          sizeBytes: 10,
-          status: 200,
-        },
-      })),
-      hostBinaryClose: vi.fn(async () => ({ ok: true, data: null })),
-    } as unknown as OpensteerDesktopBridge;
-    const fetch = createDesktopHostFetch(
-      bridge,
-      "https://home.connect.opensteer.test",
-      deploymentId,
-    );
-    const body = JSON.stringify({ fileKey: "a".repeat(5_462), workspaceId: "wsp_test" });
-    const response = await fetch(
-      "https://home.connect.opensteer.test/v1/rpc/workspace.files.preview",
-      {
-        body,
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      },
-    );
-    expect(bridge.hostBinaryOpen).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body,
-        method: "POST",
-        path: "/v1/rpc/workspace.files.preview",
-      }),
-    );
-    expect(await response.text()).toBe("0123456789");
-    expect(response.headers.get("etag")).toBe('"preview"');
-    expect(response.headers.get("x-opensteer-file-size")).toBe("100");
-    expect(response.headers.get("x-opensteer-file-truncated")).toBe("true");
-  });
-
   it("converts selected-origin fetches into typed bridge requests", async () => {
     const hostRequest = vi.fn(async () => ({
       ok: true,

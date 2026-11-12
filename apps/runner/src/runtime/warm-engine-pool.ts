@@ -167,7 +167,7 @@ export function warmEngineKey(input: {
   readonly runtimeBoundary: string;
   /** The skill catalog the engine was started with; an engine reads it at startup. */
   readonly skills: HarnessSkillPlan | undefined;
-  readonly folderSkillsDigest: string;
+  readonly homeSkillsDigest: string;
   readonly workspacePath: string;
   readonly writableRoots: readonly string[];
 }): string {
@@ -197,7 +197,7 @@ export function warmEngineKey(input: {
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,
-        input.folderSkillsDigest,
+        input.homeSkillsDigest,
         context.plugins.skillPolicy ?? null,
         context.agentTools.url,
         context.browserCdp.url,

@@ -1,5 +1,5 @@
 import { personalBrowserRepository } from "@opensteer/database/test-support/store";
-import { personalTestFolders } from "./personal-folder.test-support.js";
+import { personalTestExecution } from "./personal-execution.test-support.js";
 import { randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
@@ -117,7 +117,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
   });
   const threads = new ThreadService({
     store,
-    folders: personalTestFolders(store, f),
     commands,
     browser,
     runners: {
@@ -130,7 +129,6 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     placeContext: {} as never,
   });
   const product = new ProductToolHandlers({
-    folders: personalTestFolders(store, f),
     deploymentId: createId("deployment"),
     store,
     commands,
@@ -151,6 +149,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     onEvent: () => {},
     browserSources: {} as never,
     machineFullDiskAccess: {} as never,
+    execution: personalTestExecution(store, f),
   });
   const caller: RunCaller = {
     kind: "run",
@@ -411,7 +410,6 @@ describeStore("agents answering task questions", (it) => {
       idempotencyKey: randomUUID(),
       modelSelection: testModelSelection,
       title: "Independent reviewer",
-      folder: s.f.folder,
     });
     const turn = await storeFixture.enqueueHumanTrigger({
       content: [{ type: "text", text: "Review the export" }],
@@ -1834,7 +1832,7 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", f.thread.id)
       .execute();
     expect((await s.read({ threadId: "self" })).thread.id).toBe(f.thread.id);
-    const here = await s.product.delegate_task({
+    await s.product.delegate_task({
       caller: s.caller,
       input: delegate_task.input.parse({
         harnessInstanceId: f.harnessInstance.id,
@@ -1843,7 +1841,6 @@ describeStore("shaped agent Thread tools", (it) => {
       }),
       operationKey: randomUUID(),
     });
-    expect(here.folder).toEqual(f.thread.folder);
     const connection: AgentCaller = {
       kind: "connection",
       key: "connection:test",

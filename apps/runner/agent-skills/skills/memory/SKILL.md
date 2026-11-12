@@ -7,7 +7,7 @@ description: Remember, correct or forget what matters about the person in agent 
 
 Woken as a background pass? Read this page, then only your own reference: the [light pass](references/light-pass.md) or [nightly](references/nightly.md).
 
-Personal memory stays in the canonical agent home folder supplied in this Run, even when the task works in another folder or comes from a team thread. Use that absolute path for memory files. Its job is that the person never has to repeat themselves: what they told their agent is known in every task, and open work gets followed up.
+Personal memory lives in Agent home, where every task works, including one from a team thread. Its job is that the person never has to repeat themselves: what they told their agent is known in every task, and open work gets followed up.
 
 - **Instructions:** the person's own standing directions, in the `## ` section of the agent home's `AGENTS.md` outside `## Memory` whose heading ends in "instructions".
 - **Summary:** the `## Memory` section of `AGENTS.md`, which every task receives: who the person is, what matters now and links to notes. Under 4 KB. Replace only its contents, which end at the next `## ` heading; keep all other bytes of `AGENTS.md` unchanged and write in no other section.

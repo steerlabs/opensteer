@@ -59,10 +59,10 @@ export function ThreadName(props: {
   );
 }
 
-/** Where the task works (or the channel that asked) and its state, apart from its mark. */
+/** The channel that asked, if any, and the task's state, apart from its mark. */
 export function ThreadSubtitle(props: {
+  /** The team channel that asked, "#support". */
   readonly placeName: string | null;
-  readonly placeKind: "folder" | "team" | null;
   readonly connectionLabel: string | null;
   readonly onRetry?: (() => void) | undefined;
   readonly task: Pick<TaskHeading, "moving" | "tone" | "word"> | null;
@@ -76,11 +76,7 @@ export function ThreadSubtitle(props: {
       ) : null}
       {props.placeName === null ? null : (
         <View style={[styles.row, styles.workspace]}>
-          <Symbol
-            name={props.placeKind === "team" ? "number" : "folder"}
-            size={11}
-            tint={color.muted}
-          />
+          <Symbol name="number" size={11} tint={color.muted} />
           <AppText
             maxFontSizeMultiplier={headerFontScaleLimit}
             numberOfLines={1}

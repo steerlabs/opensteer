@@ -26,7 +26,6 @@ import {
   type ArtifactContentPart,
   type ContentPart,
   type PlaceContentPart,
-  type TaskFolder,
 } from "@opensteer/core";
 import {
   HostClientRequestError,
@@ -148,7 +147,6 @@ interface ComposerProps {
   disabled?: boolean;
   readOnly?: boolean;
   footerExtras?: ReactNode;
-  leadingFooter?: ReactNode;
   /** Chat's voice button, beside Send. */
   voice?: ReactNode;
   /**
@@ -161,8 +159,6 @@ interface ComposerProps {
    * shows another draft mounts another composer, and its place context with it.
    */
   draftKey?: string | null | undefined;
-  /** The folder a new task's draft would start in. */
-  draftFolder?: TaskFolder | undefined;
   /**
    * Whether anything is in this composer: words, files, a quote, or a send
    * still in flight. A surface that another route may replace asks for this
@@ -230,11 +226,9 @@ export function Composer({
   disabled = false,
   readOnly = false,
   footerExtras,
-  leadingFooter,
   voice,
   inputRef,
   draftKey = null,
-  draftFolder,
   onHoldingChange,
   onEscape,
   onSend,
@@ -506,12 +500,11 @@ export function Composer({
             quote,
             text: draft,
             ...(followingPlace || !context ? {} : { places: context.parts() }),
-            ...(draftFolder ? { folder: draftFolder } : {}),
           }
         : { places: [], quote: null, text: "" },
     );
     setDraftUnsaved(!kept);
-  }, [chips, context, draft, draftKey, draftFolder, followingPlace, keepDraft, quote]);
+  }, [chips, context, draft, draftKey, followingPlace, keepDraft, quote]);
 
   /**
    * One attempt. `carried` names the tray files this attempt took; an attempt
@@ -572,7 +565,6 @@ export function Composer({
             quote: carriedQuote,
             reason:
               sendError instanceof Error ? sendError.message : "The message could not be sent.",
-            folder: draftFolder,
           });
         return;
       }
@@ -992,7 +984,6 @@ export function Composer({
       ) : (
         <>
           {attachmentControl}
-          {leadingFooter}
           <FoldRow className="composer__settings">{footerExtras}</FoldRow>
         </>
       )}
