@@ -66,6 +66,48 @@ it("preserves consent by deployment and key and unions pluckable quarantined sto
   expect(next.newShares).toEqual(old.newShares);
   expect(await loadConnections()).toHaveLength(1);
 });
+it("reconnecting after quarantine keeps that Deployment's spent budget once, and never a fresh day", async () => {
+  const now = Date.now();
+  const spent = Array.from({ length: 20 }, (_, index) => now - index * 1_000);
+  const unreadable = { ...legacy(), name: 42, newShares: spent };
+  const unreadableBudget = { ...legacy(), name: 42, newShares: "broken" };
+  const otherDeployment = {
+    ...legacy(),
+    name: 42,
+    authority: {
+      ...legacy().authority,
+      document: {
+        ...legacy().authority.document,
+        deploymentId: "dep_33333333-3333-4333-8333-333333333333",
+      },
+    },
+  };
+  stored.connections = [unreadable, otherDeployment];
+  expect(await loadConnections()).toEqual([]);
+  const fresh = migrateConnection(legacy())!;
+  const reconnect = (sourceId: string) =>
+    addConnection(
+      {
+        ...fresh,
+        sourceId: BrowserSourceIdSchema.parse(sourceId),
+        newShares: [],
+        stoppedSites: [],
+      },
+      null,
+    );
+  const first = await reconnect("bsr_44444444-4444-4444-8444-444444444444");
+  expect(first.stoppedSites).toEqual(["https://stopped.test"]);
+  expect(first.newShares).toHaveLength(20);
+  const second = await reconnect("bsr_55555555-5555-4555-8555-555555555555");
+  expect(second.newShares).toHaveLength(20);
+  expect(
+    (stored.quarantined as { recovered?: true }[]).map((item) => item.recovered ?? false),
+  ).toEqual([true, false]);
+
+  stored = { connections: [unreadableBudget] };
+  await loadConnections();
+  expect((await reconnect("bsr_66666666-6666-4666-8666-666666666666")).newShares).toHaveLength(20);
+});
 it("never defaults unreadable consent to empty", () => {
   expect(migrateConnection({ ...legacy(), stoppedSites: "broken" })).toBeNull();
   expect(migrateConnection({ ...legacy(), newShares: null })).toBeNull();

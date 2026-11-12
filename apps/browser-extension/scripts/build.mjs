@@ -217,8 +217,11 @@ try {
   const payloadFiles = files.filter(
     (file) => !["connect.html", "icons/probe.png", "INSTALL.txt"].includes(file),
   );
+  // Everything Chrome loads names the build, so any change gets a new worker
+  // path: that path is what installed copies compare to adopt an update.
   const hash = createHash("sha256");
-  for (const file of payloadFiles) {
+  hash.update(JSON.stringify(manifest));
+  for (const file of [...payloadFiles, "connect.html", "icons/probe.png"]) {
     hash.update(file);
     hash.update(await readFile(path.join(staging, file)));
   }

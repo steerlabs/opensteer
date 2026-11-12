@@ -629,9 +629,11 @@ function view(connection: Connection): ConnectionView {
     deploymentName: connection.deploymentName,
     name: connection.name,
     origin: connection.origin,
-    sites: Object.entries(connection.sharedSites)
-      .map(([site, share]) => ({
-        lastSharedAt: share.lastSharedAt,
+    // A stop can exist for a site this connection never shared (carried from a
+    // previous connection), and it must still be visible to undo.
+    sites: [...new Set([...Object.keys(connection.sharedSites), ...connection.stoppedSites])]
+      .map((site) => ({
+        lastSharedAt: connection.sharedSites[site]?.lastSharedAt ?? 0,
         site,
         stopped: connection.stoppedSites.includes(site),
       }))

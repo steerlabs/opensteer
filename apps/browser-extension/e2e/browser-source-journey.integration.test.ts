@@ -713,8 +713,12 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     // ---- 6. Extension-side controls ----
     const popup = await everyday.context.newPage();
     await popup.setViewportSize({ height: 640, width: 360 });
+    // Builds since the self-updating layout keep the popup under b/<buildId>/.
+    const { action } = JSON.parse(
+      await readFile(join(extensionDirectory, "manifest.json"), "utf8"),
+    ) as { readonly action: { readonly default_popup: string } };
     const openPopup = async () => {
-      await popup.goto(extensionUrl("popup.html"));
+      await popup.goto(extensionUrl(action.default_popup));
       await popup.locator("#popup[aria-busy='false']").waitFor();
     };
 
@@ -1028,9 +1032,13 @@ type ExtensionConnection = {
   readonly stoppedSites: readonly string[];
 };
 
+/** Reads both stored shapes: 0.1.565's `ended: true` and schema 2's `held.state`. */
 async function extensionConnections(worker: Worker): Promise<ExtensionConnection[]> {
   const stored = await worker.evaluate(() => chrome.storage.local.get("connections"));
-  return (stored.connections ?? []) as ExtensionConnection[];
+  return ((stored.connections ?? []) as (ExtensionConnection & { held?: { state: string } })[]).map(
+    ({ held, ...connection }) =>
+      held?.state === "ended" ? { ...connection, ended: true as const } : connection,
+  );
 }
 
 // ---- Hosted Browser Runtime ----

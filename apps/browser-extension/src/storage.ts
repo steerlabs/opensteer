@@ -118,11 +118,18 @@ export function migrateConnection(raw: unknown): Connection | null {
   return parsed.success ? parsed.data : null;
 }
 
-type Quarantine = { id: string; raw: unknown };
+/** `recovered`: its stops and budget were carried into a reconnection already. */
+type Quarantine = { id: string; raw: unknown; recovered?: true | undefined };
 async function readState(): Promise<{ connections: Connection[]; quarantined: Quarantine[] }> {
   const stored = await chrome.storage.local.get([connectionsKey, "quarantined"]);
   const kept = z
-    .array(z.object({ id: z.string().min(1).max(64), raw: z.unknown() }))
+    .array(
+      z.object({
+        id: z.string().min(1).max(64),
+        raw: z.unknown(),
+        recovered: z.literal(true).optional(),
+      }),
+    )
     .safeParse(stored.quarantined ?? []);
   // A damaged quarantine list is itself kept, never discarded.
   const quarantined: Quarantine[] = kept.success
@@ -195,27 +202,51 @@ export async function addConnection(
       Object.assign(sharedSites, item.sharedSites);
       newShares.push(...item.newShares);
     }
-    const pluckStops = (raw: unknown): void => {
+    // What an unreadable record still tells us only ever restricts: its stops,
+    // and, for this same Deployment, the budget it had spent (all of it when
+    // that can't be read), so reconnecting never quietly grants a fresh day.
+    // A record whose Deployment is unknown lends only its stops (a union, so
+    // repeating it is harmless); one for this Deployment is used up once.
+    const now = Date.now();
+    const recover = (raw: unknown): boolean => {
       if (Array.isArray(raw)) {
-        raw.forEach(pluckStops);
-        return;
+        raw.forEach(recover);
+        return false;
       }
       const value = object(raw);
       const deploymentId =
         value.deploymentId ?? object(object(value.authority).document).deploymentId;
-      if (deploymentId !== undefined && deploymentId !== connection.deploymentId) return;
+      if (deploymentId !== undefined && deploymentId !== connection.deploymentId) return false;
       if (Array.isArray(value.stoppedSites))
         for (const site of value.stoppedSites) {
           const parsed = BrowserSiteSchema.safeParse(site);
           if (parsed.success) stopped.add(parsed.data);
         }
+      if (deploymentId !== connection.deploymentId) return false;
+      const spent = z.array(z.number().int().nonnegative()).safeParse(value.newShares);
+      if (spent.success) newShares.push(...spent.data.filter((at) => now - at < budgetWindowMs));
+      else newShares.push(...Array.from({ length: dailyNewSiteBudget }, () => now));
+      return true;
     };
-    quarantined.forEach((item) => pluckStops(item.raw));
+    const recovered = new Set<string>();
+    for (const item of quarantined) {
+      if (!item.recovered && recover(item.raw)) recovered.add(item.id);
+    }
     const next: Connection = { ...connection, sharedSites, newShares, stoppedSites: [...stopped] };
-    await writeConnections([
+    const connections = [
       ...existing.filter((item) => !sameIdentity(item) && item.sourceId !== connection.sourceId),
       next,
-    ]);
+    ];
+    if (connections.length > maximumConnections) {
+      throw new Error("This Chrome profile is connected to too many Opensteers.");
+    }
+    // One write, so a stop or budget is never applied twice or lost in between.
+    await chrome.storage.local.set({
+      [connectionsKey]: connections.map((item) => ConnectionSchema.parse(item)),
+      quarantined: quarantined.map((item) =>
+        recovered.has(item.id) ? { ...item, recovered: true as const } : item,
+      ),
+    });
     return next;
   });
 }
