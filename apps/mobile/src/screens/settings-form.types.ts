@@ -3,7 +3,6 @@ import type { AutomaticModelConfig, AutomaticModelRole, HarnessInstanceId } from
 import type { AutomaticModelsView } from "@opensteer/protocol";
 import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 import type {
-  AccountSettingsModel,
   ComputerSettingsDestination,
   ComputerSettingsRow,
   DeploymentSettingsModel,
@@ -85,27 +84,12 @@ export interface SignInsSettingsActions {
 
 export interface SettingsFormActionHandlers {
   readonly onChooseModel?: (() => void) | undefined;
-  readonly onAccountAction: () => void;
   readonly onComputerAction: (destination: ComputerSettingsDestination) => void;
   readonly onDeploymentAction: () => void;
   readonly onEngineUpdate?: ((environmentId: string, driverKind: string) => void) | undefined;
   readonly onNotificationAction: () => void;
   readonly onPasswordsAction: () => void;
   readonly onPreferenceChange: (kind: "approvals" | "run-outcomes", enabled: boolean) => void;
-}
-
-export interface RemoteAdministrationSettings {
-  readonly access: import("@opensteer/protocol").PersonalRemoteAdministrationStatus | null;
-  readonly pairing: import("@opensteer/protocol").IssuePersonalPairingCodeResponse | null;
-  readonly sessions: readonly import("@opensteer/core").AuthSessionSummary[];
-  readonly error: string | null;
-  readonly busy: boolean;
-  readonly onAction: (
-    action:
-      "off" | "connect" | "private" | "rotate" | "unlink" | "recover" | "pair" | "link" | "mode",
-  ) => void;
-  readonly onRemove: (session: import("@opensteer/core").AuthSessionSummary) => void;
-  readonly onRefresh: () => void;
 }
 
 export type SettingsPage =
@@ -120,10 +104,6 @@ export interface QuietTasksSetting {
 
 export interface SettingsFormProps extends SettingsFormActionHandlers {
   readonly page?: SettingsPage;
-  readonly administration?: RemoteAdministrationSettings | undefined;
-  /** Null in a build without an Account service. */
-  readonly account: AccountSettingsModel | null;
-  readonly accountError: string | null;
   /** Where the open Opensteer runs and its computers; empty while none is open. */
   readonly computers: readonly ComputerSettingsRow[];
   readonly deployment: DeploymentSettingsModel;

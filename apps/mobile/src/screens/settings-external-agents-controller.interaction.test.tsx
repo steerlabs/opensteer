@@ -48,12 +48,12 @@ afterEach(() => {
 });
 
 describe("External agents on the phone", () => {
-  it("blocks setup and says why when Remote access can't be read", async () => {
+  it("blocks setup and says why when Use from anywhere can't be read", async () => {
     root = createRoot(document.body.appendChild(document.createElement("div")));
     await act(async () => root!.render(<ExternalAgentsSettingsController />));
     // A notice disables every Add row, so no sheet can wait forever for an address.
     expect(state.form?.notice).toEqual({
-      title: "Remote access couldn’t be checked",
+      title: "Couldn’t check Use from anywhere",
       detail: "The computer did not answer.",
       action: null,
     });

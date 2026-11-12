@@ -28,6 +28,11 @@ vi.mock("@expo/ui/swift-ui", () => {
     );
   const Toolbar = Object.assign(view("Toolbar"), { Content: view("Toolbar.Content") });
   return {
+    Circle: view("Circle"),
+    Image: view("Image"),
+    ProgressView: view("ProgressView"),
+    Spacer: view("Spacer"),
+    VStack: view("VStack"),
     ContextMenu: Object.assign(view("ContextMenu"), {
       Trigger: view("ContextMenu.Trigger"),
       Items: view("ContextMenu.Items"),
@@ -52,7 +57,25 @@ vi.mock("@expo/ui/swift-ui", () => {
     useNativeState: () => ({ value: "", set: vi.fn() }),
   };
 });
+vi.mock("../theme.js", () => ({
+  color: new Proxy({}, { get: () => "#000000" }),
+  deploymentPaint: {},
+}));
 vi.mock("@expo/ui/swift-ui/modifiers", () => ({
+  accessibilityAddTraits: () => ({}),
+  accessibilityHidden: () => ({}),
+  accessibilityLabel: () => ({}),
+  background: () => ({}),
+  buttonBorderShape: () => ({}),
+  buttonStyle: () => ({}),
+  contentShape: () => ({}),
+  controlSize: () => ({}),
+  font: () => ({}),
+  foregroundStyle: () => ({}),
+  listStyle: () => ({}),
+  shapes: { rectangle: () => ({}), roundedRectangle: () => ({}), circle: () => ({}) },
+  textSelection: () => ({}),
+  tint: () => ({}),
   disabled: () => ({}),
   frame: () => ({}),
   navigationTitle: () => ({}),
