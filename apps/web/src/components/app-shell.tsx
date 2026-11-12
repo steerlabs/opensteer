@@ -254,6 +254,11 @@ export function useShell(): ShellContext {
   return shell;
 }
 
+/** The personal shell, where there is one: a team's own web app has none. */
+export function useOptionalShell(): ShellContext | null {
+  return useContext(ShellContext);
+}
+
 /**
  * A subtree's view of the shell. Only a live scope observes the full streaming
  * snapshot; the rest use the stable projection, so the surrounding shell and

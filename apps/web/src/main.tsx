@@ -12,6 +12,7 @@ import "@fontsource-variable/fraunces/wght-italic.css";
 import "./styles/index.css";
 import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay.js";
 
+import { DeploymentKindSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
 import { chromeConnectPagePath } from "@opensteer/client/host";
 
@@ -96,6 +97,16 @@ async function renderOpensteer(): Promise<void> {
     reactRoot.render(
       <StrictMode>
         <DesktopApp bridge={bridge} />
+      </StrictMode>,
+    );
+    return;
+  }
+
+  if (import.meta.env.VITE_OPENSTEER_USE_MOCK !== "true" && (await servedByTeam())) {
+    const { TeamWebApp } = await import("./team/team-web-app.js");
+    reactRoot.render(
+      <StrictMode>
+        <TeamWebApp />
       </StrictMode>,
     );
     return;
@@ -200,6 +211,45 @@ async function renderOpensteer(): Promise<void> {
       <App hostClient={hostClient} previewTeams={previewTeams} />
     </StrictMode>,
   );
+}
+
+const deploymentKindKey = "opensteer:deployment-kind";
+
+/**
+ * Whether a team server served this page. An origin's kind never changes, so
+ * it is asked once and remembered; later loads check behind the first screen
+ * and reload only if it differs.
+ */
+async function servedByTeam(): Promise<boolean> {
+  let remembered: string | null = null;
+  try {
+    remembered = localStorage.getItem(deploymentKindKey);
+  } catch {
+    // Storage refused: ask every time.
+  }
+  const asked = fetch("/.well-known/opensteer", {
+    cache: "no-store",
+    credentials: "omit",
+    headers: { accept: "application/json" },
+    redirect: "error",
+  })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((body: unknown) => {
+      const kind = DeploymentKindSchema.safeParse((body as { kind?: unknown } | null)?.kind);
+      if (!kind.success) return null;
+      try {
+        localStorage.setItem(deploymentKindKey, kind.data);
+      } catch {
+        // Asked again next time.
+      }
+      return kind.data;
+    })
+    .catch(() => null);
+  if (remembered !== "personal" && remembered !== "team") return (await asked) === "team";
+  void asked.then((kind) => {
+    if (kind !== null && kind !== remembered) window.location.reload();
+  });
+  return remembered === "team";
 }
 
 async function resolveDesktopPreviewBridge() {

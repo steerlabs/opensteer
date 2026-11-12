@@ -9,7 +9,7 @@ import {
 } from "@opensteer/core";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { AreaHeader } from "../components/workspace/conversation-header.js";
-import { useShell } from "../components/app-shell.js";
+import { useOptionalShell } from "../components/app-shell.js";
 import { KnowledgeTab } from "../components/team/knowledge-tab.js";
 import { PeopleOnlyBadge, PersonAvatar } from "../components/team/team-marks.js";
 import { TeamSearch, noSearchFilters } from "../components/team/team-search.js";
@@ -48,7 +48,7 @@ function TeamPage({
   readonly teamId: string;
 }) {
   const view = useTeamView(teamId, noPreviews);
-  const { hostClient } = useShell();
+  const hostClient = useOptionalShell()?.hostClient ?? null;
   if (!view) return <TeamUnavailable teamId={teamId} />;
   const title = (name: string) =>
     `${name} · ${view.snapshot.bootstrap?.teamName ?? view.team.name}`;

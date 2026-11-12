@@ -2,6 +2,7 @@ import { DeploymentIdSchema } from "@opensteer/core";
 import { createHttpHostApiClient, type WebSocketClient } from "@opensteer/client/host";
 import {
   TeamBinaryUploadMetadataSchema,
+  TeamBootstrapSchema,
   TeamFileSchema,
   teamApiVersion,
   teamApiVersionHeader,
@@ -75,18 +76,32 @@ function fileType(file: TeamFile, part: "preview" | "original"): string {
 /** The team's own web app: same-origin requests and its session cookie. */
 export function browserTeamSession(input: {
   readonly scope: TeamCacheScope;
+  /** What the app already read to learn who is signed in: the first load reuses it. */
+  readonly bootstrap?: z.infer<typeof TeamBootstrapSchema>;
   readonly notify?: Notify;
 }): TeamSessionOptions {
   const origin = window.location.origin;
+  const http = createHttpHostApiClient({
+    baseUrl: new URL(origin),
+    fetch: globalThis.fetch.bind(globalThis),
+    kind: "team",
+    onAuthenticationRequired: () => window.location.reload(),
+  });
+  let first = input.bootstrap ?? null;
   return {
     scope: input.scope,
     persistence: localTeamPersistence,
-    rpc: createHttpHostApiClient({
-      baseUrl: new URL(origin),
-      fetch: globalThis.fetch.bind(globalThis),
-      kind: "team",
-      onAuthenticationRequired: () => window.location.reload(),
-    }),
+    // One round trip before the first screen, not two, on a slow link.
+    rpc: first
+      ? new Proxy(http, {
+          get: (target, property) => {
+            if (property !== "team.bootstrap.get" || !first) return Reflect.get(target, property);
+            const data = first;
+            first = null;
+            return async () => ({ data, ok: true });
+          },
+        })
+      : http,
     connect: () => new WebSocket(`${origin.replace(/^http/u, "ws")}/v1/realtime`),
     readFile: async (file, part, signal) => {
       const metadata = TeamFileSchema.parse(file);

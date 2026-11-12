@@ -13,7 +13,7 @@ import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamTimeline } from "@opensteer/client/team";
 import type { z } from "zod";
-import { useShell } from "../components/app-shell.js";
+import { useOptionalShell } from "../components/app-shell.js";
 import { ChannelDetails, MembersPane } from "../components/team/channel-details.js";
 import { FilesTab, PinnedTab } from "../components/team/channel-tabs.js";
 import {
@@ -210,7 +210,7 @@ function ChannelScreenFor({
   const navigate = useNavigate();
   const { search } = useLocation();
   const { selection } = useWorkspace();
-  const { hostClient } = useShell();
+  const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
@@ -514,7 +514,7 @@ function ChannelScreenFor({
     (message) => message.authorKind === "agent" && message.authorUserId === words.viewerUserId,
   );
   useEffect(() => {
-    if (!repliedToMe || !place.threadId || !links) return;
+    if (!repliedToMe || !place.threadId || !links || !hostClient) return;
     void readTeamReply(hostClient, {
       teamId: team.teamId,
       channelId,
