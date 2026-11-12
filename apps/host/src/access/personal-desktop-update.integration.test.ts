@@ -8,12 +8,8 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, afterAll, expect, it, vi } from "vitest";
 import { OpensteerError, createId, type AuthenticatedSession } from "@opensteer/core";
-import {
-  createDatabase,
-  migrateToLatest,
-  PersonalDesktopUpdateStore,
-  OpensteerStore,
-} from "@opensteer/database";
+import { createDatabase, PersonalDesktopUpdateStore, OpensteerStore } from "@opensteer/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { DesktopUpdateState } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
@@ -24,7 +20,8 @@ import { registerDesktopUpdateMaintenance } from "./personal-desktop-update-rout
 
 const url = process.env.OPENSTEER_TEST_DATABASE_URL;
 if (!url) throw new Error("Run through pnpm test:integration for an isolated database");
-const database = createDatabase({ connectionString: url, maxConnections: 4 });
+let database: ReturnType<typeof createDatabase>;
+let clone: Awaited<ReturnType<typeof cloneTestDatabase>> | undefined;
 const userId = createId("user");
 const session: AuthenticatedSession = {
   id: createId("authSession"),
@@ -49,11 +46,13 @@ const state: DesktopUpdateState = {
   downloadPercent: null,
   failed: null,
 };
-const store = new PersonalDesktopUpdateStore(database);
+let store: PersonalDesktopUpdateStore;
 const makeService = () => new PersonalDesktopUpdate(store);
 const request = { idempotencyKey: "update-once", intent: { action: "update" as const } };
 beforeAll(async () => {
-  await migrateToLatest(database);
+  clone = await cloneTestDatabase("host", { serverUrl: url });
+  database = createDatabase({ connectionString: clone.url, maxConnections: 4 });
+  store = new PersonalDesktopUpdateStore(database);
   const deployment = await new OpensteerStore(database).ensureDeployment({
     canonicalOrigin: "http://127.0.0.1:4310",
     deploymentId: createId("deployment"),
@@ -90,7 +89,11 @@ beforeEach(async () => {
     .execute();
 });
 afterAll(async () => {
-  await database.destroy();
+  try {
+    await database?.destroy();
+  } finally {
+    await clone?.drop();
+  }
 });
 
 it("persists before acknowledgement, replays exactly, refuses conflicting keys and serializes competing requests", async () => {

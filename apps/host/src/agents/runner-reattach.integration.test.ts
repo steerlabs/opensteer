@@ -923,7 +923,7 @@ integration("Runs that outlive their connection", () => {
         ok: false,
         error: {
           retryable: true,
-          message: "Preparing Vertical account…",
+          message: "Preparing Account 1…",
         },
       });
       refusals.push({

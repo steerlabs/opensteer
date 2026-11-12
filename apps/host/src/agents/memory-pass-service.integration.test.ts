@@ -835,9 +835,9 @@ describeStore("managed memory passes", (it) => {
         })
       ).filter(({ systemRole }) => systemRole),
     ).toHaveLength(2);
-    expect(
-      await f.triggers.getForOwner(light.trigger.id, await f.store.createUser("Another person"), 1),
-    ).toBeNull();
+    await expect(
+      f.triggers.getForOwner(light.trigger.id, await f.store.createUser("Another person"), 1),
+    ).rejects.toMatchObject({ code: "forbidden" });
     expect(light.anchorThread?.id).toBe(light.trigger.anchorThreadId);
   });
   it("keeps a managed worker unlisted when a person reuses it for delegated work", async ({
@@ -1393,7 +1393,7 @@ describeStore("managed memory passes", (it) => {
     // The remembered model retains the person's explicit options.
     const chatModel = ModelSelectionSchema.parse({
       providerId: "openai",
-      modelId: "gpt-5.6-sol",
+      modelId: base.thread.modelSelection.modelId,
       options: {},
     });
     await f.database

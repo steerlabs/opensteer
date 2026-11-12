@@ -44,7 +44,6 @@ integration("Host native OAuth routes", () => {
         auth_admissions,
         auth_sso_providers,
         owner_enrollments,
-        security_effects,
         security_audit,
         auth_accounts,
         auth_sessions,

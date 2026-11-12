@@ -224,11 +224,12 @@ export async function createTwoHostLinkFixture() {
     },
     sealed.credential,
   );
-  const principalId = `principal-${randomUUID()}`;
+  const { id: principalId } = await database
+    .selectFrom("principals")
+    .select("id")
+    .where("userId", "=", personal.userId)
+    .executeTakeFirstOrThrow();
   const harnessId = createId("harnessInstance");
-  await sql`insert into principals(id,kind,user_id,display_name) values(${principalId},'user',${personal.userId},'Alex')`.execute(
-    database,
-  );
   await sql`insert into harness_instances(id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id) values(${harnessId},${personal.environmentId},'codex','Scripted','{}',1,'native-user',true,true,'fixture')`.execute(
     database,
   );

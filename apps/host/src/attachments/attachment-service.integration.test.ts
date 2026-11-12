@@ -548,7 +548,8 @@ integration.sequential("Host attachment originals", () => {
     if (row?.state === "ready")
       expect((await service.contentForUser(reserved.id, f.userId)).bytes).toEqual(bytes);
   });
-  it("removes aged canonical bytes left after a rolled-back finalize or deleted workspace", async () => {
+  it("removes aged canonical bytes left after a rolled-back finalize", async () => {
+    await fixture("orphan");
     const orphanId = createId("attachment");
     const originalDirectory = join(directory, "attachments", "originals");
     await mkdir(originalDirectory, {

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { OnBeforeRequestListenerDetails, Session, WebContents } from "electron";
 import { shell } from "electron";
+import type { DesktopConfiguration } from "../config.js";
 import type { DesktopDownloads } from "../downloads/desktop-downloads.js";
 import { DesktopAppOriginPolicy } from "./navigation-policy.js";
 import { expect, it, vi } from "vitest";
@@ -8,16 +9,24 @@ import {
   configureDesktopSession,
   configureDesktopWindowNavigation,
   createElectronAppWindow,
+  ElectronWindowFactory,
 } from "./electron-window.js";
 
+const pageLoad = vi.hoisted(() => ({ next: Promise.resolve() }));
+
 vi.mock("electron", () => ({
+  app: { getVersion: () => "0.1.0" },
   shell: { openExternal: vi.fn(async () => undefined) },
   BaseWindow: class extends EventEmitter {
     contentView = { addChildView: vi.fn(), setBackgroundColor: vi.fn() };
     getContentBounds = () => ({ x: 0, y: 0, width: 800, height: 600 });
+    show = vi.fn();
   },
   WebContentsView: class {
-    webContents = {};
+    webContents = Object.assign(new EventEmitter(), {
+      loadURL: vi.fn(() => pageLoad.next),
+      setWindowOpenHandler: vi.fn(),
+    });
     setBackgroundColor = vi.fn();
     setBounds = vi.fn();
   },
@@ -30,6 +39,24 @@ it("paints the window ground inside the compositor beneath the transparent app v
   expect(ground).toHaveBeenCalledWith("#080808");
   expect(vi.mocked(window.appView.setBackgroundColor)).toHaveBeenCalledWith("#00000000");
   expect(ground.mock.invocationCallOrder[0]).toBeLessThan(attach.mock.invocationCallOrder[0]!);
+});
+
+it("shows a foreground window before its page loads and keeps a login launch hidden", async () => {
+  let finishLoading!: () => void;
+  pageLoad.next = new Promise((resolve) => {
+    finishLoading = resolve;
+  });
+  const factory = new ElectronWindowFactory(
+    { mode: "production" } as unknown as DesktopConfiguration,
+    { bridgeToken: "token", preloadPath: "/preload.cjs", quit: vi.fn() },
+  );
+  const foreground = factory.create(() => undefined, { show: true });
+  const login = factory.create(() => undefined, { show: false });
+  expect(vi.mocked(foreground.window.show)).toHaveBeenCalledOnce();
+  expect(vi.mocked(login.window.show)).not.toHaveBeenCalled();
+  finishLoading();
+  await Promise.all([foreground.loaded, login.loaded]);
+  expect(vi.mocked(login.window.show)).not.toHaveBeenCalled();
 });
 
 it("opens only HTTP(S) links from the focused published-app frame in the system browser", () => {

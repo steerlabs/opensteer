@@ -974,6 +974,7 @@ export class OpensteerStore {
   async countLiveThreadsByEnvironment(
     environmentIds: readonly EnvironmentId[],
   ): Promise<ReadonlyMap<EnvironmentId, number>> {
+    if (environmentIds.length === 0) return new Map();
     const rows = await this.#database
       .selectFrom("threads")
       .select(["environmentId", ({ fn }) => fn.countAll<string>().as("count")])

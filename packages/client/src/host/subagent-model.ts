@@ -1,4 +1,4 @@
-import { plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
+import { clipText, plainTextExcerpt } from "@opensteer/shared/plainTextExcerpt";
 import { requestTitleText, type AssignmentSummary, type ExecutionNodeView } from "@opensteer/core";
 import type { AssignmentEntry, HostSnapshot, NodeEntry, TranscriptEntry } from "./client.js";
 import { workSummary, type Turn, type WorkEntry } from "./agent-activity-model.js";
@@ -129,11 +129,7 @@ export function subagentPreview(text: string | null | undefined): string | null 
   const compact = (
     text ? plainTextExcerpt(text.replace(/<[^>]*>/gu, ""), Number.MAX_SAFE_INTEGER) : null
   )?.replace(/(?<!\w)(\*|__|_)(?=\S)([^\n]*?\S)\1(?!\w)/gu, "$2");
-  if (!compact) return null;
-  const chars = [
-    ...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(compact),
-  ].map((part) => part.segment);
-  return chars.length > 280 ? chars.slice(0, 279).join("").trimEnd() + "…" : compact;
+  return compact ? clipText(compact, 280) : null;
 }
 export function isActiveSubagent(card: Pick<AgentCard, "tone">): boolean {
   return card.tone === "working" || card.tone === "waiting" || card.tone === "needs-you";

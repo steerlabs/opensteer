@@ -811,9 +811,8 @@ export async function personalDeploymentOwner(
   if (!(await isPersonalDeployment(database))) return null;
   const owner = await database
     .selectFrom("users")
-    .select("id")
-    .where("disabledAt", "is", null)
+    .select(["id", "disabledAt"])
     .orderBy("createdAt", "asc")
     .executeTakeFirst();
-  return owner?.id ?? null;
+  return owner && owner.disabledAt === null ? owner.id : null;
 }

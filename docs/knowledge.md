@@ -9,6 +9,11 @@ Attaching a shared topic to a channel grants no access. Agent SQL is scoped to t
 run ticket's channel topic and attached topics its owner may use. Either people-only switch
 excludes the agent. A task's earlier team Runs confer no authority on a private follow-up.
 
+Schema changes use new versioned ensure steps; never edit a shipped step. Each start gives the
+restricted login a new password, so the
+[authority lease](../packages/database/src/deployment-authority.ts) must keep two Hosts off one
+database.
+
 Knowledge writes hold the team access share lock and recheck authority while the restricted
 executor writes and commits. Only then may the main-pool fence release. Buffered answers
 recheck the access revision at handoff and discard the whole result on access loss, rather than
@@ -50,32 +55,26 @@ CPUs, on a private database network without a published port. The Host database 
 superuser to prepare the restricted role; role preparation or restricted-login verification
 failure refuses team startup. Personal Hosts never initialize this executor.
 
-The Host never receives more than it can safely parse. pg-protocol turns each backend message into
-a string as it arrives, and a short query can make PostgreSQL send hundreds of megabytes, as a row
-or as an error that quotes a failing input, crashing the Host from the socket parser where no
-`catch` reaches. So:
+A small query can produce a huge row or an error quoting its input. pg-protocol buffers backend
+messages before application code can catch an error, so SQL result limits alone cannot protect the
+Host: the socket must reject oversized messages before the driver buffers them. Keep independent
+server and encoded-result bounds, reject overdeep JSON, and suppress query-bearing database logs.
+[The manager](../apps/host/src/knowledge/knowledge-manager.ts) owns the bounds.
 
-- The socket under each knowledge connection reads every message header and drops the connection
-  on a message over 1 MB, before the driver buffers it. The statement fails; the process does not.
-- Inside PostgreSQL, a row over 512 KB (the whole row's text, whatever its columns are named)
-  raises, and so does a result whose running total passes 1 MB. At most 200 rows are returned.
-- The manager then refuses a whole encoded result over 512 KB rather than truncating it, and
-  counts a result it cannot encode as over that. `JSON.stringify` overflows near 8,000 levels of
-  nesting, so a stored fact value nests at most 64 arrays and objects.
-- The login logs only FATAL messages, so such error text never reaches the server log.
+Backend time and memory per query remain unbounded. PostgreSQL checks statement timeouts only at
+interrupt points, and `work_mem` does not cap memory allocated by one expression, so one hostile
+query can exhaust the container cap, restart PostgreSQL and briefly interrupt chat. The container
+cap bounds that damage; v1 promises neither per-query isolation nor uninterrupted availability.
+Managed or TLS PostgreSQL and native unbounded PostgreSQL are outside the v1 recipe.
 
-Also bounded: temp files at 32 MB; statement text at 16 KiB; at most 64 parameters, each bounded
-only by the size of the MCP request; a write at 25 facts, each value at 64 KB.
+Parameters arrive as JSON. Array queries must read a JSON array
+(`jsonb_array_elements_text($n::jsonb)`), not cast a parameter to a PostgreSQL array.
 
-Timeouts are checked at PostgreSQL interrupt points, not continuously, and `work_mem` does
-not bound expression allocation. One hostile query can exhaust the container cap, restart
-PostgreSQL and briefly interrupt chat. These limits protect the Host parser and bound the
-container; they do not promise per-query memory isolation or uninterrupted team availability.
-External managed/TLS PostgreSQL and native unbounded PostgreSQL are outside the v1 recipe.
+## Parser and PostgreSQL versions
 
-Parameters arrive as JSON; use `jsonb_array_elements_text($n::jsonb)` for a list. The validator
-refuses array casts and `ANY($n)`. The parser uses PostgreSQL 17 grammar; newer syntax stays
-refused on PostgreSQL 18 until reviewed. The
-[corpus integration test](../apps/host/src/knowledge/sql-gate-corpus.integration.test.ts) must
-prove admitted syntax against each supported PostgreSQL major before widening the boundary.
-The parser's WASM loads relative to its package, so builds ship it unbundled beside the Host.
+The parser is `libpg-query` pinned to PostgreSQL 17's grammar. The team recipe runs PostgreSQL 18,
+so newer syntax stays refused until reviewed. The
+[corpus integration test](../apps/host/src/knowledge/sql-gate-corpus.integration.test.ts) runs
+every admitted statement through the real schema; rerun it against every major the Host runs before
+widening either. The parser loads its WASM relative to its own module, so builds leave it unbundled
+and ship its package folder beside the Host.

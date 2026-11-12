@@ -846,7 +846,7 @@
   padding: 10px 11px;
   border: 0;
   border-radius: 20px;
-  background: rgb(52 50 54 / 78%);
+  background: rgb(46 44 48 / 96%);
   backdrop-filter: blur(24px) saturate(1.8);
   -webkit-backdrop-filter: blur(24px) saturate(1.8);
   box-shadow:
@@ -990,9 +990,28 @@
   height: 14px;
   color: var(--muted);
 }
-.ip-nav .orb {
+.ip-team {
+  display: inline-grid;
+  place-items: center;
   width: 14px;
   height: 14px;
+  border-radius: 3.5px;
+  background: #e0875f;
+  color: #1a1a1a;
+  font-size: 8.5px;
+  font-weight: 700;
+}
+.ip-badge {
+  margin-left: auto;
+  min-width: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
 }
 .ip-sep {
   height: 0.7px;

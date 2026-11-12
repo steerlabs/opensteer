@@ -375,6 +375,8 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       .where("id", "=", local.requestId)
       .executeTakeFirstOrThrow();
     expect(request.state).toBe("done");
+    const replyMessageId = request.replyMessageId;
+    if (replyMessageId === null) throw new Error("The finished request named no reply");
     expect([...statusStates]).toEqual(
       expect.arrayContaining(["queued", "working", "needs_you", "done"]),
     );
@@ -418,6 +420,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       teamId: team.host.deployment.id,
       channelId,
       threadRootId: queued.id,
+      replyMessageId,
     });
     expect(personalClient.getSnapshot().threadReadStates[local.localTaskId]?.readSequence).toBe(
       personalClient.getSnapshot().threadReadStates[local.localTaskId]?.unreadSequence,

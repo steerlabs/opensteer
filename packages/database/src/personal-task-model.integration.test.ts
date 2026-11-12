@@ -3,7 +3,6 @@ import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PrincipalIdSchema } from "@opensteer/channel-core";
 import {
   createId,
   ModelSelectionSchema,
@@ -96,23 +95,6 @@ async function fixture() {
   const database = createDatabase({ connectionString: clone.url, maxConnections: 4 });
   cleanups.push(() => database.destroy());
   const personal = await seedPersonalFixture(database, directory);
-  await database
-    .insertInto("principals")
-    .values([
-      {
-        id: PrincipalIdSchema.parse(`pri_${crypto.randomUUID()}`),
-        kind: "user",
-        userId: personal.userId,
-        displayName: "Alex",
-      },
-      {
-        id: PrincipalIdSchema.parse("pri_00000000-0000-4000-8000-000000000001"),
-        kind: "system",
-        userId: null,
-        displayName: "Opensteer",
-      },
-    ])
-    .execute();
   const harnessInstanceId = createId("harnessInstance");
   await database
     .insertInto("harnessInstances")

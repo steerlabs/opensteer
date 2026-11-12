@@ -12,16 +12,11 @@ focused journey across any boundary you change. Empty selections and skipped, bl
 
 ## Selecting checks
 
-`pnpm check:changed` covers committed, staged, unstaged and untracked changes. A global or unknown
-input makes CI run everything but only widens local typecheck
-([local-check.mjs](../.github/scripts/local-check.mjs)). CI fails closed on missing, corrupt,
-overlapping or incomplete shard inventories and on a cycle in the merged integration lock graph,
-which separate acyclic shards can form together. Files a native-mac task reads or launches at
-runtime go in its `extra` list in [ci-native-mac.json](../.github/scripts/ci-native-mac.json),
-since no import shows them. Re-measure job timeouts with
-[ci-timeouts.ts](../scripts/ci-timeouts.ts) after changing shards. Manual runs, and scheduled runs
-after main changed, run every lane; a scheduled run on a main that already passed a full run
-skips all lanes ([ci-changes.mjs](../.github/scripts/ci-changes.mjs)).
+Import selection misses runtime reads and launches. Declare those in the native task's
+[extra inputs](../.github/scripts/ci-native-mac.json). CI inventories and the merged lock graph
+must fail closed when incomplete or inconsistent. Selection and scheduling live in
+[local-check.mjs](../.github/scripts/local-check.mjs) and
+[ci-changes.mjs](../.github/scripts/ci-changes.mjs); procedures belong in the testing skill.
 
 ## Suites
 

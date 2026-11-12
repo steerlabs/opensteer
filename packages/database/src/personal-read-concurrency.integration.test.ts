@@ -1,14 +1,11 @@
 import { expect, it } from "vitest";
-import {
-  cloneTestDatabase,
-  ownTestDatabaseProducer,
-} from "@opensteer/database/test-support/database";
-import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
-import { createDatabase } from "../../../../packages/database/src/connection.js";
-import { withPersonalTransaction } from "../../../../packages/database/src/personal-transaction.js";
-import { deploymentSnapshot } from "../../../../packages/database/src/snapshot-store.js";
-import { NotificationStateStore } from "../../../../packages/database/src/notification-state.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
+import { createDatabase } from "./connection.js";
+import { NotificationStateStore } from "./notification-state.js";
+import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { deploymentSnapshot } from "./snapshot-store.js";
+import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
 
 it("reads a consistent personal page while a writer holds the Deployment fence", async () => {
   const clone = await cloneTestDatabase("host");

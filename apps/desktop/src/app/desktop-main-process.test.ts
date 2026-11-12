@@ -6,14 +6,14 @@ import {
 } from "./desktop-main-process.js";
 
 describe("DesktopMainProcess", () => {
-  it("shares the startup window with concurrent activations", async () => {
+  it("shows and focuses the startup window during loading with concurrent activations", async () => {
     const calls: string[] = [];
     const window = new TestWindow(calls);
-    let finishLoading!: (window: DesktopWindowHandle) => void;
-    const loaded = new Promise<DesktopWindowHandle>((resolve) => {
+    let finishLoading!: () => void;
+    const loaded = new Promise<void>((resolve) => {
       finishLoading = resolve;
     });
-    const windows = { create: vi.fn(() => loaded) };
+    const windows = { create: vi.fn(() => ({ window, loaded })) };
     const main = new DesktopMainProcess({
       services: { start: async () => undefined, stop: async () => undefined },
       windows,
@@ -23,8 +23,13 @@ describe("DesktopMainProcess", () => {
     const activations = [main.activate(), main.activate()];
     try {
       expect(windows.create).toHaveBeenCalledOnce();
+      expect(windows.create).toHaveBeenCalledWith(expect.any(Function), { show: false });
+      expect(calls).toEqual(["window.show", "window.focus", "window.show", "window.focus"]);
+      calls.length = 0;
+      main.focus();
+      expect(calls).toEqual(["window.show", "window.focus"]);
     } finally {
-      finishLoading(window);
+      finishLoading();
       await Promise.all([starting, ...activations]);
       await main.stop();
     }
@@ -35,18 +40,22 @@ describe("DesktopMainProcess", () => {
 
   it("stays hidden after shutdown, even for a window still loading or a pending link", async () => {
     const calls: string[] = [];
-    let finishLoading!: (window: DesktopWindowHandle) => void;
-    const loaded = new Promise<DesktopWindowHandle>((resolve) => {
+    let finishLoading!: () => void;
+    const loaded = new Promise<void>((resolve) => {
       finishLoading = resolve;
     });
+    const window = new TestWindow(calls);
     const main = new DesktopMainProcess({
       services: { start: async () => undefined, stop: async () => undefined },
-      windows: { create: () => loaded },
+      windows: { create: () => ({ window, loaded }) },
     });
 
     const starting = main.start();
     main.hideWindow();
-    finishLoading(new TestWindow(calls));
+    main.focus();
+    await main.activate();
+    expect(calls).toEqual(["window.hide"]);
+    finishLoading();
     await starting;
     main.focus();
     await main.activate();
@@ -61,12 +70,12 @@ describe("DesktopMainProcess", () => {
     let onClosed: (() => void) | undefined;
     const handles: TestWindow[] = [];
     const windows: DesktopWindowFactory = {
-      create: async (closed) => {
+      create: (closed) => {
         calls.push("window.create");
         onClosed = closed;
         const handle = new TestWindow(calls);
         handles.push(handle);
-        return handle;
+        return { window: handle, loaded: Promise.resolve() };
       },
     };
     const services = {
@@ -105,7 +114,7 @@ describe("DesktopMainProcess", () => {
           if (attempts === 1) throw new Error("browser process shutdown failed");
         }),
       },
-      windows: { create: async () => window },
+      windows: { create: () => ({ window, loaded: Promise.resolve() }) },
     });
     await main.start();
 
@@ -119,7 +128,7 @@ describe("DesktopMainProcess", () => {
   it("starts hidden with its window ready for notifications and shows it when activated", async () => {
     const calls: string[] = [];
     const window = new TestWindow(calls);
-    const windows = { create: vi.fn(async () => window) };
+    const windows = { create: vi.fn(() => ({ window, loaded: Promise.resolve() })) };
     const services = {
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
@@ -137,18 +146,85 @@ describe("DesktopMainProcess", () => {
     await main.stop();
   });
 
-  it("does not start optional services if the first window cannot load", async () => {
+  it("does not start optional services if the first window cannot load or the app stops first", async () => {
     const services = {
       start: vi.fn(async () => undefined),
       stop: vi.fn(async () => undefined),
     };
-    const main = new DesktopMainProcess({
+    const failing = new DesktopMainProcess({
       services,
-      windows: { create: async () => Promise.reject(new Error("Host page failed")) },
+      windows: {
+        create: () => ({
+          window: new TestWindow([]),
+          loaded: Promise.reject(new Error("Host page failed")),
+        }),
+      },
     });
-    await expect(main.start()).rejects.toThrow("Host page failed");
+    await expect(failing.start()).rejects.toThrow("Host page failed");
     expect(services.start).not.toHaveBeenCalled();
     expect(services.stop).not.toHaveBeenCalled();
+
+    let finishLoading!: () => void;
+    const loaded = new Promise<void>((resolve) => {
+      finishLoading = resolve;
+    });
+    const stopping = new DesktopMainProcess({
+      services,
+      windows: { create: () => ({ window: new TestWindow([]), loaded }) },
+    });
+    const starting = stopping.start();
+    const stopped = stopping.stop();
+    finishLoading();
+    await Promise.all([starting, stopped]);
+    expect(services.start).not.toHaveBeenCalled();
+  });
+
+  it("clears a failed loading window and allows the next activation to recreate it", async () => {
+    const calls: string[] = [];
+    const onWindowClosed = vi.fn();
+    const failure = new Error("Host page failed");
+    let failLoading!: (error: Error) => void;
+    const loaded = new Promise<void>((_resolve, reject) => {
+      failLoading = reject;
+    });
+    let closed: (() => void) | undefined;
+    const first = new TestWindow(calls);
+    const failed = new TestWindow(calls);
+    const replacement = new TestWindow(calls);
+    const windows = {
+      create: vi
+        .fn()
+        .mockImplementationOnce((onClosed: () => void) => {
+          closed = onClosed;
+          return { window: first, loaded: Promise.resolve() };
+        })
+        .mockImplementationOnce((onClosed: () => void) => ({
+          window: failed,
+          loaded: loaded.catch((error: unknown) => {
+            failed.destroy();
+            onClosed();
+            throw error;
+          }),
+        }))
+        .mockReturnValueOnce({ window: replacement, loaded: Promise.resolve() }),
+    };
+    const main = new DesktopMainProcess({
+      onWindowClosed,
+      windows,
+      services: { start: async () => undefined, stop: async () => undefined },
+    });
+    await main.start();
+    first.markClosed();
+    closed?.();
+    const activating = main.activate();
+    failLoading(failure);
+    await expect(activating).rejects.toBe(failure);
+    expect(failed.isDestroyed()).toBe(true);
+    expect(onWindowClosed).toHaveBeenCalledTimes(2);
+    await main.activate();
+    expect(windows.create).toHaveBeenCalledTimes(3);
+    expect(replacement.isDestroyed()).toBe(false);
+    await main.stop();
   });
 
   it("keeps the shell open and reports optional service startup failures nonfatally", async () => {
@@ -160,7 +236,7 @@ describe("DesktopMainProcess", () => {
         start: async () => Promise.reject(new Error("device enrollment unavailable")),
         stop: vi.fn(async () => undefined),
       },
-      windows: { create: async () => window },
+      windows: { create: () => ({ window, loaded: Promise.resolve() }) },
     });
 
     await expect(main.start()).resolves.toBeUndefined();

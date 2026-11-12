@@ -1,4 +1,3 @@
-import { PrincipalIdSchema } from "@opensteer/channel-core";
 import { HarnessIdSchema, UserIdSchema, type RunId } from "@opensteer/core";
 import type { PersonalRunFixturePort } from "./store.integration.test-support.js";
 import {
@@ -8,7 +7,6 @@ import {
   pendingEvent,
 } from "./store.integration.test-support.js";
 import type { OpensteerStore } from "./store.js";
-import { systemPrincipalId } from "./store-primitives.js";
 
 export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRunFixturePort {
   return {
@@ -19,21 +17,6 @@ export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRun
         .select("id")
         .where("runnerId", "=", input.folder.computerId)
         .executeTakeFirstOrThrow();
-      await store.database
-        .insertInto("principals")
-        .values({ id: systemPrincipalId, kind: "system", userId: null, displayName: "Opensteer" })
-        .onConflict((c) => c.column("id").doNothing())
-        .execute();
-      await store.database
-        .insertInto("principals")
-        .values({
-          id: PrincipalIdSchema.parse(`pri_${crypto.randomUUID()}`),
-          kind: "user",
-          userId: ownerId,
-          displayName: "Alex",
-        })
-        .onConflict((c) => c.doNothing())
-        .execute();
       const harnessInstance = await store.createHarnessInstance({
         config: {},
         driverKind: HarnessIdSchema.parse("native"),
@@ -165,11 +148,6 @@ export function personalFixtureOwner(
         close: () => rm(directory, { recursive: true, force: true }),
       }));
       const personal = await seedPersonalFixture(database, directory);
-      await database
-        .insertInto("principals")
-        .values({ id: systemPrincipalId, kind: "system", userId: null, displayName: "Opensteer" })
-        .onConflict((c) => c.column("id").doNothing())
-        .execute();
       return personal;
     })();
     fixtureOwners.set(database, owner);

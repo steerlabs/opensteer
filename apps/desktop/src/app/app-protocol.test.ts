@@ -75,6 +75,24 @@ describe("Desktop app protocol", () => {
     expect(await script.text()).toBe("export {};");
   });
 
+  it("reports only slow requests with their asset pathname", async () => {
+    const root = await temporaryDirectory("opensteer-app-slow-");
+    await writeFile(path.join(root, "index.html"), "ready");
+    const onSlowRequest = vi.fn();
+    const handle = createDesktopAppProtocolHandler(root, onSlowRequest);
+    const now = vi.spyOn(performance, "now");
+    try {
+      for (const elapsedMs of [999, 1_000]) {
+        now.mockReturnValueOnce(0).mockReturnValueOnce(elapsedMs);
+        const result = await handle(new Request(`${desktopAppEntryUrl}?private=value`));
+        expect(result.status).toBe(200);
+      }
+      expect(onSlowRequest).toHaveBeenCalledExactlyOnceWith({ path: "/", elapsedMs: 1_000 });
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it("rejects other authorities, writes, malformed escapes, and symlinked assets", async () => {
     const root = await temporaryDirectory("opensteer-app-policy-");
     const outside = await temporaryDirectory("opensteer-app-outside-");

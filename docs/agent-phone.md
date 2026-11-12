@@ -29,13 +29,11 @@ monitoring is on, and Xiaomi needs Install via USB and USB debugging (Security s
 writes only what does not already hold, which keeps a phone set up before an OEM update passing,
 and names those options when Android refuses.
 
-[setup-agent-phone.ts](../packages/agent-phone-setup/src/setup-agent-phone.ts) owns the sequence.
-Verify the artifact's manifest, size and digest before touching the phone, and the installed signer
-before pairing; a foreign signer needs explicit consent to uninstall and erase app data. Resolve a
-usable Host target before unpairing or minting, and confirm before unpairing from another
-Deployment. Retarget a same-Deployment identity without replacing its token or keys, and retry a
-lost mint under the same idempotency key so a replug never mints duplicate enrollments. Rerunning
-setup keeps an existing connection and owner-lowered access.
+[Setup](../packages/agent-phone-setup/src/setup-agent-phone.ts) verifies the artifact and installed
+signer before pairing. A foreign signer needs explicit consent to uninstall and erase app data.
+Resolve a usable Host before unpairing; changing Deployments needs confirmation. Retrying setup
+must preserve same-Deployment identity and owner-lowered access, and a lost enrollment answer must
+reuse its idempotency key.
 
 ## Pairing
 
@@ -97,21 +95,9 @@ a keyguard that needs no credential. Lock is not Stop.
 
 ## The tab
 
-A phone has one tab and one address, the phone itself. Sessions end with every release and Run, and
-agents release before they reply, so a tab tied to a session vanished just as the person was asked
-to use the phone. The tab opens when a session or owner view first confirms and stays until the
-owner closes it, offline included; a task holding the phone refuses the close on the Host.
-
-The tab carries no authority. While it is in front a client keeps an owner view open under it, so
-the picture never depends on a task and a release changes nothing there. Until that view is there
-it shows the holding task's Watch, else a resting page. Opening a view only records a lease on the
-phone, so it needs no press and arms no wake. A refused open or an unavailable view waits for a
-press of Open, because asking again by itself would loop. A second device on the tab shows the same
-owner view while the tab is in front there, and keeps renewing it.
-
-Closing the tab writes it closed before ending the view, and that view's removal says so: a tab in
-front elsewhere would otherwise reopen the view, and with it the tab. An open received before the
-close is refused, and a view that ended cannot record its tab as open.
+The phone's tab carries no authority and outlives task sessions, because agents release before
+replying. Viewing uses its own owner lease rather than extending a task hold. A closed tab or ended
+view must not be resurrected by a late response or another viewer's renewal.
 
 ## Live display
 
@@ -134,9 +120,8 @@ redacts FLAG_SECURE surfaces (Agent Phone's own activity sets it) that accessibi
 identify, so check pixels by decoding the stream. MediaProjection uses the setup-granted app op;
 never open consent dialogs on demand.
 
-Encode without B-frames or reordering. A joining viewer replays the cached GOP; the Host asks for a
-refresh once cached deltas grow large, so a still screen sends almost nothing. Viewers share the
-slowest viewer's bitrate cap, and only a Host cap goes below the phone's 1 Mbps floor. Person input
+Encode without B-frames or reordering. Joining viewers need a decodable cached picture without
+making a still screen stream continuously. The Host caps the shared encoder for slow viewers. Person input
 shares one lane across viewers, blocks conflicting agent input while held, never invalidates agent
 observations and is never replayed after reconnect.
 
