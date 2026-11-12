@@ -670,6 +670,11 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     completion: ConsumePersonalHostAccountLinkRequestSchema,
     type: z.literal("personal.accountLink.complete"),
   }),
+  /** Finishes the link this computer already holds, without a fresh challenge. */
+  z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    type: z.literal("personal.accountLink.resume"),
+  }),
   z.strictObject({
     idempotencyKey: idempotencyKeySchema,
     connectionId: AgentConnectionIdSchema,
@@ -1213,6 +1218,10 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   }),
   z.object({
     type: z.literal("personal.accountLink.complete"),
+    access: PersonalRemoteAccessStatusSchema,
+  }),
+  z.object({
+    type: z.literal("personal.accountLink.resume"),
     access: PersonalRemoteAccessStatusSchema,
   }),
   z.object({ type: z.literal("connection.revoke") }),

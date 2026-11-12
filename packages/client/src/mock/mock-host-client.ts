@@ -2941,6 +2941,7 @@ async function executeMockCommand(
     }
     case "personal.accountLink.approve":
     case "personal.accountLink.complete":
+    case "personal.accountLink.resume":
       return unsupportedMockRpc();
     case "connection.revoke":
       client.revokeConnection(command.connectionId);

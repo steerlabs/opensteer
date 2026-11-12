@@ -72,6 +72,18 @@ export async function linkPersonalHostAccount(
   });
 }
 
+/** Finishes an `activating` link through the Host; a fresh challenge would be refused. */
+export async function resumePersonalHostAccountLink(
+  client: Pick<HostClient, "dispatch">,
+): Promise<void> {
+  const resumed = await client.dispatch({
+    type: "personal.accountLink.resume",
+    idempotencyKey: mutationIdempotencyKey("account-link-resume"),
+  });
+  if (resumed.type !== "personal.accountLink.resume")
+    throw new Error("Unexpected Account link response");
+}
+
 export interface PersonalRemoteAccessClientSnapshot {
   readonly status: PersonalRemoteAdministrationStatus | null;
   readonly error: string | null;
