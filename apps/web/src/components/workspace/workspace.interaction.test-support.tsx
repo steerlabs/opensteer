@@ -43,6 +43,7 @@ let root: Root | null = null;
 let client: MockHostClient;
 let sessionClient: HostClient | null = null;
 let teamHost: MockTeamHost | null = null;
+let teamSession: TeamSessionClient | null = null;
 interface Step {
   readonly type: string;
   readonly path: string;
@@ -79,6 +80,8 @@ function cleanupWorkspace() {
   root = null;
   sessionClient?.dispose();
   sessionClient = null;
+  teamSession?.dispose();
+  teamSession = null;
   teamHost?.dispose();
   teamHost = null;
   client?.dispose();
@@ -147,6 +150,7 @@ async function mount(
       connect: host.connect,
     });
     await session.load();
+    teamSession = session;
     teams = [
       {
         teamId: host.teamId,
@@ -338,6 +342,8 @@ export {
   root,
   client,
   sessionClient,
+  teamHost,
+  teamSession,
   history,
   historyState,
   goTo,
