@@ -31,7 +31,6 @@ import { ComputerScreen } from "./screens/computer.js";
 import { ConversationActivityScreen } from "./screens/conversation-activity.js";
 import { DeploymentsScreen } from "./screens/deployments.js";
 import { HomeScreen } from "./screens/home.js";
-import { NewTaskScreen } from "./screens/new-task.js";
 import { NotificationsIntroScreen } from "./screens/notifications-intro.js";
 import { OpenAppScreen } from "./screens/open-app.js";
 import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js";
@@ -162,7 +161,7 @@ const RootStack = createNativeStackNavigator({
         title: "Computers",
       }),
     },
-    // Home: the new-task composer over Needs you, tasks by folder and Done.
+    // Home: the new-task composer, holding its one unsent draft.
     // The root every other screen of a Deployment is pushed over.
     Home: { screen: HomeScreen, options: { title: "Tasks" } },
     // Every task on one filter (All, Needs you, Running, Unread, Read, Done),
@@ -201,7 +200,6 @@ const RootStack = createNativeStackNavigator({
     Subagent: { screen: SubagentScreen, options: { title: "Subagent" } },
     // A task before it exists: the first message makes it, then the task's
     // own screen replaces this one.
-    NewTask: { screen: NewTaskScreen, options: { title: "New task" } },
     // Every task on the Deployment, narrowed by the search field in its bar,
     // from the sidebar's magnifying glass.
     TaskSearch: { screen: TaskSearchScreen, options: { title: "Search" } },
@@ -664,10 +662,6 @@ type OpensteerRootParamList = {
   readonly DeploymentSwitcher: undefined;
   readonly Home: { readonly deploymentId: string };
   readonly NotificationsIntro: undefined;
-  readonly NewTask: {
-    readonly deploymentId: string;
-    readonly draftId: string;
-  };
   readonly NewThread: {
     readonly deploymentId: string;
     /** The first-message Send that opened this picker, if any. */

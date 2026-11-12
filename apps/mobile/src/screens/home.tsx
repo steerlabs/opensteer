@@ -17,9 +17,6 @@ export type HomeScreenProps = StaticScreenProps<{
   readonly folder?: TaskFolder | undefined;
 }>;
 
-/** Home's own draft: one per person per computer, kept while they come and go. */
-export const homeDraftId = "home";
-
 /**
  * Home: what the reader's agent should do next, and nothing else. Today's
  * composer, with the folder the task will work in and the AI that runs it;
@@ -53,7 +50,6 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
       <NewTaskPane
         autoFocus={false}
         deploymentId={deploymentId}
-        draftId={homeDraftId}
         home={{
           folder,
           folderLabel: folderLabel(folder, home),
