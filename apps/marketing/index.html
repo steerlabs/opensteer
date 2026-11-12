@@ -201,6 +201,9 @@
           stroke-linecap="round"
         />
       </symbol>
+      <symbol id="i-stop" viewBox="0 0 16 16">
+        <rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" />
+      </symbol>
       <symbol id="i-xmark" viewBox="0 0 16 16">
         <path
           d="M4.5 4.5l7 7M11.5 4.5l-7 7"
@@ -864,11 +867,17 @@
 
           <div class="tstage reveal">
             <p class="sr-only">
-              Demo: in the #support channel, Maya reports a double charge. Leo asks his agent to
-              check Stripe. His agent works on his MacBook, asks Leo's phone to approve the refund,
-              then replies in the thread. Priya then asks her own agent to log it in HubSpot.
+              Interactive demo of a team channel, seen from Leo's Mac. In #support, Maya reports a
+              double charge. Leo asks his agent to check Stripe; it works on his MacBook, asks his
+              phone to approve the refund, then replies in the thread. Priya then asks her own agent
+              to log it in HubSpot. You can open channels, threads and tasks, and ask the agent
+              yourself.
             </p>
-            <div id="teamStage" aria-hidden="true"></div>
+            <div id="teamStage"></div>
+            <div class="tcaption">
+              <span id="teamCaption">Click anywhere in the window to take over.</span>
+              <button class="btn btn--sm" type="button" id="teamReplay" hidden>Replay</button>
+            </div>
           </div>
 
           <div class="tbelow">
