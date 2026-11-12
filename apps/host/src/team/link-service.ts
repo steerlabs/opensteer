@@ -90,15 +90,10 @@ export class TeamLinkService {
   async list(actor: TeamActor) {
     requireTeam(actor.kind === "human");
     return this.access.database.transaction().execute(async (t) => {
-      await this.access.member(t, actor.userId);
-      const links = await t
-        .selectFrom("teamLinks")
-        .selectAll()
-        .where("ownerUserId", "=", actor.userId)
-        .where("state", "in", ["active", "pending"])
-        .orderBy("id")
-        .limit(50)
-        .execute();
+      const member = await this.access.member(t, actor.userId);
+      let query = t.selectFrom("teamLinks").selectAll().where("state", "in", ["active", "pending"]);
+      if (member.role === "member") query = query.where("ownerUserId", "=", actor.userId);
+      const links = await query.orderBy("id").limit(50).execute();
       return { links: links.map((row) => linkView(row, this.identity.teamName)) };
     });
   }
@@ -110,9 +105,9 @@ export class TeamLinkService {
         .selectFrom("teamLinks")
         .selectAll()
         .where("id", "=", id)
-        .where("ownerUserId", "=", actor.userId)
         .executeTakeFirst();
       requireTeam(link);
+      if (link.ownerUserId !== actor.userId) await this.access.admin(t, actor);
       if (link.state === "revoked") return { value: undefined, effects: emptyTeamAccessEffects };
       await appendTeamAudit(t, {
         actor,

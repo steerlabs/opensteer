@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { teamReadSchemas } from "./team-api.js";
 import { teamPageSize, teamPreviewMaxBytes } from "./team-chat.js";
 import {
   TeamAuditSchema,
@@ -313,6 +314,10 @@ export const teamReadViews = {
   "teams.links.list": z.object({ links: z.array(PersonalTeamLinkViewSchema).max(100) }),
   "teams.channelFolder.get": z.object({ folder: TaskFolderViewSchema }),
   "teams.threadTask.get": z.object({ taskId: ThreadIdSchema.nullable() }),
+  "teams.replyTask.get": z.union([
+    teamReadSchemas["teams.replyTask.get"].output.options[0].strip(),
+    teamReadSchemas["teams.replyTask.get"].output.options[1].strip(),
+  ]),
   "team.mentions.page": z.object({
     messages: z.array(TeamMessageViewSchema).max(50),
     hasMore: z.boolean(),

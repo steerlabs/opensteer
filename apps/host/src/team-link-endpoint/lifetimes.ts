@@ -6,7 +6,7 @@ interface Lifetime {
   readonly userId: UserId;
   readonly requestId?: TeamAgentRequestId;
   readonly channelIds: readonly TeamChannelId[];
-  readonly cancel: () => void;
+  readonly cancel: (revoked: boolean) => void;
 }
 
 export class TeamLinkLifetimes {
@@ -28,13 +28,13 @@ export class TeamLinkLifetimes {
         entry.channelIds.some((id) => effects.channels.includes(id))
       ) {
         this.#entries.delete(entry);
-        entry.cancel();
+        entry.cancel(effects.links.includes(entry.linkId));
       }
     }
   }
 
   stop(): void {
-    for (const entry of this.#entries) entry.cancel();
+    for (const entry of this.#entries) entry.cancel(false);
     this.#entries.clear();
   }
 }

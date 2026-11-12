@@ -5,6 +5,8 @@ import {
   type TaskFolder,
   type TeamChannelId,
   type TeamTaskOrigin,
+  type TeamMessageId,
+  type UserId,
 } from "@opensteer/core";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
@@ -294,5 +296,8 @@ export class PersonalTeamLinks {
   }
   task(origin: TeamTaskOrigin) {
     return this.options.folders.task(origin);
+  }
+  replyTask(ownerId: UserId, input: TeamTaskOrigin & { readonly replyMessageId: TeamMessageId }) {
+    return this.options.requests.options.requests.replyTask(ownerId, input);
   }
 }
