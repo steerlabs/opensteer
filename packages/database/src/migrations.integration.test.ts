@@ -454,6 +454,14 @@ it("migrates baseline read positions, including the declared message-only and ne
     { name: "blank-completion", status: "completed", blank: true, unread: true },
     { name: "voice", status: "completed", voice: true, unread: true },
     { name: "future-read", status: "completed", marker: 1, future: true, unread: false },
+    {
+      name: "microsecond-unread",
+      status: "completed",
+      marker: 0,
+      messageAt: "2026-01-02T00:00:00.000500Z",
+      completedAt: "2026-01-02T00:00:00.000900Z",
+      unread: true,
+    },
   ];
   for (const item of cases) {
     const id = `thr_${item.name}`;
@@ -462,12 +470,12 @@ it("migrates baseline read positions, including the declared message-only and ne
       database,
     );
     await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content,created_at)
-      values(${`msg_${item.name}`},${id},1,'assistant',${principal.id},'{"kind":"agent"}',${JSON.stringify([{ type: "text", text: item.blank ? "" : "Reply" }])},${item.future ? new Date("2099-01-01") : item.afterCompletion ? updatedAt : completedAt})`.execute(
+      values(${`msg_${item.name}`},${id},1,'assistant',${principal.id},'{"kind":"agent"}',${JSON.stringify([{ type: "text", text: item.blank ? "" : "Reply" }])},${item.messageAt ?? (item.future ? new Date("2099-01-01") : item.afterCompletion ? updatedAt : completedAt)})`.execute(
       database,
     );
     if (item.status) {
       await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,activation_input_id,causal_chain_id,access_mode,status,completed_at)
-        values(${`run_${item.name}`},${id},${person.environmentId},'harness','{}',${person.userId},${principal.id},'{}',0,${`msg_${item.name}`},${`msg_${item.name}`},'chain','full-access',${item.status},${item.future ? new Date("2099-01-01") : completedAt})`.execute(
+        values(${`run_${item.name}`},${id},${person.environmentId},'harness','{}',${person.userId},${principal.id},'{}',0,${`msg_${item.name}`},${`msg_${item.name}`},'chain','full-access',${item.status},${item.completedAt ?? (item.future ? new Date("2099-01-01") : completedAt)})`.execute(
         database,
       );
     }
@@ -513,9 +521,22 @@ it("migrates baseline read positions, including the declared message-only and ne
     (
       await sql<{
         future: boolean;
-      }>`select exists(select 1 from runs where completed_at > now()) or exists(select 1 from messages where created_at > now()) as future`.execute(
-        database,
-      )
+      }>`select exists(select 1 from runs where completed_at > now()) as future`.execute(database)
     ).rows[0]?.future,
   ).toBe(false);
+  // Message history is never rewritten; readers compare its millisecond truncation.
+  expect(
+    (
+      await sql<{
+        id: string;
+        createdAt: string;
+      }>`select id, to_char(created_at at time zone 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') as created_at
+        from messages where id in ('msg_future-read', 'msg_microsecond-unread') order by id`.execute(
+        database,
+      )
+    ).rows,
+  ).toEqual([
+    { id: "msg_future-read", createdAt: "2099-01-01 00:00:00.000000" },
+    { id: "msg_microsecond-unread", createdAt: "2026-01-02 00:00:00.000500" },
+  ]);
 });

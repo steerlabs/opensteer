@@ -8,6 +8,7 @@ import * as lastPictures from "./browser-last-picture.js";
 import { browserLineages } from "../test-support/browser-snapshot.js";
 import { seedBrowserSession } from "../test-support/browser-snapshot.js";
 import type { PersonalTabLineage } from "./client.js";
+import type { PersonalStreamCheckpoint } from "./personal-stream-cache.js";
 import { KeyedStreamPublisher, keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import {
   BrowserGroupRowSchema,
@@ -12455,6 +12456,43 @@ describe("realtime protocol recovery journey", () => {
         });
         expect(f.client.getSnapshot().threadVisits[f.thread.id]).toBe("2026-01-02T00:00:00.000Z");
         expect(f.client.getSnapshot().connection).toBe("connected");
+      } finally {
+        f.client.dispose();
+      }
+    });
+
+    it("merges many reconnect visit pages and checkpoints them once, at synchronization", async () => {
+      const commits: PersonalStreamCheckpoint[] = [];
+      const f = await synchronizedClient({
+        streamCache: {
+          load: async () => null,
+          remove: async () => {},
+          commit: async (checkpoint) => {
+            commits.push(checkpoint);
+          },
+        },
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        f.sockets[0]!.serverClose();
+        const next = await reconnectAfter(f, 10);
+        const before = commits.length;
+        const pages = Array.from({ length: 50 }, () =>
+          Array.from({ length: 100 }, () => ({
+            threadId: createId("thread"),
+            lastVisitedAt: "2026-01-02T00:00:00.000Z",
+          })),
+        );
+        for (const visits of pages) next.socket.receiveRaw({ type: "host.thread-visits", visits });
+        const merged = f.client.getSnapshot().threadVisits;
+        next.socket.receiveRaw({ type: "host.thread-visits", visits: pages[0] });
+        expect(f.client.getSnapshot().threadVisits).toBe(merged);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(commits).toHaveLength(before);
+        next.socket.receiveRaw({ type: "host.synchronized", sequence: "10" });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(commits).toHaveLength(before + 1);
+        expect(Object.keys(commits.at(-1)!.snapshot.threadVisits)).toHaveLength(5000);
       } finally {
         f.client.dispose();
       }

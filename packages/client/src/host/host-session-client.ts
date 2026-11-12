@@ -150,6 +150,7 @@ import { mergeTaskEntries } from "./task-entries.js";
 import { threadStopTarget } from "./thread-activity.js";
 import { isThreadUnread } from "./thread-unread.js";
 import { ThreadStateProjection } from "./thread-state.js";
+import { withPublishedReplies } from "./thread-visits.js";
 import {
   drawnLiveStream,
   foldLiveRun,
@@ -2313,25 +2314,32 @@ export class HttpHostClient {
 
   #mergeVisits(
     rows: readonly { readonly id: string; readonly lastVisitedAt: string | null }[],
-  ): void {
+  ): boolean {
+    const current = this.#snapshot.threadVisits;
+    let merged: Record<string, string> | null = null;
     for (const row of rows) {
-      if (row.lastVisitedAt && row.lastVisitedAt > (this.#snapshot.threadVisits[row.id] ?? ""))
-        this.#snapshot = {
-          ...this.#snapshot,
-          threadVisits: { ...this.#snapshot.threadVisits, [row.id]: row.lastVisitedAt },
-        };
+      if (row.lastVisitedAt && row.lastVisitedAt > ((merged ?? current)[row.id] ?? "")) {
+        merged ??= { ...current };
+        merged[row.id] = row.lastVisitedAt;
+      }
     }
+    if (merged) this.#snapshot = { ...this.#snapshot, threadVisits: merged };
+    return merged !== null;
   }
 
   #applyVisits(visits: readonly ThreadVisit[]): void {
-    this.#mergeVisits(
-      visits.map((visit) => ({ id: visit.threadId, lastVisitedAt: visit.lastVisitedAt })),
-    );
+    if (
+      !this.#mergeVisits(
+        visits.map((visit) => ({ id: visit.threadId, lastVisitedAt: visit.lastVisitedAt })),
+      )
+    )
+      return;
     this.#update(this.#snapshot);
     const channel = this.#snapshot.deploymentId
       ? this.#channels.get(this.#snapshot.deploymentId)
       : undefined;
-    if (channel) this.#persistCheckpoint(channel);
+    // Reconnect visit pages precede host.synchronized, whose checkpoint carries them.
+    if (channel?.synchronized) this.#persistCheckpoint(channel);
   }
 
   async visitThread(threadId: string, visitedAt: string): Promise<void> {
@@ -4638,17 +4646,20 @@ export class HttpHostClient {
     const threadId = input.progress.threadId;
     const retained = this.#showsThread(threadId) || this.#hydratedThreads.has(threadId);
     if (changed && retained && !this.#historicalThreads.has(threadId)) {
-      this.#update({
-        ...this.#snapshot,
-        transcripts: {
-          ...this.#snapshot.transcripts,
-          [threadId]: foldLiveRun(
-            this.#snapshot.transcripts[threadId] ?? [],
-            changed,
-            new Date().toISOString(),
-          ),
+      this.#update(
+        {
+          ...this.#snapshot,
+          transcripts: {
+            ...this.#snapshot.transcripts,
+            [threadId]: foldLiveRun(
+              this.#snapshot.transcripts[threadId] ?? [],
+              changed,
+              new Date().toISOString(),
+            ),
+          },
         },
-      });
+        threadId,
+      );
     }
     if (gap) this.#scheduleLiveRefresh(threadId, this.#snapshot.deploymentId!);
   }
@@ -5254,9 +5265,9 @@ export class HttpHostClient {
       );
   }
 
-  #update(snapshot: HostSnapshot): void {
+  #update(snapshot: HostSnapshot, liveThreadId?: string): void {
     if (this.#disposed) return;
-    snapshot = this.#withInterruption(snapshot);
+    snapshot = withPublishedReplies(this.#snapshot, this.#withInterruption(snapshot), liveThreadId);
     if (snapshot.session !== "authenticated") this.#savedViewReadiness = emptySavedViewReadiness();
     if (
       !this.#capabilities?.includes("task-family-v1") &&
@@ -5874,6 +5885,7 @@ function emptySnapshot(): HostSnapshot {
     voiceThreadId: null,
 
     threadVisits: {},
+    publishedReplyAt: {},
     tasks: null,
     activeTasks: [],
 

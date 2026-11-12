@@ -279,6 +279,7 @@ import {
   type ThreadPlacementOption,
 } from "../host/thread-placement.js";
 import { isThreadUnread } from "../host/thread-unread.js";
+import { withPublishedReplies } from "../host/thread-visits.js";
 import { ThreadStateProjection } from "../host/thread-state.js";
 import {
   assignmentReturnId,
@@ -5891,7 +5892,10 @@ class MockHostState {
       this.#browserStream = new MockBrowserStream(this.browserTabs);
       this.#published = null;
     }
-    this.#published = this.#browserStream.publish(this.snapshot, this.#published);
+    this.#published = this.#browserStream.publish(
+      withPublishedReplies(this.#published, this.snapshot),
+      this.#published,
+    );
   }
   tabGroups: BrowserTabLayout = { revision: 0, groups: [], order: [] };
   projectTabGroups: (() => BrowserTabLayout | undefined) | undefined;
@@ -12639,6 +12643,7 @@ function createInitialSnapshot(): HostSnapshot {
     voiceThreadId: null,
 
     threadVisits: {},
+    publishedReplyAt: {},
     tasks: null,
     activeTasks: [],
 

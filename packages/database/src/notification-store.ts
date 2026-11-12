@@ -191,7 +191,10 @@ export class NotificationStore {
           )
           .select("messages.id")
           .where("messages.id", "=", entry.messageId)
-          .whereRef("threadVisits.lastVisitedAt", ">=", "messages.createdAt")
+          // Older rows keep microseconds; visits carry the millisecond times clients see.
+          .where(
+            sql<boolean>`thread_visits.last_visited_at >= date_trunc('milliseconds', messages.created_at)`,
+          )
           .executeTakeFirst();
         return read ? "Reply was read before publication" : null;
       }
