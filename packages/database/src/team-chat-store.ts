@@ -136,11 +136,15 @@ export class TeamChatStore {
   readonly #listeners = new Set<(channelId: TeamChannelId) => void>();
   readonly access: TeamAccessStore;
   readonly topics: ChannelTopicPort;
-  readonly identity: { readonly teamId: DeploymentId; readonly teamName: string };
+  readonly identity: {
+    readonly teamId: DeploymentId;
+    readonly teamName: string;
+    readonly agentOnline?: (ownerUserId: UserId) => boolean;
+  };
   constructor(
     access: TeamAccessStore,
     topics: ChannelTopicPort,
-    identity: { readonly teamId: DeploymentId; readonly teamName: string },
+    identity: TeamChatStore["identity"],
   ) {
     this.access = access;
     this.topics = topics;
@@ -870,7 +874,6 @@ export class TeamChatStore {
           })),
         )
         .execute();
-    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
     await transaction
       .updateTable("teamChannels")
       .set({ latestMessageId: row.id })
@@ -882,6 +885,7 @@ export class TeamChatStore {
         .set({ changeSeq })
         .where("id", "=", input.threadRootId)
         .execute();
+    await bindTeamFiles(transaction, actor, row, input.attachmentIds);
     let wake: "queued" | "no-link" | "not-requested" | "rate-limited" | "people-only" =
       "not-requested";
     if (
@@ -1286,7 +1290,6 @@ export class TeamChatStore {
       generation: number;
       scope: z.infer<typeof TeamSubscriptionScopeSchema>;
       sinceSeq: Sequence | null;
-      linkPresence?: { ownerUserId: UserId; online: boolean }[];
     },
   ) {
     return this.read(actor, "read", input.scope.channelId, async (t) => {
@@ -1297,7 +1300,6 @@ export class TeamChatStore {
         scope: input.scope,
         throughSeq: channel.changeSeq,
         channel,
-        linkPresence: input.linkPresence ?? [],
       };
       let messages = t.selectFrom("teamMessages").selectAll().where("channelId", "=", channel.id);
       let requests = t
@@ -1311,6 +1313,20 @@ export class TeamChatStore {
         );
         requests = requests.where("threadRootId", "=", rootId);
       } else messages = messages.where("threadRootId", "is", null);
+      const owners = await requests
+        .clearSelect()
+        .select("ownerUserId")
+        .distinct()
+        .orderBy("ownerUserId")
+        .limit(200)
+        .execute();
+      const presence = {
+        ...base,
+        linkPresence: owners.map(({ ownerUserId }) => ({
+          ownerUserId,
+          online: this.identity.agentOnline?.(ownerUserId) ?? false,
+        })),
+      };
       if (input.sinceSeq !== null && BigInt(input.sinceSeq) <= BigInt(channel.changeSeq)) {
         const rows = await messages
           .where("changeSeq", ">", input.sinceSeq)
@@ -1324,7 +1340,7 @@ export class TeamChatStore {
           .execute();
         if (rows.length + statuses.length <= 200) {
           const cut = {
-            ...base,
+            ...presence,
             type: "resumed" as const,
             changedRows: await teamMessageViews(
               t,
@@ -1345,7 +1361,7 @@ export class TeamChatStore {
         input.scope.kind === "thread" ? input.scope.rootId : undefined,
       );
       const cut = {
-        ...base,
+        ...presence,
         type: "snapshot" as const,
         messages: page.messages,
         requests: (await requests.orderBy("createdAt", "desc").limit(200).execute()).map(
@@ -1376,6 +1392,7 @@ export class TeamChatStore {
         query = query.where((e) =>
           e.or([e("threadRootId", "=", input.threadRootId!), e("id", "=", input.threadRootId!)]),
         );
+      if (input.threadsOnly) query = query.where("threadRootId", "is not", null);
       if (input.before) query = query.where("id", "<", input.before);
       if (input.hasFile !== undefined)
         query = query.where((e) =>
@@ -1533,6 +1550,15 @@ export class TeamChatStore {
             ).rows
           : [];
         const unreadByChannel = new Map(unreadRows.map((row) => [row.channelId, row]));
+        const mentions = await sql<{ total: string }>`
+          select count(*)::text as total from team_mentions n
+          join team_messages m on m.id=n.message_id
+          left join team_channel_member_state s on s.channel_id=n.channel_id and s.user_id=${actor.userId}
+          where n.target_user_id=${actor.userId} and n.target_kind='person'
+            and n.channel_id in ${teamReadableChannels(actor)}
+            and m.id>coalesce(s.last_read_message_id,0) and m.deleted_at is null
+            and not(m.author_kind='human' and m.author_user_id=${actor.userId})
+        `.execute(t);
         const linked = !!(await t
           .selectFrom("teamLinks")
           .select("id")
@@ -1574,13 +1600,14 @@ export class TeamChatStore {
             notificationLevel:
               state?.notificationLevel ??
               (row.kind === "dm" || row.kind === "group_dm" ? "all" : "mentions"),
-            agentOnline: false,
+            agentOnline: linked && (this.identity.agentOnline?.(actor.userId) ?? false),
           });
         }
         if (actor.kind === "agent")
           await appendTeamAudit(t, { actor, action: "agent.directory", resourceKind: "team" });
         return {
           channels,
+          totalMentionCount: Number(mentions.rows[0]!.total),
           nextCursor: rows.length > 50 ? rows[49]!.id : null,
           accessRevision: revision,
         };

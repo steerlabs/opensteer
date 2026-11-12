@@ -7,7 +7,7 @@ import {
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import type { z } from "zod";
 import type { TeamChatStore } from "@opensteer/database/team-chat";
-import type { TeamAccessStore } from "@opensteer/database/team-access";
+import { teamReadableChannels, type TeamAccessStore } from "@opensteer/database/team-access";
 
 type Frame = z.infer<typeof TeamServerFrameSchema>;
 type Scope = TeamConsistentCut["scope"];
@@ -22,6 +22,7 @@ interface Subscription {
   sidebar: boolean;
   since: TeamConsistentCut["throughSeq"] | null;
   can: TeamConsistentCut["channel"]["can"] | null;
+  linkOwners: UserId[];
 }
 interface Peer {
   actor: TeamActor;
@@ -32,6 +33,7 @@ interface Peer {
   seen: number;
   closed: boolean;
   presence: string;
+  readable?: { revision: TeamAccessStore["revision"]; ids: Set<TeamChannelId> };
 }
 export class TeamRealtimeHub {
   readonly #peers = new Set<Peer>();
@@ -163,6 +165,7 @@ export class TeamRealtimeHub {
             sidebar: frame.sidebar,
             since: frame.sinceSeq,
             can: null,
+            linkOwners: [],
           };
           if (!peer.subscriptions.has(subscription.id) && peer.subscriptions.size >= 3)
             throw new OpensteerError({
@@ -181,6 +184,7 @@ export class TeamRealtimeHub {
             const cut = await this.#snapshot(actor, subscription);
             if (peer.subscriptions.get(subscription.id) !== subscription || peer.closed) return;
             subscription.can = cut.channel.can;
+            subscription.linkOwners = cut.linkPresence.map((entry) => entry.ownerUserId);
             await this.#handoff(peer, { type: "team.cut", cut }, revision);
             subscription.since = cut.throughSeq;
           }
@@ -215,6 +219,19 @@ export class TeamRealtimeHub {
     };
   }
   #send(peer: Peer, frame: Frame) {
+    if (frame.type === "team.link.presence")
+      frame = { ...frame, online: this.chat.identity.agentOnline?.(frame.userId) ?? frame.online };
+    else if (frame.type === "team.cut")
+      frame = {
+        ...frame,
+        cut: {
+          ...frame.cut,
+          linkPresence: frame.cut.linkPresence.map((entry) => ({
+            ...entry,
+            online: this.chat.identity.agentOnline?.(entry.ownerUserId) ?? entry.online,
+          })),
+        },
+      };
     if (!peer.closed && !peer.socket.send(frame))
       this.#close(peer, "Team connection exceeded its buffer");
   }
@@ -246,12 +263,13 @@ export class TeamRealtimeHub {
         this.#dirty.clear();
         const groups = new Map<string, { peer: Peer; subscription: Subscription }[]>();
         for (const peer of this.#peers) {
-          if ([...peer.subscriptions.values()].some((s) => s.sidebar))
-            this.#send(peer, {
-              type: "team.sidebar.dirty",
-              channelIds: dirty.slice(0, 200),
-              accessRevision: this.access.revision,
-            });
+          if ([...peer.subscriptions.values()].some((s) => s.sidebar)) {
+            try {
+              await this.#sidebarDirty(peer, dirty);
+            } catch {
+              this.#close(peer, "Team sidebar unavailable");
+            }
+          }
           for (const subscription of peer.subscriptions.values()) {
             if (!subscription.scope || !dirty.includes(subscription.scope.channelId)) continue;
             const key = JSON.stringify([subscription.scope, subscription.since]);
@@ -274,6 +292,7 @@ export class TeamRealtimeHub {
             });
             for (const { peer, subscription: current } of viewers) {
               if (peer.subscriptions.get(current.id) !== current || !current.can) continue;
+              current.linkOwners = cut.linkPresence.map((entry) => entry.ownerUserId);
               await this.#handoff(
                 peer,
                 {
@@ -296,6 +315,66 @@ export class TeamRealtimeHub {
       }
     } finally {
       this.#pumping = false;
+    }
+  }
+  async #readable(peer: Peer) {
+    while (peer.readable?.revision !== this.access.revision) {
+      const revision = this.access.revision;
+      const ids = await this.access.database.transaction().execute(async (t) => {
+        await this.access.member(t, peer.actor.userId);
+        return t
+          .selectFrom("teamChannels")
+          .select("id")
+          .where("id", "in", teamReadableChannels(peer.actor))
+          .execute();
+      });
+      if (revision === this.access.revision)
+        peer.readable = { revision, ids: new Set(ids.map((row) => row.id)) };
+    }
+    return peer.readable;
+  }
+  async #sidebarDirty(peer: Peer, dirty: readonly TeamChannelId[]) {
+    const readable = await this.#readable(peer);
+    await this.access.handoff(
+      readable.revision,
+      async () => {
+        await this.#readable(peer);
+        return true;
+      },
+      () => {
+        const channelIds = dirty.filter((id) => peer.readable!.ids.has(id)).slice(0, 200);
+        if (channelIds.length)
+          this.#send(peer, {
+            type: "team.sidebar.dirty",
+            channelIds,
+            accessRevision: this.access.revision,
+          });
+      },
+    );
+  }
+  async linkPresenceChanged(userId: UserId, online: boolean) {
+    for (const peer of this.#peers) {
+      if (
+        ![...peer.subscriptions.values()].some(
+          (s) => (s.sidebar && peer.actor.userId === userId) || s.linkOwners.includes(userId),
+        )
+      )
+        continue;
+      try {
+        const revision = this.access.revision;
+        await this.access.database.transaction().execute(async (t) => {
+          await this.access.member(t, peer.actor.userId);
+          for (const subscription of peer.subscriptions.values())
+            if (
+              subscription.scope &&
+              !(await this.access.channel(t, peer.actor, subscription.scope.channelId)).read
+            )
+              throw new OpensteerError({ code: "forbidden", message: "Team access changed" });
+        });
+        await this.#handoff(peer, { type: "team.link.presence", userId, online }, revision);
+      } catch {
+        this.#close(peer, "Team presence unavailable");
+      }
     }
   }
   #typingFrame(channelId: TeamChannelId, rootId: string | null) {

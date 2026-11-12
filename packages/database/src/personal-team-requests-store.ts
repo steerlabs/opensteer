@@ -4,10 +4,16 @@ import {
   type DeploymentId,
   type RunId,
   type TeamAgentRequestId,
+  type TeamTaskOrigin,
+  type TeamMessageId,
+  type UserId,
+  SequenceSchema,
 } from "@opensteer/core";
 import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/protocol";
 import type { Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { eventFromRow } from "./deployment-events.js";
 
 export class PersonalTeamRequestsStore {
   readonly database: Kysely<DatabaseSchema>;
@@ -114,6 +120,57 @@ export class PersonalTeamRequestsStore {
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", requestId)
       .execute();
+  }
+
+  async replyTask(
+    ownerId: UserId,
+    input: TeamTaskOrigin & { readonly replyMessageId: TeamMessageId },
+  ) {
+    return this.database.transaction().execute(async (tx) => {
+      await requirePersonalOwner(tx, ownerId);
+      const empty = { taskId: null, throughSequence: null };
+      const request = await tx
+        .selectFrom("personalTeamRequests as p")
+        .innerJoin("threads as t", "t.id", "p.localTaskId")
+        .innerJoin("runs as r", (join) =>
+          join
+            .onRef("r.threadId", "=", "p.localTaskId")
+            .onRef("r.seedInputId", "=", "p.localInputId")
+            .onRef("r.teamRequestId", "=", "p.requestId"),
+        )
+        .select(["t.id as taskId", "r.id as runId"])
+        .where("t.createdBy", "=", ownerId)
+        .where("t.teamId", "=", input.teamId)
+        .where("t.channelId", "=", input.channelId)
+        .where("t.threadRootId", "=", input.threadRootId)
+        .where("p.teamDeploymentId", "=", input.teamId)
+        .where("p.acceptedMessageId", "=", input.replyMessageId)
+        .where("p.publicationState", "=", "accepted")
+        .where("r.status", "=", "completed")
+        .executeTakeFirst();
+      if (!request) return empty;
+      const row = await tx
+        .selectFrom("deploymentEvents")
+        .selectAll()
+        .where("runId", "=", request.runId)
+        .where("type", "=", "run.completed")
+        .orderBy("sequence", "desc")
+        .executeTakeFirst();
+      const event = row ? eventFromRow(row) : null;
+      if (event?.type !== "run.completed" || !event.data.replyMessageId) return empty;
+      const message = await tx
+        .selectFrom("messages")
+        .select("sequence")
+        .where("id", "=", event.data.replyMessageId)
+        .where("runId", "=", request.runId)
+        .where("threadId", "=", request.taskId)
+        .where("kind", "=", "assistant")
+        .where("addressedToUserId", "is", null)
+        .executeTakeFirst();
+      return message
+        ? { taskId: request.taskId, throughSequence: SequenceSchema.parse(message.sequence) }
+        : empty;
+    });
   }
 
   #view(row: Selectable<DatabaseSchema["personalTeamRequests"]>): PersonalTeamRequest {

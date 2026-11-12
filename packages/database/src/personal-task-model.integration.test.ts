@@ -1013,7 +1013,17 @@ it("hydrates the exact team request input when request IDs collide across teams"
     .where("type", "=", "run.execute")
     .executeTakeFirstOrThrow();
   await claimCommand(f.database, command.id, "fixture");
-  const source = { ...f.source, teamId: otherTeamId };
+  const source = {
+    ...f.source,
+    teamId: otherTeamId,
+    audience: {
+      ...f.source.audience,
+      channelName: "Renamed",
+      channelKind: "group_dm" as const,
+      memberCount: 7,
+      peopleOnly: true,
+    },
+  };
   const hydrated = await hydrateTeamTaskInput(f.database, {
     runId: second.receipt.runId!,
     requestId: first.requestId,
@@ -1031,7 +1041,7 @@ it("hydrates the exact team request input when request IDs collide across teams"
       .where("messageId", "=", messageId)
       .executeTakeFirstOrThrow();
   expect(await read(second.receipt.inputId)).toEqual({
-    teamSource: source,
+    teamSource: { ...f.source, teamId: otherTeamId },
     content: [
       { type: "text", text: `Team source and audience: ${JSON.stringify(source)}` },
       { type: "text", text: "The second team's current ask" },

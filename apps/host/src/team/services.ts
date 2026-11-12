@@ -7,6 +7,7 @@ import {
   type TeamLinkId,
   type TeamAgentRequestId,
   TeamChannelIdSchema,
+  type UserId,
 } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import {
@@ -64,6 +65,7 @@ export interface TeamServiceOptions {
     deliver(linkId: TeamLinkId): Promise<void>;
     cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): void;
     close(effects: TeamStoreAccessEffects): Promise<void> | void;
+    isOnline?(ownerUserId: UserId): boolean;
   };
   readonly registerPreviewKey?: (
     session: AuthenticatedSession,
@@ -93,6 +95,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
   const chat = new TeamChatStore(access, options.topics, {
     teamId: options.teamId,
     teamName: options.teamName,
+    agentOnline: (ownerUserId) => options.machine?.isOnline?.(ownerUserId) ?? false,
   });
   const links = new TeamLinkService(access, {
     teamName: options.teamName,
@@ -543,6 +546,13 @@ export async function startTeamServices(options: TeamServiceOptions) {
           const revision = access.revision;
           const command = TeamCommandSchema.parse(raw);
           const result = await dispatch(actor, command);
+          if (
+            typeof result === "object" &&
+            result !== null &&
+            Object.keys(result).length === 1 &&
+            "type" in result
+          )
+            return result;
           return access.handoff(
             revision,
             () =>
