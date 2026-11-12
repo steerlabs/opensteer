@@ -40,8 +40,9 @@ describe("liveTasks", () => {
     expect(ids(liveTasks(list))).toEqual([1, 4, 6, 2, 3]);
   });
 
-  it("keeps a read result while it is open, so reading it never pulls its row away", () => {
-    expect(ids(liveTasks(list, threadId(5)))).toEqual([1, 4, 5, 6, 2, 3]);
+  it("keeps the finished read result in All tasks after it leaves the sidebar", () => {
+    expect(ids(liveTasks(list))).not.toContain(5);
+    expect(ids(allTasksRows(list, "all"))).toContain(5);
   });
 });
 

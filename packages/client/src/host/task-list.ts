@@ -216,14 +216,10 @@ export function taskCanBeDone(
   return thread.purpose === "task";
 }
 
-/**
- * The sidebar's tasks: what needs the reader, then results they have not
- * read, then work running. A result leaves once read; the open task stays
- * while it is open, so reading it never pulls its row away.
- */
-export function liveTasks(list: TaskList, openThreadId: string | null = null): readonly TaskRow[] {
+/** The sidebar shows requests, unread results and running work. */
+export function liveTasks(list: TaskList): readonly TaskRow[] {
   const needsYou = list.working.filter((row) => row.tone === "needs-you");
-  const results = list.ready.filter((row) => row.unread || row.threadId === openThreadId);
+  const results = list.ready.filter((row) => row.unread);
   const running = list.working.filter((row) => row.tone !== "needs-you");
   return [...needsYou, ...results, ...running];
 }
