@@ -99,7 +99,11 @@ describe("device proofs", () => {
       sessionId: "ses_0192f4a1-2222-4222-8222-222222222222",
       issuedAt: "2026-11-12T18:30:00.000+00:00",
     };
-    const leave = { deploymentId: bind.deploymentId, runnerId: bind.runnerId, issuedAt: bind.issuedAt };
+    const leave = {
+      deploymentId: bind.deploymentId,
+      runnerId: bind.runnerId,
+      issuedAt: bind.issuedAt,
+    };
     const hex = (transcript: readonly string[]) =>
       Buffer.from(canonicalJson(transcript), "utf8").toString("hex");
     const actual = `${JSON.stringify(
@@ -121,7 +125,8 @@ describe("device proofs", () => {
       null,
       2,
     )}\n`;
-    if (process.env.OPENSTEER_WRITE_DEVICE_PROOF_VECTORS === "1") writeFileSync(fixturePath, actual);
+    if (process.env.OPENSTEER_WRITE_DEVICE_PROOF_VECTORS === "1")
+      writeFileSync(fixturePath, actual);
     expect(readFileSync(fixturePath, "utf8")).toBe(actual);
     const vectors = JSON.parse(actual) as {
       bind: typeof bind & { signature: string };

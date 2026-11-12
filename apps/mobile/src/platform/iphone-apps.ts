@@ -49,8 +49,22 @@ export interface IphoneAppsApproval {
   readonly createdAt: string;
   readonly expiresAt: string;
 }
+/** A signed self-leave persisted natively, waiting for its Host; older builds omit it. */
+export interface IphonePendingLeave {
+  readonly deploymentId: string;
+  readonly runnerId: string;
+  readonly hostUrl: string;
+  readonly issuedAt: string;
+  readonly signature: string;
+}
+export interface IphoneSessionBinding {
+  readonly runnerId: string;
+  readonly issuedAt: string;
+  readonly signature: string;
+}
 export interface IphoneAppsSnapshot {
   readonly pendingErasure?: boolean;
+  readonly pendingLeave?: IphonePendingLeave | null;
   readonly revision: number;
   readonly supported: boolean;
   readonly unsupportedReason: "not-ios" | "not-iphone" | "ios-version" | null;
@@ -96,15 +110,37 @@ export interface IphoneAppsBridge {
   discardPendingEnrollment(): Promise<{ readonly mintKey: string }>;
   retarget(pairing: IphonePairingTarget): Promise<void>;
   disconnect(): { readonly deploymentId: string | null; readonly runnerId: string | null };
+  /**
+   * The person's sign-out or removal. The signed leave is durable before the
+   * native stop starts erasing its key; `leave` is absent when nothing was
+   * signed (nothing on the Host yet, or a build that predates leave).
+   */
+  leave(): {
+    readonly deploymentId: string | null;
+    readonly runnerId: string | null;
+    readonly leave?: "persisted";
+  };
+  completeLeave(input: { readonly runnerId: string }): Promise<void>;
+  signSessionBinding(input: {
+    readonly deploymentId: string;
+    readonly sessionId: string;
+  }): Promise<IphoneSessionBinding>;
   requestPermission(app: IphoneAppId): Promise<IphonePermission>;
   chooseContacts(): Promise<IphonePermission>;
   /** Apple's limited-library picker, from a tap; what comes back is iOS's answer read afresh. */
   choosePhotos(): Promise<IphonePermission>;
 }
 
-interface NativeIphoneApps extends Omit<IphoneAppsBridge, "choosePhotos" | "subscribe"> {
+interface NativeIphoneApps extends Omit<
+  IphoneAppsBridge,
+  "choosePhotos" | "completeLeave" | "leave" | "signSessionBinding" | "subscribe"
+> {
   /** Absent from builds that predate Photos. */
   readonly choosePhotos?: () => Promise<IphonePermission>;
+  /** Absent from builds that predate device sessions. */
+  readonly leave?: IphoneAppsBridge["leave"];
+  readonly completeLeave?: IphoneAppsBridge["completeLeave"];
+  readonly signSessionBinding?: IphoneAppsBridge["signSessionBinding"];
   addListener(
     event: "onChange",
     listener: (snapshot: IphoneAppsSnapshot) => void,
@@ -154,6 +190,11 @@ const unsupported: IphoneAppsBridge = {
     throw unsupportedError();
   },
   disconnect: () => ({ deploymentId: null, runnerId: null }),
+  leave: () => ({ deploymentId: null, runnerId: null }),
+  completeLeave: async () => undefined,
+  signSessionBinding: async () => {
+    throw unsupportedError();
+  },
   requestPermission: async () => {
     throw unsupportedError();
   },
@@ -182,6 +223,14 @@ export const iphoneApps: IphoneAppsBridge =
         discardPendingEnrollment: () => native.discardPendingEnrollment(),
         retarget: (pairing) => native.retarget(pairing),
         disconnect: () => native.disconnect(),
+        leave: () => (native.leave ?? native.disconnect)(),
+        completeLeave: async (input) => {
+          await native.completeLeave?.(input);
+        },
+        signSessionBinding: async (input) => {
+          if (native.signSessionBinding === undefined) throw unsupportedError();
+          return native.signSessionBinding(input);
+        },
         requestPermission: (app) => native.requestPermission(app),
         chooseContacts: () => native.chooseContacts(),
         choosePhotos: async () => {

@@ -274,6 +274,42 @@ export function createFakeIphoneApps(
       return stopped;
     },
 
+    leave() {
+      calls.push("leave");
+      const held = snapshot.enrollment;
+      const pendingLeave =
+        held === null
+          ? null
+          : {
+              deploymentId: held.deploymentId,
+              hostUrl: held.hostUrl,
+              issuedAt: new Date().toISOString(),
+              runnerId: held.runnerId,
+              signature: "L".repeat(86),
+            };
+      const stopped = bridge.disconnect();
+      if (pendingLeave === null) return stopped;
+      set({ pendingLeave });
+      return { ...stopped, leave: "persisted" as const };
+    },
+
+    async completeLeave({ runnerId: left }) {
+      calls.push("completeLeave");
+      if (snapshot.pendingLeave?.runnerId === left) set({ pendingLeave: null });
+    },
+
+    async signSessionBinding({ deploymentId, sessionId }) {
+      calls.push(`signSessionBinding:${sessionId}`);
+      const held = snapshot.enrollment;
+      if (held?.state !== "enrolled") throw bridgeError("not-prepared");
+      if (held.deploymentId !== deploymentId) throw bridgeError("wrong-deployment");
+      return {
+        issuedAt: new Date().toISOString(),
+        runnerId: held.runnerId,
+        signature: "B".repeat(86),
+      };
+    },
+
     async requestPermission(app) {
       calls.push(`requestPermission:${app}`);
       const current = permissionOf(app);

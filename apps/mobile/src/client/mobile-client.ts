@@ -368,6 +368,8 @@ export class MobileClient {
     );
     this.#seed = options.seed ?? [];
     this.#iphoneApps = options.iphoneApps ?? null;
+    const detachRemoved = this.#iphoneApps?.onRemoved((id) => void this.markRemoved(id));
+    if (detachRemoved !== undefined) this.#detach.push(detachRemoved);
     this.#openIntegrationAuthorization = options.openIntegrationAuthorization;
     this.#integrationAttempts = new IntegrationAuthorizationAttempts({
       now: () => (options.now?.() ?? new Date()).getTime(),
@@ -812,7 +814,9 @@ export class MobileClient {
         await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-        await this.#signOutNow(id);
+        // A bound session ends with the device's leave; revoking it again would
+        // fail after a successful removal.
+        await this.#signOutNow(id, { revoke: iphone?.sessionBound !== true });
       } catch (error) {
         // A sign-out or removal that did not happen leaves the login and its live
         // attachment in place; the saved view it erased stays erased.
@@ -820,6 +824,33 @@ export class MobileClient {
         await this.#republish();
         throw error;
       }
+    });
+  }
+
+  /**
+   * The Host removed this phone from a Deployment. Its session there is
+   * already gone with the device, so nothing is revoked: the local session,
+   * saved views and preview keys go, and no automatic sign-in may restore a
+   * session until the person chooses Set up again, which signs in.
+   */
+  markRemoved(deploymentId: DeploymentId | string): Promise<void> {
+    const id = DeploymentIdSchema.parse(deploymentId);
+    this.#authorizationEpoch += 1;
+    this.#signedOut.add(id);
+    const previewCleanup = this.#notificationPreviews?.clear(id);
+    const invalidation = this.#invalidateSavedView(id);
+    return this.#operations.run(async () => {
+      await previewCleanup;
+      await invalidation;
+      if (
+        !this.#state.catalog.deployments.some(
+          ({ authority }) => authority.document.deploymentId === id,
+        )
+      ) {
+        await this.#signedOutFile.write(this.#signedOutIds());
+        return;
+      }
+      await this.#signOutNow(id, { revoke: false }).catch(() => this.#republish());
     });
   }
 
@@ -1355,7 +1386,7 @@ export class MobileClient {
         await previewCleanup;
         await invalidation;
         if (iphone !== null) await this.#tellHostIphoneStopped(id, iphone);
-        await this.#removeNow(id);
+        await this.#removeNow(id, { revoke: iphone?.sessionBound !== true });
       } catch (error) {
         // A sign-out or removal that did not happen leaves the login and its live
         // attachment in place; the saved view it erased stays erased.
@@ -1708,12 +1739,12 @@ export class MobileClient {
     this.#attachedDeploymentId = id;
   }
 
-  async #signOutNow(id: DeploymentId): Promise<void> {
+  async #signOutNow(id: DeploymentId, options = { revoke: true }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
       if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
-        await this.#revokePersonalSession(connection);
+        if (options.revoke) await this.#revokePersonalSession(connection);
         await this.sessions.clear(id);
       }
     } catch (error) {
@@ -1734,12 +1765,12 @@ export class MobileClient {
     await this.#republish();
   }
 
-  async #removeNow(id: DeploymentId): Promise<void> {
+  async #removeNow(id: DeploymentId, options = { revoke: true }): Promise<void> {
     const connection = this.#requireConnection(id);
     try {
       if (connection.kind === "team") await this.oauth.signOutHost(connection);
       else {
-        await this.#revokePersonalSession(connection);
+        if (options.revoke) await this.#revokePersonalSession(connection);
         await this.sessions.clear(id);
       }
     } catch (error) {
@@ -1984,8 +2015,18 @@ export class MobileClient {
           : "connecting"
         : snapshot.connection;
     const refused = snapshot.session === "authentication-required";
-    if (refused && !this.#attachmentRefused && this.#attachedDeploymentId !== null)
-      void this.#invalidateSavedView(this.#attachedDeploymentId);
+    if (refused && !this.#attachmentRefused && this.#attachedDeploymentId !== null) {
+      const id = this.#attachedDeploymentId;
+      void this.#invalidateSavedView(id);
+      // A session bound to this phone ends with removal and with expiry alike;
+      // neither may sign back in on its own. Removal then arrives as 4010.
+      if (this.#iphoneApps?.sessionBound(id) === true && !this.#signedOut.has(id)) {
+        this.#signedOut.add(id);
+        void this.#operations
+          .run(() => this.#signedOutFile.write(this.#signedOutIds()))
+          .catch(noop);
+      }
+    }
     if (state === this.#attachmentState && refused === this.#attachmentRefused) return false;
     this.#attachmentState = state;
     this.#attachmentRefused = refused;

@@ -914,6 +914,8 @@ export interface HostSnapshot {
   browserProfileManageAvailable?: boolean;
   searchSuggestionsAvailable?: boolean;
   iphoneAppsAvailable: boolean;
+  /** `devices-v1`: device setup switches, session binding and self-leave. */
+  devicesAvailable?: boolean;
   ownerViewWindowsAvailable?: boolean;
   /** The Host advertises voice-run-v1: a call's agent runs as a Run with Opensteer's tools. */
   voiceAvailable?: boolean;

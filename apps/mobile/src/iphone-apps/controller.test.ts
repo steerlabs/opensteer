@@ -5,12 +5,16 @@ import type {
   IphoneAppId,
   IphoneAppsApproval,
   IphoneApprovalOutcome,
+  IphonePendingLeave,
 } from "../platform/iphone-apps.js";
 import {
   IphoneAppsController,
+  type DeliverLeave,
   type IphoneAppsTiming,
+  type LeaveDelivery,
   type NativePhoneEnrollment,
 } from "./controller.js";
+import type { RemovedFile, RemovedFrom } from "./removed-file.js";
 import type { ShownApproval, ShownApprovalsFile } from "./shown-approvals-file.js";
 import { createFakeIphoneApps, type FakeIphoneApps } from "./fake-bridge.js";
 
@@ -890,7 +894,7 @@ describe("the apps chosen with Add", () => {
 
     expect(controller.getState().queued).toEqual([]);
     expect(controller.getState().failures).toEqual({});
-    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar", "disconnect"]);
+    expect(fake.device.calls).toEqual(["requestPermission:apple-calendar", "leave", "disconnect"]);
     expect(host.commands).not.toContain("integration.computer.setup.request");
   });
 
@@ -1257,12 +1261,16 @@ describe("the iPhone's owner", () => {
       deploymentId,
       deploymentName: "Mac mini",
       enrollmentId: null,
+      left: true,
       machineId: runnerId,
       name: "Alex's iPhone",
+      sessionBound: false,
     });
-    expect(fake.device.calls.at(-1)).toBe("disconnect");
+    // The signed leave is durable before the native stop erases its key.
+    expect(fake.device.calls.slice(-2)).toEqual(["leave", "disconnect"]);
     expect(controller.owner.enrolledDeploymentId()).toBeNull();
 
+    // With no self-leave route, as an older Host has none, the old revoke goes out.
     const never = vi.fn(() => new Promise<never>(() => undefined));
     const telling = controller.owner.tellHost(stopped!, never as unknown as HostClient["dispatch"]);
     await vi.advanceTimersByTimeAsync(fast.revokeMs + 1);
@@ -1279,6 +1287,132 @@ describe("the iPhone's owner", () => {
     expect(controller.owner.enrolledDeploymentId()).toBeNull();
   });
 });
+
+describe("leaving and binding", () => {
+  it("leaves with the signed proof alone, never a second authenticated revoke", async () => {
+    const delivered: IphonePendingLeave[] = [];
+    const { controller, fake } = open({
+      deliverLeave: async (leave) => {
+        delivered.push(leave);
+        return "removed";
+      },
+    });
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const runnerId = fake.device.runnerId();
+    const host = fakeHost();
+    const stopped = controller.owner.stop();
+    expect(await controller.owner.tellHost(stopped!, host.client.dispatch)).toBe("removed");
+    expect(delivered).toEqual([
+      expect.objectContaining({ deploymentId, runnerId, hostUrl: "https://mac-mini.example.test" }),
+    ]);
+    expect(host.commands).toEqual([]);
+    expect(fake.bridge.getSnapshot().pendingLeave).toBeNull();
+    expect(controller.getState().notice).toBeNull();
+  });
+
+  it("keeps an undelivered leave and delivers it after a restart", async () => {
+    const answers: LeaveDelivery[] = ["unreachable", "removed"];
+    const deliverLeave = vi.fn(async () => answers.shift()!);
+    const first = open({ deliverLeave });
+    first.fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const stopped = first.controller.owner.stop();
+    expect(await first.controller.owner.tellHost(stopped!, null)).toBe("unconfirmed");
+    expect(first.controller.getState().notice?.kind).toBe("not-told");
+    const kept = first.fake.bridge.getSnapshot().pendingLeave;
+    expect(kept?.deploymentId).toBe(deploymentId);
+    first.controller.dispose();
+
+    // A new process over the same native store.
+    const restarted = new IphoneAppsController({
+      bridge: first.fake.bridge,
+      deliverLeave,
+      shownApprovals: memoryShownFile(),
+      timing: fast,
+    });
+    controllers.push(restarted);
+    await restarted.load();
+    await vi.waitFor(() => expect(first.fake.bridge.getSnapshot().pendingLeave).toBeNull(), {
+      timeout: 1_000,
+    });
+    expect(deliverLeave).toHaveBeenLastCalledWith(kept);
+  });
+
+  it("remembers a removal across restarts until Set up again", async () => {
+    const removedFile = memoryRemovedFile();
+    const { controller, fake } = open({ removedFile });
+    const removed: string[] = [];
+    controller.owner.onRemoved((id) => removed.push(id));
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    fake.device.removedByHost();
+    expect(removed).toEqual([deploymentId]);
+    expect(controller.getState().removedFrom).toEqual({ deploymentId, deploymentName: "Mac mini" });
+    await vi.waitFor(() => expect(removedFile.stored).not.toBeNull(), { timeout: 1_000 });
+
+    const restarted = open({ removedFile });
+    await restarted.controller.load();
+    expect(restarted.controller.getState().removedFrom?.deploymentId).toBe(deploymentId);
+    await restarted.controller.clearRemoved();
+    expect(restarted.controller.getState().removedFrom).toBeNull();
+    expect(removedFile.stored).toBeNull();
+  });
+
+  it("binds the session open here once per attachment, and only on a devices-v1 Host", async () => {
+    const { controller, fake } = open();
+    fake.device.enrolledTo({ deploymentId, name: "Alex's iPhone" });
+    const runnerId = fake.device.runnerId();
+    const old = sessionHost({ devices: false });
+    controller.attachHost({ deploymentId, hostClient: old.client });
+    await settle();
+    expect(old.bound).toEqual([]);
+    expect(controller.owner.sessionBound(deploymentId)).toBe(false);
+
+    const host = sessionHost({ devices: true });
+    controller.attachHost({ deploymentId, hostClient: host.client });
+    await vi.waitFor(() => expect(controller.owner.sessionBound(deploymentId)).toBe(true), {
+      timeout: 1_000,
+    });
+    expect(host.bound).toEqual([
+      { machineId: runnerId, proof: { issuedAt: expect.any(String), signature: "B".repeat(86) } },
+    ]);
+    expect(fake.device.calls).toContain("signSessionBinding:ses_current");
+    // A later snapshot on the same attachment binds nothing again.
+    fake.device.reconnect();
+    await settle();
+    expect(host.bound).toHaveLength(1);
+    expect(controller.owner.stop()?.sessionBound).toBe(true);
+  });
+});
+
+function sessionHost(options: { readonly devices: boolean }) {
+  const base = fakeHost();
+  const bound: unknown[] = [];
+  const client = Object.assign(Object.create(base.client) as HostClient, {
+    getSnapshot: () => ({ machines: [], devicesAvailable: options.devices }),
+    subscribe: () => () => undefined,
+    rpc: {
+      ...base.client.rpc,
+      "sessions.list": async () => ({
+        ok: true,
+        data: { sessions: [{ id: "ses_current", current: true, deviceId: null }] },
+      }),
+    },
+    bindDeviceSession: async (input: unknown) => {
+      bound.push(input);
+    },
+  });
+  return { bound, client };
+}
+
+function memoryRemovedFile(): RemovedFile & { stored: RemovedFrom | null } {
+  const file = {
+    stored: null as RemovedFrom | null,
+    read: async () => file.stored,
+    write: async (value: RemovedFrom | null) => {
+      file.stored = value;
+    },
+  };
+  return file;
+}
 
 type TestApprovalInput = {
   setupRequestId: string;
@@ -1298,6 +1432,8 @@ function open(
     readonly offers?: readonly IphoneAppId[];
     readonly shown?: MemoryShownFile;
     readonly enrollNative?: NativePhoneEnrollment;
+    readonly deliverLeave?: DeliverLeave;
+    readonly removedFile?: RemovedFile;
   } = {},
 ) {
   const fake = createFakeIphoneApps({
@@ -1335,6 +1471,8 @@ function open(
     shownApprovals: options.shown ?? memoryShownFile(),
     timing: fast,
     ...(options.enrollNative === undefined ? {} : { enrollNative: options.enrollNative }),
+    ...(options.deliverLeave === undefined ? {} : { deliverLeave: options.deliverLeave }),
+    ...(options.removedFile === undefined ? {} : { removedFile: options.removedFile }),
   });
   controllers.push(controller);
   return { controller, fake: { bridge, device } };

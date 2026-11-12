@@ -174,7 +174,10 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
         ),
       ).toBe(true);
       expect(
-        verifyDeviceLeaveSignature(runnerPublic, { ...deviceProof, signature: output.devices.leave }),
+        verifyDeviceLeaveSignature(runnerPublic, {
+          ...deviceProof,
+          signature: output.devices.leave,
+        }),
       ).toBe(true);
       expect(tokenDigest(ticket)).toMatch(/^sha256:/);
       expect(RunnerWireProofSchema.parse(output.frames.enroll).type).toBe("runner.enroll");

@@ -12774,6 +12774,7 @@ function createInitialSnapshot(): HostSnapshot {
     browserProfileManageAvailable: true,
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
+    devicesAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
 

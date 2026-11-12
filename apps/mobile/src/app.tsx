@@ -99,6 +99,8 @@ import { color, space } from "./theme.js";
 import { IphoneApprovalPrompt } from "./iphone-apps/approval-prompt.js";
 import { IphoneAppsProvider, useIphoneAppsState } from "./iphone-apps/context.js";
 import { IphoneAppsController } from "./iphone-apps/controller.js";
+import { createRemovedFile } from "./iphone-apps/removed-file.js";
+import { networkLeaveDelivery } from "./platform/phone-leave.js";
 import { startPhoneBrowserRuntime } from "./phone-browser/runtime.js";
 import { createIphoneBrowserPlatform } from "./phone-browser/iphone-platform.js";
 import { createAndroidBrowserPlatform } from "./phone-browser/android-platform.js";
@@ -207,6 +209,22 @@ function mobileClient(): MobileRoot {
   }
   const iphone = new IphoneAppsController({
     bridge: fakeIphone?.bridge ?? androidPhoneBridge ?? iphoneApps,
+    deliverLeave: configuration.mock
+      ? async (leave) => {
+          const host = mockHosts.get(leave.deploymentId);
+          if (host === undefined) return "unreachable";
+          await host.dispatch({
+            idempotencyKey: `leave:${leave.runnerId}`,
+            machineId: leave.runnerId,
+            type: "machine.revoke",
+          });
+          return "removed";
+        }
+      : networkLeaveDelivery((input, init) => mobileHostFetch(input, init)),
+    removedFile: createRemovedFile({
+      filePath: `${root}${storeName}/device-removed.json`,
+      privateFiles,
+    }),
     ...(Platform.OS === "android" && !configuration.mock && androidPhoneBridge !== null
       ? { enrollNative: enrollAndroidPhone }
       : {}),
