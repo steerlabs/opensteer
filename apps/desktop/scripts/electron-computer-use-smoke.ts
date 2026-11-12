@@ -227,7 +227,16 @@ async function run(): Promise<void> {
     notifications: { openSettings: unused },
     tailscale: { share: unused, status: unused },
     portal: { openExternal: unused, pickFolder: unused },
-    runner: { recheckEngines: unused, remove: unused, start: unused, status: unused, subscribe },
+    runner: {
+      setUpDevice: unused,
+      signDeviceSessionBinding: unused,
+      leaveDeployment: unused,
+      recheckEngines: unused,
+      remove: unused,
+      start: unused,
+      status: unused,
+      subscribe,
+    },
   });
   const screenshots = path.join(
     process.env.OPENSTEER_JOURNEY_OUT ?? tmpdir(),

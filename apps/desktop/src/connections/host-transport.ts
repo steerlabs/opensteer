@@ -4,10 +4,17 @@ import { streamBoundedResponse } from "@opensteer/shared/responseStream";
 import { ensurePrivateDirectory, setPrivateFileMode } from "@opensteer/shared/privateFiles";
 import { openAsBlob, promises as fs } from "node:fs";
 import { createHmac, randomBytes } from "node:crypto";
+import { z } from "zod";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeploymentId } from "@opensteer/core";
-import { teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
+import {
+  hostApi,
+  type HostApiCommandInput,
+  type HostApiCommandOutput,
+  teamPreviewMaxBytes,
+  teamUploadMaxBytes,
+} from "@opensteer/protocol";
 import type { HostSessionRecovery } from "@opensteer/client/auth";
 import {
   HostTransport,
@@ -127,6 +134,13 @@ type OutboundSocketEvent = DesktopHostWebSocketEvent extends infer Event
  * renderers, so a socket belongs to exactly one of them and dies with it.
  */
 export class DesktopHostTransport extends HostTransport {
+  readonly #observeCommand:
+    | ((
+        deploymentId: DeploymentId,
+        command: HostApiCommandInput,
+        result: HostApiCommandOutput,
+      ) => Promise<void>)
+    | undefined;
   readonly #surfaceDiagnosticKey = randomBytes(32);
   readonly #log:
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
@@ -143,6 +157,7 @@ export class DesktopHostTransport extends HostTransport {
   readonly #ownerGenerations = new Map<number, number>();
   readonly #socketGenerations = new WeakMap<HostTransport, number>();
   #openingBinary = 0;
+  #selectedDeploymentId: DeploymentId | null = null;
   #disposed = false;
   readonly #bootstrapDiagnostics = new BootstrapNoticeDiagnostics();
 
@@ -157,6 +172,11 @@ export class DesktopHostTransport extends HostTransport {
     readonly log?: (event: string, fields: Record<string, string | number | boolean>) => void;
     readonly projection: Pick<DesktopAccessProjection, "read">;
     readonly sessions?: HostSessionRecovery;
+    readonly observeCommand?: (
+      deploymentId: DeploymentId,
+      command: HostApiCommandInput,
+      result: HostApiCommandOutput,
+    ) => Promise<void>;
   }) {
     super({
       catalog: options.catalog,
@@ -167,6 +187,7 @@ export class DesktopHostTransport extends HostTransport {
       network: options.network,
       ...(options.sessions === undefined ? {} : { sessions: options.sessions }),
     });
+    this.#observeCommand = options.observeCommand;
     this.#teamOptions = {
       catalog: options.catalog,
       ...(options.credentials === undefined ? {} : { credentials: options.credentials }),
@@ -253,7 +274,21 @@ export class DesktopHostTransport extends HostTransport {
       (path === "/v1/rpc/attention.get" && request.method === "POST") ||
       (path === "/v1/rpc/teams.links.list" && request.method === "POST");
     const transport = await this.#transport(request.expectedDeploymentId, summary);
-    return transport.exchange(request, async (response, progress) =>
+    const observing =
+      this.#observeCommand &&
+      path === "/v1/rpc/commands.dispatch" &&
+      typeof request.body === "string" &&
+      (request.body.includes("machine.session.bind") ||
+        request.body.includes("runner.enrollment.createLocal"));
+    const selected = observing ? await transport.current() : null;
+    const fencedRequest = selected
+      ? {
+          ...request,
+          expectedDeploymentId: selected.resolved.deploymentId,
+          expectedAttachmentKey: selected.resolved.key,
+        }
+      : request;
+    const result = await transport.exchange(fencedRequest, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {
           ...progress,
@@ -267,6 +302,23 @@ export class DesktopHostTransport extends HostTransport {
         status: response.status,
       }),
     );
+    if (
+      selected &&
+      this.#observeCommand &&
+      result.status === 200 &&
+      typeof request.body === "string" &&
+      (request.body.includes("machine.session.bind") ||
+        request.body.includes("runner.enrollment.createLocal"))
+    ) {
+      const command = hostApi["commands.dispatch"].payload.parse(JSON.parse(request.body));
+      const response: unknown = JSON.parse(result.body);
+      const envelope = z
+        .object({ ok: z.literal(true), data: hostApi["commands.dispatch"].success })
+        .safeParse(response);
+      if (envelope.success)
+        await this.#observeCommand(selected.resolved.deploymentId, command, envelope.data.data);
+    }
+    return result;
   }
 
   /** Main-process app traffic keeps the attachment fence until its streamed body ends. */
@@ -845,6 +897,27 @@ export class DesktopHostTransport extends HostTransport {
     for (const [transferId, transfer] of this.#binary) {
       if (transfer.transport === transport)
         void this.closeBinary(transfer.ownerId, { transferId }).catch(() => undefined);
+    }
+  }
+
+  override async current(): Promise<import("@opensteer/client/auth").SelectedAttachment> {
+    const selected = await super.current();
+    this.#selectedDeploymentId = selected.resolved.deploymentId;
+    return selected;
+  }
+
+  closeDeploymentConnections(deploymentId: DeploymentId): void {
+    // The selected transport caches its identity; do not resolve a different route during fencing.
+    if (this.#selectedDeploymentId === deploymentId) this.invalidateSession();
+    const summary = this.#summaries.get(deploymentId);
+    if (summary) {
+      this.#closeTransportSockets(summary);
+      summary.invalidateSession();
+    }
+    const team = this.#teams.get(deploymentId);
+    if (team) {
+      this.#closeTransportSockets(team);
+      team.invalidateSession();
     }
   }
 

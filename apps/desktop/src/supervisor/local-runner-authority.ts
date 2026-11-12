@@ -1,6 +1,11 @@
 import { DeploymentIdSchema, type DeploymentId, type DeploymentShape } from "@opensteer/core";
 import type { DesktopAccessOrigin } from "@opensteer/protocol/desktop";
 import type { DeploymentCatalogStore } from "@opensteer/client/connections";
+import type {
+  HostDiscoveryEnvelope,
+  PersonalHostAccessRouteEnvelope,
+} from "@opensteer/deployment-authority";
+import type { DeploymentConnectionSource } from "@opensteer/client/connections";
 import { resolveConnection } from "@opensteer/client/connections";
 
 /**
@@ -9,6 +14,9 @@ import { resolveConnection } from "@opensteer/client/connections";
  * origin used by the local Runner.
  */
 export interface DesktopLocalRunnerTarget {
+  readonly authority: HostDiscoveryEnvelope;
+  readonly source: DeploymentConnectionSource;
+  readonly accessRoute: PersonalHostAccessRouteEnvelope | null;
   readonly deploymentId: DeploymentId;
   readonly deploymentShape: DeploymentShape;
   readonly hostUrl: DesktopAccessOrigin;
@@ -60,6 +68,9 @@ export class DesktopLocalRunnerTargetResolver implements DesktopLocalRunnerTarge
       throw new Error("This Mac hosts this Deployment, so it already runs its agent.");
     const resolved = resolveConnection(connection, null, { authorization: null });
     return {
+      authority: connection.authority,
+      source: connection.source,
+      accessRoute: resolved.route,
       deploymentId: resolved.deploymentId,
       deploymentShape: { kind: "personal" },
       hostUrl: resolved.origin,

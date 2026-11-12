@@ -106,6 +106,8 @@ export type HostSessionRecoveryOutcome =
   "account-required" | "blocked" | "pairing-required" | "recovered" | "unavailable" | "unsupported";
 
 export interface HostSessionRecovery {
+  assertSessionAllowed?(deploymentId: string): Promise<void>;
+  sessionEnded?(attachment: SelectedAttachment): void;
   recoverUnauthorized(attachment: SelectedAttachment): Promise<HostSessionRecoveryOutcome>;
 }
 
@@ -155,6 +157,13 @@ type HostSessionListener = (observation: HostSessionObservation) => void;
  * session remains valid independently of Account credential refreshes.
  */
 export class HostSession implements HostSessionRecovery {
+  readonly #retiredAttempts = new Map<string, Promise<unknown>[]>();
+  readonly #blockedDeployments = new Set<string>();
+  readonly #authorizationControllers = new Map<string, AbortController>();
+  readonly #assertSessionAllowed: (deploymentId: string) => Promise<void>;
+  readonly #onUnauthorized: (attachment: SelectedAttachment) => Promise<void>;
+  readonly #onSessionEnded: (attachment: SelectedAttachment) => Promise<void>;
+  readonly #endedSessions = new Map<string, Promise<void>>();
   readonly #abandonEpochs = new Map<string, number>();
   readonly #accountCredentialRejected: () => void | Promise<void>;
   readonly #attachment: HostAttachment;
@@ -177,6 +186,9 @@ export class HostSession implements HostSessionRecovery {
   #disposed = false;
 
   constructor(options: {
+    readonly assertSessionAllowed?: (deploymentId: string) => Promise<void>;
+    readonly onUnauthorized?: (attachment: SelectedAttachment) => Promise<void>;
+    readonly onSessionEnded?: (attachment: SelectedAttachment) => Promise<void>;
     readonly accountCredentialRejected?: () => void | Promise<void>;
     readonly attachment: HostAttachment;
     readonly clearDeploymentSession: (deploymentId: string) => Promise<void>;
@@ -186,6 +198,9 @@ export class HostSession implements HostSessionRecovery {
     readonly oauth: HostOAuth;
     readonly recoveryCooldownMs?: number;
   }) {
+    this.#assertSessionAllowed = options.assertSessionAllowed ?? (async () => undefined);
+    this.#onUnauthorized = options.onUnauthorized ?? (async () => undefined);
+    this.#onSessionEnded = options.onSessionEnded ?? (async () => undefined);
     this.#accountCredentialRejected = options.accountCredentialRejected ?? (() => undefined);
     this.#attachment = options.attachment;
     this.#clearDeploymentSession = options.clearDeploymentSession;
@@ -214,6 +229,10 @@ export class HostSession implements HostSessionRecovery {
   abandonAuthorization(deploymentId: string): void {
     this.#assertActive();
     this.#abandonEpochs.set(deploymentId, this.#abandonEpoch(deploymentId) + 1);
+    this.#authorizationControllers
+      .get(deploymentId)
+      ?.abort(new Error("This Deployment's authorization was stopped."));
+    this.#authorizationControllers.delete(deploymentId);
     for (const [key, owner] of this.#attemptDeployments) {
       if (owner !== deploymentId) continue;
       this.#establishments.delete(key);
@@ -224,10 +243,72 @@ export class HostSession implements HostSessionRecovery {
     this.#oauth.abandonHostSignIn(DeploymentIdSchema.parse(deploymentId));
   }
 
+  assertSessionAllowed(deploymentId: string): Promise<void> {
+    return this.#assertAuthorization(deploymentId, this.#abandonEpoch(deploymentId));
+  }
+
+  blockDeployment(deploymentId: string): void {
+    this.#blockedDeployments.add(deploymentId);
+    const pending = this.#retiredAttempts.get(deploymentId) ?? [];
+    for (const [key, owner] of this.#attemptDeployments) {
+      if (owner !== deploymentId) continue;
+      const attempt = this.#establishments.get(key) ?? this.#recoveries.get(key);
+      if (attempt) pending.push(attempt);
+    }
+    this.#retiredAttempts.set(deploymentId, pending);
+    this.abandonAuthorization(deploymentId);
+  }
+
+  async allowDeployment(deploymentId: string): Promise<void> {
+    const epoch = this.#abandonEpoch(deploymentId);
+    await Promise.allSettled(this.#retiredAttempts.get(deploymentId) ?? []);
+    if (this.#abandonEpoch(deploymentId) !== epoch)
+      throw new HostSessionError("blocked", "Device setup changed before authorization resumed.");
+    this.#retiredAttempts.delete(deploymentId);
+    this.abandonAuthorization(deploymentId);
+    this.#blockedDeployments.delete(deploymentId);
+  }
+
+  sessionEnded(attachment: SelectedAttachment): void {
+    const id = attachment.resolved.deploymentId;
+    if (this.#endedSessions.has(id)) return;
+    const pending = this.#onSessionEnded(attachment);
+    this.#endedSessions.set(id, pending);
+    void pending
+      .finally(() => {
+        if (this.#endedSessions.get(id) === pending) this.#endedSessions.delete(id);
+      })
+      .catch(() => undefined);
+  }
+
+  async #assertAuthorization(deploymentId: string, epoch: number): Promise<void> {
+    await this.#endedSessions.get(deploymentId);
+    await this.#assertSessionAllowed(deploymentId);
+    if (
+      this.#disposed ||
+      this.#blockedDeployments.has(deploymentId) ||
+      this.#abandonEpoch(deploymentId) !== epoch
+    )
+      throw new HostSessionError(
+        "blocked",
+        "This device was signed out. Set it up again to reconnect.",
+      );
+  }
+
+  #authorizationSignal(deploymentId: string): AbortSignal {
+    const current = this.#authorizationControllers.get(deploymentId);
+    if (current) return current.signal;
+    const controller = new AbortController();
+    this.#authorizationControllers.set(deploymentId, controller);
+    return controller.signal;
+  }
+
   async establish(deploymentId: string): Promise<HostSessionObservation> {
     this.#assertActive();
     const epoch = this.#abandonEpoch(deploymentId);
+    await this.#assertAuthorization(deploymentId, epoch);
     const attachment = await this.#attachment.current();
+    await this.#assertAuthorization(deploymentId, epoch);
     if (attachment.resolved.deploymentId !== deploymentId) {
       throw new Error("The selected deployment changed before access was established.");
     }
@@ -239,7 +320,8 @@ export class HostSession implements HostSessionRecovery {
       activeRecovery
         ? activeRecovery.then((outcome) => observationFromRecovery(attachment.resolved, outcome))
         : this.#establishExact(attachment, epoch)
-    ).then((observation) => {
+    ).then(async (observation) => {
+      await this.#assertAuthorization(deploymentId, epoch);
       this.#assertCurrent(key);
       if (this.#abandonEpoch(deploymentId) === epoch) this.#publish(observation);
       return observation;
@@ -257,6 +339,14 @@ export class HostSession implements HostSessionRecovery {
   async recoverUnauthorized(attachment: SelectedAttachment): Promise<HostSessionRecoveryOutcome> {
     this.#assertActive();
     const key = attachment.resolved.key;
+    const deploymentId = attachment.resolved.deploymentId;
+    const epoch = this.#abandonEpoch(deploymentId);
+    try {
+      await this.#onUnauthorized(attachment);
+      await this.#assertAuthorization(deploymentId, epoch);
+    } catch {
+      return "blocked";
+    }
     const existing = this.#recoveries.get(key);
     if (existing) return existing;
     const establishment = this.#establishments.get(key);
@@ -270,7 +360,13 @@ export class HostSession implements HostSessionRecovery {
     if (failure && this.#now() - failure.at < this.#recoveryCooldownMs) return failure.outcome;
     const recovery = (async () => {
       if (!this.#isCurrent(key)) return "unavailable" as const;
-      const recovered = await this.#recoverExact(attachment);
+      const recovered = await this.#recoverExact(attachment, epoch);
+      try {
+        await this.#assertAuthorization(deploymentId, epoch);
+      } catch {
+        await this.#clearDeploymentSession(deploymentId);
+        return "blocked" as const;
+      }
       return recovered === "recovered" && !this.#isCurrent(key)
         ? ("unavailable" as const)
         : recovered;
@@ -303,6 +399,8 @@ export class HostSession implements HostSessionRecovery {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    for (const controller of this.#authorizationControllers.values()) controller.abort();
+    this.#authorizationControllers.clear();
     this.#unsubscribeOAuth();
     this.#unsubscribeAccount();
     this.#listeners.clear();
@@ -351,7 +449,16 @@ export class HostSession implements HostSessionRecovery {
             "This deployment no longer admits this connection.",
           );
         }
-        await this.#exchange.establish(resolved);
+        await this.#assertAuthorization(resolved.deploymentId, epoch);
+        await this.#exchange.establish(resolved, {
+          signal: this.#authorizationSignal(resolved.deploymentId),
+        });
+        try {
+          await this.#assertAuthorization(resolved.deploymentId, epoch);
+        } catch (error) {
+          await this.#clearDeploymentSession(resolved.deploymentId);
+          throw error;
+        }
         return observation(resolved, "ready");
       } catch (error) {
         return this.#establishmentFailure(resolved, error);
@@ -379,14 +486,20 @@ export class HostSession implements HostSessionRecovery {
     );
   }
 
-  async #recoverExact(attachment: SelectedAttachment): Promise<HostSessionRecoveryOutcome> {
+  async #recoverExact(
+    attachment: SelectedAttachment,
+    epoch: number,
+  ): Promise<HostSessionRecoveryOutcome> {
     const { connection, resolved } = attachment;
     try {
       if (resolved.access === "owner") {
         return (await this.#localOwner.recoverOwnerSession(resolved)) ? "recovered" : "unavailable";
       }
       if (this.#exchange.supports(resolved)) {
-        await this.#exchange.establish(resolved);
+        await this.#assertAuthorization(resolved.deploymentId, epoch);
+        await this.#exchange.establish(resolved, {
+          signal: this.#authorizationSignal(resolved.deploymentId),
+        });
         return "recovered";
       }
       if (supportsHostNativeSignIn(resolved.bootstrapMethods)) {
@@ -428,7 +541,12 @@ export class HostSession implements HostSessionRecovery {
   }
 
   #publishOAuthStateIfCurrent(state: HostOAuthState): void {
-    if (this.#disposed || !this.#isCurrent(state.key)) return;
+    if (
+      this.#disposed ||
+      this.#blockedDeployments.has(state.connection.authority.document.deploymentId) ||
+      !this.#isCurrent(state.key)
+    )
+      return;
     this.#publish(oauthObservation(state));
   }
 

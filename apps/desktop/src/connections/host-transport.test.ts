@@ -32,6 +32,75 @@ import { testPersonalHostRuntime } from "../supervisor/personal-host-runtime-tes
 import { DesktopLocalRunnerTargetResolver } from "../supervisor/local-runner-authority.js";
 
 describe("DesktopHostTransport", () => {
+  it("observes binding only after a successful Host command, using the request's exact Deployment", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    const observeCommand = vi.fn(async () => undefined);
+    let accepted = true;
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      observeCommand,
+      network: {
+        openWebSocket: () => socket(),
+        request: async () =>
+          Response.json(
+            accepted
+              ? { ok: true, data: { type: "machine.session.bind" } }
+              : { ok: false, error: { code: "forbidden", message: "refused" } },
+          ),
+      },
+    });
+    const command = {
+      type: "machine.session.bind",
+      machineId: createId("runner"),
+      proof: { issuedAt: new Date().toISOString(), signature: "s".repeat(86) },
+      idempotencyKey: "bind-device-session",
+    };
+    const request = {
+      headers: {},
+      method: "POST",
+      path: "/v1/rpc/commands.dispatch",
+      body: JSON.stringify(command),
+    };
+    await transport.request(request);
+    expect(observeCommand).toHaveBeenCalledExactlyOnceWith(
+      selected.authority.document.deploymentId,
+      command,
+      { type: "machine.session.bind" },
+    );
+    accepted = false;
+    await transport.request(request);
+    expect(observeCommand).toHaveBeenCalledOnce();
+    transport.dispose();
+  });
+
+  it("notifies session loss before a renderer can recover the closed realtime socket", async () => {
+    const selected = deployment("Home", "https://home.connect.opensteer.test");
+    let networkEvents: HostNetworkSocketEvents | undefined;
+    const order: string[] = [];
+    const transport = desktopHostTransport({
+      catalog: catalogStore([selected], selected.authority.document.deploymentId),
+      sessions: {
+        recoverUnauthorized: async () => "blocked",
+        sessionEnded: () => {
+          order.push("lifecycle");
+        },
+      },
+      network: {
+        request: async () => Response.json({}),
+        openWebSocket: (_input, events) => {
+          networkEvents = events;
+          return socket();
+        },
+      },
+    });
+    await transport.openWebSocket(7, { path: "/v1/realtime" }, (event) => {
+      if (event.type === "close") order.push("renderer");
+    });
+    networkEvents?.close(4003, "Session ended");
+    expect(order).toEqual(["lifecycle", "renderer"]);
+    transport.dispose();
+  });
+
   it.each([false, true])(
     "bounds silence while buffering a slow desktop response; stall: %s",
     async (stall) => {
@@ -1273,10 +1342,12 @@ function desktopHostTransport(options: {
   readonly log?: (event: string, fields: Record<string, string | number | boolean>) => void;
   readonly sessions?: HostSessionRecovery;
   readonly supervisedDeploymentId?: DeploymentId;
+  readonly observeCommand?: ConstructorParameters<typeof DesktopHostTransport>[0]["observeCommand"];
 }): DesktopHostTransport {
   const localRuntime = options.localRuntime ?? { current: async () => null };
   return new DesktopHostTransport({
     catalog: options.catalog,
+    ...(options.observeCommand ? { observeCommand: options.observeCommand } : {}),
     ...(options.credentials ? { credentials: options.credentials } : {}),
     localRuntime,
     network: options.network,

@@ -23,6 +23,90 @@ import { NativeOAuthManager } from "./native-oauth.js";
 import type { ProtectedAuthStore } from "./protected-auth-store.js";
 
 describe("NativeOAuthManager", () => {
+  it("persists Account leave obligations before changing the saved credential on sign-out", async () => {
+    const gate = deferred<void>();
+    const leaving = vi
+      .fn(async (_next: AccountDeploymentConnectionSource | null) => {
+        await gate.promise;
+      })
+      .mockResolvedValueOnce(undefined);
+    const fixture = await managerFixture({ beforeAccountIdentityChange: leaving });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    const previous = (await fixture.store.load()).account;
+    const lease = await fixture.manager.accountAuthorizationLease();
+    const signOut = fixture.manager.signOutAccount();
+    await vi.waitFor(() => expect(leaving).toHaveBeenCalledWith(null), { timeout: 1000 });
+    expect(lease?.signal.aborted).toBe(true);
+    await expect(fixture.manager.accountAuthorizationLease()).resolves.toBeNull();
+    expect((await fixture.store.load()).account).toEqual(previous);
+    expect(fixture.accountSessions.removeAllAccountIdentities).not.toHaveBeenCalled();
+    gate.resolve();
+    await signOut;
+    expect((await fixture.store.load()).account).toBeNull();
+    fixture.manager.dispose();
+  });
+
+  it("leaves the outgoing Account before committing a replacement but preserves membership on refresh", async () => {
+    const gate = deferred<void>();
+    const leaving = vi
+      .fn(async (_next: AccountDeploymentConnectionSource | null) => {
+        await gate.promise;
+      })
+      .mockResolvedValueOnce(undefined);
+    const fixture = await managerFixture({ beforeAccountIdentityChange: leaving });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    await fixture.signInAccount();
+    expect(leaving).toHaveBeenCalledOnce();
+    const previous = (await fixture.store.load()).account;
+    const subject = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    await fixture.manager.beginAccountSignIn();
+    fixture.accountSubject.current = subject;
+    const callback = fixture.manager.handleCallback(
+      callbackUrl(
+        "account",
+        new URL(fixture.opened.at(-1)!).searchParams.get("state")!,
+        "replacement",
+      ),
+    );
+    await vi.waitFor(
+      () =>
+        expect(leaving).toHaveBeenCalledWith({
+          issuer: "https://accounts.opensteer.test",
+          subject,
+          kind: "account",
+        }),
+      { timeout: 1000 },
+    );
+    expect((await fixture.store.load()).account).toEqual(previous);
+    gate.resolve();
+    await callback;
+    expect((await fixture.store.load()).account?.subject).toBe(subject);
+    fixture.manager.dispose();
+  });
+
+  it("does not let a late leave completion clear the Account that signed in next", async () => {
+    const gate = deferred<void>();
+    const leaving = vi.fn<(next: AccountDeploymentConnectionSource | null) => Promise<void>>(
+      async () => undefined,
+    );
+    const fixture = await managerFixture({ beforeAccountIdentityChange: leaving });
+    await fixture.manager.initialize();
+    await fixture.signInAccount();
+    leaving.mockImplementationOnce(async () => gate.promise);
+    const signOut = fixture.manager.signOutAccount();
+    await vi.waitFor(() => expect(leaving).toHaveBeenCalledWith(null), { timeout: 1000 });
+    const nextSubject = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    fixture.accountSubject.current = nextSubject;
+    await fixture.signInAccount();
+    gate.resolve();
+    await signOut;
+    expect((await fixture.store.load()).account?.subject).toBe(nextSubject);
+    expect((await fixture.manager.accountAuthorizationLease())?.subject).toBe(nextSubject);
+    fixture.manager.dispose();
+  });
+
   it("rotates saved-view login IDs on code exchange and preserves them on refresh", async () => {
     const fixture = await managerFixture({ tokenLifetimeSeconds: 61 });
     await fixture.manager.initialize();
@@ -1114,6 +1198,9 @@ describe("NativeOAuthManager credential boundaries", () => {
 
 async function managerFixture(
   options: {
+    readonly beforeAccountIdentityChange?: (
+      next: AccountDeploymentConnectionSource | null,
+    ) => Promise<void>;
     readonly accountOrigin?: string | null;
     readonly exchangeGate?: Promise<void>;
     readonly fetch?: typeof globalThis.fetch;
@@ -1217,6 +1304,9 @@ async function managerFixture(
     ),
   };
   const manager = new NativeOAuthManager({
+    ...(options.beforeAccountIdentityChange
+      ? { beforeAccountIdentityChange: options.beforeAccountIdentityChange }
+      : {}),
     accountOrigin:
       options.accountOrigin === undefined
         ? "https://accounts.opensteer.test"
