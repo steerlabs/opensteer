@@ -87,24 +87,37 @@ describe("what a person has written and not sent", () => {
     expect(field().value).toBe("Survive a reload");
   });
 
-  it("starts a blank task beside an unfinished one, and each keeps its own words", async () => {
+  it("keeps Home's one unsent draft and shows it again on every return", async () => {
     await mount("/");
     await settle();
-    await write(field(), "The first task");
-    const first = place();
+    await write(field(), "Not sent yet");
+    await openTask(firstTaskId());
+    await settle();
+
     await newTask();
     await settle();
-    expect(field().value).toBe("");
-    await write(field(), "The second task");
-    const second = place();
-    expect(second.search).not.toBe(first.search);
+    expect(field().value).toBe("Not sent yet");
+    expect(savedDrafts()).toHaveLength(1);
+  });
 
-    await remount(`${first.path}${first.search}`);
+  it("shows the Host's reason in the composer when it refuses a new task", async () => {
+    await mount("/");
     await settle();
-    expect(field().value).toBe("The first task");
-    await remount(`${second.path}${second.search}`);
-    await settle();
-    expect(field().value).toBe("The second task");
+    vi.spyOn(client, "createThread").mockRejectedValue(
+      new HostClientRequestError({
+        code: "forbidden",
+        message: "This folder is on another computer.",
+        status: 403,
+      }),
+    );
+    await write(field(), "Start over there");
+    await click(element(".composer__send"));
+    await settle(50);
+
+    expect(element(".composer__error").textContent).toContain(
+      "This folder is on another computer.",
+    );
+    expect(field().value).toBe("Start over there");
   });
 
   it("removes the draft once it starts a task", async () => {
@@ -179,7 +192,7 @@ describe("what a person has written and not sent", () => {
 
     await back();
     expect(field().value).toBe("Do the thing");
-    expect(element(".composer__error").textContent).toContain("could not be started");
+    expect(element(".composer__error").textContent).toContain("That is not allowed here.");
   });
 
   it("hands a refused task to the draft reopened before the answer came", async () => {

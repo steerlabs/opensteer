@@ -41,7 +41,6 @@ export function settingsWhereItRuns(input: {
   if (input.kind === "personal") {
     return input.facts.onThisComputer ? "Runs on this computer" : `Runs on ${input.name}`;
   }
-  if (input.kind === "development") return "Runs in development";
   const host = originHostname(input.publicOrigin);
   return host ? `Runs on ${host}` : "Runs on a server";
 }
@@ -218,7 +217,6 @@ export function settingsPlace(input: {
       icon: input.homeIcon ?? "desktop",
     };
   }
-  if (input.kind === "development") return { detail: "Development", icon: "code" };
   return { detail: originHostname(input.publicOrigin) ?? "Server", icon: "server" };
 }
 

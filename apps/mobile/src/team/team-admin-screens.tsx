@@ -361,7 +361,7 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
     const made = await command(session, {
       type: "team.invite.create",
       id: createId("teamInvite"),
-      maxUses: 100,
+      maxUses: 1,
       expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
     });
     if (made.type === "team.invite.create") setLink(made.url);
@@ -372,7 +372,6 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
       <InvitesAdminBody
         copied={copied}
         enabled={live !== undefined}
-        landing="#general"
         link={link ?? (live === undefined ? "No link is on" : "Make a new link to share it here")}
         onCopy={() => {
           if (link === null) return;
@@ -383,7 +382,6 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
             failed,
           )
         }
-        onLanding={() => undefined}
         onNewLink={() => void makeLink().catch(failed)}
         onShare={() => {
           if (link !== null) void Share.share({ message: link });
@@ -392,7 +390,7 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
         status={
           live === undefined
             ? "Off"
-            : `Expires ${new Date(live.expiresAt).toLocaleDateString()} · used ${live.usedCount} ${live.usedCount === 1 ? "time" : "times"}`
+            : `One person can join with it. Expires ${new Date(live.expiresAt).toLocaleDateString()}.`
         }
       />
     </Screen>

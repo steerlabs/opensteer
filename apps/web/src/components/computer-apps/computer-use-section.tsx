@@ -399,9 +399,7 @@ export function ComputerUseBlock({
                       <span className="computer-use__app-meta">
                         <span>
                           Asked in{" "}
-                          <Link to={`/tasks/${threadId}`}>
-                            {threadTitle ?? "Untitled thread"}
-                          </Link>
+                          <Link to={`/tasks/${threadId}`}>{threadTitle ?? "Untitled thread"}</Link>
                         </span>
                       </span>
                     ) : null}

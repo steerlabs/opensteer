@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import { TaskFolderSchema, type TaskFolder, type ThreadAccessMode } from "@opensteer/core";
 import {
   accessModeConflict,
@@ -17,7 +17,7 @@ import {
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
 import { useShell } from "../app-shell.js";
-import { composerDraftKeyFor, composerDrafts } from "../composer-drafts.js";
+import { composerDraftKeyFor, composerDrafts, homeDraftId } from "../composer-drafts.js";
 import { Composer, type ComposerSubmission } from "../composer.js";
 import { ExecutionControls } from "../execution-controls.js";
 import { UsageNotice } from "../usage-notice.js";
@@ -164,23 +164,13 @@ export function taskRowView(
 }
 
 /**
- * Which draft this page writes. An address without one is a blank task, so it
- * is given a new id on arrival: naming a draft nobody wrote is just a blank
- * page, which is why nothing is kept until something is written.
+ * Which draft this page writes: Home keeps one unsent draft of its own and
+ * shows it again on every return; there is no list of drafts. An address may
+ * still name another.
  */
 function useTaskDraftId(): string {
   const [params] = useSearchParams();
-  const named = params.get("draft");
-  const draftId = useMemo(() => named ?? globalThis.crypto.randomUUID(), [named]);
-  const { nav } = useWorkspace();
-  const { pathname } = useLocation();
-  useEffect(() => {
-    if (named !== null) return;
-    // Built on the newest address the workspace chose, so a place restored in
-    // the same moment stays beside the new draft rather than being replaced.
-    nav.openConversation(pathname, { draftId, replace: true });
-  }, [draftId, named, nav, pathname]);
-  return draftId;
+  return params.get("draft") ?? homeDraftId;
 }
 
 function folderFromKey(key: string | null): TaskFolder | null {
@@ -300,14 +290,13 @@ function NewTaskComposer({
       idempotencyKey,
     }: Pick<ComposerSubmission, "attachments" | "places" | "idempotencyKey">,
   ) => {
-    if (!selection || !current) throw new Error("The task could not be started.");
+    if (!selection || !current) throw new Error("Choose an available model to start.");
     const thread = await createThreadAndSend(
       current,
       { attachments, body, ...(places.length > 0 ? { places } : {}), idempotencyKey },
       selection,
       accessMode,
     );
-    if (!thread) throw new Error("The task could not be started.");
     nav.openConversation(nav.threadPath(thread.id));
   };
   return (

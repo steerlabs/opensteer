@@ -23,7 +23,7 @@ import {
 import { FlatList, Pressable, ScrollView, StyleSheet, Text } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { useSidebarMenu } from "../navigation-header.js";
-import { allTasks, allTasksFilters, type AllTasksFilter } from "../sidebar/live-tasks.js";
+import { allTasksFilters, allTasksRows, type AllTasksFilter } from "@opensteer/client/host";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import { folderLabel } from "../home/folder-label.js";
 import { color, controlFontScaleLimit, material, radius, space, type } from "../theme.js";
@@ -96,11 +96,11 @@ function AllTasksList(props: {
     if (filter === "done") void hostClient.loadDoneTasks().catch(() => undefined);
   }, [filter, hostClient]);
   const channels = useChannelNames();
-  const rows = useMemo(() => allTasks(list, filter), [filter, list]);
+  const rows = useMemo(() => allTasksRows(list, filter), [filter, list]);
   const counts = useMemo(
     () =>
       Object.fromEntries(
-        allTasksFilters.map(({ id }) => [id, allTasks(list, id).length]),
+        allTasksFilters.map((id) => [id, allTasksRows(list, id).length]),
       ) as Record<AllTasksFilter, number>,
     [list],
   );
@@ -173,6 +173,15 @@ export function taskDetail(
   return row.line === "" ? where : `${where} · ${row.line}`;
 }
 
+const filterLabels: Readonly<Record<AllTasksFilter, string>> = {
+  all: "All",
+  "needs-you": "Needs you",
+  running: "Running",
+  unread: "Unread",
+  read: "Read",
+  done: "Done",
+};
+
 const FilterChips = memo(function FilterChips(props: {
   readonly counts: Readonly<Record<AllTasksFilter, number>>;
   readonly filter: AllTasksFilter;
@@ -184,7 +193,8 @@ const FilterChips = memo(function FilterChips(props: {
       horizontal
       showsHorizontalScrollIndicator={false}
     >
-      {allTasksFilters.map(({ id, label }) => {
+      {allTasksFilters.map((id) => {
+        const label = filterLabels[id];
         const selected = id === props.filter;
         const count = props.counts[id];
         return (

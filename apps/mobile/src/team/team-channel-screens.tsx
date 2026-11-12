@@ -1,5 +1,5 @@
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
-import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
+import { PersonalTeamLinks, readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
 import { teamScopeKey, type TeamSessionClient, type TeamTimeline } from "@opensteer/client/team";
 import {
   TeamAgentRequestIdSchema,
@@ -338,6 +338,20 @@ function Place(props: {
       return () => clearTimeout(timer);
     }, [channelId, following, newest, session]),
   );
+  // Reading your agent's reply in its thread reads its task on your computer.
+  const repliedToMe =
+    rootId !== null &&
+    view.messages.some(
+      (message) => message.authorKind === "agent" && message.authorUserId === viewerId,
+    );
+  useFocusEffect(
+    useCallback(() => {
+      if (!repliedToMe || rootId === null || personal === null) return;
+      void readTeamReply(personal, { teamId, channelId, threadRootId: rootId }).catch(
+        () => undefined,
+      );
+    }, [channelId, personal, repliedToMe, rootId, teamId]),
+  );
   const arrivedWhileAway = useRef(0);
   const lastNewest = useRef(newest);
   if (lastNewest.current !== newest) {
@@ -561,7 +575,7 @@ function Place(props: {
     );
     if (target.exists) target.delete();
     target.create();
-    target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
+    await target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
     await Sharing.shareAsync(target.uri, { mimeType: file.mediaType, dialogTitle: file.filename });
   };
 

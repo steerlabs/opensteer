@@ -24,7 +24,7 @@ version's build numbers must only rise, so take the next one from App Store Conn
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
 MOBILE_VERSION=$(node -p 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.argv[1])' "$(git rev-parse HEAD)")
-unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE
+unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE
 export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
 export EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN="https://app.opensteer.com"
 export OPENSTEER_MOBILE_BUILD_NUMBER="<next build number>"

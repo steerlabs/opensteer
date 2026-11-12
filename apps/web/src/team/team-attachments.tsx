@@ -275,6 +275,19 @@ export function useTaskSourceView(origin: TeamTaskOrigin | null): TaskSourceView
 const noSubscribe = () => () => undefined;
 const nothing = () => null;
 
+/**
+ * One value read from a team session, redrawing only when it changes: a
+ * sidebar reads its rows, not every message, typing line and presence dot.
+ * `select` returns a value the session keeps, or a primitive.
+ */
+export function useTeamSessionValue<T>(
+  client: TeamSessionClient | null,
+  select: (snapshot: TeamSessionSnapshot | null) => T,
+): T {
+  const read = () => select(client?.getSnapshot() ?? null);
+  return useSyncExternalStore(client?.subscribe ?? noSubscribe, read, read);
+}
+
 /** A team session's snapshot, or null without a session. */
 export function useTeamSession(client: TeamSessionClient | null): TeamSessionSnapshot | null {
   return useSyncExternalStore(

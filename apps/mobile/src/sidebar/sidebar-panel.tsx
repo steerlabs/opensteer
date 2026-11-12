@@ -2,6 +2,7 @@ import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import {
+  liveTasks,
   listedRowThreadId,
   sameTaskListSource,
   taskList,
@@ -10,6 +11,7 @@ import {
   type HostSnapshot,
   type PlaceItem,
   type PersonalSurfaceDestination,
+  type AllTasksFilter,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
@@ -90,7 +92,6 @@ import type { TeamSessionClient } from "@opensteer/client/team";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
 import { MentionCount, TeamTile } from "../team/team-marks.js";
-import { liveTasks, type AllTasksFilter } from "./live-tasks.js";
 
 /** The root places the drawer switches between. */
 export type SidebarDestination = "Home" | "AllTasks" | "Schedules" | "Tabs";
@@ -336,10 +337,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     if (hostClient === null || selectedThreadId === null) return selectedThreadId;
     return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
   }, [hostClient, selectedThreadId]);
-  const live = useMemo(
-    () => (model === null ? null : liveTasks(model.list, selectedRowId)),
-    [model, selectedRowId],
-  );
+  const live = useMemo(() => {
+    if (model === null) return null;
+    const { list } = model;
+    return {
+      rows: liveTasks(list, selectedRowId),
+      needsYou: list.working.filter((row) => row.tone === "needs-you").length,
+      // Every task All tasks holds until Done.
+      total: list.working.length + list.ready.length,
+    };
+  }, [model, selectedRowId]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
     threadId !== selectedRowId && drafts.threadIds.has(threadId);

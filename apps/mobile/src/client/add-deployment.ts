@@ -50,17 +50,17 @@ export async function verifyServerDeployment(options: {
   return verified;
 }
 
-/** Step two: add the verified Deployment and make it the selected one. */
+/** Adds a verified team beside the selected personal computer. */
 export async function addServerDeployment(options: {
-  readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
+  readonly catalog: Pick<DeploymentCatalogStore, "upsert">;
   readonly name: string;
   readonly verified: VerifiedHostEndpoint;
 }): Promise<void> {
-  await options.catalog.upsertAndSelect(
+  await options.catalog.upsert(
     deploymentConnectionFromVerifiedEndpoints({
       accountAccess: null,
       endpoints: [options.verified],
-      kind: "self-hosted",
+      kind: "team",
       name: options.name,
       source: { kind: "manual" },
     }),

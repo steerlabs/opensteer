@@ -1,4 +1,3 @@
-import { KnowledgeEnvironmentSchema } from "@opensteer/config/knowledge";
 import { PasskeysEnvironmentSchema } from "@opensteer/config/passkeys";
 import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import { createHash } from "node:crypto";
@@ -62,7 +61,6 @@ export interface DesktopLocalExecutionConfiguration {
 
 export interface DesktopPersonalDeploymentConfiguration {
   readonly passkeys?: boolean;
-  readonly knowledge?: boolean;
   readonly releaseDirectory: string;
   readonly workspaceRoot: string;
 }
@@ -199,7 +197,6 @@ export function readDesktopConfiguration(
   }
   const personal: DesktopPersonalDeploymentConfiguration = {
     passkeys: PasskeysEnvironmentSchema.parse(environment).OPENSTEER_PASSKEYS,
-    knowledge: KnowledgeEnvironmentSchema.parse(environment).OPENSTEER_KNOWLEDGE,
     releaseDirectory: absolutePath(
       optional(parsed.OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR) ??
         path.join(resourcesDirectory, "personal-runtime"),

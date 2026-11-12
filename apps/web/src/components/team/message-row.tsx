@@ -64,7 +64,7 @@ export const MessageRow = memo(function MessageRow({
   /** In a thread pane: no "Reply in thread", no summary. */
   readonly inThread?: boolean;
   readonly message: MessageView;
-  readonly onEditingChange?: ((editing: boolean) => void) | undefined;
+  readonly onEditingChange?: ((messageId: string, editing: boolean) => void) | undefined;
   /** Its thread is open beside the channel. */
   readonly open?: boolean;
 }) {
@@ -117,10 +117,10 @@ export const MessageRow = memo(function MessageRow({
         {editing && actions.onEdit ? (
           <EditField
             body={message.body}
-            onCancel={() => onEditingChange?.(false)}
+            onCancel={() => onEditingChange?.(message.id, false)}
             onSave={(body) => {
               actions.onEdit?.(message.id, body);
-              onEditingChange?.(false);
+              onEditingChange?.(message.id, false);
             }}
           />
         ) : message.body ? (
@@ -234,7 +234,7 @@ export const MessageRow = memo(function MessageRow({
               className="picker__row"
               onClick={() => {
                 setMenuAt(null);
-                onEditingChange?.(true);
+                onEditingChange?.(message.id, true);
               }}
               role="menuitem"
               type="button"

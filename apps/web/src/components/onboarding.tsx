@@ -206,7 +206,7 @@ export function HostAccessOnboarding({
 
   return (
     <OnboardingCard
-      description={doorContext(config, active, admitted)}
+      description={doorContext(config, active)}
       eyebrow={active === "claim" ? "First run" : "Welcome back"}
       footnote={
         needsCode ? (
@@ -277,41 +277,26 @@ export function HostAccessOnboarding({
 
 /**
  * A Door is titled with the place's name. A place nobody has named yet still
- * has an honest identity: its kind, or for a self-hosted server the hostname
- * the visitor can see in their address bar.
+ * has an honest identity: its kind, or for a team server the hostname the
+ * visitor can see in their address bar.
  */
 function doorName(config: IdentityConfig): string {
   if (config.deployment.name) return config.deployment.name;
-  // A self-hosted server has no honest generic name, so the visitor's own
-  // address bar supplies one. Every other kind names itself once, shared.
-  if (config.deployment.kind === "self-hosted") {
+  if (config.deployment.kind === "team") {
     return originHostname(config.publicOrigin) ?? "Opensteer";
   }
   return deploymentKindLabel(config.deployment.kind);
 }
 
 /** One muted line saying what and where this place is. */
-function doorContext(
-  config: IdentityConfig,
-  active: "claim" | "sign-in",
-  admitted: boolean,
-): string {
+function doorContext(config: IdentityConfig, active: "claim" | "sign-in"): string {
   const kind = config.deployment.kind;
-  if (active === "claim") {
-    if (kind === "development") {
-      return admitted
-        ? "Development, started by pnpm dev. The setup code was supplied automatically."
-        : "Development, started by pnpm dev.";
-    }
-    if (kind === "personal") return "Set up Opensteer on this computer.";
-    if (kind === "self-hosted") return "Set up Opensteer on this server.";
-    return "Set up Opensteer here.";
-  }
-  if (kind === "development") return "Development";
+  if (active === "claim")
+    return kind === "personal" ? "Set up Opensteer on this computer." : "Set up this team server.";
   if (kind === "personal") {
     return reachedThroughRemoteRoute(config) ? "Your computer · opened remotely" : "Your computer";
   }
-  return "Server";
+  return "Team server";
 }
 
 /**

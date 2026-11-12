@@ -182,7 +182,7 @@ function channelView(view: TeamView, channel: TeamChannel | null, channelId: str
     name: summary?.name ?? "channel",
     description: "",
     peopleOnly: summary?.peopleOnly ?? false,
-    memberCount: 0,
+    memberCount: null,
     faces: [],
     instructions: channel?.instructionsMarkdown
       ? { text: channel.instructionsMarkdown, changedBy: "", changedAt: "" }
@@ -530,6 +530,7 @@ function ChannelScreenFor({
         cardActions={cardActions}
         channel={channel}
         composer={composer(place.threadId, myOpenAsk || params.has("ask"))}
+        onBack={docked ? () => go(channelPath(team.teamId, channelId)) : undefined}
         onClose={() => go(channelPath(team.teamId, channelId))}
         replies={replies}
         root={messageView(words, threadRootMessage, { requests: thread?.requests ?? [] })}
@@ -582,20 +583,7 @@ function ChannelScreenFor({
     );
 
   // Docked beside a page, a thread takes the channel's place in the dock, with ‹ back.
-  if (docked && threadPane)
-    return (
-      <div className="team-dock">
-        <button
-          className="team-dock__back"
-          onClick={() => go(channelPath(team.teamId, channelId))}
-          type="button"
-        >
-          ‹{" "}
-          {channel.kind === "dm" || channel.kind === "group-dm" ? channel.name : `#${channel.name}`}
-        </button>
-        {threadPane}
-      </div>
-    );
+  if (docked && threadPane) return threadPane;
 
   const sidePane =
     pane === "details" ? (
