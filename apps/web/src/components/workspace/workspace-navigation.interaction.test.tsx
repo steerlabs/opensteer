@@ -7,7 +7,7 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { mockTeamId, mockTeamChannelId } from "@opensteer/client/team";
-import { placeList, type HostSnapshot } from "@opensteer/client/host";
+import { doneTaskList, placeList, taskList, type HostSnapshot } from "@opensteer/client/host";
 import {
   BrowserSurfaceIdSchema,
   createId,
@@ -518,7 +518,7 @@ describe("focus never lands on the body", () => {
 });
 
 describe("the Needs you pill", () => {
-  it("counts what needs you, lines each ask, and opens All tasks at Needs you without moving the middle", async () => {
+  it("counts what needs you, lines each ask, and opens the first ask without moving the middle", async () => {
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const count = client.getSnapshot().needsYou!.count;
@@ -534,10 +534,78 @@ describe("the Needs you pill", () => {
     const before = history.length;
     await click(pill);
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)!.path).toBe("/tasks");
-    expect(new URLSearchParams(history.at(-1)!.search).get("filter")).toBe("needs-you");
+    const first = client.getSnapshot().needsYou!.entries[0]!;
+    expect(history.at(-1)!.path).toBe(`/tasks/${first.navigationThreadId}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
+  });
+});
+
+describe("sidebar Tasks until Done", () => {
+  const openTasks = () => taskList(client.getSnapshot());
+  const doneRows = () => doneTaskList(client.getSnapshot())?.rows ?? [];
+  async function readTask() {
+    const task = openTasks().ready.find((item) => item.canBeDone)!;
+    expect(task).toBeDefined();
+    const read = client.getSnapshot().threadReadStates[task.threadId];
+    if (read?.unreadSequence)
+      await act(async () => client.markThreadRead(task.threadId, read.unreadSequence!));
+    return task;
+  }
+  const shelf = () => element<HTMLButtonElement>(".side-done .side-done__main");
+  const heading = () => element("#sidebar-tasks").textContent;
+  const row = (id: string) => document.querySelector(`.side-task[data-thread-id="${id}"]`);
+
+  it("keeps a read task listed until it is Done, then opens Done in place without moving Tabs", async () => {
+    await mount("/");
+    const task = await readTask();
+    expect(row(task.threadId)).not.toBeNull();
+    await act(async () => client.setTaskDone(task.threadId, true));
+    expect(row(task.threadId)).toBeNull();
+    const count = doneTaskList(client.getSnapshot())!.total;
+    expect(shelf().getAttribute("aria-label")).toBe(
+      `Done, ${count} ${count === 1 ? "task" : "tasks"}`,
+    );
+    const tabs = element(".side-section--tabs");
+    await click(shelf());
+    expect(heading()).toBe("Done");
+    expect(row(task.threadId)).not.toBeNull();
+    expect(element(".side-day__title").textContent).toBe("Today");
+    expect(element(".side-section--tabs")).toBe(tabs);
+    await click(element('[aria-label="Back to Tasks"]'));
+    expect(heading()).toBe("Tasks");
+    await click(shelf());
+    await act(async () =>
+      element(".side-section--tasks").dispatchEvent(
+        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
+      ),
+    );
+    expect(heading()).toBe("Tasks");
+  });
+
+  it("names tasks the Host moved quietly, moves them back, and stops telling once seen", async () => {
+    await mount("/");
+    const task = await readTask();
+    await act(async () => client.moveQuietly(task.threadId));
+    expect(doneRows().some((item) => item.threadId === task.threadId)).toBe(true);
+    const chip = element<HTMLButtonElement>(".side-done__moved");
+    expect(chip.textContent).toBe("+1");
+    expect(chip.getAttribute("aria-label")).toBe("1 task moved to Done for you");
+    await click(chip);
+    expect(element(".quiet-moved__title").textContent).toBe("Moved to Done for you");
+    expect(element(".quiet-moved__name").textContent).toBe(task.title);
+    await click(element(`[aria-label="Move back: ${task.title}"]`));
+    expect(openTasks().ready.some((item) => item.threadId === task.threadId)).toBe(true);
+    expect(document.querySelector(".quiet-moved")).toBeNull();
+    expect(document.querySelector(".side-done__moved")).toBeNull();
+
+    // A second move is told again, until Done is opened.
+    const again = await readTask();
+    await act(async () => client.moveQuietly(again.threadId));
+    expect(element(".side-done__moved").textContent).toBe("+1");
+    await click(shelf());
+    await click(element('[aria-label="Back to Tasks"]'));
+    expect(document.querySelector(".side-done__moved")).toBeNull();
   });
 });
 

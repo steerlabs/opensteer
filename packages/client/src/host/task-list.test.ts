@@ -21,7 +21,6 @@ import {
   doneTaskList,
   heldThread,
   listedRowThreadId,
-  liveTasks,
   sameTaskRow,
   taskList,
   taskRowLabel,
@@ -219,22 +218,6 @@ describe("taskList", () => {
     ]);
     expect(list.working[0]!.line).toBe("Pick a night");
     expect(list.ready).toEqual([]);
-  });
-
-  it("keeps the sidebar to work that needs the reader: questions, then unread results, then running", () => {
-    const list = taskList(
-      snapshot(
-        [
-          entry(1, "Running", "running", 0.5, 0),
-          entry(2, "Unread result", "idle", 2, 1),
-          entry(3, "Read result", "idle", 1, 1),
-          entry(4, "Asks the reader", "waiting", 10, 1),
-          entry(5, "Opened result", "idle", 3, 1),
-        ],
-        { unread: [2], waiting: [asking(4, "Pick a night")] },
-      ),
-    );
-    expect(titles(liveTasks(list))).toEqual(["Asks the reader", "Unread result", "Running"]);
   });
 
   it("lists finished and failed tasks by when a person last asked, so their times read in order", () => {

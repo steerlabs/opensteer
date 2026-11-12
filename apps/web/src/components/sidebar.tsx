@@ -37,7 +37,10 @@ import {
   type TabFilter,
   describeHostConnection,
   listedRowThreadId,
-  liveTasks,
+  doneDays,
+  doneTaskList,
+  quietlyMoved,
+  quietSeenScope,
   taskList,
   type HostClient,
   type HostSnapshot,
@@ -107,6 +110,7 @@ import { TabGroupHeader, tabGroupStyle } from "./workspace/tab-group.js";
 import { NativeTabMenu, TabMenu, nativeTabMenuOffered } from "./workspace/tab-menu.js";
 import { RowMotion } from "./workspace/row-motion.js";
 import { fullHeightOf, SideSplit, useTasksShare } from "./workspace/side-split.js";
+import { DoneLine, useQuietSeen } from "./workspace/done-line.js";
 import { SidebarSearch, type SidebarSearchSources } from "./sidebar-search.js";
 import { TabFilterControl } from "./workspace/tab-filter.js";
 import type { SortRow } from "./workspace/tab-sort.js";
@@ -266,15 +270,31 @@ export function Sidebar({
   const openRowThreadId = openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId);
   const directory = useTaskDirectory(hostClient, openRowThreadId);
   const { list } = directory;
-  // A handful in order of urgency; everything else is one click away in All tasks.
-  const live = useMemo(() => {
-    const rows = liveTasks(list);
-    const needs = rows.filter((row) => row.tone === "needs-you").length;
-    return rows.slice(0, Math.max(liveRowLimit, needs));
-  }, [list, openRowThreadId]);
-  const openCount = list.working.length + list.ready.length;
   const tasksList = useRef<HTMLUListElement | null>(null);
   const [side, setSide] = useSidebarSide(deploymentId, userId, pathname);
+  const doneShelf = useRef<HTMLLIElement | null>(null);
+  // Done takes the place of Tasks while it is open, at the height Tasks had,
+  // so Tabs below never move.
+  const tasksSection = useRef<HTMLElement | null>(null);
+  const [doneView, setDoneView] = useState<{ readonly height: number } | null>(null);
+  const quietTasks = directory.snapshot.quietTasksAvailable === true;
+  useEffect(() => {
+    if (quietTasks) void hostClient.loadDoneTasks().catch(() => undefined);
+  }, [hostClient, quietTasks, userId]);
+  const doneList = useMemo(() => doneTaskList(directory.snapshot), [directory.snapshot]);
+  const doneRows = doneList?.rows ?? list.done;
+  const doneCount = doneList?.total ?? list.done.length;
+  const [quietSeen, markQuietSeen] = useQuietSeen(quietSeenScope(directory.snapshot));
+  const moved = useMemo(() => quietlyMoved(doneList, quietSeen, Date.now()), [doneList, quietSeen]);
+  const openDone = () => {
+    setDoneView({ height: tasksSection.current?.getBoundingClientRect().height ?? 0 });
+    markQuietSeen(moved);
+  };
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const doneActive = !doneView && doneRows.some((row) => row.threadId === openRowThreadId);
+  useEffect(() => {
+    if (doneActive && doneShelf.current) revealInList(doneShelf.current);
+  }, [doneActive, openRowThreadId]);
 
   const allTasks = useMemo(() => [...list.working, ...list.ready, ...list.done], [list]);
   const searchSources = useMemo<SidebarSearchSources>(
@@ -393,9 +413,13 @@ export function Sidebar({
     [onCloseMobile],
   );
   const needsYouCount = useHostSelector(hostClient, (current) => current.needsYou?.count ?? 0);
-  const openAllTasks = (filter?: string) => {
+  const openNeedsYou = () => {
+    const first = hostClient.getSnapshot().needsYou?.entries[0];
+    if (!first) return;
     onCloseMobile();
-    nav.openConversation(filter ? `/tasks?filter=${filter}` : "/tasks");
+    nav.openConversation(nav.threadPath(first.navigationThreadId), {
+      focusRequest: first.request.id,
+    });
   };
   const newTask = () => {
     onCloseMobile();
@@ -422,6 +446,13 @@ export function Sidebar({
     });
   };
   const loadMore = () => void onLoadEarlierTasks().catch(() => undefined);
+  const loadEarlier = () => {
+    if (loadingEarlier) return;
+    setLoadingEarlier(true);
+    void (doneView && quietTasks ? hostClient.loadEarlierDoneTasks() : onLoadEarlierTasks())
+      .catch(() => undefined)
+      .finally(() => setLoadingEarlier(false));
+  };
   // Put away, the sidebar is gone entirely; the restore control in the
   // conversation's or the place's head (with the count) and ⌘\ bring it back.
   if (collapsed)
@@ -436,7 +467,32 @@ export function Sidebar({
 
   const classes = ["sidebar"];
   if (mobileOpen) classes.push("sidebar--open");
-  const rowKeys = [...live.map((row) => row.threadId), "all-tasks"];
+  const rows = [...list.working, ...list.ready];
+  const days = doneView ? doneDays(doneRows, Date.now()) : [];
+  const doneMore = doneList?.hasMore ?? list.hasMore;
+  const doneLine = doneCount > 0 || moved.length > 0;
+  const rowKeys = doneView
+    ? [
+        ...days.flatMap((day) => [`day:${day.id}`, ...day.rows.map((row) => row.threadId)]),
+        ...(doneMore ? ["show-more"] : []),
+      ]
+    : [
+        ...rows.map((row) => row.threadId),
+        ...(list.hasMore ? ["show-more"] : []),
+        ...(doneLine ? ["done-shelf"] : []),
+      ];
+  const showMore = (
+    <li data-motion-key="show-more" key="show-more">
+      <button
+        className="sidebar__more"
+        disabled={loadingEarlier}
+        onClick={loadEarlier}
+        type="button"
+      >
+        {loadingEarlier ? "Loading…" : "Show more"}
+      </button>
+    </li>
+  );
   const taskRow = (row: TaskRow) => (
     <TaskRowItem
       hostClient={hostClient}
@@ -675,29 +731,55 @@ export function Sidebar({
           aria-labelledby={side === "tasks" ? "sidebar-tasks" : undefined}
           aria-label={side === "tasks" ? undefined : "Team"}
           className="side-section side-section--tasks"
-          style={sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)}
+          onKeyDown={(event) => {
+            if (doneView && event.key === "Escape" && !event.defaultPrevented) setDoneView(null);
+          }}
+          ref={tasksSection}
+          style={
+            side === "tasks" && doneView?.height
+              ? { flex: "none", height: doneView.height, maxHeight: doneView.height, minHeight: 0 }
+              : sectionFloor(side === "tasks" ? rowKeys.length + 1 : 8)
+          }
         >
           {side === "tasks" ? (
             <>
-              <div className="side-head">
-                <h2 className="side-head__title" id="sidebar-tasks">
-                  Tasks
-                </h2>
-                {needsYouCount > 0 ? (
+              {doneView ? (
+                <div className="side-head side-head--done">
                   <button
-                    aria-label={`${needsYouCount} need you. Show them`}
-                    className="side-needs"
-                    onClick={() => openAllTasks("needs-you")}
-                    title="Needs you"
+                    aria-label="Back to Tasks"
+                    className="icon-btn icon-btn--small side-head__back"
+                    onClick={() => setDoneView(null)}
+                    title="Back to Tasks · Esc"
                     type="button"
                   >
-                    <span aria-hidden className="side-needs__bang">
-                      !
-                    </span>
-                    <span aria-hidden>{needsYouCount}</span>
+                    <Icon name="chevron-left" />
                   </button>
-                ) : null}
-              </div>
+                  <h2 className="side-head__title" id="sidebar-tasks">
+                    Done
+                  </h2>
+                  <span className="side-head__count">{doneCount}</span>
+                </div>
+              ) : (
+                <div className="side-head">
+                  <h2 className="side-head__title" id="sidebar-tasks">
+                    Tasks
+                  </h2>
+                  {needsYouCount > 0 ? (
+                    <button
+                      aria-label={`${needsYouCount} need you. Open the first`}
+                      className="side-needs"
+                      onClick={openNeedsYou}
+                      title="Open the first task that needs you"
+                      type="button"
+                    >
+                      <span aria-hidden className="side-needs__bang">
+                        !
+                      </span>
+                      <span aria-hidden>{needsYouCount}</span>
+                    </button>
+                  ) : null}
+                </div>
+              )}
               <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
                 <RowMotion
                   snap={false}
@@ -705,27 +787,53 @@ export function Sidebar({
                   signature={rowKeys.join(",")}
                   lifted={false}
                 >
-                  {[
-                    ...live.map((row) => taskRow(row)),
-                    <li className="side-task side-all" data-motion-key="all-tasks" key="all-tasks">
-                      <Link
-                        aria-current={pathname === "/tasks" ? "page" : undefined}
-                        className="side-task__main"
-                        onClick={(event) => {
-                          onCloseMobile();
-                          openConversationRow(event, nav, "/tasks");
-                        }}
-                        to={nav.conversationHref("/tasks")}
-                      >
-                        <Icon name="list" />
-                        <span className="side-task__text">All tasks</span>
-                        {openCount > 0 ? (
-                          <span className="side-all__count">{openCount}</span>
-                        ) : null}
-                        <Icon className="side-all__chevron" name="chevron-right" />
-                      </Link>
-                    </li>,
-                  ]}
+                  {/* One keyed run, so a row that moves keeps its element and focus,
+                      and slides to its new place. */}
+                  {doneView
+                    ? [
+                        ...days.flatMap((day) => [
+                          <li
+                            className="side-day"
+                            data-motion-key={`day:${day.id}`}
+                            key={`day:${day.id}`}
+                          >
+                            <h3 className="side-day__title">{day.title}</h3>
+                          </li>,
+                          ...day.rows.map((row) => taskRow(row)),
+                        ]),
+                        ...(days.length === 0
+                          ? [
+                              <li
+                                className="sidebar__empty"
+                                data-motion-key="done-empty"
+                                key="done-empty"
+                              >
+                                Nothing in Done yet.
+                              </li>,
+                            ]
+                          : []),
+                        ...(doneMore ? [showMore] : []),
+                      ]
+                    : [
+                        ...rows.map((row) => taskRow(row)),
+                        ...(list.hasMore ? [showMore] : []),
+                        ...(doneLine
+                          ? [
+                              <DoneLine
+                                active={doneActive}
+                                count={doneCount}
+                                hostClient={hostClient}
+                                key="done-shelf"
+                                lineRef={doneShelf}
+                                moved={moved}
+                                onOpen={openDone}
+                                onOpenTask={openTask}
+                                onSeen={markQuietSeen}
+                                quietTaskDays={directory.snapshot.quietTaskDays}
+                              />,
+                            ]
+                          : []),
+                      ]}
                 </RowMotion>
               </SideList>
             </>
@@ -930,9 +1038,6 @@ function VoiceButton({ onOpen }: { readonly onOpen: () => void }) {
   );
 }
 
-/** Live tasks the sidebar lists before "All tasks": more only when more need the person. */
-const liveRowLimit = 5;
-
 /**
  * Which side of the switch shows. On load it follows the address (a channel
  * opens on its team, a task on Tasks), else what this person last chose here;
@@ -969,7 +1074,7 @@ function useSidebarSide(
 function routeSide(pathname: string): string | null {
   const team = /^\/teams\/([^/]+)\//u.exec(pathname);
   if (team) return decodeURIComponent(team[1]!);
-  return pathname === "/tasks" || pathname.startsWith("/tasks/") ? "tasks" : null;
+  return pathname.startsWith("/tasks/") ? "tasks" : null;
 }
 
 function storedSide(key: string): string {
