@@ -113,7 +113,9 @@ export function MessageList({
     }
     const line = list.querySelector<HTMLElement>(".tlist__new");
     setUnreadAbove(line ? line.getBoundingClientRect().bottom < top : false);
-    if (list.scrollTop < 240 && hasOlder && !loadingOlder) onLoadOlder?.();
+    const historyDistance = top - (rowsRef.current?.getBoundingClientRect().top ?? top);
+    if (historyDistance >= -followDistance && historyDistance < 240 && hasOlder && !loadingOlder)
+      onLoadOlder?.();
   }, [hasOlder, loadingOlder, onLoadOlder]);
 
   // First paint: at the first unread or a deep link, else at the end.

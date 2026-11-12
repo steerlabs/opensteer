@@ -333,13 +333,15 @@ export function ThreadPane({
         hasOlder={hasOlder}
         header={
           <>
-            <MessageRow
-              actions={actions}
-              editing={editingId === root.id}
-              inThread
-              message={root}
-              onEditingChange={(id, editing) => onEditingChange?.(editing ? id : null)}
-            />
+            <div data-row-id={root.id}>
+              <MessageRow
+                actions={actions}
+                editing={editingId === root.id}
+                inThread
+                message={root}
+                onEditingChange={(id, editing) => onEditingChange?.(editing ? id : null)}
+              />
+            </div>
             <div className="thread-pane__rule" role="separator">
               <span>
                 {root.thread?.replyCount
