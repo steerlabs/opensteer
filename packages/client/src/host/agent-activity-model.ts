@@ -2096,6 +2096,10 @@ const opensteerSteps = new Map<string, OpensteerStep>([
     ),
   ],
 
+  ["team_read", said(["Reading team context", "Read team context"], "list")],
+  ["team_search", said(["Searching team messages", "Searched team messages"], "search")],
+  ["team_reply", said(["Replying to the team", "Replied to the team"], "share")],
+
   ["settings_read", said(["Reading settings", "Read settings"], "list")],
   [
     "settings_write",
@@ -2160,7 +2164,9 @@ const opensteerSteps = new Map<string, OpensteerStep>([
         list: ["Looking up plugins and specialists", "Looked up plugins and specialists"],
         update: ["Updating a plugin", "Updated a plugin"],
         activate: ["Activating a plugin", "Activated a plugin"],
+        enable: ["Enabling a plugin", "Enabled a plugin"],
         deactivate: ["Deactivating a plugin", "Deactivated a plugin"],
+        disable: ["Disabling a plugin", "Disabled a plugin"],
         remove: ["Removing a plugin", "Removed a plugin"],
         remove_specialist: ["Removing a specialist", "Removed a specialist"],
       },
