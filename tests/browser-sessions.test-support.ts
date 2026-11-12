@@ -1,4 +1,8 @@
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -142,8 +146,12 @@ export async function agentJourney(
   // Every mistake says what happened and what to do next.
   expect(report.withoutSession.stderr).toContain("--session <Browser Session ID>");
   expect(report.outsideFile.stderr).toContain("accepts only files staged for this Browser Session");
-  expect(report.endedSession.stderr).toContain(`Browser Session ${sessionB} has ended`);
-  expect(report.unknownSession.stderr).toContain("was not found");
+  for (const refused of [report.endedSession, report.unknownSession]) {
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain(
+      "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
+    );
+  }
   expect(report.accessAlreadyAvailable.error).toContain(
     "This browser profile is already available. Open it with browser_session_open.",
   );
@@ -238,7 +246,11 @@ async function watchBrowserSession(
     const url = new URL(`/v1/browser-sessions/${sessionId}/connect`, stack.hostOrigin);
     if (mode === "watch") url.searchParams.set("mode", "watch");
     const socket = new WebSocket(url, {
-      headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+      headers: {
+        cookie: stack.sessionCookie,
+        origin: stack.hostOrigin.origin,
+        [hostApiVersionHeader]: String(hostApiVersion),
+      },
     });
     sockets.push(socket);
     await waitForBrowserSnapshot(socket);
@@ -411,6 +423,10 @@ export async function startPersonBrowser(
   stack: VerticalStack,
   input: {
     readonly initialUrl?: string;
+    readonly placement?: {
+      readonly kind: "runner";
+      readonly runnerId: import("../packages/core/src/index.js").RunnerId;
+    };
     readonly viewport: { readonly height: number; readonly width: number };
   },
 ): Promise<string> {
@@ -437,20 +453,41 @@ export async function openBrowserView(
   const url = new URL(`/v1/browser-sessions/${sessionId}/connect`, stack.hostOrigin);
   if (mode === "watch") url.searchParams.set("mode", "watch");
   const socket = new WebSocket(url, {
-    headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+    headers: {
+      cookie: stack.sessionCookie,
+      origin: stack.hostOrigin.origin,
+      [hostApiVersionHeader]: String(hostApiVersion),
+    },
   });
+  addCleanup("browser viewer socket", async () => socket.terminate(), 0);
   const snapshot = await new Promise<Extract<BrowserServerMessage, { type: "browser.snapshot" }>>(
     (resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Browser snapshot timed out.")), 10_000);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        socket.off("message", onMessage);
+        socket.off("close", onClose);
+        socket.off("error", onError);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onClose = (code: number, reason: Buffer) =>
+        onError(new Error(`Browser closed before its snapshot (${code}: ${reason.toString()})`));
+      const timeout = setTimeout(() => {
+        onError(new Error("Browser snapshot timed out."));
+        socket.terminate();
+      }, 10_000);
       const onMessage = (raw: WebSocket.RawData, isBinary: boolean) => {
         if (isBinary) return;
         const message = BrowserServerMessageSchema.parse(JSON.parse(raw.toString()));
         if (message.type !== "browser.snapshot") return;
-        clearTimeout(timeout);
-        socket.off("message", onMessage);
+        cleanup();
         resolve(message);
       };
       socket.on("message", onMessage);
+      socket.once("close", onClose);
+      socket.once("error", onError);
     },
   );
   if (mode === "control")
