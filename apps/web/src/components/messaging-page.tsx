@@ -12,14 +12,16 @@ import type {
   ChannelProviderManifest,
   ChannelRouteSelector,
 } from "@opensteer/channel-core";
+import type { TaskFolder } from "@opensteer/core";
 import {
   mutationIdempotencyKey,
   unwrapRpcResult,
   type CreatedChannelConnection,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { useShell } from "./app-shell.js";
 import { ComputerChannelSetup } from "./computer-channel-setup.js";
+import { FolderField } from "./folder-field.js";
+import { folderView } from "./home/folder-groups.js";
 import { ExternalLink } from "./external-link.js";
 import { Icon } from "./icon.js";
 import { PageHeader, PageTopbar } from "./page-header.js";
@@ -32,7 +34,7 @@ const linkCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const linkCodeLength = 8;
 
 /** Admission choices are shared by channel mentions and direct messages. */
-const senderModes = ["anyone", "owner", "approved", "linked-members", "off"] as const;
+const senderModes = ["anyone", "owner", "approved", "off"] as const;
 type SenderMode = (typeof senderModes)[number];
 
 interface LinkedIdentity {
@@ -43,7 +45,8 @@ interface LinkedIdentity {
 interface RouteDraft {
   accessPolicy: ChannelAccessPolicy;
   conversationId: string;
-  workspaceId: string;
+  /** Null until chosen: Agent home. */
+  folder: TaskFolder | null;
 }
 
 interface ChannelDraft {
@@ -52,22 +55,23 @@ interface ChannelDraft {
   credentials: Record<string, string>;
   provider: string;
   routingMode: "dedicated" | "shared";
-  workspaceId: string;
+  /** Null until chosen: Agent home. */
+  folder: TaskFolder | null;
 }
 
-/** Routed page for connecting messaging accounts and routing them to Workspaces. */
-export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean }) {
+/**
+ * Messaging: the person's own Slack, Telegram or iMessage accounts, each of
+ * whose conversations starts or continues a task for their agent in a folder
+ * on the computer that runs tasks.
+ */
+export function MessagingPage({ embedded = false }: { readonly embedded?: boolean }) {
   const location = useLocation();
   const connectionId = location.pathname.startsWith("/settings/messaging/")
     ? decodeURIComponent(location.pathname.slice("/settings/messaging/".length))
     : null;
   const { hostClient, openMobileNavigation, snapshot } = useShell();
-  const workspaces = snapshot.workspaces;
-  const homeWorkspaceId =
-    snapshot.homeWorkspaceId ??
-    workspaces.find(({ kind }) => kind === "main")?.id ??
-    workspaces[0]?.id ??
-    "";
+  const agentHome = snapshot.personalSettings?.agentHome ?? null;
+  const folderName = useFolderName();
   const [dashboard, setDashboard] = useState<ChannelDashboard | null>(null);
   const [view, setView] = useState<View>("overview");
   const [step, setStep] = useState(0);
@@ -86,7 +90,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
     credentials: {},
     provider: "",
     routingMode: "dedicated",
-    workspaceId: homeWorkspaceId,
+    folder: null,
   });
 
   const reload = useCallback(async () => {
@@ -115,19 +119,19 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
     return () => window.clearInterval(timer);
   }, [reload, view]);
 
-  const workspace = workspaces.find(({ id }) => id === draft.workspaceId);
+  const draftFolder = draft.folder ?? agentHome;
   const provider = dashboard?.providers.find(
     ({ provider }) => provider === (repairing?.provider ?? draft.provider),
   );
   const routeSummary =
     draft.routingMode === "dedicated"
-      ? "This identity always represents this Workspace"
+      ? "Every conversation starts tasks in this folder"
       : "Shared bot with editable routes";
   const canContinue =
     step === 0
       ? Boolean(provider?.credentialFields.every((field) => draft.credentials[field.key]?.trim()))
       : step === 1
-        ? Boolean(workspace)
+        ? draftFolder !== null
         : step === 2 && draft.accessPolicy.channels.scope === "selected"
           ? normalizeChannelIds(draft.channelInput).length > 0
           : true;
@@ -138,7 +142,6 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
       ...current,
       credentials: Object.fromEntries(manifest.credentialFields.map(({ key }) => [key, ""])),
       provider: manifest.provider,
-      workspaceId: current.workspaceId || homeWorkspaceId,
     }));
     setStep(0);
     // A transport that runs on one of your computers has nothing to paste.
@@ -165,6 +168,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
       if (canContinue) setStep((current) => current + 1);
       return;
     }
+    if (!draftFolder) return;
     setPending(true);
     setError(null);
     try {
@@ -177,7 +181,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
         provider: draft.provider,
         routingMode: draft.routingMode,
         type: "channel.connection.create",
-        workspaceId: draft.workspaceId,
+        folder: draftFolder,
       });
       if (result.type !== "channel.connection.create") throw new Error("Channel command mismatch.");
       setCreated(result);
@@ -305,6 +309,8 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
 
   /** Answers whether the route was created, so the card can close its form. */
   async function addRoute(account: ChannelAccount, route: RouteDraft): Promise<boolean> {
+    const folder = route.folder ?? agentHome;
+    if (!folder) return false;
     setPending(true);
     setError(null);
     try {
@@ -321,7 +327,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
           threadId: null,
         },
         type: "channel.binding.create",
-        workspaceId: route.workspaceId,
+        folder,
       });
       if (result.type !== "channel.binding.create") throw new Error("Channel command mismatch.");
       await reload();
@@ -480,7 +486,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
                 : dashboard
             }
             error={error}
-            homeWorkspaceId={homeWorkspaceId}
+            folderName={folderName}
             linkError={linkError}
             linked={linked}
             onAdd={() => {
@@ -497,7 +503,6 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
             onStatus={(connectionId, status) => void changeStatus(connectionId, status)}
             onUpdateAccess={updateAccess}
             pending={pending}
-            workspaces={workspaces}
           />
         ) : null}
 
@@ -507,7 +512,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
 
         {view === "computer-setup" && provider ? (
           <ComputerChannelSetup
-            defaultWorkspaceId={draft.workspaceId || homeWorkspaceId}
+            agentHome={agentHome}
             hostClient={hostClient}
             machines={snapshot.machines}
             onCancel={() => setView("providers")}
@@ -517,7 +522,6 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
               void reload();
             }}
             provider={provider}
-            workspaces={workspaces}
           />
         ) : null}
 
@@ -533,12 +537,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
               />
             ) : null}
             {step === 1 ? (
-              <ChannelDestination
-                draft={draft}
-                provider={provider}
-                setDraft={setDraft}
-                workspaces={workspaces}
-              />
+              <ChannelDestination draft={draft} provider={provider} setDraft={setDraft} />
             ) : null}
             {step === 2 ? (
               <ChannelAccess draft={draft} provider={provider} setDraft={setDraft} />
@@ -548,7 +547,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
                 draft={draft}
                 provider={provider}
                 routeSummary={routeSummary}
-                {...(workspace ? { workspaceName: workspace.name } : {})}
+                {...(draftFolder ? { folderName: folderName(draftFolder) } : {})}
               />
             ) : null}
             <div className="form-actions">
@@ -634,7 +633,7 @@ export function ChannelsPage({ embedded = false }: { readonly embedded?: boolean
 export function ChannelOverview({
   dashboard,
   error,
-  homeWorkspaceId,
+  folderName,
   linkError,
   linked,
   onAdd,
@@ -648,11 +647,10 @@ export function ChannelOverview({
   onStatus,
   onUpdateAccess,
   pending,
-  workspaces,
 }: {
   dashboard: ChannelDashboard | null;
   error: string | null;
-  homeWorkspaceId: string;
+  folderName: (folder: TaskFolder) => string;
   linkError: string | null;
   linked: LinkedIdentity | null;
   onAdd: () => void;
@@ -669,7 +667,6 @@ export function ChannelOverview({
   onStatus: (connectionId: string, status: "connected" | "paused") => void;
   onUpdateAccess: (binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) => Promise<boolean>;
   pending: boolean;
-  workspaces: readonly WorkspaceSummary[];
 }) {
   if (!dashboard && !error)
     return (
@@ -818,14 +815,13 @@ export function ChannelOverview({
                       bindings={dashboard.bindings.filter(
                         ({ accountId }) => accountId === account.id,
                       )}
-                      homeWorkspaceId={homeWorkspaceId}
+                      folderName={folderName}
                       key={account.id}
                       onAddRoute={onAddRoute}
                       onRevokeRoute={onRevokeRoute}
                       onUpdateAccess={onUpdateAccess}
                       pending={pending}
                       providerLabel={provider?.label ?? connection.provider}
-                      workspaces={workspaces}
                     />
                   ))}
                 </Fragment>
@@ -1013,34 +1009,15 @@ function ProviderCredentials({
   );
 }
 
-function ChannelDestination({
-  draft,
-  setDraft,
-  workspaces,
-}: DraftProps & {
-  provider: ChannelProviderManifest;
-  workspaces: readonly WorkspaceSummary[];
-}) {
+function ChannelDestination({ draft, setDraft }: DraftProps & { provider: ChannelProviderManifest }) {
   return (
     <div className="card">
       <div className="card__form">
-        <p className="section__hint">Choose the Workspace this bot represents.</p>
-        <label className="field">
-          <span className="field__label">Opensteer Workspace</span>
-          <select
-            className="select-input"
-            onChange={(event) => setDraft({ ...draft, workspaceId: event.currentTarget.value })}
-            value={draft.workspaceId}
-          >
-            {workspaces
-              .filter(({ status }) => status === "ready")
-              .map((workspace) => (
-                <option key={workspace.id} value={workspace.id}>
-                  {workspace.name}
-                </option>
-              ))}
-          </select>
-        </label>
+        <FolderField
+          folder={draft.folder}
+          hint="New conversations start tasks for your agent in this folder."
+          onChange={(folder) => setDraft({ ...draft, folder })}
+        />
         <div className="check-list" role="radiogroup" aria-label="Bot role">
           <label className="check-item">
             <input
@@ -1051,10 +1028,10 @@ function ChannelDestination({
             />
             <span className="check-item__meta">
               <span className="check-item__label">
-                Dedicated Workspace bot <span className="chip chip--accent">Recommended</span>
+                One folder <span className="chip chip--accent">Recommended</span>
               </span>
               <span className="check-item__detail">
-                This identity always represents the selected Workspace.
+                Every conversation with this identity works in the chosen folder.
               </span>
             </span>
           </label>
@@ -1068,15 +1045,11 @@ function ChannelDestination({
             <span className="check-item__meta">
               <span className="check-item__label">Shared bot with routes</span>
               <span className="check-item__detail">
-                Reuse this identity for more Workspaces. You can add routes after setup.
+                Route different conversations to different folders. You can add routes after setup.
               </span>
             </span>
           </label>
         </div>
-        <p className="notice notice--accent">
-          New conversations start Opensteer threads in{" "}
-          {workspaces.find(({ id }) => id === draft.workspaceId)?.name ?? "this Workspace"}.
-        </p>
       </div>
     </div>
   );
@@ -1105,21 +1078,21 @@ function ChannelReview({
   draft,
   provider,
   routeSummary,
-  workspaceName,
+  folderName,
 }: {
   draft: ChannelDraft;
   provider: ChannelProviderManifest;
   routeSummary: string;
-  workspaceName?: string;
+  folderName?: string;
 }) {
   const rows: { detail: string; title: string }[] = [
     { detail: `${provider.label} · verified on connect`, title: "Connected account" },
     {
       detail:
-        draft.routingMode === "dedicated" ? "Dedicated Workspace bot" : "Shared bot with routes",
+        draft.routingMode === "dedicated" ? "One folder" : "Shared bot with routes",
       title: "Bot role",
     },
-    { detail: `${workspaceName ?? "Workspace"} — ${routeSummary}`, title: "Where it answers" },
+    { detail: `${folderName ?? "Agent home"} — ${routeSummary}`, title: "Where it works" },
     {
       detail: channelPolicySummary(
         accessPolicyFromDraft(draft.accessPolicy, draft.channelInput),
@@ -1128,14 +1101,7 @@ function ChannelReview({
       title: "Channels",
     },
     { detail: senderLabel(draft.accessPolicy.directMessages.mode), title: "Direct messages" },
-    {
-      detail:
-        draft.accessPolicy.channels.sender.mode === "linked-members" ||
-        draft.accessPolicy.directMessages.mode === "linked-members"
-          ? "Linked members use their own access; other admitted senders use yours."
-          : `Runs started from ${provider.label} use your Opensteer access.`,
-      title: "Authority",
-    },
+    { detail: `Runs started from ${provider.label} use your Opensteer access.`, title: "Authority" },
     { detail: "Default AI engine", title: "Runs on" },
   ];
   return (
@@ -1549,10 +1515,7 @@ export function AccessPolicyEditor({
         </details>
       ) : null}
       <p className="notice notice--accent">
-        {policy.channels.sender.mode === "linked-members" ||
-        policy.directMessages.mode === "linked-members"
-          ? "Linked members run with their own Opensteer access. Other admitted senders use the connection owner’s access."
-          : `Runs started from ${providerLabel} use the connection owner’s Opensteer access.`}
+        Runs started from {providerLabel} use your Opensteer access.
       </p>
     </div>
   );
@@ -1565,7 +1528,6 @@ function SenderOptions() {
       <option value="owner">Only me</option>
       <option value="approved">Ask for access</option>
       <option value="off">Off</option>
-      <option value="linked-members">Linked Opensteer members (advanced)</option>
     </>
   );
 }
@@ -1574,23 +1536,21 @@ function SenderOptions() {
 export function AccountRoutes({
   account,
   bindings,
-  homeWorkspaceId,
+  folderName,
   onAddRoute,
   onRevokeRoute,
   onUpdateAccess,
   pending,
   providerLabel,
-  workspaces,
 }: {
   account: ChannelAccount;
   bindings: readonly ChannelBinding[];
-  homeWorkspaceId: string;
+  folderName: (folder: TaskFolder) => string;
   onAddRoute: (account: ChannelAccount, route: RouteDraft) => Promise<boolean>;
   onRevokeRoute: (bindingId: ChannelBinding["id"]) => void;
   onUpdateAccess: (binding: ChannelBinding, accessPolicy: ChannelAccessPolicy) => Promise<boolean>;
   pending: boolean;
   providerLabel: string;
-  workspaces: readonly WorkspaceSummary[];
 }) {
   const [open, setOpen] = useState(false);
   const [confirming, setConfirming] = useState<ChannelBinding["id"] | null>(null);
@@ -1600,9 +1560,9 @@ export function AccountRoutes({
   const [route, setRoute] = useState<RouteDraft>({
     accessPolicy: channelRouteAccessPolicy(),
     conversationId: "",
-    workspaceId: homeWorkspaceId,
+    folder: null,
   });
-  /** A dedicated bot is one identity for one Workspace: the Host refuses a second binding. */
+  /** A dedicated bot has one route, to one folder: the Host refuses a second binding. */
   const dedicated = account.routingMode === "dedicated";
   return (
     <>
@@ -1610,11 +1570,11 @@ export function AccountRoutes({
         <Fragment key={binding.id}>
           <div className="card__row">
             <span className="card__row-glyph" aria-hidden="true">
-              <Icon name="workspace" />
+              <Icon name="folder" />
             </span>
             <div className="card__row-body">
-              <span className="card__row-title">
-                {workspaces.find(({ id }) => id === binding.workspaceId)?.name ?? "Workspace"}
+              <span className="card__row-title" title={binding.folder.path}>
+                {folderName(binding.folder)}
                 {binding.status === "active" ? null : (
                   <span className="chip">{statusLabel(binding.status)}</span>
                 )}
@@ -1726,7 +1686,7 @@ export function AccountRoutes({
         <div className="card__row-body">
           <span className="card__row-detail">
             {dedicated
-              ? `A dedicated bot has one route. Connect another ${providerLabel} identity to answer for another Workspace.`
+              ? `A dedicated bot has one route. Connect another ${providerLabel} identity to work in another folder.`
               : bindings.length
                 ? `${bindings.length} route${bindings.length === 1 ? "" : "s"} for ${account.displayName}.`
                 : `No routes yet for ${account.displayName}. Messages reach Opensteer only where a route matches.`}
@@ -1777,22 +1737,11 @@ export function AccountRoutes({
             />
             <span className="field__hint">Paste the channel link, or its provider ID.</span>
           </label>
-          <label className="field">
-            <span className="field__label">Opensteer Workspace</span>
-            <select
-              className="select-input"
-              onChange={(event) => setRoute({ ...route, workspaceId: event.currentTarget.value })}
-              value={route.workspaceId}
-            >
-              {workspaces
-                .filter(({ status }) => status === "ready")
-                .map((workspace) => (
-                  <option key={workspace.id} value={workspace.id}>
-                    {workspace.name}
-                  </option>
-                ))}
-            </select>
-          </label>
+          <FolderField
+            folder={route.folder}
+            hint="Conversations here start tasks for your agent in this folder."
+            onChange={(folder) => setRoute({ ...route, folder })}
+          />
           <label className="field">
             <span className="field__label">Who can mention it</span>
             <select
@@ -1820,7 +1769,7 @@ export function AccountRoutes({
           <div className="form-actions">
             <button
               className="btn btn--primary btn--small"
-              disabled={pending || !route.conversationId.trim() || !route.workspaceId}
+              disabled={pending || !route.conversationId.trim()}
               type="submit"
             >
               Add route
@@ -1847,7 +1796,7 @@ function heading(view: View, step: number, providerLabel = "provider"): string {
 
 function subheading(view: View, step: number, providerLabel = "provider"): string {
   if (view === "overview")
-    return "Connect messaging accounts and route each conversation to the right Workspace.";
+    return "Connect messaging accounts, so their conversations start tasks for your agent.";
   if (view === "providers")
     return "Provider adapters stay outside the agent runtime, so agents remain lean.";
   if (view === "success") return "Review the connection status and finish the provider-side steps.";
@@ -1857,7 +1806,7 @@ function subheading(view: View, step: number, providerLabel = "provider"): strin
   return (
     [
       `For a self-hosted deployment, bring a ${providerLabel} app you control.`,
-      "Choose a dedicated Workspace identity or an advanced shared route.",
+      "Choose the folder its tasks work in.",
       "Choose channel access and direct messages.",
       `You can add more specific routes later without reconnecting ${providerLabel}.`,
     ][step] ?? ""
@@ -1930,15 +1879,13 @@ function channelScope(value: string): ChannelAccessPolicy["channels"]["scope"] {
 }
 
 function senderLabel(mode: SenderMode): string {
-  return mode === "linked-members"
-    ? "Linked Opensteer members"
-    : mode === "owner"
-      ? "Only me"
-      : mode === "approved"
-        ? "Ask for access"
-        : mode === "anyone"
-          ? "Anyone"
-          : "Off";
+  return mode === "owner"
+    ? "Only me"
+    : mode === "approved"
+      ? "Ask for access"
+      : mode === "anyone"
+        ? "Anyone"
+        : "Off";
 }
 
 function accessPolicyFromDraft(
@@ -1985,4 +1932,17 @@ export function normalizeChannelIds(value: string): string[] {
 
 function message(reason: unknown): string {
   return reason instanceof Error ? reason.message : "Channel settings could not be loaded.";
+}
+
+/** A folder as a route names it: "Agent home", or its last part. */
+function useFolderName(): (folder: TaskFolder) => string {
+  const { snapshot } = useShell();
+  const agentHome = snapshot.personalSettings?.agentHome ?? null;
+  return (folder) =>
+    folderView(
+      folder,
+      agentHome,
+      (computerId) =>
+        snapshot.machines.find((machine) => machine.id === computerId)?.name ?? "This computer",
+    ).label;
 }

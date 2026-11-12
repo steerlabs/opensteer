@@ -44,7 +44,6 @@ export function PhoneSection({
   const view = phoneUseView({ connections, definitions, hostConnected, machine });
   if (!view) return null;
   const currentView = view;
-  const owned = machine.ownership !== "other";
 
   async function act(kind: "access" | "stop", action: () => Promise<void>) {
     setBusy(kind);
@@ -107,27 +106,25 @@ export function PhoneSection({
             </span>
           </span>
         </div>
-        {owned ? (
-          <div className="card__row">
-            <span className="card__row-body">
-              <span className="card__row-title">Access</span>
-            </span>
-            <span className="card__row-actions">
-              {([null, "read", "read-write"] as const).map((access) => (
-                <button
-                  aria-pressed={view.access === access}
-                  className="btn btn--small"
-                  disabled={busy !== null || !hostConnected || view.access === access}
-                  key={access ?? "off"}
-                  onClick={() => void setAccess(access)}
-                  type="button"
-                >
-                  {access === null ? "Off" : computerUseAccessLabel[access]}
-                </button>
-              ))}
-            </span>
-          </div>
-        ) : null}
+        <div className="card__row">
+          <span className="card__row-body">
+            <span className="card__row-title">Access</span>
+          </span>
+          <span className="card__row-actions">
+            {([null, "read", "read-write"] as const).map((access) => (
+              <button
+                aria-pressed={view.access === access}
+                className="btn btn--small"
+                disabled={busy !== null || !hostConnected || view.access === access}
+                key={access ?? "off"}
+                onClick={() => void setAccess(access)}
+                type="button"
+              >
+                {access === null ? "Off" : computerUseAccessLabel[access]}
+              </button>
+            ))}
+          </span>
+        </div>
         {view.session ? (
           <div className="card__row">
             <span className="card__row-glyph">
@@ -143,49 +140,45 @@ export function PhoneSection({
                   : `${view.session.actionCount} actions so far`}
               </span>
             </span>
-            {owned ? (
-              <span className="card__row-actions">
-                <button
-                  aria-label={`Stop the task using ${machine.name}`}
-                  className="btn btn--danger btn--small"
-                  disabled={busy !== null}
-                  onClick={() => {
-                    const session = view.session;
-                    if (!session) return;
-                    void act("stop", () => stopComputerUseSession(hostClient, session.sessionId));
-                  }}
-                  type="button"
-                >
-                  {busy === "stop" ? "Stopping…" : "Stop"}
-                </button>
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-        {owned ? (
-          <div className="card__row">
-            <span className="card__row-glyph">
-              <Icon name="plus" />
-            </span>
-            <span className="card__row-body">
-              <span className="card__row-title">
-                {view.state.kind === "permission-required"
-                  ? "Finish setting it up"
-                  : "Update over USB"}
-              </span>
-              <span className="card__row-detail card__row-detail--wrap">
-                {view.state.kind === "permission-required"
-                  ? `Plug ${machine.name} into this computer to finish setup.`
-                  : `Plug ${machine.name} into this computer to install the Agent Phone app that comes with this Opensteer. It keeps its access and its place here.`}
-              </span>
-            </span>
             <span className="card__row-actions">
-              <button className="btn btn--small" onClick={onPlugIn} type="button">
-                Plug in
+              <button
+                aria-label={`Stop the task using ${machine.name}`}
+                className="btn btn--danger btn--small"
+                disabled={busy !== null}
+                onClick={() => {
+                  const session = view.session;
+                  if (!session) return;
+                  void act("stop", () => stopComputerUseSession(hostClient, session.sessionId));
+                }}
+                type="button"
+              >
+                {busy === "stop" ? "Stopping…" : "Stop"}
               </button>
             </span>
           </div>
         ) : null}
+        <div className="card__row">
+          <span className="card__row-glyph">
+            <Icon name="plus" />
+          </span>
+          <span className="card__row-body">
+            <span className="card__row-title">
+              {view.state.kind === "permission-required"
+                ? "Finish setting it up"
+                : "Update over USB"}
+            </span>
+            <span className="card__row-detail card__row-detail--wrap">
+              {view.state.kind === "permission-required"
+                ? `Plug ${machine.name} into this computer to finish setup.`
+                : `Plug ${machine.name} into this computer to install the Agent Phone app that comes with this Opensteer. It keeps its access and its place here.`}
+            </span>
+          </span>
+          <span className="card__row-actions">
+            <button className="btn btn--small" onClick={onPlugIn} type="button">
+              Plug in
+            </button>
+          </span>
+        </div>
       </div>
       {error ? (
         <p className="notice notice--error" role="alert">

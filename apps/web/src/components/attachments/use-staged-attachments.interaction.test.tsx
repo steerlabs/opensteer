@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function Tray({ client }: { readonly client: HostClient }) {
-  files = useStagedAttachments({ client, scope, workspaceId: "workspace" });
+  files = useStagedAttachments({ client, scope, deploymentId: "deployment" });
   return null;
 }
 
@@ -100,7 +100,7 @@ describe("a message held for sending", () => {
     await act(async () =>
       root?.render(
         <Composer
-          attachments={{ client, scope, workspaceId: "workspace" }}
+          attachments={{ client, scope, deploymentId: "deployment" }}
           draftKey={scope}
           onSend={async () => {}}
           pendingSends={held}

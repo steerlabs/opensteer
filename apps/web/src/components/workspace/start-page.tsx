@@ -13,7 +13,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { z } from "zod";
 import {
   HostClientRequestError,
@@ -230,7 +230,6 @@ export const StartPage = memo(function StartPage({
   const localMachineId = useHereId();
   const toolbarRef = useToastToolbar();
   const navigate = useNavigate();
-  const location = useLocation();
   const arrived = useRef(false);
   const snapshot = useHostSelector(hostClient, selectStart, sameStart);
   const places = usePlaceList(hostClient);
@@ -471,16 +470,9 @@ export const StartPage = memo(function StartPage({
     if (!result) return;
     // History owns consumption across reload and Back; the ref absorbs StrictMode's second effect.
     arrived.current = true;
-    const state: unknown = location.state;
-    void navigate(
-      { pathname: location.pathname, search: location.search, hash: location.hash },
-      {
-        replace: true,
-        state: { ...(typeof state === "object" && state !== null ? state : {}), startOpen: false },
-      },
-    );
+    nav.mergeEntryState({ startOpen: false });
     void run(result);
-  }, [link, location, navigate, results, run]);
+  }, [link, nav, results, run]);
 
   const typed = query.trim() !== "";
   const onPageKey = (event: KeyboardEvent<HTMLDivElement>) => {

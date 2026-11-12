@@ -102,7 +102,6 @@ function AutomationDetail({ triggerId }: { readonly triggerId: string }) {
           <AutomationView
             client={hostClient}
             detail={detail}
-            homeThreadId={snapshot.homeThreadId}
             machine={machineOf(snapshot, detail.trigger.anchorThreadId)}
             now={now}
           />
@@ -147,13 +146,11 @@ function summaryOf(detail: TriggerDetail): TriggerSummary {
 function AutomationView({
   client,
   detail,
-  homeThreadId,
   machine,
   now,
 }: {
   readonly client: HostClient;
   readonly detail: TriggerDetail;
-  readonly homeThreadId: string | null;
   readonly machine: string | null;
   readonly now: number;
 }) {
@@ -175,12 +172,8 @@ function AutomationView({
   const [changingTime, setChangingTime] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const deleteRef = useRef<HTMLButtonElement | null>(null);
-  const conversation = conversationPath(trigger.anchorThreadId, homeThreadId);
-  const conversationTitle = conversationName(
-    trigger.anchorThreadId,
-    detail.anchorThreadTitle,
-    homeThreadId,
-  );
+  const conversation = conversationPath(trigger.anchorThreadId);
+  const conversationTitle = conversationName(detail.anchorThreadTitle);
 
   const refresh = useCallback(async () => {
     await schedulesClient(client).detail(trigger.id).refresh();
@@ -280,8 +273,8 @@ function AutomationView({
         description={
           managed
             ? trigger.systemRole === "memory-light"
-              ? "Checks what’s new and tells Chat when something matters."
-              : "Tidies memory and prepares tomorrow. Findings reach you through Chat."
+              ? "Checks what’s new and remembers what matters."
+              : "Tidies memory and prepares tomorrow."
             : statusSentence({ detail, machine, now, problem, shape })
         }
         title={
@@ -299,12 +292,10 @@ function AutomationView({
         </p>
       ) : null}
 
-      {problem && (!managed || worker || homeThreadId) ? (
+      {problem && (!managed || worker) ? (
         <ProblemNotice
-          conversation={
-            managed && homeThreadId ? conversationPath(homeThreadId, homeThreadId) : conversation
-          }
-          conversationTitle={managed && homeThreadId ? "Chat" : conversationTitle}
+          conversation={conversation}
+          conversationTitle={conversationTitle}
           detail={detail}
           problem={problem}
         />
@@ -449,7 +440,7 @@ function AutomationView({
             )}
             <span className="automation-facts__note">
               {managed
-                ? "Runs here; findings reach you through Chat"
+                ? "Runs here; findings go into your agent’s memory"
                 : "Where it runs and talks to you"}
             </span>
           </dd>
@@ -470,14 +461,10 @@ function AutomationView({
             <dd>
               <AreaLink
                 className="automation-facts__link"
-                to={conversationPath(trigger.createdByThreadId, homeThreadId)}
+                to={conversationPath(trigger.createdByThreadId)}
               >
                 <Icon name="message" />
-                {conversationName(
-                  trigger.createdByThreadId,
-                  detail.createdByThreadTitle ?? "Untitled thread",
-                  homeThreadId,
-                )}
+                {conversationName(detail.createdByThreadTitle ?? "Untitled task")}
               </AreaLink>
             </dd>
           </div>
@@ -488,7 +475,6 @@ function AutomationView({
         <RecentRuns
           detail={detail}
           disabled={pending || archived}
-          homeThreadId={homeThreadId}
           now={now}
           onCancel={(occurrenceId) => void cancelRun(occurrenceId)}
         />
@@ -726,13 +712,11 @@ function toLocalInput(time: number): string {
 function RecentRuns({
   detail,
   disabled,
-  homeThreadId,
   now,
   onCancel,
 }: {
   readonly detail: TriggerDetail;
   readonly disabled: boolean;
-  readonly homeThreadId: string | null;
   readonly now: number;
   readonly onCancel: (occurrenceId: string) => void;
 }) {
@@ -751,7 +735,6 @@ function RecentRuns({
               downstream={detail.downstreamRuns.filter(
                 ({ occurrenceId }) => occurrenceId === occurrence.id,
               )}
-              homeThreadId={homeThreadId}
               key={occurrence.id}
               now={now}
               occurrence={occurrence}
@@ -775,14 +758,12 @@ const runGlyph = {
 function RunRow({
   disabled,
   downstream,
-  homeThreadId,
   now,
   occurrence,
   onCancel,
 }: {
   readonly disabled: boolean;
   readonly downstream: TriggerDetail["downstreamRuns"];
-  readonly homeThreadId: string | null;
   readonly now: number;
   readonly occurrence: TriggerOccurrence;
   readonly onCancel: (occurrenceId: string) => void;
@@ -807,7 +788,7 @@ function RunRow({
         <span className="automation-run__outcome">
           {runOutcome(
             occurrence,
-            reply ? conversationName(reply.run.threadId, reply.threadTitle, homeThreadId) : null,
+            reply ? conversationName(reply.threadTitle) : null,
             reply?.run.status ?? null,
             now,
           )}
@@ -823,7 +804,7 @@ function RunRow({
       {reply ? (
         <AreaLink
           className="btn btn--small btn--ghost"
-          to={conversationPath(reply.run.threadId, homeThreadId, reply.run.seedInputId)}
+          to={conversationPath(reply.run.threadId, reply.run.seedInputId)}
         >
           Open
         </AreaLink>

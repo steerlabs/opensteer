@@ -11,6 +11,7 @@ import {
   type HostClient,
   type WebSocketClient,
 } from "@opensteer/client/host";
+import { previewDeploymentSnapshot } from "../../desktop/preview-bootstrap.js";
 import { AutomationDetailPage } from "./automation-detail.js";
 import { AutomationEditorPage } from "./automation-editor.js";
 
@@ -71,7 +72,7 @@ it("inspects managed passes, links the worker, and retains Pause/Resume without 
   const { node, trigger } = await mount("waiting-for-model");
   expect(node.textContent).toContain("Waiting for an AI account it can use");
   expect(node.textContent).toContain("findings reach you through Chat");
-  expect(node.querySelector(`a[href="/threads/${trigger.anchorThreadId}"]`)).not.toBeNull();
+  expect(node.querySelector(`a[href="/tasks/${trigger.anchorThreadId}"]`)).not.toBeNull();
   for (const label of ["Delete", "Run now", "Edit code"])
     expect(node.textContent).not.toContain(label);
   await act(async () => button(node, "Pause").click());
@@ -177,30 +178,13 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
     },
   });
   await http.load();
-  const workspace = unwrapRpcResult(await client.rpc["bootstrap.get"]({})).workspaces.find(
-    (w) => w.id === trigger.workspaceId,
-  )!;
-  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
   const connect = (socket: TestSocket) => {
     socket.emit("open", {});
     socket.receive({
       type: "host.snapshot",
-      snapshot: {
-        workspace,
-        sequence: "0",
-        serializedBytes: 256,
-        notificationPreferences: [],
-        readStates: [],
-        messages: [],
-        messageWindows: [],
-        pendingRequests: [],
-        pendingRequestWindow: window,
-        runQueue: [],
-        threads: [],
-        threadWindow: window,
-      },
+      snapshot: previewDeploymentSnapshot(client.getSnapshot().deploymentId!),
     });
-    socket.receive({ type: "host.synchronized", workspaceId: workspace.id, sequence: "0" });
+    socket.receive({ type: "host.synchronized", sequence: "0" });
   };
   connect(sockets[0]!);
   harness.client = http;
@@ -227,7 +211,6 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
           type,
           data,
           threadId,
-          workspaceId: workspace.id,
           runId: null,
           environmentId: worker.environmentId,
           createdAt: worker.createdAt,
@@ -266,7 +249,7 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
     event(
       "thread.state-changed",
       { status: "running", doneAt: null, inputQueuePaused: false, pendingRequests: 0 },
-      client.getSnapshot().homeThreadId!,
+      trigger.anchorThreadId,
     ),
   );
   expect(read).toHaveBeenCalledTimes(4);

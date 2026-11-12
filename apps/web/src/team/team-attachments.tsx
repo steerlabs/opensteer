@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import type { TeamTaskOrigin } from "@opensteer/core";
-import type { PersonalTeamLink } from "@opensteer/protocol";
+import type { PersonalTeamLink, TeamBootstrapSchema } from "@opensteer/protocol";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { PersonalTeamLinks, type HostClient } from "@opensteer/client/host";
 import {
@@ -19,6 +19,7 @@ import {
   type TeamSessionSnapshot,
   type TeamSidebar,
 } from "@opensteer/client/team";
+import type { z } from "zod";
 import type { TaskSourceView } from "../components/home/home-models.js";
 import { channelKind } from "./team-view-models.js";
 import { teamTile } from "./team-people.js";
@@ -46,7 +47,13 @@ export type TeamSurface =
       readonly bridge: OpensteerDesktopBridge;
     }
   /** A team's own web app: that team only. */
-  | { readonly kind: "team-web"; readonly attachment: TeamAttachment };
+  | { readonly kind: "team-web"; readonly attachment: TeamAttachment }
+  /** The mock build: the personal mock Host beside live mock team sessions. */
+  | {
+      readonly kind: "preview";
+      readonly hostClient: HostClient;
+      readonly teams: readonly TeamAttachment[];
+    };
 
 interface TeamsValue {
   readonly surface: TeamSurface["kind"] | null;
@@ -117,7 +124,8 @@ export function TeamsProvider({
   readonly children: ReactNode;
   readonly surface: TeamSurface;
 }) {
-  const hostClient = surface.kind === "team-web" ? null : surface.hostClient;
+  const hostClient =
+    surface.kind === "personal-web" || surface.kind === "desktop" ? surface.hostClient : null;
   const bridge = surface.kind === "desktop" ? surface.bridge : null;
   const links = useMemo(
     () => (hostClient ? new PersonalTeamLinks(hostClient.rpc) : null),
@@ -150,6 +158,13 @@ export function TeamsProvider({
     [bridge, origins],
   );
   useEffect(() => () => registry?.dispose(), [registry]);
+  // A team's own web app and the mock build hold their sessions directly.
+  const heldTeam = surface.kind === "team-web" ? surface.attachment : null;
+  const heldTeams = surface.kind === "preview" ? surface.teams : null;
+  useEffect(() => {
+    for (const team of heldTeam ? [heldTeam] : (heldTeams ?? []))
+      void team.client?.load().catch(() => undefined);
+  }, [heldTeam, heldTeams]);
 
   const reload = useCallback(async () => {
     if (!links) return;
@@ -197,18 +212,20 @@ export function TeamsProvider({
   );
 
   const value = useMemo<TeamsValue>(() => {
-    const teams: TeamAttachment[] =
+    const teams: readonly TeamAttachment[] =
       surface.kind === "team-web"
         ? [surface.attachment]
-        : linked
-            .filter((link) => link.state !== "leaving")
-            .map((link) => ({
-              teamId: link.teamId,
-              name: link.teamName,
-              origin: link.origin,
-              client: clients.get(link.teamId) ?? null,
-              link,
-            }));
+        : surface.kind === "preview"
+          ? surface.teams
+          : linked
+              .filter((link) => link.state !== "leaving")
+              .map((link) => ({
+                teamId: link.teamId,
+                name: link.teamName,
+                origin: link.origin,
+                client: clients.get(link.teamId) ?? null,
+                link,
+              }));
     return {
       surface: surface.kind,
       teams,
@@ -222,18 +239,19 @@ export function TeamsProvider({
   return <TeamsContext value={value}>{children}</TeamsContext>;
 }
 
-/** The team web app's own session, for the signed-in member at this origin. */
-export function createTeamWebAttachment(input: {
-  readonly teamId: string;
-  readonly userId: string;
-  readonly name: string;
-}): TeamAttachment {
+/** The team web app's own session, for the member signed in at this origin. */
+export function createTeamWebAttachment(
+  bootstrap: z.infer<typeof TeamBootstrapSchema>,
+): TeamAttachment {
   return {
-    teamId: input.teamId,
-    name: input.name,
+    teamId: bootstrap.teamId,
+    name: bootstrap.teamName,
     origin: window.location.origin,
     client: new TeamSessionClient(
-      browserTeamSession({ scope: { teamDeploymentId: input.teamId, userId: input.userId } }),
+      browserTeamSession({
+        bootstrap,
+        scope: { teamDeploymentId: bootstrap.teamId, userId: bootstrap.member.userId },
+      }),
     ),
     link: null,
   };

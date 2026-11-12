@@ -201,15 +201,13 @@ it("keeps Voice's color on the tasks it started, and only those", () => {
     tasks: null,
     threads: [
       { id: "thr_started", parentThreadId: "thr_voice" },
-      { id: "thr_other", parentThreadId: "thr_chat" },
+      { id: "thr_other", parentThreadId: "thr_task" },
     ],
     voiceThreadId: "thr_voice",
-    workspaceTasks: {},
   } as unknown as HostSnapshot;
-  expect(ownCursor("thr_started", false, tasks)).toBe(true);
-  expect(ownCursor("thr_voice", false, tasks)).toBe(true);
-  expect(ownCursor("thr_chat", true, tasks)).toBe(true);
-  expect(ownCursor("thr_other", false, tasks)).toBe(false);
-  expect(ownCursor("thr_unknown", false, tasks)).toBe(false);
-  expect(ownCursor("thr_other", false, { ...tasks, voiceThreadId: null })).toBe(false);
+  expect(ownCursor("thr_started", tasks)).toBe(true);
+  expect(ownCursor("thr_voice", tasks)).toBe(true);
+  expect(ownCursor("thr_other", tasks)).toBe(false);
+  expect(ownCursor("thr_unknown", tasks)).toBe(false);
+  expect(ownCursor("thr_started", { ...tasks, voiceThreadId: null })).toBe(false);
 });

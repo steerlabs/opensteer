@@ -54,7 +54,6 @@ describe("External agents in web and desktop Settings", () => {
       label: "Research agent",
       clientName: "Example",
       accessMode: "auto",
-      reach: { kind: "user" },
       createdAt: "2026-11-01T00:00:00Z",
       expiresAt: "2026-12-01T00:00:00Z",
       lastUsedAt: null,
@@ -63,7 +62,7 @@ describe("External agents in web and desktop Settings", () => {
     const dispatch = vi.spyOn(host, "dispatch");
     const page = await mount(host);
     await vi.waitFor(() => expect(page.textContent).toContain("Research agent"));
-    expect(page.textContent).toContain("Auto, in Everything you can access. Not used yet.");
+    expect(page.textContent).toContain("Auto. Not used yet.");
     await act(async () => button("Remove Research agent").click());
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({ type: "connection.revoke", connectionId: row.id }),
@@ -121,7 +120,6 @@ describe("External agents in web and desktop Settings", () => {
         redirectUri: "http://127.0.0.1:4999/cb",
         resource: "http://127.0.0.1:4315/internal/v1/mcp",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        workspaces: [],
       },
     });
     const page = await mount(host);
@@ -141,7 +139,6 @@ describe("External agents in web and desktop Settings", () => {
           kind: "approve",
           label: "Terminal agent",
           accessMode: "approval-required",
-          reach: { kind: "user" },
         },
       });
     });

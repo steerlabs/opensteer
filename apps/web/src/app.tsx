@@ -14,7 +14,7 @@ import { AllTasksRoute, HomeRoute } from "./components/home/home-route.js";
 import { VoiceRoute } from "./components/voice-route.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
-import { TeamsProvider } from "./team/team-attachments.js";
+import { TeamsProvider, type TeamAttachment } from "./team/team-attachments.js";
 import { TeamRoutes } from "./team/team-routes.js";
 import { TeamSettingsRoute } from "./team/team-settings-route.js";
 import { JoinTeamRoute } from "./team/join-route.js";
@@ -82,6 +82,7 @@ export function App({
   notificationTarget = null,
   onSetupOpened,
   openSetup = false,
+  previewTeams = null,
 }: {
   readonly mcpAuthorizationRequestId?: string | null;
   readonly onMcpAuthorizationClosed?: (() => void) | undefined;
@@ -101,6 +102,8 @@ export function App({
   readonly onSetupOpened?: (() => void) | undefined;
   /** This computer was set up in this window, so setup continues as the app opens. */
   readonly openSetup?: boolean;
+  /** The mock build's team sessions; never set against a real Host. */
+  readonly previewTeams?: readonly TeamAttachment[] | null;
 }) {
   const { loadError, reload, snapshot } = useHostSnapshot(hostClient, sameAppGateSnapshot);
   useEffect(
@@ -508,9 +511,11 @@ export function App({
       <DesktopUpdateFeedback />
       <TeamsProvider
         surface={
-          desktopBridge
-            ? { kind: "desktop", hostClient, bridge: desktopBridge }
-            : { kind: "personal-web", hostClient }
+          previewTeams
+            ? { kind: "preview", hostClient, teams: previewTeams }
+            : desktopBridge
+              ? { kind: "desktop", hostClient, bridge: desktopBridge }
+              : { kind: "personal-web", hostClient }
         }
       >
         <BrowserRouter>

@@ -19,7 +19,6 @@ function pendingRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
     payload: { kind: "harness.approval" },
     presentation: {
       kind: "choice",
@@ -36,7 +35,6 @@ function pendingRequest(
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: createId("workspace"),
     ...overrides,
   };
 }
@@ -80,7 +78,7 @@ describe("DeniedRequestBody", () => {
         ],
         title: "Install Test Calendar?",
       },
-      requiredActor: "administrator",
+      requiredActor: "owner",
     });
     const html = renderToStaticMarkup(
       <DeniedRequestBody denied="administrator" request={request} />,

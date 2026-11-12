@@ -73,8 +73,7 @@ it("derives tab matches and device counts only when their inputs change", () => 
     expect(counts).not.toHaveBeenCalled();
     expect(matching).not.toHaveBeenCalled();
     const occupant = {
-      threadId: ThreadIdSchema.parse(snapshot.homeThreadId!),
-      home: true,
+      threadId: ThreadIdSchema.parse(snapshot.threads[0]!.id),
       holding: true,
       acting: false,
       lastActiveAt: "2026-11-01T00:00:00.000Z",

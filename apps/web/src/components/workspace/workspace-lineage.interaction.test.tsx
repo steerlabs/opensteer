@@ -19,12 +19,14 @@ function withHelper(
   const workers = new Set<string>(
     Object.values(base.assignments).map(({ workerThread }) => workerThread.id),
   );
-  const listed = base.threads.filter(
-    ({ id, listed, role }) => role === "work" && listed && id !== base.homeThreadId,
+  const listed = base.threads.filter(({ listed, purpose }) => purpose === "task" && listed);
+  // A task that needs the reader: the sidebar always lists those.
+  const asking = new Set<string>(
+    base.waitingRequests.map(({ request }) => request.originatingThreadId),
   );
-  const task = listed.find(({ id }) => workers.has(id)) ?? listed[0]!;
+  const task = listed.find(({ id }) => asking.has(id)) ?? listed[0]!;
   const helper = listed.find(({ id }) => id !== task.id && !workers.has(id))!;
-  const parentThreadId = parent(base, task.id);
+  const parentThreadId = ThreadIdSchema.parse(parent(base, task.id));
   const unlisted = <Entry extends { readonly thread: { readonly id: string } }>(
     entries: readonly Entry[],
   ) => entries.filter(({ thread }) => thread.id !== helper.id);
@@ -39,12 +41,6 @@ function withHelper(
         tasks: snapshot.tasks && { ...snapshot.tasks, entries: unlisted(snapshot.tasks.entries) },
         threads: snapshot.threads.map((thread) =>
           thread.id === helper.id ? { ...thread, listed: false, parentThreadId } : thread,
-        ),
-        workspaceTasks: Object.fromEntries(
-          Object.entries(snapshot.workspaceTasks).map(([id, list]) => [
-            id,
-            { ...list, entries: unlisted(list.entries) },
-          ]),
         ),
         // A helper hands nothing out and runs no automations of its own, so its
         // header shows only the way back.
@@ -64,9 +60,7 @@ function withHelper(
 
 const current = () =>
   [...document.querySelectorAll<HTMLElement>('.sidebar [aria-current="page"]')].map(
-    (link) =>
-      link.closest<HTMLElement>("[data-thread-id]")?.dataset.threadId ??
-      (link.classList.contains("side-home__main") ? "chat" : link.textContent),
+    (link) => link.closest<HTMLElement>("[data-thread-id]")?.dataset.threadId ?? link.textContent,
   );
 
 // Ways a helper's page can fail its reader: the sidebar marks nothing, since
@@ -78,7 +72,7 @@ describe("a helper's place among the reader's tasks", () => {
     let lineage!: ReturnType<typeof withHelper>;
     await mount((client) => {
       lineage = withHelper(client, (_, task) => task);
-      return `/threads/${lineage.helper}`;
+      return `/tasks/${lineage.helper}`;
     });
     const { helper, task } = lineage;
     const title = element(`.side-task[data-thread-id="${task}"] .side-task__main`).textContent;
@@ -89,31 +83,15 @@ describe("a helper's place among the reader's tasks", () => {
     expect(back.getAttribute("aria-label")).toMatch(/^Back to /u);
     expect(title).toContain(back.textContent);
     await click(back);
-    expect(history.at(-1)!.path).toBe(`/threads/${task}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${task}`);
     expect(current()).toEqual([task]);
-  });
-
-  it("marks Chat for work under Chat and leads back to Chat by name", async () => {
-    let lineage!: ReturnType<typeof withHelper>;
-    await mount((client) => {
-      lineage = withHelper(client, (snapshot) => snapshot.homeThreadId!);
-      return `/threads/${lineage.helper}`;
-    });
-    expect(current()).toEqual(["chat"]);
-    const back = element<HTMLAnchorElement>(".conv-header__back");
-    expect(back.textContent).toBe("Chat");
-    expect(back.getAttribute("aria-label")).toBe("Back to Chat");
-    await click(back);
-    expect(history.at(-1)!.path).toBe("/");
-    await settle();
-    expect(document.querySelector(".conv-header__back")).toBeNull();
   });
 
   it("offers no way back into a conversation the reader cannot open, and marks nothing", async () => {
     let lineage!: ReturnType<typeof withHelper>;
     await mount((client) => {
       lineage = withHelper(client, () => createId("thread"));
-      return `/threads/${lineage.helper}`;
+      return `/tasks/${lineage.helper}`;
     });
     expect(document.querySelector(".conv-header__back")).toBeNull();
     expect(element(".conv-header").classList.contains("conv-header--trail")).toBe(false);
@@ -124,15 +102,26 @@ describe("a helper's place among the reader's tasks", () => {
 function withFamily(
   client: MockHostClient,
   earlierOnly = false,
-  parentOf: (snapshot: HostSnapshot) => string = (snapshot) => snapshot.homeThreadId!,
+  parentOf: (snapshot: HostSnapshot) => string = (snapshot) => {
+    const workers = new Set<string>(
+      Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
+    );
+    return snapshot.threads.find(({ id, purpose }) => purpose === "task" && !workers.has(id))!.id;
+  },
 ) {
   const read = client.getSnapshot.bind(client);
   const base = read();
+  const parent = ThreadIdSchema.parse(parentOf(base));
   const firstAssignment = Object.values(base.assignments)[0]!;
   const assignments = [
     firstAssignment,
     ...base.threads
-      .filter((thread) => thread.role === "work" && thread.id !== firstAssignment.workerThread.id)
+      .filter(
+        (thread) =>
+          thread.purpose === "task" &&
+          thread.id !== firstAssignment.workerThread.id &&
+          thread.id !== parent,
+      )
       .slice(0, 5)
       .map((thread) => ({
         ...firstAssignment,
@@ -144,7 +133,6 @@ function withFamily(
         },
       })),
   ];
-  const parent = ThreadIdSchema.parse(parentOf(base));
   const first = assignments[0]!;
   const cache = new WeakMap<HostSnapshot, HostSnapshot>();
   vi.spyOn(client, "getSnapshot").mockImplementation(() => {
@@ -197,10 +185,7 @@ function withFamily(
 
 describe("the conversation's family", () => {
   it("shows running work, automations and collapsed earlier work, and returns focus on Escape", async () => {
-    await mount((client) => {
-      withFamily(client);
-      return "/";
-    });
+    await mount((client) => `/tasks/${withFamily(client).parent}`);
     const button = element<HTMLButtonElement>(".task-family-button");
     expect(button.getAttribute("aria-label")).toContain("1 task running");
     expect(button.getAttribute("aria-label")).toContain("1 automation");
@@ -222,7 +207,6 @@ describe("the conversation's family", () => {
     await settle();
     expect(document.querySelector(".popover--task-family")).toBeNull();
     expect(document.activeElement).toBe(button);
-    expect(document.querySelector(".conv-header__menu")).toBeNull();
     await click(button);
     await click(element<HTMLAnchorElement>(".task-family a"));
     expect(history.at(-1)!.path).toBe("/automations/family-automation");
@@ -232,8 +216,9 @@ describe("the conversation's family", () => {
   it("shows earlier-only work expanded", async () => {
     let count = 0;
     await mount((client) => {
-      count = withFamily(client, true).count;
-      return "/";
+      const family = withFamily(client, true);
+      count = family.count;
+      return `/tasks/${family.parent}`;
     });
     expect(element(".task-family-button").textContent).toBe(`${count} earlier`);
     await click(element(".task-family-button"));
@@ -258,11 +243,9 @@ it("closes the family when another header control is pressed", async () => {
       const workers = new Set<string>(
         Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
       );
-      return snapshot.threads.find(
-        ({ id, role }) => role === "work" && id !== snapshot.homeThreadId && !workers.has(id),
-      )!.id;
+      return snapshot.threads.find(({ id, purpose }) => purpose === "task" && !workers.has(id))!.id;
     }).parent;
-    return `/threads/${parent}`;
+    return `/tasks/${parent}`;
   });
   await click(element(".task-family-button"));
   expect(document.querySelector(".popover--task-family")).not.toBeNull();
@@ -276,7 +259,7 @@ it("closes the family when another header control is pressed", async () => {
 it("keeps children out of a task's title menu", async () => {
   await mount((client) => {
     const { first } = withFamily(client);
-    return `/threads/${first.workerThread.id}`;
+    return `/tasks/${first.workerThread.id}`;
   });
   await click(element(".conv-header__menu"));
   expect(element(".popover--conversation-menu").textContent).not.toContain("Started here");

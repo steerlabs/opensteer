@@ -89,16 +89,14 @@ function request(presentation: Request["presentation"]): Request {
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
     payload: { kind: "harness.input" },
     presentation,
     requestedBy: createId("user"),
-    requiredActor: "administrator",
+    requiredActor: "owner",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: createId("workspace"),
   };
 }
 
@@ -124,9 +122,8 @@ describe("request surface connectivity", () => {
         reason: "Compare the two drafts.",
         runnerId: "rnr_00000000-0000-4000-8000-000000000009",
         setupRequestId: "setup-request",
-        workspaceId: createId("workspace"),
       },
-      requiredActor: "workspace-owner",
+      requiredActor: "owner",
     } as unknown as Request;
 
     await act(async () => {
@@ -346,7 +343,7 @@ it.each(["live", "durable"] as const)(
     );
     expect(node.textContent).toContain("Light memory worker");
     expect(node.textContent).toContain("Read memory source?");
-    expect(node.querySelector(`a[href="/threads/${approval.originatingThreadId}"]`)).not.toBeNull();
+    expect(node.querySelector(`a[href="/tasks/${approval.originatingThreadId}"]`)).not.toBeNull();
     await act(async () =>
       [...node.querySelectorAll("button")]
         .find((b) => b.textContent?.includes("Allow once"))!

@@ -2,7 +2,6 @@ import { defaultTaskSymbol } from "@opensteer/core";
 import { memo, type CSSProperties } from "react";
 import {
   markColorPaint,
-  homeCursorPaint,
   threadInDirectory,
   type HostSnapshot,
   type TaskMark as ResolvedTaskMark,
@@ -139,26 +138,27 @@ export function taskStateWords(state: TaskTone): string {
   }
 }
 
+/** Opensteer's own cursor: the product's ember, deepened the way task colours are. */
+export const opensteerCursorPaint = "#a46149";
+
 /**
- * Whether a cursor is Opensteer's own: Chat's, or Voice's and what it started,
- * so the cursor that leaves the pill keeps its color on the page it opened.
+ * Whether a cursor is Opensteer's own: Voice's and what it started, so the
+ * cursor that leaves the pill keeps its color on the page it opened.
  */
 export function ownCursor(
   threadId: string,
-  home: boolean,
   snapshot: Parameters<typeof threadInDirectory>[1] & Pick<HostSnapshot, "voiceThreadId">,
 ): boolean {
   const voice = snapshot.voiceThreadId;
   return (
-    home ||
-    (voice !== null &&
-      (threadId === voice || threadInDirectory(threadId, snapshot)?.parentThreadId === voice))
+    voice !== null &&
+    (threadId === voice || threadInDirectory(threadId, snapshot)?.parentThreadId === voice)
   );
 }
 
-export function taskCursorPaint(mark: ResolvedTaskMark, home: boolean): string {
-  return home
-    ? homeCursorPaint
+export function taskCursorPaint(mark: ResolvedTaskMark, own: boolean): string {
+  return own
+    ? opensteerCursorPaint
     : mark.color === null
       ? "var(--surface-hover)"
       : markColorPaint[mark.color].cursor;

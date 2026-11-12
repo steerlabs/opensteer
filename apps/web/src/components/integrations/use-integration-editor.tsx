@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { pluginPath } from "@opensteer/client/settings";
 import { useIntegrationAuthorizationTracking } from "../../integrations/use-integration-authorization-tracking.js";
 import { RunnerIdSchema } from "@opensteer/core";
@@ -36,7 +35,7 @@ import { settingsDeploymentName } from "../settings/copy.js";
 import { createConnectOperations } from "./connect-operations.js";
 
 import { useToast } from "../toast.js";
-import { workspaceAccessSectionId } from "./grants-section.js";
+import { agentAccessSectionId } from "./grants-section.js";
 import { message, platformIntegrations, providerLabel } from "./helpers.js";
 import { mutationIdempotencyKey, unwrapRpcResult } from "@opensteer/client/host";
 
@@ -56,7 +55,7 @@ interface IntegrationResult {
   readonly status: "connected" | "denied" | "cancelled" | "expired" | "failed";
 }
 
-/** Routed integrations surface: catalog, accounts, and Workspace grants. */
+/** Routed integrations surface: catalog, accounts, and what agents may use. */
 export function useIntegrationEditor({
   embedded = false,
   initialDefinitionId,
@@ -66,10 +65,8 @@ export function useIntegrationEditor({
   onAuthorizationStarted,
   onComputerSetupRequested,
   headerAction,
-  placementAnchor,
 }: {
   readonly headerAction?: ReactNode;
-  readonly placementAnchor?: string;
   readonly children?: ReactNode;
   readonly onConnected?: (connectionId: string) => Promise<void>;
   readonly onAuthorizationStarted?: (attemptId: string) => void;
@@ -92,7 +89,6 @@ export function useIntegrationEditor({
     desktopBridge === null
       ? null
       : currentDeviceMachineId({
-          deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
           hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
           localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
           machines: snapshot.machines,
@@ -103,32 +99,11 @@ export function useIntegrationEditor({
   });
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const homeWorkspaceId =
-    snapshot.homeWorkspaceId ??
-    snapshot.workspaces.find((workspace) => workspace.kind === "main")?.id ??
-    snapshot.workspaces[0]?.id ??
-    null;
-  const [workspaceId, setWorkspaceId] = useState<string | null>(homeWorkspaceId);
-  const selectedWorkspaceId = workspaceId ?? homeWorkspaceId;
-  const workspace =
-    snapshot.workspaces.find((candidate) => candidate.id === selectedWorkspaceId) ?? null;
-  const workspaceKind: "main" | "project" = workspace?.kind === "project" ? "project" : "main";
 
   const [dashboard, setDashboard] = useState<IntegrationDashboard | null>(null);
   const [platform, setPlatform] = useState<IntegrationPlatformDashboardView | null>(null);
-  const [loadedGrants, setLoadedGrants] = useState<{
-    readonly grants: readonly IntegrationGrant[];
-    readonly workspaceId: string;
-  } | null>(null);
-  // Grants read for another Workspace are not this one's, even for a moment:
-  // until a read for this one answers, its access is unknown, not empty.
-  const grants = loadedGrants?.workspaceId === selectedWorkspaceId ? loadedGrants.grants : null;
-  /**
-   * The Workspace selected now. An action started under another one reloads
-   * after the person has changed it, and reads for this one.
-   */
-  const selectedWorkspace = useRef(selectedWorkspaceId);
-  selectedWorkspace.current = selectedWorkspaceId;
+  // Until a read answers, access is unknown, not empty.
+  const [grants, setGrants] = useState<readonly IntegrationGrant[] | null>(null);
   /** The newest read still out, and the answer its callers and older ones wait for. */
   const latestRead = useRef<{
     readonly answer: PromiseWithResolvers<IntegrationDashboard | null>;
@@ -342,22 +317,18 @@ export function useIntegrationEditor({
   };
 
   /**
-   * Every read of the page's data. Reads overlap: the first load, a Workspace
-   * change, the reload after a change, a browser return. Only the newest
-   * commits, with the grants of the Workspace it read them for, and every
+   * Every read of the page's data. Reads overlap: the first load, the reload
+   * after a change, a browser return. Only the newest commits, and every
    * caller still waiting gets its answer then. An older request still out is
    * ignored, so nothing is derived from a snapshot the page has already
    * replaced, and no change stays pending behind it.
    */
   function reload(): Promise<IntegrationDashboard | null> {
-    const workspaceId = selectedWorkspace.current;
-    if (!workspaceId) return Promise.resolve(null);
     setReadError(null);
-    setLoadedGrants(null);
     const read = Promise.all([
       client.rpc["integrations.get"]({}).then(unwrapRpcResult),
       client.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
-      client.rpc["integration.grants.list"]({ workspaceId }).then(
+      client.rpc["integration.grants.list"]({}).then(
         (response) => unwrapRpcResult(response).grants,
       ),
     ]);
@@ -371,7 +342,7 @@ export function useIntegrationEditor({
         setReadError(null);
         setDashboard(loaded);
         setPlatform(loadedPlatform);
-        setLoadedGrants({ grants, workspaceId });
+        setGrants(grants);
         answer.resolve(loaded);
       },
       (reason: unknown) => {
@@ -386,7 +357,7 @@ export function useIntegrationEditor({
 
   useEffect(() => {
     void reload().catch(() => undefined);
-  }, [client, selectedWorkspaceId]);
+  }, [client]);
 
   const { integrations } = useMemo(() => platformIntegrations(platform), [platform]);
   const detailIntegration =
@@ -403,26 +374,11 @@ export function useIntegrationEditor({
    * integration with a definition, catalog or proposed, opens its detail view,
    * anything else scrolls its installed row in.
    */
-  /**
-   * Deep link from a Project's settings: its access, chosen and brought into
-   * view once the page has drawn it. With a provider too, that integration's
-   * own page opens instead and leads back here.
-   */
-  const workspaceParam = searchParams.get("workspace");
+  /** Agent access shows once an integration's page leads to it, and is brought into view. */
   const [revealAccess, setRevealAccess] = useState(false);
   useEffect(() => {
-    if (!workspaceParam) return;
-    if (snapshot.workspaces.some(({ id }) => id === workspaceParam)) {
-      setWorkspaceId(workspaceParam);
-      if (!searchParams.has("provider")) setRevealAccess(true);
-    }
-    const next = new URLSearchParams(searchParams);
-    next.delete("workspace");
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams, snapshot.workspaces, workspaceParam]);
-  useEffect(() => {
     if (!revealAccess || !dashboard) return;
-    document.getElementById(workspaceAccessSectionId)?.scrollIntoView({ block: "start" });
+    document.getElementById(agentAccessSectionId)?.scrollIntoView({ block: "start" });
   }, [dashboard, revealAccess]);
   const focusParam = searchParams.get("provider");
   useEffect(() => {
@@ -712,7 +668,6 @@ export function useIntegrationEditor({
     readError,
     view,
     result,
-    workspaceKind,
     repositorySetup,
     pending,
     recheckRepositorySetup,
@@ -730,9 +685,7 @@ export function useIntegrationEditor({
     snapshot,
     grants,
     run,
-    selectedWorkspaceId,
     simpleAction,
-    setWorkspaceId,
     setNotice,
     uninstallIntegration,
     detailIntegration,
@@ -753,7 +706,7 @@ export function useIntegrationEditor({
     headerAction,
     children,
     revealAccess,
-    placementAnchor,
+    setRevealAccess,
     navigate,
     openDetail,
   };

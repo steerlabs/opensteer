@@ -49,15 +49,11 @@ const id = (prefix: string, number: number) =>
   `${prefix}_00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const at = (minute: number) => new Date(Date.UTC(2026, 9, 26, 12, minute)).toISOString();
 const viewer = "usr_0192f4a1-0000-4000-8000-000000000001";
-/** The mock's Travel project: a task there still needs no byline of its own. */
-const workspaceId = "wsp_00000000-0000-4000-8000-000000000800";
 const agent = (run: number) => ({
   displayName: title,
   kind: "agent",
   runId: id("run", run),
   threadId,
-  workspaceId,
-  workspaceName: "Travel",
 });
 const tool = (run: number, call: number, minute: number, state = "done") => ({
   arguments: { cmd: `curl -s https://www.apple.com/shop/fulfillment-messages?store=${call}` },
@@ -197,7 +193,7 @@ async function installFixture(context: BrowserContext, working: boolean, family:
   // tsx names nested functions with a helper that the browser does not ship.
   await context.addInitScript("globalThis.__name = (value) => value;");
   await context.addInitScript(
-    ({ entries, family, threadId, title, workspaceId, working }) => {
+    ({ entries, family, threadId, title, working }) => {
       let client: MockHostClient | undefined;
       let base: HostSnapshot | undefined;
       let projected: HostSnapshot | undefined;
@@ -235,7 +231,7 @@ async function installFixture(context: BrowserContext, working: boolean, family:
           const read = value.getSnapshot;
           Object.defineProperty(value, "getSnapshot", {
             value: (): HostSnapshot => {
-              const next = read();
+              const next = read()!;
               if (next === base && projected) return projected;
               base = next;
               // The thread list and the task lists each carry their own copy.
@@ -244,12 +240,13 @@ async function installFixture(context: BrowserContext, working: boolean, family:
                   ? {
                       ...thread,
                       title,
-                      workspaceId,
                       status: working ? "running" : "idle",
                       pendingRequests: 0,
                       inputQueuePaused: false,
-                      // Handed out by Chat: the head grows a way back above its bar.
-                      ...(family ? { parentThreadId: next.homeThreadId } : {}),
+                      // Handed out by another task: the head grows a way back above its bar.
+                      ...(family
+                        ? { parentThreadId: next.threads.find(({ id }) => id !== threadId)!.id }
+                        : {}),
                     }
                   : thread;
               const patchList = <
@@ -269,9 +266,6 @@ async function installFixture(context: BrowserContext, working: boolean, family:
                   ...entry,
                   thread: patch(entry.thread),
                 })),
-                workspaceTasks: Object.fromEntries(
-                  Object.entries(next.workspaceTasks).map(([key, list]) => [key, patchList(list)]),
-                ) as HostSnapshot["workspaceTasks"],
                 requests: { ...next.requests, [threadId]: [] },
                 threadAutomations: family
                   ? {
@@ -301,7 +295,7 @@ async function installFixture(context: BrowserContext, working: boolean, family:
         },
       });
     },
-    { entries, family, threadId, title, workspaceId, working },
+    { entries, family, threadId, title, working },
   );
 }
 

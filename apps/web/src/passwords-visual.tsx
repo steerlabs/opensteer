@@ -76,43 +76,14 @@ const client = new MockHostClient({
 });
 
 const bridge = view === "settings" || here ? passwordsBridge() : null;
-const onThisMac = bridge !== null && settingsState !== "elsewhere" && settingsState !== "server";
+const onThisMac = bridge !== null && settingsState !== "elsewhere";
 
 function useShellContext(): ShellContext {
   const live = useSyncExternalStore(client.subscribe, client.getSnapshot);
-  const snapshot =
-    settingsState === "server"
-      ? {
-          ...live,
-          deploymentPolicy: {
-            ownership: "members" as const,
-            personalRemoteAccess: false,
-            nativeWebLinks: false,
-            localOwnerClaim: false,
-            deploymentOwnsMainComputer: false,
-            nativePasswords: false,
-            deploymentComputerAccess: false,
-            sharing: true,
-            serviceManagement: true,
-            runnerEnrollmentMode: "unrestricted" as const,
-            projectConsent: "per-project" as const,
-            localRunnerDefaultModules: ["agents", "browser", "shell"] as const,
-          },
-          deploymentShape: {
-            defaultWorkspaceBacking: "local-directory" as const,
-            kind: "server" as const,
-          },
-          identityConfig: live.identityConfig && {
-            ...live.identityConfig,
-            deployment: { kind: "self-hosted" as const, name: "Design server" },
-            publicOrigin: "https://design.example.test",
-          },
-        }
-      : live;
+  const snapshot = live;
   return {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -131,8 +102,6 @@ function useShellContext(): ShellContext {
         })
       : null,
     executionPreferences: emptyExecutionPreferences,
-    homeHandoff: null,
-    homeThreadId: null,
     hostClient: client,
     localExecutionAction: null,
     localExecutionError: null,
@@ -142,15 +111,12 @@ function useShellContext(): ShellContext {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
     snapshot: { ...snapshot, connection: "connected" },
-    writeInChat: noOp,
   };
 }
 
@@ -223,7 +189,6 @@ function CardsView() {
               client={cardClient(state ?? { stage: "gone" })}
               disabled={false}
               request={mockPasswordSignInRequest({ index: index + 1 })}
-              workspaceName="Main"
             />
           </section>
         ))}
@@ -341,12 +306,7 @@ function ResolvedView() {
         {endings.map(([label, request]) => (
           <section className="card card__form" key={request.id}>
             <span className="eyebrow eyebrow--micro">{label}</span>
-            <PasswordSignInRequestBody
-              client={client}
-              disabled={false}
-              request={request}
-              workspaceName="Main"
-            />
+            <PasswordSignInRequestBody client={client} disabled={false} request={request} />
           </section>
         ))}
       </div>
@@ -472,7 +432,7 @@ function previewStatus(state: string): DesktopPasswordsStatus {
     development = false,
   ): DesktopPasswordsStatus => ({
     availability: "available",
-    broker: { agentSignIns, personFill: agentSignIns, vault },
+    broker: { agentSignIns, personFill: agentSignIns, personSave: agentSignIns, vault },
     development,
   });
   switch (state) {

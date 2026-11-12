@@ -16,14 +16,19 @@ import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
 import { AutomationsPage } from "../automations/automations-page.js";
 import { ComputersPage } from "../computers-page.js";
-import { HomeRoute, NewTaskRoute, WorkspaceHomeRoute } from "../home-view.js";
+import { AllTasksRoute, HomeRoute } from "../home/home-route.js";
 import { SettingsRedirect } from "../settings/settings-redirect.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.js";
-import { ProjectSettingsRoute } from "../project-settings.js";
-import { ProjectsPage } from "../projects-page.js";
 import { ThreadRoute } from "../thread-view.js";
 import { ToastProvider } from "../toast.js";
 import { LiveRedirect } from "./live-redirect.js";
+import { TeamRoutes } from "../../team/team-routes.js";
+import { TeamsProvider, type TeamAttachment } from "../../team/team-attachments.js";
+import {
+  MockTeamHost,
+  TeamSessionClient,
+  createMemoryTeamPersistence,
+} from "@opensteer/client/team";
 
 /**
  * The workspace contract over the moving mock world: each selection action
@@ -37,6 +42,8 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 let root: Root | null = null;
 let client: MockHostClient;
 let sessionClient: HostClient | null = null;
+let teamHost: MockTeamHost | null = null;
+let teamSession: TeamSessionClient | null = null;
 interface Step {
   readonly type: string;
   readonly path: string;
@@ -73,6 +80,10 @@ function cleanupWorkspace() {
   root = null;
   sessionClient?.dispose();
   sessionClient = null;
+  teamSession?.dispose();
+  teamSession = null;
+  teamHost?.dispose();
+  teamHost = null;
   client?.dispose();
   history = [];
   goTo = null;
@@ -108,6 +119,10 @@ async function mount(
     latencyMs?: number;
     /** What else the mock Host starts with: plugins, say. */
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
+    /** One live mock team beside the person's own tasks, as a joined desktop has. */
+    team?: boolean;
+    /** The Host the last mount drew, as a page reload finds it. */
+    sameHost?: boolean;
     shell?: Partial<
       Pick<
         Parameters<typeof AppShell>[0],
@@ -117,15 +132,39 @@ async function mount(
   } = {},
 ) {
   stubLayout(options.width ?? 1440);
-  client = new MockHostClient({
-    ...options.mock,
-    latencyMs: options.latencyMs ?? 0,
-    ...(options.now ? { now: options.now } : {}),
-  });
-  await client.load();
+  if (!options.sameHost) {
+    client = new MockHostClient({
+      ...options.mock,
+      latencyMs: options.latencyMs ?? 0,
+      ...(options.now ? { now: options.now } : {}),
+    });
+    await client.load();
+  }
   const entry = typeof path === "function" ? path(client) : path;
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();
+  let teams: readonly TeamAttachment[] = [];
+  if (options.team) {
+    const host = new MockTeamHost();
+    teamHost = host;
+    const session = new TeamSessionClient({
+      scope: { teamDeploymentId: host.teamId, userId: host.userId },
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: host.connect,
+    });
+    await session.load();
+    teamSession = session;
+    teams = [
+      {
+        teamId: host.teamId,
+        name: host.bootstrap.teamName,
+        origin: "https://chat.acme.example",
+        client: session,
+        link: null,
+      },
+    ];
+  }
   const node = document.createElement("div");
   document.body.append(node);
   root = createRoot(node);
@@ -134,49 +173,51 @@ async function mount(
     root?.render(
       <Wrapper>
         <ToastProvider>
-          <MemoryRouter initialEntries={[entry]}>
-            <History />
-            <Routes>
-              <Route
-                element={
-                  <AppShell
-                    hostClient={sessionClient ?? client}
-                    loadError={null}
-                    {...options.shell}
-                  />
-                }
-              >
-                <Route index element={<HomeRoute />} />
-                <Route path="new" element={<NewTaskRoute />} />
-                <Route path="threads/:threadId" element={<ThreadRoute />} />
-                <Route path="live" element={<LiveRedirect />} />
-                <Route path="projects" element={<ProjectsPage />} />
-                <Route path="workspaces/:workspaceId" element={<WorkspaceHomeRoute />} />
-                <Route path="workspaces/:workspaceId/settings" element={<ProjectSettingsRoute />} />
-                <Route path="automations" element={<AutomationsPage />} />
-                <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
+          <TeamsProvider surface={{ kind: "preview", hostClient: sessionClient ?? client, teams }}>
+            <MemoryRouter initialEntries={[entry]}>
+              <History />
+              <Routes>
                 <Route
-                  path="computers/*"
-                  element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
-                />
-                <Route path="settings" element={<SettingsShell />}>
+                  element={
+                    <AppShell
+                      hostClient={sessionClient ?? client}
+                      loadError={null}
+                      {...options.shell}
+                    />
+                  }
+                >
+                  <Route index element={<HomeRoute />} />
+                  <Route path="tasks" element={<AllTasksRoute />} />
+                  <Route path="tasks/:threadId" element={<ThreadRoute />} />
+                  <Route path="teams/:teamId/*" element={<TeamRoutes />} />
+                  <Route path="live" element={<LiveRedirect />} />
+                  <Route path="automations" element={<AutomationsPage />} />
+                  <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
                   <Route
-                    index
-                    element={<SettingsRedirect from="/settings" to="/settings/general" />}
+                    path="computers/*"
+                    element={
+                      <SettingsRedirect from="/computers" to="/settings/devices/computers" />
+                    }
                   />
-                  <Route path="general" element={<SettingsSectionRoute section="general" />} />
-                  <Route
-                    path="ai-engines"
-                    element={<SettingsRedirect from="/settings/ai-engines" to="/settings/ai" />}
-                  />
-                  <Route path="ai" element={<SettingsSectionRoute section="ai" />} />
-                  <Route path="account" element={<SettingsSectionRoute section="account" />} />
-                  <Route path="plugins/*" element={<SettingsSectionRoute section="plugins" />} />
-                  <Route path="devices/computers" element={<ComputersPage />} />
+                  <Route path="settings" element={<SettingsShell />}>
+                    <Route
+                      index
+                      element={<SettingsRedirect from="/settings" to="/settings/general" />}
+                    />
+                    <Route path="general" element={<SettingsSectionRoute section="general" />} />
+                    <Route
+                      path="ai-engines"
+                      element={<SettingsRedirect from="/settings/ai-engines" to="/settings/ai" />}
+                    />
+                    <Route path="ai" element={<SettingsSectionRoute section="ai" />} />
+                    <Route path="account" element={<SettingsSectionRoute section="account" />} />
+                    <Route path="plugins/*" element={<SettingsSectionRoute section="plugins" />} />
+                    <Route path="devices/computers" element={<ComputersPage />} />
+                  </Route>
                 </Route>
-              </Route>
-            </Routes>
-          </MemoryRouter>
+              </Routes>
+            </MemoryRouter>
+          </TeamsProvider>
         </ToastProvider>
       </Wrapper>,
     ),
@@ -305,6 +346,8 @@ export {
   root,
   client,
   sessionClient,
+  teamHost,
+  teamSession,
   history,
   historyState,
   goTo,

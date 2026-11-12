@@ -22,7 +22,7 @@ const account = {
   label: null,
 };
 async function mount(
-  card: PasswordSignInCard = { stage: "approval", accounts: [account], permissionVersion: 5 },
+  card: PasswordSignInCard = { stage: "approval", accounts: [account], permissionVersion: 6 },
 ) {
   const base = new MockHostClient({ latencyMs: 0 });
   const read = vi.fn(async () => ({ ok: true as const, data: card }));
@@ -40,7 +40,6 @@ async function mount(
         client={client}
         disabled={false}
         request={mockPasswordSignInRequest()}
-        workspaceName="Main"
       />,
     ),
   );
@@ -71,7 +70,7 @@ describe("Passwords approval through the Host", () => {
             loginId: account.id,
             revision: 3,
             remember,
-            permissionVersion: 5,
+            permissionVersion: 6,
           },
         }),
       );
@@ -80,7 +79,7 @@ describe("Passwords approval through the Host", () => {
   it("requires an explicit choice among accounts", async () => {
     const h = await mount({
       stage: "approval",
-      permissionVersion: 5,
+      permissionVersion: 6,
       accounts: [
         account,
         { ...account, id: "00000000-0000-4000-8000-000000000002", username: "work@example.com" },
@@ -98,7 +97,7 @@ describe("Passwords approval through the Host", () => {
       type: "browser.password-sign-in.respond",
       status: "pending",
       message: "That account changed. Choose it again.",
-      card: { stage: "approval", permissionVersion: 5, accounts: [{ ...account, revision: 4 }] },
+      card: { stage: "approval", permissionVersion: 6, accounts: [{ ...account, revision: 4 }] },
     });
     await act(async () => button(h.page, "Allow").click());
     expect(h.page.textContent).toContain("That account changed");
@@ -125,14 +124,7 @@ describe("Passwords approval through the Host", () => {
     const root = createRoot(page);
     roots.push(root);
     await act(async () =>
-      root.render(
-        <PasswordSignInRequestBody
-          client={client}
-          disabled={false}
-          request={request}
-          workspaceName="Main"
-        />,
-      ),
+      root.render(<PasswordSignInRequestBody client={client} disabled={false} request={request} />),
     );
     expect(page.textContent).not.toContain("Only this time");
   });

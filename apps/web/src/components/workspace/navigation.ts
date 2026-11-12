@@ -405,6 +405,8 @@ export interface WorkspaceNavigation {
   ) => void;
   /** Back from Settings to the conversation and place left for it, or Home if opened there. */
   readonly leaveSettings: () => void;
+  /** Writes into the current entry's history state, keeping the rest of it and the address. */
+  readonly mergeEntryState: (patch: Readonly<Record<string, unknown>>) => void;
   /** The path of a task: under /tasks. */
   readonly threadPath: (threadId: string) => string;
   /** Task row, task line, the menu under a name: the conversation only. */
@@ -473,6 +475,8 @@ export interface WorkspaceNavigation {
 interface Address {
   readonly pathname: string;
   readonly search: string;
+  /** The entry's history state, as the newest navigation left it. */
+  readonly state?: unknown;
 }
 
 export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNavigation {
@@ -485,7 +489,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   // Every imperative choice reads the address as it is when it runs, never as
   // it was when a callback was made: an answer that lands later must not write
   // an older conversation or place back.
-  const latest = useRef<Address>({ pathname: location.pathname, search });
+  const latest = useRef<Address>({ pathname: location.pathname, search, state: location.state });
   const seen = useRef(location);
   const settingsReturn = useRef<Address>({ pathname: "/", search: "" });
   // Any change of place in the address — a row, Back, a typed address — and
@@ -499,7 +503,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     if (!isSettingsPath(seen.current.pathname) && navigationType !== "REPLACE")
       settingsReturn.current = { pathname: seen.current.pathname, search: seen.current.search };
     seen.current = location;
-    latest.current = { pathname: location.pathname, search };
+    latest.current = { pathname: location.pathname, search, state: location.state };
   }
   // An explicit choice of what is already shown adds no entry.
   const go = useCallback(
@@ -509,7 +513,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       if (same && state === undefined) return;
       void navigate(to, { replace: same || replace, ...(state === undefined ? {} : { state }) });
       // Two choices in one event build on each other, not on the render before both.
-      latest.current = to;
+      latest.current = { ...to, state };
     },
     [navigate],
   );
@@ -547,19 +551,37 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
     },
     [navigate],
   );
+  const mergeEntryState = useCallback<WorkspaceNavigation["mergeEntryState"]>(
+    (patch) => {
+      const { pathname, search: current, state } = latest.current;
+      go(
+        { pathname, search: current },
+        { ...(typeof state === "object" && state !== null ? state : {}), ...patch },
+      );
+    },
+    [go],
+  );
   const leaveSettings = useCallback<WorkspaceNavigation["leaveSettings"]>(
     () => void navigate(settingsReturn.current),
     [navigate],
   );
   const openConversation = useCallback<WorkspaceNavigation["openConversation"]>(
     (path, options) => {
+      // A path may carry its own query (All tasks' filter); the place shown stays beside it.
+      const [pathname = path, query = ""] = path.split("?", 2);
       const params = placeOnly(latest.current.search);
+      for (const [key, value] of new URLSearchParams(query)) params.set(key, value);
       if (options?.messageId) params.set("messageId", options.messageId);
       if (options?.draftId) params.set("draft", options.draftId);
       if (options?.subagent) params.set("subagent", options.subagent);
+      // The place stays, so a replaced entry keeps what its place saved there.
       go(
-        { pathname: path, search: searchString(params) },
-        options?.focusRequest ? { focusRequest: options.focusRequest } : undefined,
+        { pathname, search: searchString(params) },
+        options?.focusRequest
+          ? { focusRequest: options.focusRequest }
+          : options?.replace
+            ? latest.current.state
+            : undefined,
         options?.replace,
       );
     },
@@ -689,6 +711,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       hideComputer,
       leaveLauncher,
       leaveSettings,
+      mergeEntryState,
       openConversation,
       openPage,
       placeSearch,
@@ -709,6 +732,7 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
       hideComputer,
       leaveLauncher,
       leaveSettings,
+      mergeEntryState,
       openConversation,
       openPage,
       placeSearch,

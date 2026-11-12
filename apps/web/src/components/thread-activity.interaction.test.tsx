@@ -70,8 +70,6 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
         threadId: thread.id,
         readSequence: null,
         unreadSequence: null,
-        placement: null,
-        placementRevision: "0",
         asOfSequence: "100",
       }),
     },
@@ -84,10 +82,10 @@ async function renderScenario(scenario: ThreadActivityScenario): Promise<HTMLEle
   await act(async () =>
     root?.render(
       <ToastProvider>
-        <MemoryRouter initialEntries={[`/threads/${thread.id}`]}>
+        <MemoryRouter initialEntries={[`/tasks/${thread.id}`]}>
           <Routes>
             <Route element={<AppShell hostClient={hostClient} loadError={null} />}>
-              <Route path="threads/:threadId" element={<ThreadRoute />} />
+              <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>
           </Routes>
         </MemoryRouter>

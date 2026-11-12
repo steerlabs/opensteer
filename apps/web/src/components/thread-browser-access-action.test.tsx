@@ -17,26 +17,8 @@ const profiles: BrowserProfileSummary[] = [
   { homeRunnerId: null, id: personalId, name: "Personal" },
   { homeRunnerId: null, id: workId, name: "Work" },
 ];
-const mainId = createId("workspace");
-const projectId = createId("workspace");
-const snapshot = {
-  browserProfiles: profiles,
-  browserProfileGrants: [
-    {
-      access: "read-write",
-      createdAt: "2026-11-04T00:00:00.000Z",
-      id: createId("browserProfileGrant"),
-      profileId: workId,
-      workspaceId: projectId,
-    },
-  ],
-  workspaces: [
-    { id: mainId, kind: "main", name: "Main" },
-    { id: projectId, kind: "project", name: "Client" },
-  ],
-} as unknown as Pick<HostSnapshot, "browserProfileGrants" | "browserProfiles" | "workspaces">;
-const project = browserAccessChoices(snapshot, projectId);
-const main = browserAccessChoices(snapshot, mainId);
+const snapshot = { browserProfiles: profiles } as Pick<HostSnapshot, "browserProfiles">;
+const choices = browserAccessChoices(snapshot);
 
 function render(
   choices: BrowserAccessChoices,
@@ -81,34 +63,25 @@ describe("browserAccessInitialSelection", () => {
 describe("BrowserAccessBody", () => {
   it("keeps the grant unavailable until the owner chooses for a user-choice suggestion", () => {
     const markup = render(
-      project,
+      choices,
       browserAccessInitialSelection({ kind: "user_choice" }, profiles),
     );
 
     expect(markup).not.toContain('checked=""');
     expect(markup).not.toContain(">Name<");
-    expect(markup).toContain('disabled="" type="button">Allow full control');
+    expect(markup).toContain('disabled="" type="button">Use profile');
   });
 
-  it("marks a Project's usable profiles and creates and allows a new one", () => {
-    expect(render(project, { kind: "existing", profileId: workId })).toContain(
-      "Already available to Client",
-    );
-    expect(render(project, { kind: "existing", profileId: workId })).toContain(">Use profile<");
-    expect(render(project, { kind: "new" })).toContain(">Create and allow<");
-  });
-
-  it("in Main, uses any profile as is and creates a new one without a grant", () => {
-    const existing = render(main, { kind: "existing", profileId: personalId });
-    expect(existing).not.toContain("Already available");
+  it("uses any profile as is and creates a new one without a grant", () => {
+    const existing = render(choices, { kind: "existing", profileId: personalId });
     expect(existing).toContain(">Use profile<");
-    expect(existing).toContain("Agents in Main can use every browser profile you have");
-    expect(render(main, { kind: "new" })).toContain(">Create profile<");
+    expect(existing).toContain("Your agent can use every browser profile you have");
+    expect(render(choices, { kind: "new" })).toContain(">Create profile<");
   });
 
   it("suggests only names the owner has not used, and marks the one chosen", () => {
-    expect(main.nameSuggestions).toEqual(["Finance", "Shopping"]);
-    const markup = render(main, { kind: "new" }, "Finance");
+    expect(choices.nameSuggestions).toEqual(["Finance", "Shopping"]);
+    const markup = render(choices, { kind: "new" }, "Finance");
     expect(markup).toContain('aria-pressed="true" class="chip chip--accent"');
     expect(markup).toContain(">Shopping<");
     expect(markup).not.toContain(">Personal</button>");

@@ -15,7 +15,7 @@ import {
   InstalledServicesSection,
   PluginsAndMcpSection,
 } from "./catalog-section.js";
-import { GrantsSection, workspaceAccessSectionId } from "./grants-section.js";
+import { GrantsSection, agentAccessSectionId } from "./grants-section.js";
 import { platformIntegrations } from "./helpers.js";
 import { IntegrationDetail } from "./integration-detail.js";
 import { canRespondToRequests, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -36,7 +36,6 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
     readError,
     view,
     result,
-    workspaceKind,
     repositorySetup,
     pending,
     recheckRepositorySetup,
@@ -54,9 +53,7 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
     snapshot,
     grants,
     run,
-    selectedWorkspaceId,
     simpleAction,
-    setWorkspaceId,
     setNotice,
     uninstallIntegration,
     detailIntegration,
@@ -115,9 +112,7 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                   <strong>{integrationResultTitle(result)}</strong>
                   <p>
                     {result.status === "connected"
-                      ? workspaceKind === "main"
-                        ? "The account is ready for Opensteer and your tasks."
-                        : "The account is ready for exact tools you authorize."
+                      ? "The account is ready for the tools you allow your agent."
                       : integrationResultDetail(result.status)}
                   </p>
                 </div>
@@ -193,7 +188,7 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                     await run(async () => {
                       await client.dispatch({
                         idempotencyKey: mutationIdempotencyKey(
-                          `integration-grant:${input.workspaceId}`,
+                          `integration-grant:${input.installationId}`,
                         ),
                         input,
                         type: "integration.grant.create",
@@ -201,27 +196,18 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                     });
                   }}
                   onRevoke={(grantId) =>
-                    selectedWorkspaceId
-                      ? simpleAction(() =>
-                          client
-                            .dispatch({
-                              grantId,
-                              idempotencyKey: mutationIdempotencyKey(
-                                `integration-grant:${grantId}`,
-                              ),
-                              type: "integration.grant.revoke",
-                              workspaceId: selectedWorkspaceId,
-                            })
-                            .then(() => undefined),
-                        )
-                      : undefined
+                    simpleAction(() =>
+                      client
+                        .dispatch({
+                          grantId,
+                          idempotencyKey: mutationIdempotencyKey(`integration-grant:${grantId}`),
+                          type: "integration.grant.revoke",
+                        })
+                        .then(() => undefined),
+                    )
                   }
-                  onWorkspace={setWorkspaceId}
                   pending={pending}
                   platform={platform}
-                  workspaceId={selectedWorkspaceId}
-                  workspaceKind={workspaceKind}
-                  workspaces={snapshot.workspaces}
                 />
                 <PluginsAndMcpSection
                   entries={otherInstallations.filter(
@@ -268,8 +254,8 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
             }
             onChooseSignIn={() => signIn(detailIntegration.definition.id, null, true)}
             onConnectOauth={(account) => signIn(detailIntegration.definition.id, account)}
-            onWorkspaceAccess={() => {
-              openAt.current = workspaceAccessSectionId;
+            onAgentAccess={() => {
+              openAt.current = agentAccessSectionId;
               setError(null);
               setView({ kind: "overview" });
             }}

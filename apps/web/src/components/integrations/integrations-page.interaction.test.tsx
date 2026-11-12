@@ -402,7 +402,7 @@ describe("Settings puts what the user has, and what needs them, first", () => {
       "Installed services",
       "Your accounts",
       "Apps on your computers",
-      "Workspace access",
+      "Agent access",
       "MCP servers",
       "Add a service",
     ]);
@@ -675,10 +675,6 @@ describe("Settings says which integration an agent proposed wherever one is chos
     );
     expect(mcpAccount && marked(mcpAccount)).toBeTruthy();
 
-    const workspace = [...container.querySelectorAll<HTMLSelectElement>("select")].find((select) =>
-      [...select.options].some((option) => option.textContent === "Customer launch"),
-    );
-    await choose(workspace ?? null, "wsp_00000000-0000-4000-8000-000000000002");
     await click(
       [...container.querySelectorAll("button")].find((button) =>
         button.textContent?.includes("Allow an integration"),
@@ -691,13 +687,11 @@ describe("Settings says which integration an agent proposed wherever one is chos
       labels.filter((label) => label === "Google Calendar · Proposed by an agent"),
     ).toHaveLength(1);
 
-    const before = sectionRows(container, "Workspace access").length;
+    const before = sectionRows(container, "Agent access").length;
     await choose(integration, mockVapi.installationId);
     await click(buttonWithText(container, "Allow access"));
-    await vi.waitFor(() =>
-      expect(sectionRows(container, "Workspace access")).toHaveLength(before + 1),
-    );
-    const grants = sectionRows(container, "Workspace access").filter((row) =>
+    await vi.waitFor(() => expect(sectionRows(container, "Agent access")).toHaveLength(before + 1));
+    const grants = sectionRows(container, "Agent access").filter((row) =>
       [...row.querySelectorAll(".chip")].some((chip) => chip.textContent === "Google Calendar"),
     );
     expect(grants.filter((row) => marked(row))).toHaveLength(1);
@@ -1099,134 +1093,6 @@ describe("Settings repairs each GitHub account the way the Host says it needs", 
   );
 });
 
-describe("Settings shows the selected Workspace's access", () => {
-  // The ways it could fail: disconnecting an account with Main selected
-  // reloads the page, and the person picks a project before that reload,
-  // or the disconnect itself, answers. A read for Main answers last and
-  // replaces the project's grants, which disappear under its name.
-  it.each(["reload", "disconnect"] as const)(
-    "keeps a project's grants when Main's %s answers after the switch",
-    async (late) => {
-      const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-      if (!project) throw new Error("The mock seeds a project.");
-      const container = await mountSettings(client);
-      let answer: (() => void) | null = null;
-      const hold = <T,>(work: () => Promise<T>) =>
-        new Promise<T>((resolve) => {
-          answer = () => resolve(work());
-        });
-      if (late === "reload") {
-        const grants = client.rpc["integration.grants.list"];
-        let held = false;
-        withRpc(client, {
-          "integration.grants.list": (input) => {
-            const read = () => grants(input as Parameters<typeof grants>[0]);
-            if (held) return read();
-            held = true;
-            return hold(read);
-          },
-        });
-      } else {
-        const dispatch = client.dispatch.bind(client);
-        vi.spyOn(client, "dispatch").mockImplementationOnce((command) =>
-          hold(() => dispatch(command)),
-        );
-      }
-      const row = accountRows(container).find((candidate) =>
-        buttonWithText(candidate, "Disconnect"),
-      );
-      await click(buttonWithText(row ?? container, "Disconnect"));
-      await click(buttonWithText(row ?? container, "Confirm disconnect"));
-      await vi.waitFor(() => expect(answer).not.toBeNull());
-
-      const workspace = workspaceSelect(container);
-      await choose(workspace, project.id);
-      await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant").length).toBe(2));
-      await act(async () => answer?.());
-
-      expect(workspace?.value).toBe(project.id);
-      expect(container.querySelectorAll(".intg-grant").length).toBe(2);
-    },
-  );
-
-  // The ways it could fail: Main's reload after a disconnect stalls, and the
-  // person picks a project, whose access loads. The disconnect waits for
-  // Main's read all the same, and every change on the page stays disabled
-  // under access that has already loaded.
-  it("lets the person change access once a newer read loads, while an older one stalls", async () => {
-    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-    const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-    if (!project) throw new Error("The mock seeds a project.");
-    const container = await mountSettings(client);
-    const grants = client.rpc["integration.grants.list"];
-    let answerMain: (() => void) | null = null;
-    withRpc(client, {
-      "integration.grants.list": (input) => {
-        const read = () => grants(input as Parameters<typeof grants>[0]);
-        if (answerMain) return read();
-        return new Promise((resolve) => {
-          answerMain = () => resolve(read());
-        });
-      },
-    });
-    const row = accountRows(container).find((candidate) => buttonWithText(candidate, "Disconnect"));
-    await click(buttonWithText(row ?? container, "Disconnect"));
-    await click(buttonWithText(row ?? container, "Confirm disconnect"));
-    await vi.waitFor(() => expect(answerMain).not.toBeNull());
-
-    await choose(workspaceSelect(container), project.id);
-    await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant").length).toBe(2));
-
-    expect(buttonWithText(container, "Revoke")?.disabled).toBe(false);
-    await act(async () => answerMain?.());
-    expect(container.querySelectorAll(".intg-grant").length).toBe(2);
-    expect(buttonWithText(container, "Revoke")?.disabled).toBe(false);
-  });
-
-  // The ways it could fail: the person picks a project that has access,
-  // and while that access loads, or once its read fails, the page says
-  // nothing is allowed there; or it stops saying so where nothing is.
-  it.each(["fails", "finds nothing"] as const)(
-    "says nothing is allowed only once a read finds nothing, not while one loads or %s",
-    async (answer) => {
-      const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-      if (!project) throw new Error("The mock seeds a project.");
-      const nothing = "Nothing is allowed here yet";
-      const failed = "Workspace access could not be read";
-      const container = await mountSettings(client);
-      let answerRead = () => {};
-      withRpc(client, {
-        "integration.grants.list": () =>
-          new Promise((resolve) => {
-            answerRead = () =>
-              resolve(
-                answer === "fails"
-                  ? { error: { code: "internal", message: failed, retryable: true }, ok: false }
-                  : { data: { grants: [] }, ok: true },
-              );
-          }),
-      });
-
-      await choose(workspaceSelect(container), project.id);
-
-      expect(container.textContent).not.toContain(nothing);
-      expect(container.querySelector('[aria-label="Loading Workspace access"]')).not.toBeNull();
-      await act(async () => answerRead());
-
-      expect(container.querySelector('[aria-label="Loading Workspace access"]')).toBeNull();
-      if (answer === "fails") {
-        expect(container.querySelector('[role="alert"]')?.textContent).toBe(failed);
-        expect(container.textContent).not.toContain(nothing);
-      } else {
-        expect(container.querySelector('[role="alert"]')).toBeNull();
-        expect(container.textContent).toContain(nothing);
-      }
-    },
-  );
-});
-
 describe("Settings retires only the page read failure that a newer read supersedes", () => {
   it("shows a failed sheet-close refresh on the detail page until a later read succeeds", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
@@ -1261,136 +1127,6 @@ describe("Settings retires only the page read failure that a newer read supersed
     await click(document.querySelector<HTMLButtonElement>('button[aria-label="Close"]'));
     await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).toBeNull());
     expect(sectionRows(container, "Accounts")).toHaveLength(2);
-  });
-
-  it.each([false, true])(
-    "reports a failed post-disconnect refresh once and recovers (overlapping Workspace read: %s)",
-    async (overlap) => {
-      const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-      const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-      if (!project || !main) throw new Error("Both Workspaces exist.");
-      const container = await mountSettings(client);
-      const read = client.rpc["integration.grants.list"];
-      const dispatch = vi.spyOn(client, "dispatch");
-      const failed = "Post-disconnect read failed";
-      const failure = () => ({
-        ok: false,
-        error: { code: "internal", message: failed, retryable: true },
-      });
-      let finishOld = () => {};
-      withRpc(client, {
-        "integration.grants.list": overlap
-          ? (input) =>
-              new Promise((resolve) => {
-                finishOld = () => resolve(read(input as Parameters<typeof read>[0]));
-              })
-          : async () => failure(),
-      });
-      const row = accountRows(container).find((account) => buttonWithText(account, "Disconnect"));
-      await click(buttonWithText(row ?? container, "Disconnect"));
-      await click(buttonWithText(row ?? container, "Confirm disconnect"));
-      expect(dispatch).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "integration.mcp.disconnect" }),
-      );
-      if (overlap) {
-        withRpc(client, { "integration.grants.list": async () => failure() });
-        await choose(workspaceSelect(container), project.id);
-      }
-      await vi.waitFor(() => expect(container.textContent).toContain(failed));
-      const alerts = () =>
-        [...container.querySelectorAll('[role="alert"]')].map((node) => node.textContent);
-      expect(alerts()).toEqual([failed]);
-      if (overlap) {
-        await act(async () => finishOld());
-        expect(alerts()).toEqual([failed]);
-      }
-      withRpc(client, {
-        "integration.grants.list": (input) => read(input as Parameters<typeof read>[0]),
-      });
-      await choose(workspaceSelect(container), overlap ? main.id : project.id);
-      await choose(workspaceSelect(container), project.id);
-      await vi.waitFor(() => expect(container.querySelectorAll(".intg-grant")).toHaveLength(2));
-      expect(alerts()).toEqual([]);
-      expect(row?.isConnected).toBe(false);
-    },
-  );
-
-  // Failures: a retry keeps the old alert, a Workspace change hides loading,
-  // an old completion wins, or a successful read erases a repository error.
-  it.each(["grants", "empty"] as const)(
-    "recovers the selected Workspace with %s",
-    async (result) => {
-      const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-      const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-      if (!project || !main) throw new Error("Both Workspaces exist.");
-      const container = await mountSettings(client);
-      const read = client.rpc["integration.grants.list"];
-      const failed = "Workspace access could not be read";
-      withRpc(client, {
-        "integration.grants.list": async () => ({
-          ok: false,
-          error: { code: "internal", message: failed, retryable: true },
-        }),
-      });
-      await choose(workspaceSelect(container), project.id);
-      await vi.waitFor(() =>
-        expect(container.querySelector('[role="alert"]')?.textContent).toBe(failed),
-      );
-      let finish = () => {};
-      withRpc(client, {
-        "integration.grants.list": (input) =>
-          new Promise((resolve) => {
-            finish = () =>
-              resolve(
-                result === "empty"
-                  ? { ok: true, data: { grants: [] } }
-                  : read(input as Parameters<typeof read>[0]),
-              );
-          }),
-      });
-      await choose(workspaceSelect(container), main.id);
-      expect(container.querySelector('[role="alert"]')).toBeNull();
-      await choose(workspaceSelect(container), project.id);
-      expect(container.querySelector('[aria-label="Loading Workspace access"]')).not.toBeNull();
-      await act(async () => finish());
-      expect(container.querySelector('[role="alert"]')).toBeNull();
-      if (result === "empty")
-        expect(container.textContent).toContain("Nothing is allowed here yet");
-      else expect(container.querySelectorAll(".intg-grant")).toHaveLength(2);
-    },
-  );
-
-  it("ignores an older success after the newest Workspace read fails", async () => {
-    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-    const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project");
-    const main = client.getSnapshot().workspaces.find(({ kind }) => kind === "main");
-    if (!project || !main) throw new Error("Both Workspaces exist.");
-    const container = await mountSettings(client);
-    const read = client.rpc["integration.grants.list"];
-    let finishOld = () => {};
-    withRpc(client, {
-      "integration.grants.list": (input) =>
-        new Promise((resolve) => {
-          finishOld = () => resolve(read(input as Parameters<typeof read>[0]));
-        }),
-    });
-    await choose(workspaceSelect(container), project.id);
-    withRpc(client, {
-      "integration.grants.list": async () => ({
-        ok: false,
-        error: { code: "internal", message: "Latest read failed", retryable: true },
-      }),
-    });
-    await choose(workspaceSelect(container), main.id);
-    await vi.waitFor(() =>
-      expect(container.querySelector('[role="alert"]')?.textContent).toBe("Latest read failed"),
-    );
-    await act(async () => finishOld());
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe("Latest read failed");
-    expect(container.querySelectorAll(".intg-grant")).toHaveLength(0);
-    expect(container.textContent).not.toContain("Nothing is allowed here yet");
   });
 
   it("keeps the repository rejection after a successful reload", async () => {
@@ -1855,14 +1591,6 @@ function sectionRows(container: HTMLElement, title: string): readonly HTMLElemen
   if (!section) throw new Error(`${title} is listed.`);
   // The row that adds an account is not one.
   return [...section.querySelectorAll<HTMLElement>(".card__row:not(.intg-account--add)")];
-}
-
-function workspaceSelect(container: HTMLElement): HTMLSelectElement | null {
-  return (
-    [...container.querySelectorAll("select")].find((select) =>
-      select.closest("label")?.textContent?.startsWith("Workspace"),
-    ) ?? null
-  );
 }
 
 function buttonWithText(container: HTMLElement, label: string): HTMLButtonElement | null {

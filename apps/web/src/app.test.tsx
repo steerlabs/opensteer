@@ -236,7 +236,7 @@ describe("Host OIDC sign-in surface", () => {
 });
 
 describe("App setup continuation", () => {
-  it("keeps setup on screen through the session and workspace waits, then hands back", async () => {
+  it("keeps setup on screen through the session and personal settings waits, then hands back", async () => {
     installWindow();
     const client = createClient();
     const onSetupOpened = vi.fn();
@@ -261,11 +261,11 @@ describe("App setup continuation", () => {
     await runEffectsTwice();
     // Still loading: setup must not hand back, or the window flips to a spinner.
     expect(onSetupOpened).not.toHaveBeenCalled();
-    snapshot = { ...snapshot, session: "authenticated", workspaces: [] };
+    snapshot = { ...snapshot, session: "authenticated", personalSettings: null };
     expect(render()).toContain("Your AI");
     await runEffectsTwice();
     expect(onSetupOpened).not.toHaveBeenCalled();
-    snapshot = { ...snapshot, workspaces: client.getSnapshot().workspaces };
+    snapshot = { ...snapshot, personalSettings: client.getSnapshot().personalSettings };
     hooks.beginRender();
     try {
       renderToStaticMarkup(<App hostClient={client} onSetupOpened={onSetupOpened} openSetup />);

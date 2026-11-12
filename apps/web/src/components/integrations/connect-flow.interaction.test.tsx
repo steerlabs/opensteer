@@ -643,7 +643,7 @@ function render(input: {
           operations={input.operations}
           purpose="Connect a Slack account so this integration can read through 6 operations you approve."
           requestedBy="Mattress Deal Finder"
-          returnPath="/threads/thread-1"
+          returnPath="/tasks/thread-1"
         />
       </MemoryRouter>,
     ),

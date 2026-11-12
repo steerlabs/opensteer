@@ -1,6 +1,7 @@
 import {
   ModelSelectionSchema,
   ProviderContinuationIdentitySchema,
+  RunnerIdSchema,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
@@ -50,13 +51,17 @@ function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
     modelSelection,
     parentThreadId: null,
     pendingRequests: 0,
-    role: "work",
+    purpose: "task",
+    folder: {
+      computerId: RunnerIdSchema.parse("rnr_00000000-0000-4000-8000-000000000001"),
+      path: "/Users/ada/Opensteer",
+    },
+    teamOrigin: null,
     runnerLabel: "Main runner",
     status: "failed",
     title: "Ship the fix",
     unread: false,
     updatedAt: "2026-09-05T00:00:00.000Z",
-    workspaceId: "workspace-1",
     ...overrides,
   };
 }

@@ -646,10 +646,7 @@ export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
   const byId = useMemo(
     () =>
       new Map(
-        tasks.map((assignment) => [
-          assignment.id,
-          { assignment, owner: taskOwner(assignment, snapshot) },
-        ]),
+        tasks.map((assignment) => [assignment.id, { assignment, owner: taskOwner(assignment) }]),
       ),
     [tasks, snapshot],
   );

@@ -123,16 +123,14 @@ export function NativeAgentCursors({
       cursors: records.slice(0, 32).map(({ record, point, leaving }) => {
         const at = point ?? neutralCursorPoint;
         const mark = threadMark(record.threadId, directory.snapshot);
-        const own = ownCursor(record.threadId, record.home, directory.snapshot);
+        const own = ownCursor(record.threadId, directory.snapshot);
         return {
           icon: own ? null : mark.icon,
           color: own ? null : mark.color,
           home: own,
           leaving,
           threadId: record.threadId,
-          title: record.home
-            ? "Opensteer"
-            : (threadInDirectory(record.threadId, directory.snapshot)?.title ?? "Task"),
+          title: threadInDirectory(record.threadId, directory.snapshot)?.title ?? "Task",
           x: at.x * placement.viewport.width,
           y: at.y * placement.viewport.height,
         };

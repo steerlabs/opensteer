@@ -13,7 +13,7 @@ import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
 import { readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamTimeline } from "@opensteer/client/team";
 import type { z } from "zod";
-import { useShell } from "../components/app-shell.js";
+import { useOptionalShell } from "../components/app-shell.js";
 import { ChannelDetails, MembersPane } from "../components/team/channel-details.js";
 import { FilesTab, PinnedTab } from "../components/team/channel-tabs.js";
 import {
@@ -38,6 +38,8 @@ import type {
 import { ConnectionBanner } from "../components/team/team-status.js";
 import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
+import { DrawerButton } from "../components/workspace/place-stage.js";
+import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { useTeams } from "./team-attachments.js";
 import { useKnowledge } from "./team-knowledge.js";
@@ -209,8 +211,8 @@ function ChannelScreenFor({
   const { client, snapshot, team, words } = view;
   const navigate = useNavigate();
   const { search } = useLocation();
-  const { selection } = useWorkspace();
-  const { hostClient } = useShell();
+  const { drawer, selection, work } = useWorkspace();
+  const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
   const toast = useToast();
   const report = (error: unknown) => toast.error(actionErrorMessage(error));
@@ -273,7 +275,7 @@ function ChannelScreenFor({
     const me = view.me;
     if (!me) return;
     // A message never posts half its files: it waits for every upload.
-    const files = await Promise.all([...uploads.current.values()]);
+    const files = await Promise.all(uploads.current.values());
     uploads.current.clear();
     setStaged([]);
     const message = teamMessage(input, me, view.members);
@@ -514,7 +516,7 @@ function ChannelScreenFor({
     (message) => message.authorKind === "agent" && message.authorUserId === words.viewerUserId,
   );
   useEffect(() => {
-    if (!repliedToMe || !place.threadId || !links) return;
+    if (!repliedToMe || !place.threadId || !links || !hostClient) return;
     void readTeamReply(hostClient, {
       teamId: team.teamId,
       channelId,
@@ -628,6 +630,7 @@ function ChannelScreenFor({
         <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
       }
       channel={channel}
+      lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
       menu={{
         onOpenDetails: () => setPane("details"),
         onOpenMembers: () => setPane("members"),

@@ -11,9 +11,7 @@ import {
   lastExecutionSelection,
   newTaskDefaults,
   placementForSelection,
-  taskFolderKey,
   taskMark,
-  unwrapRpcResult,
   type ExecutionSelection,
   type TaskRow,
   type ThreadPlacementOption,
@@ -34,8 +32,9 @@ import { useComposerContext } from "../workspace/composer-context.js";
 import { useTaskDirectory } from "../workspace/task-directory.js";
 import { useTaskSourceLookup } from "../../team/task-sources.js";
 import { FolderChip } from "./folder-picker.js";
-import { folderView, shortPath } from "./folder-groups.js";
-import type { FolderBrowseView, FolderView, TaskRowView } from "./home-models.js";
+import { shortPath } from "./folder-groups.js";
+import type { TaskRowView } from "./home-models.js";
+import { useFolderPicker } from "./use-folder-picker.js";
 import { needsYouItems, useNeedsYouAnswer } from "./needs-you-model.js";
 import { AllTasksPage, TasksHome } from "./tasks-home.js";
 
@@ -173,17 +172,14 @@ function useTaskDraftId(): string {
   const [params] = useSearchParams();
   const named = params.get("draft");
   const draftId = useMemo(() => named ?? globalThis.crypto.randomUUID(), [named]);
-  const navigate = useNavigate();
-  const location = useLocation();
+  const { nav } = useWorkspace();
+  const { pathname } = useLocation();
   useEffect(() => {
     if (named !== null) return;
-    const search = new URLSearchParams(location.search);
-    search.set("draft", draftId);
-    void navigate(
-      { hash: location.hash, pathname: location.pathname, search: `?${search.toString()}` },
-      { replace: true, state: location.state },
-    );
-  }, [draftId, location.hash, location.pathname, location.search, location.state, named, navigate]);
+    // Built on the newest address the workspace chose, so a place restored in
+    // the same moment stays beside the new draft rather than being replaced.
+    nav.openConversation(pathname, { draftId, replace: true });
+  }, [draftId, named, nav, pathname]);
   return draftId;
 }
 
@@ -252,71 +248,7 @@ function NewTaskComposer({
     if (chosen) setFolder(chosen);
   }, [named]);
   const current = folder ?? agentHome;
-  const computerName = (computerId: string) =>
-    snapshot.machines.find((machine) => machine.id === computerId)?.name ?? "This computer";
-  // Only the hosting computer runs tasks in this build; the Host says which that is.
-  const computers = defaults.environments.flatMap((environment) =>
-    environment.runnerId === null
-      ? []
-      : [
-          {
-            id: environment.runnerId,
-            name: computerName(environment.runnerId),
-            kind: "laptop" as const,
-            hosting: true,
-            online: environment.connected,
-          },
-        ],
-  );
-  const recent = useMemo<FolderView[]>(() => {
-    const seen = new Map<string, FolderView>();
-    for (const thread of snapshot.threads)
-      if (thread.purpose === "task" && !seen.has(taskFolderKey(thread.folder)))
-        seen.set(taskFolderKey(thread.folder), folderView(thread.folder, agentHome, computerName));
-    return [...seen.values()].slice(0, 6);
-  }, [agentHome, snapshot.threads]);
-  const [browsing, setBrowsing] = useState<FolderBrowseView | null>(null);
-  const browse = (computerId: string, path: string | null) => {
-    const computer = computers.find((candidate) => candidate.id === computerId);
-    const at = path ?? agentHome?.path ?? "/";
-    if (!computer) return;
-    const crumbs = at
-      .split("/")
-      .filter(Boolean)
-      .map((label, index, parts) => ({ label, path: `/${parts.slice(0, index + 1).join("/")}` }));
-    setBrowsing({ computer, path: at, crumbs, entries: null });
-    void hostClient.rpc["folder.files.list"]({
-      folder: TaskFolderSchema.parse({ computerId, path: at }),
-      parentKey: "",
-    })
-      .then(unwrapRpcResult)
-      .then((page) =>
-        setBrowsing((held) =>
-          held?.path === at
-            ? {
-                ...held,
-                entries: page.entries
-                  .filter((entry) => entry.kind === "directory" && !entry.hidden)
-                  .map((entry) => ({
-                    name: entry.name,
-                    path: `${at.replace(/\/$/u, "")}/${entry.name}`,
-                  })),
-              }
-            : held,
-        ),
-      )
-      .catch((error: unknown) =>
-        setBrowsing((held) =>
-          held?.path === at
-            ? {
-                ...held,
-                entries: [],
-                error: error instanceof Error ? error.message : "Can’t read this folder.",
-              }
-            : held,
-        ),
-      );
-  };
+  const folderPicker = useFolderPicker(current, setFolder);
   const [accessMode, setAccessMode] = useState<ThreadAccessMode>(executionPreferences.accessMode);
   const remembered = useMemo(
     () => lastExecutionSelection(executionPreferences),
@@ -378,7 +310,6 @@ function NewTaskComposer({
     if (!thread) throw new Error("The task could not be started.");
     nav.openConversation(nav.threadPath(thread.id));
   };
-  const currentView = current ? folderView(current, agentHome, computerName) : null;
   return (
     <>
       <Composer
@@ -412,25 +343,7 @@ function NewTaskComposer({
         }
         inputRef={inputRef}
         key={suggestion?.key ?? 0}
-        leadingFooter={
-          currentView ? (
-            <FolderChip
-              browsing={browsing}
-              computers={computers}
-              current={currentView}
-              onBrowse={browse}
-              onChoose={(view) => {
-                const next = [
-                  ...(agentHome ? [agentHome] : []),
-                  ...snapshot.threads.map((thread) => thread.folder),
-                ].find((candidate) => taskFolderKey(candidate) === view.id);
-                if (next) setFolder(next);
-              }}
-              onUse={(computerId, path) => setFolder(TaskFolderSchema.parse({ computerId, path }))}
-              recent={recent}
-            />
-          ) : null
-        }
+        leadingFooter={folderPicker ? <FolderChip {...folderPicker} /> : null}
         onSend={startThread}
         placeContext={placeContext}
         placeholder={placeholderFor(selection !== null, blockedPlacement, defaults.canCreate)}

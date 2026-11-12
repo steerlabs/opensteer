@@ -50,10 +50,6 @@ export function ThreadBrowserSignInAction({
       key={request.id}
       profileName={profileName}
       request={request}
-      workspaceName={
-        snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.name ??
-        "this Workspace"
-      }
     />
   );
 }
@@ -77,14 +73,12 @@ export function BrowserSignInRequestBody({
   environment,
   profileName,
   request,
-  workspaceName,
 }: {
   readonly client: BrowserSignInRequestClient;
   readonly disabled: boolean;
   readonly environment: ChromeConnectEnvironment;
   readonly profileName: string | null;
   readonly request: Request;
-  readonly workspaceName: string;
 }) {
   const payload = request.payload.kind === "browser.sign-in" ? request.payload : null;
   const site = payload?.site ?? null;
@@ -171,16 +165,14 @@ export function BrowserSignInRequestBody({
     void client.rpc["browser.sources.get"]({})
       .then(unwrapRpcResult)
       .then((state) => {
-        if (
-          browserSitePreferredSource(state, request.targetWorkspaceId, site) === pinned.sourceId
-        ) {
+        if (browserSitePreferredSource(state, site) === pinned.sourceId) {
           respondRef.current("allow", pinned.sourceId);
         } else {
           setRetryStopped(true);
         }
       })
       .catch(() => setRetryStopped(true));
-  }, [client, inspection, pinned, request.targetWorkspaceId, retryable, site]);
+  }, [client, inspection, pinned, retryable, site]);
 
   if (!payload || !site) return <ActionNote alert>This sign-in request is invalid.</ActionNote>;
   if (!pending) {
@@ -280,7 +272,7 @@ export function BrowserSignInRequestBody({
       <ul className="sign-in-card__facts">
         <li>
           <Icon name="workspace" />
-          Agents in {workspaceName} will be able to use {domain} as you.
+          Your agent will be able to use {domain} as you.
         </li>
         {profileName ? (
           <li>

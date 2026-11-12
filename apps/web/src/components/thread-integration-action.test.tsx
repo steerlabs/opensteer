@@ -23,11 +23,7 @@ import {
   mockTmdbProposal,
   mockVapi,
 } from "@opensteer/client/mock";
-import {
-  RequestJsonObjectSchema,
-  WorkspaceIdSchema,
-  requestAgentProposedDetail,
-} from "@opensteer/core";
+import { RequestJsonObjectSchema, requestAgentProposedDetail } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   integrationAccountCanChange,
@@ -57,13 +53,9 @@ afterEach(() => {
 });
 
 describe("ThreadIntegrationAction one-tap Connect", () => {
-  it.each([
-    ["main", false],
-    ["project", false],
-    ["main", true],
-  ] as const)(
-    "connects and fulfills %s access from one tap, with catalog setup %s",
-    async (kind, autoInstall) => {
+  it.each([false, true])(
+    "connects and fulfills access from one tap, with catalog setup %s",
+    async (autoInstall) => {
       const loaded = oauthRequest();
       loaded.dashboard.isAdministrator = true;
       let installed = !autoInstall;
@@ -82,7 +74,6 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
             status: "connected",
             computer: null,
           } as never);
-          if (kind === "main") requestPending = false;
           resolve({
             ok: true,
             data: {
@@ -106,14 +97,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
           launchTicket: "t".repeat(43),
         };
       });
-      const snapshot = {
-        ...shellSnapshot(),
-        workspaces: shellSnapshot().workspaces.map((workspace) => ({
-          ...workspace,
-          kind,
-          name: kind === "main" ? "Main" : "Support",
-        })),
-      };
+      const snapshot = shellSnapshot();
       shellState.current = {
         snapshot,
         hostClient: {
@@ -185,17 +169,16 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       );
       expect(buttonWithText(container, "Allow")).toBeNull();
       const grants = dispatch.mock.calls.filter(([command]) => command.type === "request.respond");
-      expect(grants).toHaveLength((kind === "main" ? 0 : 1) + (autoInstall ? 1 : 0));
+      expect(grants).toHaveLength(1 + (autoInstall ? 1 : 0));
       if (autoInstall)
         expect(grants[0]?.[0]).toMatchObject({
           response: { kind: "choice", optionId: "installed" },
         });
-      if (kind === "project")
-        expect(grants[0]?.[0]).toMatchObject({
-          response: {
-            value: { access: "read", connectionId: "connected-account", decision: "fulfilled" },
-          },
-        });
+      expect(grants.at(-1)?.[0]).toMatchObject({
+        response: {
+          value: { access: "read", connectionId: "connected-account", decision: "fulfilled" },
+        },
+      });
     },
   );
 
@@ -489,7 +472,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     const container = await mountThreadAction(
       record,
       "alex@example.com",
-      `/threads/thr_test?integrationAttempt=${attemptId}`,
+      `/tasks/thr_test?integrationAttempt=${attemptId}`,
     );
     expect(dispatch).not.toHaveBeenCalled();
     await act(async () => buttonWithText(container, "Allow")!.click());
@@ -524,7 +507,11 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       },
     };
     const container = await mountThreadAction(shown, "Connect Provider integration");
-    expect(notes(container)).toEqual(["Read and write"]);
+    // The scope line says who gets it; what they can do is under it, before Connect.
+    expect(notes(container)).toEqual(["All your tasks"]);
+    await openDetails(container);
+    // Nothing has named this Deployment in the card's shell.
+    expect(notes(container)).toContain(mainAccessDetail("this Opensteer", "Provider integration"));
   });
 
   it("adds a credential-free catalog integration and grants access in the same tap", async () => {
@@ -684,7 +671,6 @@ describe("ThreadIntegrationAction computer access", () => {
     const hostClient = {
       dispatch,
       getSnapshot: () => shellSnapshot(),
-      loadEarlierWorkspaces: async () => undefined,
       refresh: async () => undefined,
       rpc: {
         "integration.platform.get": async () => ({ data: loaded.platform, ok: true as const }),
@@ -758,7 +744,6 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       hostClient: {
         dispatch: vi.fn(),
         getSnapshot: () => shellSnapshot(),
-        loadEarlierWorkspaces: async () => undefined,
         refresh: async () => undefined,
         rpc: {
           "integration.authorization.get": async () => ({
@@ -784,7 +769,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const container = await mountThreadAction(
       requestRecord(loaded, "Connect GitHub"),
       rejected,
-      `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+      `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
     );
 
     expect(document.body.textContent).not.toContain("Recheck repository access");
@@ -839,7 +824,6 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
         hostClient: {
           dispatch: vi.fn(),
           getSnapshot: () => shellSnapshot(),
-          loadEarlierWorkspaces: async () => undefined,
           refresh: async () => undefined,
           rpc: {
             "integration.authorization.get": async () => ({
@@ -862,7 +846,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       const container = await mountThreadAction(
         requestRecord(loaded, "Connect GitHub"),
         "Recheck repository access",
-        `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+        `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
       );
       let answerReload = () => {};
       if (late === "reload") {
@@ -966,7 +950,6 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       hostClient: {
         dispatch: vi.fn(),
         getSnapshot: () => shellSnapshot(),
-        loadEarlierWorkspaces: async () => undefined,
         refresh: async () => undefined,
         rpc: {
           "integration.authorization.get": async () => ({
@@ -992,7 +975,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const container = await mountThreadAction(
       requestRecord(loaded, "Connect GitHub"),
       "Recheck repository access",
-      `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+      `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
     );
 
     await act(async () => buttonWithText(document.body, "Recheck repository access")?.click());
@@ -1149,67 +1132,6 @@ describe("ThreadIntegrationAction on a desktop app that returns by itself", () =
   });
 });
 
-describe("ThreadIntegrationAction finding its target Workspace", () => {
-  // The ways it could fail: the card asks for earlier Workspaces because its
-  // target is not loaded, a newer snapshot brings the target meanwhile, and
-  // the person opens the Connect sheet. The earlier page, failing only now,
-  // replaces the card and that sheet with its error.
-  it("ignores an earlier page of Workspaces that fails after the target arrived", async () => {
-    const failed = "Earlier Workspaces could not be loaded.";
-    const loaded = oauthRequest({ provider: "github" });
-    let failPage = (_reason: Error) => {};
-    const hostClient = {
-      dispatch: vi.fn(async (command: { type: string }) => ({
-        type: command.type,
-        attemptId: createIntegrationId("oauthAttempt"),
-        launchTicket: "t".repeat(43),
-        expiresAt: "2099-01-01T00:00:00Z",
-      })),
-      getSnapshot: () => shellSnapshot(),
-      loadEarlierWorkspaces: vi.fn(
-        () =>
-          new Promise<void>((_, reject) => {
-            failPage = reject;
-          }),
-      ),
-      refresh: async () => undefined,
-      rpc: {
-        "integration.authorization.get": () => new Promise(() => {}),
-        "integration.platform.get": async () => ({ data: loaded.platform, ok: true as const }),
-        "integrations.get": async () => ({ data: loaded.dashboard, ok: true as const }),
-      },
-    };
-    shellState.current = {
-      hostClient,
-      reportActionError: vi.fn(),
-      snapshot: { machines: [], workspaceWindow: { hasMore: true, itemCount: 0 }, workspaces: [] },
-    };
-    const request = requestRecord(loaded, "Connect GitHub");
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    mountedRoots.push(root);
-    const card = () => (
-      <MemoryRouter initialEntries={["/threads/thr_test"]}>
-        <ThreadIntegrationAction request={request} threadId="thr_test" />
-      </MemoryRouter>
-    );
-    await act(async () => root.render(card()));
-    expect(container.textContent).toContain("Checking target Workspace");
-    expect(hostClient.loadEarlierWorkspaces).toHaveBeenCalledTimes(1);
-
-    shellState.current = { hostClient, reportActionError: vi.fn(), snapshot: shellSnapshot() };
-    await act(async () => root.render(card()));
-    await vi.waitFor(() => expect(buttonWithText(container, "Connect")).not.toBeNull());
-    await act(async () => buttonWithText(container, "Connect")?.click());
-    expect(document.body.textContent).toContain("Finish signing in in your browser");
-    await act(async () => failPage(new Error(failed)));
-
-    expect(document.body.textContent).toContain("Finish signing in in your browser");
-    expect(document.body.textContent).not.toContain(failed);
-  });
-});
-
 describe("ThreadIntegrationAction cancelling a sign-in", () => {
   // The ways it could fail: Cancel answers only after the sign-in it was
   // meant for has finished and the person has started another. The answer,
@@ -1270,7 +1192,6 @@ describe("ThreadIntegrationAction cancelling a sign-in", () => {
         hostClient: {
           dispatch,
           getSnapshot: () => shellSnapshot(),
-          loadEarlierWorkspaces: async () => undefined,
           refresh: async () => undefined,
           rpc: {
             "integration.authorization.get": (input: { readonly attemptId: string }) =>
@@ -1334,9 +1255,9 @@ describe("ThreadIntegrationAction reconnecting the account a request names", () 
     // The title names the integration and the row the account; the foot says
     // where access lands even beside the key form, and opens what it means.
     await openDetails(container);
-    expect(notes(container)).toContain("All tasks in Main");
+    expect(notes(container)).toContain("All your tasks");
     expect(notes(container)).toContain("Read and write · 1 operation");
-    expect(notes(container)).toContain(mainAccessDetail("Main", "Vapi API"));
+    expect(notes(container)).toContain(mainAccessDetail(mockDeploymentName, "Vapi API"));
     expect(container.textContent).not.toContain("Vapi API · Vapi API");
     const key = container.querySelector<HTMLInputElement>('input[type="password"]');
     if (!key) throw new Error("The key field is shown at once.");
@@ -1418,13 +1339,11 @@ describe("ThreadIntegrationAction adding another key beside a usable account", (
 });
 
 describe("ThreadIntegrationAction says what connecting does before it is done", () => {
-  const allows = mainAccessDetail("Main", "TMDB");
-  // The ways it could fail: on a request for Main, a key that connects also
-  // answers the request and resumes the agent with nothing said beforehand;
-  // the note promised where it is false, for a project Workspace, whose
-  // account still waits for Allow; the note on a card that offers nothing to
-  // connect; connecting on Main not answering the request after all.
-  it("tells a Main request that connecting allows it, and connecting does", async () => {
+  const allows = mainAccessDetail(mockDeploymentName, "TMDB");
+  // The ways it could fail: a key that connects also answers the request and
+  // resumes the agent with nothing said beforehand; the note on a card that
+  // offers nothing to connect; connecting not answering the request after all.
+  it("says that connecting allows the request, and connecting does", async () => {
     const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
     shellState.current = {
       hostClient: client,
@@ -1444,11 +1363,7 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     expect(container.querySelector(".chip")?.getAttribute("title")).toBe(
       requestAgentProposedDetail,
     );
-    expect(notes(container)).toEqual([
-      "All tasks in Main",
-      allows,
-      "Read and write · 4 operations",
-    ]);
+    expect(notes(container)).toEqual(["All your tasks", allows, "Read and write · 4 operations"]);
     const setup = container.querySelector('a[href="https://www.themoviedb.org/settings/api"]');
     expect(setup?.textContent).toBe("www.themoviedb.org");
     expect(actionRowLabels(container)).toEqual([["Not now", "Connect TMDB"]]);
@@ -1473,36 +1388,6 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
           (entry) => entry.kind === "request" && entry.requestId === mockTmdbProposal.requestId,
         ),
     ).toMatchObject({ outcome: "Allowed" });
-  });
-
-  it("promises nothing for a project Workspace, whose account still waits for Allow", async () => {
-    const client = new MockHostClient({ automations: "absent", latencyMs: 0 });
-    const pinned = client.getSnapshot().requests[mockVapi.threadId]?.[0];
-    if (pinned?.payload.kind !== "integration.access") {
-      throw new Error("The mock seeds the Vapi access request.");
-    }
-    const request = {
-      ...pinned,
-      payload: { ...pinned.payload, requestedConnectionId: null },
-      targetWorkspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002"),
-    };
-    shellState.current = {
-      hostClient: client,
-      reportActionError: vi.fn(),
-      snapshot: client.getSnapshot(),
-    };
-    const container = await mountThreadAction(request);
-    await openDetails(container);
-
-    expect(container.querySelector(".chip")?.getAttribute("title")).toBe(
-      requestAgentProposedDetail,
-    );
-    expect(notes(container)).toEqual([
-      "Read only",
-      "Only Customer launch gets access.",
-      "Read only · 1 operation",
-    ]);
-    expect(actionRowLabels(container)).toEqual([["Allow", "Not now"]]);
   });
 });
 
@@ -1587,7 +1472,7 @@ describe("ThreadIntegrationAction installing an agent's proposal", () => {
       "Opensteer checks the key with TMDB before saving it.",
     ]);
     expect(notes(container)).toEqual([
-      "All tasks in Main",
+      "All your tasks",
       "After it’s installed, you’ll finish setting it up and review its access here.",
     ]);
     expect(container.textContent).not.toMatch(/tmdb-api|operation|Agent proposal|https:/u);
@@ -1599,7 +1484,7 @@ describe("ThreadIntegrationAction installing an agent's proposal", () => {
     );
     await openDetails(container);
     expect(notes(container)).toContain("Read and write · 4 operations");
-    expect(notes(container)).toContain(mainAccessDetail("Main", "TMDB"));
+    expect(notes(container)).toContain(mainAccessDetail(mockDeploymentName, "TMDB"));
 
     // The access step, not the review, says what is granted; the key form
     // repeats where the key goes in the review's own words.
@@ -1772,8 +1657,8 @@ describe("ThreadIntegrationAction reviewing what a request would install", () =>
     await openDetails(resend);
     expect(["Resend REST", ...notes(resend)]).toEqual([
       "Resend REST",
-      "All tasks in Main",
-      mainAccessDetail("Main", "Resend REST"),
+      "All your tasks",
+      mainAccessDetail(mockDeploymentName, "Resend REST"),
       "Send transactional email and inspect sending domains through Resend.",
     ]);
 
@@ -1781,8 +1666,8 @@ describe("ThreadIntegrationAction reviewing what a request would install", () =>
     await openDetails(linear);
     expect(["Linear GraphQL", ...notes(linear)]).toEqual([
       "Linear GraphQL",
-      "All tasks in Main",
-      mainAccessDetail("Main", "Linear GraphQL"),
+      "All your tasks",
+      mainAccessDetail(mockDeploymentName, "Linear GraphQL"),
       "Read and update Linear issues, projects, teams, and comments.",
       "Your key is stored encrypted by your Opensteer and sent to api.linear.app when used.",
       "Opensteer checks the key with Linear GraphQL before saving it.",
@@ -1834,6 +1719,9 @@ async function mockConnections(client: MockHostClient) {
 }
 
 /** The card's own lines: where access lands, what it means once opened, and its notes. */
+/** What the mock Host calls this Deployment: the card says who gets access by it. */
+const mockDeploymentName = "Mac mini";
+
 function notes(container: HTMLElement): readonly string[] {
   return [
     ...container.querySelectorAll(".connect-card__scope, .connect-card__details p, .action-note"),
@@ -1856,38 +1744,7 @@ function actionRowLabels(container: HTMLElement): readonly (readonly string[])[]
 }
 
 describe("resolveIntegrationAccess", () => {
-  it("sends only the minimal fulfillment decision for a Main target", async () => {
-    const dispatch = vi.fn(async () => ({ type: "request.respond" as const }));
-
-    await resolveIntegrationAccess(
-      { dispatch },
-      {
-        access: "read-write",
-        accountsCount: 1,
-        installationTitle: "Gmail",
-        requestId: "request-main",
-        selectedAccount: {
-          accountIdentifier: "work@example.com",
-          displayName: "Work",
-          id: "connection-work",
-        },
-        targetKind: "main",
-      },
-    );
-
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: "request-main",
-        response: {
-          kind: "external",
-          value: { connectionId: "connection-work", decision: "fulfilled" },
-        },
-        type: "request.respond",
-      }),
-    );
-  });
-
-  it("sends the full grant decision for a project target", async () => {
+  it("sends the full grant decision", async () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" as const }));
 
     await resolveIntegrationAccess(
@@ -1902,7 +1759,6 @@ describe("resolveIntegrationAccess", () => {
           displayName: "Client",
           id: "connection-client",
         },
-        targetKind: "project",
       },
     );
 
@@ -2358,7 +2214,6 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
     hostClient: {
       dispatch: vi.fn(),
       getSnapshot: () => shellSnapshot(),
-      loadEarlierWorkspaces: async () => undefined,
       refresh: async () => undefined,
       rpc: {
         "integration.authorization.get": async () => ({
@@ -2398,7 +2253,7 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
   const container = await mountThreadAction(
     requestRecord(loaded, "Connect GitHub"),
     ready,
-    `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+    `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
   );
   return { answer: () => answer(), check, container };
 }
@@ -2406,7 +2261,7 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
 async function mountThreadAction(
   request: Parameters<typeof ThreadIntegrationAction>[0]["request"],
   ready: string | null = null,
-  path = "/threads/thr_test",
+  path = "/tasks/thr_test",
 ) {
   const shell = shellState.current as {
     hostClient: {
@@ -2553,7 +2408,6 @@ function requestRecord(loaded: LoadedAccessRequest, title: string) {
     payload: loaded.request,
     presentation: { kind: "external", title },
     status: "pending",
-    targetWorkspaceId: "wsp_support",
   } as unknown as Request;
 }
 
@@ -2566,14 +2420,9 @@ function computerRequestRecord() {
     payload: computerRequest().request,
     presentation: { kind: "external", title: "Connect Messages" },
     status: "pending",
-    targetWorkspaceId: "wsp_support",
   } as never;
 }
 
 function shellSnapshot() {
-  return {
-    machines: [],
-    workspaceWindow: { hasMore: false, itemCount: 1 },
-    workspaces: [{ id: "wsp_support", kind: "project", name: "Support" }],
-  } as unknown as HostSnapshot;
+  return { machines: [] } as unknown as HostSnapshot;
 }

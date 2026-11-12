@@ -27,7 +27,7 @@ describe("integration authorization route tracking", () => {
 
     expect(rendered.router.state.location).toMatchObject({
       hash: "#request-9",
-      pathname: "/threads/thread_123",
+      pathname: "/tasks/thread_123",
       search: `?panel=apps&integrationAttempt=${attemptId}`,
       state: { routeKey: "same-entry" },
     });
@@ -78,7 +78,7 @@ describe("integration authorization route tracking", () => {
 
     expect(rendered.router.state.location).toMatchObject({
       hash: "#request-9",
-      pathname: "/threads/thread_123",
+      pathname: "/tasks/thread_123",
       search: "?panel=apps",
       state: { routeKey: "same-entry" },
     });
@@ -99,7 +99,7 @@ function renderTracking(): {
     initialEntries: [
       {
         hash: "#request-9",
-        pathname: "/threads/thread_123",
+        pathname: "/tasks/thread_123",
         search: "?panel=apps",
         state: { routeKey: "same-entry" },
       },

@@ -44,7 +44,7 @@ describe("the review's findings", () => {
     await mount((source) => {
       const getSnapshot = source.getSnapshot.bind(source);
       const thread = getSnapshot().threads.find(
-        (entry) => entry.listed && entry.id !== getSnapshot().homeThreadId,
+        (entry) => entry.listed && entry.purpose === "task",
       )!;
       const cache = new WeakMap<HostSnapshot, HostSnapshot>();
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
@@ -56,7 +56,7 @@ describe("the review's findings", () => {
         }
         return offline;
       });
-      return `/threads/${thread.id}`;
+      return `/tasks/${thread.id}`;
     });
     const refresh = vi.spyOn(client, "refresh").mockResolvedValue();
     expect(element(".thread__connection-label").textContent).toBe("Unavailable");
@@ -70,10 +70,12 @@ describe("the review's findings", () => {
       (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
     )!;
     await settle(100);
-    const answer = deferred<unknown>();
-    vi.spyOn(client, "dispatch").mockImplementationOnce(
-      async () => (await answer.promise) as never,
-    );
+    const answer = deferred<void>();
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
+      await answer.promise;
+      return real(...args);
+    });
     const field = element<HTMLTextAreaElement>("[data-composer-input]");
     await write(field, "First");
     await click(element(".composer__send"));
@@ -86,19 +88,23 @@ describe("the review's findings", () => {
     expect(element(".context-chip__title").textContent).toBe(place.title);
     // Removed while the first send waits: a choice of the second draft's that sticks.
     await click(element(".context-chip__remove"));
-    await act(async () => answer.resolve({ type: "thread.sendMessage" }));
+    await act(async () => answer.resolve());
     await settle(150);
-    expect(field.value).toBe("Second draft typed before acknowledgement");
+    // The answer opens the task it started; the second draft stays where it was written.
+    expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
+    await act(async () => goTo!(-1));
+    await settle(100);
+    expect(element<HTMLTextAreaElement>("[data-composer-input]").value).toBe(
+      "Second draft typed before acknowledgement",
+    );
     expect(document.querySelector(".context-chip")).toBeNull();
   });
 
   it("2 · an explicit pick still being read holds Send, can be cancelled, and never lands in a later draft", async () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find(
-        (thread) => thread.listed && thread.id !== snapshot.homeThreadId,
-      )!;
-      return `/threads/${task.id}${tabSearch(pageTab(source))}`;
+      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
+      return `/tasks/${task.id}${tabSearch(pageTab(source))}`;
     });
     const place = pageTab();
     if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
@@ -171,13 +177,13 @@ describe("the review's findings", () => {
     // Choosing a conversation meanwhile keeps the pending tab selected.
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
     expect(element(".place").textContent).toContain("example.com");
     await act(async () => gates[0]!.resolve());
     await settle(50);
     // The answer shows its tab in place of the start page and keeps the conversation now open.
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
     // Asked again, then another place chosen before the answer: the choice stands.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
@@ -192,22 +198,10 @@ describe("the review's findings", () => {
     await settle(50);
     expect(history.length).toBe(before);
     expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
   });
 
-  it("4 · Projects and Automations links keep the place in the middle", async () => {
-    await mount((source) => `/projects${tabSearch(pageTab(source))}`);
-    const place = pageTab();
-    const middle = element(".place");
-    await click(element(".project-row"));
-    expect(history.at(-1)!.path).toMatch(/^\/workspaces\//u);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    expect(element(".place")).toBe(middle);
-    act(() => root?.unmount());
-    setRoot(null);
-    client.dispose();
-    resetHistory();
-    document.body.replaceChildren();
+  it("4 · Automations links keep the place in the middle", async () => {
     await mount((source) => `/automations${tabSearch(pageTab(source))}`);
     await settle(200);
     const sameMiddle = element(".place");
@@ -222,7 +216,15 @@ describe("the review's findings", () => {
   });
 
   it("5 · a phone's place offers Hide computer: one entry back to the conversation, draft kept", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`, { width: 390 });
+    await mount(
+      (source) => {
+        const task = source
+          .getSnapshot()
+          .threads.find((thread) => thread.listed && thread.purpose === "task")!;
+        return `/tasks/${task.id}${tabSearch(pageTab(source))}`;
+      },
+      { width: 390 },
+    );
     const field = element<HTMLTextAreaElement>("[data-composer-input]");
     await write(field, "Keep this");
     const before = history.length;
@@ -247,16 +249,14 @@ describe("the review's findings", () => {
           release();
         };
       });
-      const run = source
-        .getSnapshot()
-        .runQueue.find((run) => run.threadId === source.getSnapshot().homeThreadId);
+      const run = source.getSnapshot().runQueue.find((run) => run.status === "running");
       const latest = run ? source.runPlace(run.id) : null;
       const other = placeList(source.getSnapshot()).find(
         (item) =>
           item.kind === "browser" &&
           item.key !== (latest ? placeIdentityKey(latest.data.place) : null),
       )!;
-      return `/${tabSearch(other)}`;
+      return `/tasks/${run!.threadId}${tabSearch(other)}`;
     });
     // The viewfinder takes its lease in an effect after mount; under a loaded
     // suite that can outlast any fixed pause, so each step waits for the lease
@@ -368,13 +368,13 @@ describe("the review's findings", () => {
   });
 
   it("10 · the count's exact request is focused once its panel can render, behind another one or late", async () => {
-    // Behind: Opensteer's own request is first; the counted one waits below it.
+    // Behind: the task's own request is first; the counted one waits below it.
     await mount((source) => {
-      const snapshot = source.getSnapshot();
-      const waiting = snapshot.waitingRequests.find(({ assignments }) =>
-        assignments.some(({ parentThreadId }) => parentThreadId === snapshot.homeThreadId),
-      )!;
-      return { pathname: "/", state: { focusRequest: waiting.request.id } };
+      const waiting = source.getSnapshot().waitingRequests[0]!;
+      return {
+        pathname: `/tasks/${waiting.request.originatingThreadId}`,
+        state: { focusRequest: waiting.request.id },
+      };
     });
     await settle(100);
     const target = (history.at(-1) && document.activeElement?.closest("[data-request-id]")) ?? null;
@@ -394,12 +394,10 @@ describe("the review's findings", () => {
     const listeners = new Set<() => void>();
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const [threadId, requests] = Object.entries(snapshot.requests).find(
-        ([id, list]) =>
-          id !== snapshot.homeThreadId &&
-          list.some(
-            (request) => request.status === "pending" && request.presentation.kind === "choice",
-          ),
+      const [threadId, requests] = Object.entries(snapshot.requests).find(([, list]) =>
+        list.some(
+          (request) => request.status === "pending" && request.presentation.kind === "choice",
+        ),
       )!;
       const request = requests.find(
         (item) => item.status === "pending" && item.presentation.kind === "choice",
@@ -434,7 +432,7 @@ describe("the review's findings", () => {
           };
         return copy.to;
       });
-      return { pathname: `/threads/${threadId}`, state: { focusRequest: request.id } };
+      return { pathname: `/tasks/${threadId}`, state: { focusRequest: request.id } };
     });
     await settle(100);
     expect(document.activeElement?.closest("[data-request-id]")).toBeNull();
@@ -452,17 +450,15 @@ describe("the review's findings", () => {
   it("11 · a place-only choice keeps the conversation's message anchor", async () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find(
-        (thread) => thread.listed && thread.id !== snapshot.homeThreadId,
-      )!;
-      return `/threads/${task.id}?messageId=msg_anchor`;
+      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
+      return `/tasks/${task.id}?messageId=msg_anchor`;
     });
     const place = pageTab();
     await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
     expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe("msg_anchor");
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // Changing conversation leaves it behind.
-    await click(element(".side-home__main"));
+    await click(element('[aria-label="New task"]'));
     expect(new URLSearchParams(history.at(-1)!.search).has("messageId")).toBe(false);
   });
 });
@@ -486,22 +482,16 @@ describe("stopping a task and finishing it: one Stop", () => {
   /** A task the person starts themselves, from New task, still running. */
   async function startOwnTask(text: string): Promise<string> {
     // Paced so its scripted run is still working while the person acts on it.
-    await mount("/new", { latencyMs: 3_000 });
+    await mount("/", { latencyMs: 3_000 });
     await write(element<HTMLTextAreaElement>("[data-composer-input]"), text);
     await click(element(".composer__send"));
-    for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/threads/"); tries += 1)
+    for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
       await settle(50);
-    const threadId = decodeURIComponent(history.at(-1)!.path.replace("/threads/", ""));
+    const threadId = decodeURIComponent(history.at(-1)!.path.replace("/tasks/", ""));
     expect(workerAssignment(client.getSnapshot().assignments, threadId)).toBeNull();
     expect(thread(threadId).status).toBe("running");
     return threadId;
   }
-
-  it("Chat offers no Done action", async () => {
-    await mount("/");
-    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
-    expect(document.querySelector(".conv-header__menu")).toBeNull();
-  });
 
   it("confirms shared Done on running work and keeps the composer to reopen it", async () => {
     const own = await startOwnTask("Compare two coworking passes");
@@ -525,7 +515,6 @@ describe("stopping a task and finishing it: one Stop", () => {
     await settle(100);
     expect(thread(own).doneAt).toBeNull();
     expect(document.querySelector(".input-surface__done")).toBeNull();
-    expect(sidebarRow(own)).not.toBeNull();
   });
 
   it("dismisses Stop when its run ends and never turns that review into a different action", async () => {
@@ -542,18 +531,16 @@ describe("stopping a task and finishing it: one Stop", () => {
     expect(document.querySelector(".shell-error, .toast--error")).toBeNull();
   });
 
-  it("a task stopped from its composer's square moves to Done from its row, still paused", async () => {
+  it("a task stopped from its composer's square moves to Done, never resuming its paused input", async () => {
     const own = await startOwnTask("Price check standing desks");
-    expect(sidebarRow(own)?.querySelector(".side-row-action")).not.toBeNull();
     await click(button("Stop the run")!);
     await settle(100);
     expect(thread(own).inputQueuePaused).toBe(true);
     const resume = vi.spyOn(client, "resumeThreadInputQueue");
-    const action = element<HTMLButtonElement>(".side-row-action", sidebarRow(own)!);
-    expect(action.getAttribute("aria-label")).toBe(`Mark Done: ${thread(own).title}`);
-    await click(action);
+    await openMenu();
+    await click(menuRow("Mark Done")!);
     await settle(100);
-    expect(sidebarRow(own)).toBeNull();
+    expect(thread(own).doneAt).not.toBeNull();
     expect(resume).not.toHaveBeenCalled();
     expect(thread(own).inputQueuePaused).toBe(false);
   });
@@ -571,12 +558,11 @@ describe("stopping a task and finishing it: one Stop", () => {
           modelSelection: source.modelSelection,
           parentThreadId: parent,
           title: "Shortlist venues",
-          workspaceId: source.workspaceId,
         })
       ).id;
     });
     expect(thread(worker).listed).toBe(false);
-    await act(async () => goTo!(`/threads/${worker}`));
+    await act(async () => goTo!(`/tasks/${worker}`));
     await settle(100);
     await openMenu();
     await click(menuRow("Mark Done")!);
@@ -710,7 +696,7 @@ describe("the v7 web review's findings", () => {
 
   it("M2 · the person's own view of the phone a task holds leaves the task's viewfinder on its own session", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await settle(200);
     const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
     const before = client.runPlace(runId)!;
@@ -745,7 +731,7 @@ describe("the v7 web review's findings", () => {
 
   it("a phone's tab stays live through its task's end, without waking it, until the person closes it", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await settle(200);
     const phone = () => placeList(client.getSnapshot()).find((place) => place.kind === "phone");
     const held = phone()!;
@@ -926,6 +912,8 @@ describe("a computer that can't show its apps, on the start page", () => {
     // Typing still finds Keynote and says why where Enter's action would be; the keyboard passes
     // over it to the search, and choosing it asks nothing.
     const field = element<HTMLInputElement>(".start-page__input");
+    // Home's composer has the keyboard; the person clicks into the search.
+    await act(async () => field.focus());
     await typeInto(field, "keynote");
     const keynote = [...document.querySelectorAll<HTMLElement>(".start-result")].find(
       (row) => row.querySelector(".start-result__title")?.textContent === "Keynote",
@@ -987,6 +975,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     await act(async () => client.setComputerUseReadiness(mini.id, "permission-required"));
     await settle();
     const field = element<HTMLInputElement>(".start-page__input");
+    await act(async () => field.focus());
     await typeInto(field, "notes");
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));

@@ -817,47 +817,6 @@
   min-width: 0;
 }
 
-/* Workspaces hang under their site, aligned with its name. */
-.chrome-site__workspaces {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: 0 0 0 calc(34px + var(--space-12));
-  padding: 0;
-  list-style: none;
-}
-
-.chrome-site__workspace {
-  display: flex;
-  align-items: center;
-  gap: var(--space-8);
-  min-height: 32px;
-  padding: 0 0 0 var(--space-10);
-  border-left: 1px solid var(--line-strong);
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-}
-
-.chrome-site__workspace > svg {
-  width: 14px;
-  height: 14px;
-  color: var(--muted);
-}
-
-.chrome-site__workspace-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 560px) {
-  .chrome-site__workspaces {
-    margin-left: 0;
-  }
-}
-
 .chrome-settings__cancel {
   align-self: flex-end;
   margin-top: calc(var(--space-8) * -1);

@@ -35,6 +35,7 @@ import {
   type ReactNode,
 } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { receiveDesktopTeamLinks, teamLinkPath } from "../desktop/team-links.js";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -190,17 +191,17 @@ export type LocalExecutionAction =
   | { readonly kind: "add"; readonly name: string; readonly runAgents: boolean }
   | { readonly kind: "set-run-agents"; readonly runAgents: boolean };
 
+/** What another computer lends when it joins: agents run only on the hosting computer. */
+export const localEnrollmentModules = ["browser", "integrations", "messaging", "shell"] as const;
+
 /**
  * The Deployment whose local Runner slot this window supervises, if any.
  *
  * Every Deployment a desktop attaches to has a slot — a Personal one reached
- * over its access route can be joined as a reachable computer just like a
- * server. The one exception is the Personal Deployment hosted on this very
- * computer: there the local Runner is its Main, which the Deployment owns
- * rather than a computer anybody adds or removes.
+ * over its access route can be joined as a reachable computer. The one
+ * exception is the Personal Deployment hosted on this very computer: its
+ * Runner is the hosting computer, which nobody adds or removes.
  */
-export const localEnrollmentModules = ["shell"] as const;
-
 export function localRunnerSlotDeploymentId(input: {
   readonly desktopBridge: OpensteerDesktopBridge | null;
   readonly desktopDeployment: DesktopDeploymentSummary | null;
@@ -251,6 +252,11 @@ export function useShell(): ShellContext {
   const shell = useContext(ShellContext);
   if (!shell) throw new Error("The shell is not available here.");
   return shell;
+}
+
+/** The personal shell, where there is one: a team's own web app has none. */
+export function useOptionalShell(): ShellContext | null {
+  return useContext(ShellContext);
 }
 
 /**
@@ -359,10 +365,7 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  const webLinkReady = desktopWebLinksReady(
-    true,
-    snapshot,
-  );
+  const webLinkReady = desktopWebLinksReady(true, snapshot);
   useEffect(() => {
     if (
       !webLinkReady ||
@@ -418,6 +421,14 @@ export function AppShell({
     hostClient,
     toast,
   ]);
+  // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
+  const navigateTo = useNavigate();
+  useEffect(() => {
+    if (!suppliedDesktopBridge) return;
+    return receiveDesktopTeamLinks(suppliedDesktopBridge, (url) => {
+      void navigateTo(teamLinkPath(url));
+    });
+  }, [navigateTo, suppliedDesktopBridge]);
   // The remembered place reopens once per viewer for the shell's life: Settings
   // unmounts the workspace's keys, and coming back from it is not a launch.
   const placeRestored = useRef<string | null>(null);
@@ -1222,15 +1233,20 @@ function WorkspaceKeys({
   const userId = useHostSelector(hostClient, selectUserId);
   const canonicalized = useRef<string | null>(null);
   const restoreVersion = useHostSelector(hostClient, (snapshot) => snapshot.tabRestoreVersion);
+  // The restore answers after a read; by then the address may have moved on
+  // (Home names its draft), and the place joins that address, not the old one.
+  const address = useRef({ pathname, search });
+  address.current = { pathname, search };
   useEffect(() => {
     if (!known || !deploymentId || !userId || restoreVersion !== 1) return;
     const viewer = `${deploymentId}:${userId}`;
     if (restored.current === viewer) return;
     restored.current = viewer;
+    const opened = address.current;
     if (
-      pathname === "/live" ||
-      new URLSearchParams(search).has("panel") ||
-      new URLSearchParams(search).has("browser")
+      opened.pathname === "/live" ||
+      new URLSearchParams(opened.search).has("panel") ||
+      new URLSearchParams(opened.search).has("browser")
     )
       return;
     const scope = { deploymentId, userId };
@@ -1254,23 +1270,24 @@ function WorkspaceKeys({
           if (read?.tabs?.some((tab) => tab.id === remembered.tabId)) sessionId = read.session.id;
         }
         if (cancelled) return;
-        const params = new URLSearchParams(search);
+        const now = address.current;
+        const params = new URLSearchParams(now.search);
         params.set("panel", "browser");
         if (sessionId !== null) {
           params.set("browser", sessionId);
           params.set("browserTab", remembered.tabId ?? "");
         }
-        void navigate({ pathname, search: `?${params}` }, { replace: true });
+        void navigate({ pathname: now.pathname, search: `?${params}` }, { replace: true });
       })().catch(() => undefined);
     } else if (rememberedNewTab(scope)) {
-      const params = new URLSearchParams(search);
+      const params = new URLSearchParams(opened.search);
       params.set("panel", "browser");
-      void navigate({ pathname, search: `?${params}` }, { replace: true });
+      void navigate({ pathname: opened.pathname, search: `?${params}` }, { replace: true });
     }
     return () => {
       cancelled = true;
     };
-  }, [deploymentId, hostClient, known, navigate, pathname, restoreVersion, search, userId]);
+  }, [deploymentId, hostClient, known, navigate, restoreVersion, userId]);
   useEffect(() => {
     // A redirect owns its own address change; nothing else rewrites it meanwhile.
     if (canonicalized.current === key || pathname === "/live") return;

@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { requestSettlementLabel } from "@opensteer/client/host";
 import { ActionNote } from "./action-rows.js";
 import { useComputerAppApproval } from "./computer-apps/computer-app-approval.js";
@@ -48,7 +47,7 @@ export function ThreadComputerAppAccessAction({
     onThatMac:
       machine !== undefined &&
       fullAccessOnThisMac({
-        hostsDeployment: hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
+        hostsDeployment: hostsDeployment(machine),
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         inDesktopApp: desktopBridge !== null,
         lentByThisDesktop: localExecutionStatus?.runner.runnerId === runnerId,

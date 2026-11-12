@@ -4,6 +4,14 @@ import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
 /** The one moment every preview record claims, so nothing in it reads as live. */
 export const previewDate = "2026-08-12T19:00:00.000Z";
 
+const previewBrowser = {
+  available: false,
+  groups: { rows: [], complete: true },
+  placements: [],
+  profiles: [],
+  tabs: [],
+};
+
 /**
  * A complete, valid bootstrap for one selected place, with nothing in it but
  * the place itself. The Electron place-list smoke serves it too, so the real
@@ -15,59 +23,20 @@ export function previewBootstrap(
     readonly environmentId: ReturnType<typeof createId<"environment">>;
     readonly runnerId: ReturnType<typeof createId<"runner">>;
     readonly userId: ReturnType<typeof createId<"user">>;
-    readonly workspaceId: ReturnType<typeof createId<"workspace">>;
   },
 ) {
-  const workspace = previewWorkspace(selected, ids.workspaceId, ids.environmentId);
   return {
-    deploymentPolicy:
-      selected.kind === "personal"
-        ? {
-            ownership: "single-user",
-            personalRemoteAccess: true,
-            nativeWebLinks: true,
-            localOwnerClaim: true,
-            deploymentOwnsMainComputer: true,
-            nativePasswords: true,
-            deploymentComputerAccess: true,
-            computerExecutionControls: false,
-            sharing: false,
-            deploymentWideMachineReach: false,
-            serviceManagement: false,
-            runnerEnrollmentMode: "reach-only",
-            projectConsent: "owner-wide",
-            localRunnerDefaultModules: ["shell"],
-          }
-        : {
-            ownership: "members",
-            personalRemoteAccess: false,
-            nativeWebLinks: false,
-            localOwnerClaim: false,
-            deploymentOwnsMainComputer: false,
-            nativePasswords: false,
-            deploymentComputerAccess: false,
-            computerExecutionControls: true,
-            sharing: true,
-            deploymentWideMachineReach: true,
-            serviceManagement: true,
-            runnerEnrollmentMode: "unrestricted",
-            projectConsent: "per-project",
-            localRunnerDefaultModules: ["agents", "browser", "shell"],
-          },
     deploymentId: selected.id,
-    notificationPreferences: [{ workspaceId: workspace.id, muted: false, revision: "0" }],
-    browser: {
-      profileGrants: [],
-      available: false,
-      placements: [],
-      profiles: [],
-      groups: { rows: [], complete: true },
-      tabs: [],
+    sessionId: createId("authSession"),
+    personalSettings: {
+      ownerId: ids.userId,
+      agentHome: { computerId: ids.runnerId, path: "/Users/preview/Opensteer" },
+      voiceThreadId: null,
     },
-    deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
-      kind: selected.kind === "personal" ? "personal" : "server",
-    },
+    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+    appTabs: [],
+    browser: previewBrowser,
+    latestPlaces: [],
     environments: [
       {
         capabilities: ["filesystem", "host-apps", "network-egress"],
@@ -75,26 +44,24 @@ export function previewBootstrap(
         harnessAuthenticationAllowed: true,
         harnessCatalogs: [],
         harnessDrivers: [],
-        providerStateModes: selected.kind === "personal" ? ["ambient", "isolated"] : ["isolated"],
+        providerStateModes: ["ambient", "isolated"],
         id: ids.environmentId,
         kind: "main",
         name: "This Computer",
         runnerId: ids.runnerId,
         status: "connected",
-        workspaceBackings: ["local-directory"],
+        can: { executeTasks: true },
       },
     ],
+    executionPreferences: emptyExecutionPreferences,
+    quietTaskDays: 7,
     harnesses: [],
-    homeWorkspace: workspace,
     identityConfig: {
-      deployment: {
-        kind: selected.kind === "self-hosted" ? "self-hosted" : "personal",
-        name: selected.name,
-      },
+      deployment: { kind: "personal", name: selected.name },
       emailDeliveryAvailable: true,
-      exposure: selected.kind === "personal" ? "loopback" : "networked",
+      exposure: "loopback",
       localPasswordEnabled: false,
-      machineOwner: selected.kind === "personal",
+      machineOwner: true,
       oidcProviders: [],
       passkeysEnabled: false,
       portalOrigin: null,
@@ -113,16 +80,15 @@ export function previewBootstrap(
         fullDiskAccess: false,
         id: ids.runnerId,
         lastSeenAt: previewDate,
-        localWorkspaces: 1,
         modules: { agents: { checkedAt: previewDate, detail: null, readiness: "ready" } },
         name: "Preview MacBook",
         ownership: "deployment",
         pinnedThreads: 1,
         revocable: false,
         status: "online",
-        unlinkedLocalFolders: 0,
       },
     ],
+    sessionSurface: "canonical",
     user: {
       disabledAt: null,
       displayName: "Preview User",
@@ -130,45 +96,28 @@ export function previewBootstrap(
       emailVerified: true,
       id: ids.userId,
       image: null,
-      instanceRole: "administrator",
-    },
-    executionPreferences: emptyExecutionPreferences,
-    workspaceSharingAvailable: false,
-    workspaces: [workspace],
-    workspaceWindow: {
-      byteCount: 2,
-      hasMore: false,
-      itemCount: 1,
-      nextBefore: null,
-      totalItems: 1,
     },
   };
 }
 
-export function previewWorkspace(
-  selected: DesktopDeploymentSummary,
-  workspaceId: ReturnType<typeof createId<"workspace">>,
-  environmentId: ReturnType<typeof createId<"environment">>,
-) {
-  const local = selected.kind === "personal" && selected.onThisComputer;
+/** An empty personal stream snapshot: no tasks, nothing waiting. */
+export function previewDeploymentSnapshot(deploymentId: string) {
+  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
+  const page = { readStates: [], tasks: [], window };
   return {
-    capacity: { kind: "host-filesystem" as const },
-    createdAt: previewDate,
-    id: workspaceId,
-    homeThreadId: createId("thread"),
-    voiceThreadId: null,
-    icon: null,
-    kind: "main" as const,
-    location: local
-      ? { environmentId, kind: "machine" as const, name: "This Computer" }
-      : {
-          kind: "machine" as const,
-          environmentId,
-          name: null,
-        },
-    name: "Main",
-    status: "ready" as const,
-    storageIssue: null,
-    updatedAt: previewDate,
+    tasks: { recent: page, active: page, done: page },
+    needsYou: { count: 0, entries: [], window },
+    resources: { appTabs: [], browser: previewBrowser },
+    readStates: [],
+    messages: [],
+    messageWindows: [],
+    pendingRequests: [],
+    pendingRequestWindow: window,
+    runQueue: [],
+    sequence: "0",
+    serializedBytes: 2,
+    threadWindow: window,
+    threads: [],
+    deploymentId,
   };
 }

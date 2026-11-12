@@ -19,36 +19,21 @@ afterEach(() => {
   host?.dispose();
   document.body.replaceChildren();
 });
-it.each([true, false])(
-  "uses Main ownership independently of member grouping: %s",
-  async (ownsMain) => {
-    host = new MockHostClient({ latencyMs: 0 });
-    const snapshot = host.getSnapshot();
-    shell.value = {
-      hostClient: host,
-      snapshot: {
-        ...snapshot,
-        deploymentPolicy: {
-          ...snapshot.deploymentPolicy,
-          ownership: ownsMain ? "members" : "single-user",
-          deploymentOwnsMainComputer: ownsMain,
-        },
-      },
-      desktopBridge: null,
-    };
-    root = createRoot(document.body.appendChild(document.createElement("div")));
-    await act(async () =>
-      root!.render(
-        <MemoryRouter>
-          <AgentDevicesSection />
-        </MemoryRouter>,
-      ),
-    );
-    await vi.waitFor(() =>
-      expect(document.querySelectorAll(".settings-device-list li").length).toBeGreaterThan(0),
-    );
-    expect(
-      [...document.querySelectorAll(".chip")].some((chip) => chip.textContent === "Main"),
-    ).toBe(ownsMain);
-  },
-);
+it("marks the computer Opensteer runs on", async () => {
+  host = new MockHostClient({ latencyMs: 0 });
+  shell.value = { hostClient: host, snapshot: host.getSnapshot(), desktopBridge: null };
+  root = createRoot(document.body.appendChild(document.createElement("div")));
+  await act(async () =>
+    root!.render(
+      <MemoryRouter>
+        <AgentDevicesSection />
+      </MemoryRouter>,
+    ),
+  );
+  await vi.waitFor(() =>
+    expect(document.querySelectorAll(".settings-device-list li").length).toBeGreaterThan(0),
+  );
+  expect(
+    [...document.querySelectorAll(".chip")].filter((chip) => chip.textContent === "Runs Opensteer"),
+  ).toHaveLength(1);
+});

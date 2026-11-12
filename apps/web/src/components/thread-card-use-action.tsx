@@ -19,12 +19,10 @@ export function CardUseRequestBody({
   client,
   disabled,
   request,
-  workspaceName,
 }: {
   readonly client: PasswordSignInRequestClient;
   readonly disabled: boolean;
   readonly request: Request;
-  readonly workspaceName: string;
 }) {
   const pending = request.status === "pending";
   const chooser = useHostSignIn(client, pending && !disabled ? request.id : null);
@@ -139,7 +137,7 @@ export function CardUseRequestBody({
               : "Loading cards…"}
         </p>
       )}
-      <p>{cardUseConsent(workspaceName, payload.site, payload.expiresAt)}</p>
+      <p>{cardUseConsent(payload.site, payload.expiresAt)}</p>
       <span className="sign-in-card__expiry">{passwordSignInExpiry(payload.expiresAt, now)}</span>
       {chooser.readError ? (
         <p role="alert">

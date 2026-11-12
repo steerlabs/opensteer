@@ -519,7 +519,7 @@ function ConversationMenu({
                 <span className="picker__glyph">
                   <Icon name="expand" />
                 </span>
-                <span className="picker__label">Expand chat</span>
+                <span className="picker__label">Expand</span>
                 <kbd aria-hidden className="kbd">
                   ⌘.
                 </kbd>
@@ -553,7 +553,8 @@ export function AreaHeader({
   mark,
   title,
 }: {
-  readonly hostClient: HostClient;
+  /** The personal Host, which Show computer opens; a team's own web app has none. */
+  readonly hostClient: HostClient | null;
   readonly mark?: ReactNode;
   readonly title: string;
 }) {
@@ -587,7 +588,7 @@ export function AreaHeader({
             )}
           </h1>
         </div>
-        {work || phone ? null : (
+        {work || phone || !hostClient ? null : (
           <div className="conv-header__end">
             <div className="conv-header__actions">
               <button

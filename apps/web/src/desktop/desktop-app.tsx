@@ -20,6 +20,8 @@ import { thisComputerLabel } from "./places.js";
 import { pendingSetupStep } from "../components/first-run/setup-memory.js";
 import { SetupOpening } from "../components/first-run/setup-opening.js";
 import { StartupFailure } from "../components/onboarding-card.js";
+import { StartFreshScreen } from "../components/start-fresh-screen.js";
+import { useStartFresh } from "./start-fresh.js";
 import {
   createDesktopHostFetch,
   createDesktopHostWebSocketFactory,
@@ -117,6 +119,10 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
   // opens. A later launch resumes only a setup left unfinished; after that,
   // setup stays one menu away.
   const [settingUpHere, setSettingUpHere] = useState(false);
+  // Data an earlier Opensteer left, which this one can't open: offered a fresh
+  // start until the person chooses another way on ("Not now").
+  const startFresh = useStartFresh(bridge, snapshot?.personalSetup?.state === "repair-required");
+  const [startFreshDeclined, setStartFreshDeclined] = useState(false);
   // The notification that was clicked. It names one Deployment, which this
   // window may not be showing, so it waits here — through the selection and any
   // sign-in that follows — until the app for that Deployment can open it.
@@ -286,6 +292,20 @@ function DesktopAppSurfaces({ bridge }: { readonly bridge: OpensteerDesktopBridg
         setFormError(errorDetail(reason, "The desktop operation could not be completed.")),
       );
     };
+
+    const fresh = startFresh.state;
+    if (fresh.phase === "checking") return <DesktopLoadingScreen />;
+    if ((fresh.phase === "offer" && !startFreshDeclined) || fresh.phase === "starting") {
+      return (
+        <StartFreshScreen
+          error={fresh.phase === "offer" ? fresh.error : null}
+          moves={fresh.data.entries}
+          onNotNow={() => setStartFreshDeclined(true)}
+          onStartFresh={startFresh.startFresh}
+          working={fresh.phase === "starting"}
+        />
+      );
+    }
 
     if (
       personalLoadFailure &&

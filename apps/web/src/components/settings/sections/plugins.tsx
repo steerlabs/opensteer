@@ -30,12 +30,10 @@ import {
   pluginCatalogMatches,
   pluginCatalogProducts,
   pluginCatalogToAdd,
-  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginPath,
   pluginTargetFromPath,
-  pluginPlacementLabel,
   pluginAccountRows,
   pluginsPageRows,
   fixDeviceDraftText,
@@ -75,8 +73,8 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
   const { hostClient, snapshot } = useShell();
   const returnedAttempt = new URLSearchParams(search).get("integrationAttempt");
   async function resumeConsent(connectionId: string) {
-    if (!returnedAttempt || !snapshot.homeWorkspaceId || !snapshot.user) return;
-    const key = pluginConsentKey(snapshot.homeWorkspaceId, snapshot.user.id, returnedAttempt);
+    if (!returnedAttempt || !snapshot.deploymentId || !snapshot.user) return;
+    const key = pluginConsentKey(snapshot.deploymentId, snapshot.user.id, returnedAttempt);
     const consent = readPluginConsent(key);
     if (!consent) return;
     await completePluginConsent(hostClient, consent, connectionId, (next) =>
@@ -85,9 +83,7 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
     sessionStorage.removeItem(key);
   }
   const [handlingReturn] = useState(() =>
-    ["integrationAttempt", "provider", "workspace"].some((key) =>
-      new URLSearchParams(search).has(key),
-    ),
+    ["integrationAttempt", "provider"].some((key) => new URLSearchParams(search).has(key)),
   );
   const suffix = pathname.slice("/settings/plugins".length).split("/").filter(Boolean);
   // The catalog lives on this page; its old address still lands on it.
@@ -98,14 +94,7 @@ export function PluginsSection({ view }: { readonly view: SettingsView }) {
       (suffix[1] && decodeTargetSegment(suffix[1])) || "",
     );
     if (target)
-      return (
-        <PluginDetail
-          key={pathname}
-          target={target}
-          view={view}
-          onReturnConnected={resumeConsent}
-        />
-      );
+      return <PluginDetail key={pathname} target={target} onReturnConnected={resumeConsent} />;
   }
   if (handlingReturn)
     return (
@@ -193,7 +182,6 @@ function PluginOverview({
                       <OverviewRow
                         key={pluginPath(row.target)}
                         row={row}
-                        view={view}
                         reload={overview.reload}
                       />
                     ))}
@@ -210,7 +198,6 @@ function PluginOverview({
                       <OverviewRow
                         key={pluginPath(row.target)}
                         row={row}
-                        view={view}
                         reload={overview.reload}
                       />
                     ))}
@@ -354,19 +341,17 @@ function PluginCatalog({
           ) : null}
         </>
       )}
-      {view.administrator ? (
-        <button className="settings-catalog__own" onClick={() => setAddingOwn(true)} type="button">
-          <span aria-hidden className="settings-catalog__own-glyph">
-            <Icon name="plus" />
+      <button className="settings-catalog__own" onClick={() => setAddingOwn(true)} type="button">
+        <span aria-hidden className="settings-catalog__own-glyph">
+          <Icon name="plus" />
+        </span>
+        <span className="card__row-body">
+          <span className="card__row-title">Add your own</span>
+          <span className="card__row-detail">
+            A plugin folder on {view.name}, or an MCP server’s address
           </span>
-          <span className="card__row-body">
-            <span className="card__row-title">Add your own</span>
-            <span className="card__row-detail">
-              A plugin folder on {view.name}, or an MCP server’s address
-            </span>
-          </span>
-        </button>
-      ) : null}
+        </span>
+      </button>
       {adding ? (
         <Dialog
           labelledBy="add-plugin-title"
@@ -376,10 +361,7 @@ function PluginCatalog({
             onChanged();
           }}
         >
-          <PluginAddSheet
-            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
-            product={adding}
-          />
+          <PluginAddSheet product={adding} />
         </Dialog>
       ) : null}
       {addingOwn ? (
@@ -477,15 +459,7 @@ function EnableSwitch({ row, reload }: { row: PluginRow; reload: () => void }) {
     </>
   );
 }
-function OverviewRow({
-  row,
-  view,
-  reload,
-}: {
-  row: PluginRow;
-  view: SettingsView;
-  reload: () => void;
-}) {
+function OverviewRow({ row, reload }: { row: PluginRow; reload: () => void }) {
   const state = pluginState(row);
   const { snapshot } = useShell();
   const waitingDevice =
@@ -511,12 +485,9 @@ function OverviewRow({
                 ? `${waitingDevice} · waiting`
                 : "Waiting"
               : state.label
-            : [
-                row.accountCount > 1 ? `${row.accountCount} accounts` : null,
-                pluginPlacementLabel(row, view.deploymentPolicy?.projectConsent === "owner-wide"),
-              ]
-                .filter(Boolean)
-                .join(" · ")}
+            : row.accountCount > 1
+              ? `${row.accountCount} accounts`
+              : "On"}
         </span>
       </Link>
       {state.group === "Needs you" ? (
@@ -537,11 +508,9 @@ function OverviewRow({
 }
 function PluginDetail({
   target,
-  view,
   onReturnConnected,
 }: {
   target: PluginRow["target"];
-  view: SettingsView;
   onReturnConnected: (connectionId: string) => Promise<void>;
 }) {
   const { hostClient } = useShell();
@@ -585,7 +554,6 @@ function PluginDetail({
               embedded
               initialDefinitionId={target.definitionId}
               onConnected={onReturnConnected}
-              placementAnchor="plugin-placement"
               headerAction={<EnableSwitch row={data.row} reload={detail.reload} />}
             />
           ) : null}
@@ -601,11 +569,6 @@ function PluginDetail({
               </ul>
             </>
           ) : null}
-          <Placement
-            detail={data}
-            reload={detail.reload}
-            personal={view.deploymentPolicy?.projectConsent === "owner-wide"}
-          />
           {data.permissions.length ? (
             <section className="settings-group">
               <h2 className="settings-group__title">What agents may do</h2>
@@ -649,7 +612,7 @@ function PluginDetail({
           <PackageActions detail={data} reload={detail.reload} />
           {data.sourceFolder === null &&
           data.row.target.kind === "plugin" &&
-          data.row.source.kind !== "workspace" ? (
+          data.row.source.kind !== "folder" ? (
             <p>Source folder unknown</p>
           ) : null}
         </>
@@ -660,189 +623,10 @@ function PluginDetail({
     </>
   );
 }
-function Placement({
-  detail,
-  reload,
-  personal,
-}: {
-  detail: PluginDetailView;
-  reload: () => void;
-  personal: boolean;
-}) {
-  const { hostClient } = useShell();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const attempt = useRef<Parameters<typeof hostClient.dispatch>[0] | null>(null);
-  const [accounts, setAccounts] = useState<PluginDetailView["places"][number]["accounts"]>([]);
-  const requiresAccount =
-    detail.row.target.kind === "service" || detail.row.target.kind === "device-app";
-  function change(mainIncluded: boolean, selected: string[], everywhere: boolean) {
-    if (pending) return;
-    const command = attempt.current ?? {
-      type: "settings.plugin.placement.set" as const,
-      idempotencyKey: mutationIdempotencyKey("settings-placement"),
-      target: detail.row.target,
-      expectedRevision: detail.row.placement.revision,
-      mainIncluded,
-      projects: detail.places
-        .filter((place) => place.kind !== "main" && selected.includes(place.workspaceId))
-        .map((place) => ({
-          workspaceId: place.workspaceId,
-          accounts: pluginPlacementAccounts(
-            everywhere ? [] : place.accounts,
-            accounts,
-            requiresAccount,
-          ),
-        })),
-      personalEverywhere: everywhere
-        ? {
-            accounts: pluginPlacementAccounts([], accounts, requiresAccount),
-          }
-        : null,
-    };
-    attempt.current = command;
-    setPending(true);
-    setError(null);
-    void hostClient
-      .dispatch(command)
-      .then(() => {
-        attempt.current = null;
-        reload();
-      })
-      .catch(async (reason: unknown) => {
-        if (settingsMutationRejected(reason)) attempt.current = null;
-        try {
-          unwrapRpcResult(
-            await hostClient.rpc["plugins.detail.get"]({ target: detail.row.target }),
-          );
-          reload();
-        } catch {
-          /* Preserve the uncertain operation. */
-        }
-        setError(actionErrorMessage(reason));
-      })
-      .finally(() => setPending(false));
-  }
-  const selected = detail.places
-    .filter((place) => place.selected)
-    .map((place) => place.workspaceId);
-  return (
-    <section className="settings-group" id="plugin-placement">
-      <h2 className="settings-group__title">Where it’s on</h2>
-      <div className="card">
-        {requiresAccount
-          ? detail.accounts.map((account) => (
-              <label className="card__row" key={account.connectionId}>
-                <span>{account.displayName}</span>
-                <select
-                  aria-label={`Access for ${account.displayName}`}
-                  value={
-                    accounts.find((a) => a.connectionId === account.connectionId)?.access ?? ""
-                  }
-                  disabled={pending}
-                  onChange={(event) => {
-                    const access = event.currentTarget.value;
-                    setAccounts((previous) => [
-                      ...previous.filter((a) => a.connectionId !== account.connectionId),
-                      ...(access === "read" || access === "read-write"
-                        ? [
-                            {
-                              connectionId: account.connectionId,
-                              access:
-                                access === "read" ? ("read" as const) : ("read-write" as const),
-                            },
-                          ]
-                        : []),
-                    ]);
-                  }}
-                >
-                  <option value="">Choose access</option>
-                  <option value="read">Read</option>
-                  <option value="read-write">Read and update</option>
-                </select>
-              </label>
-            ))
-          : null}
-        {personal &&
-        detail.row.target.kind !== "skill" &&
-        detail.row.source.kind !== "workspace" ? (
-          <label className="card__row">
-            <span className="card__row-body">Everywhere</span>
-            <input
-              className="switch"
-              type="checkbox"
-              role="switch"
-              checked={detail.row.placement.personalEverywhere}
-              disabled={
-                pending ||
-                !detail.row.permissions.canPlace ||
-                (requiresAccount && !accounts.length && !detail.row.placement.personalEverywhere)
-              }
-              onChange={(event) =>
-                change(
-                  true,
-                  event.currentTarget.checked
-                    ? detail.places.map((place) => place.workspaceId)
-                    : selected,
-                  event.currentTarget.checked,
-                )
-              }
-            />
-          </label>
-        ) : null}
-        {!personal || !detail.row.placement.personalEverywhere
-          ? detail.places.map((place) => (
-              <label className="card__row" key={place.workspaceId}>
-                <span className="card__row-body">{place.name}</span>
-                <input
-                  className="switch"
-                  role="switch"
-                  type="checkbox"
-                  checked={
-                    place.kind === "main" ? detail.row.placement.mainIncluded : place.selected
-                  }
-                  disabled={
-                    pending ||
-                    !place.canSelect ||
-                    (requiresAccount &&
-                      place.kind === "project" &&
-                      !place.selected &&
-                      !accounts.length) ||
-                    !detail.row.permissions.canPlace
-                  }
-                  onChange={(event) =>
-                    change(
-                      place.kind === "main"
-                        ? event.currentTarget.checked
-                        : detail.row.placement.mainIncluded,
-                      event.currentTarget.checked
-                        ? [...selected, place.workspaceId]
-                        : selected.filter((id) => id !== place.workspaceId),
-                      false,
-                    )
-                  }
-                />
-              </label>
-            ))
-          : null}
-      </div>
-      {pending ? <p role="status">Saving…</p> : null}
-      <SettingsError message={error} />
-    </section>
-  );
-}
-export function PluginAddSheet({
-  personal,
-  product,
-}: {
-  readonly personal: boolean;
-  readonly product: PluginCatalogProduct;
-}) {
+export function PluginAddSheet({ product }: { readonly product: PluginCatalogProduct }) {
   const { hostClient, snapshot } = useShell();
   const [definitionId, setDefinitionId] = useState(product.variants[0].definitionId);
   const [ready, setReady] = useState(false);
-  const [everywhere, setEverywhere] = useState(personal);
-  const [places, setPlaces] = useState<string[]>([]);
   const [access, setAccess] = useState<"read" | "read-write">("read");
   const [saved, setSaved] = useState(false);
   const [setupRunner, setSetupRunner] = useState<string | null>(null);
@@ -870,8 +654,6 @@ export function PluginAddSheet({
     return (
       placementAttempt.current ?? {
         target: { kind: definition?.computerApp ? "device-app" : "service", definitionId },
-        everywhere,
-        places,
         access,
         idempotencyKey: mutationIdempotencyKey("plugin-add-placement"),
         command: null,
@@ -905,9 +687,9 @@ export function PluginAddSheet({
           embedded
           initialDefinitionId={definitionId}
           onAuthorizationStarted={(attemptId) => {
-            if (!snapshot.homeWorkspaceId || !snapshot.user)
+            if (!snapshot.deploymentId || !snapshot.user)
               throw new Error("This Opensteer is still loading.");
-            const key = pluginConsentKey(snapshot.homeWorkspaceId, snapshot.user.id, attemptId);
+            const key = pluginConsentKey(snapshot.deploymentId, snapshot.user.id, attemptId);
             consentStorageKey.current = key;
             const consent = reviewedConsent();
             placementAttempt.current = consent;
@@ -923,8 +705,8 @@ export function PluginAddSheet({
             onConnected={applyPlacement}
           />
         ) : null}
-        {saved ? <p role="status">Connected and turned on in your chosen places.</p> : null}
-        {placing ? <p role="status">Saving placement…</p> : null}
+        {saved ? <p role="status">Connected and turned on.</p> : null}
+        {placing ? <p role="status">Turning it on…</p> : null}
         <SettingsError message={placementError} />
         {placementError && connectedAccount.current ? (
           <button
@@ -933,7 +715,7 @@ export function PluginAddSheet({
             type="button"
             onClick={() => void applyPlacement(connectedAccount.current!).catch(() => undefined)}
           >
-            Retry placement
+            Try again
           </button>
         ) : null}
       </div>
@@ -984,43 +766,6 @@ export function PluginAddSheet({
           </ul>
         )}
       </section>
-      <section className="settings-add-sheet__part">
-        <h3>Turn on in</h3>
-        {personal ? (
-          <SettingsSegmented
-            label="Where it’s on"
-            onChange={(value) => setEverywhere(value === "everywhere")}
-            options={[
-              { value: "everywhere", label: "Everywhere" },
-              { value: "choose", label: "Choose places" },
-            ]}
-            value={everywhere ? "everywhere" : "choose"}
-          />
-        ) : null}
-        {!everywhere ? (
-          <div className="card settings-add-sheet__places">
-            {snapshot.workspaces.map((place) => (
-              <label className="card__row" key={place.id}>
-                <span className="card__row-body">{place.name}</span>
-                <input
-                  className="switch"
-                  role="switch"
-                  aria-label={place.name}
-                  type="checkbox"
-                  checked={places.includes(place.id)}
-                  onChange={(event) =>
-                    setPlaces(
-                      event.currentTarget.checked
-                        ? [...places, place.id]
-                        : places.filter((id) => id !== place.id),
-                    )
-                  }
-                />
-              </label>
-            ))}
-          </div>
-        ) : null}
-      </section>
       {product.variants.length > 1 ? (
         <details className="settings-add-sheet__advanced">
           <summary>
@@ -1046,7 +791,7 @@ export function PluginAddSheet({
       <button
         className="btn btn--primary"
         type="button"
-        disabled={placing || !definition || (!everywhere && places.length === 0)}
+        disabled={placing || !definition}
         onClick={() => {
           setPlacing(true);
           setPlacementError(null);
@@ -1100,11 +845,7 @@ function AwaitDevicePlacement({
     applied.current = account.connectionId;
     void onConnected(account.connectionId).catch(() => undefined);
   }, [detail.data, onConnected, runnerId]);
-  return (
-    <p role="status">
-      Waiting for this device’s approval before turning it on in your chosen places.
-    </p>
-  );
+  return <p role="status">Waiting for this device’s approval before turning it on.</p>;
 }
 function DirectoryRequests() {
   const { hostClient } = useShell();
@@ -1255,7 +996,7 @@ function PackageActions({ detail, reload }: { detail: PluginDetailView; reload: 
   return (
     <section>
       <h2>Installation</h2>
-      {detail.row.source.kind === "workspace" ? (
+      {detail.row.source.kind === "folder" ? (
         <p>An agent made this plugin and updates it by installing its folder again.</p>
       ) : (
         <button

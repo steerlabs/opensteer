@@ -14,10 +14,9 @@ import { BrowserProfilesSection } from "./browser-profiles.js";
 /*
  * How Settings → Browser profiles could mislead or misfire:
  * - the section is missing from what agents can use, or splits Chrome from Passwords;
- * - a profile does not say who may use it;
  * - rename or delete send the wrong command, or delete does not first say what goes with it;
  * - deleting leaves this device's new tabs and links defaulting to the deleted profile;
- * - an older Host without rename and delete is offered them anyway;
+ * - a Host without rename and delete is offered them anyway;
  * - "Add profile…" elsewhere lands on the page without the name field open.
  */
 
@@ -31,14 +30,14 @@ afterEach(() => {
 });
 
 describe("Settings → Browser profiles", () => {
-  it("sits with the other browser sign-ins and says who may use each profile", async () => {
+  it("sits with the other browser sign-ins", async () => {
     expect(
       settingsRail("personal")
         .agents.map(({ id }) => id)
         .slice(-3),
     ).toEqual(["ai", "plugins", "sign-ins"]);
     const { page } = await mount();
-    expect(rows(page)).toEqual(["Shopping Opensteer and Buyer", "Work Opensteer only"]);
+    expect(rows(page)).toEqual(["Shopping", "Work"]);
   });
 
   it("keeps both pending disk erasure states visible without profile actions", async () => {
@@ -87,7 +86,7 @@ describe("Settings → Browser profiles", () => {
     await click(menuItem("Delete profile"));
     expect(dispatch).not.toHaveBeenCalled();
     expect(page.querySelector('[aria-label="Delete Shopping"]')?.textContent).toContain(
-      "Its sign-ins and site data are erased from this Opensteer. Buyer loses access. This can’t be undone.",
+      "Its sign-ins and site data are erased from this Opensteer. This can’t be undone.",
     );
     await click(button(page, "Delete profile"));
     expect(dispatch).toHaveBeenCalledWith(
@@ -96,19 +95,9 @@ describe("Settings → Browser profiles", () => {
     expect(lastBrowsingChoice(scope)).toEqual({ kind: "guest" });
   });
 
-  it("offers an older Host only what it can do: project access", async () => {
-    const { dispatch, page } = await mount({ manageable: false });
-    await click(button(page, "Manage Work"));
-    expect(menuItems()).toEqual(["Choose projects…"]);
-    await click(menuItem("Choose projects…"));
-    await click(button(page, "Off"));
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        profileId: "bpr_work",
-        type: "browser.profile.grant",
-        workspaceId: "wsp_buyer",
-      }),
-    );
+  it("offers a Host without profile management nothing to manage", async () => {
+    const { page } = await mount({ manageable: false });
+    expect(page.querySelector('[aria-label="Manage Work"]')).toBeNull();
   });
 
   it("opens the name field when sent here to add a profile", async () => {
@@ -128,7 +117,6 @@ async function mount(
   // Each command's effect on the snapshot is the client's, covered with its patches.
   const dispatch = vi.spyOn(hostClient, "dispatch").mockResolvedValue(undefined as never);
   const base = hostClient.getSnapshot();
-  const main = base.workspaces.find((workspace) => workspace.kind === "main")!;
   const snapshot: HostSnapshot = {
     ...base,
     browserProfileManageAvailable: input.manageable ?? true,
@@ -138,16 +126,6 @@ async function mount(
       { homeRunnerId: null, id: "bpr_work", name: "Work" },
       { homeRunnerId: null, id: "bpr_shopping", name: "Shopping" },
     ],
-    browserProfileGrants: [
-      {
-        access: "read-write",
-        createdAt: "2026-10-30T12:00:00.000Z",
-        id: "bpg_shopping_buyer",
-        profileId: "bpr_shopping",
-        workspaceId: "wsp_buyer",
-      },
-    ],
-    workspaces: [...base.workspaces, { ...main, id: "wsp_buyer", kind: "project", name: "Buyer" }],
   };
   const context = { hostClient, snapshot } as unknown as ShellContext;
   const container = document.createElement("div");

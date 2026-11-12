@@ -4,7 +4,7 @@ import { seedBrowserSnapshot } from "@opensteer/client/test-support";
 import { readFileSync } from "node:fs";
 import { act } from "react";
 
-import { describe, expect, it, vi, type MockInstance } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   browserTabStrip,
@@ -12,30 +12,23 @@ import {
   type HostSnapshot,
   type PlaceItem,
 } from "@opensteer/client/host";
-import {
-  BrowserSurfaceIdSchema,
-  createId,
-  ThreadIdSchema,
-  WorkspaceIdSchema,
-} from "@opensteer/core";
+import { BrowserSurfaceIdSchema, createId } from "@opensteer/core";
 import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
 
 import {
-  root,
   client,
   history,
+  goTo,
   mount,
   settle,
   element,
   click,
   pageTab,
-  tabSearch,
   write,
   typeInto,
   pressEnter,
-  setRoot,
 } from "./workspace.interaction.test-support.js";
 describe("personal browser tab groups", () => {
   async function mountSaved() {
@@ -62,7 +55,6 @@ describe("personal browser tab groups", () => {
                   profileId: session.profileId,
                   runtimeId: session.runtimeId,
                   state: session.state,
-                  workspaceId: session.workspaceId,
                   createdAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
                   updatedAt: session.createdAt ?? "2026-10-19T12:00:00.000Z",
                 },
@@ -526,23 +518,36 @@ describe("personal browser tab groups", () => {
 });
 
 describe("task marks", () => {
-  it("leaves no trailing state column on a finished, read task and fades task text", async () => {
+  it("fades long task text rather than cutting it with an ellipsis", async () => {
     await mount("/");
     const style = document.createElement("style");
     style.textContent = ["tokens", "workspace"]
       .map((name) => readFileSync(`apps/web/src/styles/${name}.css`, "utf8"))
       .join("\n");
     document.body.append(style);
-    const state = element(".side-task--finished .task-state:empty");
-    expect(getComputedStyle(state).display).toBe("none");
-    for (const text of document.querySelectorAll(".side-task__title, .side-task__ask")) {
+    const texts = document.querySelectorAll(".side-task__title, .side-task__ask");
+    expect(texts.length).toBeGreaterThan(0);
+    for (const text of texts) {
       expect(getComputedStyle(text).textOverflow).not.toBe("ellipsis");
       expect(getComputedStyle(text).maskImage).toContain("linear-gradient");
     }
   });
 
   const flights = "thr_b21e07d4-9c3a-4f62-8e1d-73a5c0f4d912";
-  const travel = "wsp_00000000-0000-4000-8000-000000000800";
+  /** Opens a task the sidebar lists, working when asked, and answers its id. */
+  async function openLiveTask(state?: "working"): Promise<string> {
+    await mount("/");
+    const row = [...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]")].find(
+      (candidate) =>
+        state === undefined ||
+        candidate.querySelector(".task-state")?.getAttribute("data-state") === state,
+    );
+    if (!row) throw new Error(`The sidebar lists no ${state ?? ""} task`);
+    const id = row.dataset.threadId!;
+    await act(async () => goTo!(`/tasks/${id}`));
+    await settle();
+    return id;
+  }
   async function press(target: Element, key: string) {
     await act(async () =>
       target.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key })),
@@ -553,159 +558,14 @@ describe("task marks", () => {
     await click(element(".conv-header__menu"));
     await click(element('[data-action="change-icon"]'));
   }
-  it.each(["chat", "thread"])("keeps Chat's identity through its %s URL", async (route) => {
-    let search = "";
-    await mount((source) => {
-      search = `${tabSearch(pageTab(source))}&messageId=chat-message&focusRequest=chat-request`;
-      return `${route === "chat" ? "/" : `/threads/${source.getSnapshot().homeThreadId}`}${search}`;
-    });
-    expect(history.at(-1)).toMatchObject({ path: "/", search });
-    if (route === "thread") expect(history.at(-1)?.type).toBe("REPLACE");
-    expect(element(".conv-header__name").textContent).toBe("Chat");
-    expect(element(".conv-header .chat-orb")).toBeDefined();
-    expect(document.querySelector(".conv-header__mark .task-mark")).toBeNull();
-    // Docked beside its tab, Chat's menu holds Find and nothing to rename or mark.
-    await click(element(".conv-header__menu"));
-    expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
-  });
-  it("uses a project's identity and excludes edits for its home Thread", async () => {
-    await mount((source) => {
-      const read = source.getSnapshot;
-      const cache = new WeakMap<HostSnapshot, HostSnapshot>();
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const snapshot = read();
-        let held = cache.get(snapshot);
-        if (!held) {
-          held = {
-            ...snapshot,
-            workspaces: snapshot.workspaces.map((workspace) =>
-              workspace.id === travel ? { ...workspace, homeThreadId: flights } : workspace,
-            ),
-          };
-          cache.set(snapshot, held);
-        }
-        return held;
-      });
-      return `/threads/${flights}`;
-    });
-    expect(history.at(-1)?.path).toBe(`/threads/${flights}`);
-    expect(element(".conv-header__name").textContent).toBe("Travel");
-    expect(element(".conv-header__mark .workspace-orb").getAttribute("data-color")).toBe("blue");
-    expect(document.querySelector(".conv-header__mark .task-mark")).toBeNull();
-    await click(element(".conv-header__menu"));
-    expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
-    expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
-    await press(element(".conv-header__menu"), "Escape");
-    await act(async () =>
-      element(`.side-task[data-thread-id="${flights}"]`).dispatchEvent(
-        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
-      ),
-    );
-    expect(document.querySelector('[data-action="change-icon"]')).toBeNull();
-  });
-  it.each(["main", "project", "unknown"])(
-    "attributes an assignment to its %s owner without changing its task mark",
-    async (owner) => {
-      let catalogResolved = owner !== "unknown";
-      const released = vi.fn();
-      let observed: MockInstance;
-      await mount((source) => {
-        observed = vi.spyOn(source, "observeThread").mockReturnValue(released);
-        const read = source.getSnapshot;
-        const cache = new WeakMap<HostSnapshot, HostSnapshot>();
-        vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-          const snapshot = read();
-          let held = cache.get(snapshot);
-          if (!held) {
-            const original = Object.values(snapshot.assignments)[0]!;
-            const assignment = {
-              ...original,
-              ...(owner === "unknown"
-                ? { status: "completed" as const, finishedAt: original.createdAt }
-                : {}),
-              workerThread: {
-                ...original.workerThread,
-                ...(owner === "main"
-                  ? {}
-                  : {
-                      id: ThreadIdSchema.parse(flights),
-                      workspaceId: WorkspaceIdSchema.parse(travel),
-                      title: "Tokyo flights in May",
-                      icon: "plane" as const,
-                      color: "lime" as const,
-                    }),
-              },
-            };
-            held = {
-              ...snapshot,
-              assignments: { ...snapshot.assignments, [assignment.id]: assignment },
-              threads: snapshot.threads.filter(
-                (thread) => owner !== "unknown" || thread.id !== flights,
-              ),
-              workspaces: snapshot.workspaces.filter(
-                (workspace) => catalogResolved || workspace.id !== travel,
-              ),
-              transcripts: Object.fromEntries(
-                Object.entries(snapshot.transcripts).map(([id, entries]) => [
-                  id,
-                  entries.map((entry) =>
-                    entry.kind === "assignment" && entry.assignment.id === assignment.id
-                      ? { ...entry, assignment }
-                      : entry,
-                  ),
-                ]),
-              ),
-            };
-            cache.set(snapshot, held);
-          }
-          return held;
-        });
-        return "/";
-      });
-      // The line draws only the task's own mark; who does it is in its name and tooltip.
-      const card = () => element("a.agent-step__head");
-      expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
-      if (owner === "unknown") {
-        expect(card().textContent).not.toContain("Opensteer");
-        expect(card().getAttribute("aria-label")).not.toContain("Opensteer");
-        expect(card().getAttribute("title")).not.toContain("Opensteer");
-        expect(observed!).toHaveBeenCalledWith(flights);
-      } else {
-        const name = owner === "main" ? "Opensteer" : "Travel";
-        expect(card().getAttribute("title")).toContain(name);
-        expect(card().getAttribute("aria-label")).toContain(name);
-      }
-      const mark = element(".agent-mark .task-mark").outerHTML;
-      catalogResolved = true;
-      await act(async () => {
-        await client.dispatch({
-          type: "workspace.color.set",
-          workspaceId: travel,
-          color: "purple",
-          idempotencyKey: `card-owner-colour-${owner}`,
-        });
-      });
-      await settle();
-      expect(element(".agent-mark .task-mark").outerHTML).toBe(mark);
-      expect(card().querySelector(".chat-orb, .workspace-orb")).toBeNull();
-      if (owner !== "main") {
-        expect(card().getAttribute("title")).toContain("Travel");
-        expect(card().getAttribute("aria-label")).toContain("Travel");
-      }
-      if (owner === "unknown") expect(released).toHaveBeenCalled();
-    },
-  );
   it("shows a task's subject and separate working state in its row and header", async () => {
-    await mount(`/threads/${flights}`);
-    expect(
-      element(`.side-task[data-thread-id="${flights}"] .task-mark`).getAttribute("data-icon"),
-    ).toBe("plane");
-    expect(
-      element(`.side-task[data-thread-id="${flights}"] .task-state`).getAttribute("data-state"),
-    ).toBe("working");
-    expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("plane");
-    expect(element(".conv-header").textContent).toContain("Travel");
+    // Running work the sidebar's handful has no room for is on All tasks.
+    await mount("/tasks?filter=running");
+    const row = element<HTMLAnchorElement>("a.home-task--working");
+    const icon = element(".task-mark", row).getAttribute("data-icon");
+    expect(element(".task-state", row).getAttribute("data-state")).toBe("working");
+    await click(row);
+    expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe(icon);
     // Working shows on the task's mark and is spoken with its name, never as a word beside it.
     expect(element(".conv-header__mark > .working-ring").getAttribute("aria-hidden")).toBe("true");
     expect(element(".conv-header__menu").getAttribute("aria-label")).toContain("working");
@@ -713,7 +573,7 @@ describe("task marks", () => {
     expect(element(".task-mark").getAttribute("aria-hidden")).toBe("true");
   });
   it("updates every occupant in place on an icon-only edit, keeping the acting task hue", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     const place = pageTab();
     await act(async () => client.actInPlace(flights, place.key));
     await settle();
@@ -766,13 +626,11 @@ describe("task marks", () => {
     expect(task.getAttribute("aria-label")).toContain(place.title);
     const id = task.getAttribute("data-thread-id");
     await click(task);
-    expect(history.at(-1)?.path).toBe(
-      id === client.getSnapshot().homeThreadId ? "/" : `/threads/${id}`,
-    );
+    expect(history.at(-1)?.path).toBe(`/tasks/${id}`);
   });
   it("opens Change icon from the sidebar context menu and returns keyboard focus to its row", async () => {
-    await mount(`/threads/${flights}`);
-    const row = element<HTMLElement>(`.side-task[data-thread-id="${flights}"] .side-task__main`);
+    const id = await openLiveTask();
+    const row = element<HTMLElement>(`.side-task[data-thread-id="${id}"] .side-task__main`);
     row.focus();
     await act(async () =>
       row.dispatchEvent(
@@ -793,7 +651,7 @@ describe("task marks", () => {
     expect(document.activeElement).toBe(row);
   });
   it("edits from the header with keyboard search, locks Use default and restores focus", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     const dispatch = vi.spyOn(client, "dispatch");
     const opener = element(".conv-header__menu");
     await picker();
@@ -819,40 +677,17 @@ describe("task marks", () => {
     expect(document.activeElement).toBe(opener);
   });
   it("keeps a refused icon edit reviewable and restores its authoritative mark", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     vi.spyOn(client, "dispatch").mockRejectedValueOnce(new Error("Icon refused"));
     await picker();
     await click(element('[aria-label="Hotel"]'));
     expect(document.body.textContent).toContain("Icon refused");
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("plane");
   });
-  it("changes a project's colour without repainting its tasks", async () => {
-    await mount("/workspaces/wsp_00000000-0000-4000-8000-000000000800");
-    const dispatch = vi.spyOn(client, "dispatch");
-    await click(element(".workspace-icon-chooser"));
-    expect(document.querySelectorAll('[aria-label="Colour"] button')).toHaveLength(7);
-    await click(element('[aria-label="Purple"]'));
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "workspace.color.set", color: "purple" }),
-    );
-    expect(element(".workspace-icon-chooser .workspace-orb").getAttribute("data-color")).toBe(
-      "purple",
-    );
-    expect(
-      element(`.side-task[data-thread-id="${flights}"] .task-mark`).getAttribute("data-color"),
-    ).toBe("lime");
-  });
-  it("excludes Chat and hides task mark edits for an older Host", async () => {
-    await mount("/");
-    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
-    expect(document.querySelector(".conv-header__menu")).toBeNull();
-    act(() => root?.unmount());
-    setRoot(null);
-    client.dispose();
-    document.body.replaceChildren();
+  it("hides task mark edits on a Host without task marks", async () => {
     let last: HostSnapshot | null = null;
     let held: HostSnapshot | null = null;
-    await mount(`/threads/${flights}`, {
+    await mount(`/tasks/${flights}`, {
       hostClient: (source) =>
         new Proxy(source, {
           get(target, name) {
