@@ -102,7 +102,11 @@ export function browserTeamSession(input: {
           },
         })
       : http,
-    connect: () => new WebSocket(`${origin.replace(/^http/u, "ws")}/v1/realtime`),
+    // A browser can't set headers on the upgrade, so the version rides in the address.
+    connect: () =>
+      new WebSocket(
+        `${origin.replace(/^http/u, "ws")}/v1/realtime?opensteer_api_version=${teamApiVersion}`,
+      ),
     readFile: async (file, part, signal) => {
       const metadata = TeamFileSchema.parse(file);
       return readBlob(
