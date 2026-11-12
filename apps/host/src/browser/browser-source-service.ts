@@ -170,6 +170,7 @@ export class BrowserSourceService {
   /** Signs with the Host identity key the invitation's authority names. */
   readonly #sign: (bytes: Uint8Array) => string;
   readonly #canonicalOrigin: string;
+  readonly #extensionDirectory: string | null;
   readonly #currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
   readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onRequestResolved: () => void;
@@ -198,6 +199,8 @@ export class BrowserSourceService {
     readonly browser: Pick<BrowserService, "applySiteCookies" | "signInTarget">;
     readonly sign: (bytes: Uint8Array) => string;
     readonly canonicalOrigin: string;
+    /** The unpacked extension folder the desktop app keeps current, when there is one. */
+    readonly extensionDirectory?: string | null;
     readonly currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
     readonly onDeploymentEvent: (event: AgentEvent) => void;
     /** A sign-in Request was fulfilled or declined, so its continuation can be sent. */
@@ -220,6 +223,7 @@ export class BrowserSourceService {
     this.#browser = options.browser;
     this.#sign = options.sign;
     this.#canonicalOrigin = options.canonicalOrigin;
+    this.#extensionDirectory = options.extensionDirectory ?? null;
     this.#currentRoute = options.currentRoute;
     this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onRequestResolved = options.onRequestResolved;
@@ -454,6 +458,7 @@ export class BrowserSourceService {
     ]);
     const active = new Set(sources.map((source) => source.id));
     return {
+      extensionDirectory: this.#extensionDirectory,
       sources: sources.map((source) => ({
         connected: this.#isConnected(source.id),
         createdAt: source.createdAt.toISOString(),

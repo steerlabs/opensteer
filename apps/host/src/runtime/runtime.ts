@@ -890,6 +890,7 @@ export async function createHostRuntime(
       deploymentId: deployment.id,
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
+      extensionDirectory: config.personal?.browserExtensionDirectory ?? null,
       currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
       sign: (bytes) => sign(null, bytes, keys.privateKey).toString("base64url"),
       store: new BrowserSourceStore(database),
