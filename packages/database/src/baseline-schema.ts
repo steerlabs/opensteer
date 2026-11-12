@@ -2412,6 +2412,14 @@ create index auth_verifications_identifier on auth_verifications USING btree (id
 create index browser_session_attachments_session on browser_session_attachments USING btree (session_id);
 create index browser_sessions_active_profile_placement on browser_sessions USING btree (profile_id, placement_key) WHERE (state = ANY (ARRAY['starting'::text, 'ready'::text, 'closing'::text]));
 create index browser_sessions_runner on browser_sessions USING btree (runner_id, state);
+create index browser_sessions_tab_group on browser_sessions(tab_group_id, created_at desc);
+create index personal_tabs_group on personal_tabs(group_id, "order");
+create index personal_tabs_session on personal_tabs(session_id);
+create index personal_tabs_reopen on personal_tabs(closed_by, closed_at desc, id desc) where closed_by is not null and reopened_at is null;
+create index browser_tab_groups_owner on browser_tab_groups(owner_id);
+create index browser_tab_group_members_group on browser_tab_group_members(group_id);
+create index browser_tab_opens_preference on browser_tab_opens(owner_id, identity_key, created_at desc) where identity_key is not null;
+create index browser_tab_opens_retention on browser_tab_opens(owner_id, created_at);
 create index channel_access_grants_account_status on channel_access_grants USING btree (account_id, status, requested_at DESC);
 create index channel_accounts_connection on channel_accounts USING btree (connection_id, updated_at DESC);
 create index channel_bindings_account_status on channel_bindings USING btree (account_id, status, updated_at DESC);
