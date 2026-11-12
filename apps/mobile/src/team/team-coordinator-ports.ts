@@ -57,13 +57,8 @@ export function fileTeamIntentStore(
         const parsed = IntentFileSchema.safeParse(JSON.parse(new TextDecoder().decode(stored)));
         if (parsed.success)
           rows = parsed.data.intents.flatMap((row) => {
-            // `TeamOriginSchema`'s refinement throws on a value that isn't a URL at all.
-            try {
-              const intent = TeamConnectionIntentSchema.safeParse(row);
-              return intent.success ? [intent.data] : [];
-            } catch {
-              return [];
-            }
+            const intent = TeamConnectionIntentSchema.safeParse(row);
+            return intent.success ? [intent.data] : [];
           });
       } catch {
         // Unreadable: nothing to resume.
