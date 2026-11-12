@@ -220,7 +220,12 @@ export async function startPersonalRuntime(input: {
       throw new Error(`Local owner claim failed (${signedIn.statusCode})`);
     cookie = signedIn.cookies.map((value) => `${value.name}=${value.value}`).join("; ");
   }
-  async function stopRunner() {
+  async function stopRunner(disconnectFirst = false) {
+    if (disconnectFirst) {
+      runnerStop?.abort();
+      connection?.close();
+      await connecting;
+    }
     try {
       await child?.close();
       await runner?.close();
@@ -613,7 +618,7 @@ export async function startPersonalRuntime(input: {
         });
       },
       async restartRunner() {
-        await stopRunner();
+        await stopRunner(true);
         await startRunner();
       },
       async close() {
