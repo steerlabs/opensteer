@@ -1,10 +1,13 @@
 import { useId, useState } from "react";
 import { usePersonalRemoteAccess } from "@opensteer/client/react";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import type { PersonalRemoteAdministrationIntent } from "@opensteer/protocol";
 import { useShell } from "../../app-shell.js";
-import { linkAccountFromWeb } from "../link-personal-account.js";
-import type { SettingsView } from "../primitives.js";
+import type {
+  RemoteAccessAction as CoreAction,
+  RemoteAccessStep as CoreStep,
+  RemoteAccessView,
+} from "@opensteer/client/host";
+import { useWebRemoteAccess } from "../../../account/remote-access-port.js";
 
 /**
  * "Use from anywhere": one status, one sentence, one action. Everything the
@@ -18,7 +21,8 @@ export interface RemoteAccessCardModel {
   readonly address: string | null;
   readonly steps: readonly RemoteAccessStep[] | null;
   readonly primary: RemoteAccessAction | null;
-  readonly secondary: RemoteAccessAction | null;
+  readonly secondary: readonly RemoteAccessAction[];
+  readonly pairing: { readonly code: string; readonly expiresAt: string } | null;
   readonly advanced: RemoteAccessAdvanced | null;
 }
 
@@ -40,14 +44,12 @@ export interface RemoteAccessAdvanced {
   readonly usePrivateNetwork: ((origin: string) => void) | null;
   readonly useAccount: (() => void) | null;
   readonly resetKey: (() => void) | null;
-  readonly addDevice: (() => void) | null;
-  readonly pairing: { readonly code: string; readonly expiresAt: string } | null;
   readonly removeLink: (() => void) | null;
   readonly busy: boolean;
 }
 
-export function RemoteAccessCard({ view }: { readonly view: SettingsView }) {
-  return <RemoteAccessCardView model={useRemoteAccessCardModel(view)} />;
+export function RemoteAccessCard() {
+  return <RemoteAccessCardView model={useRemoteAccessCardModel()} />;
 }
 
 export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCardModel }) {
@@ -89,6 +91,16 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
                 </button>
               </span>
             ) : null}
+            {model.pairing ? (
+              <span className="card__row-detail">
+                Enter <code>{model.pairing.code}</code> on the other device. It works once, until{" "}
+                {new Date(model.pairing.expiresAt).toLocaleTimeString([], {
+                  hour: "numeric",
+                  minute: "2-digit",
+                })}
+                .
+              </span>
+            ) : null}
             {model.steps ? (
               <ol className="settings-steps" aria-label="Progress">
                 {model.steps.map((step) => (
@@ -102,7 +114,7 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
               </ol>
             ) : null}
           </span>
-          {model.primary || model.secondary ? (
+          {model.primary || model.secondary.length > 0 ? (
             <span className="card__row-actions settings-remote__actions">
               {model.primary ? (
                 <button
@@ -114,16 +126,17 @@ export function RemoteAccessCardView({ model }: { readonly model: RemoteAccessCa
                   {model.primary.label}
                 </button>
               ) : null}
-              {model.secondary ? (
+              {model.secondary.map((secondary) => (
                 <button
                   className="btn"
-                  disabled={model.secondary.disabled}
-                  onClick={model.secondary.run}
+                  disabled={secondary.disabled}
+                  key={secondary.label}
+                  onClick={secondary.run}
                   type="button"
                 >
-                  {model.secondary.label}
+                  {secondary.label}
                 </button>
-              ) : null}
+              ))}
             </span>
           ) : null}
         </div>
@@ -198,31 +211,6 @@ function Advanced({ advanced }: { readonly advanced: RemoteAccessAdvanced }) {
             </button>
           </form>
         ) : null}
-        {advanced.addDevice ? (
-          <div className="card__row">
-            <span className="card__row-body">
-              <span className="card__row-title">Add a device</span>
-              <span className="card__row-detail">
-                {advanced.pairing ? (
-                  <>
-                    <code>{advanced.pairing.code}</code> · works once, until{" "}
-                    {new Date(advanced.pairing.expiresAt).toLocaleTimeString()}
-                  </>
-                ) : (
-                  "Makes a one-time code that works for ten minutes."
-                )}
-              </span>
-            </span>
-            <button
-              className="btn"
-              disabled={advanced.busy}
-              onClick={advanced.addDevice}
-              type="button"
-            >
-              Make code
-            </button>
-          </div>
-        ) : null}
         {advanced.resetKey ? (
           <div className="card__row">
             <span className="card__row-body">
@@ -265,133 +253,84 @@ function Advanced({ advanced }: { readonly advanced: RemoteAccessAdvanced }) {
 }
 
 /** Today's remote-access state, read from the Host, in the card's words. */
-function useRemoteAccessCardModel(view: SettingsView): RemoteAccessCardModel {
+function useRemoteAccessCardModel(): RemoteAccessCardModel {
   const shell = useShell();
   const remote = usePersonalRemoteAccess(shell.hostClient);
-  const [linking, setLinking] = useState(false);
-  const [linkError, setLinkError] = useState<string | null>(null);
+  const controller = useWebRemoteAccess(remote);
+  const { view } = controller;
   const status = remote.status;
-  const error = linkError ?? remote.error;
-  if (!status)
-    return {
-      ...empty,
-      tone: error ? "error" : "off",
-      title: error ? "Couldn’t check" : "Checking…",
-      sentence: error,
-    };
-  const access = status.access;
-  const operation = status.operation;
-  const outstanding = operation?.state === "pending" || operation?.state === "running";
-  const busy = remote.working || linking || outstanding;
-  const connectAvailable = status.accountIssuer !== null;
-  const linked = access.accountLink?.state === "active";
-  const request = (intent: PersonalRemoteAdministrationIntent) => {
-    const disconnects =
-      intent.action === "unlink" ||
-      intent.action === "rotate" ||
-      (intent.action === "configure" && access.mode !== "off");
-    if (disconnects && !window.confirm(remoteAccessDisconnectWarning)) return;
-    setLinkError(null);
-    void remote.request?.(intent);
-  };
-  const turnOn = () => {
-    if (linked) {
-      request({ action: "configure", mode: "connect", privateOrigin: null });
-      return;
-    }
-    setLinking(true);
-    setLinkError(null);
-    void linkAccountFromWeb(shell, status, view.name)
-      .then(() => remote.request?.({ action: "configure", mode: "connect", privateOrigin: null }))
-      .catch((reason: unknown) =>
-        setLinkError(reason instanceof Error ? reason.message : "Something went wrong. Try again."),
-      )
-      .finally(() => setLinking(false));
-  };
-  const turnOff = () => request({ action: "configure", mode: "off", privateOrigin: null });
-  const advanced: RemoteAccessAdvanced = {
-    method: access.mode === "off" ? (connectAvailable ? "connect" : null) : access.mode,
-    privateOrigin: access.mode === "private" ? (access.route?.document.route.origin ?? "") : "",
-    usePrivateNetwork: (origin) =>
-      request({ action: "configure", mode: "private", privateOrigin: origin }),
-    useAccount: connectAvailable && access.mode !== "connect" ? turnOn : null,
-    resetKey: access.mode === "connect" ? () => request({ action: "rotate" }) : null,
-    addDevice: access.mode === "private" ? () => void remote.pair?.() : null,
-    pairing: remote.pairing,
-    removeLink: access.accountLink ? () => request({ action: "unlink" }) : null,
-    busy,
-  };
-  const failed = operation?.state === "failed" && !remote.working && !linking;
-  const tryAgain = { label: "Try again", run: () => request({ action: "recover" }) };
-  const intent = operation?.intent;
-  const turningOff = intent?.action === "configure" && intent.mode === "off";
-
-  if (access.mode === "off") {
-    if (linking || (outstanding && !turningOff))
-      return {
-        ...empty,
-        tone: "busy",
-        title: "Turning on…",
-        sentence:
-          outstanding && !status.executorConnected
-            ? `Waiting for Opensteer on ${view.name} to open.`
-            : null,
-        steps: [
-          { label: "Add this computer to your Account", state: linked ? "done" : "now" },
-          { label: "Open a secure connection", state: linked ? "now" : "todo" },
-          { label: "Share its address with your devices", state: "todo" },
-        ],
-        secondary: { label: "Cancel", run: turnOff, disabled: !outstanding },
-      };
-    if (failed && !turningOff)
-      return {
-        ...empty,
-        tone: "error",
-        title: "Couldn’t turn on",
-        sentence: operation.detail ?? "Something went wrong. Try again.",
-        primary: tryAgain,
-        secondary: { label: "Cancel", run: turnOff },
-        advanced,
-      };
-    return {
-      ...empty,
-      tone: error ? "error" : "off",
-      title: "Off",
-      sentence:
-        error ??
-        (connectAvailable
-          ? `Only ${view.name} can use Opensteer. Turn on to open it from your phone, on any network.`
-          : "Add a private network address under Advanced to open it from your other devices."),
-      primary: connectAvailable ? { label: "Turn on", run: turnOn, disabled: busy } : null,
-      advanced: connectAvailable ? null : advanced,
-    };
-  }
-  const address = access.route?.document.route.origin ?? null;
-  if (outstanding && turningOff) return { ...empty, tone: "busy", title: "Turning off…", address };
+  const access = status?.access ?? null;
+  const operation = status?.operation ?? null;
+  const busy =
+    remote.working ||
+    view.tone === "busy" ||
+    operation?.state === "pending" ||
+    operation?.state === "running";
+  const action = (offered: CoreAction | null): RemoteAccessAction | null =>
+    offered
+      ? {
+          label: offered.label,
+          run: () => {
+            if (offered.confirm && !window.confirm(offered.confirm)) return;
+            controller.act(offered.id);
+          },
+        }
+      : null;
+  const offered = (id: CoreAction["id"]) =>
+    [view.primary, ...view.secondary].find((candidate) => candidate?.id === id) ?? null;
+  // Rare, technical actions live under Advanced; the card keeps the one obvious choice.
+  const inAdvanced = new Set<CoreAction["id"]>(["reset-key", "remove-link"]);
+  const showAdvanced =
+    status !== null &&
+    (view.state === "connect-unavailable" ||
+      view.state === "on-connect" ||
+      view.state === "on-private" ||
+      view.state === "off");
   return {
-    ...empty,
-    tone: failed || error ? "error" : "ok",
-    title: "On",
-    sentence: failed
-      ? (operation.detail ?? "Something went wrong. Try again.")
-      : (error ??
-        (access.mode === "connect"
-          ? `Your phone and signed-in computers can open ${view.name} from anywhere.`
-          : `Devices you add can open ${view.name} through your private network.`)),
-    address,
-    primary: failed ? tryAgain : null,
-    secondary: { label: "Turn off", run: turnOff, disabled: busy },
-    advanced,
+    tone: toneOf[view.tone],
+    title: view.title,
+    sentence: view.sentence,
+    address: view.address,
+    steps: view.steps?.map((step) => ({ label: step.label, state: stepStateOf[step.state] })) ?? null,
+    primary: action(view.primary && !inAdvanced.has(view.primary.id) ? view.primary : null),
+    secondary: view.secondary
+      .filter((candidate) => !inAdvanced.has(candidate.id))
+      .map((candidate) => action(candidate)!),
+    pairing: controller.pairing,
+    advanced:
+      showAdvanced && access
+        ? {
+            method:
+              access.mode === "off" ? (status.accountIssuer ? "connect" : null) : access.mode,
+            privateOrigin:
+              access.mode === "private" ? (access.route?.document.route.origin ?? "") : "",
+            // A private network address is typed, not chosen, so it goes to the Host as-is.
+            usePrivateNetwork: (origin) => {
+              const warning = access.mode === "off" ? null : remoteAccessDisconnectWarning;
+              if (warning && !window.confirm(warning)) return;
+              void remote.request?.({ action: "configure", mode: "private", privateOrigin: origin });
+            },
+            useAccount:
+              status.accountIssuer && access.mode !== "connect" ? () => controller.act("turn-on") : null,
+            resetKey: action(offered("reset-key"))?.run ?? null,
+            removeLink: action(offered("remove-link"))?.run ?? null,
+            busy,
+          }
+        : null,
   };
 }
 
-const empty: RemoteAccessCardModel = {
-  tone: "off",
-  title: "",
-  sentence: null,
-  address: null,
-  steps: null,
-  primary: null,
-  secondary: null,
-  advanced: null,
+const toneOf: Record<RemoteAccessView["tone"], RemoteAccessCardModel["tone"]> = {
+  attention: "error",
+  busy: "busy",
+  neutral: "off",
+  on: "ok",
+};
+
+type RemoteAccessStepState = CoreStep["state"];
+
+const stepStateOf: Record<RemoteAccessStepState, RemoteAccessStep["state"]> = {
+  active: "now",
+  done: "done",
+  todo: "todo",
 };

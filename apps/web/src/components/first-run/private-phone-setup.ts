@@ -175,7 +175,7 @@ export function usePrivatePhoneSetup(input: {
     ) {
       setPhase({
         kind: "failed",
-        message: operation.detail ?? "Remote access couldn’t be turned on. Try again.",
+        message: operation.detail ?? "Couldn’t turn on. Try again.",
       });
     }
   }, [activeOrigin, operation, phase]);

@@ -42,7 +42,7 @@ export function AccountSection({ view }: { readonly view: SettingsView }) {
           />
         )}
       </SettingsGroup>
-      <RemoteAccessCard view={view} />
+      <RemoteAccessCard />
       <SignedInDevicesSection view={view} />
       {desktopBridge && signedIn && portalOrigin ? (
         <p className="settings-footer-link">

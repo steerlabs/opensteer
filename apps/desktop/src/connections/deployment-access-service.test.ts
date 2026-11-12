@@ -180,8 +180,8 @@ describe("DeploymentAccessService", () => {
     expect(service.snapshot().deployments.map(({ statusInfo }) => statusInfo)).toEqual([
       { reason: null, status: "ready" },
       {
-        label: "Remote access off",
-        reason: "Remote access is off on Mac mini. Turn it on there in Settings › Remote access.",
+        label: "Can’t be opened from here",
+        reason: "Mac mini can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
         status: "offline",
       },
       { reason: null, status: "ready" },
@@ -1269,8 +1269,8 @@ describe("DeploymentAccessService", () => {
         status: "offline",
       });
       expect(off?.statusInfo).toEqual({
-        label: "Remote access off",
-        reason: "Remote access is off on Office Mac. Turn it on there in Settings › Remote access.",
+        label: "Can’t be opened from here",
+        reason: "Office Mac can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
         status: "offline",
       });
       expect(sleeping?.availableActions).toEqual([]);

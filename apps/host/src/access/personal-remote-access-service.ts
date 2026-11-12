@@ -1064,7 +1064,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       if (!replaces)
         throw new OpensteerError({
           code: "conflict",
-          message: "An Account change is awaiting acknowledgement. Use Recover to resume it.",
+          message: "An earlier change to your Opensteer Account hasn’t finished. Try again.",
         });
     }
     const accountOperation: AccountOperation = { ...input, id: randomUUID() };
