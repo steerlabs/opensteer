@@ -482,7 +482,7 @@ describe("stopping a task and finishing it: one Stop", () => {
   /** A task the person starts themselves, from New task, still running. */
   async function startOwnTask(text: string): Promise<string> {
     // Paced so its scripted run is still working while the person acts on it.
-    await mount("/new", { latencyMs: 3_000 });
+    await mount("/", { latencyMs: 3_000 });
     await write(element<HTMLTextAreaElement>("[data-composer-input]"), text);
     await click(element(".composer__send"));
     for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)

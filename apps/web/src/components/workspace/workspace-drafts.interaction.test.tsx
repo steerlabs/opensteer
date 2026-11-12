@@ -224,7 +224,7 @@ describe("the draft's places", () => {
     }, 20_000);
 
     it("an explicit pick wears the page its read found, never the page it was picked from", async () => {
-      const tab = await open("/new");
+      const tab = await open("/");
       const read = client.readBrowserContextCandidate.bind(client);
       const reading = deferred<Awaited<ReturnType<typeof read>>>();
       vi.spyOn(client, "readBrowserContextCandidate").mockImplementationOnce(() => reading.promise);
@@ -333,7 +333,7 @@ describe("the draft's places", () => {
               return { ...candidate, title: readTitles.get(tabId) ?? candidate.title };
             });
           if (holdFirst) reads.mockImplementationOnce(() => first.promise);
-          return pick ? "/new" : `/${tabSearch(place)}`;
+          return pick ? "/" : `/${tabSearch(place)}`;
         },
         {
           hostClient: (mock) =>
@@ -627,7 +627,7 @@ describe("the draft's places", () => {
   });
 
   it("explicit + attaches a tab through the candidate read", async () => {
-    await mount("/new");
+    await mount("/");
     const read = vi.spyOn(client, "readBrowserContextCandidate");
     const place = pageTab();
     await click(element('.composer__attach[aria-label="Attach"]'));
@@ -1256,7 +1256,7 @@ describe("a link arriving at the start page", () => {
     expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);
     expect(element(".place").textContent).toContain("Choose a computer");
     expect(client.getSnapshot().pendingBrowserTabs?.[0]?.state).toBe("failed");
-    await act(async () => goTo!("/new"));
+    await act(async () => goTo!("/"));
     await act(async () => goTo!(-1));
     await settle(50);
     expect(element(".place .browser-address__display").getAttribute("aria-label")).toBe(address);

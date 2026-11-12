@@ -80,7 +80,7 @@ async function remountWith(key: string, draft: unknown) {
 
 describe("what a person has written and not sent", () => {
   it("brings a new task back after visiting another task", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "Compare the invoices");
     expect(draftRows()).toHaveLength(0);
@@ -92,11 +92,11 @@ describe("what a person has written and not sent", () => {
     await openDraft();
     await settle();
     expect(field().value).toBe("Compare the invoices");
-    expect(place().path).toBe("/new");
+    expect(place().path).toBe("/");
   });
 
   it("keeps a draft through a reload, on the same address", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "Survive a reload");
     const { path, search } = place();
@@ -112,7 +112,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("starts a blank task beside an unfinished one, and each keeps its own words", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "The first task");
     await newTask();
@@ -133,7 +133,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("reuses a blank task rather than listing it", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await newTask();
     await settle();
@@ -145,7 +145,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("removes the draft once it starts a task", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "Start this one");
     await click(element(".composer__send"));
@@ -159,7 +159,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("gives each conversation its own reply, and marks the ones waiting", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const [first, second] = [
       ...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]"),
@@ -198,7 +198,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("discards a draft and takes the discard back", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "Maybe not");
     await openTask(firstTaskId());
@@ -217,7 +217,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("leaves the open draft when it is the one discarded, without writing it back", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "First");
     await openTask(firstTaskId());
@@ -235,7 +235,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("returns a task refused after leaving to its own draft, and says why there", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const refused = deferred<void>();
     vi.spyOn(client, "createThread").mockImplementation(async () => {
@@ -267,7 +267,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("hands a refused task to the draft reopened before the answer came", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const refused = deferred<void>();
     vi.spyOn(client, "createThread").mockImplementation(async () => {
@@ -299,7 +299,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("keeps an upload going through a discard that is taken back", async () => {
-    await mount("/new", { latencyMs: 30 });
+    await mount("/", { latencyMs: 30 });
     await settle();
     await attach("notes.txt");
     await openTask(firstTaskId());
@@ -317,7 +317,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("does not let a discarded draft's upload bring it back", async () => {
-    await mount("/new", { latencyMs: 30 });
+    await mount("/", { latencyMs: 30 });
     await settle();
     await attach("notes.txt");
     await openTask(firstTaskId());
@@ -331,7 +331,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("finishes an upload after leaving, and the file is there on return", async () => {
-    await mount("/new", { latencyMs: 20 });
+    await mount("/", { latencyMs: 20 });
     await settle();
     await attach("notes.txt");
     await openTask(firstTaskId());
@@ -345,7 +345,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("asks for a file again when a reload lost it mid-upload", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const search = () => place().search;
     await write(field(), "With a file");
@@ -358,7 +358,7 @@ describe("what a person has written and not sent", () => {
         files: [{ mediaType: "text/plain", name: "lost.txt", part: null, sizeBytes: 4 }],
       }),
     );
-    await remount(`/new${search()}`);
+    await remount(`/${search()}`);
     await settle();
 
     expect(field().value).toBe("With a file");
@@ -367,7 +367,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("survives React's double effects without losing or doubling a draft", async () => {
-    await mount("/new", { strict: true });
+    await mount("/", { strict: true });
     await settle();
     await write(field(), "Strict words");
     await openTask(firstTaskId());
@@ -379,7 +379,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("lists a project's draft in its folder, and moves it with the assignee", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const project = await createProject();
     await settle();
@@ -402,7 +402,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("uploads a draft's files again when its task moves to another Workspace", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     const project = await createProject();
     await settle();
@@ -419,7 +419,7 @@ describe("what a person has written and not sent", () => {
   });
 
   it("keeps a draft whose project has gone reachable from Main", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "An orphan");
     const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"))!;
@@ -431,12 +431,12 @@ describe("what a person has written and not sent", () => {
     expect(draftTitles()).toEqual(["An orphan"]);
     await openDraft();
     await settle();
-    expect(place().path).toBe("/new");
+    expect(place().path).toBe("/");
     expect(field().value).toBe("An orphan");
   });
 
   it("goes back to a draft from the browser's Back button", async () => {
-    await mount("/new");
+    await mount("/");
     await settle();
     await write(field(), "Back to me");
     await openTask(firstTaskId());
