@@ -5,7 +5,12 @@ import {
   IssueHostAccountAdoptionProofResponseSchema,
 } from "@opensteer/control-plane-protocol";
 import { createId } from "@opensteer/core";
-import { createDatabase, migrateToLatest, OpensteerStore } from "@opensteer/database";
+import {
+  createDatabase,
+  migrateToLatest,
+  OpensteerStore,
+  requirePersonalOwner,
+} from "@opensteer/database";
 import { IdentityService } from "@opensteer/identity";
 import Fastify from "fastify";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -50,8 +55,7 @@ integration("Host Account adoption routes", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "personal" as const,
       },
     });
     const { privateKey, publicKey } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
@@ -62,7 +66,7 @@ integration("Host Account adoption routes", () => {
       use: "sig",
     };
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "personal", name: null },
       accountAdoption: {
         grantVerifier: new RemoteAccountAdoptionGrantVerifier({
           audience: origin,
@@ -91,16 +95,19 @@ integration("Host Account adoption routes", () => {
       },
       new Headers({ origin }),
     );
-    await database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", signup.data.session.user.id)
-      .executeTakeFirstOrThrow();
+    await (
+      await import("@opensteer/database/test-support/personal")
+    ).seedPersonalOwnerResources(database, {
+      deploymentId: (await store.getDeployment())!.id,
+      userId: signup.data.session.user.id,
+      path: "/tmp/adoption-personal-home",
+    });
 
     const app = Fastify();
     const acknowledgeAccountAdoption = vi.fn(async () => undefined);
     registerIdentityRoutes(app, new HostAuthenticator({ identity, publicUrl: new URL(origin) }), {
       acknowledgeAccountAdoption,
+      assertOwner: (id) => requirePersonalOwner(database, id),
     });
     try {
       const account = {

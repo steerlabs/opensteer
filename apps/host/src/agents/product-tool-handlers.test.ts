@@ -412,6 +412,7 @@ describe("Product tool handlers", () => {
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
+      folder: current.folder,
       callerIntent: {
         requestId: mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task"),
         requestFingerprint: fingerprint({

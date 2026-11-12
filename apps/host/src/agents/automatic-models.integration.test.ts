@@ -15,7 +15,7 @@ import {
 } from "@opensteer/core";
 import type { HarnessInstanceRecord } from "@opensteer/database";
 import { HarnessInstanceCatalogSchema, type HarnessObservedConnection } from "@opensteer/protocol";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   readAutomaticModelPreview,
   resolveAutomaticModels,
@@ -23,8 +23,26 @@ import {
 } from "./automatic-models.js";
 import { specialistPlacement } from "./specialist-placement.js";
 const userId = createId("user");
-const main = createId("environment");
+let main = createId("environment");
 const laptop = createId("environment");
+let owner: Awaited<
+  ReturnType<typeof import("../runtime/personal-owner.test-support.js").createPersonalOwnerFixture>
+>;
+beforeAll(async () => {
+  owner = await (
+    await import("../runtime/personal-owner.test-support.js")
+  ).createPersonalOwnerFixture(userId);
+  main = owner.resources!.environmentId;
+});
+beforeEach(async () => {
+  await owner.database
+    .updateTable("personalSettings")
+    .set({ executionPreferences: { accessMode: "full-access", history: [] } })
+    .execute();
+});
+afterAll(async () => {
+  await owner?.close();
+});
 const effort = {
   id: "effort",
   label: "Effort",
@@ -109,6 +127,7 @@ function world(
   config.excludedAccounts.push(...(options.exclude ?? []).map((index) => harnesses[index]!.id));
   const dependencies = {
     store: {
+      database: owner.database,
       getAutomaticModelConfig: async () => config,
       listEnvironmentsForUser: async () => [
         {
@@ -254,7 +273,7 @@ describe("automatic model resolution on the Host", () => {
       }),
     );
   });
-  it("previews light as the general preference and deep within Main's computer, ending with Chat", async () => {
+  it("previews light as the general preference and deep on the hosting computer, ending with its remembered model", async () => {
     const { dependencies, harnesses } = world(
       [
         {
@@ -271,6 +290,18 @@ describe("automatic model resolution on the Host", () => {
         accessModes: ["full-access"],
       },
     );
+    await owner.store.rememberExecutionChoice(userId, {
+      accessMode: "full-access",
+      selection: {
+        environmentId: main,
+        harnessInstanceId: harnesses[1]!.id,
+        modelSelection: ModelSelectionSchema.parse({
+          providerId: "openai",
+          modelId: "gpt-6.1-terra",
+          options: {},
+        }),
+      },
+    });
     const view = await readAutomaticModelPreview(
       {
         ...dependencies,
@@ -292,7 +323,7 @@ describe("automatic model resolution on the Host", () => {
     );
     expect(view.light.label).toBe("General preference");
     expect(view.light.candidates).toEqual([]);
-    // Opus is ranked for deep but lives on the laptop, so only Chat's model qualifies.
+    // Opus is ranked for deep but lives on the laptop, so only the remembered model qualifies.
     expect(view.deep.candidates).toEqual([
       expect.objectContaining({
         harnessInstanceId: harnesses[1]!.id,
@@ -559,7 +590,7 @@ describe("specialist placement", () => {
       },
     });
   });
-  it("runs only on the Workspace's computer, on an engine that enforces its access mode", async () => {
+  it("runs only on the task's computer, on an engine that enforces its access mode", async () => {
     const elsewhere = world([
       {
         models: [haiku],

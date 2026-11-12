@@ -1,4 +1,4 @@
-import { createId, type Workspace } from "@opensteer/core";
+import { createId } from "@opensteer/core";
 import {
   MachineSummarySchema,
   mintComputerUseSessionId,
@@ -29,10 +29,8 @@ function runner(overrides: Partial<MachineRunnerInput> = {}): MachineRunnerInput
       agents: {
         environmentIds: [createId("environment")],
         harnessDrivers: [],
-        localStorage: null,
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
       },
     },
     name: "Laptop",
@@ -68,7 +66,6 @@ describe("Machines projection", () => {
         apps: new Map([[phone.id, []]]),
         computerUseDisplayStreamSupported: new Map([[phone.id, displayStream === true]]),
         deploymentOwnsMainComputer: true,
-        localWorkspaces: [],
         pendingRunners: [],
         runners: [phone],
         threadsByEnvironment: new Map(),
@@ -81,7 +78,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
       runners: [
@@ -102,7 +98,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       threadsByEnvironment: new Map(),
       runners: [
         runner({
@@ -143,7 +138,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
       runners: [
@@ -171,7 +165,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
       runners: [runner({ connected: false, readiness: new Map([["agents", ready]]) })],
@@ -186,7 +179,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: true,
-      localWorkspaces: [],
       pendingRunners: [],
       threadsByEnvironment: new Map(),
       runners: [runner({ kind: "main", ownerKind: "deployment" })],
@@ -204,7 +196,6 @@ describe("Machines projection", () => {
         apps: new Map(),
         access: new Map(),
         deploymentOwnsMainComputer: false,
-        localWorkspaces: [],
         pendingRunners: [],
         threadsByEnvironment: new Map(),
         runners: [runner({ revokedAt: new Date() })],
@@ -226,7 +217,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [pending],
       threadsByEnvironment: new Map(),
       runners: [],
@@ -250,7 +240,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: true,
-      localWorkspaces: [],
       pendingRunners: [
         {
           deviceProfile: null,
@@ -284,39 +273,10 @@ describe("Machines projection", () => {
   it("counts what removing a computer would take away", () => {
     const environmentId = createId("environment");
     const otherEnvironmentId = createId("environment");
-    const now = "2026-09-01T10:00:00.000Z";
-    const localWorkspace = (ownerEnvironmentId: typeof environmentId): Workspace => ({
-      backing: {
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        kind: "local-directory",
-        ownerEnvironmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdAt: now,
-      createdBy: createId("user"),
-      homeThreadId: null,
-      voiceThreadId: null,
-      icon: null,
-      id: createId("workspace"),
-      kind: "project",
-      name: "Research",
-      status: "ready",
-      storageIssue: null,
-      updatedAt: now,
-    });
-
     const [machine] = projectMachines({
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [
-        localWorkspace(environmentId),
-        localWorkspace(environmentId),
-        // Another computer's folder must not be counted against this one.
-        localWorkspace(otherEnvironmentId),
-      ],
       pendingRunners: [],
       threadsByEnvironment: new Map([
         [environmentId, 4],
@@ -327,7 +287,7 @@ describe("Machines projection", () => {
       ],
     });
 
-    expect(machine).toMatchObject({ localWorkspaces: 2, pinnedThreads: 4 });
+    expect(machine).toMatchObject({ pinnedThreads: 4 });
   });
 
   it("shows the access section only to a viewer who manages that computer", () => {
@@ -349,7 +309,6 @@ describe("Machines projection", () => {
       access,
       apps: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [
         {
           deviceProfile: null,
@@ -402,7 +361,6 @@ describe("Machines projection", () => {
       // managed, so an unmanaged one is absent exactly as it is from `access`.
       apps: new Map([[managed.id, apps]]),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [
         {
           deviceProfile: null,
@@ -458,7 +416,6 @@ describe("Machines projection", () => {
         computerUsePolicies: new Map([[phone.id, { appApproval: "ask" }]]),
         computerUseSessions: new Map([[phone.id, [session]]]),
         deploymentOwnsMainComputer: false,
-        localWorkspaces: [],
         pendingRunners: [],
         runners: [phone],
         threadsByEnvironment: new Map(),
@@ -486,7 +443,6 @@ describe("Machines projection", () => {
         access: new Map(),
         apps: new Map(),
         deploymentOwnsMainComputer: false,
-        localWorkspaces: [],
         pendingRunners: [],
         runners: [phone, runner({ connected: false, runtimeVersion: null })],
         threadsByEnvironment: new Map(),
@@ -499,7 +455,6 @@ describe("Machines projection", () => {
         access: new Map(),
         apps: new Map(),
         deploymentOwnsMainComputer: false,
-        localWorkspaces: [],
         pendingRunners: [],
         runners: [{ ...phone, phoneUpdate: "awaiting-user" }],
         threadsByEnvironment: new Map(),
@@ -555,7 +510,6 @@ describe("Machines projection", () => {
             }
           : {}),
         deploymentOwnsMainComputer: true,
-        localWorkspaces: [],
         pendingRunners: [],
         threadsByEnvironment: new Map(),
         runners: [mac],
@@ -800,7 +754,6 @@ describe("Machines projection", () => {
       apps: new Map(),
       access: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
       pendingRunners: [
         {
           deviceProfile: null,

@@ -15,7 +15,9 @@ import {
 import type { MachineAccessHost } from "./machine-access.test-support.js";
 import { startPersonalRuntime } from "./personal-startup.test-support.js";
 
-export const nativeFsHelperBinary = resolve("apps/runner/native-fs-helper/opensteer-native-fs");
+export const nativeFsHelperBinary = resolve(
+  "apps/runner/native-fs-helper/opensteer-native-fs-test",
+);
 
 export async function createMachineAccessDatabase(serverUrl: string) {
   return cloneTestDatabase("host", { serverUrl });
@@ -28,7 +30,7 @@ export async function configurePersonalRemoteAccess(
   const response = await host.runtime.app.inject({
     method: "PUT",
     url: "/v1/personal-remote-access",
-    headers: host.ownerHeaders,
+    headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(hostApiVersion) },
     payload: input,
   });
   if (response.statusCode !== 200)

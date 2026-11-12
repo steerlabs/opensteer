@@ -14,14 +14,14 @@ import {
   resetMachineAccessDatabase,
   runCommand,
   runShim,
-  startMachineAccessScenario,
+  startShellAccessScenario,
   startShim,
   updateAccessPolicy,
   waitForCondition,
-  type MachineAccessScenario,
+  type ShellAccessScenario,
   type RunningShim,
   type ShimResult,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 /**
  * The caller and the target are the same computer here, which is what makes
@@ -59,7 +59,7 @@ integration("Machine access, end to end", () => {
     database = undefined;
   }, 120_000);
 
-  let scenario: MachineAccessScenario | undefined;
+  let scenario: ShellAccessScenario | undefined;
   let readShare = "";
   let writeShare = "";
   let homeShare = "";
@@ -80,7 +80,7 @@ integration("Machine access, end to end", () => {
   }, 60_000);
 
   it("names the target in the Run's machine access, its known hosts and its pinned ssh config", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       fullDiskAccess: false,
       policy: {
         commands: true,
@@ -193,7 +193,7 @@ integration("Machine access, end to end", () => {
   }, 120_000);
 
   it("runs a command on the target, half-closes its input, and leaks no Opensteer environment", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
     });
     const { alias, launch } = scenario;
@@ -244,7 +244,7 @@ integration("Machine access, end to end", () => {
     for (const name of remoteNames) await writeFile(join(readShare, name), `body of ${name}`);
     await mkdir(join(homeShare, "nested"), { recursive: true });
     await writeFile(join(homeShare, "nested", "home.txt"), "from home");
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: {
         commands: false,
         forwarding: false,
@@ -364,7 +364,7 @@ integration("Machine access, end to end", () => {
   }, 180_000);
 
   it("refuses commands, interactive terminals and port forwarding exactly as the policy says", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: false, forwarding: false, reach: "owner", shares: [] },
     });
     const { alias, host, launch, target } = scenario;

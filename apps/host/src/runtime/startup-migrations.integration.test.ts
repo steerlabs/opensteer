@@ -10,7 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Pool } from "pg";
 import { describe, expect, it, type TestContext } from "vitest";
-import { freePort, machineAccessHostConfig } from "./machine-access.test-support.js";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+import { parseHostConfig } from "@opensteer/config";
+import { createId } from "@opensteer/core";
 import { createHostRuntime } from "./runtime.js";
 
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
@@ -18,7 +20,7 @@ const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describ
 // Genuine cold/upgrade shapes must depend on the production startup migrator.
 // Removing the startup migration call fails cold startup or the full-history assertion.
 integration("production startup migrations", () => {
-  it.for(["empty", "historical"])(
+  it.for(["empty", "old-lineage"])(
     "starts a truly %s database and restarts idempotently",
     async (state: string, context: TestContext) => {
       const name = `opensteer_startup_${randomUUID().replaceAll("-", "")}`;
@@ -40,27 +42,46 @@ integration("production startup migrations", () => {
       });
       await sql`create database ${sql.id(name)} template template0`.execute(admin);
       const names = Object.keys(await migrations.migrationProvider().getMigrations()).sort();
-      if (state === "historical") {
+      const port = await freePort();
+      const config = parseHostConfig({
+        OPENSTEER_MODE: "development",
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
+        OPENSTEER_DATABASE_URL: url.toString(),
+        OPENSTEER_AUTH_SECRET: randomUUID().repeat(2),
+        OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: randomUUID().repeat(2),
+        OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+        OPENSTEER_HOST_DATA_DIR: dataDirectory,
+        OPENSTEER_PORT: String(port),
+        OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+        OPENSTEER_CANONICAL_ORIGIN: `http://127.0.0.1:${port}`,
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+        OPENSTEER_AGENT_HOME: join(dataDirectory, "home"),
+      });
+      if (state === "old-lineage") {
+        await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
+          database,
+        );
+
         const result = await new Migrator({
           db: database,
-          provider: migrations.migrationProvider(),
-        }).migrateTo(names.at(-2)!);
+          provider: { getMigrations: async () => ({ "0001_baseline": { up: async () => {} } }) },
+        }).migrateToLatest();
         expect(result.error).toBeUndefined();
-        expect((await sql`select name from kysely_migration`.execute(database)).rows).toHaveLength(
-          names.length - 1,
-        );
+        await expect(createHostRuntime(config)).rejects.toMatchObject({
+          cause: expect.objectContaining({ name: "MigrationLineageError" }),
+        });
+        expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
+          { value: "preserved" },
+        ]);
+        expect((await sql`select name from kysely_migration`.execute(database)).rows).toEqual([
+          { name: "0001_baseline" },
+        ]);
+        return;
       }
+      runtime = await createHostRuntime(config);
       await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
         database,
       );
-      const config = machineAccessHostConfig(
-        await freePort(),
-        dataDirectory,
-        new URL("http://127.0.0.1:9"),
-        url.toString(),
-        "invite-only",
-      );
-      runtime = await createHostRuntime(config);
       const first = await sql<{
         name: string;
         timestamp: string;
@@ -69,7 +90,7 @@ integration("production startup migrations", () => {
       expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
         { value: "preserved" },
       ]);
-      // The knowledge trial is off: nothing about it may exist in this database.
+      // Personal startup must not provision team knowledge.
       expect(
         (
           await sql<{ trace: string }>`
@@ -108,68 +129,6 @@ integration("production startup migrations", () => {
       console.info(`Startup migration evidence: ${evidence}`);
     },
   );
-
-  it("leaves the schema main creates when it upgrades a database with the knowledge trial off", async (context) => {
-    const url = new URL(process.env.OPENSTEER_TEST_DATABASE_URL!);
-    url.pathname = "/postgres";
-    const admin = createDatabase({ connectionString: url.toString(), maxConnections: 1 });
-    const names = [0, 1].map(() => `opensteer_schema_${randomUUID().replaceAll("-", "")}`);
-    const databases = names.map((name) => {
-      url.pathname = `/${name}`;
-      return {
-        name,
-        url: url.toString(),
-        database: createDatabase({ connectionString: url.toString() }),
-      };
-    });
-    const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-schema-host-"));
-    let runtime: Awaited<ReturnType<typeof createHostRuntime>> | undefined;
-    context.onTestFinished(async () => {
-      try {
-        await runtime?.close();
-        for (const { database, name } of databases)
-          await closeStartupDatabase(database, admin, name);
-      } finally {
-        await admin.destroy();
-        await rm(dataDirectory, { recursive: true, force: true });
-      }
-    });
-    for (const { name } of databases)
-      await sql`create database ${sql.id(name)} template template0`.execute(admin);
-    const [mainCreated, branchUpgraded] = databases as [
-      (typeof databases)[number],
-      (typeof databases)[number],
-    ];
-    const migrationNames = Object.keys(await migrations.migrationProvider().getMigrations()).sort();
-    // main's startup runs these same migrations with no knowledge step; the branch adds none.
-    expect(
-      (
-        await new Migrator({
-          db: mainCreated.database,
-          provider: migrations.migrationProvider(),
-        }).migrateToLatest()
-      ).error,
-    ).toBeUndefined();
-    expect(
-      (
-        await new Migrator({
-          db: branchUpgraded.database,
-          provider: migrations.migrationProvider(),
-        }).migrateTo(migrationNames.at(-2)!)
-      ).error,
-    ).toBeUndefined();
-    runtime = await createHostRuntime({
-      ...machineAccessHostConfig(
-        await freePort(),
-        dataDirectory,
-        new URL("http://127.0.0.1:9"),
-        branchUpgraded.url,
-        "invite-only",
-      ),
-      knowledge: false,
-    });
-    expect(await schemaOf(branchUpgraded.database)).toEqual(await schemaOf(mainCreated.database));
-  });
 
   it("waits for closing clients before dropping a startup database", async (context) => {
     const name = `opensteer_startup_${randomUUID().replaceAll("-", "")}`;
@@ -240,37 +199,3 @@ async function closeStartupDatabase(
 }
 
 /** Every object and dependency a database holds, without names that vary per database. */
-async function schemaOf(database: ReturnType<typeof createDatabase>) {
-  const { rows } = await sql<{ entry: string }>`
-    select format('namespace %s', nspname) as entry from pg_catalog.pg_namespace
-    where nspname not like 'pg\_%' and nspname <> 'information_schema'
-    union all
-    select format('column %s.%s.%s %s %s %s', table_schema, table_name, column_name, data_type,
-      is_nullable, coalesce(column_default, '')) from information_schema.columns
-    where table_schema not in ('pg_catalog', 'information_schema')
-    union all
-    select format('constraint %s %s %s', conrelid::regclass, conname, pg_get_constraintdef(oid))
-    from pg_catalog.pg_constraint where connamespace not in
-      (select oid from pg_catalog.pg_namespace where nspname in ('pg_catalog', 'information_schema'))
-    union all
-    select format('index %s.%s %s', schemaname, indexname, indexdef) from pg_catalog.pg_indexes
-    where schemaname not in ('pg_catalog', 'information_schema')
-    union all
-    select format('function %s', p.oid::regprocedure) from pg_catalog.pg_proc p
-    join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-    where n.nspname not in ('pg_catalog', 'information_schema')
-    union all
-    select format('trigger %s %s', tgrelid::regclass, tgname) from pg_catalog.pg_trigger
-    where not tgisinternal
-    union all
-    select format('policy %s.%s %s', schemaname, tablename, policyname) from pg_catalog.pg_policies
-    union all
-    select format('role dependency %s %s', r.rolname, d.deptype) from pg_catalog.pg_shdepend d
-    join pg_catalog.pg_roles r on r.oid = d.refobjid
-    where d.dbid = (select oid from pg_catalog.pg_database where datname = current_database())
-    union all
-    select format('migration %s', name) from kysely_migration
-    order by 1
-  `.execute(database);
-  return rows.map(({ entry }) => entry);
-}

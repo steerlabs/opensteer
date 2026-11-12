@@ -1,10 +1,10 @@
 import type { ManualClock } from "@opensteer/shared/test-support/clock";
-import type { HostRuntime } from "../runtime/runtime.js";
+import type { PersonalHostRuntime } from "../runtime/runtime.js";
 import type { VerticalStack } from "./vertical-stack.test-support.js";
 import type { RunId } from "@opensteer/core";
 
 export async function executionLeaseExpiresAt(
-  host: Pick<HostRuntime, "store">,
+  host: Pick<PersonalHostRuntime, "store">,
   runId: RunId,
 ): Promise<Date> {
   const binding = await host.store.database
@@ -32,7 +32,7 @@ export async function executionDisconnected(
 /** Advance a bounded interval, waiting for each async sweep before its next tick. */
 export async function advanceExecutionClock(
   clock: ManualClock,
-  host: Pick<HostRuntime, "settleExecutionLeases">,
+  host: Pick<PersonalHostRuntime, "settleExecutionLeases">,
   milliseconds: number,
 ): Promise<void> {
   if (!Number.isSafeInteger(milliseconds) || milliseconds < 0)

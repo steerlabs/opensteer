@@ -40,7 +40,7 @@ import {
   type MachineAccessOwner,
   type RunningShim,
   type TargetMachine,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 /*
  * A warm engine keeps the launch directory it reaches other computers through
@@ -771,13 +771,23 @@ async function startRig(
     const threadId = await stack.createThread({
       modelSelection: selection,
       title: "Reach other computers",
-      workspaceId: stack.mainWorkspaceId,
+      folder: stack.agentHome,
     });
     // Codex reaches the relay socket only with its network on, in Full access.
     await stack.updateThreadAccess(threadId, "full-access");
+    await (
+      await import("./personal-machine.test-support.js")
+    ).configurePersonalRemoteAccess(
+      {
+        runtime: stack.host,
+        ownerHeaders: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+      },
+      { schemaVersion: 1, mode: "private", routeOrigin: "https://personal.machine-access.test" },
+    );
     const owner: MachineAccessOwner = {
       hostPort: Number(stack.hostOrigin.port),
-      origin: stack.hostOrigin.origin,
+      origin: stack.hostOrigin,
+      api: stack.api,
       ownerHeaders: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
     };
     const revisions = new Map<RunnerId, number>();

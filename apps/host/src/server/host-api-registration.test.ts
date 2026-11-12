@@ -21,7 +21,6 @@ const session: AuthenticatedSession = {
     emailVerified: true,
     disabledAt: null,
     image: null,
-    instanceRole: "administrator",
   },
 };
 const commands = [
@@ -38,11 +37,9 @@ const commands = [
       kind: "approve",
       label: "Agent",
       accessMode: "approval-required",
-      reach: { kind: "user" },
     },
   },
   { type: "session.revoke", sessionId: createId("authSession") },
-  { type: "workspace.delete", workspaceId: createId("workspace") },
   { type: "integration.uninstall", installationId: createIntegrationId("installation") },
   {
     type: "channel.connection.status.set",

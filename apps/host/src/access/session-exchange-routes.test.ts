@@ -365,7 +365,6 @@ function testSession() {
       emailVerified: true,
       id: createId("user"),
       image: null,
-      instanceRole: "administrator",
     },
   });
 }
@@ -382,7 +381,6 @@ function personalAccessRoute() {
         algorithm: "Ed25519",
       },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),

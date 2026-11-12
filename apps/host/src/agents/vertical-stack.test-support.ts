@@ -115,6 +115,7 @@ export interface VerticalStackOptions {
   readonly executionClock?: import("@opensteer/shared/clock").Clock;
   readonly account?: HostConfig["account"];
   readonly accountDirectoryFetch?: typeof globalThis.fetch;
+  readonly personalAccountIssuer?: URL;
   readonly runnerWire?: RunnerWireOptions;
   /** Child-process Runner for crash/reaping acceptance journeys. */
   readonly runnerChild?: { readonly fixture: string; readonly arguments: readonly string[] };

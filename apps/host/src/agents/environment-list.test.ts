@@ -75,6 +75,7 @@ describe("environment model discovery", () => {
     const tool = agentTools.find(({ name }) => name === "orchestrator_capabilities")!;
     expect(
       tool.output.parse({
+        folder: { computerId: createId("runner"), path: "/agent-home" },
         harnesses: discovery,
         accessCeiling: "full-access",
         limits: {

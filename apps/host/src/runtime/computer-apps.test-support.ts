@@ -29,7 +29,6 @@ import {
   type ComputerAppProvider,
   type ComputerAppModuleHandlerOptions,
 } from "@opensteer/runner";
-import { attachLocalWorkspaceDisk } from "../workspace/runner-local-workspace.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   closed,
@@ -38,7 +37,7 @@ import {
   enrollmentToken,
   type MachineAccessHost,
   type PrimaryConnection,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 /**
  * A Mac as a Host meets it: its primary connection, its `integrations`
@@ -69,7 +68,6 @@ export async function connectComputerAppMachine(
   const mainSocket = options.personalMain
     ? new WebSocket(`ws://127.0.0.1:${host.hostPort}/internal/v1/runners`)
     : undefined;
-  const disk = mainSocket ? attachLocalWorkspaceDisk(mainSocket) : undefined;
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
     capabilities: [],
@@ -80,10 +78,8 @@ export async function connectComputerAppMachine(
             agents: {
               environmentIds: [options.personalMain.environmentId],
               harnessDrivers: [],
-              localStorage: disk?.inventory ?? null,
               maxConcurrentRuns: 1,
               providerStateModes: ["isolated"],
-              workspaceBackings: ["local-directory"],
             },
           }
         : {}),
@@ -115,7 +111,6 @@ export async function connectComputerAppMachine(
   if (options.personalMain) acknowledgeCommands(primary, () => true);
   let module: Awaited<ReturnType<typeof attachIntegrations>>;
   const close = async () => {
-    disk?.stop();
     try {
       await module?.close();
     } finally {

@@ -1,4 +1,7 @@
-import { personalBrowserRepository } from "@opensteer/database/test-support/store";
+import {
+  enrollTestRunner,
+  personalBrowserRepository,
+} from "@opensteer/database/test-support/store";
 import { createId, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import {
   IntegrationPlatformStore,
@@ -230,8 +233,7 @@ describeStore("MCP administration", (it) => {
           agent,
           name,
           input,
-          () =>
-            service.execute({ kind: "person", userId: run.userId, isAdministrator: true }, person),
+          () => service.execute({ kind: "person", userId: run.userId }, person),
           observe,
           different,
         );
@@ -526,12 +528,21 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-computer");
-    const targetRunnerId = await f.enrollBrowserRunner(run.userId, "Removed computer");
+    const targetRunnerId = createId("runner");
     await f.database
-      .updateTable("runners")
-      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
-      .where("id", "=", targetRunnerId)
+      .updateTable("personalRemoteAccess")
+      .set({ mode: "private", routeOrigin: "https://personal.mcp.test", generation: 1 })
       .execute();
+    await enrollTestRunner(f.store, {
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      runnerId: targetRunnerId,
+      runnerKind: "local",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+      name: "Removed computer",
+      tokenSuffix: targetRunnerId,
+    });
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Removed browser",

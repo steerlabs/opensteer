@@ -200,7 +200,6 @@ function testSession(): AuthenticatedSession {
       emailVerified: true,
       id: createId("user"),
       image: null,
-      instanceRole: "administrator",
     },
   };
 }

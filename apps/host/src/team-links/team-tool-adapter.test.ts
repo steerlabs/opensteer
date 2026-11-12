@@ -101,7 +101,7 @@ function fixture() {
     },
     async sql(_id, input) {
       wire.push(input);
-      return { columns: [], rows: [], sources: [], truncated: false };
+      return { columns: [], rows: [], truncated: false };
     },
     async reply(_id, bodyMarkdown, attachmentIds) {
       wire.push({ bodyMarkdown, attachmentIds });
@@ -175,7 +175,6 @@ describe("Run-bound team tool adapter", () => {
     });
     expect(sql.output.parse(await f.adapter.sql(f.run, input))).toMatchObject({
       rows: [],
-      sources: [],
       source: f.source,
     });
     expect(f.wire).toEqual([input]);
@@ -236,7 +235,7 @@ describe("Run-bound team tool adapter", () => {
     expect(rejected.wire).toHaveLength(0);
   });
 
-  it("preserves hit and topic sources alongside the asking audience and obeys cancellation", async () => {
+  it("preserves hit sources and the asking audience and obeys cancellation", async () => {
     const f = fixture();
     const other = {
       ...f.source,
@@ -247,12 +246,14 @@ describe("Run-bound team tool adapter", () => {
       results: [{ message: f.messages[0]!, source: other }],
       hasMore: false,
     });
-    f.tools.sql = async () => ({ columns: [], rows: [], sources: [other], truncated: false });
+    f.tools.sql = async () => ({ columns: [], rows: [], truncated: false });
     expect(
       (await f.adapter.search(f.run, team_search.input.parse({ query: "a" }))).results[0]!.source,
     ).toEqual(other);
-    expect(await f.adapter.sql(f.run, sql.input.parse({}))).toMatchObject({
-      sources: [other],
+    expect(await f.adapter.sql(f.run, sql.input.parse({}))).toEqual({
+      columns: [],
+      rows: [],
+      truncated: false,
       source: f.source,
     });
     await expect(

@@ -13,8 +13,14 @@ import { injectRpcRequest } from "./test-host-api-request.js";
 const preview = vi.hoisted(() => vi.fn());
 vi.mock("../agents/automatic-models.js", () => ({ readAutomaticModelPreview: preview }));
 
-it("serves and replaces automatic models for the signed-in person only, behind its capability", async () => {
-  const userId = createId("user");
+it("serves and replaces automatic models for the signed-in person only, behind its capability", async ({
+  onTestFinished,
+}) => {
+  const owner = await (
+    await import("../runtime/personal-owner.test-support.js")
+  ).createPersonalOwnerFixture();
+  onTestFinished(() => owner.close());
+  const userId = owner.ownerId;
   const session = {
     absoluteExpiresAt: "2026-12-12T00:00:00.000Z",
     createdAt: "2026-11-04T00:00:00.000Z",
@@ -27,7 +33,6 @@ it("serves and replaces automatic models for the signed-in person only, behind i
       emailVerified: true,
       id: userId,
       image: null,
-      instanceRole: "user" as const,
     },
   };
   const authenticator = new HostAuthenticator({
@@ -70,9 +75,9 @@ it("serves and replaces automatic models for the signed-in person only, behind i
         deploymentId: createId("deployment"),
         hostInstanceId: createId("hostInstance"),
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: "personal" },
       }),
-      store: { setAutomaticModelConfig } as never,
+      store: { database: owner.database, setAutomaticModelConfig } as never,
     }),
   );
   try {

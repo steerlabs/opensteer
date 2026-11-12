@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  createId,
   ModelSelectionSchema,
   NotificationViewSchema,
   TriggerIdSchema,
@@ -75,7 +75,12 @@ integration("Notifications", () => {
   const publications: HostNotificationPublication[] = [];
   const clock = new ManualClock();
   let graceFinished = Promise.withResolvers<void>();
-  let authorityAvailable = true;
+  let heldPublication:
+    | {
+        entered: ReturnType<typeof Promise.withResolvers<void>>;
+        aborted: ReturnType<typeof Promise.withResolvers<void>>;
+      }
+    | undefined;
   let interruptAcknowledgementFor: RunId | undefined;
   beforeAll(async () => {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-notifications-"));
@@ -88,20 +93,31 @@ integration("Notifications", () => {
           if (milliseconds === 5_000) graceFinished.resolve();
         },
       },
-      account: {
-        controlApiOrigin: new URL("https://accounts.notifications.invalid"),
-        hostCredential: `osc_${"a".repeat(43)}`,
-        issuer: new URL("https://accounts.notifications.invalid"),
-        oidcClientId: "notifications",
-        oidcClientSecret: `ocs_${"b".repeat(43)}`,
-        provisioningMode: "adoption",
-        reachability: "canonical",
-      },
+      personalAccountIssuer: new URL("https://accounts.notifications.invalid"),
       accountDirectoryFetch: async (url, init) => {
         const path = new URL(url.toString()).pathname;
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (path === "/v1/host/notifications") {
           const publication = HostNotificationPublicationSchema.parse(body);
+          if (heldPublication) {
+            const held = heldPublication;
+            held.entered.resolve();
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  init!.signal!.addEventListener(
+                    "abort",
+                    () => {
+                      held.aborted.resolve();
+                      controller.error(init!.signal!.reason);
+                    },
+                    { once: true },
+                  );
+                },
+              }),
+              { status: 202 },
+            );
+          }
           publications.push(publication);
           if (publication.runId === interruptAcknowledgementFor) {
             interruptAcknowledgementFor = undefined;
@@ -130,10 +146,6 @@ integration("Notifications", () => {
           );
         }
         if (path === "/v1/host/authority") {
-          if (!authorityAvailable)
-            return new Response("", {
-              status: 503,
-            });
           const envelope = body.authorityEnvelope as {
             readonly document: {
               readonly deploymentId: string;
@@ -180,31 +192,19 @@ integration("Notifications", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
-    const ownerId = (
-      await stack.host.store.database
-        .selectFrom("personalSettings")
-        .select("ownerId")
-        .executeTakeFirstOrThrow()
-    ).ownerId;
-    const provider = await stack.host.store.database
-      .selectFrom("accountDirectoryProvider")
-      .select("providerId")
-      .executeTakeFirstOrThrow();
     await stack.host.store.database
-      .insertInto("authAccounts")
+      .insertInto("personalRemoteAccountLink")
       .values({
-        id: createId("authAccount"),
-        userId: ownerId,
-        accountId: `acct_${randomUUID()}`,
-        providerId: provider.providerId,
-        password: null,
-        accessToken: null,
-        refreshToken: null,
-        idToken: null,
-        accessTokenExpiresAt: null,
-        refreshTokenExpiresAt: null,
-        scope: null,
-        createdAt: new Date(),
+        singletonKey: "opensteer-account",
+        accountOperation: null,
+        challengeId: `phc_${randomUUID()}`,
+        grantId: `phg_${randomUUID()}`,
+        issuer: "https://accounts.notifications.invalid",
+        hostCredential: `osc_${"a".repeat(43)}`,
+        linkGeneration: "n".repeat(43),
+        state: "active",
+        subject: `acct_${randomUUID()}`,
+        linkedAt: new Date(),
         updatedAt: new Date(),
       })
       .execute();
@@ -228,7 +228,11 @@ integration("Notifications", () => {
         type: "client.subscribe",
         threadId: rootTask,
         apiVersion: hostApiVersion,
-        afterSequence: zeroSequence,
+        cursor: {
+          deploymentId: stack.host.deployment.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
       }),
     );
     await synchronized;
@@ -292,7 +296,7 @@ integration("Notifications", () => {
       kind: "reply-published",
       runId: turn.runId,
       threadId: rootTask,
-      title: "Opensteer",
+      title: "The task",
     });
     await settle();
     // One alert, for the reply — never for the person's own message.
@@ -425,7 +429,7 @@ integration("Notifications", () => {
     expect(reminder).toMatchObject({
       kind: "reply-published",
       threadId: rootTask,
-      title: "Opensteer",
+      title: "The task",
     });
     const run = await stack.host.store.database
       .selectFrom("runs")
@@ -529,7 +533,7 @@ integration("Notifications", () => {
     expect(alert).toMatchObject({
       kind: "reply-published",
       threadId: rootTask,
-      title: "Opensteer",
+      title: "The task",
     });
     await record("automation failure", since);
   }, 120_000);
@@ -700,30 +704,40 @@ integration("Notifications", () => {
     ]);
     await record("interrupted acknowledgement retry", since);
   }, 120_000);
-  it("H12 closes the real Host promptly while authority readiness never resolves", async () => {
+  it("H12 closes the real Host promptly while the Account acknowledgement never arrives", async () => {
     graceFinished = Promise.withResolvers<void>();
-    authorityAvailable = false;
-    await stack.restartHost();
-    const since = stack.notifications.length;
+    heldPublication = {
+      entered: Promise.withResolvers<void>(),
+      aborted: Promise.withResolvers<void>(),
+    };
+    const since = received.length;
     const turn = await stack.sendMessage({
       text: "Waiting for authority [[reply Held for authority]]",
       threadId: rootTask,
     });
     await waitForNotification(
-      stack.notifications,
+      received,
       since,
       (entry) => entry.runId === turn.runId,
       "live while authority unavailable",
     );
     await clock.runUntilSettled(graceFinished.promise);
     clock.advanceBy(100);
+    await withTimeout(heldPublication.entered.promise, 5_000, {
+      timeoutError: () => new Error("Notification publication never reached the Account"),
+    });
     expect(publications.filter((entry) => entry.runId === turn.runId)).toEqual([]);
     const started = Date.now();
     await stack.host.close();
     expect(Date.now() - started).toBeLessThan(5_000);
+    await withTimeout(heldPublication.aborted.promise, 1_000, {
+      timeoutError: () =>
+        new Error("Host shutdown did not abort the pending Account acknowledgement"),
+    });
+    heldPublication = undefined;
     journeys.push({
       name: "close before authority ready",
-      notifications: stack.notifications.slice(since),
+      notifications: received.slice(since),
       publications: [...publications],
     });
   }, 120_000);
@@ -732,6 +746,7 @@ function openSocket(stack: VerticalStack): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const url = new URL("/v1/realtime", stack.hostOrigin);
     url.protocol = "ws:";
+    url.searchParams.set("opensteer_api_version", String(hostApiVersion));
     const socket = new WebSocket(url, {
       headers: {
         cookie: stack.sessionCookie,
