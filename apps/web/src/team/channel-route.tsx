@@ -38,6 +38,8 @@ import type {
 import { ConnectionBanner } from "../components/team/team-status.js";
 import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
+import { DrawerButton } from "../components/workspace/place-stage.js";
+import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
 import { actionErrorMessage } from "../ui-utils.js";
 import { useTeams } from "./team-attachments.js";
 import { useKnowledge } from "./team-knowledge.js";
@@ -209,7 +211,7 @@ function ChannelScreenFor({
   const { client, snapshot, team, words } = view;
   const navigate = useNavigate();
   const { search } = useLocation();
-  const { selection } = useWorkspace();
+  const { drawer, selection, work } = useWorkspace();
   const hostClient = useOptionalShell()?.hostClient ?? null;
   const { links, surface } = useTeams();
   const toast = useToast();
@@ -628,6 +630,7 @@ function ChannelScreenFor({
         <ConnectionBanner notice={notice} onRetry={() => client.connect()} team={team.name} />
       }
       channel={channel}
+      lead={work ? null : drawer ? <DrawerButton /> : <SidebarRestoreButton />}
       menu={{
         onOpenDetails: () => setPane("details"),
         onOpenMembers: () => setPane("members"),

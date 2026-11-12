@@ -33,6 +33,7 @@ export function ChannelScreen({
   banner,
   channel,
   children,
+  lead,
   menu = {},
   onTab,
   pane,
@@ -40,6 +41,8 @@ export function ChannelScreen({
 }: {
   /** One line about the connection, shown only after it has lasted. */
   readonly banner?: ReactNode;
+  /** The way back to the sidebar while it is a drawer or put away. */
+  readonly lead?: ReactNode;
   readonly channel: Channel;
   readonly children: ReactNode;
   readonly menu?: ChannelMenuActions | undefined;
@@ -50,7 +53,7 @@ export function ChannelScreen({
   return (
     <div className={pane ? "team-view team-view--pane" : "team-view"}>
       <section aria-label={channelLabel(channel)} className="channel">
-        <ChannelHeader channel={channel} menu={menu} />
+        <ChannelHeader channel={channel} lead={lead} menu={menu} />
         <ChannelTabs channel={channel} onTab={onTab} tab={tab} />
         {banner}
         <div className="channel__body" role="tabpanel">
@@ -64,9 +67,11 @@ export function ChannelScreen({
 
 function ChannelHeader({
   channel,
+  lead,
   menu,
 }: {
   readonly channel: Channel;
+  readonly lead: ReactNode;
   readonly menu: ChannelMenuActions;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -75,6 +80,7 @@ function ChannelHeader({
   const other = channel.kind === "dm" ? channel.people?.[0] : undefined;
   return (
     <header className="channel__head">
+      {lead}
       <button
         aria-label={`${channelLabel(channel)} details`}
         className="channel__name"
