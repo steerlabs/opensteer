@@ -18,7 +18,6 @@ export function largeTranscriptFixture() {
         sequence: String(sequence),
         threadId: id("thr", 2),
         type,
-        workspaceId: id("wsp", 1),
       }),
     );
   };

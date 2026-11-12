@@ -42,6 +42,7 @@ export function MessageList({
   firstUnreadId,
   flashId = null,
   hasOlder,
+  header,
   inThread = false,
   intro,
   items,
@@ -62,6 +63,7 @@ export function MessageList({
   /** A deep link's message: scrolled to and flashed once. */
   readonly flashId?: string | null;
   readonly hasOlder: boolean;
+  readonly header?: ReactNode;
   readonly inThread?: boolean;
   readonly onVisibleMessage?: ((id: string) => void) | undefined;
   /** The start of the channel, shown once there is nothing older. */
@@ -78,6 +80,7 @@ export function MessageList({
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
   const rowsRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLDivElement | null>(null);
   const atEnd = useRef(true);
   const stable = useStableItems(items);
   const rowActions = useStableActions(actions ?? noActions);
@@ -122,7 +125,8 @@ export function MessageList({
       : list.querySelector<HTMLElement>(".tlist__new");
     if (target) {
       const offset = flashId ? list.clientHeight / 2 : list.clientHeight / 3;
-      list.scrollTop = target.offsetTop - offset;
+      list.scrollTop +=
+        target.getBoundingClientRect().top - list.getBoundingClientRect().top - offset;
     } else {
       list.scrollTop = list.scrollHeight;
     }
@@ -137,7 +141,8 @@ export function MessageList({
     if (!list || !flashId || landed.current === flashId) return;
     const row = list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(flashId)}"]`);
     if (!row) return;
-    list.scrollTop = row.offsetTop - list.clientHeight / 2;
+    list.scrollTop +=
+      row.getBoundingClientRect().top - list.getBoundingClientRect().top - list.clientHeight / 2;
     landed.current = flashId;
     atEnd.current = false;
     measure();
@@ -187,6 +192,7 @@ export function MessageList({
       if (Math.abs(drift) > 0.5) list.scrollTop += drift;
     });
     observer.observe(rows);
+    if (headerRef.current) observer.observe(headerRef.current);
     return () => observer.disconnect();
   }, []);
 
@@ -283,6 +289,11 @@ export function MessageList({
         role="log"
         tabIndex={-1}
       >
+        {header ? (
+          <div className="tlist__header" ref={headerRef}>
+            {header}
+          </div>
+        ) : null}
         <div className="tlist__rows" ref={rowsRef}>
           {hasOlder ? (
             <button

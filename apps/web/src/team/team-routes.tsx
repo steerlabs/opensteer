@@ -324,11 +324,21 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
       })
       .catch((error: unknown) => toast.error(actionErrorMessage(error)));
   }, [view.client, query, filters, view.snapshot.sidebar?.accessRevision]);
-  const channels = (view.snapshot.sidebar?.channels ?? []).map((row) => ({
-    id: row.channel.id,
-    name: row.channel.name,
-    kind: channelKind(row.channel.kind),
-  }));
+  const directory = usePagedList(
+    (cursor) =>
+      view.client.rpc["team.channels.list"](
+        cursor ? { after: TeamChannelIdSchema.parse(cursor) } : {},
+      )
+        .then(unwrapRpcResult)
+        .then((page) => ({
+          items: page.channels,
+          nextCursor: page.hasMore ? (page.channels.at(-1)?.id ?? null) : null,
+        })),
+    `search-channels:${view.team.teamId}:${view.snapshot.sidebar?.accessRevision ?? ""}`,
+  );
+  const channels = directory.items
+    .filter((channel) => channel.can.read)
+    .map((channel) => ({ id: channel.id, name: channel.name, kind: channelKind(channel.kind) }));
   const results = view.snapshot.search?.results ?? null;
   const people = useMemo(
     () => [...view.members.values()].map((member) => person(view.words, member.userId)),
@@ -337,6 +347,8 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
   return (
     <TeamSearch
       channels={channels}
+      onMoreChannels={directory.nextCursor ? directory.more : undefined}
+      loadingChannels={directory.loadingMore}
       filters={filters}
       onFilters={(next) => {
         run(query, next);

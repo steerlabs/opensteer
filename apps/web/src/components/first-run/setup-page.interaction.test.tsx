@@ -116,7 +116,6 @@ const shell = vi.hoisted(() => ({
     deploymentId: "dep_6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b",
     environments: [] as unknown[],
     harnesses: [] as unknown[],
-    homeThreadId: null as string | null,
     identityConfig: {
       deployment: { name: "Studio Mac" },
       portalOrigin: "https://app.opensteer.test",
@@ -141,7 +140,6 @@ beforeEach(() => {
   shell.desktopBridge = null;
   shell.desktopDeployment = null;
   shell.deploymentAccess = null;
-  shell.snapshot.homeThreadId = null;
   shell.snapshot.environments = [mainEnvironment()];
   shell.hostClient.rememberExecution.mockResolvedValue({});
   shell.hostClient.rpc["sessions.list"].mockResolvedValue({ data: { sessions: [] }, ok: true });

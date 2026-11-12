@@ -134,6 +134,11 @@ export const MessageRow = memo(function MessageRow({
         ) : message.send?.kind === "failed" ? (
           <p className="tmsg__state tmsg__state--failed" role="alert">
             <Icon name="alert-circle" /> Not sent: {message.send.reason}
+            {message.canEdit && actions.onEdit && !editing ? (
+              <button onClick={() => onEditingChange?.(message.id, true)} type="button">
+                Edit
+              </button>
+            ) : null}
             {actions.onRetrySend ? (
               <button onClick={() => actions.onRetrySend?.(message.id)} type="button">
                 Try again

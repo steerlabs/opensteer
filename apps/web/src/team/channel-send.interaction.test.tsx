@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { createId } from "@opensteer/core";
+import { createId, TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
 import { mockCardUseRequest } from "@opensteer/client/mock";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -165,5 +165,100 @@ describe("sending in a channel", () => {
     await click(element(".channel .composer__send"));
     expect(field().value).toBe(text);
     expect(teamSession!.getSnapshot().pending).toEqual([]);
+  });
+  it("opens an old reply link in its parent thread with the target row mounted", async () => {
+    await mount("/", { team: true });
+    const host = teamHost!,
+      channelId = host.bootstrap.sidebar.channels[0]!.channel.id;
+    const root = host.post({ channelId, bodyMarkdown: "Old root" });
+    const reply = host.post({ channelId, threadRootId: root.id, bodyMarkdown: "The linked reply" });
+    for (let index = 0; index < 100; index++)
+      host.post({ channelId, threadRootId: root.id, bodyMarkdown: `Newer reply ${index}` });
+    await act(async () => goTo!(`/teams/${host.teamId}/c/${channelId}/m/${reply.id}`));
+    await act(async () => {
+      await vi.waitFor(
+        () => {
+          expect(history.at(-1)!.path).toBe(
+            `/teams/${host.teamId}/c/${channelId}/t/${root.id}/m/${reply.id}`,
+          );
+          expect(element(`.thread-pane [data-row-id="${reply.id}"]`).textContent).toContain(
+            "The linked reply",
+          );
+        },
+        { timeout: 1000 },
+      );
+    });
+  });
+
+  it("pages the search channel directory and chooses a channel beyond its first page", async () => {
+    await mount("/", { team: true });
+    const host = teamHost!,
+      template = host.channels.values().next().value!;
+    for (let index = 2; index <= 51; index++) {
+      const id = TeamChannelIdSchema.parse(
+        `tch_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      );
+      host.channels.set(id, { ...template, id, name: `Directory ${index}` });
+    }
+    const target = TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000051");
+    host.post({ channelId: target, bodyMarkdown: "Needle in the old channel" });
+    await act(async () => goTo!(`/teams/${host.teamId}/search?q=Needle`));
+    await click(element(".filter-chip"));
+    const more = [...document.querySelectorAll<HTMLButtonElement>(".picker__row")].find(
+      (button) => button.textContent === "More channels",
+    );
+    expect(more).toBeTruthy();
+    await click(more!);
+    const option = [...document.querySelectorAll<HTMLButtonElement>(".picker__row")].find(
+      (button) => button.textContent?.includes("Directory 51"),
+    );
+    expect(option).toBeTruthy();
+    await click(option!);
+    expect(new URLSearchParams(history.at(-1)!.search).get("in")).toBe(target);
+    await act(async () => {
+      await vi.waitFor(
+        () =>
+          expect(document.querySelector(".search-hit")?.textContent).toContain(
+            "Needle in the old channel",
+          ),
+        { timeout: 1000 },
+      );
+    });
+  });
+  it("edits a refused pending message into the composer and removes the original unsent row", async () => {
+    await openChannel();
+    const host = teamHost!,
+      read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation((name, input) => {
+      if (name === "commands.dispatch" && (input as { type?: string }).type === "team.message.send")
+        throw new OpensteerError({ code: "forbidden", message: "Posting refused" });
+      return read(name, input);
+    });
+    await write(field(), "Refused original");
+    await click(element(".channel .composer__send"));
+    await act(async () => {
+      await vi.waitFor(() => expect(document.querySelector(".tmsg--failed")).not.toBeNull(), {
+        timeout: 1000,
+      });
+    });
+    const edit = [
+      ...document.querySelectorAll<HTMLButtonElement>(".tmsg--failed .tmsg__state button"),
+    ].find((button) => button.textContent === "Edit");
+    expect(edit).toBeTruthy();
+    await click(edit!);
+    const editor = element<HTMLTextAreaElement>('[aria-label="Edit message"]');
+    await write(editor, "Revised unsent message");
+    await act(async () =>
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+      ),
+    );
+    await act(async () => {
+      await vi.waitFor(() => expect(teamSession!.getSnapshot().pending).toEqual([]), {
+        timeout: 1000,
+      });
+    });
+    expect(field().value).toBe("Revised unsent message");
+    expect(host.messages.size).toBe(0);
   });
 });

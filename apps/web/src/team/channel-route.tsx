@@ -269,6 +269,7 @@ function ChannelScreenFor({
 
   /* ---- Sending ---- */
   type Staged = StagedFileView & { file: TeamFile | null };
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [stagedScopes, setStagedScopes] = useState<Readonly<Record<string, readonly Staged[]>>>({});
   const setStaged = (
     rootId: string | null,
@@ -653,6 +654,8 @@ function ChannelScreenFor({
         composer={composer(place.threadId, myOpenAsk || params.has("ask"))}
         onBack={docked ? () => go(channelPath(team.teamId, channelId)) : undefined}
         onClose={() => go(channelPath(team.teamId, channelId))}
+        editingId={editingId}
+        onEditingChange={setEditingId}
         replies={replies}
         flashId={place.messageId}
         hasOlder={thread?.hasMore ?? false}
@@ -686,6 +689,8 @@ function ChannelScreenFor({
           <MessageList
             actions={messageActions}
             firstUnreadId={firstUnread}
+            editingId={editingId}
+            onEditingChange={setEditingId}
             flashId={place.messageId}
             hasOlder={timeline?.hasMore ?? false}
             intro={<ChannelIntro channel={channel} />}

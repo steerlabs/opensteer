@@ -17,8 +17,8 @@ import {
 
 /**
  * Notifications already shown, by Deployment and notification id. The Host
- * sends each one to every socket the person has open, one per Workspace and
- * window, and only the first copy is shown. Ids are never reused, so only the
+ * sends each one over the personal stream to every window the person has open,
+ * and only the first copy is shown. Ids are never reused, so only the
  * most recent need remembering.
  */
 const shownNotifications = new Set<string>();
