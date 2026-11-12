@@ -1,11 +1,13 @@
 import {
   buildMobileThreadDeepLink,
   DeploymentIdSchema,
-  mobileDeepLinkScheme,
   TeamChannelIdSchema,
+  TeamMessageIdSchema,
+  TeamNoticeIdSchema,
   teamPageAppLink,
   ThreadIdSchema,
 } from "@opensteer/core";
+import { teamNotificationDeepLink } from "@opensteer/control-plane-protocol";
 import { RequestIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -132,15 +134,21 @@ describe("dismissThreadNotifications", () => {
 describe("a team's notifications", () => {
   const origin = "https://chat.acme.example";
   const channelId = TeamChannelIdSchema.parse("tch_0192f4a1-6666-4000-8000-000000000006");
-  const message = teamPageAppLink(
-    { origin, target: { kind: "message", channelId, messageId: "42" } as never },
-    mobileDeepLinkScheme,
-  );
-  const notice = `${mobileDeepLinkScheme}:/team-notice?${new URLSearchParams({
+  const teamId = DeploymentIdSchema.parse("dep_0192f4a1-5555-4000-8000-000000000005");
+  // The links exactly as the team's push publication writes them.
+  const message = teamNotificationDeepLink({
+    kind: "team-message",
     origin,
-    teamId: "dep_0192f4a1-5555-4000-8000-000000000005",
-    noticeId: "tnt_0192f4a1-7777-4000-8000-000000000007",
-  })}`;
+    teamId,
+    channelId,
+    messageId: TeamMessageIdSchema.parse("42"),
+  });
+  const notice = teamNotificationDeepLink({
+    kind: "team-notice",
+    origin,
+    teamId,
+    noticeId: TeamNoticeIdSchema.parse("tnt_0192f4a1-7777-4000-8000-000000000007"),
+  });
 
   it("names the team page alone, whatever the payload says beside it", () => {
     for (const link of [message, notice])

@@ -55,6 +55,9 @@ export function networkTeamTransport(options: {
             const declared = Number(response.headers.get("content-length") ?? expected);
             if (declared > (preview ? teamPreviewMaxBytes : teamUploadMaxBytes))
               throw new Error("Team file exceeds its byte bound.");
+            const mediaType = response.headers.get("content-type")?.split(";", 1)[0];
+            if (mediaType !== (preview ? metadata.preview!.mediaType : "application/octet-stream"))
+              throw new Error("Unexpected team file type.");
             const blob = await response.blob();
             if (blob.size !== expected) throw new Error("Team file size changed.");
             return blob;
