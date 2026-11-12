@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
+import { teamInvitePagePrefix, teamSetupPagePath } from "../apps/host/src/team/setup-routes.js";
 
 describe("team Compose contract", () => {
   it("keeps Host keys on its own data volume", async () => {
@@ -43,8 +44,14 @@ describe("team Compose contract", () => {
     expect(caddyfile.match(/reverse_proxy .+/gu)).toEqual([
       "reverse_proxy {$OPENSTEER_HOST_UPSTREAM:host:4310}",
     ]);
-    expect(await readFile(resolve("deploy/container/Containerfile"), "utf8")).toContain(
-      "AS team-gateway\nCOPY deploy/team/Caddyfile /etc/caddy/Caddyfile\n",
+    // The Host serves the first-owner setup and invite pages; the web app must not shadow them.
+    const api = caddyfile.match(/@api path ([^\n]+)/u)?.[1]?.trim().split(/\s+/u);
+    expect(api).toEqual(expect.arrayContaining([teamSetupPagePath, `${teamInvitePagePrefix}*`]));
+    const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
+    const gatewayStage = containerfile.slice(
+      containerfile.indexOf(" AS team-gateway\n"),
+      containerfile.indexOf("\nFROM ", containerfile.indexOf(" AS team-gateway\n")),
     );
+    expect(gatewayStage).toContain("\nCOPY deploy/team/Caddyfile /etc/caddy/Caddyfile\n");
   });
 });

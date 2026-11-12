@@ -11,6 +11,10 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { assertTeamApiVersion } from "./services.js";
 
+/** Pages the team Host serves itself; its gateway must route them here, not to the web app. */
+export const teamSetupPagePath = "/setup";
+export const teamInvitePagePrefix = "/invite/";
+
 function headers(request: FastifyRequest) {
   const result = new Headers();
   for (const [key, value] of Object.entries(request.headers)) {
@@ -24,7 +28,7 @@ export function registerTeamSetupRoutes(
   options: { identity: IdentityService; accountPortalOrigin: string },
 ) {
   const gate = async (request: FastifyRequest) => assertTeamApiVersion(headers(request));
-  app.get("/setup", async (_request, reply) => {
+  app.get(teamSetupPagePath, async (_request, reply) => {
     const nonce = randomBytes(18).toString("base64url");
     return reply
       .header("cache-control", "no-store")
@@ -36,7 +40,7 @@ export function registerTeamSetupRoutes(
       .type("text/html")
       .send(teamSetupPage(nonce, options.accountPortalOrigin));
   });
-  app.get("/invite/:selector", async (request, reply) => {
+  app.get(`${teamInvitePagePrefix}:selector`, async (request, reply) => {
     const { selector } = z
       .strictObject({ selector: z.string().regex(/^[A-Za-z0-9_-]{32}$/) })
       .parse(request.params);
