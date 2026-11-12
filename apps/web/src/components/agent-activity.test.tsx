@@ -51,7 +51,6 @@ describe("AgentTranscript", () => {
     const otherUserId = createId("user");
     const threadId = createId("thread");
     const runId = createId("run");
-    const workspaceId = createId("workspace");
     const entries: MessageEntry[] = [
       {
         author: {
@@ -87,8 +86,6 @@ describe("AgentTranscript", () => {
           kind: "agent",
           runId,
           threadId,
-          workspaceId,
-          workspaceName: "Travel",
         },
         body: "I found three options",
         createdAt: "2026-08-16T10:00:02.000Z",

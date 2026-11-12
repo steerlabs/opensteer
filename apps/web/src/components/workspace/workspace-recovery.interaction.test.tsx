@@ -567,7 +567,6 @@ describe("stopping a task and finishing it: one Stop", () => {
           modelSelection: source.modelSelection,
           parentThreadId: parent,
           title: "Shortlist venues",
-          workspaceId: source.workspaceId,
         })
       ).id;
     });

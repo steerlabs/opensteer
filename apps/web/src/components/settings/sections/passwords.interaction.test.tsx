@@ -21,7 +21,6 @@ import { SettingsSectionRoute, SettingsShell } from "../settings-shell.js";
  * - a browser tab, a phone-sized window or the desktop app on another computer
  *   draws controls that only work on the Mac that runs this Opensteer, or asks
  *   that Mac's bridge for a status it does not have;
- * - a server Opensteer points at a Mac it does not have;
  * - a Mac that can never keep Passwords is offered Set up;
  * - the status read fails, or the Mac says Passwords is unavailable, and the
  *   page offers no way to read it again;
@@ -47,22 +46,11 @@ afterEach(() => {
 });
 
 describe("Settings → Passwords on the Mac that keeps them", () => {
-  it.each([false, true])(
-    "keeps Passwords controls compatible with an older Host (server: %s)",
-    async (server) => {
-      const page = await mount({
-        bridge: fakeBridge(available("not-set-up")).bridge,
-        server,
-        legacy: true,
-      });
-      expect(buttons(page).includes("Set up Passwords")).toBe(!server);
-    },
-  );
   it("keeps vault management under Sign-ins", async () => {
     const page = await mount({ bridge: fakeBridge(available("not-set-up")).bridge });
     const links = [
       ...page.querySelectorAll<HTMLAnchorElement>(
-        ".settings-navigation__group .settings-navigation__link",
+        '.settings-navigation__group[aria-labelledby="settings-navigation-agents"] .settings-navigation__link',
       ),
     ].map((link) => link.getAttribute("href"));
     expect(links.slice(-2)).toEqual(["/settings/plugins", "/settings/sign-ins"]);
@@ -95,7 +83,7 @@ describe("Settings → Passwords on the Mac that keeps them", () => {
     expect(page.querySelector(".chip")?.textContent).toBe("On");
     expect(text(page)).not.toContain("Waiting for you");
     expect(text(page)).toContain(
-      "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
+      "You allow an account from any device signed in to this Opensteer. Your agents can then use it for your tasks.",
     );
     expect(text(page)).toContain("Take that access away any time in the Passwords window.");
     expect(text(page)).toContain("Sign-ins can stay saved in the browser profile.");
@@ -237,15 +225,6 @@ describe("Settings → Passwords anywhere else", () => {
     expect(fake.bridge.passwordsStatus).not.toHaveBeenCalled();
     expect(fake.listeners.size).toBe(0);
   });
-
-  it("says a server Opensteer has none yet", async () => {
-    const page = await mount({ server: true });
-    expect(text(page)).toContain(
-      "Saved-password sign-ins are available on a Personal Opensteer for now.",
-    );
-    expect(text(page)).not.toContain("Mac mini");
-    expect(buttons(page)).toEqual([]);
-  });
 });
 
 function available(
@@ -254,7 +233,12 @@ function available(
 ): DesktopPasswordsStatus {
   return {
     availability: "available",
-    broker: { agentSignIns: broker.agentSignIns ?? "on", vault },
+    broker: {
+      agentSignIns: broker.agentSignIns ?? "on",
+      personFill: broker.agentSignIns ?? "on",
+      personSave: broker.agentSignIns ?? "on",
+      vault,
+    },
     development: broker.development ?? false,
   };
 }
@@ -286,11 +270,9 @@ function fakeBridge(initial: DesktopPasswordsStatus | Error) {
 }
 
 async function mount(input: {
-  readonly legacy?: boolean;
   readonly bridge?: OpensteerDesktopBridge;
   readonly client?: MockHostClient;
   readonly onThisComputer?: boolean;
-  readonly server?: boolean;
 }): Promise<HTMLElement> {
   const hostClient = input.client ?? new MockHostClient({ latencyMs: 0 });
   const container = document.createElement("div");
@@ -307,50 +289,21 @@ async function mount(input: {
 function page(
   hostClient: MockHostClient,
   input: {
-    readonly legacy?: boolean;
     readonly bridge?: OpensteerDesktopBridge;
     readonly onThisComputer?: boolean;
-    readonly server?: boolean;
   },
 ) {
-  const base = hostClient.getSnapshot();
-  let snapshot: HostSnapshot = input.server
-    ? {
-        ...base,
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-        deploymentPolicy: {
-          ownership: "members",
-          personalRemoteAccess: false,
-          nativeWebLinks: false,
-          localOwnerClaim: false,
-          deploymentOwnsMainComputer: false,
-          nativePasswords: false,
-          deploymentComputerAccess: false,
-          sharing: true,
-          serviceManagement: true,
-          runnerEnrollmentMode: "unrestricted",
-          projectConsent: "per-project",
-          localRunnerDefaultModules: ["agents", "browser", "shell"],
-        },
-        identityConfig: base.identityConfig && {
-          ...base.identityConfig,
-          deployment: { kind: "self-hosted", name: "Design server" },
-          publicOrigin: "https://design.example.test",
-        },
-      }
-    : base;
-  if (input.legacy) snapshot = { ...snapshot, deploymentPolicy: undefined };
+  const snapshot: HostSnapshot = hostClient.getSnapshot();
   const origin = "http://127.0.0.1:43110";
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: input.bridge ?? null,
     desktopDeployment:
-      input.bridge && !input.server
+      input.bridge
         ? DesktopDeploymentSummarySchema.parse({
             access: input.onThisComputer === false ? "connect" : "owner",
             activeOrigin: origin,
@@ -364,8 +317,6 @@ function page(
           })
         : null,
     executionPreferences: emptyExecutionPreferences,
-    homeHandoff: null,
-    homeThreadId: null,
     hostClient,
     localExecutionAction: null,
     localExecutionError: null,
@@ -375,15 +326,12 @@ function page(
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
     snapshot: { ...snapshot, connection: "connected" },
-    writeInChat: noOp,
   };
   return (
     <MemoryRouter initialEntries={["/settings/passwords"]}>

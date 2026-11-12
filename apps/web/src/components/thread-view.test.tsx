@@ -56,7 +56,6 @@ function thread(overrides: Partial<ThreadSummary> = {}): ThreadSummary {
     title: "Ship the fix",
     unread: false,
     updatedAt: "2026-09-05T00:00:00.000Z",
-    workspaceId: "workspace-1",
     ...overrides,
   };
 }

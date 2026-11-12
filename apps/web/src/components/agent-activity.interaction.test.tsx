@@ -662,7 +662,6 @@ describe("task mark bylines", () => {
         displayName: thread.title,
         runId: createId("run"),
         threadId: ThreadIdSchema.parse(thread.id),
-        workspaceId: WorkspaceIdSchema.parse(main.id),
         workspaceName: main.name,
       };
       const entry: MessageEntry = { ...note, author, body: "Here is the result." };
@@ -707,7 +706,6 @@ describe("task mark bylines", () => {
         ...entry,
         author: {
           ...author,
-          workspaceId: WorkspaceIdSchema.parse(project.id),
           workspaceName: project.name,
           displayName: project.name,
         },

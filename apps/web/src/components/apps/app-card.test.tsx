@@ -40,7 +40,6 @@ const entry: AppEntry = {
 };
 const metadata: OpensteerApp = {
   id: appId,
-  workspaceId: createId("workspace"),
   threadId: createId("thread"),
   runId: createId("run"),
   title: "Budget",
@@ -73,7 +72,6 @@ const tab = {
   appId,
   title: "Budget",
   threadId: metadata.threadId,
-  workspaceId: metadata.workspaceId,
   latestVersion: 1,
   openedAt: entry.createdAt,
 };

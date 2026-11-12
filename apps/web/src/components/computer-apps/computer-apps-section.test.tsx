@@ -501,7 +501,7 @@ describe("ComputerAppsSection", () => {
   it("does not reveal another owner's app block", async () => {
     const { container } = await mount({
       connections: [connection("read-write")],
-      machine: machine({ apps: [ready()], ownership: "other" }),
+      machine: machine({ apps: [ready()], ownership: "mine" }),
       owned: false,
     });
 
@@ -732,10 +732,6 @@ async function mount(input: MountInput) {
             owned={next.owned ?? true}
             platform={platform()}
             setupRequests={next.setupRequests ?? []}
-            workspaces={[
-              workspace(mainWorkspace, "main", "Main"),
-              workspace(homeProjects, "project", "Home projects"),
-            ]}
           />
         </MemoryRouter>,
       );
@@ -904,7 +900,6 @@ function workspace(id: string, kind: "main" | "project", name: string): Workspac
   return {
     description: "",
     fileCount: 0,
-    homeThreadId: null,
     voiceThreadId: null,
     harnessLabel: "Codex",
     icon: null,

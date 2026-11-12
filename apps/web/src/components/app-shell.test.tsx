@@ -49,7 +49,6 @@ describe("localRunnerSlotDeploymentId", () => {
       localRunnerSlotDeploymentId({
         desktopBridge: bridge,
         desktopDeployment: personal,
-        deploymentPolicy: { deploymentOwnsMainComputer: false },
       }),
     ).toBe(personal.id);
     const server = deployment({ onThisComputer: true });
@@ -57,7 +56,6 @@ describe("localRunnerSlotDeploymentId", () => {
       localRunnerSlotDeploymentId({
         desktopBridge: bridge,
         desktopDeployment: server,
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
       }),
     ).toBeNull();
   });
@@ -65,7 +63,6 @@ describe("localRunnerSlotDeploymentId", () => {
     const server = deployment();
     expect(
       localRunnerSlotDeploymentId({
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: bridge,
         desktopDeployment: server,
       }),
@@ -80,7 +77,6 @@ describe("localRunnerSlotDeploymentId", () => {
     });
     expect(
       localRunnerSlotDeploymentId({
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: bridge,
         desktopDeployment: remotePersonal,
       }),
@@ -92,7 +88,6 @@ describe("localRunnerSlotDeploymentId", () => {
     // here to add, remove, or switch.
     expect(
       localRunnerSlotDeploymentId({
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: bridge,
         desktopDeployment: deployment({ access: "owner", kind: "personal", onThisComputer: true }),
       }),
@@ -102,14 +97,12 @@ describe("localRunnerSlotDeploymentId", () => {
   it("has no slot in a browser, which supervises nothing", () => {
     expect(
       localRunnerSlotDeploymentId({
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: null,
         desktopDeployment: deployment(),
       }),
     ).toBeNull();
     expect(
       localRunnerSlotDeploymentId({
-        deploymentPolicy: { deploymentOwnsMainComputer: true },
         desktopBridge: bridge,
         desktopDeployment: null,
       }),

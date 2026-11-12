@@ -1484,7 +1484,6 @@ describe("ThreadIntegrationAction says what connecting does before it is done", 
     const request = {
       ...pinned,
       payload: { ...pinned.payload, requestedConnectionId: null },
-      targetWorkspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002"),
     };
     shellState.current = {
       hostClient: client,
@@ -1871,7 +1870,6 @@ describe("resolveIntegrationAccess", () => {
           displayName: "Work",
           id: "connection-work",
         },
-        targetKind: "main",
       },
     );
 
@@ -1902,7 +1900,6 @@ describe("resolveIntegrationAccess", () => {
           displayName: "Client",
           id: "connection-client",
         },
-        targetKind: "project",
       },
     );
 
@@ -2553,7 +2550,6 @@ function requestRecord(loaded: LoadedAccessRequest, title: string) {
     payload: loaded.request,
     presentation: { kind: "external", title },
     status: "pending",
-    targetWorkspaceId: "wsp_support",
   } as unknown as Request;
 }
 
@@ -2566,7 +2562,6 @@ function computerRequestRecord() {
     payload: computerRequest().request,
     presentation: { kind: "external", title: "Connect Messages" },
     status: "pending",
-    targetWorkspaceId: "wsp_support",
   } as never;
 }
 

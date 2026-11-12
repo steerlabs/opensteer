@@ -95,7 +95,6 @@ function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
     payload: {
       kind: "machine.full-disk-access",
       machineId,
@@ -114,7 +113,6 @@ function fullDiskAccessRequest(machineId: ReturnType<typeof RunnerIdSchema.parse
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: createId("workspace"),
   };
 }
 
@@ -188,9 +186,6 @@ function shellContext(input: {
   return {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -207,14 +202,11 @@ function shellContext(input: {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot,
   };
 }

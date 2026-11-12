@@ -121,7 +121,6 @@ describe("External agents in web and desktop Settings", () => {
         redirectUri: "http://127.0.0.1:4999/cb",
         resource: "http://127.0.0.1:4315/internal/v1/mcp",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        workspaces: [],
       },
     });
     const page = await mount(host);

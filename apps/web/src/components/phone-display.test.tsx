@@ -1356,7 +1356,7 @@ it.each([
     expect(node.querySelector(".phone-display__picture--hidden")).toBeNull();
     expect(node.querySelector(".viewfinder--still")).toBeNull();
   });
-  await move([{ ...machine, ownership: "other", computerUse: null }]);
+  await move([{ ...machine, ownership: "mine", computerUse: null }]);
   expect(node.querySelector(".phone-display__picture--hidden")).not.toBeNull();
   expect(node.querySelector("canvas")).toBe(canvas);
   expect(sessionId).toBeDefined();

@@ -77,11 +77,6 @@ describe("currentDeviceMachineId", () => {
           localExecutionStatus: localStatus({ enrolled: false }),
           snapshot: {
             ...snapshot,
-            deploymentPolicy: {
-              ...snapshot.deploymentPolicy,
-              ownership: ownsMain ? "members" : "single-user",
-              deploymentOwnsMainComputer: ownsMain,
-            },
           },
         });
         expect(markup.includes("Add it and agents on")).toBe(ownsMain);
@@ -98,20 +93,6 @@ describe("currentDeviceMachineId", () => {
 
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         hostsDeploymentOnThisComputer: true,
         localRunnerId: null,
         machines,
@@ -119,20 +100,6 @@ describe("currentDeviceMachineId", () => {
     ).toBe(macMiniId);
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         hostsDeploymentOnThisComputer: false,
         localRunnerId: null,
         machines,
@@ -508,13 +475,6 @@ describe("ComputerDetailPage", () => {
           path: `/settings/devices/computers/${macMiniId}`,
           snapshot: {
             ...snapshot,
-            deploymentPolicy: {
-              ...snapshot.deploymentPolicy,
-              computerExecutionControls,
-              localRunnerDefaultModules: computerExecutionControls
-                ? ["shell"]
-                : ["agents", "shell"],
-            },
           },
         });
         expect(markup.includes('aria-labelledby="runs-agents-title"')).toBe(
@@ -947,21 +907,6 @@ function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
   return {
     ...client.getSnapshot(),
     deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-    deploymentPolicy: {
-      ownership: "members",
-      personalRemoteAccess: false,
-      nativeWebLinks: false,
-      localOwnerClaim: false,
-      deploymentOwnsMainComputer: false,
-      nativePasswords: false,
-      deploymentComputerAccess: false,
-      computerExecutionControls: true,
-      sharing: true,
-      serviceManagement: true,
-      runnerEnrollmentMode: "unrestricted",
-      projectConsent: "per-project",
-      localRunnerDefaultModules: ["agents", "browser", "shell"],
-    },
   };
 }
 
@@ -1045,9 +990,6 @@ function pageElement(input: PageInput) {
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -1063,14 +1005,11 @@ function pageElement(input: PageInput) {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: input.performLocalExecutionAction ?? (async () => undefined),
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot: input.snapshot,
   };
   return (

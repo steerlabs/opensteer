@@ -210,7 +210,6 @@ export function IntegrationControllerFixture(props: Parameters<typeof useIntegra
                                 `integration-grant:${grantId}`,
                               ),
                               type: "integration.grant.revoke",
-                              workspaceId: selectedWorkspaceId,
                             })
                             .then(() => undefined),
                         )
