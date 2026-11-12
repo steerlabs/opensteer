@@ -57,7 +57,7 @@ describe("team session lifecycle", () => {
     const f = fixture();
     const ownerUserId = createId("user");
     try {
-      await seed(f.host, 1);
+      await seed(f.host, 2);
       const rootId = TeamMessageIdSchema.parse("1");
       const request = TeamAgentRequestSchema.parse({
         id: createId("teamAgentRequest"),

@@ -176,7 +176,7 @@ describe("DeploymentAccessService", () => {
     await service.checkDeployments();
 
     // Nothing is attached, and every row still says what its own authority
-    // knows — a self-hosted Host that was never opened is not "Starting…".
+    // knows — a team Host that was never opened is not "Starting…".
     expect(service.snapshot().deployments.map(({ statusInfo }) => statusInfo)).toEqual([
       { reason: null, status: "ready" },
       {
@@ -1654,7 +1654,7 @@ function deployment(
     readonly accountAccess?: "owner" | "member" | null;
     readonly attachmentKey?: string | null;
     readonly id?: string;
-    readonly kind?: "personal" | "self-hosted";
+    readonly kind?: "personal" | "team";
     readonly lastUsedAt?: string | null;
     readonly name?: string;
     readonly onThisComputer?: boolean;
@@ -1670,7 +1670,7 @@ function deployment(
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: overrides.id ?? createId("deployment"),
-    kind: overrides.kind ?? "self-hosted",
+    kind: overrides.kind ?? "team",
     lastUsedAt: overrides.lastUsedAt ?? null,
     name: overrides.name ?? "Host",
     onThisComputer: overrides.onThisComputer ?? false,
