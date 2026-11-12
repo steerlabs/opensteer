@@ -49,6 +49,7 @@ import {
 } from "../client/thread-drafts.js";
 import type { ThreadHeaderState } from "./thread-pane.js";
 import { Pane } from "../ui/pane.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { VoiceContext } from "@opensteer/client/react";
 import type { VoiceControls } from "@opensteer/client/voice";
 import { VoiceOverlay } from "../voice/controls.js";
@@ -782,7 +783,7 @@ const viewer = base.user;
 if (viewer === null) throw new Error("The mock Host has no signed-in reader.");
 const userId = viewer.id;
 const workId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000004");
-const newDraftId = "draft-research";
+const newDraftId = homeDraftId;
 const agentHome = base.personalSettings!.agentHome;
 const at = "2026-10-09T10:00:00.000Z";
 const human = {
@@ -4161,7 +4162,6 @@ it("hands a new task to its transcript, with the page Ask started it from, witho
       <NewTaskPane
         autoFocus={false}
         deploymentId={deploymentId}
-        draftId={newDraftId}
         hostClient={host.client}
         onStarted={onStarted}
         underHeader={false}
@@ -4225,7 +4225,6 @@ it("keeps New task creation and message keys when Ask is left after a lost creat
     <NewTaskPane
       autoFocus={false}
       deploymentId={deploymentId}
-      draftId={newDraftId}
       hostClient={host.client}
       onStarted={() => false}
       underHeader={false}
@@ -4262,8 +4261,8 @@ describe("a new task Ask started", () => {
       url: "https://example.com",
     });
 
-  async function open(files: MemoryPrivateFilesystem, route?: object) {
-    const { NewTaskScreen } = await import("../screens/new-task.js");
+  async function open(files: MemoryPrivateFilesystem) {
+    const { NewTaskPane } = await import("../screens/new-task.js");
     const host = fakeHost(snapshotFor({ entries: [], run: null, threadId: workId }));
     const drafts = createThreadDraftStore({
       filePath: "/private/new-task.json",
@@ -4277,10 +4276,17 @@ describe("a new task Ask started", () => {
     document.body.append(container);
     const root = createRoot(container);
     roots.push(root);
-    const params = { deploymentId, draftId: newDraftId, ...route } as Parameters<
-      typeof NewTaskScreen
-    >[0]["route"]["params"];
-    await act(async () => root.render(<NewTaskScreen route={{ params }} />));
+    await act(async () =>
+      root.render(
+        <NewTaskPane
+          autoFocus={false}
+          deploymentId={deploymentId}
+          hostClient={host.client}
+          onStarted={() => false}
+          underHeader={false}
+        />,
+      ),
+    );
     await settle();
     return { container, drafts, root };
   }
@@ -4309,47 +4315,10 @@ describe("a new task Ask started", () => {
     expect(text(third.container)).not.toContain("Research page");
   });
 
-  it("reopens each of several drafts as it was left, and an unknown one blank", async () => {
-    const files = new MemoryPrivateFilesystem();
-    const first = await open(files, { draftId: "draft-first" });
-    await type(first.container, "Message", "First words");
-    await act(async () => first.root.render(<div />));
-    const second = await open(files, { draftId: "draft-second" });
-    expect(field(second.container)).toBe("");
-    await type(second.container, "Message", "Second words");
-    await act(() =>
-      second.drafts.writeDraftPage(
-        deploymentId,
-        userId,
-        newTaskDraftKey("draft-second"),
-        included(),
-      ),
-    );
-    await act(async () => second.root.render(<div />));
-
-    const again = await open(files, { draftId: "draft-first" });
-    expect(field(again.container)).toBe("First words");
-    expect(text(again.container)).not.toContain("Research page");
-    expect(
-      again.drafts
-        .readDraftSummary(deploymentId, userId)
-        .newTasks.map((draft) => [draft.draftId, draft.folder]),
-    ).toEqual(
-      expect.arrayContaining([
-        ["draft-first", agentHome],
-        ["draft-second", agentHome],
-      ]),
-    );
-    await act(async () => again.root.render(<div />));
-    const unknown = await open(files, { draftId: "draft-gone" });
-    expect(field(unknown.container)).toBe("");
-    expect(text(unknown.container)).toContain("What should your agent do?");
-  });
-
   it("gives a refused message back to the draft it came from, under new keys next time", async () => {
     const files = new MemoryPrivateFilesystem();
-    const { container, drafts } = await open(files, { draftId: "draft-refused" });
-    const key = newTaskDraftKey("draft-refused");
+    const { container, drafts } = await open(files);
+    const key = newTaskDraftKey(newDraftId);
     const createThread = vi.fn().mockRejectedValue(
       new HostClientRequestError({
         code: "workspace_not_ready",
@@ -4370,7 +4339,7 @@ describe("a new task Ask started", () => {
     expect(field(container)).toBe("Refused words");
   });
 
-  it("never shows another reader's Ask page, nor one a route still carries", async () => {
+  it("never shows another reader's Ask page", async () => {
     const files = new MemoryPrivateFilesystem();
     const page = included();
     const seeded = createThreadDraftStore({
@@ -4385,7 +4354,7 @@ describe("a new task Ask started", () => {
       newTaskDraftKey(newDraftId),
       page,
     );
-    const { container } = await open(files, { deploymentId, page });
+    const { container } = await open(files);
     expect(text(container)).toContain("What should your agent do?");
     expect(text(container)).not.toContain("Research page");
   });

@@ -1,7 +1,8 @@
 import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
-import { newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { threadReturn } from "../navigation-state.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 
@@ -9,7 +10,6 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 const screenRoutes: ReadonlySet<string> = new Set([
   "AllTasks",
   "Home",
-  "NewTask",
   "Tabs",
   "TeamChannel",
   "TeamHome",
@@ -21,16 +21,16 @@ const screenRoutes: ReadonlySet<string> = new Set([
 
 /**
  * Leaving the sheets stacked over a Deployment's work, such as Settings, for
- * one of its Threads or a new task: back to the screen the sheets were opened
- * over, then forward, so its Back returns there and nothing is pushed over a
- * sheet.
+ * one of its Threads, back to the screen the sheets were opened over and then
+ * forward, so its Back returns there and nothing is pushed over a sheet; or
+ * for a new task, which is Home's.
  */
 export function useLeaveSheets(
   deploymentId: string | null,
   hostClient: HostClient | null,
 ): {
   readonly openThread: (threadId: string) => void;
-  /** A new task in Agent home with `text` already in its composer. */
+  /** Home, with `text` as its new task's words. */
   readonly openNewTask: (text: string) => Promise<void>;
 } {
   const navigation = useNavigation();
@@ -59,15 +59,11 @@ export function useLeaveSheets(
       if (deploymentId === null || hostClient === null) return;
       const snapshot = hostClient.getSnapshot();
       const userId = snapshot.user?.id;
-      const folder = snapshot.personalSettings?.agentHome;
-      if (userId === undefined || folder === undefined) return;
-      const draftId = newTaskDraftId();
-      drafts.placeNewTaskDraft(deploymentId, userId, draftId, folder);
-      await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(draftId), text);
-      popSheets();
-      navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId }));
+      if (userId === undefined) return;
+      await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(homeDraftId), text);
+      navigation.dispatch(StackActions.popToTop());
     },
-    [deploymentId, drafts, hostClient, navigation, popSheets],
+    [deploymentId, drafts, hostClient, navigation],
   );
   return useMemo(() => ({ openNewTask, openThread }), [openNewTask, openThread]);
 }

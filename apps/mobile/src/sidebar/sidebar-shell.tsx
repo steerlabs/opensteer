@@ -184,10 +184,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
       ? focusedParams["threadId"]
       : null;
-  const openDraftId =
-    focused?.name === "NewTask" && typeof focusedParams?.["draftId"] === "string"
-      ? focusedParams["draftId"]
-      : null;
   const openTeamId = typeof focusedParams?.["teamId"] === "string" ? focusedParams["teamId"] : null;
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
@@ -380,10 +376,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       close,
       onHome: () => show("Home"),
       onOpenAllTasks: (_deploymentId, filter) => show("AllTasks", { filter }),
-      onOpenDraft: (targetDeploymentId, draftId) => {
-        leave();
-        go("NewTask", { deploymentId: targetDeploymentId, draftId }, false);
-      },
       onOpenPlace: (destination: PersonalSurfaceDestination) => {
         leave();
         const deployment = homeDeployment();
@@ -445,7 +437,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
-                  openDraftId={openDraftId}
                   openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
                   visible={visible}
@@ -484,7 +475,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
-                      openDraftId={openDraftId}
                       openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
                       visible

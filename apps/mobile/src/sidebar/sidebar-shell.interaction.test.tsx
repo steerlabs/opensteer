@@ -41,12 +41,10 @@ const harness = vi.hoisted(() => ({
   },
   panels: [] as {
     docked: boolean;
-    openDraftId: string | null;
     selectedThreadId: string | null;
     openThreadId: string | null;
     visible: boolean;
     actions: {
-      onOpenDraft: (deploymentId: string, draftId: string) => void;
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
@@ -526,22 +524,6 @@ describe("the sidebar as the window changes shape", () => {
       name: "Tabs",
       params: { deploymentId: "deployment-a" },
     });
-  });
-});
-
-describe("the drafts beside Home", () => {
-  const params = { deploymentId: "deployment-a", draftId: "draft-open" };
-  const newTask = { key: "new-task-key", name: "NewTask", params };
-  const opened = () =>
-    (harness.dispatch.mock.calls.at(-1)![0] as { payload: { routes: { params: object }[] } })
-      .payload.routes[1]!.params as typeof params;
-
-  it("opens exactly the draft chosen", async () => {
-    harness.bounds = { height: 1133, width: 744 };
-    await mount([home, newTask]);
-    expect(lastPanel().openDraftId).toBe("draft-open");
-    act(() => lastPanel().actions.onOpenDraft("deployment-a", "draft-waiting"));
-    expect(opened()).toEqual({ ...params, draftId: "draft-waiting" });
   });
 });
 

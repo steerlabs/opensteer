@@ -33,7 +33,6 @@ import {
 import {
   AccessibilityInfo,
   ActivityIndicator,
-  Alert,
   Platform,
   Pressable,
   ScrollView,
@@ -45,13 +44,6 @@ import {
 import { ActingDot, agentWorkingLabel } from "../browser/acting-dot.js";
 import { opensteerAppGlyph } from "../browser/agent-surface.js";
 import { tabSiteLabel } from "../browser/site-label.js";
-import { operationDetail } from "../client/mobile-client.js";
-import {
-  noDrafts,
-  sameDraftSummary,
-  type DraftSummary,
-  type NewTaskDraftSummary,
-} from "../client/thread-drafts.js";
 import { sidebarBottom, sidebarTop } from "../layout.js";
 import { statusTone } from "../screens/deployment-row.js";
 import {
@@ -69,7 +61,6 @@ import {
   sameDeploymentIdentity,
   type DeploymentIdentity,
 } from "../threads/deployment-identity.js";
-import { discardNewTaskDraft } from "../thread/draft-attachments.js";
 import {
   DraftPen,
   draftPenLabel,
@@ -87,7 +78,6 @@ import { useContentInsets } from "../ui/pane.js";
 import { useRetainedScroll, type ScrollMemory } from "../ui/retained-scroll.js";
 import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
-import { DraftRow } from "./draft-row.js";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import type { MobileTeam } from "../team/mobile-teams.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
@@ -101,8 +91,6 @@ export interface SidebarActions {
   readonly close: () => void;
   /** Home: a new task's composer. */
   readonly onHome: () => void;
-  /** Exactly this unfinished new task, with everything it held. */
-  readonly onOpenDraft: (deploymentId: string, draftId: string) => void;
   /** Every task, on one of All tasks' filters. */
   readonly onOpenAllTasks: (deploymentId: string, filter: AllTasksFilter) => void;
   /** Shows exactly this tab, app or phone, alone. */
@@ -182,32 +170,25 @@ function useSidebarModel(
   return useSyncExternalStore(subscribe, read, read);
 }
 
+const noReplies: ReadonlySet<string> = new Set();
+
 /**
- * This reader's drafts, held until the list would change: the store publishes
- * every write, and a keystroke leaves this list as it was.
+ * The tasks with an unsent reply, held until that set changes: the store
+ * publishes every write, and a keystroke leaves it as it was.
  */
-function useDraftSummary(
-  deploymentId: string | null,
-  userId: string | null,
-  openDraftId: string | null,
-): DraftSummary {
+function useUnsentReplies(deploymentId: string | null, userId: string | null): ReadonlySet<string> {
   const { drafts } = useMobileClient();
-  const cached = useRef(noDrafts);
-  const read = useCallback((): DraftSummary => {
-    const saved =
+  const cached = useRef(noReplies);
+  const read = useCallback((): ReadonlySet<string> => {
+    const next =
       deploymentId === null || userId === null
-        ? noDrafts
-        : drafts.readDraftSummary(deploymentId, userId);
-    const listed = cached.current.newTasks.find((draft) => draft.draftId === openDraftId);
-    const next = {
-      ...saved,
-      newTasks: saved.newTasks.flatMap((draft) =>
-        draft.draftId !== openDraftId ? [draft] : listed ? [{ ...draft, title: listed.title }] : [],
-      ),
-    };
-    if (!sameDraftSummary(cached.current, next)) cached.current = next;
+        ? noReplies
+        : drafts.readDraftSummary(deploymentId, userId).threadIds;
+    const current = cached.current;
+    if (next.size !== current.size || [...next].some((id) => !current.has(id)))
+      cached.current = next;
     return cached.current;
-  }, [deploymentId, drafts, openDraftId, userId]);
+  }, [deploymentId, drafts, userId]);
   return useSyncExternalStore(drafts.subscribe, read, read);
 }
 
@@ -252,8 +233,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   /** Where the reader left the list, kept by the shell across the drawer and the column. */
   readonly scroll: ScrollMemory;
   readonly shelves: ShelfMemory;
-  /** The new-task draft in front. */
-  readonly openDraftId: string | null;
   /** The task in front, marked as the one open. */
   readonly selectedThreadId: string | null;
   /** The team whose page or channel is in front. */
@@ -277,9 +256,8 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     props.shelves,
   );
   const identity = useDeploymentIdentity(deploymentId);
-  const client = useMobileClient();
   const userId = useHostUserId(hostClient);
-  const drafts = useDraftSummary(visible ? deploymentId : null, userId, props.openDraftId);
+  const replies = useUnsentReplies(visible ? deploymentId : null, userId);
   const heading = useRef<TextInstance>(null);
   const retained = useRetainedScroll(props.scroll);
 
@@ -297,34 +275,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
       if (deploymentId !== null) actions.onOpenTask(deploymentId, threadId);
     },
     [actions, deploymentId],
-  );
-  const openDraft = useCallback(
-    (draft: NewTaskDraftSummary) => {
-      if (deploymentId !== null) actions.onOpenDraft(deploymentId, draft.draftId);
-    },
-    [actions, deploymentId],
-  );
-  const discardDraft = useCallback(
-    (draft: NewTaskDraftSummary) => {
-      if (deploymentId === null || userId === null) return;
-      const discard = (): void =>
-        void discardNewTaskDraft({
-          client: hostClient,
-          deploymentId,
-          draftId: draft.draftId,
-          drafts: client.drafts,
-          userId,
-        }).then(
-          () => AccessibilityInfo.announceForAccessibility("Draft discarded"),
-          (error: unknown) =>
-            Alert.alert("Draft not discarded", operationDetail(error, "Try again.")),
-        );
-      Alert.alert("Discard draft?", `“${draft.title}” will be removed.`, [
-        { style: "cancel", text: "Cancel" },
-        { onPress: discard, style: "destructive", text: "Discard" },
-      ]);
-    },
-    [client, deploymentId, hostClient, userId],
   );
   const moveTask = useCallback(
     (task: TaskRow, done: boolean) => {
@@ -349,7 +299,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   }, [model, selectedRowId]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
-    threadId !== selectedRowId && drafts.threadIds.has(threadId);
+    threadId !== selectedRowId && replies.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
   const shown = live?.rows ?? [];
@@ -400,21 +350,6 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
         showsVerticalScrollIndicator={false}
         style={styles.scroll}
       >
-        {drafts.newTasks.length === 0 ? null : (
-          <>
-            <GroupHead title="Drafts" />
-            {drafts.newTasks.map((draft) => (
-              <DraftRow
-                draft={draft}
-                key={draft.draftId}
-                onDiscard={discardDraft}
-                onOpen={openDraft}
-                selected={draft.draftId === props.openDraftId}
-              />
-            ))}
-          </>
-        )}
-
         {savedTasks.source === "saved" ? (
           <SavedTasks
             tasks={savedTasks.content}

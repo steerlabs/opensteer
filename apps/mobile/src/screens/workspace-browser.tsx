@@ -95,7 +95,8 @@ import {
   type SurfacesRoute,
 } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
-import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
@@ -253,10 +254,8 @@ function SurfacesForUser(props: {
   );
 }
 
-/** What is beside the page: a Thread, or a task being started from it. */
-type Companion =
-  | { readonly kind: "thread"; readonly threadId: string }
-  | { readonly draftId: string; readonly kind: "task" };
+/** What is beside the page: a Thread, or Home's new task being started from it. */
+type Companion = { readonly kind: "thread"; readonly threadId: string } | { readonly kind: "task" };
 
 /**
  * One tab, app or phone with its own bar, and — where a pair fits — a second
@@ -351,24 +350,18 @@ function Focused(props: {
   );
   const showBeside = useCallback((threadId: string) => setChosen({ kind: "thread", threadId }), []);
   /**
-   * Ask's page goes on the draft it is for — the task's, or a new task's — and
-   * is this reader's, so it is shown, removed and sent from that draft like
-   * the words with it, and survives leaving it unsent. A page Ask cannot name,
-   * such as a Mac app's, takes any earlier one off rather than leaving it to
-   * stand for what was asked about. Answers whether there is such a draft.
+   * Ask's page goes on the draft it is for — the task's, or Home's new task —
+   * and is this reader's, so it is shown, removed and sent from that draft
+   * like the words with it, and survives leaving it unsent. A page Ask cannot
+   * name, such as a Mac app's, takes any earlier one off rather than leaving
+   * it to stand for what was asked about. Answers whether there is such a draft.
    */
   const putPageOnDraft = useCallback(
-    (target: AskTarget, taskDraftId: string): boolean => {
+    (target: AskTarget): boolean => {
       const { appThreadId: origin, shownPage: included } = latest.current;
-      const current = hostClient.getSnapshot();
-      const userId = current.user?.id;
-      const folder = current.personalSettings?.agentHome ?? null;
-      const draftKey =
-        target === "thread" ? origin : folder === null ? null : newTaskDraftKey(taskDraftId);
+      const userId = hostClient.getSnapshot().user?.id;
+      const draftKey = target === "thread" ? origin : newTaskDraftKey(homeDraftId);
       if (userId === undefined || draftKey === null) return false;
-      if (target === "task" && folder !== null) {
-        drafts.placeNewTaskDraft(deploymentId, userId, taskDraftId, folder);
-      }
       void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
       return true;
     },
@@ -377,32 +370,23 @@ function Focused(props: {
   /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      const draftId = newTaskDraftId();
-      if (!putPageOnDraft(target, draftId)) return;
+      if (!putPageOnDraft(target)) return;
       const { appThreadId: origin } = latest.current;
       if (target === "thread") {
         if (origin !== null) openThread(origin);
-      } else navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId }));
+      } else navigation.dispatch(StackActions.popToTop());
     },
-    [deploymentId, navigation, openThread, putPageOnDraft],
+    [navigation, openThread, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
-      const userId = hostClient.getSnapshot().user?.id;
-      // A blank draft already beside the page takes this one; one with words waits in the sidebar.
-      const draftId =
-        chosen?.kind === "task" &&
-        userId !== undefined &&
-        newTaskDraftBlank(drafts, deploymentId, userId, chosen.draftId)
-          ? chosen.draftId
-          : newTaskDraftId();
-      if (!putPageOnDraft(target, draftId)) return;
+      if (!putPageOnDraft(target)) return;
       const { appThreadId: origin } = latest.current;
-      if (target === "task") setChosen({ draftId, kind: "task" });
+      if (target === "task") setChosen({ kind: "task" });
       else if (origin !== null) setChosen({ kind: "thread", threadId: origin });
     },
-    [chosen, deploymentId, drafts, hostClient, putPageOnDraft],
+    [putPageOnDraft],
   );
   const closeCompanion = useCallback(() => {
     setChosen(null);
@@ -672,9 +656,7 @@ function Focused(props: {
               <NewTaskPane
                 autoFocus
                 deploymentId={deploymentId}
-                draftId={companion.draftId}
                 hostClient={hostClient}
-                key={companion.draftId}
                 onStarted={onStarted}
                 underHeader={false}
               />
