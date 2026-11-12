@@ -651,7 +651,9 @@ export class RemoteAccessRunner {
           // Busy until the Host's own state shows the change, so the view
           // never flashes back to what it was before.
           await this.#until(
-            () => (this.#facts.status?.operation?.id ?? null) !== before,
+            () =>
+              (this.#facts.status?.operation?.id ?? null) !== before ||
+              nextRemoteAccessStep(goal, this.#facts, this.#port).kind === "done",
             signal,
           ).catch(() => signal.throwIfAborted());
           break;

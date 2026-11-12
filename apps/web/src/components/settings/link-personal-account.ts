@@ -1,4 +1,8 @@
-import { linkPersonalHostAccount } from "@opensteer/client/host";
+import {
+  linkPersonalHostAccount,
+  RemoteAccessPortError,
+  type HostClient,
+} from "@opensteer/client/host";
 import {
   IssuePersonalHostAccountLinkChallengeResponseSchema,
   CompletePersonalHostAccountLinkResponseSchema,
@@ -30,15 +34,35 @@ export async function linkAccountFromWeb(
     );
     return;
   }
-  const portal = shell.snapshot.identityConfig?.portalOrigin;
-  if (!portal) throw new Error("This deployment has no Account portal configured.");
+  await linkAccountThroughPortal({
+    authorityEnvelope: status.authorityEnvelope,
+    hostClient: shell.hostClient,
+    name,
+    portalOrigin: shell.snapshot.identityConfig?.portalOrigin ?? null,
+  });
+}
+
+/**
+ * A plain browser links through the Account portal in a popup: the portal
+ * signs the person in and is the courier for the link credentials. Every
+ * failure is a sentence a person can read.
+ */
+export async function linkAccountThroughPortal(input: {
+  readonly authorityEnvelope: PersonalRemoteAdministrationStatus["authorityEnvelope"];
+  readonly hostClient: Pick<HostClient, "dispatch">;
+  readonly name: string;
+  readonly portalOrigin: string | null;
+  readonly signal?: AbortSignal;
+}): Promise<void> {
+  const portal = input.portalOrigin;
+  if (!portal) throw new RemoteAccessPortError("Opensteer accounts aren’t available here.");
   const origin = new URL(portal).origin;
   const nonce = globalThis.crypto.randomUUID();
   const url = new URL("/personal-host-link", origin);
   url.searchParams.set("origin", window.location.origin);
   url.searchParams.set("nonce", nonce);
   const popup = window.open(url, "_blank", "popup,width=520,height=640");
-  if (!popup) throw new Error("Allow the Account sign-in window, then try again.");
+  if (!popup) throw new RemoteAccessPortError("Allow the sign-in window to open, then try again.");
   const pending = new Map<
     string,
     { resolve: (value: unknown) => void; reject: (error: Error) => void }
@@ -60,7 +84,7 @@ export async function linkAccountFromWeb(
     const data = event.data as Record<string, unknown>;
     if (data.nonce !== nonce) return;
     if (data.kind === "cancelled") {
-      const error = new Error("Account linking was cancelled.");
+      const error = new RemoteAccessPortError("Signing in was cancelled.");
       rejectReady?.(error);
       for (const call of pending.values()) call.reject(error);
       pending.clear();
@@ -73,36 +97,47 @@ export async function linkAccountFromWeb(
     const call = typeof data.kind === "string" ? pending.get(data.kind) : undefined;
     if (!call) return;
     pending.delete(String(data.kind));
-    if (data.error) call.reject(new Error("Account linking did not finish. Try again."));
+    if (data.error)
+      call.reject(
+        new RemoteAccessPortError("Adding this computer to your account didn’t finish. Try again."),
+      );
     else call.resolve(data.result);
   };
   window.addEventListener("message", receive);
-  const timeout = setTimeout(() => {
-    rejectReady?.(new Error("Account linking expired. Try again."));
-    for (const call of pending.values())
-      call.reject(new Error("Account linking expired. Try again."));
+  const stop = (error: Error) => {
+    rejectReady?.(error);
+    for (const call of pending.values()) call.reject(error);
     popup.close();
-  }, 5 * 60_000);
-  const call = (kind: string, input: unknown) =>
+  };
+  const timeout = setTimeout(
+    () => stop(new RemoteAccessPortError("Signing in took too long. Try again.")),
+    5 * 60_000,
+  );
+  const abort = () => stop(new RemoteAccessPortError("Signing in was cancelled."));
+  input.signal?.addEventListener("abort", abort, { once: true });
+  const call = (kind: string, payload: unknown) =>
     new Promise<unknown>((resolve, reject) => {
       pending.set(kind, { resolve, reject });
-      popup.postMessage({ kind, input, nonce }, origin);
+      popup.postMessage({ kind, input: payload, nonce }, origin);
     });
   try {
     await readiness;
     await linkPersonalHostAccount(
-      shell.hostClient,
+      input.hostClient,
       {
-        issuePersonalHostAccountLinkChallenge: async (input) =>
-          IssuePersonalHostAccountLinkChallengeResponseSchema.parse(await call("challenge", input)),
-        completePersonalHostAccountLink: async (_challengeId, input) =>
-          CompletePersonalHostAccountLinkResponseSchema.parse(await call("complete", input)),
+        issuePersonalHostAccountLinkChallenge: async (challenge) =>
+          IssuePersonalHostAccountLinkChallengeResponseSchema.parse(
+            await call("challenge", challenge),
+          ),
+        completePersonalHostAccountLink: async (_challengeId, completion) =>
+          CompletePersonalHostAccountLinkResponseSchema.parse(await call("complete", completion)),
       },
-      status.authorityEnvelope,
-      name,
+      input.authorityEnvelope,
+      input.name,
     );
   } finally {
     clearTimeout(timeout);
+    input.signal?.removeEventListener("abort", abort);
     window.removeEventListener("message", receive);
     popup.close();
   }

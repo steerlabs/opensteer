@@ -1246,18 +1246,25 @@ export class MobileClient {
     });
   }
 
-  async linkSelectedPersonalAccount(): Promise<void> {
+  /**
+   * Adds the attached computer to this phone's Account, signing in first when
+   * needed. With `activating`, finishes the link the computer already holds:
+   * a fresh link would be refused.
+   */
+  async linkSelectedPersonalAccount(
+    options: { readonly activating?: boolean } = {},
+  ): Promise<void> {
     const hostClient = this.#hostClient;
     const deploymentId = this.#attachedDeploymentId;
     if (!hostClient || !deploymentId) throw new Error("Connect to the computer first.");
-    const connection = this.#requireConnection(deploymentId);
-    if ((await this.oauth.state()).account.status !== "signed-in") {
-      await this.signInAccount();
-      throw new Error("Finish Account sign-in, then tap Link Account again.");
+    const host = await import("@opensteer/client/host");
+    if (options.activating) {
+      await host.resumePersonalHostAccountLink(hostClient);
+      return;
     }
-    await (
-      await import("@opensteer/client/host")
-    ).linkPersonalHostAccount(
+    const connection = this.#requireConnection(deploymentId);
+    if ((await this.oauth.state()).account.status !== "signed-in") await this.signInAccount();
+    await host.linkPersonalHostAccount(
       hostClient,
       this.accountDirectory,
       connection.authority,

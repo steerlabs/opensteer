@@ -966,8 +966,6 @@ function liveSessionQuery() {
   return rowQuery({ id: createId("authSession"), deviceLabel: "Owner device", userAgent: null });
 }
 
-const accountUnreachable = /Couldn't reach Opensteer/u;
-
 /** The Account answered with this status; its technical line stays out of the message. */
 function accountAnswered(status: number) {
   return { request: expect.stringContaining(`HTTP ${status}`), status };
