@@ -32,7 +32,7 @@ it("revalidates renderer links before invoking any browser command", async () =>
   expect(open).not.toHaveBeenCalled();
   client.dispose();
 });
-it("opens the exact destination where it was bound through the person command, selects it then acknowledges with a stable retry key", async () => {
+it("opens the exact destination through the person command, selects it then acknowledges with a stable retry key", async () => {
   const client = new MockHostClient();
   const open = vi.spyOn(client, "beginBrowserTabOpen").mockReturnValue({
     idempotencyKey: `desktop-web-link:${link.id}`,
@@ -47,15 +47,11 @@ it("opens the exact destination where it was bound through the person command, s
   const ack = vi.fn(async () => {
     order.push("ack");
   });
-  const target = {
-    identity: { kind: "guest" },
-    placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
-  } as const;
-  await openDesktopWebLink(link, client, target, show, ack);
-  expect(open).toHaveBeenCalledWith(target, {
-    url: link.url,
-    idempotencyKey: `desktop-web-link:${link.id}`,
-  });
+  await openDesktopWebLink(link, client, { identity: { kind: "guest" } }, show, ack);
+  expect(open).toHaveBeenCalledWith(
+    { identity: { kind: "guest" } },
+    { url: link.url, idempotencyKey: `desktop-web-link:${link.id}` },
+  );
   expect(show).toHaveBeenCalledWith({ kind: "browser", sessionId: "session", tabId: "tab" });
   expect(ack).toHaveBeenCalledWith(link.id);
   expect(order).toEqual(["show", "show", "ack"]);

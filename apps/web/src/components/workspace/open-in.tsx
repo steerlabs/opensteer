@@ -1,6 +1,7 @@
 import { useCallback, useMemo } from "react";
 import {
   mutationIdempotencyKey,
+  newTabTarget,
   parseNavigationInput,
   sameIdentity,
   startPageIndex,
@@ -38,6 +39,7 @@ function sameProfiles(left: HostSnapshot, right: HostSnapshot): boolean {
  */
 export function useOpenPageIn(hostClient: HostClient) {
   const { nav, phone } = useWorkspace();
+  const hereId = useHereId();
   const toast = useToast();
   return useCallback(
     (place: PlaceItem, profile: StartPageProfileChoice) => {
@@ -56,14 +58,11 @@ export function useOpenPageIn(hostClient: HostClient) {
           if (parsed?.kind !== "url")
             throw new Error("This page’s address can’t be opened in another profile.");
           return hostClient
-            .openBrowserTab(
-              { identity: profile.identity },
-              {
-                url: parsed.url,
-                ...(viewport ? { viewport } : {}),
-                idempotencyKey: mutationIdempotencyKey("open-in"),
-              },
-            )
+            .openBrowserTab(newTabTarget(hostClient.getSnapshot(), profile.identity, hereId), {
+              url: parsed.url,
+              ...(viewport ? { viewport } : {}),
+              idempotencyKey: mutationIdempotencyKey("open-in"),
+            })
             .then((opened) => {
               show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
               toast.success(`Opened in ${profile.presentation.name} · the original stays`);
@@ -71,7 +70,7 @@ export function useOpenPageIn(hostClient: HostClient) {
         })
         .catch((error: unknown) => toast.error(actionErrorMessage(error)));
     },
-    [hostClient, nav, phone, toast],
+    [hereId, hostClient, nav, phone, toast],
   );
 }
 

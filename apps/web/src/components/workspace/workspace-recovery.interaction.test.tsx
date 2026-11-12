@@ -689,7 +689,7 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
 });
 
 describe("a desktop that is its own computer in another Mac's Opensteer", () => {
-  it("opens Guest from a reply's web link, New tab and another app's link on this Mac, not on the hosting Mac", async () => {
+  it("opens Guest from a reply's web link, New tab, Open this page in and another app's link on this Mac, not on the hosting Mac", async () => {
     const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
     const studio = "rnr_88888888-8888-4888-8888-888888888888";
     const status = {
@@ -777,6 +777,37 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
       here,
       expect.objectContaining({ url: "https://example.com/" }),
     );
+    // A profile tab's menu: Open this page in… ▸ Guest.
+    const profileTab = placeList(client.getSnapshot()).find(
+      (place) => place.kind === "browser" && place.identity?.kind === "profile",
+    )!;
+    await act(async () =>
+      element(`.side-tab[data-place-key="${profileTab.key}"]`).dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 300,
+        }),
+      ),
+    );
+    await settle();
+    const openIn = [...document.querySelectorAll<HTMLElement>(".popover [role=menuitem]")].find(
+      (node) => node.querySelector(".picker__label")?.textContent === "Open this page in…",
+    )!;
+    await act(async () => openIn.dispatchEvent(new PointerEvent("pointerover", { bubbles: true })));
+    await settle();
+    const guest = [
+      ...element('[role="menu"][aria-label="Open this page in"]').querySelectorAll<HTMLElement>(
+        "button",
+      ),
+    ].find((node) => node.querySelector(".picker__label")?.textContent === "Guest")!;
+    const opened = open.mock.calls.length;
+    await click(guest);
+    await vi.waitFor(() => expect(open, "Open in never opened").toHaveBeenCalledTimes(opened + 1), {
+      timeout: 1_000,
+    });
+    expect(open).toHaveBeenLastCalledWith(here, expect.anything());
     // A link clicked in another app, with Opensteer as the Mac's default browser.
     await vi.waitFor(() => expect(deliver, "The link receiver never subscribed").not.toBeNull(), {
       timeout: 1_000,
