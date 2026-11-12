@@ -3,6 +3,18 @@ import { Migrator, type MigrationProvider, type MigrationResultSet } from "kysel
 import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
+/**
+ * One current reusable invite per team, with unlimited (`null`) or capped uses. Its verifier is
+ * also sealed so managers can show the same link again; earlier single-use rows stay valid.
+ */
+const TEAM_REUSABLE_INVITES_SQL = `
+alter table team_invites alter column max_uses drop not null;
+alter table team_invites drop constraint team_invites_check;
+alter table team_invites add constraint team_invites_uses check ((max_uses is null or max_uses between 1 and 1000) and used_count >= 0 and (max_uses is null or used_count <= max_uses));
+alter table team_invites add column sealed_verifier bytea;
+create unique index team_invites_current on team_invites((true)) where sealed_verifier is not null and revoked_at is null;
+`;
+
 export const personalTeamBaselineName = "0002_personal_team_baseline";
 export function migrationProvider(): MigrationProvider {
   return {
@@ -11,6 +23,11 @@ export function migrationProvider(): MigrationProvider {
         [personalTeamBaselineName]: {
           async up(database) {
             await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
+          },
+        },
+        "0003_team_reusable_invites": {
+          async up(database) {
+            await sql.raw(TEAM_REUSABLE_INVITES_SQL).execute(database);
           },
         },
       };

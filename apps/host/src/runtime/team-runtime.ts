@@ -60,6 +60,7 @@ import { startTeamServices, assertTeamApiVersion } from "../team/services.js";
 import { registerTeamBinaryRoutes } from "../team/binary-routes.js";
 import { registerTeamSetupRoutes } from "../team/setup-routes.js";
 import { registerTeamSessionExchangeRoute } from "../team/session-exchange-routes.js";
+import { createTeamInviteVerifierVault } from "../team/invite-verifier-vault.js";
 import { createTeamMachineAdapters } from "../team/machine-adapters.js";
 import { createTeamPushPublisher } from "../team/push.js";
 import {
@@ -153,6 +154,7 @@ export async function createTeamHostRuntime(input: {
       teamName: config.deploymentName ?? "Team",
       hostKeyFingerprint,
       origin: deployment.canonicalOrigin,
+      inviteVerifiers: createTeamInviteVerifierVault(config.authSecret, deployment.id),
       dataDirectory: config.dataDirectory,
       storageLimitBytes: config.teamStorageLimitBytes,
       topics: teamChannelTopics,
@@ -348,6 +350,7 @@ export async function createTeamHostRuntime(input: {
           ...(config.identity.nativeOAuth ? ["native-oauth", "team-session-exchange-v1"] : []),
           "notification-preview-v1",
           "team-hosted-bootstrap-v1",
+          "team-reusable-invites-v1",
         ],
       }),
     );
@@ -374,6 +377,8 @@ export async function createTeamHostRuntime(input: {
     registerTeamSetupRoutes(app, {
       identity,
       hosted: admission,
+      invites: team.invites,
+      teamName: config.deploymentName ?? "Team",
       accountPortalOrigin: config.portalOrigin?.origin ?? "https://app.opensteer.com",
     });
     if (config.identity.nativeOAuth)
