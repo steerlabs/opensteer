@@ -178,7 +178,7 @@ export function createPhone(el: HTMLElement, events: PhoneEvents): Phone {
     thread: find(el, ".ip-thread"),
   };
   const draft = find(screens.new, ".ip-composer");
-  const back = find<HTMLButtonElement>(el, ".ip-back");
+  const back = find<HTMLButtonElement>(el, ".ip-thread .ip-back");
   const push = find<HTMLButtonElement>(el, ".ip-push");
   const request = find(el, ".ip-req");
   const feed = part("feed");

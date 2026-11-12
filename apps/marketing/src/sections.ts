@@ -129,6 +129,11 @@ const ANSWERED: TaskView = {
   status: "done",
   message: "I refunded the extra $480 and replied to Dana. Ticket #4821 is solved.",
 };
+const DENIED: TaskView = {
+  ...ASKED,
+  status: "stopped",
+  message: "I didn't refund anything. Dana's ticket is still open.",
+};
 const REQUEST = {
   title: "Refund $480 to Northwind?",
   body: "Duplicate charge for invoice 2291 on Nov 3, Visa •••• 4242.",
@@ -153,9 +158,11 @@ function steer(): void {
     pick() {},
     back() {},
     push() {},
-    answer() {
+    answer(answer) {
       stop();
-      allowed();
+      if (answer === "allow") return allowed();
+      reply.hidden = true;
+      phone.showThread(DENIED, null);
     },
   });
   phone.setView("thread");

@@ -203,7 +203,8 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
   function play(id: AgentId, byVisitor: boolean): void {
     for (const other of ORDER) {
       const { status } = runners[other].task;
-      if (other !== id && (status === "working" || status === "needs")) runners[other].stop();
+      // A story still dictating is idle with taps queued, so only finished ones are left as they are.
+      if (other !== id && status !== "done" && status !== "stopped") runners[other].stop();
     }
     active = id;
     if (SCENES[id].opener.from) onMac = id;

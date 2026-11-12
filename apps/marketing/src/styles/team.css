@@ -388,7 +388,6 @@
   animation: none;
   transform: scale(0.62);
 }
-.tcard[data-state="done"] 
 /* Composer */
 .tw-compose {
   position: relative;
