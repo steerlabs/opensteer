@@ -293,11 +293,14 @@ export class TeamAccessStore {
             known.add(`topic:${id}`);
       }
       const before = admin ? await this.#readableRestricted(transaction, actor) : new Set<string>();
+      const candidates = [...known].filter((key) => !before.has(key));
+      const previousManagers = await this.#managerLists(transaction, candidates);
       const result = await write(transaction);
       if (admin) {
         const after = await this.#readableRestricted(transaction, actor);
-        for (const key of after) {
-          if (before.has(key) || !known.has(key)) continue;
+        const gained = [...after].filter((key) => !before.has(key) && known.has(key));
+        const currentManagers = await this.#managerLists(transaction, gained);
+        for (const key of gained) {
           const colon = key.indexOf(":");
           const resourceKind = key.slice(0, colon) === "channel" ? "channel" : "topic";
           const resourceId = key.slice(colon + 1);
@@ -308,7 +311,9 @@ export class TeamAccessStore {
             resourceId,
             metadata: { via: action },
           });
-          const managerIds = await this.#managers(transaction, resourceKind, resourceId);
+          const managerIds = [
+            ...new Set([...(previousManagers.get(key) ?? []), ...(currentManagers.get(key) ?? [])]),
+          ];
           await addTeamSelfAddNotices(transaction, {
             actorUserId: actor.userId,
             managerIds,
@@ -346,32 +351,26 @@ export class TeamAccessStore {
     }
     return set;
   }
-  async #managers(transaction: Transaction<DatabaseSchema>, kind: "channel" | "topic", id: string) {
-    const people = await transaction
-      .selectFrom("teamMembers")
-      .select("userId")
-      .where("state", "=", "active")
-      .orderBy("userId")
-      .execute();
-    const managers: UserId[] = [];
-    for (const { userId } of people) {
-      const rights =
-        kind === "channel"
-          ? (
-              await sql<{
-                manage: boolean;
-              }>`${teamGroupPaths(userId)} select coalesce(bool_or(manage),false) as manage from team_channel_members where channel_id=${id} and ((subject_kind='person' and subject_id=${userId}) or(subject_kind='group' and subject_id in(select id from member_groups)))`.execute(
-                transaction,
-              )
-            ).rows[0]
-          : (
-              await sql<{
-                manage: boolean;
-              }>`${teamGroupPaths(userId)} select count(*)>0 as manage from team_topic_grants where topic_id=${id} and level='manage' and ((subject_kind='person' and subject_id=${userId}) or(subject_kind='group' and subject_id in(select id from member_groups)))`.execute(
-                transaction,
-              )
-            ).rows[0];
-      if (rights?.manage) managers.push(userId);
+  async #managerLists(transaction: Transaction<DatabaseSchema>, keys: readonly string[]) {
+    const managers = new Map<string, UserId[]>();
+    if (!keys.length) return managers;
+    const rows = await sql<{ resourceKey: string; userId: UserId }>`
+      select distinct managed.resource_key,m.user_id from team_members m
+      cross join lateral (
+        ${teamGroupPaths(sql.ref("m.user_id"))}
+        select 'channel:'||a.channel_id as resource_key from team_channel_members a
+        where a.manage and ((a.subject_kind='person' and a.subject_id=m.user_id)
+          or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
+        union all
+        select 'topic:'||g.topic_id as resource_key from team_topic_grants g
+        where g.level='manage' and ((g.subject_kind='person' and g.subject_id=m.user_id)
+          or (g.subject_kind='group' and g.subject_id in(select id from member_groups)))
+      ) managed where m.state='active' and managed.resource_key=any(${keys}::text[])
+    `.execute(transaction);
+    for (const row of rows.rows) {
+      const people = managers.get(row.resourceKey) ?? [];
+      people.push(row.userId);
+      managers.set(row.resourceKey, people);
     }
     return managers;
   }

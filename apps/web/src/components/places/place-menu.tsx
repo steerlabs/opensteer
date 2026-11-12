@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { DeploymentIdSchema } from "@opensteer/core";
-import { usePlaceChecks, type DesktopPlaces } from "../../desktop/places-context.js";
+import { type DesktopPlaces } from "../../desktop/places-context.js";
+import { readComputerFacts, type ComputerFacts } from "../../desktop/computer-facts.js";
 import { placeRows, thisComputerLabel } from "../../desktop/places.js";
 import { actionErrorMessage } from "../../ui-utils.js";
 import { Icon } from "../icon.js";
@@ -19,8 +20,44 @@ export function PlaceMenuPlaces({
   const { bridge, onAddPlace, snapshot } = places;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  usePlaceChecks(bridge, true);
-  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel() });
+  const [facts, setFacts] = useState<ReadonlyMap<string, ComputerFacts>>(new Map());
+  const computers = snapshot.deployments.filter((row) => row.kind === "personal");
+  const latest = useRef(computers);
+  latest.current = computers;
+  const computerKey = computers
+    .map((row) => `${row.id}:${row.canonicalOrigin}`)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    let generation = 0;
+    const refresh = () => {
+      void bridge.checkDeployments().catch(() => undefined);
+      const current = ++generation;
+      void Promise.allSettled(
+        latest.current.map(
+          async (computer) => [computer.id, await readComputerFacts(bridge, computer)] as const,
+        ),
+      ).then((results) => {
+        if (current !== generation) return;
+        setFacts((held) => {
+          const next = new Map(held);
+          for (const result of results)
+            if (result.status === "fulfilled") next.set(...result.value);
+          return next;
+        });
+      });
+    };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => {
+      generation++;
+      window.removeEventListener("focus", refresh);
+    };
+  }, [bridge, computerKey]);
+  const personalIds = new Set<string>(computers.map((row) => row.id));
+  const rows = placeRows(snapshot, { thisComputer: thisComputerLabel(), facts }).filter((row) =>
+    personalIds.has(row.id),
+  );
   const run = (operation: () => Promise<void>, then?: () => void) => {
     setPending(true);
     setError(null);
@@ -36,7 +73,7 @@ export function PlaceMenuPlaces({
         <PlaceList
           busy={pending}
           explainCurrent
-          label="Your computers and servers"
+          label="Your computers"
           onCheck={() => void bridge.checkDeployments().catch(() => undefined)}
           onOpen={(row) => {
             if (row.current) {

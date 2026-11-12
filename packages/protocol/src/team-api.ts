@@ -429,6 +429,18 @@ export const teamReadSchemas = {
     }),
     output: z.strictObject({ taskId: ThreadIdSchema.nullable() }),
   },
+  "teams.replyTask.get": {
+    input: z.strictObject({
+      teamId: DeploymentIdSchema,
+      channelId: TeamChannelIdSchema,
+      threadRootId: TeamMessageIdSchema,
+      replyMessageId: TeamMessageIdSchema,
+    }),
+    output: z.union([
+      z.strictObject({ taskId: ThreadIdSchema, throughSequence: SequenceSchema }),
+      z.strictObject({ taskId: z.null(), throughSequence: z.null() }),
+    ]),
+  },
   "team.mentions.page": {
     input: z.strictObject({
       channelId: TeamChannelIdSchema.optional(),

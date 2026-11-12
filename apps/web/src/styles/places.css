@@ -333,3 +333,15 @@
 .start-app-windows small {
   opacity: 0.65;
 }
+
+.place-row__team {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

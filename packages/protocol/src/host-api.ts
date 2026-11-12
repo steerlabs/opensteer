@@ -1440,6 +1440,11 @@ export const hostApi = defineRpc({
       content: z.string().max(512 * 1024),
     }),
   ),
+  "attention.get": declaration(
+    "POST",
+    z.strictObject({}),
+    z.object({ needsYou: z.number().int().nonnegative(), unread: z.boolean() }),
+  ),
   "needsYou.get": declaration(
     "POST",
     z.strictObject({
@@ -1572,6 +1577,11 @@ export const hostApi = defineRpc({
     "POST",
     teamReadSchemas["teams.threadTask.get"].input,
     teamReadViews["teams.threadTask.get"],
+  ),
+  "teams.replyTask.get": declaration(
+    "POST",
+    teamReadSchemas["teams.replyTask.get"].input,
+    teamReadViews["teams.replyTask.get"],
   ),
   "team.mentions.page": declaration(
     "POST",

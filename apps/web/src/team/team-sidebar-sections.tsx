@@ -20,9 +20,11 @@ import { sidebarView } from "./team-view-models.js";
 
 export function teamConnection(
   team: TeamAttachment,
-  snapshot: Pick<TeamSessionSnapshot, "connection"> | null,
+  snapshot:
+    (Pick<TeamSessionSnapshot, "connection"> & Partial<Pick<TeamSessionSnapshot, "ended">>) | null,
 ): TeamConnection {
-  if (team.link?.state === "revoked") return "removed";
+  if (snapshot?.ended === "sign-in" || snapshot?.ended === "viewer-changed") return "sign-in";
+  if (team.link?.state === "revoked" || snapshot?.ended === "removed") return "removed";
   if (team.link?.state === "needs_update") return "update-app";
   if (snapshot?.connection === "connected") return "online";
   if (snapshot?.connection === "connecting") return "reconnecting";
@@ -57,10 +59,7 @@ function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readon
       const snapshot = client?.getSnapshot() ?? null;
       return {
         name: snapshot?.bootstrap?.teamName ?? null,
-        mentions: (snapshot?.sidebar?.channels ?? []).reduce(
-          (sum, row) => sum + row.mentionCount,
-          0,
-        ),
+        mentions: snapshot?.sidebar?.totalMentionCount ?? 0,
         invites: snapshot?.bootstrap?.can.manageInvites ?? false,
       };
     });
@@ -110,7 +109,7 @@ export function TeamSwitch({
     onKnowledge: team.client ? () => go(teamPath(team.teamId, "knowledge")) : undefined,
     onInvite: invites ? () => go(`/settings/teams/${team.teamId}/invites`) : undefined,
     onSettings: team.client ? () => go(`/settings/teams/${team.teamId}/profile`) : undefined,
-    onLeave: team.link ? () => setLeaving(team) : undefined,
+    onLeave: team.client ? () => setLeaving(team) : undefined,
   });
   return (
     <>
@@ -154,7 +153,7 @@ function useStableClients(teams: readonly TeamAttachment[]): readonly (TeamSessi
   return held.current;
 }
 
-function LeaveTeamDialog({
+export function LeaveTeamDialog({
   onClose,
   onLeft,
   team,
@@ -204,7 +203,7 @@ export function TeamSideFor({
   readonly onNavigate: () => void;
   readonly teamId: string;
 }) {
-  const { teams, leave } = useTeams();
+  const { teams, forget, surface } = useTeams();
   const team = teams.find((candidate) => candidate.teamId === teamId) ?? null;
   const client = team?.client ?? null;
   // Only what the side draws: a message, typing or presence elsewhere never redraws it.
@@ -212,6 +211,8 @@ export function TeamSideFor({
   const teamName = useTeamSessionValue(client, selectTeamName);
   const canCreate = useTeamSessionValue(client, selectCanCreate);
   const connection = useTeamSessionValue(client, selectConnection);
+  const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const toast = useToast();
@@ -226,8 +227,13 @@ export function TeamSideFor({
     onNewMessage: () => go(teamPath(teamId, "people")),
     onMoreDms: () => go(teamPath(teamId, "people")),
     onRemoveFromSidebar: () =>
-      void leave(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
-    onRetry: () => client?.connect(),
+      void forget(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
+    onRetry: () =>
+      ended
+        ? surface === "team-web"
+          ? window.location.reload()
+          : go(`/join?team=${encodeURIComponent(teamId)}`)
+        : client?.connect(),
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
   if (!team) return null;
@@ -250,12 +256,22 @@ export function TeamSideFor({
   return (
     <TeamSide
       actions={actions}
+      hasMore={Boolean(sidebar?.nextCursor)}
+      loadingMore={loadingMore}
+      onLoadMore={() => {
+        if (!client || loadingMore) return;
+        setLoadingMore(true);
+        void client
+          .loadMoreSidebar()
+          .catch((error: unknown) => toast.error(actionErrorMessage(error)))
+          .finally(() => setLoadingMore(false));
+      }}
       hrefFor={hrefFor}
       openChannelId={open}
       team={sidebarView({
         teamId: team.teamId,
         tile: teamTile(team.teamId, teamName ?? team.name),
-        connection: teamConnection(team, { connection }),
+        connection: teamConnection(team, { connection, ended }),
         sidebar,
       })}
     />

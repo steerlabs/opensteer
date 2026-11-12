@@ -73,6 +73,14 @@ export interface TeamSessionOptions {
   readonly uploadFile?: (input: TeamFileUpload) => Promise<z.infer<typeof TeamFileSchema>>;
   readonly notify?: (entry: TeamSidebar["channels"][number]) => void;
 }
+function refusedSend(error: unknown): error is OpensteerError {
+  return (
+    error instanceof OpensteerError &&
+    !error.retryable &&
+    ["bad_request", "conflict", "forbidden", "not_found", "resource_exhausted"].includes(error.code)
+  );
+}
+
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
   readonly #options: TeamSessionOptions;
@@ -113,6 +121,7 @@ export class TeamSessionClient {
   #contentGeneration = 0;
   #connectionGeneration = 0;
   #sidebarGeneration = 0;
+  #landingGeneration = 0;
   #searchInput: SearchInput | null = null;
   #searchMore: Promise<void> | null = null;
   constructor(options: TeamSessionOptions) {
@@ -263,7 +272,48 @@ export class TeamSessionClient {
         await this.remove("viewer-changed");
         return;
       }
-      this.#update({ bootstrap });
+      if (this.#snapshot.sidebar?.accessRevision !== bootstrap.sidebar.accessRevision) {
+        this.receive({
+          type: "team.access.changed",
+          accessRevision: bootstrap.sidebar.accessRevision,
+        });
+        const selected = this.#snapshot.channel;
+        if (selected) {
+          try {
+            await this.rpc["team.channel.get"]({ channelId: selected.scope.channelId }).then(
+              unwrapRpcResult,
+            );
+          } catch (error) {
+            if (lifetime !== this.#lifetime) return;
+            if (
+              !(error instanceof OpensteerError) ||
+              !["forbidden", "not_found"].includes(error.code)
+            )
+              throw error;
+            const channelId = selected.scope.channelId;
+            this.selectChannel(null);
+            this.#update({
+              pending: this.#snapshot.pending.filter((row) => row.command.channelId !== channelId),
+              drafts: Object.fromEntries(
+                Object.entries(this.#snapshot.drafts).filter(([key]) => {
+                  try {
+                    const parsed: unknown = JSON.parse(key);
+                    return !Array.isArray(parsed) || parsed[1] !== channelId;
+                  } catch {
+                    return true;
+                  }
+                }),
+              ),
+            });
+            await this.#save();
+          }
+        }
+      }
+      if (lifetime === this.#lifetime)
+        this.#update({
+          bootstrap,
+          sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
+        });
     } catch (error) {
       if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
     }
@@ -328,7 +378,7 @@ export class TeamSessionClient {
           this.#update({
             thread: {
               ...current,
-              messages: [root, ...current.messages.filter((row) => row.id !== root.id)],
+              messages: [root, ...current.messages.filter((row) => row.id !== root.id).slice(-299)],
             },
           });
         })
@@ -387,11 +437,19 @@ export class TeamSessionClient {
   ): Promise<TeamMessage | null> {
     if (this.#removed || this.#disposed) return null;
     const lifetime = this.#lifetime,
-      content = this.#contentGeneration;
+      content = this.#contentGeneration,
+      selection = this.#generation,
+      landing = ++this.#landingGeneration;
     const message = await this.rpc["team.message.get"]({ channelId, messageId }).then(
       unwrapRpcResult,
     );
-    if (lifetime !== this.#lifetime || content !== this.#contentGeneration) return null;
+    if (
+      lifetime !== this.#lifetime ||
+      content !== this.#contentGeneration ||
+      selection !== this.#generation ||
+      landing !== this.#landingGeneration
+    )
+      return null;
     if (this.#snapshot.channel?.scope.channelId !== channelId) this.selectChannel(channelId);
     const rootId = message.threadRootId;
     if (
@@ -400,6 +458,7 @@ export class TeamSessionClient {
         this.#snapshot.thread.scope.rootId !== rootId)
     )
       this.selectThread(channelId, rootId);
+    if (!rootId && this.#snapshot.thread) this.selectThread(channelId, null);
     const view = rootId ? "thread" : "channel",
       selected = this.#snapshot[view];
     if (!selected) return null;
@@ -418,7 +477,8 @@ export class TeamSessionClient {
     if (
       lifetime !== this.#lifetime ||
       content !== this.#contentGeneration ||
-      current?.generation !== selected.generation
+      current?.generation !== selected.generation ||
+      landing !== this.#landingGeneration
     )
       return null;
     let next = reduceTeamPage(
@@ -433,7 +493,7 @@ export class TeamSessionClient {
       selected.generation,
       "after",
     );
-    this.#update({ [view]: { ...next, hasMore: before.hasMore } });
+    this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
     return message;
   }
   receive(frame: z.infer<typeof TeamServerFrameSchema>): void {
@@ -444,7 +504,15 @@ export class TeamSessionClient {
         const held = this.#snapshot[view];
         if (!held) return;
         const next = reduceTeamCut(held, frame.cut);
-        if (next !== held) this.#update({ [view]: next });
+        if (next !== held) {
+          this.#update({ [view]: next });
+          if (
+            frame.cut.type === "snapshot" &&
+            held.anchorId &&
+            (view === "thread" || !this.#snapshot.thread)
+          )
+            void this.landMessage(held.scope.channelId, held.anchorId).catch(() => undefined);
+        }
         break;
       }
       case "team.sidebar":
@@ -570,7 +638,11 @@ export class TeamSessionClient {
       current,
       monotonicTeamSidebar(current, { ...current, channels: page.channels }),
     );
-    this.#applySidebar({ ...current, channels: rows.slice(0, 1000) }, true, false);
+    this.#applySidebar(
+      { ...current, totalMentionCount: page.totalMentionCount, channels: rows.slice(0, 1000) },
+      true,
+      false,
+    );
   }
   async refreshSidebar(): Promise<void> {
     if (this.#removed || this.#disposed) return;
@@ -715,7 +787,7 @@ export class TeamSessionClient {
       await this.#confirm([result.message]);
     } catch (error) {
       if (lifetime !== this.#lifetime) return;
-      if (!(error instanceof OpensteerError) || error.retryable) throw error;
+      if (!refusedSend(error)) throw error;
       await this.#fail([pending], error);
     }
   }
@@ -759,7 +831,7 @@ export class TeamSessionClient {
             }).then(unwrapRpcResult);
           } catch (error) {
             if (!current()) return;
-            if (!(error instanceof OpensteerError) || error.retryable) throw error;
+            if (!refusedSend(error)) throw error;
             await this.#fail(batch, error);
             continue;
           }
@@ -815,6 +887,7 @@ export class TeamSessionClient {
     const generation = ++this.#searchGeneration,
       lifetime = this.#lifetime;
     this.#searchInput = input;
+    this.#searchMore = null;
     this.#update({ search: null });
     const search = await this.rpc["team.search"]({ input }).then(unwrapRpcResult);
     if (generation === this.#searchGeneration && lifetime === this.#lifetime)
@@ -901,6 +974,15 @@ export class TeamSessionClient {
     if (result.type !== "notification.preview.register")
       throw new Error("Notification registration result mismatch.");
   }
+  async leave(): Promise<void> {
+    if (!this.#snapshot.bootstrap) await this.load(false);
+    const member = this.#snapshot.bootstrap?.member;
+    if (!member) throw new Error("Sign in to the team before leaving it.");
+    await this.rpc["commands.dispatch"]({ type: "team.member.remove", userId: member.userId }).then(
+      unwrapRpcResult,
+    );
+    await this.remove();
+  }
   disconnect(): void {
     this.#connectionGeneration++;
     this.#connected = false;
@@ -917,6 +999,9 @@ export class TeamSessionClient {
     this.disconnect();
     this.#files.clear();
     this.#fileBytes = 0;
+    this.#searchInput = null;
+    this.#searchMore = null;
+    this.#typingAt.clear();
     this.#update({
       bootstrap: null,
       sidebar: null,

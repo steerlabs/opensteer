@@ -2523,6 +2523,7 @@ alter table personal_team_requests add foreign key(local_input_id) references th
 alter table personal_team_requests add foreign key(run_id) references runs(id);
 alter table personal_team_requests add unique(local_input_id);
 create index personal_team_requests_unpublished on personal_team_requests(team_deployment_id,created_at,request_id) where publication_state='pending';
+create index personal_team_requests_reply on personal_team_requests(team_deployment_id,accepted_message_id) where publication_state='accepted' and accepted_message_id is not null;
 
 create unique index triggers_system_role on triggers(system_role) where system_role is not null;
 create table folder_skill_inventory (

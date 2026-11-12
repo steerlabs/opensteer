@@ -1085,7 +1085,7 @@ describe("DesktopHostTransport", () => {
   it("does not treat an ambiguous WebSocket failure as authentication evidence", async () => {
     const selected = DeploymentConnectionSchema.parse({
       ...deployment("Cloud", "https://cloud.opensteer.test"),
-      kind: "self-hosted",
+      kind: "team",
     });
     let events: HostNetworkSocketEvents | null = null;
     const recoverUnauthorized = vi.fn(async () => "recovered" as const);
@@ -1112,7 +1112,7 @@ describe("DesktopHostTransport", () => {
   });
 
   it("never spends an Account grant for a Deployment that owns its authorization", async () => {
-    const fixture = cloudFixture({ kind: "self-hosted" });
+    const fixture = cloudFixture({ kind: "team" });
 
     await expect(
       fixture.transport.request({ headers: {}, method: "GET", path: "/v1/bootstrap" }),
@@ -1125,19 +1125,18 @@ describe("DesktopHostTransport", () => {
 
 function cloudFixture(
   options: {
-    readonly kind?: "self-hosted" | "self-hosted";
+    readonly kind?: "personal" | "team";
     readonly redemptionStatus?: number;
   } = {},
 ) {
   const canonicalOrigin = "https://cloud.opensteer.test";
   const selected = DeploymentConnectionSchema.parse({
-    ...deployment("Cloud", canonicalOrigin),
-    kind: options.kind ?? "self-hosted",
+    ...deployment("Cloud", canonicalOrigin, options.kind ?? "personal"),
   });
   const hostRequests: string[] = [];
   let sessionActive = false;
   const recoverUnauthorized = vi.fn(async () => {
-    if (options.kind === "self-hosted") return "unsupported" as const;
+    if (options.kind === "team") return "unsupported" as const;
     if (options.redemptionStatus !== undefined) return "blocked" as const;
     sessionActive = true;
     return "recovered" as const;
@@ -1179,7 +1178,7 @@ function deployment(name: string, canonicalOrigin: string, kind: "personal" | "t
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin: canonicalOrigin, verifiedAt: now }],
-    kind: kind === "personal" ? "personal" : "self-hosted",
+    kind,
     lastUsedAt: null,
     name,
     reachability: "canonical",
@@ -1787,7 +1786,7 @@ describe("joined team routing", () => {
         expect(sockets.at(-1)!.input).toMatchObject({
           deploymentId: expectedDeploymentId,
           authorization: `Bearer credential-${expectedDeploymentId}`,
-          url: origin.replace("https:", "wss:") + "/v1/realtime",
+          url: origin.replace("https:", "wss:") + "/v1/realtime?opensteer_api_version=1",
           headers: { "x-opensteer-team-api-version": "1" },
         });
       }
@@ -1807,6 +1806,64 @@ describe("joined team routing", () => {
       transport.dispose();
     }
     expect(sockets.every(({ network }) => network.close.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("reads only pinned summary RPCs from another personal computer without selecting it or opening a socket", async () => {
+    const first = deployment("Home", "https://home.example.test", "personal");
+    const second = deployment("Work", "https://work.example.test", "personal");
+    const catalog = catalogStore([first, second], first.authority.document.deploymentId);
+    const requested: string[] = [];
+    const network = {
+      request: vi.fn(async ({ url }: HostNetworkRequest) => {
+        requested.push(String(url));
+        return new Response("{}");
+      }),
+      openWebSocket: vi.fn(() => socket()),
+    };
+    const transport = desktopHostTransport({ catalog, network });
+    try {
+      const expectedDeploymentId = second.authority.document.deploymentId;
+      await transport.request({
+        expectedDeploymentId,
+        headers: {},
+        method: "GET",
+        path: "/v1/rpc/attention.get",
+      });
+      await transport.request({
+        expectedDeploymentId,
+        headers: {},
+        method: "POST",
+        path: "/v1/rpc/teams.links.list",
+        body: "{}",
+      });
+      expect(requested).toEqual([
+        "https://work.example.test/v1/rpc/attention.get",
+        "https://work.example.test/v1/rpc/teams.links.list",
+      ]);
+      expect((await catalog.load()).selectedDeploymentId).toBe(
+        first.authority.document.deploymentId,
+      );
+      expect(network.openWebSocket).not.toHaveBeenCalled();
+      await expect(
+        transport.request({
+          expectedDeploymentId,
+          headers: {},
+          method: "GET",
+          path: "/v1/rpc/tasks.list",
+        }),
+      ).rejects.toMatchObject({ code: "deployment-changed" });
+      await expect(
+        transport.request({
+          expectedDeploymentId,
+          headers: {},
+          method: "POST",
+          path: "/v1/rpc/attention.get",
+        }),
+      ).rejects.toMatchObject({ code: "deployment-changed" });
+      expect(network.request).toHaveBeenCalledTimes(2);
+    } finally {
+      transport.dispose();
+    }
   });
 
   it("refuses missing team pins and Personal deployment mismatches before opening any network traffic", async () => {

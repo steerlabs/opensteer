@@ -1539,6 +1539,10 @@ export async function createHostServer(
         }),
       );
     },
+    "attention.get": async (_input, context) =>
+      rpcSuccess(
+        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
+      ),
     "needsYou.get": async (input, context) =>
       rpcSuccess(
         await needsYouPage(dependencies.store.database, {
@@ -1560,6 +1564,10 @@ export async function createHostServer(
     "teams.threadTask.get": async (input, context) => {
       await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
       return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
+    },
+    "teams.replyTask.get": async (input, context) => {
+      const ownerId = requireRpcSession(context).user.id;
+      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
     },
     "tasks.list": async (input, context) =>
       rpcSuccess(
@@ -1591,10 +1599,12 @@ export async function createHostServer(
     | "attachment.content"
     | "folder.files.list"
     | "folder.files.preview"
+    | "attention.get"
     | "needsYou.get"
     | "teams.links.list"
     | "teams.channelFolder.get"
     | "teams.threadTask.get"
+    | "teams.replyTask.get"
     | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"

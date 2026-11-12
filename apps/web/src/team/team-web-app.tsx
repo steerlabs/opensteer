@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
 import {
   opensteerDesktopApplicationId,
@@ -22,7 +22,7 @@ import { TeamsProvider, createTeamWebAttachment, type TeamAttachment } from "./t
 import { channelPath, teamPath } from "./team-paths.js";
 import { TeamRoutes } from "./team-routes.js";
 import { TeamSettingsRoute } from "./team-settings-route.js";
-import { TeamSideFor } from "./team-sidebar-sections.js";
+import { TeamSideFor, LeaveTeamDialog } from "./team-sidebar-sections.js";
 
 type TeamBootstrap = z.infer<typeof TeamBootstrapSchema>;
 type Entry =
@@ -216,6 +216,22 @@ function TeamWebShell({
 }) {
   const nav = useWorkspaceNavigation({ deploymentId: team.teamId, userId });
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [leaving, setLeaving] = useState(false);
+  const ended = useSyncExternalStore(
+    team.client!.subscribe,
+    () => team.client!.getSnapshot().ended,
+  );
+  if (ended)
+    return (
+      <OnboardingCard
+        title={ended === "removed" ? `You’re no longer in ${team.name}` : "Sign in to your team"}
+        description="Your saved team content has been cleared from this browser."
+      >
+        <button className="btn" onClick={() => window.location.reload()} type="button">
+          Sign in
+        </button>
+      </OnboardingCard>
+    );
   const close = () => setDrawerOpen(false);
   return (
     <WorkspaceProvider attention={0} nav={nav} openDrawer={() => setDrawerOpen(true)}>
@@ -244,7 +260,22 @@ function TeamWebShell({
             >
               <Icon name="settings" />
             </Link>
+            <button
+              className="icon-btn"
+              aria-label={`Leave ${team.name}`}
+              onClick={() => setLeaving(true)}
+              type="button"
+            >
+              <Icon name="log-out" />
+            </button>
           </div>
+          {leaving ? (
+            <LeaveTeamDialog
+              team={team}
+              onClose={() => setLeaving(false)}
+              onLeft={() => setLeaving(false)}
+            />
+          ) : null}
           <section aria-label="Team" className="side-section side-section--tasks">
             <TeamSideFor onNavigate={close} teamId={team.teamId} />
           </section>

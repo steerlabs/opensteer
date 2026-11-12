@@ -37,6 +37,8 @@ export function TeamSearch({
   channels,
   filters,
   header,
+  hasMore = false,
+  onMore,
   onFilters,
   onOpenResult,
   onQuery,
@@ -47,6 +49,8 @@ export function TeamSearch({
   readonly channels: readonly ChannelOption[];
   readonly filters: SearchFilters;
   readonly header?: ReactNode;
+  readonly hasMore?: boolean;
+  readonly onMore?: (() => void) | undefined;
   readonly onFilters: (filters: SearchFilters) => void;
   readonly onOpenResult: (result: SearchResultView) => void;
   readonly onQuery: (query: string) => void;
@@ -206,6 +210,11 @@ export function TeamSearch({
                 </li>
               ))}
             </ul>
+            {hasMore && onMore ? (
+              <button className="btn" onClick={onMore} type="button">
+                More results
+              </button>
+            ) : null}
           </>
         )}
       </div>

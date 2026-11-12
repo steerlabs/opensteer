@@ -132,6 +132,7 @@ export class DesktopHostTransport extends HostTransport {
     ((event: string, fields: Record<string, string | number | boolean>) => void) | undefined;
   readonly #catalog: Pick<DeploymentCatalogStore, "load" | "select" | "setPreferredEndpoint">;
   readonly #teams = new Map<DeploymentId, HostTransport>();
+  readonly #summaries = new Map<DeploymentId, HostTransport>();
   readonly #teamOptions: ConstructorParameters<typeof HostTransport>[0];
   readonly #unsubscribeCatalog: () => void;
   readonly #projection: Pick<DesktopAccessProjection, "read">;
@@ -178,6 +179,7 @@ export class DesktopHostTransport extends HostTransport {
     };
     this.#unsubscribeCatalog = options.catalog.subscribe(() => {
       for (const team of this.#teams.values()) void team.current().catch(() => undefined);
+      for (const summary of this.#summaries.values()) void summary.current().catch(() => undefined);
     });
     this.#log = options.log;
     this.#catalog = options.catalog;
@@ -246,7 +248,11 @@ export class DesktopHostTransport extends HostTransport {
         }
       }
     }
-    const transport = await this.#transport(request.expectedDeploymentId);
+    const path = request.path.split("?")[0];
+    const summary =
+      (path === "/v1/rpc/attention.get" && request.method === "GET") ||
+      (path === "/v1/rpc/teams.links.list" && request.method === "POST");
+    const transport = await this.#transport(request.expectedDeploymentId, summary);
     return transport.exchange(request, async (response, progress) =>
       DesktopHostHttpResponseSchema.parse({
         body: await readBoundedText(response, {
@@ -254,7 +260,7 @@ export class DesktopHostTransport extends HostTransport {
           fatalUtf8: true,
           invalidContentLengthError: () =>
             new Error("The Host returned an invalid content length."),
-          maximumBytes: maximumHostResponseBytes,
+          maximumBytes: summary ? 512 * 1024 : maximumHostResponseBytes,
           sizeError: () => new HostTransportError("response-too-large"),
         }),
         headers: { contentType: response.headers.get("content-type") },
@@ -851,6 +857,7 @@ export class DesktopHostTransport extends HostTransport {
       this.#closeTransportSockets(team);
       team.closeAllSockets();
     }
+    for (const summary of this.#summaries.values()) summary.closeAllSockets();
   }
 
   dispose(): void {
@@ -859,9 +866,10 @@ export class DesktopHostTransport extends HostTransport {
     this.#unsubscribeCatalog();
     this.closeAllConnections();
     this.#teams.clear();
+    this.#summaries.clear();
   }
 
-  async #transport(deploymentId?: DeploymentId): Promise<HostTransport> {
+  async #transport(deploymentId?: DeploymentId, summary = false): Promise<HostTransport> {
     if (this.#disposed) throw new HostTransportError("cancelled");
     if (deploymentId === undefined) return this;
     const catalog = await this.#catalog.load();
@@ -870,7 +878,19 @@ export class DesktopHostTransport extends HostTransport {
       ({ authority }) => authority.document.deploymentId === deploymentId,
     );
     if (!connection) throw new HostTransportError("deployment-changed");
-    if (connection.authority.document.deploymentShape.kind !== "team") return this;
+    if (connection.authority.document.deploymentShape.kind !== "team") {
+      if (!summary || catalog.selectedDeploymentId === deploymentId) return this;
+      let transport = this.#summaries.get(deploymentId);
+      if (!transport) {
+        transport = new HostTransport({
+          ...this.#teamOptions,
+          expectedKind: "personal",
+          deploymentId,
+        });
+        this.#summaries.set(deploymentId, transport);
+      }
+      return transport;
+    }
     const existing = this.#teams.get(deploymentId);
     if (existing) return existing;
     const team = new HostTransport({ ...this.#teamOptions, deploymentId });

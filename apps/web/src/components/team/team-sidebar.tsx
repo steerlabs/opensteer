@@ -1,4 +1,5 @@
-import { memo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useRef, useState, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { useWindowedRows } from "../workspace/windowed-rows.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { useScrollEdges } from "../workspace/scroll-edges.js";
@@ -57,7 +58,7 @@ export function SidebarSwitch({
   const anchors = useRef(new Map<string, HTMLButtonElement>());
   return (
     <div aria-label="Tasks or a team" className="segmented side-switch" role="radiogroup">
-      {segments.map((segment) => {
+      {segments.map((segment, index) => {
         const chosen = segment.id === active;
         const menu = chosen ? segment.menu : undefined;
         return (
@@ -70,6 +71,30 @@ export function SidebarSwitch({
               className="side-switch__option"
               data-value={segment.id}
               onClick={() => onSelect(segment.id)}
+              onKeyDown={(event) => {
+                const step =
+                  event.key === "ArrowRight" || event.key === "ArrowDown"
+                    ? 1
+                    : event.key === "ArrowLeft" || event.key === "ArrowUp"
+                      ? -1
+                      : 0;
+                const nextIndex =
+                  event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                      ? segments.length - 1
+                      : step
+                        ? (index + step + segments.length) % segments.length
+                        : null;
+                if (nextIndex === null) return;
+                event.preventDefault();
+                const next = segments[nextIndex]!;
+                onSelect(next.id);
+                const group = event.currentTarget.closest('[role="radiogroup"]');
+                group
+                  ?.querySelector<HTMLButtonElement>(`[data-value="${CSS.escape(next.id)}"]`)
+                  ?.focus();
+              }}
               role="radio"
               tabIndex={chosen ? 0 : -1}
               title={segment.label}
@@ -171,6 +196,9 @@ export function TeamSide({
   hrefFor,
   openChannelId = null,
   team,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: {
   /** Kept the same between draws, so unchanged rows are not drawn again. */
   readonly actions: TeamSideActions;
@@ -178,10 +206,22 @@ export function TeamSide({
   readonly hrefFor?: ((channelId: string) => string) | undefined;
   readonly openChannelId?: string | null;
   readonly team: TeamSidebarView;
+  readonly hasMore?: boolean;
+  readonly loadingMore?: boolean;
+  readonly onLoadMore?: (() => void) | undefined;
 }) {
   const name = team.tile.name;
   const scroller = useRef<HTMLDivElement | null>(null);
   useScrollEdges(scroller);
+  if (team.connection === "sign-in")
+    return (
+      <div className="team-left">
+        <p className="team-left__title">Sign in to {name}</p>
+        <button className="btn btn--small" onClick={actions.onRetry} type="button">
+          Sign in
+        </button>
+      </div>
+    );
   if (team.connection === "removed" || team.connection === "left")
     return (
       <div className="team-left">
@@ -234,37 +274,77 @@ export function TeamSide({
           ["New channel", actions.onNewChannel],
         ]}
       />
-      <ul aria-label={`${name} channels`} className="team-rows">
-        {team.channels.map((row) => (
-          <ChannelRow
-            hrefFor={hrefFor}
-            key={row.id}
-            onOpen={actions.onOpenChannel}
-            open={row.id === openChannelId}
-            row={row}
-          />
-        ))}
-      </ul>
+      <ChannelRows
+        label={`${name} channels`}
+        rows={team.channels}
+        scroll={scroller}
+        hrefFor={hrefFor}
+        onOpen={actions.onOpenChannel}
+        openChannelId={openChannelId}
+      />
       <SideLabel label="Direct messages" menu={[["New message", actions.onNewMessage]]} />
-      <ul aria-label={`${name} direct messages`} className="team-rows">
-        {team.dms.map((row) => (
+      <ChannelRows
+        label={`${name} direct messages`}
+        rows={team.dms}
+        scroll={scroller}
+        hrefFor={hrefFor}
+        onOpen={actions.onOpenChannel}
+        openChannelId={openChannelId}
+      />
+      {hasMore && onLoadMore ? (
+        <button
+          className="team-rows__more"
+          disabled={loadingMore}
+          onClick={onLoadMore}
+          type="button"
+        >
+          {loadingMore ? "Loading…" : "More channels and messages"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ChannelRows({
+  label,
+  rows,
+  scroll,
+  hrefFor,
+  onOpen,
+  openChannelId,
+}: {
+  readonly label: string;
+  readonly rows: readonly ChannelRowView[];
+  readonly scroll: RefObject<HTMLDivElement | null>;
+  readonly hrefFor: ChannelRowProps["hrefFor"];
+  readonly onOpen: ChannelRowProps["onOpen"];
+  readonly openChannelId: string | null;
+}) {
+  const list = useRef<HTMLUListElement | null>(null);
+  const plan = useWindowedRows({
+    list: scroll,
+    rows: list,
+    keys: rows.map((row) => row.id),
+    estimate: () => 32,
+    pinned: [openChannelId ?? ""],
+    all: false,
+  });
+  return (
+    <ul aria-label={label} className="team-rows" ref={list}>
+      {plan.map((entry, index) =>
+        "spacer" in entry ? (
+          <li aria-hidden key={`spacer:${index}`} style={{ height: entry.spacer }} />
+        ) : (
           <ChannelRow
             hrefFor={hrefFor}
-            key={row.id}
-            onOpen={actions.onOpenChannel}
-            open={row.id === openChannelId}
-            row={row}
+            key={rows[entry.index]!.id}
+            onOpen={onOpen}
+            open={rows[entry.index]!.id === openChannelId}
+            row={rows[entry.index]!}
           />
-        ))}
-        {team.moreDms > 0 && actions.onMoreDms ? (
-          <li>
-            <button className="team-rows__more" onClick={actions.onMoreDms} type="button">
-              {team.moreDms} more
-            </button>
-          </li>
-        ) : null}
-      </ul>
-    </div>
+        ),
+      )}
+    </ul>
   );
 }
 
@@ -366,6 +446,7 @@ const ChannelRow = memo(function ChannelRow({ hrefFor, onOpen, open, row }: Chan
         .filter(Boolean)
         .join(" ")}
       data-channel-id={row.id}
+      data-motion-key={row.id}
     >
       {href ? (
         <a

@@ -1056,7 +1056,6 @@ svg.icon {
   :is(
     .settings-navigation__link.is-active,
     .settings-choice.is-selected,
-    .side-home.is-filled,
     .side-task.is-filled,
     .side-tab.is-active,
     .browser-tab.is-active,

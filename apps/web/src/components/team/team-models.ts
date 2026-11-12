@@ -205,7 +205,14 @@ export interface ChannelRowView {
 
 /** How the viewer's app stands with one team's server. */
 export type TeamConnection =
-  "online" | "reconnecting" | "offline" | "update-app" | "update-server" | "removed" | "left";
+  | "online"
+  | "reconnecting"
+  | "offline"
+  | "update-app"
+  | "update-server"
+  | "sign-in"
+  | "removed"
+  | "left";
 
 export interface TeamSidebarView {
   readonly id: string;

@@ -1,7 +1,7 @@
 import type { HostApiClient } from "@opensteer/protocol";
 import { unwrapRpcResult } from "./host-session-client.js";
 import type { HostClient } from "./client.js";
-import { isThreadUnread } from "./thread-read-state.js";
+import { compareSequence } from "@opensteer/core";
 import {
   DeploymentIdSchema,
   TeamChannelIdSchema,
@@ -50,21 +50,29 @@ export class PersonalTeamLinks {
   }
 }
 
-/**
- * Reading your agent's reply in its team thread reads its task: the local
- * task bound to that thread is marked read through what it last published.
- */
+/** Reads only the local publication corresponding to the reply the person saw. */
 export async function readTeamReply(
   client: Pick<HostClient, "getSnapshot" | "markThreadRead" | "rpc">,
-  origin: { readonly teamId: string; readonly channelId: string; readonly threadRootId: string },
-): Promise<void> {
-  const taskId = await new PersonalTeamLinks(client.rpc).task(
-    origin.teamId,
-    origin.channelId,
-    origin.threadRootId,
+  origin: {
+    readonly teamId: string;
+    readonly channelId: string;
+    readonly threadRootId: string;
+    readonly replyMessageId: string;
+  },
+): Promise<boolean> {
+  const publication = unwrapRpcResult(
+    await client.rpc["teams.replyTask.get"]({
+      teamId: DeploymentIdSchema.parse(origin.teamId),
+      channelId: TeamChannelIdSchema.parse(origin.channelId),
+      threadRootId: TeamMessageIdSchema.parse(origin.threadRootId),
+      replyMessageId: TeamMessageIdSchema.parse(origin.replyMessageId),
+    }),
   );
-  if (!taskId) return;
-  const state = client.getSnapshot().threadReadStates[taskId];
-  if (!state?.unreadSequence || !isThreadUnread(state)) return;
-  await client.markThreadRead(taskId, state.unreadSequence);
+  if (!publication.taskId || !publication.throughSequence) return false;
+  const state = client.getSnapshot().threadReadStates[publication.taskId];
+  if (!state || compareSequence(state.asOfSequence, publication.throughSequence) < 0) return false;
+  if (state.readSequence && compareSequence(state.readSequence, publication.throughSequence) >= 0)
+    return true;
+  await client.markThreadRead(publication.taskId, publication.throughSequence);
+  return true;
 }

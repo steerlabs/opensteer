@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -61,8 +62,9 @@ interface TeamsValue {
   /** The personal Host's team commands; null on a team's own web app. */
   readonly links: PersonalTeamLinks | null;
   readonly reload: () => Promise<void>;
-  /** Leaves a team: cuts the link, ends the session and forgets what this device kept. */
+  /** Ends membership on the team Host, then removes this viewer’s saved state. */
   readonly leave: (teamId: string) => Promise<void>;
+  readonly forget: (teamId: string) => Promise<void>;
   /** A notification was opened: the channel it names. */
   readonly opened: { readonly teamId: string; readonly channelId: string } | null;
   readonly consumeOpened: () => void;
@@ -74,6 +76,7 @@ const TeamsContext = createContext<TeamsValue>({
   links: null,
   reload: async () => undefined,
   leave: async () => undefined,
+  forget: async () => undefined,
   opened: null,
   consumeOpened: () => undefined,
 });
@@ -125,7 +128,9 @@ export function TeamsProvider({
   readonly surface: TeamSurface;
 }) {
   const hostClient =
-    surface.kind === "personal-web" || surface.kind === "desktop" ? surface.hostClient : null;
+    surface.kind === "personal-web" || surface.kind === "desktop" || surface.kind === "preview"
+      ? surface.hostClient
+      : null;
   const bridge = surface.kind === "desktop" ? surface.bridge : null;
   const links = useMemo(
     () => (hostClient ? new PersonalTeamLinks(hostClient.rpc) : null),
@@ -134,15 +139,18 @@ export function TeamsProvider({
   const [linked, setLinked] = useState<readonly PersonalTeamLink[]>([]);
   const [clients, setClients] = useState<ReadonlyMap<string, TeamSessionClient>>(new Map());
   const [opened, setOpened] = useState<TeamsValue["opened"]>(null);
+  const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
   const origins = useMemo(
     () => new Map<string, PersonalTeamLink>(linked.map((link) => [link.teamId, link])),
     [linked],
   );
+  const originRef = useRef(origins);
+  originRef.current = origins;
   const registry = useMemo(
     () =>
       bridge
         ? new TeamTransportRegistry("desktop", (scope: TeamCacheScope) => {
-            const link = origins.get(scope.teamDeploymentId);
+            const link = originRef.current.get(scope.teamDeploymentId);
             if (!link) throw new Error("This team is not linked.");
             return desktopTeamSession({
               bridge,
@@ -155,7 +163,7 @@ export function TeamsProvider({
             });
           })
         : null,
-    [bridge, origins],
+    [bridge],
   );
   useEffect(() => () => registry?.dispose(), [registry]);
   // A team's own web app and the mock build hold their sessions directly.
@@ -203,12 +211,37 @@ export function TeamsProvider({
   const leave = useCallback(
     async (teamId: string) => {
       const link = linked.find((row) => row.teamId === teamId);
-      await links?.leave(teamId);
+      const session =
+        clients.get(teamId) ??
+        (surface.kind === "team-web"
+          ? surface.attachment.client
+          : surface.kind === "preview"
+            ? surface.teams.find((team) => team.teamId === teamId)?.client
+            : null);
+      if (!session) throw new Error("Sign in to the team before leaving it.");
+      await session.leave();
       if (registry && link?.ownerUserId)
         await registry.remove({ teamDeploymentId: teamId, userId: link.ownerUserId });
       await reload();
     },
-    [linked, links, registry, reload],
+    [linked, clients, surface, registry, reload],
+  );
+
+  const forget = useCallback(
+    async (teamId: string) => {
+      const session =
+        clients.get(teamId) ??
+        (surface.kind === "team-web"
+          ? surface.attachment.client
+          : surface.kind === "preview"
+            ? surface.teams.find((team) => team.teamId === teamId)?.client
+            : null);
+      await session?.remove();
+      const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
+      if (registry && owner) await registry.remove({ teamDeploymentId: teamId, userId: owner });
+      setForgotten((held) => new Set([...held, teamId]));
+    },
+    [clients, surface, linked, registry],
   );
 
   const value = useMemo<TeamsValue>(() => {
@@ -228,14 +261,15 @@ export function TeamsProvider({
               }));
     return {
       surface: surface.kind,
-      teams,
+      teams: teams.filter((team) => !forgotten.has(team.teamId)),
       links,
       reload,
       leave,
+      forget,
       opened,
       consumeOpened: () => setOpened(null),
     };
-  }, [clients, leave, linked, links, opened, reload, surface]);
+  }, [clients, leave, forget, forgotten, linked, links, opened, reload, surface]);
   return <TeamsContext value={value}>{children}</TeamsContext>;
 }
 
