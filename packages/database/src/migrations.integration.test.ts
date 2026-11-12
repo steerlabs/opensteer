@@ -7,7 +7,6 @@ import {
   migrateToLatest,
   migrationProvider,
   personalTeamBaselineName,
-  threadVisitsMigrationName,
 } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
