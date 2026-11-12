@@ -542,11 +542,11 @@ describe("One schedule", () => {
       };
     });
     const list = listScreen();
-    await shown(list, "Unavailable thread", "the list never named the unavailable thread");
+    await shown(list, "Unavailable task", "the list never named the unavailable thread");
     expect(button(list, /^GitHub deploys\./).querySelector("[data-quiet]")).not.toBeNull();
     const screen = detailScreen(summary.id);
-    await shown(screen, "That thread isn’t available to you", "the schedule never loaded");
-    const anchor = button(screen, "Runs in Unavailable thread");
+    await shown(screen, "That task isn’t available to you", "the schedule never loaded");
+    const anchor = button(screen, "Runs in Unavailable task");
     expect(anchor.disabled).toBe(true);
     press(anchor);
     expect(pushed()).toEqual([]);

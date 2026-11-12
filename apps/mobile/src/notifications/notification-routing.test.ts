@@ -23,7 +23,7 @@ describe("notificationDestination", () => {
       notificationDestination(
         push({ deepLink, deploymentId, kind: "request-opened", requestId, threadId }),
       ),
-    ).toEqual({ deepLink, deploymentId, requestId, threadId });
+    ).toEqual({ kind: "thread", deepLink, deploymentId, requestId, threadId });
   });
 
   it("ignores the payload's own identifiers when they contradict the link", () => {

@@ -101,18 +101,15 @@ vi.mock("../ui/primitives.js", () => {
 const { ChromeScreen } = await import("./chrome.js");
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
-const research = "wsp_00000000-0000-4000-8000-000000000004";
-const home = "wsp_00000000-0000-4000-8000-000000000005";
 const mac = "bsr_00000000-0000-4000-8000-000000000001";
 const laptop = "bsr_00000000-0000-4000-8000-000000000002";
 
-function grant(site: string, workspaceId: string, lastSignedInAt: string | null = null) {
+function grant(site: string, lastSignedInAt: string | null = null) {
   return {
     createdAt: "2026-09-20T10:00:00.000Z",
     lastSignedInAt,
     preferredSourceId: mac,
     site,
-    workspaceId,
   };
 }
 
@@ -126,10 +123,6 @@ function host(sources: readonly object[], sites: readonly object[] = []) {
       network: "online",
       session: "authenticated",
       user: { id: "user-a" },
-      workspaces: [
-        { id: research, name: "Research", tone: "violet" },
-        { id: home, name: "Home", tone: "teal" },
-      ],
     }),
     rpc: { "browser.sources.get": get },
   };
@@ -240,7 +233,7 @@ describe("mobile Chrome", () => {
     expect(get.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it("groups allowed sites by site and removes one Workspace's permission", async () => {
+  it("lists allowed sites and removes one", async () => {
     const { dispatch } = host(
       [
         {
@@ -252,9 +245,8 @@ describe("mobile Chrome", () => {
         },
       ],
       [
-        grant("https://github.com", research, "2026-09-22T10:00:00.000Z"),
-        grant("https://example.com", home),
-        grant("https://github.com", home),
+        grant("https://github.com", "2026-09-22T10:00:00.000Z"),
+        grant("https://example.com"),
       ],
     );
     await render();
@@ -265,14 +257,13 @@ describe("mobile Chrome", () => {
     expect(body).toContain("Not used yet");
     expect(body).toContain("Last signed in");
 
-    await press("Remove github.com from Home");
+    await press("Remove github.com");
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({
         site: "https://github.com",
         type: "browser.site.remove",
-        workspaceId: home,
       }),
     );
-    expect(text()).toContain("github.com removed from Home.");
+    expect(text()).toContain("github.com removed. Your agent asks before using it again.");
   });
 });

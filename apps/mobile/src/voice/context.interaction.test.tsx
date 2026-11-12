@@ -151,42 +151,39 @@ it("routes an authorized unloaded Thread through the existing Thread screen", as
   });
 });
 
-it.each(["Home", "Thread"])(
-  "opens the exact requested tab from the active %s conversation",
-  async (name) => {
-    const f = await mount();
-    const source = name === "Home" ? f.source : f.target;
-    state.route = {
-      key: name,
-      name,
-      params: { deploymentId: f.snapshot.deploymentId, threadId: source.id },
-    };
-    const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
-    if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-    const { sessionId, tabId } = place.destination;
-    await act(async () =>
-      f.host.receivePersonShow(
-        PersonShowMessageSchema.parse({
-          ...f.message,
-          threadId: source.id,
-          target: { tabId },
-        }),
-      ),
-    );
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
-      type: "PUSH",
-      payload: {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: f.snapshot.deploymentId,
-          scope: "tabs",
-          sessionId,
-          tabId,
-        },
+it("opens the exact requested tab from the active Thread", async () => {
+  const f = await mount();
+  const source = f.target;
+  state.route = {
+    key: "Thread",
+    name: "Thread",
+    params: { deploymentId: f.snapshot.deploymentId, threadId: source.id },
+  };
+  const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
+  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
+  const { sessionId, tabId } = place.destination;
+  await act(async () =>
+    f.host.receivePersonShow(
+      PersonShowMessageSchema.parse({
+        ...f.message,
+        threadId: source.id,
+        target: { tabId },
+      }),
+    ),
+  );
+  expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+    type: "PUSH",
+    payload: {
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: f.snapshot.deploymentId,
+        scope: "tabs",
+        sessionId,
+        tabId,
       },
-    });
-  },
-);
+    },
+  });
+});
 
 it("ignores inactive apps, covered routes and different Threads or Deployments, without replaying Show", async () => {
   const f = await mount();

@@ -326,7 +326,7 @@ function ScheduleBody(props: {
               ? managed
                 ? "It tells you when something matters"
                 : "Each run posts its result there"
-              : "That thread isn’t available to you"}
+              : "That task isn’t available to you"}
           </AppText>
         </View>
         {item.anchor.visible ? (

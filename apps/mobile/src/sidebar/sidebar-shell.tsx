@@ -364,7 +364,11 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         if (state.index > 0) navigation.dispatch(StackActions.popToTop());
         return;
       }
-      go(target, { deploymentId: deployment, ...extra }, true);
+      const params = { deploymentId: deployment, ...extra };
+      if (same(target, params)) return;
+      // Home stays mounted underneath, untouched, so its draft is exactly
+      // where it was. One destination replaces another in place.
+      go(target, params, true);
     };
     const same = (name: string, params: Record<string, unknown>): boolean => {
       const current = latest.current.routes[latest.current.index];
