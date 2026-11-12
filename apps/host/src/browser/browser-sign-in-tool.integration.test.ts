@@ -72,9 +72,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const caller = await connectCallerMachine(host, {
         name: "Personal vault Mac",
         environmentId: host.ownerEnvironmentId,
-        localDirectory: true,
         loginFill: true,
-        runnerKind: "main",
         token: host.hostingRunnerEnrollmentToken,
         integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2, cardUse: 1 },
         browser: {

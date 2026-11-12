@@ -8,7 +8,7 @@ import {
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 type ComputerAppApprovalList = {
   readonly approvals: readonly {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
@@ -235,7 +235,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     mcp.callHandler = undefined;
     mcp.listHandler = undefined;
     mcp.registrations = 0;
-    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
   });
   afterAll(async () => {
     await database?.destroy();
@@ -2414,7 +2416,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in the computer tool. Continue.`,
       );
     }
-    // Both Threads share the wider Workspace grant, independent of ask order.
+    // Both Threads share the wider personal grant, independent of ask order.
     const callable = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
 
@@ -2446,7 +2448,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.close();
   });
 
-  it("approves automatically, never widens, blocks, keeps connections, grants other Workspaces, and refuses offline and Trigger calls", async () => {
+  it("approves automatically, never widens, blocks, keeps connections, and refuses offline and Trigger calls", async () => {
     const world = await createWorld(database);
     const runA = await world.startRun("Shopping list");
     const a = await world.gateway(runA);
@@ -2637,79 +2639,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       macRow(json(await a.call("integration_search", { query: "Computer use" }))).computers[0],
     ).toMatchObject({ appApproval: "ask" });
 
-    // Another Workspace asks for an approved app: an ordinary Request, approvable anywhere.
-    const sideProject = await world.createFolder("Side project");
-    const runD = await world.startRun("Side notes", sideProject);
-    const d = await world.gateway(runD);
-    const sideListing = json(await d.call("integration_search", { runnerId: world.macId }));
-    expect(sideListing.apps[0]).toEqual({
-      name: "Notes",
-      bundleId: "com.apple.Notes",
-      status: "approved",
-      access: "read-write",
-      callable: false,
-    });
-    const sideResults = json(await d.call("integration_search", { query: "Computer use" }));
-    expect(macRow(sideResults).computers[0]!.apps).toContainEqual(
-      expect.objectContaining({
-        name: "Notes",
-        status: "approved",
-        callable: false,
-      }),
-    );
-    expect(sideResults.guidance.computers).toContain(
-      "An approved app with callable:false needs Workspace access, approved from anywhere",
-    );
-    const grantAsk = await d.call("integration_request", {
-      kind: "computer-app",
-      app: "Notes",
-      access: "read",
-      reason: "Read the side notes.",
-    });
-    const grantBody = JSON.parse(text(grantAsk).split("\n")[0]!);
-    expect(grantBody).toMatchObject({ kind: "integration.access", status: "pending" });
-    expect(text(grantAsk)).toContain("The user has been asked in Opensteer.");
-    expect(
-      json(await d.call("integration_search", { runnerId: world.macId })).apps[0],
-    ).toMatchObject({
-      pending: "workspace",
-    });
-    const notesConnection = await world.connectionFor("Notes");
-    const { request: granted } = await world.platform.resolveRequest({
-      requestId: grantBody.requestId,
-      resolvedBy: world.owner.userId,
-      response: {
-        kind: "external",
-        value: {
-          alias: "Notes on Alex's Mac",
-          access: "read",
-          connectionId: notesConnection.id,
-          decision: "fulfilled",
-          isDefault: true,
-        },
-      },
-    });
-    const sideNotes = json(await d.call("integration_search", { runnerId: world.macId })).apps[0];
-    expect(sideNotes).toMatchObject({
-      callable: true,
-    });
-    expect(sideNotes).not.toHaveProperty("toolRefs");
-    // Discovery names the owner's approval; the Workspace grant remains read-only.
-    expect(sideNotes.access).toBe("read-write");
-    const sideTools = await world.platform.listCallableTools({
-      ownerUserId: world.owner.userId,
-
-      threadId: runD.threadId,
-    });
-    expect(
-      sideTools
-        .filter((row) => row.grant.connectionId === notesConnection.id)
-        .map((row) => row.tool.name),
-    ).toEqual(["observe"]);
-    expect(await continuationMessage(granted, inventorySource(world.platform))).toBe(
-      `Request ${granted.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in the computer tool. Continue.`,
-    );
-
+    const runD = await world.startRun("More notes");
     // Several Macs and no runnerId: the refusal names each with its id.
     const studio = await world.addMac("Studio Mac");
     const d2 = await world.gateway(runD);
@@ -2808,7 +2738,9 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     mcp.callHandler = undefined;
     mcp.listHandler = undefined;
     mcp.registrations = 0;
-    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
   });
   afterAll(async () => {
     await database?.destroy();
@@ -3108,7 +3040,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       code: "stopped-by-user",
     });
     const restarted = new ComputerUseService({
-      deploymentId: createId("deployment"),
+      deploymentId: world.owner.deploymentId,
       hub: world.hub,
       authorizer: world.store,
       listMachines: async () => [],
@@ -3631,7 +3563,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           runnerId: phoneId,
         }),
       );
-      // The phone already covers this Workspace's ask, so it comes straight back.
+      // The phone already covers this task’s ask, so it comes straight back.
       expect(asked).toMatchObject({ status: "already-available" });
       expect(asked).not.toHaveProperty("toolRefs");
     })();
@@ -4001,7 +3933,6 @@ function json(result: ToolResult) {
       'integration_request {kind: "computer-app", runnerId, app, access, reason}',
       "blocked: only the computer owner can unblock it from any Opensteer app",
       "pending:mac waits for its owner",
-      "pending:workspace waits on a Workspace grant",
       "do not poll, repeat or route around the Request",
       "Pending grants no access; do not poll, repeat or route around the Request",
       "do not retry in a loop",
@@ -4957,7 +4888,7 @@ async function createWorld(
     onRunnerDetached: (runnerId) => computerUse.forgetRunner(runnerId),
   });
   computerUse = new ComputerUseService({
-    deploymentId: createId("deployment"),
+    deploymentId: owner.deploymentId,
     hub,
     ...(options.passwords
       ? {
@@ -5337,6 +5268,9 @@ async function createOwner(
   } else personal = await seedPersonalFixture(store.database, directory);
   if (existingUserId && existingUserId !== personal.userId)
     throw new Error("Computer-use fixture must use the real personal owner");
+  await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
+    store.database,
+  );
   const harnessInstance = await store.createHarnessInstance({
     config: {},
     driverKind: HarnessIdSchema.parse("native"),

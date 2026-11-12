@@ -24,7 +24,7 @@ async function setup(fixture: StoreFixture) {
   return run;
 }
 
-async function computer(fixture: StoreFixture, ownerId: UserId, personal = true) {
+async function computer(fixture: StoreFixture, ownerId: UserId) {
   const runnerId = createId("runner");
   await enrollTestRunner(fixture.store, {
     createdBy: ownerId,
@@ -33,7 +33,7 @@ async function computer(fixture: StoreFixture, ownerId: UserId, personal = true)
     runnerKind: "local",
     name: "Mac mini",
     tokenSuffix: runnerId,
-    allowedModules: personal ? ["browser", "integrations", "messaging", "shell"] : ["browser"],
+    allowedModules: ["browser", "integrations", "messaging", "shell"],
     modules: { browser: { runtimeId: runnerId, wireVersion: 2 } },
   });
   return runnerId;
@@ -70,8 +70,8 @@ describeStore("Host browser homes", (it) => {
       .set({ allowedModules: sql`'["agents","integrations","messaging","shell"]'::jsonb` })
       .where("id", "=", run.runnerId)
       .execute();
-    const home = await computer(fixture, run.userId, true);
-    await computer(fixture, run.userId, true);
+    const home = await computer(fixture, run.userId);
+    await computer(fixture, run.userId);
     const { browser } = service(fixture, { personal: true });
     const input = { ownerId: run.userId, name: "Legacy", idempotencyKey: "legacy-personal" };
     try {
@@ -121,7 +121,7 @@ describeStore("Host browser homes", (it) => {
       const verify = async (result: Promise<{ homeRunnerId: RunnerId | null } | null>) => {
         if (count === 0)
           await expect(result).rejects.toMatchObject({
-            code: presence === "id" ? "forbidden" : "folder_unavailable",
+            code: presence === "id" ? "forbidden" : "runner_offline",
           });
         else if (count === 2 && presence === "null")
           await expect(result).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
@@ -200,7 +200,7 @@ describeStore("Host browser homes", (it) => {
     },
   );
 
-  it.for([false, true])(
+  it.for([true])(
     "defaults older profile creation and preserves the first home on replay (Personal=%s)",
     async (personal, { storeFixture: fixture }) => {
       const run = await setup(fixture);
@@ -209,7 +209,7 @@ describeStore("Host browser homes", (it) => {
         const input = { ownerId: run.userId, name: "Work", idempotencyKey: "older-client" };
         const profile = await browser.createProfile(input);
         expect(profile.homeRunnerId).toBe(run.runnerId);
-        const second = await computer(fixture, run.userId, personal);
+        const second = await computer(fixture, run.userId);
         expect(await browser.createProfile(input)).toEqual(profile);
         await expect(
           browser.createProfile({ ...input, homeRunnerId: second }),
@@ -304,7 +304,7 @@ describeStore("Host browser homes", (it) => {
 
           fresh: true,
         }),
-      ).rejects.toMatchObject({ code: "folder_unavailable" });
+      ).rejects.toMatchObject({ code: "runner_offline" });
       await fixture.store.revokeRunner(home, run.userId);
       expect(
         await fixture.database
@@ -359,7 +359,7 @@ describeStore("Host browser homes", (it) => {
         runnerBootId: "approval-boot",
         runnerId: run.runnerId,
       });
-      const home = await computer(fixture, run.userId, personal);
+      const home = await computer(fixture, run.userId);
       if (choice === "unavailable-run" || choice === "no-home")
         await fixture.database
           .updateTable("runners")
@@ -471,7 +471,14 @@ describeStore("Host browser homes", (it) => {
         environmentIds: [],
       });
       expect(await browser.listAgentProfiles(run.userId)).toEqual([
-        expect.objectContaining({ home: { runnerId: home, name: "Mac mini", reachable: true } }),
+        expect.objectContaining({
+          name: "Work",
+          home: { runnerId: home, name: "Mac mini", reachable: true },
+        }),
+        expect.objectContaining({
+          name: "Private",
+          home: { runnerId: run.runnerId, name: "Hosting computer", reachable: false },
+        }),
       ]);
       await browser.deleteProfile({ ownerId: run.userId, profileId: profile.id });
       expect(await browser.listAgentProfiles(run.userId)).toEqual([

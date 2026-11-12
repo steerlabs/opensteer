@@ -1,3 +1,4 @@
+import { emptyAutomaticModelConfig } from "@opensteer/core";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -136,9 +137,15 @@ integration("messaging end to end", () => {
 
   beforeAll(async () => {
     await migrateToLatest(database);
-    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
     directory = await realpath(await mkdtemp(join(tmpdir(), "personal-messaging-")));
     personal = await seedPersonalFixture(database, directory);
+    await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
+      database,
+    );
+    await store.setAutomaticModelConfig(personal.userId, emptyAutomaticModelConfig);
     credentials = new CredentialService({ key: randomBytes(32), store });
     await credentials.initialize();
     ownerUserId = personal.userId;
@@ -248,9 +255,19 @@ integration("messaging end to end", () => {
     expect(wire.relayRequests).toEqual(["connection.inspect", "connections.sync"]);
     expect(created.account.externalAccountId).toBe(teamId);
 
-    const socket = await vi.waitFor(() => {
+    const socket = await vi.waitFor(async () => {
       const first = slack.sockets[0];
-      if (!first?.attached) throw new Error("The Slack adapter never opened a socket");
+      if (!first?.attached)
+        throw new Error(
+          "The Slack adapter never opened a socket: " +
+            JSON.stringify(
+              await database
+                .selectFrom("integrationConnections")
+                .selectAll()
+                .where("id", "=", connectionId)
+                .executeTakeFirst(),
+            ),
+        );
       return first;
     }, 10_000);
     socket.deliver({ connection_info: { app_id: "A1" }, num_connections: 1, type: "hello" });

@@ -1,3 +1,5 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersionHeader } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
   connectCallerMachine,
@@ -12,7 +14,7 @@ import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { BrowserServerMessageSchema, decodeBrowserFrameEnvelope } from "@opensteer/protocol";
 
 import { sql } from "kysely";
-import { rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -26,7 +28,6 @@ const integration = databaseUrl ? describe : describe.skip;
 
 integration("Host browser broker vertical", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
-  let dataDirectory: string | undefined;
   let caller: CallerMachine | undefined;
   let runtime: import("../runtime/runtime.js").PersonalHostRuntime | undefined;
   let personalHost: MachineAccessHost | undefined;
@@ -36,7 +37,7 @@ integration("Host browser broker vertical", () => {
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
     await migrateToLatest(database);
     await sql`
-      truncate table deployments, users, runners restart identity cascade
+      truncate table credential_vault_canaries, deployments, users, runners restart identity cascade
     `.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
@@ -51,7 +52,6 @@ integration("Host browser broker vertical", () => {
     await caller?.close();
     await personalHost?.close();
     await Promise.allSettled([browserRuntime?.close()]);
-    if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
   it("keeps Browser Runtime private while relaying authenticated view and input", async () => {
@@ -382,7 +382,9 @@ function expectUpgradeRejected(
   expectedStatus: number,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, { headers });
+    const socket = new WebSocket(url, {
+      headers: { ...headers, [hostApiVersionHeader]: String(hostApiVersion) },
+    });
     socket.once("open", () => reject(new Error("Unexpected WebSocket upgrade success.")));
     socket.once("unexpected-response", (_request, response) => {
       if (response.statusCode === expectedStatus) resolve();
@@ -399,7 +401,9 @@ function openBrowserSocket(
 ): Promise<{ readonly messages: Array<{ type: string }>; readonly socket: WebSocket }> {
   return new Promise((resolve, reject) => {
     const messages: Array<{ type: string }> = [];
-    const socket = new WebSocket(url, { headers });
+    const socket = new WebSocket(url, {
+      headers: { ...headers, [hostApiVersionHeader]: String(hostApiVersion) },
+    });
     const timeout = setTimeout(() => reject(new Error("Browser UI attach timed out.")), 5_000);
     socket.on("message", (raw, isBinary) => {
       if (isBinary) {
@@ -418,13 +422,6 @@ function openBrowserSocket(
     });
     socket.once("error", reject);
   });
-}
-
-function responseCookies(response: Response): string[] {
-  return response.headers
-    .getSetCookie()
-    .map((value) => value.split(";", 1)[0])
-    .filter((value): value is string => Boolean(value));
 }
 
 function waitForBinary(socket: WebSocket): Promise<Buffer> {

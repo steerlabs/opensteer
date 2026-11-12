@@ -586,7 +586,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     savedLogins.length = 0;
     stoppedThreads.clear();
     wakeFault = null;
-    await sql`truncate table deployments, users, runners restart identity cascade`.execute(
+    await sql`truncate table credential_vault_canaries, deployments, users, runners restart identity cascade`.execute(
       database,
     );
     personal = await seedPersonalFixture(database, directory);

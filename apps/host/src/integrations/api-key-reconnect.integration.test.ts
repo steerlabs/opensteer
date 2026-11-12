@@ -39,7 +39,7 @@ import {
   operation,
   operations,
   toolText,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 import {
   acceptCallerRun,
   connectCallerMachine,
@@ -65,7 +65,6 @@ integration("API-key reconnect incident", () => {
 
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
-    undefined;
   }, 120_000);
   afterEach(async () => {
     for (const close of closers) await close();
@@ -90,7 +89,6 @@ integration("API-key reconnect incident", () => {
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "API-key incident agent",
-        localDirectory: true,
         token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());

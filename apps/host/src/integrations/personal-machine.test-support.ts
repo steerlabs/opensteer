@@ -1,3 +1,5 @@
+import { createDatabase } from "@opensteer/database";
+import { sql } from "kysely";
 import { parseHostConfig, type HostConfig } from "@opensteer/config";
 import {
   createId,
@@ -386,9 +388,7 @@ export async function connectCallerMachine(
   host: PrivateMachineHost,
   input: {
     /**
-     * The environment this computer executes in. A Personal Deployment holds
-     * its Workspaces on the Main computer's disk and names that environment in
-     * its own configuration, so the caller must attach as exactly that one.
+     * The actual hosting computer’s execution environment.
      */
     readonly environmentId?: EnvironmentId;
     /** Synthetic Personal desktop authority shares its real primary identity. */
@@ -397,8 +397,6 @@ export async function connectCallerMachine(
     readonly name: string;
     readonly maxConcurrentRuns?: number;
     readonly voice?: boolean;
-    /** Holds its own directories, the way a local-directory Deployment needs. */
-    readonly localDirectory?: boolean;
     readonly loginFill?: boolean;
     /**
      * Takes a steered message by restarting the Run, as a Runner whose engine
@@ -413,7 +411,6 @@ export async function connectCallerMachine(
     readonly computerTool?: 1;
     readonly longRequestHold?: boolean;
     readonly runFiles?: boolean;
-    readonly runnerKind?: "local" | "main";
   } & (
     | { readonly token: string; readonly previous?: undefined }
     /** Reattach the same computer and disk after its Host restarts. */
@@ -668,12 +665,7 @@ export async function dispatchCallerRun(
   input: {
     readonly key: string;
     readonly title: string;
-    /**
-     * The Workspace the Run's Thread opens in, such as the owner's Main;
-     * a Workspace of the Run's own is created when it is absent.
-     */
-
-    /** A later Run of this Thread, in `workspaceId`, instead of a new Thread's first. */
+    /** Continue this task rather than creating a new one. */
     readonly threadId?: ThreadId;
   },
 ): Promise<CallerRun> {
@@ -1039,8 +1031,7 @@ export async function openRealtime(
   socket.on("message", (frame: WebSocket.RawData) => {
     messages.push(JSON.parse(frame.toString()) as Record<string, unknown>);
   });
-  // Machine notifications are addressed to a person, not to a Workspace, so an
-  // authenticated connection is all this needs.
+
   return {
     close: async () => {
       socket.close();
@@ -1096,4 +1087,15 @@ export async function steerRun(
   );
   if (result.type !== "thread.sendMessage") throw new Error("Steer command mismatch.");
   return { wasDuplicate: result.wasDuplicate };
+}
+
+export async function clearPersonalMachineFixture(databaseUrl: string): Promise<void> {
+  const database = createDatabase({ connectionString: databaseUrl });
+  try {
+    await sql`truncate table credential_vault_canaries, deployments, users, runners restart identity cascade`.execute(
+      database,
+    );
+  } finally {
+    await database.destroy();
+  }
 }

@@ -72,11 +72,8 @@ export function passwordsAnywhereJourneys() {
             cleanups.push(() => host.close());
             const caller = await connectCallerMachine(host, {
               environmentId: host.ownerEnvironmentId,
-              localDirectory: true,
               name: "Personal vault Mac",
-              runnerKind: "main",
               token: host.hostingRunnerEnrollmentToken,
-              // Deliberately no loginFill: app sign-in must not depend on Browser Harness.
               ...(name === "browser-loginFill-required"
                 ? {
                     browser: {
@@ -166,7 +163,7 @@ export function passwordsAnywhereJourneys() {
               });
             if (name === "epoch-47-refusal") {
               expect(hostApiVersion).toBeGreaterThanOrEqual(48);
-              const response = await fetch(`${host.origin}/v1/rpc/requests.list`, {
+              const response = await fetch(`${host.origin.origin}/v1/rpc/requests.list`, {
                 method: "POST",
                 headers: {
                   ...host.ownerHeaders,

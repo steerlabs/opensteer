@@ -363,6 +363,7 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
     let nextCut = start + cutInterval();
     let index = 0;
 
+    // oxlint-disable-next-line opensteer/no-polling-loop-in-tests -- These fixed cycles are the soak workload; readiness awaits device events.
     while (start + index * cycleMs < deadline) {
       const scheduled = start + index * cycleMs;
       if (Date.now() < scheduled) await delay(scheduled - Date.now());

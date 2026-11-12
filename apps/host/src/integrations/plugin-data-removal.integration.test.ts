@@ -8,7 +8,7 @@ import { type HostApiCommand, runnerIntegrationsProtocolVersion } from "@openste
 import { LocalMcpServers } from "@opensteer/runner";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { connectComputerAppMachine } from "../runtime/computer-apps.test-support.js";
+import { connectComputerAppMachine } from "./computer-apps.test-support.js";
 import {
   createMachineAccessDatabase,
   startPrivateMachineHost,

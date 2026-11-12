@@ -11,7 +11,7 @@ import {
   type LoginReceiverKey,
   SealedLoginEnvelopeSchema,
 } from "@opensteer/protocol";
-import { openAuxiliaryStream } from "../runtime/computer-apps.test-support.js";
+import { openAuxiliaryStream } from "../integrations/computer-apps.test-support.js";
 import {
   closed,
   waitForMessage,

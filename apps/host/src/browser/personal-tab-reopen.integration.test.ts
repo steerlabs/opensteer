@@ -54,7 +54,7 @@ integration("Reopen closed personal tab through the Host", () => {
         type: "browser.session.start",
 
         idempotencyKey: "start",
-        input: { fresh: true },
+        input: { fresh: true, placement: { kind: "runner", runnerId: runtime.runnerId } },
       },
       { headers: host.ownerHeaders },
     );
@@ -104,7 +104,7 @@ integration("Reopen closed personal tab through the Host", () => {
     const profileRefusal = await command();
     expect(profileRefusal.status).toBe(404);
     const profileBody: unknown = await profileRefusal.json();
-    expect(JSON.stringify(profileBody)).toContain("This browser profile is no longer available.");
+    expect(JSON.stringify(profileBody)).toContain("Browser tabs not found.");
     await db
       .updateTable("browserProfiles")
       .set({ archivedAt: null })
@@ -116,9 +116,9 @@ integration("Reopen closed personal tab through the Host", () => {
       .where("id", "=", runtime.runnerId)
       .execute();
     const computerRefusal = await command();
-    expect(computerRefusal.status).toBe(409);
+    expect(computerRefusal.status).toBe(404);
     const computerBody: unknown = await computerRefusal.json();
-    expect(JSON.stringify(computerBody)).toContain("This browser computer was retired.");
+    expect(JSON.stringify(computerBody)).toContain("Browser tabs not found.");
     await db
       .updateTable("runners")
       .set({ revokedAt: null })

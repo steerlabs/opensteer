@@ -1,3 +1,4 @@
+import { emptyAutomaticModelConfig } from "@opensteer/core";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
 import { mkdtemp, realpath, mkdir, rm } from "node:fs/promises";
@@ -75,9 +76,15 @@ integration("messaging pipeline", () => {
 
   beforeAll(async () => {
     await migrateToLatest(database);
-    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
     directory = await realpath(await mkdtemp(join(tmpdir(), "personal-messaging-")));
     personal = await seedPersonalFixture(database, directory);
+    await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
+      database,
+    );
+    await store.setAutomaticModelConfig(personal.userId, emptyAutomaticModelConfig);
     credentials = new CredentialService({ key: randomBytes(32), store });
     await credentials.initialize();
     ownerUserId = personal.userId;
@@ -805,7 +812,7 @@ integration("messaging pipeline", () => {
       { timeout: 10_000 },
     );
     expect(told.delivery).toMatchObject({ audience: "actor", kind: "status" });
-    expect(statusText(told)).toContain("not routed to an Opensteer Workspace");
+    expect(statusText(told)).toContain("no Messaging binding");
     await acknowledgeDelivery(service, told);
 
     await service.close();
@@ -1292,7 +1299,16 @@ integration("messaging pipeline", () => {
           ])
           .where("threads.folderPath", "=", folder.path)
           .executeTakeFirst();
-        if (!row) throw new Error("No Run was created from the channel ingress");
+        if (!row)
+          throw new Error(
+            "No Run was created: " +
+              JSON.stringify(
+                await database
+                  .selectFrom("channelIngressEvents")
+                  .select(["status", "lastError"])
+                  .execute(),
+              ),
+          );
         return row;
       },
       { timeout: 10_000 },

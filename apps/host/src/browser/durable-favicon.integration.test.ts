@@ -84,7 +84,11 @@ async function listen(host: MachineAccessHost, headers = host.ownerHeaders) {
   const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
   socket.send(
     JSON.stringify({
-      afterSequence: zeroSequence,
+      cursor: {
+        deploymentId: (await host.store.getDeployment())!.id,
+        apiVersion: hostApiVersion,
+        afterSequence: zeroSequence,
+      },
       apiVersion: hostApiVersion,
       threadId: null,
       type: "client.subscribe",
@@ -548,6 +552,7 @@ integration("Durable tab icons", () => {
     expect(await read()).toEqual({ entries: [], icons: [] });
     // Guest navigation never writes a profile's history or icon rows.
     const guest = await host.runtime.browser.start({
+      placement: { kind: "runner", runnerId: runtime.runnerId },
       ownerId: host.ownerId,
 
       fresh: true,
@@ -664,7 +669,7 @@ integration("Durable tab icons", () => {
         type: "browser.session.start",
 
         idempotencyKey: "icon-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );

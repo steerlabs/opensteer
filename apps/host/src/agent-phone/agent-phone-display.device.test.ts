@@ -2786,7 +2786,7 @@ it.each([
       await phase("epoch-old-and-future-requests-are-refused", async () => {
         const results = [];
         for (const version of [41, 43]) {
-          const result = await fetch(`${host.origin}/v1/rpc/bootstrap.get`, {
+          const result = await fetch(`${host.origin.origin}/v1/rpc/bootstrap.get`, {
             headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(version) },
           });
           expect(result.status).toBe(400);

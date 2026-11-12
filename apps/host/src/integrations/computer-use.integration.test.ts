@@ -48,7 +48,9 @@ integration.sequential("Host computer-use approval transactions", () => {
     });
   }, 120_000);
   beforeEach(async () => {
-    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
   });
   afterAll(async () => {
     await database?.destroy();

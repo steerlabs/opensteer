@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
 import { startHeldRequest } from "./held-request.test-support.js";
 import { startUpstream } from "./integration-schemas.test-support.js";
 /**
@@ -40,7 +42,7 @@ import {
 } from "@opensteer/integration-core";
 import { standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway, toolText } from "../runtime/computer-apps.test-support.js";
+import { integrationGateway, toolText } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -64,6 +66,7 @@ type Json = Readonly<Record<string, unknown>>;
 type Gateway = Awaited<ReturnType<typeof integrationGateway>>;
 
 integration("integration schemas", () => {
+  beforeEach(() => clearPersonalMachineFixture(databaseUrl!));
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;

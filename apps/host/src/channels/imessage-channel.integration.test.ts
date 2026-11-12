@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+import { clearPersonalMachineFixture } from "../integrations/personal-machine.test-support.js";
 /**
  * iMessage through a Mac, end to end on real parts: one real Host over its
  * real sockets, a Mac Runner's real `integrations` and `messaging` modules as
@@ -49,7 +51,7 @@ import {
   setComputerApp,
   startFakeDesktop,
   type FakeDesktopAnswer,
-} from "../runtime/computer-apps.test-support.js";
+} from "../integrations/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -69,6 +71,7 @@ const ownerEmail = "owner@example.com";
 const strangerPhone = "+15559876543";
 
 integration("iMessage channel", () => {
+  beforeEach(() => clearPersonalMachineFixture(databaseUrl!));
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;
@@ -164,10 +167,12 @@ integration("iMessage channel", () => {
           { headers: host.ownerHeaders },
         );
         const mac = machines.find(({ id }) => id === computer.runnerId);
-        return (
-          mac?.modules.messaging !== undefined &&
-          (mac.apps ?? []).some(({ definitionId }) => definitionId === "apple-messages")
-        );
+        if (
+          !mac?.modules.messaging ||
+          !(mac.apps ?? []).some(({ definitionId }) => definitionId === "apple-messages")
+        )
+          throw new Error("Messaging computer never reported Messages: " + JSON.stringify(mac));
+        return true;
       });
       record("machine offers messaging and Messages", { runnerId: computer.runnerId });
 

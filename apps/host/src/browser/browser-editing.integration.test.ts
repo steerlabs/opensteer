@@ -18,7 +18,7 @@ import { sql } from "kysely";
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
 import { join } from "node:path";
@@ -37,7 +37,6 @@ const integration = databaseUrl ? describe : describe.skip;
 
 integration("Host and Chromium editing contract", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
-  let dataDirectory: string | undefined;
   let caller: CallerMachine | undefined;
   let runtime: import("../runtime/runtime.js").PersonalHostRuntime | undefined;
   let personalHost: MachineAccessHost | undefined;
@@ -50,7 +49,7 @@ integration("Host and Chromium editing contract", () => {
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
     await migrateToLatest(database);
     await sql`
-      truncate table deployments, users, runners restart identity cascade
+      truncate table credential_vault_canaries, deployments, users, runners restart identity cascade
     `.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
@@ -83,7 +82,6 @@ integration("Host and Chromium editing contract", () => {
       }
     }
     if (failures.length) throw new AggregateError(failures, "Browser editing cleanup failed");
-    if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
   it("projects old viewers and attributes native clipboard over the real Host route", async () => {
@@ -92,7 +90,6 @@ integration("Host and Chromium editing contract", () => {
 
     const hostPort = personalHost.hostPort;
     const origin = personalHost.origin.origin;
-    const cookie = personalHost.ownerHeaders.cookie!;
     const sessionHeaders = personalHost.ownerHeaders;
     // The browser is a module of an enrolled computer: it dials the Host and
     // relays over its own stream, so no Runtime address is ever configured.
@@ -214,7 +211,7 @@ integration("Host and Chromium editing contract", () => {
       expect(browserRuntime.lastClaims()).toMatchObject({ editingVersion: 1 });
       const base = `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${opened.session.id}/connect`;
       const connect = async (query: string) => {
-        const socket = new WebSocket(base + query, { headers: { cookie, origin } });
+        const socket = new WebSocket(base + query, { headers: sessionHeaders });
         sockets.push(socket);
         const messages: BrowserServerMessage[] = [];
         const frames: Record<string, unknown>[] = [];
@@ -589,10 +586,3 @@ integration("Host and Chromium editing contract", () => {
     if (captureFailure) throw new Error(captureFailure);
   }, 60_000);
 });
-
-function responseCookies(response: Response): string[] {
-  return response.headers
-    .getSetCookie()
-    .map((value) => value.split(";", 1)[0])
-    .filter((value): value is string => Boolean(value));
-}

@@ -85,7 +85,11 @@ async function listen(
     const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
     socket.send(
       JSON.stringify({
-        afterSequence: zeroSequence,
+        cursor: {
+          deploymentId: (await host.store.getDeployment())!.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
         apiVersion: hostApiVersion,
         threadId: null,
         personShow: "accept",
@@ -299,6 +303,7 @@ integration("Browser presence and conversation usage", () => {
     const c = await listen(host, host.ownerHeaders, true, false, false);
     cleanups.push(() => c.close());
     const opened = await host.runtime.browser.start({
+      placement: { kind: "runner", runnerId: runtime.runnerId },
       fresh: true,
       ownerId: host.ownerId,
 
@@ -709,7 +714,7 @@ integration("Browser presence and conversation usage", () => {
     await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
     const catalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
-      expect.objectContaining({ threadId: run.threadId, home: false }),
+      expect.objectContaining({ threadId: run.threadId }),
     ]);
     await host.runtime.browser.flushPendingTabDescriptors();
     const trafficFrom = owner.messages.length;
@@ -1063,7 +1068,7 @@ integration("Browser presence and conversation usage", () => {
         type: "browser.session.start",
 
         idempotencyKey: "catalog-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );
@@ -1884,7 +1889,7 @@ integration("Browser presence and conversation usage", () => {
         type: "browser.session.start",
 
         idempotencyKey: "same-page-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );
@@ -2051,7 +2056,11 @@ integration("Browser presence and conversation usage", () => {
       "commands.dispatch",
       {
         idempotencyKey: "browser-open",
-        input: { fresh: true, threadId: run.threadId },
+        input: {
+          placement: { kind: "runner", runnerId: browserComputer.runnerId },
+          fresh: true,
+          threadId: run.threadId,
+        },
         type: "browser.session.start",
       },
       { headers: host.ownerHeaders },
@@ -2412,7 +2421,7 @@ integration("Browser presence and conversation usage", () => {
       "commands.dispatch",
       {
         idempotencyKey: "live-open",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: browserComputer.runnerId }, fresh: true },
         type: "browser.session.start",
       },
       { headers: host.ownerHeaders },

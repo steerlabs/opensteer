@@ -1,3 +1,4 @@
+import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -14,7 +15,7 @@ import {
   integrationGateway,
   operation,
   toolText,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
@@ -40,7 +41,7 @@ integration("input from a computer's MCP server", () => {
     await database?.drop();
   }, 120_000);
   beforeEach(async () => {
-    undefined;
+    await clearPersonalMachineFixture(database.url);
   });
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();

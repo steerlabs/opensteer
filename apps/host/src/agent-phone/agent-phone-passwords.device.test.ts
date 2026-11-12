@@ -142,8 +142,6 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         caller = await connectCallerMachine(host, {
           name: "Personal vault Mac",
           environmentId: host.ownerEnvironmentId,
-          localDirectory: true,
-          runnerKind: "main",
           token: host.hostingRunnerEnrollmentToken,
           integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2 },
         });

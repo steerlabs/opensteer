@@ -139,7 +139,7 @@ const triggerScope = {
   runnerBootId: scope.runnerBootId,
   runnerId: scope.runnerId,
   threadId: scope.threadId,
-  toolContractVersion: 2,
+  toolContractVersion: 3,
 } satisfies IntegrationToolsTriggerScope;
 
 describe("Opensteer MCP integration access classes", () => {
@@ -206,7 +206,12 @@ describe("Opensteer MCP integration access classes", () => {
     };
     expect(listed.tools.map(({ name }) => name)).toEqual(
       agentTools
-        .filter((tool) => tool.callers.some((kind) => kind === "run") && !("knowledge" in tool))
+        .filter(
+          (tool) =>
+            tool.callers.some((kind) => kind === "run") &&
+            !("knowledge" in tool) &&
+            !("team" in tool),
+        )
         .map((tool) => tool.name),
     );
     // The MCP SDK rejects a tools/list result whose inputSchema has no object
@@ -839,7 +844,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(response).toMatchObject({
       content: [
         {
-          text: 'Linear operation Create issue makes changes, and this Workspace has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
+          text: 'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
           type: "text",
         },
       ],
@@ -1366,7 +1371,7 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("already-granted"),
     );
     expect(errorText(response)).toContain(
-      "This Workspace already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
+      "The owner already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
     );
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
   });

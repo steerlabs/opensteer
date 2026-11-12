@@ -7,9 +7,7 @@ import type { AgentCaller } from "../mcp/agent-caller.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 
 describeStore("Settings invocation admission", (test) => {
-  test("an issued tool reference cannot invoke after Off or Main exclusion", async ({
-    storeFixture: f,
-  }) => {
+  test("an issued tool reference cannot invoke after Off", async ({ storeFixture: f }) => {
     const run = await f.startRunFixture("settings-issued-identity");
     const store = new IntegrationPlatformStore(f.database);
     const installationId = createIntegrationId("installation");
@@ -27,7 +25,7 @@ describeStore("Settings invocation admission", (test) => {
         status: "active",
         trust: "built-in",
         manifest: { definition: { id: "records" } },
-        provenance: {},
+        provenance: { definitionId: "records" },
       },
       servers: [
         {
@@ -71,7 +69,6 @@ describeStore("Settings invocation admission", (test) => {
       key: `run:${run.run.id}`,
       userId: run.userId,
       accessMode: run.thread.accessMode,
-      reach: { kind: "user" },
       thread: run.thread,
       claims: {
         requestedBy: run.userId,

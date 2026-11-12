@@ -1572,9 +1572,10 @@ export async function startAgentPhoneHost(
     },
     async restart() {
       await runtime.close();
-      const created = await createHostRuntime(base.config, {
-        ...(input.phoneUpdateRelease ? { phoneUpdateRelease: input.phoneUpdateRelease } : {}),
-      });
+      const created = await createHostRuntime(
+        base.config,
+        input.phoneUpdateRelease ? { phoneUpdateRelease: input.phoneUpdateRelease } : {},
+      );
       if (created.kind !== "personal") {
         await created.close();
         throw new Error("Expected Personal Host");
@@ -1592,7 +1593,7 @@ const DiscoveryDocumentSchema = z.object({
 
 /** The Deployment the owner's session belongs to, as the Host publishes it. */
 export async function deploymentIdOf(host: AgentPhoneOwner) {
-  const response = await fetch(`${host.origin}/.well-known/opensteer`);
+  const response = await fetch(new URL("/.well-known/opensteer", host.origin));
   if (!response.ok) throw new Error(`Discovery answered HTTP ${response.status}.`);
   return DiscoveryDocumentSchema.parse(await response.json()).authority.document.deploymentId;
 }
@@ -1796,7 +1797,7 @@ export interface PhoneAgent {
   readonly run: CallerRun;
 }
 
-/** Dispatches a Run on `caller` in `workspaceId` and connects to its gateway as its engine would. */
+/** Dispatches a personal Run on `caller` and connects to its gateway as its engine would. */
 export async function startPhoneAgent(
   host: AgentPhoneHost,
   caller: CallerMachine,

@@ -33,9 +33,9 @@ import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { IntegrationInstallStore, createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { createHostRuntime } from "../runtime/runtime.js";
-import { operation, operations, toolText } from "../runtime/computer-apps.test-support.js";
+import { operation, operations, toolText } from "./computer-apps.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway } from "../runtime/computer-apps.test-support.js";
+import { integrationGateway } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,

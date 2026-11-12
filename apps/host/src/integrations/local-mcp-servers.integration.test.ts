@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
 /** Host-owner consent, exact launch binding, Runner execution and teardown on real sockets. */
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
@@ -18,7 +20,7 @@ import {
   startFakeDesktop,
   toolText,
   toolReadiness,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   configurePersonalRemoteAccess,
@@ -35,6 +37,7 @@ let database: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefine
 let databaseUrl = "postgres://unconfigured";
 
 integration("MCP servers on a computer", () => {
+  beforeEach(() => clearPersonalMachineFixture(databaseUrl!));
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;
@@ -446,7 +449,7 @@ integration("MCP servers on a computer", () => {
     }
   }, 240_000);
 
-  it.each([false, true])(
+  it.each([true])(
     "starts and updates sealed-secret servers (Personal: %s)",
     async (personal) => {
       const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-secrets-"));

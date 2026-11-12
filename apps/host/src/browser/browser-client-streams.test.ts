@@ -273,7 +273,6 @@ describe("BrowserClientStreams", () => {
             {
               threadId:
                 "thr_00000000-0000-4000-8000-000000000001" as BrowserTabRow["occupants"][number]["threadId"],
-              home: false,
               holding: true,
               acting: true,
               lastActiveAt: group.createdAt,
