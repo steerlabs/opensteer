@@ -164,6 +164,9 @@ export async function startTeamServices(options: TeamServiceOptions) {
   });
   push();
   maintenance();
+  // A removal has committed; on failure the next maintenance pass frees its files.
+  const freeFiles = () =>
+    fileService.collectGarbage().catch(() => options.backgroundError("team-maintenance"));
   async function dispatch(actor: TeamActor, raw: unknown): Promise<unknown> {
     requireTeam(actor.kind === "human", "Human session required for team commands");
     const command = TeamCommandSchema.parse(raw);
@@ -216,6 +219,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
         break;
       case "team.message.delete":
         await chat.editOrDelete(actor, command.channelId, command.messageId, null);
+        await freeFiles();
         break;
       case "team.message.pin":
       case "team.message.unpin":
@@ -248,12 +252,14 @@ export async function startTeamServices(options: TeamServiceOptions) {
       }
       case "team.upload.cancel":
         await files.cancel(actor, command.blobId);
+        await freeFiles();
         break;
       case "team.member.role.set":
         await members.change(actor, command.userId, command.role);
         break;
       case "team.member.remove":
         await members.change(actor, command.userId, "remove");
+        await freeFiles();
         break;
       case "team.owner.transfer":
         await members.change(actor, command.userId, "owner");

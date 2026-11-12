@@ -89,6 +89,9 @@ per-origin and opens the team at its own address.
 
 Files use authenticated routes that recheck access, with fixed byte limits and cancellation on
 revocation. An optional team storage limit counts every stored or unfinished upload; an upload
-reserves its bytes before any are written, so concurrent uploads cannot overshoot it. Link credentials and request IDs belong in headers, never URLs. Mobile push uses
+reserves its bytes before any are written, so concurrent uploads cannot overshoot it. A file
+stays reserved until its bytes leave the disk; deleting a message, cancelling an upload or
+removing a person frees the files no message holds before the command returns, and other unsent
+uploads expire after a day. Link credentials and request IDs belong in headers, never URLs. Mobile push uses
 generic text and sealed previews through Account; no plaintext team content enters the push
 provider. Desktop notifications come from team sidebar sockets; there is no Web Push.
