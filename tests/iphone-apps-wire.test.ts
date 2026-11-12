@@ -21,6 +21,8 @@ import {
   verifyRunnerAuthenticationSignature,
   verifyRunnerEnrollmentSignature,
   createRunnerAuxiliarySignature,
+  verifyDeviceLeaveSignature,
+  verifyDeviceSessionBindingSignature,
   verifyRunnerAuxiliarySignature,
 } from "../packages/runner-auth/src/index.js";
 import { describe, expect, it } from "vitest";
@@ -66,6 +68,11 @@ const descriptor = {
   runnerKind: "local",
   runtimeVersion: "0.1.202",
 };
+const device = {
+  deploymentId: "dep_55555555-5555-4555-8555-555555555555",
+  sessionId: "ses_66666666-6666-4666-8666-666666666666",
+  issuedAt: "2030-01-01T12:00:00.000Z",
+};
 const token = "iphone-enrollment-token-0123456789abcdefghijklmnopqrstuvwxyz";
 const ticket = "eyJhbGciOiJFZERTQSJ9.eyJ4IjoxfQ.c2ln";
 const fence = {
@@ -108,6 +115,7 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
         ticket,
         fence,
         sentAt: "2030-01-01T12:00:00.000Z",
+        device,
         expected,
       };
       const output = JSON.parse(
@@ -117,6 +125,7 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
         }).toString(),
       ) as {
         actual: typeof expected;
+        devices: { bind: string; leave: string };
         matches: Record<keyof typeof expected, boolean>;
         rejectsTampering: Record<
           string,
@@ -155,6 +164,17 @@ describe.runIf(process.env.OPENSTEER_IPHONE_APPS_NATIVE_TESTS === "1")(
           { ...aux, signature: output.actual.auxiliary },
           now,
         ),
+      ).toBe(true);
+      const deviceProof = { ...device, runnerId: descriptor.runnerId };
+      expect(
+        verifyDeviceSessionBindingSignature(
+          runnerPublic,
+          { ...deviceProof, signature: output.devices.bind },
+          now,
+        ),
+      ).toBe(true);
+      expect(
+        verifyDeviceLeaveSignature(runnerPublic, { ...deviceProof, signature: output.devices.leave }),
       ).toBe(true);
       expect(tokenDigest(ticket)).toMatch(/^sha256:/);
       expect(RunnerWireProofSchema.parse(output.frames.enroll).type).toBe("runner.enroll");

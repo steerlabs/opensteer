@@ -44,12 +44,12 @@ final class IphoneKeychainVault: IdentityVault {
 
 final class IphoneSandboxRecord: IdentityRecordStore {
   private let url: URL
-  init() throws {
+  init(name: String = "enrollment.json") throws {
     let support = try FileManager.default.url(for: .applicationSupportDirectory,
       in: .userDomainMask, appropriateFor: nil, create: true)
     let directory = support.appendingPathComponent("iphone-apps", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    url = directory.appendingPathComponent("enrollment.json")
+    url = directory.appendingPathComponent(name)
   }
   func read() throws -> Data? {
     guard FileManager.default.fileExists(atPath: url.path) else { return nil }

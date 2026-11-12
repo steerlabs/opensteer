@@ -5,6 +5,13 @@ import UIKit
 private struct PrepareInput: Record {
   @Field var deploymentId: String = ""
 }
+private struct CompleteLeaveInput: Record {
+  @Field var runnerId: String = ""
+}
+private struct SessionBindingInput: Record {
+  @Field var deploymentId: String = ""
+  @Field var sessionId: String = ""
+}
 private struct PairingInput: Record {
   @Field var deploymentId: String = ""
   @Field var deploymentName: String = ""
@@ -56,6 +63,20 @@ public final class IphoneAppsModule: Module {
     Function("disconnect") { () -> [String: String?] in
       guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
       return IphoneExecutorRuntime.shared.disconnect()
+    }
+    Function("leave") { () -> [String: String?] in
+      guard #available(iOS 17, *) else { return ["deploymentId": nil, "runnerId": nil] }
+      return IphoneExecutorRuntime.shared.leave()
+    }
+    AsyncFunction("completeLeave") { (input: CompleteLeaveInput) throws -> Void in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { try IphoneExecutorRuntime.shared.completeLeave(runnerId: input.runnerId) }
+      catch { throw Self.map(error) }
+    }
+    AsyncFunction("signSessionBinding") { (input: SessionBindingInput) throws -> [String: String] in
+      guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }
+      do { return try IphoneExecutorRuntime.shared.signSessionBinding(deploymentId: input.deploymentId, sessionId: input.sessionId) }
+      catch { throw Self.map(error) }
     }
     AsyncFunction("prepare") { (input: PrepareInput) throws -> [String: String] in
       guard #available(iOS 17, *) else { throw Self.refusal("unsupported") }

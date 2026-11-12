@@ -97,7 +97,14 @@ do {
     "status": IphoneWire.status(fence, permissions: ["apple-calendar": .granted,
       "apple-contacts": .limited, "apple-reminders": .denied]),
   ]
-  let result = ["actual": actual, "matches": matches, "frames": frames, "rejectsTampering": rejectsTampering] as [String: Any]
+  let device = try object(input["device"], "device")
+  let devices: [String: Any] = [
+    "bind": try IphoneProofs.deviceSessionBind(runner, deploymentId: try string(device["deploymentId"], "deploymentId"),
+      runnerId: runnerId, sessionId: try string(device["sessionId"], "sessionId"), issuedAt: try string(device["issuedAt"], "issuedAt")),
+    "leave": try IphoneProofs.deviceLeave(runner, deploymentId: try string(device["deploymentId"], "deploymentId"),
+      runnerId: runnerId, issuedAt: try string(device["issuedAt"], "issuedAt")),
+  ]
+  let result = ["actual": actual, "devices": devices, "matches": matches, "frames": frames, "rejectsTampering": rejectsTampering] as [String: Any]
   FileHandle.standardOutput.write(try JSONSerialization.data(withJSONObject: result, options: [.sortedKeys]))
 } catch {
   FileHandle.standardError.write(Data("iPhone vector failure: \(error)\n".utf8))
