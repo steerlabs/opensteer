@@ -530,6 +530,9 @@ ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
 EXPOSE 80 443
 
 FROM ${CADDY_IMAGE} AS team-gateway
+# Hosted pods run Caddy unprivileged on :8080 under no_new_privs, which refuses to exec a
+# binary carrying file capabilities; self-host runs it as root and needs none.
+RUN setcap -r /usr/bin/caddy
 COPY deploy/team/Caddyfile /etc/caddy/Caddyfile
 COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
 COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json

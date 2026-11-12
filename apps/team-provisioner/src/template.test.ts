@@ -71,7 +71,7 @@ describe("renderTeam", () => {
         from: [
           { namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": edgeNamespace } } },
         ],
-        ports: [{ protocol: "TCP", port: 80 }],
+        ports: [{ protocol: "TCP", port: 8080 }],
       },
     ]);
     const metadataAddress = policy.egress.filter((rule) =>
@@ -120,7 +120,7 @@ describe("renderTeam", () => {
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: "/run/secrets/host/setup-token-digest",
     });
     expect(env("gateway")).toEqual({
-      OPENSTEER_SITE_ADDRESS: ":80",
+      OPENSTEER_SITE_ADDRESS: ":8080",
       OPENSTEER_HOST_UPSTREAM: "127.0.0.1:4310",
     });
   });

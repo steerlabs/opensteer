@@ -20,6 +20,8 @@ const volumeSize = "10Gi";
 const storageLimitBytes = 5 * 1024 ** 3;
 const postgresUid = 70;
 const opensteerUid = 10_001;
+/** Unprivileged; the team Service maps port 80 to it. */
+const gatewayPort = 8080;
 
 export interface TeamImages {
   readonly host: string;
@@ -119,7 +121,7 @@ export function renderTeam(input: TeamTemplateInput): readonly KubernetesObject[
                 },
               },
             ],
-            ports: [{ protocol: "TCP", port: 80 }],
+            ports: [{ protocol: "TCP", port: gatewayPort }],
           },
         ],
         egress: [
@@ -223,7 +225,6 @@ function teamStatefulSet(
             // Postgres refuses a data directory whose group can write, so never re-chmod it.
             fsGroupChangePolicy: "OnRootMismatch",
             seccompProfile: { type: "RuntimeDefault" },
-            sysctls: [{ name: "net.ipv4.ip_unprivileged_port_start", value: "0" }],
           },
           initContainers: [
             {
@@ -308,10 +309,10 @@ function teamStatefulSet(
               name: "gateway",
               image: input.images.gateway,
               env: [
-                { name: "OPENSTEER_SITE_ADDRESS", value: ":80" },
+                { name: "OPENSTEER_SITE_ADDRESS", value: `:${gatewayPort}` },
                 { name: "OPENSTEER_HOST_UPSTREAM", value: "127.0.0.1:4310" },
               ],
-              ports: [{ name: "http", containerPort: 80 }],
+              ports: [{ name: "http", containerPort: gatewayPort }],
               readinessProbe: { httpGet: { path: "/healthz", port: "http" }, periodSeconds: 5 },
               resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
               securityContext: restricted(opensteerUid),
