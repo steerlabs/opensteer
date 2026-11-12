@@ -1165,7 +1165,7 @@ describe("a link arriving at the start page", () => {
         `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
         JSON.stringify({ kind: "profile", profileId: snapshot.browserProfiles[0]!.id }),
       );
-      return "/threads/thr_00000000-0000-4000-8000-000000000002";
+      return "/tasks/thr_00000000-0000-4000-8000-000000000002";
     });
     let link!: HTMLAnchorElement;
     await vi.waitFor(
@@ -1330,7 +1330,7 @@ describe("a link arriving at the start page", () => {
       );
       open = vi.spyOn(source, "beginBrowserTabOpen");
       return {
-        pathname: "/threads/thr_00000000-0000-4000-8000-000000000002",
+        pathname: "/tasks/thr_00000000-0000-4000-8000-000000000002",
         search: "?panel=browser",
         state: { startId: "new-tab", startFrom: from },
       };
@@ -1403,11 +1403,11 @@ describe("a link arriving at the start page", () => {
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     await act(async () => gates[0]!.resolve());
     await settle(50);
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
     await act(async () =>
       goTo!(
-        { pathname: `/threads/${threadId}`, search: "?panel=browser" },
+        { pathname: `/tasks/${threadId}`, search: "?panel=browser" },
         { state: { ...state, startId: "second-link" } },
       ),
     );

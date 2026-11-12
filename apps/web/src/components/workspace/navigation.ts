@@ -553,12 +553,15 @@ export function useWorkspaceNavigation(scope: PlaceMemoryScope): WorkspaceNaviga
   );
   const openConversation = useCallback<WorkspaceNavigation["openConversation"]>(
     (path, options) => {
+      // A path may carry its own query (All tasks' filter); the place shown stays beside it.
+      const [pathname = path, query = ""] = path.split("?", 2);
       const params = placeOnly(latest.current.search);
+      for (const [key, value] of new URLSearchParams(query)) params.set(key, value);
       if (options?.messageId) params.set("messageId", options.messageId);
       if (options?.draftId) params.set("draft", options.draftId);
       if (options?.subagent) params.set("subagent", options.subagent);
       go(
-        { pathname: path, search: searchString(params) },
+        { pathname, search: searchString(params) },
         options?.focusRequest ? { focusRequest: options.focusRequest } : undefined,
         options?.replace,
       );

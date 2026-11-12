@@ -489,7 +489,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     const container = await mountThreadAction(
       record,
       "alex@example.com",
-      `/threads/thr_test?integrationAttempt=${attemptId}`,
+      `/tasks/thr_test?integrationAttempt=${attemptId}`,
     );
     expect(dispatch).not.toHaveBeenCalled();
     await act(async () => buttonWithText(container, "Allow")!.click());
@@ -784,7 +784,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const container = await mountThreadAction(
       requestRecord(loaded, "Connect GitHub"),
       rejected,
-      `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+      `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
     );
 
     expect(document.body.textContent).not.toContain("Recheck repository access");
@@ -862,7 +862,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
       const container = await mountThreadAction(
         requestRecord(loaded, "Connect GitHub"),
         "Recheck repository access",
-        `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+        `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
       );
       let answerReload = () => {};
       if (late === "reload") {
@@ -992,7 +992,7 @@ describe("ThreadIntegrationAction finishing a GitHub sign-in the browser returne
     const container = await mountThreadAction(
       requestRecord(loaded, "Connect GitHub"),
       "Recheck repository access",
-      `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+      `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
     );
 
     await act(async () => buttonWithText(document.body, "Recheck repository access")?.click());
@@ -1190,7 +1190,7 @@ describe("ThreadIntegrationAction finding its target Workspace", () => {
     const root = createRoot(container);
     mountedRoots.push(root);
     const card = () => (
-      <MemoryRouter initialEntries={["/threads/thr_test"]}>
+      <MemoryRouter initialEntries={["/tasks/thr_test"]}>
         <ThreadIntegrationAction request={request} threadId="thr_test" />
       </MemoryRouter>
     );
@@ -2398,7 +2398,7 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
   const container = await mountThreadAction(
     requestRecord(loaded, "Connect GitHub"),
     ready,
-    `/threads/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
+    `/tasks/thr_test?integrationAttempt=${createIntegrationId("oauthAttempt")}`,
   );
   return { answer: () => answer(), check, container };
 }
@@ -2406,7 +2406,7 @@ async function returnFromGitHubSignIn(ready: string, answered: number) {
 async function mountThreadAction(
   request: Parameters<typeof ThreadIntegrationAction>[0]["request"],
   ready: string | null = null,
-  path = "/threads/thr_test",
+  path = "/tasks/thr_test",
 ) {
   const shell = shellState.current as {
     hostClient: {

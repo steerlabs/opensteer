@@ -44,7 +44,7 @@ describe("the review's findings", () => {
     await mount((source) => {
       const getSnapshot = source.getSnapshot.bind(source);
       const thread = getSnapshot().threads.find(
-        (entry) => entry.listed && entry.id !== getSnapshot().homeThreadId,
+        (entry) => entry.listed && entry.purpose === "task",
       )!;
       const cache = new WeakMap<HostSnapshot, HostSnapshot>();
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
@@ -56,7 +56,7 @@ describe("the review's findings", () => {
         }
         return offline;
       });
-      return `/threads/${thread.id}`;
+      return `/tasks/${thread.id}`;
     });
     const refresh = vi.spyOn(client, "refresh").mockResolvedValue();
     expect(element(".thread__connection-label").textContent).toBe("Unavailable");
@@ -95,10 +95,8 @@ describe("the review's findings", () => {
   it("2 · an explicit pick still being read holds Send, can be cancelled, and never lands in a later draft", async () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find(
-        (thread) => thread.listed && thread.id !== snapshot.homeThreadId,
-      )!;
-      return `/threads/${task.id}${tabSearch(pageTab(source))}`;
+      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
+      return `/tasks/${task.id}${tabSearch(pageTab(source))}`;
     });
     const place = pageTab();
     if (place.destination.kind !== "browser" || !place.destination.tabId) throw new Error("tab");
@@ -171,13 +169,13 @@ describe("the review's findings", () => {
     // Choosing a conversation meanwhile keeps the pending tab selected.
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("pendingBrowserTab")).toBe(pendingKey);
     expect(element(".place").textContent).toContain("example.com");
     await act(async () => gates[0]!.resolve());
     await settle(50);
     // The answer shows its tab in place of the start page and keeps the conversation now open.
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("browserTab")).toBe(tabId);
     // Asked again, then another place chosen before the answer: the choice stands.
     await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
@@ -192,7 +190,7 @@ describe("the review's findings", () => {
     await settle(50);
     expect(history.length).toBe(before);
     expect(element(".place").getAttribute("data-place-key")).toBe(chosen.key);
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
   });
 
   it("4 · Projects and Automations links keep the place in the middle", async () => {
@@ -434,7 +432,7 @@ describe("the review's findings", () => {
           };
         return copy.to;
       });
-      return { pathname: `/threads/${threadId}`, state: { focusRequest: request.id } };
+      return { pathname: `/tasks/${threadId}`, state: { focusRequest: request.id } };
     });
     await settle(100);
     expect(document.activeElement?.closest("[data-request-id]")).toBeNull();
@@ -452,10 +450,8 @@ describe("the review's findings", () => {
   it("11 · a place-only choice keeps the conversation's message anchor", async () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const task = snapshot.threads.find(
-        (thread) => thread.listed && thread.id !== snapshot.homeThreadId,
-      )!;
-      return `/threads/${task.id}?messageId=msg_anchor`;
+      const task = snapshot.threads.find((thread) => thread.listed && thread.purpose === "task")!;
+      return `/tasks/${task.id}?messageId=msg_anchor`;
     });
     const place = pageTab();
     await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
@@ -489,9 +485,9 @@ describe("stopping a task and finishing it: one Stop", () => {
     await mount("/new", { latencyMs: 3_000 });
     await write(element<HTMLTextAreaElement>("[data-composer-input]"), text);
     await click(element(".composer__send"));
-    for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/threads/"); tries += 1)
+    for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
       await settle(50);
-    const threadId = decodeURIComponent(history.at(-1)!.path.replace("/threads/", ""));
+    const threadId = decodeURIComponent(history.at(-1)!.path.replace("/tasks/", ""));
     expect(workerAssignment(client.getSnapshot().assignments, threadId)).toBeNull();
     expect(thread(threadId).status).toBe("running");
     return threadId;
@@ -576,7 +572,7 @@ describe("stopping a task and finishing it: one Stop", () => {
       ).id;
     });
     expect(thread(worker).listed).toBe(false);
-    await act(async () => goTo!(`/threads/${worker}`));
+    await act(async () => goTo!(`/tasks/${worker}`));
     await settle(100);
     await openMenu();
     await click(menuRow("Mark Done")!);
@@ -710,7 +706,7 @@ describe("the v7 web review's findings", () => {
 
   it("M2 · the person's own view of the phone a task holds leaves the task's viewfinder on its own session", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await settle(200);
     const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
     const before = client.runPlace(runId)!;
@@ -745,7 +741,7 @@ describe("the v7 web review's findings", () => {
 
   it("a phone's tab stays live through its task's end, without waking it, until the person closes it", async () => {
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await settle(200);
     const phone = () => placeList(client.getSnapshot()).find((place) => place.kind === "phone");
     const held = phone()!;

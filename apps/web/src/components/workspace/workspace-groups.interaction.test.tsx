@@ -557,7 +557,7 @@ describe("task marks", () => {
     let search = "";
     await mount((source) => {
       search = `${tabSearch(pageTab(source))}&messageId=chat-message&focusRequest=chat-request`;
-      return `${route === "chat" ? "/" : `/threads/${source.getSnapshot().homeThreadId}`}${search}`;
+      return `${route === "chat" ? "/" : `/tasks/${source.getSnapshot().homeThreadId}`}${search}`;
     });
     expect(history.at(-1)).toMatchObject({ path: "/", search });
     if (route === "thread") expect(history.at(-1)?.type).toBe("REPLACE");
@@ -587,9 +587,9 @@ describe("task marks", () => {
         }
         return held;
       });
-      return `/threads/${flights}`;
+      return `/tasks/${flights}`;
     });
-    expect(history.at(-1)?.path).toBe(`/threads/${flights}`);
+    expect(history.at(-1)?.path).toBe(`/tasks/${flights}`);
     expect(element(".conv-header__name").textContent).toBe("Travel");
     expect(element(".conv-header__mark .workspace-orb").getAttribute("data-color")).toBe("blue");
     expect(document.querySelector(".conv-header__mark .task-mark")).toBeNull();
@@ -697,7 +697,7 @@ describe("task marks", () => {
     },
   );
   it("shows a task's subject and separate working state in its row and header", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     expect(
       element(`.side-task[data-thread-id="${flights}"] .task-mark`).getAttribute("data-icon"),
     ).toBe("plane");
@@ -713,7 +713,7 @@ describe("task marks", () => {
     expect(element(".task-mark").getAttribute("aria-hidden")).toBe("true");
   });
   it("updates every occupant in place on an icon-only edit, keeping the acting task hue", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     const place = pageTab();
     await act(async () => client.actInPlace(flights, place.key));
     await settle();
@@ -767,11 +767,11 @@ describe("task marks", () => {
     const id = task.getAttribute("data-thread-id");
     await click(task);
     expect(history.at(-1)?.path).toBe(
-      id === client.getSnapshot().homeThreadId ? "/" : `/threads/${id}`,
+      id === client.getSnapshot().homeThreadId ? "/" : `/tasks/${id}`,
     );
   });
   it("opens Change icon from the sidebar context menu and returns keyboard focus to its row", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     const row = element<HTMLElement>(`.side-task[data-thread-id="${flights}"] .side-task__main`);
     row.focus();
     await act(async () =>
@@ -793,7 +793,7 @@ describe("task marks", () => {
     expect(document.activeElement).toBe(row);
   });
   it("edits from the header with keyboard search, locks Use default and restores focus", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     const dispatch = vi.spyOn(client, "dispatch");
     const opener = element(".conv-header__menu");
     await picker();
@@ -819,7 +819,7 @@ describe("task marks", () => {
     expect(document.activeElement).toBe(opener);
   });
   it("keeps a refused icon edit reviewable and restores its authoritative mark", async () => {
-    await mount(`/threads/${flights}`);
+    await mount(`/tasks/${flights}`);
     vi.spyOn(client, "dispatch").mockRejectedValueOnce(new Error("Icon refused"));
     await picker();
     await click(element('[aria-label="Hotel"]'));
@@ -852,7 +852,7 @@ describe("task marks", () => {
     document.body.replaceChildren();
     let last: HostSnapshot | null = null;
     let held: HostSnapshot | null = null;
-    await mount(`/threads/${flights}`, {
+    await mount(`/tasks/${flights}`, {
       hostClient: (source) =>
         new Proxy(source, {
           get(target, name) {

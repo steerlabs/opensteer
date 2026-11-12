@@ -55,7 +55,7 @@ describe("a conversation chosen before the list redraws", () => {
       ).click();
     });
     await settle();
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // A modified click still belongs to the link.
     const other = document.querySelectorAll<HTMLAnchorElement>(".side-task .side-task__main")[1]!;
@@ -63,7 +63,7 @@ describe("a conversation chosen before the list redraws", () => {
     await act(async () => {
       other.dispatchEvent(event);
     });
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
   });
 });
 
@@ -237,7 +237,7 @@ describe("a reply's live picture belongs to its working Run", () => {
     await mount("/");
     const { home, place } = await chatWorkingIn("Weekend ideas");
     const waiting = "thr_00000000-0000-4000-8000-000000000902";
-    await act(async () => goTo!(`/threads/${waiting}`));
+    await act(async () => goTo!(`/tasks/${waiting}`));
     await vi.waitFor(
       () => expect(picture(), "The previous thread kept its live picture").toBeNull(),
       { timeout: 1500 },
@@ -426,7 +426,7 @@ describe("a reply's live picture belongs to its working Run", () => {
 
   it("a reply waiting on the person keeps its picture", async () => {
     const waiting = "thr_00000000-0000-4000-8000-000000000902";
-    await mount(`/threads/${waiting}`);
+    await mount(`/tasks/${waiting}`);
     expect(picture()).toBeNull();
     const place = browserPlaces()[0]!;
     await act(async () => client.actInPlace(waiting, place.key));
@@ -572,7 +572,7 @@ describe("task titles", () => {
     async (entry) => {
       await mount(
         (client) =>
-          `/threads/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
+          `/tasks/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
       );
       const id = history.at(-1)!.path.split("/").at(-1)!;
       const original = client.getSnapshot().threads.find((thread) => thread.id === id)!.title;
@@ -617,7 +617,7 @@ describe("task titles", () => {
       const message = "Prepare a launch plan for the new mobile application with milestones";
       await write(element<HTMLTextAreaElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
-      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/threads/"); tries += 1)
+      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
         await settle(25);
       const id = history.at(-1)!.path.split("/").at(-1)!;
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(message);
@@ -721,7 +721,7 @@ describe("task titles", () => {
   it("cancels blank, unchanged and Escape edits, and displays a refused rename", async () => {
     await mount(
       (client) =>
-        `/threads/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
+        `/tasks/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
     );
     const rename = vi.spyOn(client, "renameThread");
     for (const value of ["", "unchanged", "cancelled"]) {
@@ -758,7 +758,7 @@ describe("task titles", () => {
         }
         return held;
       });
-      return `/threads/${source.getSnapshot().threads.find((thread) => thread.role === "work")!.id}`;
+      return `/tasks/${source.getSnapshot().threads.find((thread) => thread.role === "work")!.id}`;
     });
     await click(element(".conv-header__menu"));
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
@@ -812,7 +812,7 @@ describe("a conversation's page above it at phone width", () => {
       });
   }
   async function opened() {
-    await mount(`/threads/${waiting}`, { width: 390 });
+    await mount(`/tasks/${waiting}`, { width: 390 });
     phoneGeometry();
     expect(page() ?? folded(), "The Run was already in a place").toBeNull();
   }
@@ -844,7 +844,7 @@ describe("a conversation's page above it at phone width", () => {
     await click(folded()!);
     expect(page()).not.toBeNull();
     // Folding and unfolding never navigate.
-    expect(history.at(-1)).toMatchObject({ path: `/threads/${waiting}`, search: "" });
+    expect(history.at(-1)).toMatchObject({ path: `/tasks/${waiting}`, search: "" });
 
     // The Run moving to another page keeps it open, on that page.
     const next = browserPlace("Your reading list");
@@ -854,7 +854,7 @@ describe("a conversation's page above it at phone width", () => {
 
     await click(element(".run-page__view"));
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    await act(async () => goTo!(`/threads/${waiting}`));
+    await act(async () => goTo!(`/tasks/${waiting}`));
     expect(page(), "Coming back, the page was no longer open").not.toBeNull();
 
     await act(async () => client.stopRun(waiting));

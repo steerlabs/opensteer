@@ -77,7 +77,7 @@ it("routes an authorized unloaded Thread through the existing Thread route", asy
       }),
     ),
   );
-  expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+  expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
 });
 
 it.each(["Chat", "task"])(
@@ -86,7 +86,7 @@ it.each(["Chat", "task"])(
     await mount((host) =>
       route === "Chat"
         ? "/"
-        : `/threads/${host.getSnapshot().threads.find((thread) => thread.id !== host.getSnapshot().homeThreadId)!.id}`,
+        : `/tasks/${host.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`,
     );
     vi.spyOn(document, "hasFocus").mockReturnValue(true);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
@@ -160,7 +160,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
   focused.mockReturnValue(false);
   await deliverIgnored();
   focused.mockReturnValue(true);
-  await act(async () => goTo!(`/threads/${target.id}`));
+  await act(async () => goTo!(`/tasks/${target.id}`));
   await deliverIgnored();
   await act(async () => goTo!("/settings/ai-engines"));
   await deliverIgnored();
@@ -169,7 +169,7 @@ it("leaves other focused work, hidden windows and other conversations alone with
   await act(async () => undefined);
   expect(history).toHaveLength(before);
   await act(async () => client.receivePersonShow(message));
-  expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+  expect(history.at(-1)!.path).toBe(`/tasks/${target.id}`);
 });
 
 it("keeps following its Run with a place over the conversation and the dock closed", async () => {
@@ -196,7 +196,7 @@ it("keeps following its Run with a place over the conversation and the dock clos
   await click(element('[aria-label="Hide the conversation"]'));
   const threadId = createId("thread");
   await show({ threadId });
-  expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+  expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
 });
 
 it("opens what the voice call's agent shows from any screen, and ignores a call it replaced", async () => {
@@ -219,15 +219,15 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
     PersonShowMessageSchema.parse({ type: "host.show", ...from, target: { threadId: target.id } });
   await act(async () => goTo!("/settings/ai-engines"));
   await act(async () => client.receivePersonShow(show(call)));
-  expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+  expect(history.at(-1)!.path).toBe(`/tasks/${target.id}`);
   expect(showed).toHaveBeenCalledTimes(1);
   // One long Run can show again after the person changes screens.
-  for (const path of ["/", `/threads/${createId("thread")}`, "/settings/ai-engines"]) {
+  for (const path of ["/", `/tasks/${createId("thread")}`, "/settings/ai-engines"]) {
     await act(async () => goTo!(path));
     const before = history.length;
     await act(async () => client.receivePersonShow(show(call)));
     expect(history.length).toBeGreaterThan(before);
-    expect(history.at(-1)!.path).toBe(`/threads/${target.id}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${target.id}`);
   }
   expect(showed).toHaveBeenCalledTimes(4);
 

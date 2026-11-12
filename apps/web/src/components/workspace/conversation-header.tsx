@@ -519,7 +519,7 @@ function ConversationMenu({
                 <span className="picker__glyph">
                   <Icon name="expand" />
                 </span>
-                <span className="picker__label">Expand chat</span>
+                <span className="picker__label">Expand</span>
                 <kbd aria-hidden className="kbd">
                   ⌘.
                 </kbd>

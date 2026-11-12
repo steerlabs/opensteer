@@ -345,10 +345,16 @@ export function ChannelIntro({ channel }: { readonly channel: Channel }) {
           ? `This is the start of your conversation with ${channel.name}`
           : `This is the start of ${channelLabel(channel)}`}
       </h2>
-      {dm ? null : (
+      {dm || !(channel.createdAt || channel.description) ? null : (
         <p className="channel-intro__meta">
-          Created by {channel.createdBy} on {shortWhen(channel.createdAt)}
-          {channel.description ? `. ${channel.description}` : ""}
+          {[
+            channel.createdAt
+              ? `Created by ${channel.createdBy} on ${shortWhen(channel.createdAt)}`
+              : null,
+            channel.description || null,
+          ]
+            .filter(Boolean)
+            .join(". ")}
         </p>
       )}
       {channel.peopleOnly ? (

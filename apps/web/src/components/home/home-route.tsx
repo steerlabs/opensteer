@@ -172,17 +172,14 @@ function useTaskDraftId(): string {
   const [params] = useSearchParams();
   const named = params.get("draft");
   const draftId = useMemo(() => named ?? globalThis.crypto.randomUUID(), [named]);
-  const navigate = useNavigate();
-  const location = useLocation();
+  const { nav } = useWorkspace();
+  const { pathname } = useLocation();
   useEffect(() => {
     if (named !== null) return;
-    const search = new URLSearchParams(location.search);
-    search.set("draft", draftId);
-    void navigate(
-      { hash: location.hash, pathname: location.pathname, search: `?${search.toString()}` },
-      { replace: true, state: location.state },
-    );
-  }, [draftId, location.hash, location.pathname, location.search, location.state, named, navigate]);
+    // Built on the newest address the workspace chose, so a place restored in
+    // the same moment stays beside the new draft rather than being replaced.
+    nav.openConversation(pathname, { draftId, replace: true });
+  }, [draftId, named, nav, pathname]);
   return draftId;
 }
 

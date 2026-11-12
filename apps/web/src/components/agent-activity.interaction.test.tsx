@@ -130,7 +130,7 @@ function mount(entries: TranscriptEntry[]): HTMLElement {
 function render(root: Root, entries: TranscriptEntry[]): void {
   act(() =>
     root.render(
-      <MemoryRouter initialEntries={["/threads/thread-1"]}>
+      <MemoryRouter initialEntries={["/tasks/thread-1"]}>
         <AgentTranscript entries={entries} />
       </MemoryRouter>,
     ),
@@ -200,7 +200,7 @@ describe("AgentTranscript work", () => {
     const commands = button(container, "Ran 2 commands");
     expect(commands).toBeDefined();
     expect(button(container, "Opened a browser")).toBeDefined();
-    expect(container.querySelector('a[href="/threads/thread-1?panel=browser"]')).toBeNull();
+    expect(container.querySelector('a[href="/tasks/thread-1?panel=browser"]')).toBeNull();
     const text = container.textContent!;
     expect(text.indexOf("Ran 2 commands")).toBeLessThan(text.indexOf("public page"));
     expect(text.indexOf("public page")).toBeLessThan(text.indexOf("Opened a browser"));

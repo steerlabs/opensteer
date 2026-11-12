@@ -6,14 +6,7 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  doneTaskList,
-  groupTasksByProject,
-  placeList,
-  taskAttention,
-  taskList,
-  type HostSnapshot,
-} from "@opensteer/client/host";
+import { placeList, type HostSnapshot } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 
@@ -36,6 +29,13 @@ import {
   setRoot,
   resetHistory,
 } from "./workspace.interaction.test-support.js";
+/** The task that handed work to another, which the mock's family and task line belong to. */
+function delegating(source: { getSnapshot(): HostSnapshot }): string {
+  const assignment = Object.values(source.getSnapshot().assignments)[0];
+  if (!assignment) throw new Error("The mock hands out no work");
+  return assignment.parentThreadId;
+}
+
 describe("Settings returns to the workspace exactly as it was", () => {
   async function openSettingsFromWorkspace() {
     await click(element(".sidebar__place"));
@@ -50,13 +50,13 @@ describe("Settings returns to the workspace exactly as it was", () => {
     let threadId = "";
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      threadId = snapshot.threads.find((thread) => thread.id !== snapshot.homeThreadId)!.id;
+      threadId = snapshot.threads.find((thread) => thread.purpose === "task")!.id;
       const place = pageTab(source);
       if (place.destination.kind !== "browser") throw new Error("Missing browser place");
-      return `/threads/${threadId}?panel=browser&browser=${place.destination.sessionId}`;
+      return `/tasks/${threadId}?panel=browser&browser=${place.destination.sessionId}`;
     });
     const canonical = history.at(-1)!;
-    expect(canonical).toMatchObject({ path: `/threads/${threadId}`, type: "REPLACE" });
+    expect(canonical).toMatchObject({ path: `/tasks/${threadId}`, type: "REPLACE" });
     const selectedTab = new URLSearchParams(canonical.search).get("browserTab");
     expect(selectedTab).toBeTruthy();
     const place = placeList(client.getSnapshot()).find(
@@ -74,7 +74,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await click(element(".settings-navigation__back"));
     await settle(100);
     expect(history.slice(beforeBack)).toEqual([
-      { path: `/threads/${threadId}`, search: canonical.search, type: "PUSH" },
+      { path: `/tasks/${threadId}`, search: canonical.search, type: "PUSH" },
     ]);
     expect(element(".thread")).toBeTruthy();
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
@@ -84,8 +84,8 @@ describe("Settings returns to the workspace exactly as it was", () => {
     let threadId = "";
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      threadId = snapshot.threads.find((thread) => thread.id !== snapshot.homeThreadId)!.id;
-      return `/threads/${threadId}`;
+      threadId = snapshot.threads.find((thread) => thread.purpose === "task")!.id;
+      return `/tasks/${threadId}`;
     });
     await act(async () => goTo!("/computers"));
     await settle();
@@ -99,7 +99,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await click(element(".settings-navigation__back"));
     await settle(100);
     expect(history.slice(beforeBack)).toEqual([
-      { path: `/threads/${threadId}`, search: "", type: "PUSH" },
+      { path: `/tasks/${threadId}`, search: "", type: "PUSH" },
     ]);
     expect(element(".thread")).toBeTruthy();
   });
@@ -121,8 +121,8 @@ describe("Settings returns to the workspace exactly as it was", () => {
         return restoring;
       });
       const snapshot = source.getSnapshot();
-      threadId = snapshot.threads.find((thread) => thread.id !== snapshot.homeThreadId)!.id;
-      return `/threads/${threadId}${tabSearch(pageTab(source))}`;
+      threadId = snapshot.threads.find((thread) => thread.purpose === "task")!.id;
+      return `/tasks/${threadId}${tabSearch(pageTab(source))}`;
     });
     const place = pageTab();
     if (place.destination.kind !== "browser") throw new Error("Missing browser place");
@@ -132,12 +132,12 @@ describe("Settings returns to the workspace exactly as it was", () => {
       place.destination,
     );
     const conversationOnly = snapshot.threads.find(
-      (thread) => thread.id !== snapshot.homeThreadId && thread.id !== threadId,
+      (thread) => thread.purpose === "task" && thread.id !== threadId,
     )!;
-    await act(async () => goTo!(`/threads/${conversationOnly.id}`));
+    await act(async () => goTo!(`/tasks/${conversationOnly.id}`));
     await settle();
     expect(history.at(-1)).toMatchObject({
-      path: `/threads/${conversationOnly.id}`,
+      path: `/tasks/${conversationOnly.id}`,
       search: "",
       type: "PUSH",
     });
@@ -148,7 +148,7 @@ describe("Settings returns to the workspace exactly as it was", () => {
     await click(element(".settings-navigation__back"));
     await settle(100);
     expect(history.slice(beforeBack)).toEqual([
-      { path: `/threads/${conversationOnly.id}`, search: "", type: "PUSH" },
+      { path: `/tasks/${conversationOnly.id}`, search: "", type: "PUSH" },
     ]);
     expect(element(".thread")).toBeTruthy();
     expect(document.querySelector(".place")).toBeNull();
@@ -160,7 +160,10 @@ describe("Settings returns to the workspace exactly as it was", () => {
     const beforeBack = history.length;
     await click(element(".settings-navigation__back"));
     await settle(100);
-    expect(history.slice(beforeBack)).toEqual([{ path: "/", search: "", type: "PUSH" }]);
+    const [home, ...named] = history.slice(beforeBack);
+    expect(home).toEqual({ path: "/", search: "", type: "PUSH" });
+    // Home names its blank draft in place; nothing else moves.
+    expect(named.every((step) => step.type === "REPLACE" && step.path === "/")).toBe(true);
     expect(element(".thread")).toBeTruthy();
   });
 });
@@ -190,7 +193,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
             access: "read-write",
             createdAt: "2026-10-19T12:00:00.000Z",
             updatedAt: "2026-10-19T12:00:00.000Z",
-            origin: "workspace",
+            origin: "person",
             placement: {
               kind: "runner",
               runnerId: selected.device!
@@ -199,7 +202,6 @@ describe("selection actions own exactly their axis, one history entry each", () 
             profileId: null,
             runtimeId: "test",
             state: "failed",
-            workspaceId: original.homeWorkspaceId as PersonalTabLineage["session"]["workspaceId"],
           },
           tabs: [
             {
@@ -278,7 +280,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
     const threadId = firstTaskId();
     await click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)).toMatchObject({ path: `/threads/${threadId}`, type: "PUSH" });
+    expect(history.at(-1)).toMatchObject({ path: `/tasks/${threadId}`, type: "PUSH" });
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place")).toBe(middle);
     expect(element(".place .browser-canvas")).toBe(canvas);
@@ -299,7 +301,7 @@ describe("selection actions own exactly their axis, one history entry each", () 
   it("face on a tab: that place and that task, as one entry", async () => {
     await mount("/");
     const place = pageTab();
-    const occupant = place.occupants.find((value) => !value.home)!;
+    const occupant = place.occupants[0]!;
     const before = history.length;
     await click(
       element(
@@ -307,12 +309,12 @@ describe("selection actions own exactly their axis, one history entry each", () 
       ),
     );
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)!.path).toBe(`/threads/${occupant.threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${occupant.threadId}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 
   it("a task in the header's family: only the conversation", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const middle = element(".place");
     await click(element(".conv-header__menu"));
@@ -324,35 +326,39 @@ describe("selection actions own exactly their axis, one history entry each", () 
     // The menu is this conversation's: no search across every task, which the sidebar has.
     expect(document.querySelector(".popover--conversation-menu input")).toBeNull();
     const target = element<HTMLButtonElement>(".task-family__row");
-    expect(target.getAttribute("aria-label")).toMatch(/, (Working|Needs you)$/u);
     const before = history.length;
     await click(target);
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)!.path).toMatch(/^\/threads\//u);
+    expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
+    expect(history.at(-1)!.path).not.toBe(`/tasks/${delegating(client)}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     expect(element(".place")).toBe(middle);
   });
 
-  it("task line in Chat: only the conversation", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
+  it("a task line in its parent's transcript: only the conversation", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`);
     const place = pageTab();
     const card = element<HTMLAnchorElement>("a.agent-step__head");
     const before = history.length;
     await click(card);
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)!.path).toMatch(/^\/threads\//u);
+    expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
   });
 
   it("viewfinder: only the place, and it opens Work from Talk", async () => {
-    await mount("/");
+    let task = "";
+    await mount((source) => {
+      task = source.getSnapshot().threads.find(({ status }) => status === "running")!.id;
+      return `/tasks/${task}`;
+    });
     await settle(400);
     const viewfinder = element<HTMLButtonElement>(".viewfinder:not(:disabled)");
     const key = viewfinder.dataset.placeKey!;
     const before = history.length;
     await click(viewfinder);
     expect(history.length).toBe(before + 1);
-    expect(history.at(-1)!.path).toBe("/");
+    expect(history.at(-1)!.path).toBe(`/tasks/${task}`);
     expect(new URLSearchParams(history.at(-1)!.search).get("panel")).toBe("browser");
     expect(element(".place").getAttribute("data-place-key")).toBe(key);
   });
@@ -375,7 +381,7 @@ describe("nothing but the person navigates", () => {
     expect(history.length).toBe(before);
   });
 
-  it("legacy /live opens Chat, keeps an explicit place and invents none", async () => {
+  it("legacy /live opens Home, keeps an explicit place and invents none", async () => {
     await mount((source) => {
       const target = pageTab(source);
       if (target.destination.kind !== "browser") throw new Error("browser");
@@ -390,14 +396,15 @@ describe("nothing but the person navigates", () => {
     client.dispose();
     document.body.replaceChildren();
     await mount("/live");
-    expect(history.at(-1)).toMatchObject({ path: "/", search: "", type: "REPLACE" });
+    expect(history.at(-1)).toMatchObject({ path: "/", type: "REPLACE" });
+    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(""));
   });
 
   it("a browser address without its tab is canonicalised by one replace", async () => {
     await mount((source) => {
       const target = pageTab(source);
       if (target.destination.kind !== "browser") throw new Error("browser");
-      return `/?panel=browser&browser=${target.destination.sessionId}`;
+      return `/tasks/${delegating(source)}?panel=browser&browser=${target.destination.sessionId}`;
     });
     await settle(100);
     const replaces = history.filter((step) => step.type === "REPLACE");
@@ -437,12 +444,12 @@ describe("the conversation survives layout changes", () => {
   });
 
   it("a docked page without a conversation still expands from its name", async () => {
-    await mount((source) => `/new${tabSearch(pageTab(source))}`);
+    await mount((source) => `/${tabSearch(pageTab(source))}`);
     expect(document.querySelector(".conv-header--area .conv-header__actions")).toBeNull();
     await click(element(".conv-header--area .conv-header__menu"));
     const expand = [
       ...document.querySelectorAll<HTMLButtonElement>(".popover--conversation-menu button"),
-    ].find((button) => button.textContent?.startsWith("Expand chat"));
+    ].find((button) => button.textContent?.startsWith("Expand"));
     expect(expand).toBeDefined();
     await click(expand!);
     expect(document.querySelector(".place")).toBeNull();
@@ -484,7 +491,7 @@ describe("focus never lands on the body", () => {
   it("a focused face that leaves hands focus to its tab row", async () => {
     await mount("/");
     const place = pageTab();
-    const occupant = place.occupants.find((value) => !value.home)!;
+    const occupant = place.occupants[0]!;
     const face = element<HTMLButtonElement>(
       `.side-tab[data-place-key="${place.key}"] .occupant-mark[data-thread-id="${occupant.threadId}"]`,
     );
@@ -502,30 +509,13 @@ describe("focus never lands on the body", () => {
   });
 });
 
-describe("the Tasks count", () => {
-  it("counts tasks, not requests, and opens the first one at its request without moving the middle", async () => {
-    // From a task with nothing asked, so the first ask is somewhere else.
-    await mount((source) => {
-      const asked = new Set(taskAttention(source.getSnapshot()).map((ask) => ask.threadId));
-      const quiet = source
-        .getSnapshot()
-        .threads.find(
-          (thread) =>
-            thread.listed &&
-            thread.id !== source.getSnapshot().homeThreadId &&
-            !asked.has(thread.id),
-        )!;
-      return `/threads/${quiet.id}${tabSearch(pageTab(source))}`;
-    });
+describe("the Needs you pill", () => {
+  it("counts what needs you, lines each ask, and opens All tasks at Needs you without moving the middle", async () => {
+    await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    const asks = taskAttention(client.getSnapshot());
-    // One per task that needs you — the same rows that wear the amber line, and Opensteer's "!".
-    const amberRows =
-      document.querySelectorAll(".side-task__ask").length +
-      document.querySelectorAll(".side-home .side-bang").length;
+    const count = client.getSnapshot().needsYou!.count;
     const pill = element<HTMLButtonElement>(".side-needs");
-    expect(pill.textContent).toContain(String(asks.length));
-    expect(amberRows).toBe(asks.length);
+    expect(pill.textContent).toContain(String(count));
     // The amber line is the request's own title; who proposed it stays on the request.
     for (const line of document.querySelectorAll(".side-task__ask")) {
       expect(line.textContent).not.toContain("Proposed by");
@@ -535,17 +525,11 @@ describe("the Tasks count", () => {
     }
     const before = history.length;
     await click(pill);
-    await settle(80);
     expect(history.length).toBe(before + 1);
-    const first =
-      asks.find((ask) => ask.threadId === client.getSnapshot().homeThreadId) ?? asks[0]!;
-    expect(history.at(-1)!.path).toBe(
-      first.threadId === client.getSnapshot().homeThreadId ? "/" : `/threads/${first.threadId}`,
-    );
+    expect(history.at(-1)!.path).toBe("/tasks");
+    expect(new URLSearchParams(history.at(-1)!.search).get("filter")).toBe("needs-you");
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    expect(
-      document.activeElement?.closest(`[data-request-id="${first.requestId}"]`),
-    ).not.toBeNull();
+    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
   });
 });
 
@@ -557,7 +541,9 @@ describe("narrow screens", () => {
   });
 
   it("≤ 700px: a place opens full screen with the conversation as a sheet", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`, { width: 390 });
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      width: 390,
+    });
     expect(element(".workspace").className).toContain("workspace--phone-stage");
     expect(element(".thread").className).toContain("thread--sheet");
   });
@@ -574,260 +560,50 @@ describe("native places", () => {
   });
 });
 
-describe("sidebar Done shelf", () => {
-  // The shelf is Main's: a Project's Done work stays on that Project's page.
-  const mainTasks = () => {
-    const snapshot = client.getSnapshot();
-    return groupTasksByProject(snapshot, taskList(snapshot)).main;
-  };
-  const doneRows = () => doneTaskList(client.getSnapshot())?.rows ?? [];
-  async function readTask() {
-    const task = mainTasks().ready.find((item) => item.canBeDone)!;
-    expect(task).toBeDefined();
-    const read = client.getSnapshot().threadReadStates[task.threadId];
-    if (read?.unreadSequence)
-      await act(async () => client.markThreadRead(task.threadId, read.unreadSequence!));
-    return task;
-  }
-  async function mountWithDone() {
-    await mount("/");
-    const task = await readTask();
-    await act(async () => client.setTaskDone(task.threadId, true));
-    return task.threadId;
-  }
-  const shelf = () => element<HTMLButtonElement>(".side-done .side-done__main");
-  const heading = () => element("#sidebar-tasks").textContent;
-  const row = (id: string) => document.querySelector(`.side-task[data-thread-id="${id}"]`);
-
-  it("opens Done in place of Tasks, by day, and goes back without moving Tabs", async () => {
-    const id = await mountWithDone();
-    const count = doneTaskList(client.getSnapshot())!.total;
-    expect(shelf().getAttribute("aria-label")).toBe(
-      `Done, ${count} ${count === 1 ? "task" : "tasks"}`,
-    );
-    expect(row(id)).toBeNull();
-    const tabs = element(".side-section--tabs");
-    await click(shelf());
-    expect(heading()).toBe("Done");
-    expect(row(id)).not.toBeNull();
-    expect(element(".side-day__title").textContent).toBe("Today");
-    expect(element(".side-section--tabs")).toBe(tabs);
-    await click(element('[aria-label="Back to Tasks"]'));
-    expect(heading()).toBe("Tasks");
-    expect(row(id)).toBeNull();
-    await click(shelf());
-    await act(async () =>
-      element(".side-section--tasks").dispatchEvent(
-        new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }),
-      ),
-    );
-    expect(heading()).toBe("Tasks");
-  });
-
-  it("hides the shelf when no Done tasks exist", async () => {
-    await mountWithDone();
-    for (const done of doneRows()) await act(async () => client.setTaskDone(done.threadId, false));
-    expect(document.querySelector(".side-done")).toBeNull();
-    expect(heading()).toBe("Tasks");
-  });
-
-  it.each([false, true])(
-    "renders the Tasks section on an older Host only when its Done-only list has rows: %s",
-    async (hasDone) => {
-      await mount((source) => {
-        const snapshot = source.getSnapshot();
-        const task = groupTasksByProject(snapshot, taskList(snapshot)).main.ready[0]!;
-        const entry = snapshot.tasks!.entries.find(({ thread }) => thread.id === task.threadId)!;
-        vi.spyOn(source, "getSnapshot").mockReturnValue({
-          ...snapshot,
-          activeTasks: [],
-          quietTasksAvailable: false,
-          // Main's own list: a Project's folder would hold the section open by itself.
-          workspaces: snapshot.workspaces.filter(({ kind }) => kind === "main"),
-          tasks: {
-            ...snapshot.tasks!,
-            entries: hasDone
-              ? [
-                  {
-                    ...entry,
-                    thread: { ...entry.thread, doneAt: new Date().toISOString(), status: "idle" },
-                  },
-                ]
-              : [],
-          },
-          threadReadStates: {},
-        });
-        return "/";
-      });
-      expect(document.querySelector("#sidebar-tasks") !== null).toBe(hasDone);
-      expect(document.querySelector(".side-done") !== null).toBe(hasDone);
-      if (hasDone) expect(shelf().getAttribute("aria-label")).toBe("Done, 1 task");
-      expect(document.querySelector(".side-section--tasks [data-thread-id]")).toBeNull();
-    },
-  );
-
-  it("moves a Ready row to Done and back using its context menu", async () => {
-    await mount("/");
-    const task = await readTask();
-    const choose = async (name: string) => {
-      await act(async () =>
-        row(task.threadId)!.dispatchEvent(
-          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
-        ),
-      );
-      const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-        (node) => node.textContent?.trim() === name,
-      )!;
-      expect(action).toBeDefined();
-      await click(action);
-    };
-    await choose("Mark Done");
-    expect(row(task.threadId)).toBeNull();
-    expect(doneRows().some((item) => item.threadId === task.threadId)).toBe(true);
-    await click(shelf());
-    await choose("Reopen");
-    expect(row(task.threadId)).toBeNull();
-    await click(element('[aria-label="Back to Tasks"]'));
-    expect(mainTasks().ready.some((item) => item.threadId === task.threadId)).toBe(true);
-    expect(row(task.threadId)).not.toBeNull();
-  });
-
-  it("indicates an open Done conversation on the line, and in Done once open", async () => {
-    const id = await mountWithDone();
-    await act(async () => goTo!(`/threads/${id}`));
-    expect(shelf().getAttribute("aria-current")).toBe("true");
-    expect(element(".side-done").classList.contains("is-filled")).toBe(true);
-    expect(row(id)).toBeNull();
-    await click(shelf());
-    expect(element(`[data-thread-id="${id}"] a`).getAttribute("aria-current")).toBe("page");
-  });
-
-  it("names tasks the Host moved quietly, moves them back, and stops telling once seen", async () => {
-    await mount("/");
-    const task = await readTask();
-    await act(async () => client.moveQuietly(task.threadId));
-    const chip = element<HTMLButtonElement>(".side-done__moved");
-    expect(chip.textContent).toBe("+1");
-    expect(chip.getAttribute("aria-label")).toBe("1 task moved to Done for you");
-    await click(chip);
-    expect(element(".quiet-moved__title").textContent).toBe("Moved to Done for you");
-    expect(element(".quiet-moved__why").textContent).toBe("No activity in 3 days");
-    expect(element(".quiet-moved__name").textContent).toBe(task.title);
-    await click(element(`[aria-label="Move back: ${task.title}"]`));
-    expect(mainTasks().ready.some((item) => item.threadId === task.threadId)).toBe(true);
-    // Nothing left to name: the card closes, and so does the notice.
-    expect(document.querySelector(".quiet-moved")).toBeNull();
-    expect(document.querySelector(".side-done__moved")).toBeNull();
-
-    // A second move is told again, until Done is opened.
-    const again = await readTask();
-    await act(async () => client.moveQuietly(again.threadId));
-    expect(element(".side-done__moved").textContent).toBe("+1");
-    await click(shelf());
-    await click(element('[aria-label="Back to Tasks"]'));
-    expect(document.querySelector(".side-done__moved")).toBeNull();
-  });
-
-  it("loads earlier tasks with busy state and allows another attempt after failure", async () => {
-    let reject!: (error: Error) => void;
-    let load!: ReturnType<typeof vi.spyOn>;
-    await mount((source) => {
-      const read = source.getSnapshot.bind(source);
-      let previous: HostSnapshot | undefined;
-      let next: HostSnapshot;
-      vi.spyOn(source, "getSnapshot").mockImplementation(() => {
-        const snapshot = read();
-        if (previous !== snapshot) {
-          previous = snapshot;
-          next = {
-            ...snapshot,
-            tasks: snapshot.tasks
-              ? { ...snapshot.tasks, window: { ...snapshot.tasks.window, hasMore: true } }
-              : null,
-          };
-        }
-        return next;
-      });
-      load = vi
-        .spyOn(source, "loadEarlierTasks")
-        .mockImplementationOnce(
-          () =>
-            new Promise<void>((_resolve, fail) => {
-              reject = fail;
-            }),
-        )
-        .mockResolvedValue(undefined);
-      return "/";
+describe("a channel and back", () => {
+  it("Back after jumping into a channel restores the conversation and the page beside it", async () => {
+    await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
+      team: true,
     });
-    await click(element(".side-section--tasks .sidebar__more"));
-    expect(load).toHaveBeenCalledTimes(1);
-    const more = element<HTMLButtonElement>(".side-section--tasks .sidebar__more");
-    expect(more.disabled).toBe(true);
-    expect(more.textContent).toBe("Loading…");
-    await act(async () => reject(new Error("Earlier tasks unavailable")));
-    expect(more.disabled).toBe(false);
-    expect(more.textContent).toBe("Show more");
-    await click(more);
-    expect(load).toHaveBeenCalledTimes(2);
-    expect(more.disabled).toBe(false);
-  });
-});
-
-describe("sidebar Project folders", () => {
-  const folders = () => {
-    const snapshot = client.getSnapshot();
-    return groupTasksByProject(snapshot, taskList(snapshot));
-  };
-  const header = (id: string) => element(`.side-folder[data-workspace-id="${id}"]`);
-
-  it("holds each Project's work under its folder, and folded still says it needs you", async () => {
-    await mount("/");
-    const grouping = folders();
-    const asking = grouping.folders.find(({ signal }) => signal === "needs-you")!;
-    const id = asking.workspace.id;
-    const task = asking.rows[0]!;
-    const nested = element(`.side-task[data-thread-id="${task.threadId}"]`);
-    expect(nested.classList.contains("side-task--nested")).toBe(true);
-    expect(
-      header(id).compareDocumentPosition(nested) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    const mine = grouping.main.working[0] ?? grouping.main.ready[0]!;
-    expect(
-      element(`.side-task[data-thread-id="${mine.threadId}"]`).classList.contains(
-        "side-task--nested",
-      ),
-    ).toBe(false);
-    // Open, the row says it needs you; the folder does not repeat it.
-    expect(header(id).querySelector(".side-folder__needs")).toBeNull();
-
-    await click(element(".side-folder__toggle", header(id)));
-    expect(element(".side-folder__toggle", header(id)).getAttribute("aria-expanded")).toBe("false");
-    expect(document.querySelector(`.side-task[data-thread-id="${task.threadId}"]`)).toBeNull();
-    expect(element(".side-folder__needs", header(id)).textContent).toBe(`!${asking.needsYou}`);
-    expect(element(".side-folder__main", header(id)).getAttribute("aria-label")).toMatch(
-      /needs? you/u,
-    );
-
-    // Folded stays folded on this device.
-    act(() => root?.unmount());
-    setRoot(null);
-    client.dispose();
-    resetHistory();
-    document.body.replaceChildren();
-    await mount("/");
-    expect(element(".side-folder__toggle", header(id)).getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("starts a task in a Project from its folder, keeping the place in the middle", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`);
     const place = pageTab();
-    const project = folders().folders[0]!.workspace;
-    await click(element(".side-folder__new", header(project.id)));
-    expect(history.at(-1)!.path).toBe(`/workspaces/${project.id}`);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    expect(element(".side-folder__main", header(project.id)).getAttribute("aria-current")).toBe(
-      "page",
-    );
-    expect(document.querySelector("[data-composer-input]")).not.toBeNull();
+    const before = history.at(-1)!;
+    const entries = history.length;
+    // Switching sides is the sidebar's own business: nothing navigates.
+    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    expect(history.length).toBe(entries);
+    await click(element(".team-row__main"));
+    expect(history.length).toBe(entries + 1);
+    expect(history.at(-1)!.path).toMatch(/^\/teams\/[^/]+\/c\/[^/]+$/u);
+    // The channel fills the window; the page leaves the middle, and its tab stays in Tabs.
+    expect(document.querySelector(".place")).toBeNull();
+    expect(element(`.side-tab[data-place-key="${place.key}"]`)).toBeTruthy();
+
+    await act(async () => goTo!(-1));
+    await settle();
+    expect(history.at(-1)).toMatchObject({
+      path: before.path,
+      search: before.search,
+      type: "POP",
+    });
+    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
+    expect(element(".thread")).toBeTruthy();
+  });
+
+  it("a tab opened from a channel docks the channel beside its page, and Back fills the window again", async () => {
+    await mount("/", { team: true });
+    await click(element('.side-switch__option:not([data-value="tasks"])'));
+    await click(element(".team-row__main"));
+    const channel = history.at(-1)!;
+    expect(document.querySelector(".place")).toBeNull();
+    const place = pageTab();
+    await click(element(`.side-tab[data-place-key="${place.key}"] .side-tab__main`));
+    expect(history.at(-1)!.path).toBe(channel.path);
+    expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
+    expect(element(".workspace__conversation .channel")).toBeTruthy();
+
+    await act(async () => goTo!(-1));
+    await settle();
+    expect(history.at(-1)).toMatchObject({ path: channel.path, search: channel.search });
+    expect(document.querySelector(".place")).toBeNull();
   });
 });

@@ -823,10 +823,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       setBadgeCount: vi.fn(async () => undefined),
     });
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await click(main(tab("Launch brief").key));
     const path = history.at(-1)!.path;
-    expect(path).toBe(`/threads/${threadId}`);
+    expect(path).toBe(`/tasks/${threadId}`);
     /** × with the keyboard on it: focus goes where the middle goes. */
     const closeButton = async (place: Place) => {
       const close = element<HTMLButtonElement>(".side-tab__close", row(place.key)!);
@@ -1273,7 +1273,7 @@ describe("an app tab", () => {
     expect(frame("First")).toBe(running);
 
     const task = client.getSnapshot().threads.find((thread) => thread.role === "work")!;
-    await act(async () => goTo!(`/threads/${task.id}${address(first).slice(1)}`));
+    await act(async () => goTo!(`/tasks/${task.id}${address(first).slice(1)}`));
     await settle();
     expect(frame("First")).toBe(running);
     expect(running.closest<HTMLElement>(".place")?.hidden).toBe(false);

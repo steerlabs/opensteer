@@ -71,7 +71,7 @@ it("inspects managed passes, links the worker, and retains Pause/Resume without 
   const { node, trigger } = await mount("waiting-for-model");
   expect(node.textContent).toContain("Waiting for an AI account it can use");
   expect(node.textContent).toContain("findings reach you through Chat");
-  expect(node.querySelector(`a[href="/threads/${trigger.anchorThreadId}"]`)).not.toBeNull();
+  expect(node.querySelector(`a[href="/tasks/${trigger.anchorThreadId}"]`)).not.toBeNull();
   for (const label of ["Delete", "Run now", "Edit code"])
     expect(node.textContent).not.toContain(label);
   await act(async () => button(node, "Pause").click());

@@ -71,7 +71,7 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
   document.body.append(node);
   const root = createRoot(node);
   roots.push(root);
-  const path = (nodeId: string) => `/threads/${thread.id}?subagent=${nodeId}`;
+  const path = (nodeId: string) => `/tasks/${thread.id}?subagent=${nodeId}`;
   await act(async () =>
     root.render(
       <ToastProvider>
@@ -107,7 +107,7 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
   expect(watches.mock.calls.at(-1)?.[1]).toBe(second!.nodeId);
   expect(live()).toBe(1);
 
-  await act(async () => navigate(`/threads/${thread.id}`));
+  await act(async () => navigate(`/tasks/${thread.id}`));
   expect(released).toContain(second!.nodeId);
   expect(live()).toBe(0);
   expect(node.querySelector(".subagent-pane")).toBeNull();

@@ -346,7 +346,7 @@ it.each(["live", "durable"] as const)(
     );
     expect(node.textContent).toContain("Light memory worker");
     expect(node.textContent).toContain("Read memory source?");
-    expect(node.querySelector(`a[href="/threads/${approval.originatingThreadId}"]`)).not.toBeNull();
+    expect(node.querySelector(`a[href="/tasks/${approval.originatingThreadId}"]`)).not.toBeNull();
     await act(async () =>
       [...node.querySelectorAll("button")]
         .find((b) => b.textContent?.includes("Allow once"))!

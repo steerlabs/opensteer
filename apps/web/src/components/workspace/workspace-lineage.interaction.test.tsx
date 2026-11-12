@@ -19,9 +19,7 @@ function withHelper(
   const workers = new Set<string>(
     Object.values(base.assignments).map(({ workerThread }) => workerThread.id),
   );
-  const listed = base.threads.filter(
-    ({ id, listed, role }) => role === "work" && listed && id !== base.homeThreadId,
-  );
+  const listed = base.threads.filter(({ listed, purpose }) => purpose === "task" && listed);
   const task = listed.find(({ id }) => workers.has(id)) ?? listed[0]!;
   const helper = listed.find(({ id }) => id !== task.id && !workers.has(id))!;
   const parentThreadId = parent(base, task.id);
@@ -78,7 +76,7 @@ describe("a helper's place among the reader's tasks", () => {
     let lineage!: ReturnType<typeof withHelper>;
     await mount((client) => {
       lineage = withHelper(client, (_, task) => task);
-      return `/threads/${lineage.helper}`;
+      return `/tasks/${lineage.helper}`;
     });
     const { helper, task } = lineage;
     const title = element(`.side-task[data-thread-id="${task}"] .side-task__main`).textContent;
@@ -89,7 +87,7 @@ describe("a helper's place among the reader's tasks", () => {
     expect(back.getAttribute("aria-label")).toMatch(/^Back to /u);
     expect(title).toContain(back.textContent);
     await click(back);
-    expect(history.at(-1)!.path).toBe(`/threads/${task}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${task}`);
     expect(current()).toEqual([task]);
   });
 
@@ -97,7 +95,7 @@ describe("a helper's place among the reader's tasks", () => {
     let lineage!: ReturnType<typeof withHelper>;
     await mount((client) => {
       lineage = withHelper(client, (snapshot) => snapshot.homeThreadId!);
-      return `/threads/${lineage.helper}`;
+      return `/tasks/${lineage.helper}`;
     });
     expect(current()).toEqual(["chat"]);
     const back = element<HTMLAnchorElement>(".conv-header__back");
@@ -113,7 +111,7 @@ describe("a helper's place among the reader's tasks", () => {
     let lineage!: ReturnType<typeof withHelper>;
     await mount((client) => {
       lineage = withHelper(client, () => createId("thread"));
-      return `/threads/${lineage.helper}`;
+      return `/tasks/${lineage.helper}`;
     });
     expect(document.querySelector(".conv-header__back")).toBeNull();
     expect(element(".conv-header").classList.contains("conv-header--trail")).toBe(false);
@@ -258,11 +256,9 @@ it("closes the family when another header control is pressed", async () => {
       const workers = new Set<string>(
         Object.values(snapshot.assignments).map(({ workerThread }) => workerThread.id),
       );
-      return snapshot.threads.find(
-        ({ id, role }) => role === "work" && id !== snapshot.homeThreadId && !workers.has(id),
-      )!.id;
+      return snapshot.threads.find(({ id, purpose }) => purpose === "task" && !workers.has(id))!.id;
     }).parent;
-    return `/threads/${parent}`;
+    return `/tasks/${parent}`;
   });
   await click(element(".task-family-button"));
   expect(document.querySelector(".popover--task-family")).not.toBeNull();
@@ -276,7 +272,7 @@ it("closes the family when another header control is pressed", async () => {
 it("keeps children out of a task's title menu", async () => {
   await mount((client) => {
     const { first } = withFamily(client);
-    return `/threads/${first.workerThread.id}`;
+    return `/tasks/${first.workerThread.id}`;
   });
   await click(element(".conv-header__menu"));
   expect(element(".popover--conversation-menu").textContent).not.toContain("Started here");
