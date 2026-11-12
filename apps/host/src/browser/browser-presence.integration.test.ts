@@ -546,7 +546,17 @@ integration("Browser presence and conversation usage", () => {
     expect(keyedStreamBytes(large.tabs)).toBeLessThanOrEqual(64 * 1024);
     expect(reads.mock.calls.length).toBeGreaterThan(0);
     expect(reads.mock.calls.length).toBeLessThan(150);
-    expect(reads.mock.calls.every(([ids]) => ids.length === 1)).toBe(true);
+    const fetched = await Promise.all(
+      reads.mock.results.map((result) => {
+        if (result.type !== "return") throw new Error("Browser prefix tab read did not return");
+        return result.value;
+      }),
+    );
+    const requested = reads.mock.calls.flatMap(([ids]) => ids);
+    expect(requested).toEqual(large.groups.rows.slice(0, requested.length).map(({ id }) => id));
+    expect(fetched.flat().length).toBeLessThanOrEqual(
+      large.tabs.reduce((sum, entry) => sum + entry.rows.length, 0) + 32,
+    );
     const report = {
       samples,
       acting: actingBytes,

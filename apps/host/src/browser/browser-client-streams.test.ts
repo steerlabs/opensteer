@@ -155,8 +155,9 @@ function fixture(count = 1) {
 }
 afterEach(() => vi.useRealTimers());
 describe("BrowserClientStreams", () => {
-  it("bounds uncached bootstrap group reads while filling its byte-limited prefix", async () => {
-    const f = fixture();
+  it.each([0, 1, 64])("bounds uncached bootstrap reads with %i tabs per group", async (count) => {
+    const f = fixture(count);
+    f.live = false;
     const ids = Array.from(
       { length: 150 },
       (_, index) =>
@@ -167,7 +168,14 @@ describe("BrowserClientStreams", () => {
       requested.map((id) => ({ ...f.facts, id, sessionId: id })).reverse(),
     );
     vi.mocked(f.ports.readTabs).mockImplementation(async (requested) =>
-      requested.map((id) => ({ ...f.durable.get(tabId)!, groupId: id, sessionId: id })),
+      requested.flatMap((id) =>
+        [...f.durable.values()].map((row) => ({
+          ...row,
+          title: count === 64 ? "界".repeat(256) : id,
+          groupId: id,
+          sessionId: id,
+        })),
+      ),
     );
     try {
       const prefix = await f.streams.source.bootstrap(alice);
@@ -180,6 +188,19 @@ describe("BrowserClientStreams", () => {
       const reads = vi.mocked(f.ports.readGroups).mock.calls;
       expect(reads.length).toBeLessThanOrEqual(4);
       expect(reads.flatMap(([, requested]) => requested).length).toBeLessThan(ids.length);
+      const tabReads = vi.mocked(f.ports.readTabs).mock.calls;
+      expect(tabReads.length).toBeLessThanOrEqual(4);
+      const requestedTabs = tabReads.flatMap(([requested]) => requested);
+      expect(requestedTabs).toEqual(
+        prefix.groups.rows.slice(0, requestedTabs.length).map(({ id }) => id),
+      );
+      expect(prefix.tabs.map(({ groupId }) => groupId)).toEqual(
+        requestedTabs.slice(0, prefix.tabs.length),
+      );
+      for (const entry of prefix.tabs)
+        for (const row of entry.rows)
+          expect(row.title).toBe(count === 64 ? "界".repeat(256) : entry.groupId);
+      if (count === 64) expect(requestedTabs).toHaveLength(1);
     } finally {
       f.streams.close();
     }
