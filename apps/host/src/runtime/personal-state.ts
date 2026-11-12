@@ -36,9 +36,13 @@ export async function initializePersonalState(
     .executeTakeFirst();
   if (!existing) await mkdir(config.agentHome, { recursive: true });
   const path = await realpath(config.agentHome);
-  const created = await withPersonalTransaction(database, (transaction) =>
-    initializePersonalSettings(transaction, ownerId, { computerId: hosting.id, path }),
-  );
+  // Reconciliation runs this repeatedly; once settings exist it must not hold the
+  // Deployment event fence that every personal writer queues behind.
+  const created =
+    !existing &&
+    (await withPersonalTransaction(database, (transaction) =>
+      initializePersonalSettings(transaction, ownerId, { computerId: hosting.id, path }),
+    ));
   const settings = await personalSettings(database);
   if (
     settings.ownerId !== ownerId ||

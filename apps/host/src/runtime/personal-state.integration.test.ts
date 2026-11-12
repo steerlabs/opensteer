@@ -5,6 +5,7 @@ import { createDatabase } from "@opensteer/database/connection";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import type { RealtimeHub } from "@opensteer/orchestration";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it } from "vitest";
 import { initializePersonalState } from "./personal-state.js";
 
@@ -49,6 +50,29 @@ it("rereads bootstrap once when the hosting computer first makes personal settin
     expect(notices).toEqual([[[personal.userId], { type: "host.machines.changed" }]]);
     expect(await Promise.all(committed)).toEqual([{ ownerId: personal.userId }]);
     await initialize();
+    expect(notices).toHaveLength(1);
+    // Reconciling ready settings must not queue behind, or hold, the Deployment event fence.
+    const held = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const fence = database.transaction().execute(async (transaction) => {
+      await transaction
+        .selectFrom("deploymentEventState")
+        .select("deploymentId")
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      held.resolve();
+      await release.promise;
+    });
+    void fence.catch(held.reject);
+    try {
+      await held.promise;
+      await withTimeout(initialize(), 2_000, {
+        timeoutError: () => new Error("Reconciling ready settings waited on the event fence"),
+      });
+    } finally {
+      release.resolve();
+      await fence;
+    }
     expect(notices).toHaveLength(1);
   } finally {
     await database.destroy();
