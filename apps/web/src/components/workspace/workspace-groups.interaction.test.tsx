@@ -561,7 +561,8 @@ describe("task marks", () => {
   it("shows a task's subject and separate working state in its row and header", async () => {
     await mount("/");
     const row = [...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]")].find(
-      (candidate) => candidate.querySelector(".task-state")?.getAttribute("data-state") === "working",
+      (candidate) =>
+        candidate.querySelector(".task-state")?.getAttribute("data-state") === "working",
     );
     if (!row) throw new Error("The sidebar lists no working task");
     const icon = element(".task-mark", row).getAttribute("data-icon");

@@ -9,7 +9,6 @@ import {
   settle,
   goTo,
   history,
-  client,
   teamHost,
   teamSession,
   write,
