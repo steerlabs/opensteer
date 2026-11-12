@@ -3,6 +3,7 @@ import type { IssuePersonalPairingCodeResponse } from "@opensteer/protocol";
 import type { HostClient } from "../host/client.js";
 import { requestPersonalRemoteAccess } from "../host/personal-remote-access.js";
 import {
+  RemoteAccessPortError,
   RemoteAccessRunner,
   remoteAccessActionGoal,
   remoteAccessView,
@@ -29,7 +30,8 @@ export interface RemoteAccessController {
  * port that signs in and links on this device.
  */
 export function useRemoteAccess(input: {
-  readonly hostClient: HostClient;
+  /** Null while this screen has no computer to talk to; requests then fail. */
+  readonly hostClient: HostClient | null;
   readonly remote: ReturnType<typeof usePersonalRemoteAccess>;
   readonly port: RemoteAccessPort;
   readonly link: RemoteAccessLink | null;
@@ -54,7 +56,12 @@ export function useRemoteAccess(input: {
       new RemoteAccessRunner({
         facts,
         port,
-        request: (intent) => requestPersonalRemoteAccess(hostClientRef.current, intent),
+        request: (intent) => {
+          const client = hostClientRef.current;
+          return client
+            ? requestPersonalRemoteAccess(client, intent)
+            : Promise.reject(new RemoteAccessPortError("This computer isn’t connected right now."));
+        },
       }),
   );
   useEffect(() => runner.update(facts, port), [facts, port, runner]);

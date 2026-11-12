@@ -181,7 +181,8 @@ describe("DeploymentAccessService", () => {
       { reason: null, status: "ready" },
       {
         label: "Can’t be opened from here",
-        reason: "Mac mini can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
+        reason:
+          "Mac mini can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
         status: "offline",
       },
       { reason: null, status: "ready" },
@@ -1270,7 +1271,8 @@ describe("DeploymentAccessService", () => {
       });
       expect(off?.statusInfo).toEqual({
         label: "Can’t be opened from here",
-        reason: "Office Mac can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
+        reason:
+          "Office Mac can only be used on that computer. Turn on Use from anywhere there, in Settings › Account.",
         status: "offline",
       });
       expect(sleeping?.availableActions).toEqual([]);

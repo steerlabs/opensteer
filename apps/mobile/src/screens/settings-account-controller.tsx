@@ -1,25 +1,18 @@
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import { usePersonalRemoteAccess } from "@opensteer/client/react";
-import { settingsSessionRows } from "@opensteer/client/settings";
+import { usePersonalRemoteAccess, useRemoteAccess } from "@opensteer/client/react";
+import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Alert, Linking } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
+import { mobileRemoteAccessPort } from "../client/remote-access-port.js";
 import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
 import type { NativeSettingsRow, NativeSettingsSection } from "./native-settings-page.types.js";
-import {
-  accountSettingsModel,
-  sessionActivityLine,
-  signOutAccountInOrder,
-} from "./settings-model.js";
-import {
-  remoteAccessSections,
-  type RemoteAccessActionId,
-  type RemoteAccessTurnOn,
-} from "./settings-remote-access.js";
+import { accountSettingsModel, signOutAccountInOrder } from "./settings-model.js";
+import { remoteAccessSections, type RemoteAccessRowAction } from "./settings-remote-access.js";
 import { useSettingsHost } from "./use-settings-host.js";
 import { useSettingsLease } from "./use-settings-read.js";
 
@@ -47,18 +40,24 @@ function AccountSettingsContent(props: {
   const snapshot = useSettingsHost(host);
   const isCurrent = useSettingsLease(host);
   const remote = usePersonalRemoteAccess(snapshot !== null ? host : null);
-  const latestRemote = useRef(remote);
-  latestRemote.current = remote;
   const [sessions, setSessions] = useState<readonly AuthSessionSummary[] | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
   const [removing, setRemoving] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [accountWorking, setAccountWorking] = useState(false);
   const accountInFlight = useRef(false);
-  const [turnOn, setTurnOn] = useState<RemoteAccessTurnOn | null>(null);
-  const turnOnRun = useRef(0);
   const [privateAddress, setPrivateAddress] = useState<string | null>(null);
-  const computer = snapshot?.identityConfig?.deployment.name ?? "This computer";
+  const computerName = snapshot?.identityConfig?.deployment.name ?? null;
+  const computer = computerName ?? "This computer";
+  const port = useMemo(() => mobileRemoteAccessPort(client), [client]);
+  const remoteAccess = useRemoteAccess({
+    computerName,
+    hostClient: snapshot !== null ? host : null,
+    link: null,
+    port,
+    remote,
+    signedIn: account.account.identity !== null,
+  });
 
   useEffect(() => {
     setSessions(null);
@@ -75,13 +74,7 @@ function AccountSettingsContent(props: {
       });
   }, [client, host, isCurrent]);
 
-  // Turn on hands over to the Host's own operation once it reports one.
   const status = remote.status;
-  useEffect(() => {
-    if (turnOn?.step !== "request" || turnOn.failed !== null || remote.working) return;
-    if (remote.error !== null) setTurnOn({ ...turnOn, failed: remote.error });
-    else if (status?.operation || status?.access.mode !== "off") setTurnOn(null);
-  }, [turnOn, remote.working, remote.error, status]);
 
   const runAccount = useCallback((operation: () => Promise<void>, fallback: string) => {
     if (accountInFlight.current) return;
@@ -162,97 +155,21 @@ function AccountSettingsContent(props: {
     if (isCurrent()) void remote.request?.(intent);
   };
 
-  // Only what's missing: sign in, then add this computer to the Account, then turn on.
-  const startTurnOn = () => {
-    const run = ++turnOnRun.current;
-    const stale = () => run !== turnOnRun.current || !isCurrent();
-    const signedInFirst = account.account.identity === null;
-    void (async () => {
-      let step: RemoteAccessTurnOn["step"] = "sign-in";
-      try {
-        if (signedInFirst) {
-          setTurnOn({ step, signedInFirst, failed: null });
-          await client.signInAccount();
-          if (stale()) return;
-        }
-        if (latestRemote.current.status?.access.accountLink?.state !== "active") {
-          step = "link";
-          setTurnOn({ step, signedInFirst, failed: null });
-          await client.linkSelectedPersonalAccount();
-          if (stale()) return;
-        }
-        step = "request";
-        setTurnOn({ step, signedInFirst, failed: null });
-        await latestRemote.current.request?.({
-          action: "configure",
-          mode: "connect",
-          privateOrigin: null,
-        });
-      } catch (error) {
-        if (stale()) return;
-        setTurnOn({
-          step,
-          signedInFirst,
-          failed:
-            step === "sign-in"
-              ? "Sign-in wasn’t finished. Nothing changed."
-              : operationDetail(error, "Something went wrong. Try again."),
-        });
-      }
-    })();
-  };
-
-  const act = (action: RemoteAccessActionId) => {
-    const operation = status?.operation ?? null;
-    switch (action) {
-      case "turn-on":
-        startTurnOn();
-        return;
-      case "try-again":
-        if (turnOn !== null || operation?.state !== "failed") startTurnOn();
-        else request({ action: "recover" });
-        return;
-      case "cancel":
-        turnOnRun.current += 1;
-        setTurnOn(null);
-        // Off replaces work the Host already accepted; it never pretends it didn't happen.
-        if (operation !== null && operation.state !== "succeeded")
-          request({ action: "configure", mode: "off", privateOrigin: null });
-        return;
-      case "turn-off":
-        confirm("Turn off use from anywhere?", remoteAccessDisconnectWarning, "Turn off", () => {
-          turnOnRun.current += 1;
-          setTurnOn(null);
-          request({ action: "configure", mode: "off", privateOrigin: null });
-        });
-        return;
-      case "remove-link":
-        confirm(
-          `Remove ${computer} from this Account?`,
-          remoteAccessDisconnectWarning,
-          "Remove",
-          () => request({ action: "unlink" }),
-        );
-        return;
-      case "rotate":
-        confirm("Reset the connection key?", remoteAccessDisconnectWarning, "Reset", () =>
-          request({ action: "rotate" }),
-        );
-        return;
-      case "pair":
-        if (isCurrent()) void remote.pair?.();
-        return;
-      case "private":
-        setPrivateAddress(
-          status?.access.mode === "private"
-            ? (status.access.route?.document.route.origin ?? "")
-            : "",
-        );
-        return;
-      case "reload":
-        props.onReload();
-        return;
+  const act = (row: RemoteAccessRowAction) => {
+    if (row.kind === "reload") {
+      props.onReload();
+      return;
     }
+    if (row.kind === "private") {
+      setPrivateAddress(
+        status?.access.mode === "private" ? (status.access.route?.document.route.origin ?? "") : "",
+      );
+      return;
+    }
+    const { action } = row;
+    if (action.confirm === null) remoteAccess.act(action.id);
+    else
+      confirm(`${action.label}?`, action.confirm, action.label, () => remoteAccess.act(action.id));
   };
 
   const accountModel = accountSettingsModel(account.account, accountWorking);
@@ -356,13 +273,10 @@ function AccountSettingsContent(props: {
     sections.push(
       ...remoteAccessSections(
         {
+          view: remoteAccess.view,
           status,
-          error: remote.error,
-          signedIn: account.account.identity !== null,
-          account: account.account.identity,
           computer,
-          turnOn,
-          pairing: remote.pairing,
+          pairing: remoteAccess.pairing,
           now: Date.now(),
         },
         act,

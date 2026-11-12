@@ -9,7 +9,7 @@ import type { AccountDeploymentDirectoryService } from "../connections/account-d
 import { PersonalHostAccountLinkOperationIdSchema } from "@opensteer/control-plane-protocol";
 
 export const remoteAccessDisconnectWarning =
-  "Changing remote access or unlinking the Account can sign out this device and other connected devices. You may need to return to the computer to connect again.";
+  "Devices that open this computer from elsewhere will be signed out, and you may need to be at the computer to connect them again.";
 
 export async function requestPersonalRemoteAccess(
   client: Pick<HostClient, "dispatch">,

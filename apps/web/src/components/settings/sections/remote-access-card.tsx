@@ -291,7 +291,8 @@ function useRemoteAccessCardModel(): RemoteAccessCardModel {
     title: view.title,
     sentence: view.sentence,
     address: view.address,
-    steps: view.steps?.map((step) => ({ label: step.label, state: stepStateOf[step.state] })) ?? null,
+    steps:
+      view.steps?.map((step) => ({ label: step.label, state: stepStateOf[step.state] })) ?? null,
     primary: action(view.primary && !inAdvanced.has(view.primary.id) ? view.primary : null),
     secondary: view.secondary
       .filter((candidate) => !inAdvanced.has(candidate.id))
@@ -300,18 +301,23 @@ function useRemoteAccessCardModel(): RemoteAccessCardModel {
     advanced:
       showAdvanced && access
         ? {
-            method:
-              access.mode === "off" ? (status.accountIssuer ? "connect" : null) : access.mode,
+            method: access.mode === "off" ? (status.accountIssuer ? "connect" : null) : access.mode,
             privateOrigin:
               access.mode === "private" ? (access.route?.document.route.origin ?? "") : "",
             // A private network address is typed, not chosen, so it goes to the Host as-is.
             usePrivateNetwork: (origin) => {
               const warning = access.mode === "off" ? null : remoteAccessDisconnectWarning;
               if (warning && !window.confirm(warning)) return;
-              void remote.request?.({ action: "configure", mode: "private", privateOrigin: origin });
+              void remote.request?.({
+                action: "configure",
+                mode: "private",
+                privateOrigin: origin,
+              });
             },
             useAccount:
-              status.accountIssuer && access.mode !== "connect" ? () => controller.act("turn-on") : null,
+              status.accountIssuer && access.mode !== "connect"
+                ? () => controller.act("turn-on")
+                : null,
             resetKey: action(offered("reset-key"))?.run ?? null,
             removeLink: action(offered("remove-link"))?.run ?? null,
             busy,

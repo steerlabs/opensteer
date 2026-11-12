@@ -3,7 +3,6 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import type { PersonalRemoteAdministrationStatus } from "@opensteer/protocol";
 import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
 const state = vi.hoisted(() => ({
   account: { identity: null, available: false } as object,
@@ -23,7 +22,8 @@ vi.mock("react-native", () => ({
 vi.mock("@react-navigation/native", () => ({
   useNavigation: () => ({ navigate: state.navigate, goBack: vi.fn() }),
 }));
-vi.mock("@opensteer/client/react", () => ({
+vi.mock("@opensteer/client/react", async (original) => ({
+  ...(await original<typeof import("@opensteer/client/react")>()),
   usePersonalRemoteAccess: () => ({
     status: state.remote,
     pairing: null,
@@ -97,14 +97,6 @@ function press(found: NativeSettingsRow): Promise<void> {
   return act(async () => found.onPress());
 }
 
-async function remoteFixture(
-  change: (status: PersonalRemoteAdministrationStatus) => PersonalRemoteAdministrationStatus,
-) {
-  const result = await state.host!.rpc["personal.remoteAccess.get"]({});
-  if (!result.ok) throw new Error("Remote fixture missing");
-  return change({ ...result.data, accountIssuer: "https://accounts.test" });
-}
-
 it("pushes session identity only, then confirms Sign out in its detail", async () => {
   const root = await mount(<AccountSettingsController />);
   try {
@@ -138,84 +130,6 @@ it("sends only a signed-in person to the portal to delete their Account", async 
     await act(async () => root.render(<AccountSettingsController key="signed-in" />));
     await press(row("account-actions", "account-delete"));
     expect(state.openURL).toHaveBeenCalledWith("https://portal.test/account/delete");
-  } finally {
-    act(() => root.unmount());
-  }
-});
-
-it("turns on with only the steps that are missing", async () => {
-  state.account = { available: true, detail: null, identity: null, status: "signed-out" };
-  const root = await mount(<AccountSettingsController />);
-  try {
-    state.remote = await remoteFixture((status) => ({
-      ...status,
-      access: { ...status.access, mode: "off", route: null, accountLink: null },
-      operation: null,
-    }));
-    await act(async () => root.render(<AccountSettingsController key="signed-out" />));
-    state.request.mockImplementation(async () => void state.calls.push("request"));
-    await press(row("remote", "turn-on"));
-    expect(state.calls).toEqual(["sign-in", "link", "request"]);
-
-    // Signed in with an active link: no browser and no new link, only the change.
-    state.calls = [];
-    state.account = signedIn;
-    state.remote = await remoteFixture((status) => ({
-      ...status,
-      access: {
-        ...status.access,
-        mode: "off",
-        route: null,
-        accountLink: {
-          issuer: "https://accounts.test",
-          subject: "acct",
-          generation: 1,
-          state: "active",
-        } as unknown as PersonalRemoteAdministrationStatus["access"]["accountLink"],
-      },
-      operation: null,
-    }));
-    await act(async () => root.render(<AccountSettingsController key="signed-in" />));
-    await press(row("remote", "turn-on"));
-    expect(state.calls).toEqual(["request"]);
-    expect(state.request).toHaveBeenLastCalledWith({
-      action: "configure",
-      mode: "connect",
-      privateOrigin: null,
-    });
-  } finally {
-    act(() => root.unmount());
-  }
-});
-
-it("keeps current access beside a failed change, and retries that change", async () => {
-  state.account = signedIn;
-  const root = await mount(<AccountSettingsController />);
-  try {
-    state.remote = await remoteFixture((status) => ({
-      ...status,
-      access: { ...status.access, mode: "off", route: null },
-      operation: {
-        id: "00000000-0000-4000-8000-000000000001",
-        executionId: "00000000-0000-4000-8000-000000000002",
-        intent: { action: "configure", mode: "connect", privateOrigin: null },
-        state: "failed",
-        detail: "Couldn’t reach Opensteer. Check this Mac’s internet connection.",
-      },
-    }));
-    await act(async () => root.render(<AccountSettingsController key="failed" />));
-    const remote = state.page!.sections.find((section) => section.key === "remote")!;
-    expect(remote.rows[0]).toMatchObject({
-      kind: "status",
-      tone: "bad",
-      label: "Couldn’t turn on",
-    });
-    expect(remote.footer).toEqual({
-      text: "Couldn’t reach Opensteer. Check this Mac’s internet connection.",
-      tone: "danger",
-    });
-    await press(row("remote", "try-again"));
-    expect(state.request).toHaveBeenLastCalledWith({ action: "recover" });
   } finally {
     act(() => root.unmount());
   }

@@ -1,13 +1,8 @@
 import { useCallback, useRef, useState } from "react";
-import { settingsSessionRows } from "@opensteer/client/settings";
+import { sessionActivityLine, settingsSessionRows } from "@opensteer/client/settings";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
-import {
-  formatRelativeTime,
-  mutationIdempotencyKey,
-  unwrapRpcResult,
-  type HostClient,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { computerIcon } from "../../computers/device-art.js";
@@ -42,7 +37,7 @@ export function SignedInDevicesSection({ view }: { readonly view: SettingsView }
               onConfirm={() => sessions.remove(session)}
             />
           }
-          detail={sessionActivity(session.lastSeenAt)}
+          detail={sessionActivityLine(session, new Date())}
           key={session.id}
           title={session.deviceLabel}
         />
@@ -122,11 +117,6 @@ export function useHomeComputer(): { readonly icon: IconName; readonly name: str
 }
 
 /** "Active 3h ago", or the date once it is more than a week old. */
-export function sessionActivity(lastSeenAt: string, now = new Date()): string {
-  const relative = formatRelativeTime(lastSeenAt, now);
-  if (relative === "now") return "Active now";
-  return /^\d+[mhd]$/u.test(relative) ? `Active ${relative} ago` : `Last active ${relative}`;
-}
 
 /** Signing out here ends this device's Host session, independently of its Account sign-in. */
 function CurrentSessionRow({
