@@ -72,7 +72,6 @@ describe("PersonalRemoteAccessService", () => {
     const caller = ownerSession("personal-remote-header");
     const session = {
       ...caller.session,
-      user: { ...caller.session.user, instanceRole: "user" as const },
     };
     await expect(
       service.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
@@ -556,7 +555,6 @@ function ownerSession(
         emailVerified: true,
         id: createId("user"),
         image: null,
-        instanceRole: "administrator",
       },
     },
     surface: credentialKind === "browser-cookie" ? "canonical" : "personal-remote",

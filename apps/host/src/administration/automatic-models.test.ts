@@ -20,7 +20,6 @@ it("refuses automatic model settings from agents before consulting account autho
         userId,
         connectionId: "external",
         accessMode: "full-access",
-        reach: { kind: "user" },
       },
       command,
     ),

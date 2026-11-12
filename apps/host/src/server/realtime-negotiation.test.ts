@@ -1,6 +1,6 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { createId, DeclinedRequestSchema, SequenceSchema, zeroSequence } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionQueryParameter, hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HostToClientMessageSchema,
   unsupportedVersionCloseCode,
@@ -17,7 +17,7 @@ import { hostServerTestDependencies } from "./host-server-test-harness.js";
 const testDiscovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
   canonicalOrigin: "https://opensteer.example",
   deploymentId: createId("deployment"),
-  deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+  deploymentShape: { kind: "personal" },
   hostInstanceId: createId("hostInstance"),
   hostKey: { algorithm: "Ed25519" },
 });
@@ -28,10 +28,10 @@ const testDiscovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
  */
 describe("realtime version negotiation", () => {
   it("projects the Host's realtime output through its declared schema", async () => {
-    const { close, socket } = await realtimeSocket(async ({ sink, workspaceId }) => {
+    const { close, socket } = await realtimeSocket(async ({ sink, deploymentId }) => {
       await sink.send({
         type: "host.synchronized",
-        workspaceId,
+        deploymentId,
         sequence: zeroSequence,
         internalOnly: "PRIVATE-HOST-VALUE",
       } as unknown as HostToClientMessage);
@@ -45,9 +45,12 @@ describe("realtime version negotiation", () => {
         JSON.stringify({
           type: "client.subscribe",
           apiVersion: hostApiVersion,
-          workspaceId: createId("workspace"),
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
           threadId: null,
-          afterSequence: zeroSequence,
         }),
       );
       expect(await frame).not.toContain("PRIVATE-HOST-VALUE");
@@ -57,7 +60,7 @@ describe("realtime version negotiation", () => {
   });
 
   it("keeps settlement sessions out of raw resolution subscription frames", async () => {
-    const workspaceId = createId("workspace");
+    const deploymentId = testDiscovery.document.deploymentId;
     const threadId = createId("thread");
     const ownerId = createId("user");
     const createdAt = new Date().toISOString();
@@ -70,8 +73,6 @@ describe("realtime version negotiation", () => {
       originatingOccurrenceId: null,
       originatingRunId: createId("run"),
       originatingThreadId: threadId,
-      originatingWorkspaceId: workspaceId,
-      targetWorkspaceId: workspaceId,
       payload: {
         kind: "browser.access",
         reason: "Choose browser access",
@@ -80,7 +81,7 @@ describe("realtime version negotiation", () => {
       presentation: {
         kind: "external",
         title: "Browser access",
-        subject: { id: workspaceId, kind: "workspace" },
+        subject: { id: threadId, kind: "thread" },
       },
       requestedBy: ownerId,
       requiredActor: "requester",
@@ -94,6 +95,7 @@ describe("realtime version negotiation", () => {
     const { close, socket } = await realtimeSocket(async ({ sink }) => {
       await sink.send({
         type: "host.events",
+        throughSequence: SequenceSchema.parse("1"),
         events: [
           {
             createdAt,
@@ -104,7 +106,6 @@ describe("realtime version negotiation", () => {
             sequence: SequenceSchema.parse("1"),
             threadId,
             type: "request.resolved",
-            workspaceId,
           },
         ],
       });
@@ -118,9 +119,8 @@ describe("realtime version negotiation", () => {
         JSON.stringify({
           type: "client.subscribe",
           apiVersion: hostApiVersion,
-          workspaceId,
+          cursor: { deploymentId, apiVersion: hostApiVersion, afterSequence: zeroSequence },
           threadId,
-          afterSequence: zeroSequence,
         }),
       );
       const raw = await withTimeout(frame, 2_000, {
@@ -139,6 +139,7 @@ describe("realtime version negotiation", () => {
     const { close, socket } = await realtimeSocket(async ({ sink }) => {
       await sink.send({
         type: "host.events",
+        throughSequence: SequenceSchema.parse("1"),
         events: [{ type: "run.started", data: { status: "PRIVATE-INVALID-STATUS" } }],
       } as unknown as HostToClientMessage);
       return () => undefined;
@@ -151,9 +152,12 @@ describe("realtime version negotiation", () => {
         JSON.stringify({
           type: "client.subscribe",
           apiVersion: hostApiVersion,
-          workspaceId: createId("workspace"),
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
           threadId: null,
-          afterSequence: zeroSequence,
         }),
       );
       const refusal = JSON.parse(await frame);
@@ -172,11 +176,14 @@ describe("realtime version negotiation", () => {
     try {
       socket.send(
         JSON.stringify({
-          afterSequence: zeroSequence,
           apiVersion: hostApiVersion + 1,
           threadId: null,
           type: "client.subscribe",
-          workspaceId: createId("workspace"),
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion + 1,
+            afterSequence: zeroSequence,
+          },
         }),
       );
 
@@ -200,15 +207,14 @@ describe("realtime version negotiation", () => {
   it("subscribes a client that states this tree's epoch", async () => {
     const subscribe = vi.fn(async () => () => undefined);
     const { close, socket } = await realtimeSocket(subscribe);
-    const workspaceId = createId("workspace");
+    const deploymentId = testDiscovery.document.deploymentId;
     try {
       socket.send(
         JSON.stringify({
-          afterSequence: zeroSequence,
           apiVersion: hostApiVersion,
           threadId: null,
           type: "client.subscribe",
-          workspaceId,
+          cursor: { deploymentId, apiVersion: hostApiVersion, afterSequence: zeroSequence },
         }),
       );
       // The ping round trip proves the subscribe frame was fully processed
@@ -216,7 +222,7 @@ describe("realtime version negotiation", () => {
       socket.send(JSON.stringify({ nonce: "negotiated", type: "client.ping" }));
 
       expect(await nextMessage(socket)).toEqual({ nonce: "negotiated", type: "host.pong" });
-      expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }));
+      expect(subscribe).toHaveBeenCalledWith(expect.objectContaining({ deploymentId }));
     } finally {
       await close();
     }
@@ -242,7 +248,6 @@ async function realtimeSocket(
             emailVerified: true,
             id: userId,
             image: null,
-            instanceRole: "administrator",
           },
         }),
         identity: {
@@ -256,12 +261,13 @@ async function realtimeSocket(
         registerConnection: () => () => undefined,
         subscribe,
       } as never,
-      workspaces: {} as never,
     }),
   );
   await app.listen({ host: "127.0.0.1", port: 0 });
   const { port } = app.server.address() as AddressInfo;
-  const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/realtime`);
+  const socket = new WebSocket(
+    `ws://127.0.0.1:${port}/v1/realtime?${apiVersionQueryParameter}=${hostApiVersion}`,
+  );
   await new Promise<void>((resolve, reject) => {
     socket.once("open", () => resolve());
     socket.once("error", reject);

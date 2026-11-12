@@ -38,11 +38,9 @@ function fixture() {
 describe("Settings read projections", () => {
   it("uses viewer-addressed Requests and retains real request identities and the window bound", async () => {
     const f = fixture();
-    const workspaceId = createId("workspace");
     const requestId = createId("request");
     const install = {
       id: requestId,
-      originatingWorkspaceId: workspaceId,
       kind: "integration.install",
       presentation: { title: "Add Gmail" },
     };
@@ -56,7 +54,7 @@ describe("Settings read projections", () => {
     expect(await f.handlers["plugins.directory.get"]({}, testHostApiContext(f.owner))).toEqual(
       rpcSuccess({
         catalog: await f.catalog(),
-        requests: [{ requestId, workspaceId, title: "Add Gmail" }],
+        requests: [{ requestId, title: "Add Gmail" }],
         hasMoreRequests: true,
       }),
     );

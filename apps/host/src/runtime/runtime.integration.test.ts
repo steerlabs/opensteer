@@ -1,9 +1,8 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import { enrollTestRunner } from "@opensteer/database/test-support/store";
 import { describe } from "vitest";
 import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
-import { slackChannelProviderManifest } from "@opensteer/channel-core";
-import type { HostConfig } from "@opensteer/config";
+
+import { parseHostConfig, type HostConfig } from "@opensteer/config";
 import {
   ControlPlaneAccountIdSchema,
   CompletePersonalHostAccountLinkResponseSchema,
@@ -16,24 +15,15 @@ import {
   EnvironmentIdSchema,
   HarnessIdSchema,
   ModelSelectionSchema,
-  WorkspaceIdSchema,
   createId,
   zeroSequence,
   type EnvironmentId,
-  type MessageId,
-  type WorkspaceIconName,
 } from "@opensteer/core";
-import {
-  AccountDirectoryStore,
-  OpensteerStore,
-  createDatabase,
-  migrateToLatest,
-} from "@opensteer/database";
+import { AccountDirectoryStore, OpensteerStore, createDatabase } from "@opensteer/database";
 import { HostDescriptorSchema, hostApiVersion } from "@opensteer/deployment-authority";
 import {
   HarnessInstanceCatalogSchema,
   IssuePersonalPairingCodeResponseSchema,
-  PendingAgentEventSchema,
   PersonalHostAccessRouteEnvelopeSchema,
   PersonalRemoteAccessStatusSchema,
   RunnerAuxiliaryChallengeSchema,
@@ -83,17 +73,21 @@ import {
 import { loadOrCreateHostInstance } from "../identity/host-instance.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import {
-  attachLocalWorkspaceDisk,
-  connectLocalWorkspaceRunner,
-} from "../workspace/runner-local-workspace.test-support.js";
-import { createHostRuntime, ensureDefaultHarnesses, type HostRuntime } from "./runtime.js";
-
-const runtimeTestDisk = {
-  storageAuthorityId: createId("storageAuthority"),
-  bindings: [] as import("@opensteer/protocol").RunnerLocalStorageInventory["bindings"],
-  truncated: false,
-};
-const diskBySocket = new WeakMap<WebSocket, ReturnType<typeof attachLocalWorkspaceDisk>>();
+  createHostRuntime as productionHostRuntime,
+  ensureDefaultHarnesses,
+  type PersonalHostRuntime,
+  type HostRuntimeOptions,
+} from "./runtime.js";
+import {
+  resetMachineAccessDatabase,
+  connectPrimary,
+} from "./machine-access-protocol.test-support.js";
+import { personalSettings } from "@opensteer/database";
+async function createHostRuntime(config: HostConfig, options: HostRuntimeOptions = {}) {
+  const host = await productionHostRuntime(config, options);
+  if (host.kind !== "personal") throw new Error("Expected a personal Host");
+  return host;
+}
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 
@@ -110,6 +104,7 @@ const testModelSelection = ModelSelectionSchema.parse({
 });
 let ownerSessionHeaders: Record<string, string> | undefined;
 let runnerToken = "";
+let hostingEnvironmentId = createId("environment");
 
 /** The one source the Codex driver in these cases declares it can drive. */
 const openAiSource = {
@@ -131,7 +126,7 @@ const anthropicSource = {
 } as const;
 
 integration("Host vertical slice", () => {
-  let runtime: HostRuntime | undefined;
+  let runtime: PersonalHostRuntime | undefined;
   let runnerSocket: WebSocket | undefined;
   let auxiliarySocket: WebSocket | undefined;
   let realtimeSocket: WebSocket | undefined;
@@ -143,57 +138,10 @@ integration("Host vertical slice", () => {
   });
 
   beforeEach(async () => {
-    runtimeTestDisk.bindings.length = 0;
     ownerSessionHeaders = undefined;
     runnerToken = "";
-    const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
-    await migrateToLatest(database);
-    await sql`
-      truncate table
-        personal_remote_session_grant_uses,
-        personal_remote_sessions,
-        personal_remote_pairing_codes,
-        personal_remote_account_link,
-        account_directory_provider,
-        account_directory_projections,
-        auth_rate_limits,
-        auth_verifications,
-        auth_admissions,
-        auth_sso_providers,
-        owner_enrollments,
-        security_effects,
-        security_audit,
-        credential_access_audit,
-        credential_vault_canaries,
-        browser_profile_grants,
-        browser_sessions,
-        browser_profiles,
-        credentials,
-        workspace_events,
-        commands,
-        provider_sessions,
-        messages,
-        runs,
-        threads,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
-    await database
-      .updateTable("personalRemoteAccess")
-      .set({ generation: 0, mode: "off", routeOrigin: null, updatedAt: new Date() })
-      .where("singletonKey", "=", "personal")
-      .executeTakeFirstOrThrow();
-    await sql`
-      insert into principals(id, kind, user_id, display_name)
-      values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
-      on conflict (id) do nothing
-    `.execute(database);
-    await database.destroy();
+    hostingEnvironmentId = createId("environment");
+    await resetMachineAccessDatabase(databaseUrl ?? "postgres://unconfigured");
   });
 
   afterEach(async () => {
@@ -209,64 +157,7 @@ integration("Host vertical slice", () => {
     dataDirectory = undefined;
   });
 
-  it.each(["server", "personal"] as const)(
-    "refuses unsupported %s authority at real runtime startup without changing model-1 startup",
-    async (kind) => {
-      dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-authority-startup-"));
-      const base = testHostConfig(await freePort(), dataDirectory, new URL("http://127.0.0.1:9"));
-      const config: HostConfig =
-        kind === "server"
-          ? base
-          : {
-              ...base,
-              acceptsExternalRunners: false,
-              exposure: "loopback",
-              identity: {
-                ...base.identity,
-                initialOwnerEnrollment: undefined,
-                localPasswordEnabled: false,
-                localOwnerClaimToken: accessToken,
-              },
-              workspace: {
-                ...base.workspace,
-                shape: { ...base.workspace.shape, kind },
-              },
-            };
-      const database = createDatabase({ connectionString: config.databaseUrl });
-      try {
-        const store = new OpensteerStore(database);
-        const hostInstance = await loadOrCreateHostInstance(dataDirectory);
-        const deployment = await store.ensureDeployment({
-          canonicalOrigin: config.canonicalOrigin.origin,
-          deploymentShape: config.workspace.shape,
-          hostInstanceId: hostInstance.hostInstanceId,
-        });
-        runtime = await createHostRuntime(config);
-        await runtime.listen();
-        expect(await store.getDeployment()).toMatchObject({ id: deployment.id });
-        await runtime.close();
-        runtime = undefined;
-        await database
-          .updateTable("deployments")
-          .set({ authorityModelVersion: 2 })
-          .where("id", "=", deployment.id)
-          .executeTakeFirstOrThrow();
-        await expect(
-          createHostRuntime(config).then((started) => {
-            runtime = started;
-            return "runtime-started";
-          }),
-        ).rejects.toMatchObject({
-          code: "conflict",
-          message: expect.stringContaining("Unsupported Deployment authority model"),
-        });
-      } finally {
-        await database.destroy();
-      }
-    },
-  );
-
-  it("provisions a workspace and carries a Runner turn through durable projection", async () => {
+  it("runs in a chosen folder and carries a Runner turn through durable projection", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-host-integration-"));
     const hostPort = await freePort();
     const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
@@ -284,9 +175,9 @@ integration("Host vertical slice", () => {
       { headers: authorization(accessToken) },
     );
     expect(withoutComputer.harnesses).toEqual([]);
-    expect(withoutComputer.homeWorkspace).toBeNull();
+
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const runnerConnection = await openRunnerSocket(
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
     );
@@ -343,97 +234,16 @@ integration("Host vertical slice", () => {
         headers: authorization(accessToken),
       },
     );
-    expect(bootstrap.user.displayName).toBe("Alex");
+    expect(bootstrap.user.displayName).toBe("You");
     // This Host names no apex portal, so the config every client reads on boot
     // reports none and the web UI renders no way "up" out of a self-hosted
     // Deployment.
     expect(bootstrap.identityConfig).toMatchObject({
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "personal", name: null },
       portalOrigin: null,
     });
-    expect(bootstrap.homeWorkspace).toMatchObject({ kind: "main" });
-    if (!bootstrap.homeWorkspace) throw new Error("Main Workspace is missing.");
-    const homeWorkspaceId = bootstrap.homeWorkspace.id;
+    const folderPath = await realpath(await mkdtemp(join(dataDirectory, "chosen-")));
     let harnessInstanceId = "";
-
-    const localEnrollment = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "enroll-example-mac-1",
-        name: "Alex's Mac",
-        type: "runner.enrollment.createLocal",
-      },
-      { headers: authorization(accessToken) },
-    );
-    const localEnrollmentReplay = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "enroll-example-mac-1",
-        name: "Alex's Mac",
-        type: "runner.enrollment.createLocal",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (
-      localEnrollment.type !== "runner.enrollment.createLocal" ||
-      localEnrollmentReplay.type !== "runner.enrollment.createLocal"
-    ) {
-      throw new Error("Runner enrollment command mismatch.");
-    }
-    expect(localEnrollmentReplay).toEqual(localEnrollment);
-    expect(localEnrollment.token).toHaveLength(86);
-    const created = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Client workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(created.workspace.status).toBe("ready");
-    // The Project is provisioned beneath Main.
-    expect(created.workspace.kind).toBe("project");
-    const bootstrapAfterProjectWorkspace = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
-    expect(bootstrapAfterProjectWorkspace.workspaces[0]?.id).toBe(created.workspace.id);
-    expect(bootstrapAfterProjectWorkspace.homeWorkspace?.id).toBe(homeWorkspaceId);
-    const duplicate = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Client workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (duplicate.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(duplicate.workspace.id).toBe(created.workspace.id);
-    const conflictingWorkspaceRetry = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "workspace-1",
-        name: "Different workspace",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(conflictingWorkspaceRetry.status).toBe(409);
-
     await waitForCondition(async () => {
       const connectedBootstrap = await testRpcData(
         origin,
@@ -460,13 +270,13 @@ integration("Host vertical slice", () => {
         modelSelection: testModelSelection,
         title: "Do the work",
         type: "thread.create",
-        workspaceId: created.workspace.id,
+        folder: { computerId: runnerId, path: folderPath },
       },
       { headers: authorization(accessToken) },
     );
     if (threadResult.type !== "thread.create") throw new Error("Thread command mismatch.");
     const threadId = threadResult.thread.id as string;
-    expect(threadResult.thread.accessMode).toBe("full-access");
+    expect(threadResult.thread.accessMode).toBe("approval-required");
     const accessModeUpdate = await testRpcData(
       origin,
       "commands.dispatch",
@@ -485,11 +295,14 @@ integration("Host vertical slice", () => {
     realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
     realtimeSocket.send(
       JSON.stringify({
-        afterSequence: zeroSequence,
         apiVersion: hostApiVersion,
         threadId: null,
         type: "client.subscribe",
-        workspaceId: created.workspace.id,
+        cursor: {
+          deploymentId: runtime.deployment.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
       }),
     );
     await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
@@ -511,7 +324,6 @@ integration("Host vertical slice", () => {
           events?: Array<{
             sequence: string;
             type: string;
-            workspaceId: string;
             data?: { status?: string };
           }>;
         };
@@ -523,7 +335,6 @@ integration("Host vertical slice", () => {
             JSON.stringify({
               sequence: latest.sequence,
               type: "client.ack",
-              workspaceId: latest.workspaceId,
             }),
           );
         }
@@ -559,8 +370,7 @@ integration("Host vertical slice", () => {
             type: "runner.command-accepted",
           }),
         );
-        const workspaceAccess = command.context.workspaceAccess;
-        expect(workspaceAccess.kind).toBe("local-directory");
+        expect(command.location.folder).toEqual({ computerId: runnerId, path: folderPath });
         runnerSocket?.send(
           JSON.stringify({
             ...fence,
@@ -579,7 +389,6 @@ integration("Host vertical slice", () => {
           environmentId,
           runId: command.context.runId,
           threadId: command.context.threadId,
-          workspaceId: command.context.workspaceId,
         };
         const events = [
           { ...base, data: { status: "running" }, ordinal: 0, type: "run.started" },
@@ -642,7 +451,7 @@ integration("Host vertical slice", () => {
       "run.completed",
       "thread.state-changed",
     ]);
-    const snapshot = await runtime.store.workspaceSnapshot(created.workspace.id);
+    const snapshot = await runtime.store.deploymentSnapshot();
     expect(snapshot.messages.at(-1)?.content).toEqual([
       { text: "Finished through the Runner.", type: "text" },
     ]);
@@ -661,116 +470,25 @@ integration("Host vertical slice", () => {
         id: runnerId,
         modules: { agents: expect.objectContaining({ readiness: "ready" }) },
         ownerName: null,
-        ownership: "mine",
+        ownership: "deployment",
         status: "online",
       }),
     );
-    const runnerClosed = waitForClose(runnerConnection.socket);
-    const revoked = await testRpcData(
+    const revoked = await testRpcRequest(
       origin,
       "commands.dispatch",
-      {
-        idempotencyKey: "revoke-main-runner",
-        machineId: runnerId,
-        type: "machine.revoke",
-      },
+      { idempotencyKey: "revoke-hosting-runner", machineId: runnerId, type: "machine.revoke" },
       { headers: authorization(accessToken) },
     );
-    expect(revoked).toEqual({ type: "machine.revoke" });
-    // The terminal code, distinct from every refusal a Runner should retry.
-    expect(await runnerClosed).toMatchObject({
-      code: 4010,
-      reason: "Runner identity was revoked",
-    });
-    // Machines is an inventory of what a person still owns, so a revoked Runner
-    // leaves the projection entirely; the durable row is where the revocation
-    // itself is observable.
-    const afterRevocation = await testRpcData(
-      origin,
-      "machines.list",
-      {},
-      { headers: authorization(accessToken) },
-    );
-    expect(afterRevocation.machines.map((machine) => machine.id)).not.toContain(runnerId);
-    await expect(
-      runtime.store.database
+    expect(revoked.status).toBe(403);
+    expect(runnerConnection.socket.readyState).toBe(WebSocket.OPEN);
+    expect(
+      await runtime.store.database
         .selectFrom("runners")
         .select("revokedAt")
         .where("id", "=", runnerId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ revokedAt: expect.any(Date) });
-
-    const replacementEnrollment = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "runner-after-main-revoke",
-        name: "Replacement computer",
-        type: "runner.enrollment.createLocal",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (replacementEnrollment.type !== "runner.enrollment.createLocal") {
-      throw new Error("Runner enrollment command mismatch.");
-    }
-    expect(
-      await testRpcData(
-        origin,
-        "commands.dispatch",
-        {
-          allowedModules: ["agents"],
-          idempotencyKey: "runner-after-main-revoke",
-          name: "Replacement computer",
-          type: "runner.enrollment.createLocal",
-        },
-        { headers: authorization(accessToken) },
-      ),
-    ).toEqual(replacementEnrollment);
-    const replacementRunnerId = createId("runner");
-    const replacementEnvironmentId = createId("environment");
-    const replacementConnection = await openRunnerSocket(
-      `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
-    );
-    runnerSocket = replacementConnection.socket;
-    await enrollRunnerSocket(
-      replacementConnection.socket,
-      agentsRunnerDescriptor({
-        bootId: `rbt_${randomUUID()}`,
-        capabilities: ["filesystem"],
-        environmentIds: [replacementEnvironmentId],
-        harnessDrivers: [
-          {
-            accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
-            driverKind: "codex",
-            readiness: "configured",
-            sources: [openAiSource],
-          },
-        ],
-        maxConcurrentRuns: 1,
-        name: "Replacement Runner",
-        runnerId: replacementRunnerId,
-        runnerKind: "local",
-        runtimeVersion: "integration",
-
-        workspaceBackings: ["local-directory"],
-        localStorage: null,
-      }),
-      replacementEnrollment.token,
-      replacementConnection.challenge,
-    );
-    respondToHarnessInspections(replacementConnection.socket, readyCodexCatalog);
-    const recoveredBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      {
-        headers: authorization(accessToken),
-      },
-    );
-    expect(recoveredBootstrap.environments).toEqual([
-      expect.objectContaining({ connected: true, id: replacementEnvironmentId }),
-    ]);
+    ).toEqual({ revokedAt: null });
   });
 
   it("starts the control plane without a Main Runner", async () => {
@@ -792,362 +510,6 @@ integration("Host vertical slice", () => {
       },
     );
     expect(bootstrap.environments).toEqual([]);
-  });
-
-  it("shares the entire Workspace through a browser-bound invitation and revokes it", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-sharing-integration-"));
-    const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
-    runtime = await createHostRuntime(config, { logger: true });
-    await runtime.listen();
-    const origin = config.runtimeOrigin.origin;
-    await initializeOwnerSession(origin);
-    const storageRunner = await connectLocalWorkspaceRunner({
-      origin,
-      enrollmentToken: runnerToken,
-      environmentId: createId("environment"),
-      name: "Project storage",
-      runnerKind: "local",
-    });
-    runnerSocket = storageRunner.socket;
-
-    const workspaceResult = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "sharing-workspace",
-        name: "Shared with a client",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (workspaceResult.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    const workspaceId = WorkspaceIdSchema.parse(workspaceResult.workspace.id);
-    const invitationResult = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "sharing-invitation",
-        role: "collaborator",
-        type: "workspace.invitation.create",
-        workspaceId,
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (invitationResult.type !== "workspace.invitation.create")
-      throw new Error("Invitation command mismatch.");
-    const invitationUrl = new URL(invitationResult.invitationUrl as string);
-    const selector = invitationUrl.pathname.split("/").at(-1);
-    const verifier = invitationUrl.hash.slice(1);
-    if (!selector || !verifier) throw new Error("Invitation URL is incomplete");
-    const listedInvitations = await testRpcData(
-      origin,
-      "workspace.invitations.list",
-      {
-        workspaceId,
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(JSON.stringify(listedInvitations)).not.toContain(verifier);
-
-    const exchanged = await testRpcRequest(
-      origin,
-      "auth.invitation.exchange",
-      {
-        selector,
-        verifier,
-      },
-      { headers: { origin } },
-    );
-    expect(exchanged.status).toBe(200);
-    await expect(exchanged.clone().json()).resolves.toMatchObject({
-      data: { preview: { role: "collaborator", workspaceName: "Shared with a client" } },
-      ok: true,
-    });
-    const admissionCookies = responseCookies(exchanged);
-    const signedUp = await testRpcRequest(
-      origin,
-      "auth.password.signUp",
-      {
-        // No display name: signup asks for an address and a password, nothing else.
-        email: "client@example.com",
-        password: "client integration password",
-      },
-      {
-        headers: {
-          cookie: admissionCookies.join("; "),
-          origin,
-        },
-      },
-    );
-    expect(signedUp.status).toBe(200);
-    const clientCookies = responseCookies(signedUp);
-    const accepted = await testRpcRequest(
-      origin,
-      "auth.invitation.accept",
-      {},
-      {
-        headers: {
-          cookie: [...admissionCookies, ...clientCookies].join("; "),
-          origin,
-        },
-      },
-    );
-    expect(accepted.status).toBe(200);
-    const membership = (await accepted.json()) as {
-      readonly data: { readonly membership: { readonly userId: string } };
-    };
-    const clientHeaders = { cookie: clientCookies.join("; "), origin };
-    const members = await testRpcData(
-      origin,
-      "workspace.members.list",
-      { workspaceId },
-      {
-        headers: authorization(accessToken),
-      },
-    );
-    expect(members.members).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ displayName: "Client", role: "collaborator", state: "active" }),
-      ]),
-    );
-
-    // A computer the invited person adds is theirs. An administrator sees it
-    // among teammates' computers, named with its owner and drawn as the
-    // device it says it is — and is told nothing about what it shares.
-    const clientEnrollment = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["agents"],
-        idempotencyKey: "enroll-client-laptop",
-        name: "Client laptop",
-        type: "runner.enrollment.createLocal",
-      },
-      { headers: clientHeaders },
-    );
-    if (clientEnrollment.type !== "runner.enrollment.createLocal") {
-      throw new Error("Runner enrollment command mismatch.");
-    }
-    const clientRunnerId = createId("runner");
-    let clientMain: { readonly id: string; readonly kind: string } | undefined;
-    const clientRunner = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
-    auxiliarySocket = clientRunner.socket;
-    await enrollRunnerSocket(
-      clientRunner.socket,
-      agentsRunnerDescriptor({
-        bootId: `rbt_${randomUUID()}`,
-        device: { form: "laptop", platform: "linux" },
-        environmentIds: [createId("environment")],
-        harnessDrivers: [],
-        name: "Client laptop",
-        runnerId: clientRunnerId,
-        runnerKind: "local",
-        runtimeVersion: "integration",
-      }),
-      clientEnrollment.token,
-      clientRunner.challenge,
-    );
-    const clientBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: clientHeaders },
-    );
-    // Accepting an invitation does not stand in for having a home of your own:
-    // the invited account still gets its own Main alongside the shared
-    // Workspace, and Main is scoped to its creator rather than to membership.
-    const clientWorkspaces = clientBootstrap.workspaces as ReadonlyArray<{
-      readonly id: string;
-      readonly kind: string;
-    }>;
-    expect(clientWorkspaces.map((workspace) => workspace.id)).toContain(workspaceId);
-    clientMain = clientWorkspaces.find((workspace) => workspace.kind === "main");
-    expect(clientMain).toBeDefined();
-    expect(clientMain).not.toHaveProperty("createdBy");
-    expect(clientWorkspaces).toHaveLength(2);
-    const administratorView = await testRpcData(
-      origin,
-      "machines.list",
-      {},
-      { headers: authorization(accessToken) },
-    );
-    expect(
-      administratorView.machines.find((machine) => machine.id === clientRunnerId),
-    ).toMatchObject({
-      access: null,
-      device: { form: "laptop", platform: "linux" },
-      ownerName: "Client",
-      ownership: "other",
-    });
-    const ownerView = await testRpcData(origin, "machines.list", {}, { headers: clientHeaders });
-    expect(ownerView.machines.find((machine) => machine.id === clientRunnerId)).toMatchObject({
-      ownerName: null,
-      ownership: "mine",
-    });
-
-    // A Workspace's icon is the Workspace's own: every member sees it, only an
-    // owner changes it, Main keeps the product mark, and the catalog is the
-    // only vocabulary the Host accepts.
-    expect(workspaceResult.workspace.icon).toBeNull();
-    const setIcon = (
-      icon: WorkspaceIconName | null,
-      headers: Record<string, string>,
-      key: string,
-    ) =>
-      testRpcRequest(
-        origin,
-        "commands.dispatch",
-        { icon, idempotencyKey: key, type: "workspace.icon.set", workspaceId },
-        { headers },
-      );
-    expect((await setIcon("plane", clientHeaders, "icon-by-collaborator")).status).toBe(403);
-    const ownerSet = await setIcon("plane", authorization(accessToken), "icon-by-owner");
-    expect(ownerSet.status).toBe(200);
-    await expect(ownerSet.json()).resolves.toMatchObject({
-      data: { type: "workspace.icon.set", workspace: { icon: "plane", id: workspaceId } },
-    });
-    // A retry is a replay, not a second write: the same key with the same icon
-    // answers without changing anything, the same key with another icon is a
-    // conflict, and a late retry of an older choice cannot undo a newer one.
-    expect((await setIcon("plane", authorization(accessToken), "icon-by-owner")).status).toBe(200);
-    expect((await setIcon("mail", authorization(accessToken), "icon-by-owner")).status).toBe(409);
-    expect((await setIcon("mail", authorization(accessToken), "icon-a")).status).toBe(200);
-    expect((await setIcon("plane", authorization(accessToken), "icon-b")).status).toBe(200);
-    const lateRetry = await setIcon("mail", authorization(accessToken), "icon-a");
-    await expect(lateRetry.json()).resolves.toMatchObject({
-      data: { workspace: { icon: "plane" } },
-    });
-    const memberSees = await testRpcData(origin, "bootstrap.get", {}, { headers: clientHeaders });
-    expect(
-      (
-        memberSees.workspaces as ReadonlyArray<{ readonly icon?: unknown; readonly id: string }>
-      ).find((workspace) => workspace.id === workspaceId)?.icon,
-    ).toBe("plane");
-    const setColor = (color: "teal" | "purple", headers: Record<string, string>, key: string) =>
-      testRpcRequest(
-        origin,
-        "commands.dispatch",
-        { color, idempotencyKey: key, type: "workspace.color.set", workspaceId },
-        { headers },
-      );
-    expect((await setColor("teal", clientHeaders, "color-collaborator")).status).toBe(403);
-    expect((await setColor("teal", authorization(accessToken), "color-a")).status).toBe(200);
-    expect((await setColor("purple", authorization(accessToken), "color-a")).status).toBe(409);
-    expect((await setColor("purple", authorization(accessToken), "color-b")).status).toBe(200);
-    await expect(
-      (await setColor("teal", authorization(accessToken), "color-a")).json(),
-    ).resolves.toMatchObject({
-      data: { type: "workspace.color.set", workspace: { color: "purple" } },
-    });
-    const coloredBootstrap = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: clientHeaders },
-    );
-    expect(
-      coloredBootstrap.workspaces.find((workspace) => workspace.id === workspaceId)?.color,
-    ).toBe("purple");
-    expect(coloredBootstrap.homeWorkspace?.color).toBeDefined();
-    // Sent raw: the test helper would refuse the name before the Host could.
-    const unknownIcon = await fetch(`${origin}/v1/rpc/commands.dispatch`, {
-      body: JSON.stringify({
-        icon: "not-an-icon",
-        idempotencyKey: "icon-unknown",
-        type: "workspace.icon.set",
-        workspaceId,
-      }),
-      headers: {
-        ...authorization(accessToken),
-        [hostApiVersionHeader]: String(hostApiVersion),
-        "content-type": "application/json",
-      },
-      method: "POST",
-    });
-    expect(unknownIcon.status).toBe(400);
-    const ownerMain = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: authorization(accessToken) },
-    );
-    if (!ownerMain.homeWorkspace) throw new Error("Main Workspace is missing.");
-    expect(ownerMain.homeWorkspace.icon).toBeNull();
-    const mainIcon = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        icon: "star",
-        idempotencyKey: "icon-main",
-        type: "workspace.icon.set",
-        workspaceId: ownerMain.homeWorkspace.id,
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(mainIcon.status).toBe(400);
-    const cleared = await setIcon(null, authorization(accessToken), "icon-clear");
-    await expect(cleared.json()).resolves.toMatchObject({
-      data: { workspace: { icon: null, id: workspaceId } },
-    });
-    const withIcon = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        icon: "mail",
-        idempotencyKey: "workspace-with-icon",
-        name: "Morning Email Summarizer",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (withIcon.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(withIcon.workspace.icon).toBe("mail");
-    const replayedWithAnotherIcon = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        icon: "plane",
-        idempotencyKey: "workspace-with-icon",
-        name: "Morning Email Summarizer",
-        type: "workspace.create",
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(replayedWithAnotherIcon.status).toBe(409);
-
-    const revoked = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "sharing-member-revoke",
-        state: "revoked",
-        type: "workspace.member.update",
-        userId: membership.data.membership.userId,
-        workspaceId,
-      },
-      { headers: authorization(accessToken) },
-    );
-    expect(revoked.status).toBe(200);
-    await waitForCondition(async () => {
-      const effects = await runtime?.store.database
-        .selectFrom("securityEffects")
-        .select("status")
-        .where("workspaceId", "=", workspaceId)
-        .execute();
-      return effects?.length === 6 && effects.every((effect) => effect.status === "completed");
-    });
-    // Revoking the share removes the shared Workspace and nothing else: the
-    // invited account keeps its own Main.
-    const afterRevocation = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: clientHeaders },
-    );
-    expect(afterRevocation.workspaces.map((workspace: { id: string }) => workspace.id)).toEqual([
-      clientMain?.id,
-    ]);
   });
 
   it("persists the fixed initial-owner enrollment deadline across Host restarts", async () => {
@@ -1182,7 +544,7 @@ integration("Host vertical slice", () => {
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${firstPort}`);
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const connection = await openRunnerSocket(`ws://127.0.0.1:${firstPort}/internal/v1/runners`);
     runnerSocket = connection.socket;
     const firstDescriptor = agentsRunnerDescriptor({
@@ -1266,7 +628,7 @@ integration("Host vertical slice", () => {
     );
     await runtime.listen();
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
     runnerSocket = connection.socket;
     let signedIn = false;
@@ -1470,7 +832,7 @@ integration("Host vertical slice", () => {
     await initializeOwnerSession(origin);
 
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const runnerConnection = await openRunnerSocket(
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
     );
@@ -1542,27 +904,7 @@ integration("Host vertical slice", () => {
       runnerConnection.challenge,
     );
     const ownerId = await administratorId(runtime.store);
-    const workspace = await createTestWorkspace(runtime.store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
-        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: "placement-runtime-workspace",
-      name: "Placement workspace",
-      status: "ready",
-    });
-    if (workspace.backing.kind === "local-directory")
-      runtimeTestDisk.bindings.push({
-        bindingId: workspace.backing.bindingId,
-        generation: workspace.backing.generation,
-        workspaceId: workspace.id,
-        state: "ready",
-      });
+    const folder = (await personalSettings(runtime.store.database)).agentHome;
     // A driver the Runner reports as unavailable is not seeded a default
     // profile, and adding one is refused: an engine the Runner cannot run has
     // no source to validate against. This case's unavailable account is one
@@ -1667,7 +1009,7 @@ integration("Host vertical slice", () => {
         modelSelection: testModelSelection,
         title: "Must not be created",
         type: "thread.create",
-        workspaceId: workspace.id,
+        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1679,12 +1021,12 @@ integration("Host vertical slice", () => {
     const selectedBrowserId = createBrowserSessionId();
     await runtime.store.createBrowserSession({
       id: selectedBrowserId,
-      origin: "workspace",
+      origin: "agent",
       placementKey: `runner:${runnerId}:browser`,
       profileId: null,
       runnerId,
       runtimeId: "browser",
-      workspaceId: workspace.id,
+      ownerId,
     });
     // Somebody else's signed-in browser in the same Workspace: its owner's alone.
     const stranger = await runtime.store.createUser("Browser stranger");
@@ -1721,12 +1063,12 @@ integration("Host vertical slice", () => {
     const hiddenBrowserId = createBrowserSessionId();
     await runtime.store.createBrowserSession({
       id: hiddenBrowserId,
-      origin: "workspace",
+      origin: "agent",
       placementKey: `runner:${strangerRunnerId}:browser`,
       profileId: strangerProfile.id,
       runnerId: strangerRunnerId,
       runtimeId: "browser",
-      workspaceId: workspace.id,
+      ownerId: stranger,
     });
     const createBody = {
       environmentId,
@@ -1741,7 +1083,7 @@ integration("Host vertical slice", () => {
         ...createBody,
         idempotencyKey: "placement-claude",
         type: "thread.create",
-        workspaceId: workspace.id,
+        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1839,7 +1181,7 @@ integration("Host vertical slice", () => {
         ...createBody,
         idempotencyKey: "placement-claude",
         type: "thread.create",
-        workspaceId: workspace.id,
+        folder,
       },
       { headers: authorization(accessToken) },
     );
@@ -1882,7 +1224,7 @@ integration("Host vertical slice", () => {
     const origin = `http://127.0.0.1:${hostPort}`;
     await initializeOwnerSession(origin);
 
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const runnerConnection = await openRunnerSocket(
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
     );
@@ -1987,7 +1329,7 @@ integration("Host vertical slice", () => {
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
 
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const runnerConnection = await openRunnerSocket(
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
     );
@@ -2028,27 +1370,8 @@ integration("Host vertical slice", () => {
 
     try {
       const ownerId = await administratorId(runtime.store);
-      const workspace = await createTestWorkspace(runtime.store, {
-        backing: {
-          kind: "local-directory",
-          generation: 1,
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
-          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-        },
+      const folder = (await personalSettings(runtime.store.database)).agentHome;
 
-        createdBy: ownerId,
-        idempotencyKey: "rejection-runtime-workspace",
-        name: "Rejected dispatch workspace",
-        status: "ready",
-      });
-      if (workspace.backing.kind === "local-directory")
-        runtimeTestDisk.bindings.push({
-          bindingId: workspace.backing.bindingId,
-          generation: workspace.backing.generation,
-          workspaceId: workspace.id,
-          state: "ready",
-        });
       await publication.entered;
       const harnesses = await runtime.store.listHarnessInstances({
         environmentIds: [environmentId],
@@ -2098,7 +1421,7 @@ integration("Host vertical slice", () => {
         idempotencyKey: "rejection-runtime-thread",
         modelSelection: testModelSelection,
         title: "Reject this dispatch",
-        workspaceId: workspace.id,
+        folder,
       });
 
       realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
@@ -2108,7 +1431,7 @@ integration("Host vertical slice", () => {
           apiVersion: hostApiVersion,
           threadId: thread.id,
           type: "client.subscribe",
-          workspaceId: workspace.id,
+          folder,
         }),
       );
       await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
@@ -2178,7 +1501,7 @@ integration("Host vertical slice", () => {
           .executeTakeFirstOrThrow(),
       ).resolves.toEqual({ status: "failed" });
       const persistedEvents = await runtime.store.database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select(["data", "runnerOrdinal", "type"])
         .where("runId", "=", admittedRun.id)
         .where("type", "=", "run.failed")
@@ -2207,7 +1530,7 @@ integration("Host vertical slice", () => {
     await initializeOwnerSession(`http://127.0.0.1:${hostPort}`);
 
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const runnerBootId = `rbt_${randomUUID()}`;
     const runnerConnection = await openRunnerSocket(
       `ws://127.0.0.1:${hostPort}/internal/v1/runners`,
@@ -2242,27 +1565,8 @@ integration("Host vertical slice", () => {
     const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
 
     const ownerId = await administratorId(runtime.store);
-    const workspace = await createTestWorkspace(runtime.store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
-        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-      },
+    const folder = (await personalSettings(runtime.store.database)).agentHome;
 
-      createdBy: ownerId,
-      idempotencyKey: "disconnect-runtime-workspace",
-      name: "Disconnect workspace",
-      status: "ready",
-    });
-    if (workspace.backing.kind === "local-directory")
-      runtimeTestDisk.bindings.push({
-        bindingId: workspace.backing.bindingId,
-        generation: workspace.backing.generation,
-        workspaceId: workspace.id,
-        state: "ready",
-      });
     const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
       createdBy: ownerId,
@@ -2271,7 +1575,7 @@ integration("Host vertical slice", () => {
       idempotencyKey: "disconnect-runtime-thread",
       modelSelection: testModelSelection,
       title: "Disconnect me",
-      workspaceId: workspace.id,
+      folder,
     });
     const commandPromise = waitForRunnerExecution(runnerSocket);
     const turn = await runtime.store.enqueueThreadInput({
@@ -2307,7 +1611,6 @@ integration("Host vertical slice", () => {
           runId: command.context.runId,
           threadId: command.context.threadId,
           type: "run.started",
-          workspaceId: command.context.workspaceId,
         },
         type: "runner.event",
       }),
@@ -2402,7 +1705,7 @@ integration("Host vertical slice", () => {
     ).resolves.toEqual({ status: "succeeded" });
     await expect(
       runtime.store.database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select(["data", "runnerOrdinal", "type"])
         .where("runId", "=", admittedRun.id)
         .where("type", "=", "run.failed")
@@ -2428,12 +1731,11 @@ integration("Host vertical slice", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: hostInstance.hostInstanceId,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "personal" as const,
       },
     });
     const runnerId = createId("runner");
-    const environmentId = createId("environment");
+    const environmentId = hostingEnvironmentId;
     const seedKeys = generateKeyPairSync("ed25519");
     const seedEnrollmentTokenHash = hashRunnerEnrollmentToken("restart-runner-enrollment-token");
     await seedStore.createRunnerEnrollment({
@@ -2475,27 +1777,7 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    const workspace = await createTestWorkspace(seedStore, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
-        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: "restart-runtime-workspace",
-      name: "Restart workspace",
-      status: "ready",
-    });
-    if (workspace.backing.kind === "local-directory")
-      runtimeTestDisk.bindings.push({
-        bindingId: workspace.backing.bindingId,
-        generation: workspace.backing.generation,
-        workspaceId: workspace.id,
-        state: "ready",
-      });
+    const folder = (await personalSettings(seedStore.database)).agentHome;
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -2511,7 +1793,7 @@ integration("Host vertical slice", () => {
       idempotencyKey: "restart-runtime-thread",
       modelSelection: testModelSelection,
       title: "Recover me",
-      workspaceId: workspace.id,
+      folder,
     });
     const turn = await seedStore.enqueueThreadInput({
       content: [{ text: "The Host will restart after claiming this", type: "text" }],
@@ -2534,7 +1816,7 @@ integration("Host vertical slice", () => {
       },
       harnessInstanceId: harness.id,
       leaseTokenHash: "restart-runtime-lease",
-      membershipGeneration: 1,
+
       runnerBootId: "restart-runtime-boot",
       runnerId,
       runId: admittedRun.id,
@@ -2553,7 +1835,7 @@ integration("Host vertical slice", () => {
       profileId: null,
       runnerId,
       runtimeId: "restart-runtime",
-      workspaceId: workspace.id,
+      ownerId,
     });
     await seedStore.transitionBrowserSession({
       from: ["starting"],
@@ -2567,7 +1849,7 @@ integration("Host vertical slice", () => {
       idempotencyKey: "stranded-thread-state",
       modelSelection: testModelSelection,
       title: "Stranded projection",
-      workspaceId: workspace.id,
+      folder,
     });
     await seedDatabase
       .updateTable("threads")
@@ -2609,7 +1891,7 @@ integration("Host vertical slice", () => {
       { timeout: 5000 },
     );
     const repaired = await runtime.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("data")
       .where("threadId", "=", idleThread.id)
       .where("type", "=", "thread.state-changed")
@@ -2656,439 +1938,13 @@ integration("Host vertical slice", () => {
     ).resolves.toEqual({ status: "running" });
     await expect(
       runtime.store.database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select("type")
         .where("runId", "=", admittedRun.id)
         .where("type", "=", "run.failed")
         .execute(),
     ).resolves.toEqual([]);
   });
-
-  it("keeps Chat follow-ups from an older reattached Runner and in order when a Runner refuses one", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-steer-answer-integration-"));
-    const hostPort = await freePort();
-    const hostInstance = await loadOrCreateHostInstance(dataDirectory);
-    const seedDatabase = createDatabase({
-      connectionString: databaseUrl ?? "postgres://unconfigured",
-    });
-    const seedStore = new OpensteerStore(seedDatabase);
-    const ownerId = await seedStore.createUser("Alex");
-    await seedStore.ensureDeployment({
-      canonicalOrigin: `http://127.0.0.1:${hostPort}`,
-      deploymentId: createId("deployment"),
-      hostInstanceId: hostInstance.hostInstanceId,
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
-    });
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    const runnerKeys = generateKeyPairSync("ed25519");
-    const enrollmentTokenHash = hashRunnerEnrollmentToken("steer-answer-runner-enrollment-token");
-    await seedStore.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: ownerId,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: "steer-answer-runner-enrollment",
-      mainEnrollmentPurpose: "initial",
-      name: "Steer answer runner",
-      requestFingerprint: "sha256:steer-answer-runner-enrollment",
-      runnerKind: "main",
-      tokenHash: enrollmentTokenHash,
-    });
-    const descriptorFor = (bootId: string, steerAnswer: boolean): RunnerDescriptor => {
-      const current = agentsRunnerDescriptor({
-        bootId,
-        capabilities: ["filesystem"],
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ["approval-required", "auto-accept-edits", "auto", "full-access"],
-            driverKind: "codex",
-            readiness: "configured",
-            sources: [openAiSource],
-            steering: true,
-          },
-        ],
-        maxConcurrentRuns: 1,
-        name: "Steer answer runner",
-        runnerId,
-        runnerKind: "main",
-        runtimeVersion: "integration",
-        workspaceBackings: ["local-directory"],
-        localStorage: null,
-      });
-      return RunnerDescriptorSchema.parse({
-        ...current,
-        capabilities: current.capabilities.filter(
-          (capability) => steerAnswer || capability !== "steer-answer-v1",
-        ),
-      });
-    };
-    // A Runner from before `steer-answer-v1`, executing a Chat reply an
-    // earlier Host dispatched to it.
-    const olderBoot = `rbt_${randomUUID()}`;
-    const older = descriptorFor(olderBoot, false);
-    await seedStore.enrollRunnerConnection({
-      descriptor: older,
-      enrollmentTokenHash,
-      publicKeyFingerprint: runnerPublicKeyFingerprint(runnerKeys.publicKey),
-      publicKeyPem: canonicalRunnerPublicKeyPem(runnerKeys.publicKey),
-    });
-    const workspace = await createTestWorkspace(seedStore, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: EnvironmentIdSchema.parse(environmentId),
-        storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: "steer-answer-workspace",
-      kind: "main",
-      name: "Steer answer workspace",
-      status: "ready",
-    });
-    if (workspace.backing.kind === "local-directory")
-      runtimeTestDisk.bindings.push({
-        bindingId: workspace.backing.bindingId,
-        generation: workspace.backing.generation,
-        workspaceId: workspace.id,
-        state: "ready",
-      });
-    const harness = await seedStore.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("codex"),
-      environmentId,
-      name: "Codex",
-      sourceId: "openai",
-      stateKind: "isolated",
-    });
-    const { thread } = await seedStore.createThread({
-      createdBy: ownerId,
-      environmentId,
-      harnessInstanceId: harness.id,
-      home: true,
-      idempotencyKey: "steer-answer-chat",
-      modelSelection: testModelSelection,
-      title: "Chat",
-      workspaceId: workspace.id,
-    });
-    const say = (key: string, text: string) =>
-      runtime!.store.enqueueThreadInput({
-        content: [{ text, type: "text" }],
-        idempotencyKey: key,
-        policy: "queue",
-        requestedBy: ownerId,
-        source: { kind: "human" },
-        threadId: thread.id,
-      });
-    const first = await seedStore.enqueueThreadInput({
-      content: [{ text: "Plan the offsite", type: "text" }],
-      idempotencyKey: "steer-answer-first",
-      policy: "queue",
-      requestedBy: ownerId,
-      source: { kind: "human" },
-      threadId: thread.id,
-    });
-    if (!first.command || !first.run) throw new Error("The first message did not start a reply");
-    const firstRunId = first.run.id;
-    await seedStore.claimCommand(first.command.id, "earlier-host");
-    const binding = await seedStore.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 10 * 60_000),
-      continuationIdentity: {
-        continuationKey: "runner:v1:8tErnQuB1d-nw979Rab9a4JN0RE_tKRvI_Rtmy45Bbo",
-        driverKind: harness.driverKind,
-      },
-      harnessInstanceId: harness.id,
-      leaseTokenHash: "steer-answer-lease",
-      membershipGeneration: 1,
-      runnerBootId: olderBoot,
-      runnerId,
-      runId: firstRunId,
-      threadId: thread.id,
-    });
-    const event = (
-      runId: string,
-      bindingGeneration: number,
-      ordinal: number,
-      type: string,
-      data: unknown,
-    ) => ({
-      bindingGeneration,
-      data,
-      emittedAt: new Date().toISOString(),
-      environmentId,
-      ordinal,
-      runId,
-      threadId: thread.id,
-      type,
-      workspaceId: workspace.id,
-    });
-    await seedStore.commitRunnerEvent({
-      environmentId,
-      event: PendingAgentEventSchema.parse(
-        event(firstRunId, binding.bindingGeneration, 0, "run.started", { status: "running" }),
-      ),
-      runnerBootId: olderBoot,
-      runnerId,
-    });
-    // As the engine does once it holds a native session, so later replies continue it.
-    const { providerSessionId } = await seedDatabase
-      .selectFrom("runs")
-      .select("providerSessionId")
-      .where("id", "=", firstRunId)
-      .executeTakeFirstOrThrow();
-    if (!providerSessionId) throw new Error("The reply has no provider session");
-    await seedStore.bindProviderSession({
-      bindingGeneration: binding.bindingGeneration,
-      harnessInstanceId: harness.id,
-      providerSessionId,
-      providerSessionReference: `codex-thread-${thread.id}`,
-      runId: firstRunId,
-      runnerBootId: olderBoot,
-      runnerId,
-      threadId: thread.id,
-    });
-    await seedDatabase.destroy();
-
-    // The Host is upgraded; the same Runner boot reconnects and states its reply.
-    runtime = await createHostRuntime(
-      testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9")),
-    );
-    await runtime.listen();
-    const connect = async (descriptor: RunnerDescriptor) => {
-      if (descriptor.modules.agents) descriptor.modules.agents.localStorage = runtimeTestDisk;
-      const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
-      const challenge = RunnerChallengeSchema.parse(connection.challenge);
-      const frames: HostToRunnerMessage[] = [];
-      connection.socket.on("message", (frame) => {
-        frames.push(JSON.parse(frame.toString()) as HostToRunnerMessage);
-      });
-      connection.socket.send(
-        JSON.stringify({
-          challengeId: challenge.challengeId,
-          descriptor,
-          signature: createRunnerAuthenticationSignature(runnerKeys.privateKey, {
-            challenge,
-            descriptor,
-          }),
-          proofFormatVersion: 2,
-          type: "runner.authenticate",
-        }),
-      );
-      const welcome = runnerFence(
-        (await waitForMessage(
-          connection.socket,
-          (message) => message.type === "host.welcome",
-        )) as unknown as RunnerConnectionFence,
-      );
-      respondToHarnessInspections(connection.socket, readyCodexCatalog);
-      return { frames, socket: connection.socket, welcome };
-    };
-    const commandsOf = (frames: readonly HostToRunnerMessage[], type: string) =>
-      frames.flatMap((frame) =>
-        frame.type === "host.command" && frame.command.type === type ? [frame.command] : [],
-      );
-    const inputOf = (messageId: MessageId) =>
-      runtime!.store.database
-        .selectFrom("threadInputs")
-        .leftJoin("commands", "commands.id", "threadInputs.steerCommandId")
-        .select([
-          "commands.status as commandStatus",
-          "threadInputs.runId",
-          "threadInputs.state",
-          "threadInputs.steerCommandId",
-        ])
-        .where("threadInputs.messageId", "=", messageId)
-        .executeTakeFirstOrThrow();
-    const runOf = (seedInputId: MessageId) =>
-      runtime!.store.database
-        .selectFrom("runs")
-        .select(["bindingGeneration", "id", "status"])
-        .where("seedInputId", "=", seedInputId)
-        .executeTakeFirst();
-
-    const olderRunner = await connect(older);
-    runnerSocket = olderRunner.socket;
-    const attached = waitForMessage(
-      olderRunner.socket,
-      (message) => message.type === "host.executions.attached",
-    );
-    olderRunner.socket.send(
-      JSON.stringify({
-        ...olderRunner.welcome,
-        complete: true,
-        executions: [
-          {
-            bindingGeneration: binding.bindingGeneration,
-            environmentId,
-            nextOrdinal: 1,
-            runId: firstRunId,
-            terminal: false,
-            threadId: thread.id,
-            workspaceId: workspace.id,
-          },
-        ],
-        type: "runner.executions.attach",
-      }),
-    );
-    await expect(attached).resolves.toMatchObject({
-      results: [{ runId: firstRunId, status: "attached" }],
-    });
-    // The person writes while that reply is under way: accepted, and kept
-    // for the next reply rather than steered into a driver that may leave it
-    // unanswered.
-    const waiting = await say("steer-answer-follow-up", "Add a dinner option");
-    expect(waiting).toMatchObject({ disposition: "pending", run: null });
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
-    expect(commandsOf(olderRunner.frames, "run.steer")).toEqual([]);
-    olderRunner.socket.send(
-      JSON.stringify({
-        ...olderRunner.welcome,
-        event: event(firstRunId, binding.bindingGeneration, 1, "assistant.message", {
-          content: [{ text: "Here is the offsite plan.", type: "text" }],
-          messageId: createId("message"),
-        }),
-        type: "runner.event",
-      }),
-    );
-    olderRunner.socket.send(
-      JSON.stringify({
-        ...olderRunner.welcome,
-        event: event(firstRunId, binding.bindingGeneration, 2, "run.completed", {
-          status: "completed",
-        }),
-        type: "runner.event",
-      }),
-    );
-    // The next reply starts with the follow-up, and the Host asks for the
-    // update instead of sending it to this Runner.
-    await waitForCondition(
-      async () => (await runOf(waiting.message.id))?.status === "failed",
-      20_000,
-    );
-    const refusedRun = (await runOf(waiting.message.id))!;
-    await expect(
-      runtime.store.database
-        .selectFrom("workspaceEvents")
-        .select("data")
-        .where("runId", "=", refusedRun.id)
-        .where("type", "=", "run.failed")
-        .executeTakeFirstOrThrow(),
-    ).resolves.toMatchObject({
-      data: {
-        message: "Update this Runner so messages sent while Opensteer replies are answered.",
-      },
-    });
-    expect(commandsOf(olderRunner.frames, "run.execute")).toEqual([]);
-    const closed = waitForClose(olderRunner.socket);
-    olderRunner.socket.close();
-    await closed;
-
-    // Updated, the Runner comes back as a new boot that advertises it.
-    const updatedRunner = await connect(descriptorFor(`rbt_${randomUUID()}`, true));
-    runnerSocket = updatedRunner.socket;
-    updatedRunner.socket.send(
-      JSON.stringify({
-        ...updatedRunner.welcome,
-        complete: true,
-        executions: [],
-        type: "runner.executions.attach",
-      }),
-    );
-    const next = await say("steer-answer-next", "Plan it again");
-    if (!next.run) throw new Error("The next message did not start a reply");
-    const nextRunId = next.run.id;
-    await waitForCondition(
-      async () => commandsOf(updatedRunner.frames, "run.execute").length === 1,
-      20_000,
-    );
-    const execute = commandsOf(updatedRunner.frames, "run.execute")[0]!;
-    if (execute.type !== "run.execute") throw new Error("Expected the reply's execute");
-    updatedRunner.socket.send(
-      JSON.stringify({
-        ...updatedRunner.welcome,
-        commandId: execute.commandId,
-        correlationId: execute.correlationId,
-        type: "runner.command-accepted",
-      }),
-    );
-    const nextBinding = execute.context.bindingGeneration;
-    updatedRunner.socket.send(
-      JSON.stringify({
-        ...updatedRunner.welcome,
-        event: event(nextRunId, nextBinding, 0, "run.started", { status: "running" }),
-        type: "runner.event",
-      }),
-    );
-    await waitForCondition(async () => (await runOf(next.message.id))?.status === "running");
-    // Joined: the follow-up reaches the reply under way.
-    const refused = await say("steer-answer-refused", "Add the floor plan");
-    expect(refused).toMatchObject({ disposition: "steering", run: { id: nextRunId } });
-    await waitForCondition(
-      async () => commandsOf(updatedRunner.frames, "run.steer").length === 1,
-      20_000,
-    );
-    const behind = await say("steer-answer-behind", "And book the room");
-    expect(behind).toMatchObject({ disposition: "steering", run: { id: nextRunId } });
-    const steer = commandsOf(updatedRunner.frames, "run.steer")[0]!;
-    if (steer.type !== "run.steer") throw new Error("Expected a steer");
-    expect(steer.input.messageId).toBe(refused.message.id);
-    // The engine definitely did not take it.
-    updatedRunner.socket.send(
-      JSON.stringify({
-        ...updatedRunner.welcome,
-        commandId: steer.commandId,
-        correlationId: steer.correlationId,
-        error: {
-          code: "conflict",
-          message: "The engine could not take this message",
-          retryable: false,
-        },
-        type: "runner.command-rejected",
-      }),
-    );
-    await waitForCondition(async () => (await inputOf(behind.message.id)).state === "pending");
-    await expect(inputOf(refused.message.id)).resolves.toMatchObject({
-      commandStatus: null,
-      runId: null,
-      state: "pending",
-    });
-    await new Promise<void>((resolve) => setTimeout(resolve, 500));
-    // What the person sent after it never reached the Runner ahead of it.
-    expect(
-      commandsOf(updatedRunner.frames, "run.steer").map((command) =>
-        command.type === "run.steer" ? command.input.messageId : null,
-      ),
-    ).toEqual([refused.message.id]);
-    const failedHandOffs = await runtime.store.database
-      .selectFrom("commands")
-      .select(["status", "idempotencyKey"])
-      .where("runId", "=", nextRunId)
-      .where("type", "=", "run.steer")
-      .orderBy("createdAt", "asc")
-      .execute();
-    expect(failedHandOffs.map(({ status }) => status)).toEqual(["failed", "failed"]);
-    // The reply ends; the next one starts with both, in the order they were sent.
-    updatedRunner.socket.send(
-      JSON.stringify({
-        ...updatedRunner.welcome,
-        event: event(nextRunId, nextBinding, 1, "run.completed", { status: "completed" }),
-        type: "runner.event",
-      }),
-    );
-    await waitForCondition(
-      async () => commandsOf(updatedRunner.frames, "run.execute").length === 2,
-      20_000,
-    );
-    const following = commandsOf(updatedRunner.frames, "run.execute")[1]!;
-    if (following.type !== "run.execute") throw new Error("Expected the next reply's execute");
-    expect(following.inputs.map(({ messageId }) => messageId)).toEqual([
-      refused.message.id,
-      behind.message.id,
-    ]);
-  }, 90_000);
 
   it("opens a browser module stream beside the primary connection, once per ticket", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-browser-module-"));
@@ -3247,104 +2103,7 @@ integration("Host vertical slice", () => {
     auxiliarySocket = undefined;
   });
 
-  it("enrolls a messaging-only computer and projects its one module", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-messaging-module-"));
-    const hostPort = await freePort();
-    const config = testHostConfig(hostPort, dataDirectory, new URL("http://127.0.0.1:9"));
-    runtime = await createHostRuntime(config);
-    await runtime.listen();
-    const origin = config.runtimeOrigin.origin;
-    await initializeOwnerSession(origin);
-
-    const enrollment = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        allowedModules: ["messaging"],
-        idempotencyKey: "enroll-messaging-computer",
-        name: "Messaging computer",
-        type: "runner.enrollment.createManaged",
-      },
-      { headers: authorization(accessToken) },
-    );
-    if (enrollment.type !== "runner.enrollment.createManaged") {
-      throw new Error("Runner enrollment command mismatch.");
-    }
-
-    const runnerId = createId("runner");
-    const connection = await openRunnerSocket(`ws://127.0.0.1:${hostPort}/internal/v1/runners`);
-    runnerSocket = connection.socket;
-    const enrolled = await enrollRunnerSocket(
-      connection.socket,
-      RunnerDescriptorSchema.parse({
-        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
-        capabilities: [],
-        modules: {
-          messaging: {
-            capabilities: [
-              {
-                manifest: slackChannelProviderManifest,
-                provider: "slack",
-                transportKinds: ["socket"],
-              },
-            ],
-          },
-        },
-        name: "Messaging computer",
-        runnerId,
-        runnerKind: "managed",
-        runtimeVersion: "integration",
-      }),
-      enrollment.token,
-      connection.challenge,
-    );
-    connection.socket.send(
-      JSON.stringify({
-        ...enrolled.fence,
-        modules: [
-          {
-            checkedAt: new Date().toISOString(),
-            detail: null,
-            module: "messaging",
-            readiness: "ready",
-          },
-        ],
-        type: "runner.modules.report",
-      }),
-    );
-
-    await waitForCondition(async () => {
-      const listed = await testRpcData(
-        origin,
-        "machines.list",
-        {},
-        { headers: authorization(accessToken) },
-      );
-      const machine = listed.machines.find((candidate) => candidate.id === runnerId);
-      return machine?.modules.messaging?.readiness === "ready";
-    });
-    // A messaging computer is a Machine like any other: one row, one identity,
-    // and no agents module it never claimed.
-    const listed = await testRpcData(
-      origin,
-      "machines.list",
-      {},
-      { headers: authorization(accessToken) },
-    );
-    expect(listed.machines.find((machine) => machine.id === runnerId)).toMatchObject({
-      // A service describes no device: it is not a computer anybody recognises.
-      device: null,
-      modules: { messaging: expect.objectContaining({ readiness: "ready" }) },
-      ownerName: null,
-      ownership: "deployment",
-      status: "online",
-    });
-    expect(
-      listed.machines.find((machine) => machine.id === runnerId)?.modules.agents,
-    ).toBeUndefined();
-  });
-
-  it("stands a Personal Host up passwordlessly with native local Workspaces", async () => {
+  it("stands a Personal Host up passwordlessly with its one owner and agent home", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-local-bootstrap-"));
     // The native filesystem authority rejects symlinked parents. macOS exposes
     // `tmpdir()` through `/var`, which is itself a symlink to `/private/var`, so
@@ -3410,7 +2169,6 @@ integration("Host vertical slice", () => {
       ...baseConfig,
       // A Personal Deployment is single-user and loopback-only: nobody lends it
       // a machine from outside its own network.
-      acceptsExternalRunners: false,
       identity: {
         initialOwnerEnrollment: undefined,
         localPasswordEnabled: false,
@@ -3422,17 +2180,8 @@ integration("Host vertical slice", () => {
       personalAccountIssuer: accountIssuer,
       canonicalOrigin: new URL(`http://localhost:${hostPort}`),
       runtimeOrigin: new URL(`http://localhost:${hostPort}`),
-      workspace: {
-        deletionRetentionDays: 14,
-        shape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "personal" as const,
-        },
-        storage: {
-          kind: "local-directory",
-          ownerEnvironmentId,
-        },
-      },
+      deploymentShape: { kind: "personal" },
+      personal: { environmentId: ownerEnvironmentId, agentHome: join(dataDirectory, "home") },
     };
     runtime = await createHostRuntime(config, {
       accountDirectoryFetch: personalAccountGrantFetch,
@@ -3474,13 +2223,26 @@ integration("Host vertical slice", () => {
     // A Personal stack is a Host and the Main Runner on the same computer. That
     // Runner holds the local directories, so it has to be attached before any
     // Workspace can exist — including Main.
-    const mainRunner = await connectLocalWorkspaceRunner({
-      enrollmentToken: offered.runnerEnrollmentToken,
-      environmentId: ownerEnvironmentId,
-      name: "Main computer",
-      origin,
-      runnerKind: "main",
-    });
+    const mainRunner = await connectPrimary(
+      hostPort,
+      RunnerDescriptorSchema.parse({
+        runnerId: createId("runner"),
+        bootId: `rbt_${randomUUID()}`,
+        name: "Hosting computer",
+        runnerKind: "main",
+        runtimeVersion: "integration",
+        capabilities: [],
+        modules: {
+          agents: {
+            environmentIds: [ownerEnvironmentId],
+            harnessDrivers: [],
+            maxConcurrentRuns: 1,
+            providerStateModes: ["isolated"],
+          },
+        },
+      }),
+      { token: offered.runnerEnrollmentToken },
+    );
     runnerSocket = mainRunner.socket;
 
     // The Desktop-held loopback proof asks the person for no password or
@@ -3500,72 +2262,13 @@ integration("Host vertical slice", () => {
     expect(claimed.status).toBe(200);
     const sessionHeaders = { cookie: responseCookies(claimed).join("; "), origin };
     const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-    expect(bootstrap.user.instanceRole).toBe("administrator");
     expect(bootstrap.user.displayName).toBe("You");
     expect(bootstrap.sessionSurface).toBe("canonical");
     expect(bootstrap.sessionId).toMatch(/^ses_/u);
-    expect(bootstrap.workspaceSharingAvailable).toBe(false);
-    // Main exists without anyone naming it, and is the only Workspace.
-    expect(bootstrap.workspaces).toHaveLength(1);
-    expect(bootstrap.workspaces[0]).toMatchObject({
-      kind: "main",
-      // The bytes live on the Main Runner's disk, and the view names that
-      // machine rather than any path on it.
-      location: { environmentId: ownerEnvironmentId, kind: "machine" },
-      name: "Main",
+    expect(bootstrap.personalSettings.agentHome).toEqual({
+      computerId: mainRunner.fence.runnerId,
+      path: await realpath(join(dataDirectory, "home")),
     });
-    expect(JSON.stringify(bootstrap.workspaces[0])).not.toContain(dataDirectory);
-    const project = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "personal-project-workspace",
-        name: "Private research",
-        type: "workspace.create",
-      },
-      { headers: sessionHeaders },
-    );
-    if (project.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    expect(project.workspace).toMatchObject({
-      location: { environmentId: ownerEnvironmentId, kind: "machine" },
-      name: "Private research",
-      status: "ready",
-    });
-    const sharingProject = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "share-personal-project",
-        role: "collaborator",
-        type: "workspace.invitation.create",
-        workspaceId: project.workspace.id,
-      },
-      { headers: sessionHeaders },
-    );
-    expect(sharingProject.status).toBe(403);
-    expect(await sharingProject.json()).toMatchObject({
-      error: {
-        code: "forbidden",
-        message: "Workspace sharing is unavailable for this Deployment",
-      },
-    });
-
-    // Main is the mount point for project Workspaces, so it cannot be shared.
-    const mainWorkspace = bootstrap.workspaces[0];
-    if (!mainWorkspace) throw new Error("Main Workspace is missing.");
-    const sharingMain = await testRpcRequest(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "share-main",
-        role: "collaborator",
-        type: "workspace.invitation.create",
-        workspaceId: mainWorkspace.id,
-      },
-      { headers: sessionHeaders },
-    );
-    expect(sharingMain.status).toBe(403);
-
     // Setup is spent. The Main Runner enrollment stays replayable so a
     // supervisor that restarts mid-handshake can finish against the same
     // record instead of minting a second one.
@@ -3747,7 +2450,7 @@ integration("Host vertical slice", () => {
     // Owner authority is required even for an already authenticated device.
     await runtime.store.database
       .updateTable("users")
-      .set({ instanceRole: "user" })
+      .set({ disabledAt: new Date() })
       .where("id", "=", bootstrap.user.id)
       .execute();
     try {
@@ -3765,7 +2468,7 @@ integration("Host vertical slice", () => {
     } finally {
       await runtime.store.database
         .updateTable("users")
-        .set({ instanceRole: "administrator" })
+        .set({ disabledAt: null })
         .where("id", "=", bootstrap.user.id)
         .execute();
     }
@@ -4326,7 +3029,6 @@ integration("Host vertical slice", () => {
       ...baseConfig,
       // A Personal Deployment is single-user and loopback-only: nobody lends it
       // a machine from outside its own network.
-      acceptsExternalRunners: false,
       identity: {
         initialOwnerEnrollment: undefined,
         localPasswordEnabled: false,
@@ -4338,17 +3040,8 @@ integration("Host vertical slice", () => {
       personalAccountIssuer: accountIssuer,
       canonicalOrigin: new URL(`http://localhost:${hostPort}`),
       runtimeOrigin: new URL(`http://localhost:${hostPort}`),
-      workspace: {
-        deletionRetentionDays: 14,
-        shape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "personal" as const,
-        },
-        storage: {
-          kind: "local-directory",
-          ownerEnvironmentId,
-        },
-      },
+      deploymentShape: { kind: "personal" },
+      personal: { environmentId: ownerEnvironmentId, agentHome: join(dataDirectory, "home") },
     };
     runtime = await createHostRuntime(config, {
       accountDirectoryFetch: accountFetch,
@@ -4584,43 +3277,20 @@ integration("Host vertical slice", () => {
 });
 
 function testHostConfig(hostPort: number, hostDataDirectory: string, _storageUrl: URL): HostConfig {
-  return {
-    acceptsExternalRunners: true,
-    authSecret: "runtime-auth-secret".padEnd(40, "x"),
-    bindAddress: "127.0.0.1",
-    canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-    browserRuntime: { attachKeyId: "host-browser-v1" },
-    credentialKeyPath: undefined,
-    databaseUrl: databaseUrl ?? "postgres://unconfigured",
-    dataDirectory: hostDataDirectory,
-    identity: {
-      initialOwnerEnrollment: { lifetimeSeconds: 3_600, token: accessToken },
-      localPasswordEnabled: true,
-      oidcConfigPath: undefined,
-      signupPolicy: "invite-only",
-    },
-    executionLeaseMs: 90_000,
-    maxConcurrentDispatches: 4,
-    maxConcurrentTriggerDispatches: 4,
-    mode: "development",
-    port: hostPort,
-    exposure: "networked" as const,
-    privateKeyPath: undefined,
-    publicKeyPath: undefined,
-    runtimeOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-    workspace: localWorkspaceConfig(),
-  };
-}
-
-function localWorkspaceConfig(): HostConfig["workspace"] {
-  return {
-    deletionRetentionDays: 14,
-    shape: {
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
-    },
-    storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
-  };
+  return parseHostConfig({
+    OPENSTEER_MODE: "development",
+    OPENSTEER_DEPLOYMENT_KIND: "personal",
+    OPENSTEER_DATABASE_URL: databaseUrl ?? "postgres://unconfigured",
+    OPENSTEER_AUTH_SECRET: "runtime-auth-secret".padEnd(40, "x"),
+    OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: accessToken,
+    OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
+    OPENSTEER_HOST_DATA_DIR: hostDataDirectory,
+    OPENSTEER_PORT: String(hostPort),
+    OPENSTEER_BIND_ADDRESS: "127.0.0.1",
+    OPENSTEER_CANONICAL_ORIGIN: `http://127.0.0.1:${hostPort}`,
+    OPENSTEER_HOSTING_ENVIRONMENT_ID: hostingEnvironmentId,
+    OPENSTEER_AGENT_HOME: join(hostDataDirectory, "home"),
+  });
 }
 
 function withoutInitialOwner(config: HostConfig): HostConfig {
@@ -4631,53 +3301,22 @@ function withoutInitialOwner(config: HostConfig): HostConfig {
 }
 
 async function initializeOwnerSession(origin: string): Promise<void> {
-  const exchanged = await fetch(`${origin}/v1/rpc/auth.setup.exchange`, {
-    body: JSON.stringify({ token: accessToken }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      origin,
-    },
-    method: "POST",
-  });
-  if (!exchanged.ok) throw new Error(`Setup exchange failed with HTTP ${exchanged.status}.`);
-  const admissionCookies = responseCookies(exchanged);
   const claimed = await fetch(`${origin}/v1/rpc/auth.setup.claim`, {
-    body: JSON.stringify({
-      email: "alex@example.com",
-      kind: "password",
-      password: "integration-owner-password",
-    }),
+    method: "POST",
     headers: {
       [hostApiVersionHeader]: String(hostApiVersion),
       "content-type": "application/json",
-      cookie: admissionCookies.join("; "),
       origin,
     },
-    method: "POST",
+    body: JSON.stringify({ kind: "local-machine-owner", token: accessToken }),
   });
-  if (!claimed.ok) {
-    throw new Error(`Owner claim failed with HTTP ${claimed.status}: ${await claimed.text()}`);
-  }
-  const sessionCookies = responseCookies(claimed);
-  if (sessionCookies.length === 0) throw new Error("Host did not issue a session cookie.");
-  ownerSessionHeaders = { cookie: sessionCookies.join("; "), origin };
-  const enrollment = await testRpcData(
-    origin,
-    "commands.dispatch",
-    {
-      // The lend flow grants both modules this Deployment's own computer has.
-      allowedModules: ["agents", "browser"],
-      idempotencyKey: "test-local-runner",
-      name: "Test local computer",
-      type: "runner.enrollment.createLocal",
-    },
-    { headers: ownerSessionHeaders },
-  );
-  if (enrollment.type !== "runner.enrollment.createLocal") {
-    throw new Error("Runner enrollment command mismatch.");
-  }
-  runnerToken = enrollment.token;
+  if (!claimed.ok) throw new Error(`Owner claim failed: ${claimed.status}`);
+  ownerSessionHeaders = { cookie: responseCookies(claimed).join("; "), origin };
+  const bootstrap = await fetch(`${origin}/v1/local-bootstrap`, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  runnerToken = ((await bootstrap.json()) as { runnerEnrollmentToken: string })
+    .runnerEnrollmentToken;
 }
 
 function responseCookies(response: Response): string[] {
@@ -4690,7 +3329,7 @@ function responseCookies(response: Response): string[] {
 async function administratorId(store: OpensteerStore) {
   const user = await store.firstUser();
   const full = user ? await store.userById(user.id) : null;
-  if (!full || full.instanceRole !== "administrator") {
+  if (!full) {
     throw new Error("Test administrator has not been initialized");
   }
   return full.id;
@@ -4767,7 +3406,7 @@ async function waitForCondition(
 
 // The Host seeds an Environment's default harness in its post-registration work,
 // which can finish after enrollment has already answered the Runner.
-async function seededHarness(store: HostRuntime["store"], environmentId: EnvironmentId) {
+async function seededHarness(store: PersonalHostRuntime["store"], environmentId: EnvironmentId) {
   await waitForCondition(
     async () => (await store.listHarnessInstances({ environmentIds: [environmentId] })).length > 0,
   );
@@ -4840,11 +3479,6 @@ function agentsRunnerDescriptor(input: {
       agents: {
         environmentIds: input.environmentIds,
         harnessDrivers: input.harnessDrivers,
-        localStorage: input.localStorage ?? {
-          storageAuthorityId: runtimeTestDisk.storageAuthorityId,
-          bindings: [],
-          truncated: false,
-        },
         maxConcurrentRuns: input.maxConcurrentRuns ?? 1,
         providerStateModes: input.providerStateModes ?? ["ambient", "isolated"],
         workspaceBackings: input.workspaceBackings ?? ["local-directory"],
@@ -4853,11 +3487,9 @@ function agentsRunnerDescriptor(input: {
     },
     name: input.name,
     runnerId: input.runnerId,
-    runnerKind: input.runnerKind,
+    runnerKind: "main",
     runtimeVersion: input.runtimeVersion,
   });
-  if (input.localStorage == null && descriptor.modules.agents)
-    descriptor.modules.agents.localStorage = runtimeTestDisk;
   return descriptor;
 }
 
@@ -4872,14 +3504,6 @@ async function enrollRunnerSocket(
   readonly publicKey: KeyObject;
 }> {
   const challenge = RunnerChallengeSchema.parse(challengeInput);
-  const storageAuthorityId = descriptor.modules.agents?.localStorage?.storageAuthorityId;
-  if (storageAuthorityId) {
-    diskBySocket.get(socket)?.stop();
-    diskBySocket.set(
-      socket,
-      attachLocalWorkspaceDisk(socket, { inventory: descriptor.modules.agents!.localStorage! }),
-    );
-  }
   const pair = generateKeyPairSync("ed25519");
   const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
   const credential = RunnerEnrollmentCredentialSchema.parse({
@@ -4923,7 +3547,6 @@ async function openRunnerSocket(url: string): Promise<{
   readonly socket: WebSocket;
 }> {
   const socket = new WebSocket(url);
-  diskBySocket.set(socket, attachLocalWorkspaceDisk(socket, { inventory: runtimeTestDisk }));
   const challenge = waitForMessage(socket, (message) => message.type === "host.challenge");
   await new Promise<void>((resolve, reject) => {
     socket.once("open", resolve);

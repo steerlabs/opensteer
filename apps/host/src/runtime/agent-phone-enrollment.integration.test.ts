@@ -27,12 +27,10 @@ import {
   configurePersonalRemoteAccess,
   createMachineAccessDatabase,
   resetMachineAccessDatabase,
-  signUpUser,
-  startMachineAccessHost,
-  startPersonalMachineAccessHost,
+  startMachineAccessWireHost,
   waitForCondition,
   type MachineAccessHost,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 /*
  * An Android phone joins a Deployment with a one-use enrollment its owner
@@ -83,7 +81,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 120_000);
 
   it("retains an Opensteer phone's signed identity through enrollment, reconnect and update refusal", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const active = host;
     const runnerId = createId("runner");
     const device = { app: "opensteer", form: "phone", platform: "android" } as const;
@@ -155,7 +153,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 120_000);
 
   it("admits whole signed v2 advertisements and refuses mixed formats without consuming enrollment", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const runnerId = createId("runner");
     const baseline = phoneDescriptor(runnerId);
     const descriptor = {
@@ -211,13 +209,13 @@ integration.sequential("An Android phone joining a Deployment", () => {
           providerStateModes: ["isolated"],
           workspaceBackings: ["local-directory"],
           localStorage: {
-            storageAuthorityId: createId("storageAuthority"),
+            storageAuthorityId: `lsa_${randomUUID()}`,
             truncated: false,
             bindings: [
               {
-                bindingId: createId("workspaceBinding"),
+                bindingId: `wbd_${randomUUID()}`,
                 generation: 1,
-                workspaceId: createId("workspace"),
+                workspaceId: `wsp_${randomUUID()}`,
                 state: "future-state",
               },
             ],
@@ -305,7 +303,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     );
     expect(release).not.toBeNull();
     const newerRelease = () => release;
-    host = await startMachineAccessHost(isolated!.url, {
+    host = await startMachineAccessWireHost(isolated!.url, {
       logger,
       phoneUpdateRelease: newerRelease,
     });
@@ -393,6 +391,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
       logger,
       phoneUpdateRelease: newerRelease,
     });
+    if (restarted.kind !== "personal") throw new Error("Expected a Personal Host");
     await restarted.listen();
     host = {
       ...before,
@@ -491,7 +490,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 60_000);
 
   it("reports an inconsistent enrolled key equally for admission and update refusal", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const minted = await mintPhone(host, "inconsistent-enrolled-key");
     const descriptor = phoneDescriptor(createId("runner"));
     const arrived = await presentPhone(host, descriptor, { token: minted.token });
@@ -540,7 +539,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   });
 
   it("preserves all computer issuance grants and old signed enrollment-key replay", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const keys = generateKeyPairSync("ed25519");
     const issuer = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
@@ -679,7 +678,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 120_000);
 
   it("mints the phone grant with the Host's own address and refuses shell and execution", async () => {
-    host = await startMachineAccessHost(isolated!.url, { deploymentName: "Acme Research" });
+    host = await startMachineAccessWireHost(isolated!.url, { deploymentName: "Acme Research" });
     const minted = await mintPhone(host, "pixel-1");
     const authority = await hostAuthority(host);
     expect(minted).toEqual({
@@ -775,7 +774,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 120_000);
 
   it("tells a phone by reason that its enrollment expired, then closes", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const minted = await mintPhone(host, "pixel-expired");
     await host.store.database
       .updateTable("runnerEnrollments")
@@ -797,7 +796,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
   }, 120_000);
 
   it("pairs a Personal phone only over the live remote-access route, and sends it away by reason when that route goes", async () => {
-    const personal = await startPersonalMachineAccessHost(isolated!.url);
+    const personal = await startMachineAccessWireHost(isolated!.url);
     host = personal;
 
     // With remote access off there is no address a phone could use, so
@@ -825,7 +824,11 @@ integration.sequential("An Android phone joining a Deployment", () => {
     ).toHaveLength(1);
 
     const routeOrigin = "https://personal.agent-phone.test";
-    await configurePersonalRemoteAccess(personal, { mode: "private", routeOrigin });
+    await configurePersonalRemoteAccess(personal, {
+      schemaVersion: 1,
+      mode: "private",
+      routeOrigin,
+    });
     const minted = await mintPhone(personal, "pixel-personal");
     expect(minted.pairing).toMatchObject({ deploymentName: "Mac mini", hostUrl: routeOrigin });
 
@@ -839,7 +842,11 @@ integration.sequential("An Android phone joining a Deployment", () => {
       runnerId,
     });
 
-    await configurePersonalRemoteAccess(personal, { mode: "off", routeOrigin: null });
+    await configurePersonalRemoteAccess(personal, {
+      schemaVersion: 1,
+      mode: "off",
+      routeOrigin: null,
+    });
     await waitForCondition(async () => {
       const state = await personal.store.database
         .selectFrom("personalRemoteAccess")
@@ -879,7 +886,7 @@ integration.sequential("Retiring a phone enrollment", () => {
   }, 120_000);
 
   it("makes a pending enrollment unusable at once, and says so again only as expired", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const minted = await mintPhone(host, "pixel-retired");
     expect(await pendingEnrollments(host)).toContain(minted.enrollmentId);
 
@@ -897,7 +904,7 @@ integration.sequential("Retiring a phone enrollment", () => {
   }, 120_000);
 
   it("answers consumed for a redeemed enrollment and expired for one that ran out", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const redeemed = await mintPhone(host, "pixel-redeemed");
     const runnerId = createId("runner");
     expect(
@@ -922,26 +929,8 @@ integration.sequential("Retiring a phone enrollment", () => {
     expect(await retirePhone(host, lapsed.enrollmentId)).toMatchObject({ state: "expired" });
   }, 120_000);
 
-  it("lets only the enrollment's owner retire it, without saying whether it exists", async () => {
-    host = await startMachineAccessHost(isolated!.url, { signupPolicy: "open" });
-    const minted = await mintPhone(host, "pixel-owned");
-    const stranger = await signUpUser(host, {
-      email: "stranger@example.test",
-      password: "stranger-user-password",
-    });
-    const theirs = await retireRefusal(host, minted.enrollmentId, stranger.headers);
-    const nobodys = await retireRefusal(host, `ren_${randomUUID()}`, stranger.headers);
-    expect(theirs).toEqual(nobodys);
-    expect(theirs).toMatchObject({ error: { code: "not_found" }, ok: false });
-    expect(await pendingEnrollments(host)).toContain(minted.enrollmentId);
-    const runnerId = createId("runner");
-    expect(
-      (await presentPhone(host, phoneDescriptor(runnerId), { token: minted.token })).welcome,
-    ).toMatchObject({ runnerId });
-  }, 120_000);
-
   it("never answers retired for an enrollment a phone redeems at the same moment", async () => {
-    host = await startMachineAccessHost(isolated!.url);
+    host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     for (let round = 0; round < 12; round += 1) {
       const minted = await mintPhone(host, `pixel-race-${round}`);
       const runnerId = createId("runner");
@@ -985,20 +974,6 @@ async function retirePhone(host: MachineAccessHost, enrollmentId: string) {
   );
   if (retired.type !== "runner.enrollment.retire") throw new Error("Not a retirement.");
   return retired;
-}
-
-async function retireRefusal(
-  host: MachineAccessHost,
-  enrollmentId: string,
-  headers: Record<string, string>,
-): Promise<unknown> {
-  const response = await testRpcRequest(
-    host.origin,
-    "commands.dispatch",
-    { enrollmentId, idempotencyKey: `retire-${randomUUID()}`, type: "runner.enrollment.retire" },
-    { headers },
-  );
-  return response.json();
 }
 
 async function pendingEnrollments(host: MachineAccessHost): Promise<string[]> {

@@ -8,7 +8,12 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, afterAll, expect, it, vi } from "vitest";
 import { OpensteerError, createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, migrateToLatest, PersonalDesktopUpdateStore } from "@opensteer/database";
+import {
+  createDatabase,
+  migrateToLatest,
+  PersonalDesktopUpdateStore,
+  OpensteerStore,
+} from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { DesktopUpdateState } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
@@ -32,7 +37,6 @@ const session: AuthenticatedSession = {
     email: "desktop-owner@example.test",
     emailVerified: true,
     image: null,
-    instanceRole: "administrator",
     disabledAt: null,
   },
 };
@@ -50,7 +54,20 @@ const makeService = () => new PersonalDesktopUpdate(store);
 const request = { idempotencyKey: "update-once", intent: { action: "update" as const } };
 beforeAll(async () => {
   await migrateToLatest(database);
+  const deployment = await new OpensteerStore(database).ensureDeployment({
+    canonicalOrigin: "http://127.0.0.1:4310",
+    deploymentId: createId("deployment"),
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
   await database.insertInto("users").values(session.user).execute();
+  await (
+    await import("@opensteer/database/test-support/personal")
+  ).seedPersonalOwnerResources(database, {
+    deploymentId: deployment.id,
+    userId,
+    path: "/tmp/desktop-update-personal-home",
+  });
 });
 beforeEach(async () => {
   await database.deleteFrom("personalDesktopUpdate").execute();
@@ -91,7 +108,7 @@ it("persists before acknowledgement, replays exactly, refuses conflicting keys a
   expect(other).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
   expect(competing).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
   await expect(
-    updates.request({ ...session, user: { ...session.user, instanceRole: "user" } }, request),
+    updates.request({ ...session, user: { ...session.user, id: createId("user") } }, request),
   ).rejects.toMatchObject({ code: "forbidden" });
   await database
     .updateTable("authSessions")
@@ -187,16 +204,7 @@ async function fixture(updates: PersonalDesktopUpdate | null) {
           absoluteExpiresAt: row.absoluteExpiresAt,
         };
       },
-      userSessionProfile: async () => ({
-        ...session.user,
-        instanceRole: (
-          await database
-            .selectFrom("users")
-            .select("instanceRole")
-            .where("id", "=", userId)
-            .executeTakeFirstOrThrow()
-        ).instanceRole,
-      }),
+      userSessionProfile: async () => session.user,
       requireSession: async (headers: Headers) => {
         if (headers.get("cookie") !== "session=owner")
           throw new OpensteerError({ code: "unauthorized", message: "No session" });
@@ -218,7 +226,7 @@ async function fixture(updates: PersonalDesktopUpdate | null) {
       )
       .send({ error: code });
   });
-  registerDesktopUpdateMaintenance(app, authenticator, updates);
+  registerDesktopUpdateMaintenance(app, authenticator, updates, database);
   return app;
 }
 
@@ -267,18 +275,18 @@ it("maintenance ignores the client epoch but retains authentication, current own
     ).toBe(409);
     await database
       .updateTable("users")
-      .set({ instanceRole: "user" })
+      .set({ disabledAt: new Date() })
       .where("id", "=", userId)
       .execute();
     expect((await app.inject({ url: path, headers })).statusCode).toBe(403);
-    const member = { ...session, user: { ...session.user, instanceRole: "user" as const } };
-    await expect(makeService().request(member, request)).rejects.toMatchObject({
+    const other = { ...session, user: { ...session.user, id: createId("user") } };
+    await expect(makeService().request(other, request)).rejects.toMatchObject({
       code: "forbidden",
     });
   } finally {
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ disabledAt: null })
       .where("id", "=", userId)
       .execute();
     await app.close();

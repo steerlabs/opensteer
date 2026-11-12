@@ -70,7 +70,7 @@ it("serves and replaces automatic models for the signed-in person only, behind i
         deploymentId: createId("deployment"),
         hostInstanceId: createId("hostInstance"),
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: "personal" },
       }),
       store: { setAutomaticModelConfig } as never,
     }),

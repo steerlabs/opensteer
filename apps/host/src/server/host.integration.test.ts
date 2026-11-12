@@ -34,9 +34,8 @@ import {
   type RunnerId,
   type ThreadAccessMode,
   type UserId,
-  type Workspace,
 } from "@opensteer/core";
-import type { OpensteerStore, WorkspaceFilesAdmission } from "@opensteer/database";
+import type { OpensteerStore } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
@@ -48,16 +47,13 @@ import {
   type HarnessInstanceCatalog,
   type RunnerHarnessDriver,
 } from "@opensteer/protocol";
-import {
-  bootstrapDiagnosticHeader,
-  BootstrapNoticeDiagnostics,
-} from "@opensteer/shared/bootstrapDiagnostics";
+
 import type { FastifyInstance, LightMyRequestResponse } from "fastify";
 import { generateKeyPairSync } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   threadPlacementOptions,
   type EnvironmentSummary,
@@ -74,6 +70,47 @@ type StringDriverKind<T> = T extends { readonly driverKind: unknown }
 type TestRunnerHarnessDriver = StringDriverKind<RunnerHarnessDriver>;
 
 const temporaryDirectories: string[] = [];
+const fixtureOwnerId = createId("user");
+let personalFixture: Awaited<
+  ReturnType<typeof import("@opensteer/database/test-support/store").createStoreFixture>
+>;
+const personalFolder: import("@opensteer/core").TaskFolder = {
+  computerId: createId("runner"),
+  path: "/tmp/host-route-personal-home",
+};
+beforeAll(async () => {
+  personalFixture = await (
+    await import("@opensteer/database/test-support/store")
+  ).createStoreFixture();
+  const deployment = await personalFixture.store.ensureDeployment({
+    canonicalOrigin: "https://opensteer.example",
+    deploymentId: createId("deployment"),
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
+  await personalFixture.database
+    .insertInto("users")
+    .values({
+      id: fixtureOwnerId,
+      displayName: "Owner",
+      email: "owner@example.test",
+      emailVerified: true,
+      image: null,
+      disabledAt: null,
+    })
+    .execute();
+  const seeded = await (
+    await import("@opensteer/database/test-support/personal")
+  ).seedPersonalOwnerResources(personalFixture.database, {
+    deploymentId: deployment.id,
+    userId: fixtureOwnerId,
+    path: "/tmp/host-route-personal-home",
+  });
+  personalFolder.computerId = seeded.agentHome.computerId;
+});
+afterAll(async () => {
+  await personalFixture?.close();
+});
 
 function createHostServer(dependencies: HostServerTestOverrides) {
   const complete = hostServerTestDependencies(dependencies);
@@ -89,7 +126,7 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   const store = Object.assign(
     {
       countLiveThreadsByEnvironment: async () => new Map(),
-      listLocalWorkspacesForEnvironments: async () => [],
+      database: personalFixture.database,
       listPendingRunnerEnrollments: async () => [],
       listRunners: async () => ({ nextCursor: null, runners: [] }),
     },
@@ -97,6 +134,15 @@ function createHostServer(dependencies: HostServerTestOverrides) {
   ) as typeof complete.store;
   return createProductionHostServer({
     ...complete,
+    folders: {
+      canExecute: () => true,
+      resolve: async (_id: UserId, folder?: import("@opensteer/core").TaskFolder) => ({
+        environmentId: (await complete.store.listEnvironmentsForUser(fixtureOwnerId))[0]?.id,
+        folder: folder ?? personalFolder,
+      }),
+      assertAvailable: async () => undefined,
+      admit: async (folder: import("@opensteer/core").TaskFolder) => folder,
+    } as never,
     authenticator: {
       ...authenticator,
       authenticateSessionContext: async (headers, options) => ({
@@ -126,7 +172,6 @@ function testAuthenticatedSession(userId: UserId): AuthenticatedSession {
       emailVerified: true,
       id: userId,
       image: null,
-      instanceRole: "administrator",
     },
   };
 }
@@ -183,14 +228,13 @@ const testDiscovery = signHostDiscovery(testDiscoveryKeys, {
     algorithm: "Ed25519",
   },
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
-    kind: "server" as const,
+    kind: "personal" as const,
   },
 });
 const personalDiscovery = signHostDiscovery(testDiscoveryKeys, {
   ...testDiscovery.document,
   canonicalOrigin: "http://127.0.0.1:47821",
-  deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+  deploymentShape: { kind: "personal" },
 });
 
 describe("public Runner challenge admission", () => {
@@ -199,12 +243,11 @@ describe("public Runner challenge admission", () => {
     async (loopbackOriginAliases) => {
       const actual = core.deploymentPolicy({
         kind: personalDiscovery.document.deploymentShape.kind,
-        defaultWorkspaceBacking: "local-directory",
       });
       vi.spyOn(core, "deploymentPolicy").mockReturnValue({
         ...actual,
-        loopbackOriginAliases,
-        services: { ...actual.services, personalRemoteAccess: !loopbackOriginAliases },
+        loopbackOnly: loopbackOriginAliases,
+        personalRemoteAccess: !loopbackOriginAliases,
       });
       const app = await createHostServer({
         discovery: personalDiscovery,
@@ -303,7 +346,7 @@ describe("Host signing keys", () => {
   });
 
   it("binds cookie sessions to the configured origin for mutations", async () => {
-    const owner = createId("user");
+    const owner = fixtureOwnerId;
     const session = {
       absoluteExpiresAt: new Date(Date.now() + 60_000).toISOString(),
       createdAt: new Date().toISOString(),
@@ -316,7 +359,6 @@ describe("Host signing keys", () => {
         emailVerified: true,
         id: owner,
         image: null,
-        instanceRole: "administrator",
       },
     } satisfies AuthenticatedSession;
     const requireSession = vi.fn(async () => session);
@@ -340,7 +382,7 @@ describe("Host signing keys", () => {
   });
 
   it("applies the exact-origin cookie boundary to realtime WebSocket handshakes", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const session = testAuthenticatedSession(ownerId);
     const authenticateSession = vi.fn(async () => session);
     const app = await createHostServer({
@@ -367,9 +409,7 @@ describe("Host signing keys", () => {
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
-      securityEffects: {} as never,
       store: {} as never,
-      workspaces: {} as never,
     } satisfies HostServerTestOverrides);
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
@@ -428,7 +468,7 @@ describe("Host signing keys", () => {
   });
 
   it("delivers tunnel credentials only to the process-capability executor, never an owner session", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const connectCredential = vi.fn(async () => ({ tunnelToken: "private-connect-token" }));
     const capability = "process-capability".padEnd(43, "x");
     const app = await createHostServer({
@@ -502,7 +542,7 @@ describe("Host signing keys", () => {
   it("advertises exactly the optional features whose routes it registered", async () => {
     const app = await createHostServer({
       authenticator: {
-        authenticateUser: async () => createId("user"),
+        authenticateUser: async () => fixtureOwnerId,
         identity: {
           configuration: async () => ({ localPasswordEnabled: false, oidcProviders: [] }),
           nativeOAuthAuthorizationServerMetadata: () => async () => new Response(null),
@@ -575,7 +615,7 @@ describe("rpc envelope", () => {
       readonly listRunners?: OpensteerStore["listRunners"];
     } = {},
   ) {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     return createHostServer({
       authenticator: {
         authenticateSession:
@@ -591,7 +631,7 @@ describe("rpc envelope", () => {
       } as never,
       store: {
         countLiveThreadsByEnvironment: async () => new Map(),
-        listLocalWorkspacesForEnvironments: async () => [],
+        database: personalFixture.database,
         listPendingRunnerEnrollments: overrides.listPendingRunnerEnrollments ?? (async () => []),
         listRunners: overrides.listRunners ?? (async () => ({ runners: [] })),
       } as never,
@@ -618,7 +658,7 @@ describe("rpc envelope", () => {
   });
 
   it("refuses a caller on another protocol epoch before it authenticates or dispatches", async () => {
-    const authenticateSession = vi.fn(async () => testAuthenticatedSession(createId("user")));
+    const authenticateSession = vi.fn(async () => testAuthenticatedSession(fixtureOwnerId));
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
@@ -716,10 +756,10 @@ describe("rpc envelope", () => {
   });
 
   it("lets a signed-in member list only their own computers and pending additions", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const session = {
       ...testAuthenticatedSession(ownerId),
-      user: { ...testAuthenticatedSession(ownerId).user, instanceRole: "user" as const },
+      user: testAuthenticatedSession(ownerId).user,
     };
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const listPendingRunnerEnrollments = vi.fn(async () => [
@@ -768,10 +808,10 @@ describe("rpc envelope", () => {
   });
 
   it("lets owners revoke their own computer without deployment administration", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const session = {
       ...testAuthenticatedSession(ownerId),
-      user: { ...testAuthenticatedSession(ownerId).user, instanceRole: "user" as const },
+      user: testAuthenticatedSession(ownerId).user,
     };
     const runnerId = createId("runner");
     const revokeRunner = vi.fn(async () => ({
@@ -812,7 +852,7 @@ describe("rpc envelope", () => {
   });
 
   it("tells the person's other devices when a connected agent is approved or revoked", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const connectionId = `mcn_${crypto.randomUUID()}`;
     const revoke = vi.fn(async () => undefined);
     const decide = vi.fn(async () => ({
@@ -850,7 +890,7 @@ describe("rpc envelope", () => {
   });
 
   it("publishes the terminal events for work the removed computer never claimed", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     const terminalEvent = {
       id: createId("event"),
@@ -871,7 +911,9 @@ describe("rpc envelope", () => {
         },
       },
       type: "run.failed",
-      workspaceId: createId("workspace"),
+      folder: personalFolder,
+      purpose: "task",
+      teamOrigin: null,
     };
     const publish = vi.fn();
     const app = await createHostServer({
@@ -910,7 +952,7 @@ describe("rpc envelope", () => {
   });
 
   it("surfaces the refusal to retire the computer a Personal Deployment runs on", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     const revokeRunner = vi.fn(async () => {
       throw new OpensteerError({
@@ -948,7 +990,7 @@ describe("rpc envelope", () => {
   });
 
   it("shows a computer's access with its live byte totals and whether owner reach is real", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const withShell = createId("runner");
     const withoutShell = createId("runner");
     const sessionId = ShellSessionIdSchema.parse(`shs_${globalThis.crypto.randomUUID()}`);
@@ -1026,22 +1068,13 @@ describe("rpc envelope", () => {
   });
 
   it.each([
-    ["owner", "server", "user", "local", "user", true],
-    ["administrator who is not the owner", "server", "user", "local", "administrator", false],
-    [
-      "administrator of a Deployment-owned computer",
-      "server",
-      "deployment",
-      "managed",
-      "administrator",
-      false,
-    ],
-    ["owner of a Personal Main computer", "personal", "deployment", "main", "administrator", true],
+    ["hosting computer", "personal", "deployment", "main", "administrator", true],
+    ["attached computer", "personal", "user", "local", "administrator", true],
   ] as const)(
     "projects apps for the %s according to effective ownership",
     async (_label, deploymentKind, ownerKind, runnerKind, instanceRole, expected) => {
-      const viewerId = createId("user");
-      const otherOwnerId = createId("user");
+      const viewerId = fixtureOwnerId;
+      const otherOwnerId = fixtureOwnerId;
       const runnerId = createId("runner");
       const apps = [
         {
@@ -1089,14 +1122,7 @@ describe("rpc envelope", () => {
               [
                 runnerId,
                 {
-                  effectiveOwner:
-                    deploymentKind === "personal"
-                      ? viewerId
-                      : ownerKind === "user"
-                        ? instanceRole === "user"
-                          ? viewerId
-                          : otherOwnerId
-                        : null,
+                  effectiveOwner: viewerId,
                   ownerKind,
                 },
               ],
@@ -1142,7 +1168,7 @@ describe("rpc envelope", () => {
   );
 
   it("claims the revoked reason between the durable write and the stream teardown", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     const order: string[] = [];
     const shellControl = {
@@ -1221,7 +1247,7 @@ describe("rpc envelope", () => {
   });
 
   it("carries the machine-access idempotency keys into the recorded results", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     const sessionId = ShellSessionIdSchema.parse(`shs_${globalThis.crypto.randomUUID()}`);
     const updateMachineAccessPolicy = vi.fn(async () => ({
@@ -1287,7 +1313,7 @@ describe("rpc envelope", () => {
   });
 
   it("closes sessions on a committed access save, and leaves them alone on a replay", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const runnerId = createId("runner");
     // A store that records the key the way the real one does: the second save
     // with the same key commits nothing and replays the recorded answer.
@@ -1355,34 +1381,6 @@ describe("rpc envelope", () => {
     }
   });
 
-  it("includes deployment-owned computers only for administrators", async () => {
-    const ownerId = createId("user");
-    const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] }));
-    const listPendingRunnerEnrollments = vi.fn(async () => []);
-    const app = await machinesServer({
-      authenticateSession: async () => testAuthenticatedSession(ownerId),
-      listPendingRunnerEnrollments,
-      listRunners,
-    });
-    try {
-      const response = await injectRpcRequest(app, "machines.list", {});
-      expect(response.statusCode, response.body).toBe(200);
-      expect(listRunners).toHaveBeenCalledWith({
-        includeDeployment: true,
-        includeOtherOwners: true,
-        limit: 100,
-        ownerId,
-      });
-      expect(listPendingRunnerEnrollments).toHaveBeenCalledWith({
-        includeDeployment: true,
-        limit: 100,
-        ownerId,
-      });
-    } finally {
-      await app.close();
-    }
-  });
-
   it("repeats the consent endpoint's own refusal instead of a generic rejection", async () => {
     const app = await createHostServer({
       authenticator: {
@@ -1415,7 +1413,7 @@ describe("rpc envelope", () => {
   });
 
   it("allows header session revocation and protects cookie mutations", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1469,7 +1467,7 @@ describe("rpc envelope", () => {
   });
 
   it("lets a header credential end its own session without a browser origin", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1514,7 +1512,7 @@ describe("rpc envelope", () => {
   });
 
   it("lets a Personal remote session end itself, which is how a phone signs out", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
       identity: { ...testIdentity, requireSession: async () => session, revokeSession } as never,
@@ -1549,7 +1547,7 @@ describe("rpc envelope", () => {
   });
 
   it("allows a header credential to request removal of another session owned by its user", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const revokeSession = vi.fn(async () => undefined);
     const authenticator = new HostAuthenticator({
       identity: {
@@ -1596,7 +1594,7 @@ describe("rpc envelope", () => {
   it.each(["provider", "mcp"] as const)(
     "dispatches %s app returns to the owner service",
     async (kind) => {
-      const session = testAuthenticatedSession(createId("user"));
+      const session = testAuthenticatedSession(fixtureOwnerId);
       const authenticator = new HostAuthenticator({
         identity: {
           ...testIdentity,
@@ -1652,7 +1650,7 @@ describe("rpc envelope", () => {
   );
 
   it("allows header integration uninstall and protects cookie mutations", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const authenticator = new HostAuthenticator({
       identity: {
         ...testIdentity,
@@ -1730,7 +1728,7 @@ describe("rpc envelope", () => {
   });
 
   it("allows Personal remote administration and disconnecting", async () => {
-    const session = testAuthenticatedSession(createId("user"));
+    const session = testAuthenticatedSession(fixtureOwnerId);
     const authenticator = new HostAuthenticator({
       identity: { ...testIdentity, requireSession: async () => session } as never,
       personalRemote: {
@@ -1825,7 +1823,7 @@ describe("Agent Phone pairing target", () => {
     readonly deploymentName?: string | null;
     readonly personalRoute?: string | null;
   }) {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const document = {
       ...(input.personalRoute === undefined ? testDiscovery : personalDiscovery).document,
       ...(input.canonicalOrigin ? { canonicalOrigin: input.canonicalOrigin } : {}),
@@ -1866,35 +1864,6 @@ describe("Agent Phone pairing target", () => {
     } satisfies HostServerTestOverrides);
     return { accessRoute, app };
   }
-
-  it("answers a server's canonical origin with its Deployment and Host instance", async () => {
-    const { app } = await targetServer({});
-    try {
-      const response = await injectRpcRequest(app, "agentPhone.target.get", {});
-      expect(response.statusCode).toBe(200);
-      expect(rpcData(response)).toEqual({
-        deploymentId: testDiscovery.document.deploymentId,
-        deploymentName: "Test",
-        hostInstanceId: testDiscovery.document.hostInstanceId,
-        hostUrl: "https://opensteer.example",
-      });
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("calls an unnamed Deployment by its address, as its Settings page does", async () => {
-    const { app } = await targetServer({ deploymentName: null });
-    try {
-      const response = await injectRpcRequest(app, "agentPhone.target.get", {});
-      expect(rpcData(response)).toMatchObject({
-        deploymentName: "opensteer.example",
-        hostUrl: "https://opensteer.example",
-      });
-    } finally {
-      await app.close();
-    }
-  });
 
   it("answers a Personal Deployment's live route, never its loopback origin", async () => {
     const { accessRoute, app } = await targetServer({
@@ -1950,7 +1919,7 @@ describe("Agent Phone pairing target", () => {
 
 describe("Request routes", () => {
   it("seals a live form response and queues the one Runner control command", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const request = pendingRequestFixture("harness.input");
     const sendControl = vi.fn(async () => ({
       commandId: createId("command"),
@@ -2011,7 +1980,7 @@ describe("Optional subsystem registration", () => {
       requestResponseVault: {} as never,
 
       agentTools: { handle } as never,
-      authenticator: { authenticateUser: async () => createId("user") } as never,
+      authenticator: { authenticateUser: async () => fixtureOwnerId } as never,
       browser: {} as never,
       commands: {} as never,
       credentials: {} as never,
@@ -2022,9 +1991,7 @@ describe("Optional subsystem registration", () => {
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
-      securityEffects: {} as never,
       store: {} as never,
-      workspaces: {} as never,
     } satisfies HostServerTestOverrides);
     try {
       const response = await app.inject({
@@ -2047,7 +2014,7 @@ describe("Optional subsystem registration", () => {
       requestResponseVault: {} as never,
 
       agentTools: {} as never,
-      authenticator: { authenticateUser: async () => createId("user") } as never,
+      authenticator: { authenticateUser: async () => fixtureOwnerId } as never,
       browser: {} as never,
       commands: {} as never,
       credentials: {} as never,
@@ -2058,9 +2025,7 @@ describe("Optional subsystem registration", () => {
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
-      securityEffects: {} as never,
       store: {} as never,
-      workspaces: {} as never,
     } satisfies HostServerTestOverrides);
     try {
       for (const url of [
@@ -2073,292 +2038,6 @@ describe("Optional subsystem registration", () => {
       }
     } finally {
       await app.close();
-    }
-  });
-});
-
-describe("Workspace route projections", () => {
-  it("does not expose internal storage authority when retrying storage", async () => {
-    const ownerId = createId("user");
-    const workspace = localWorkspaceFixture(ownerId, {
-      name: "Research",
-      volumeId: "workspace-retry-projection",
-    });
-    const retry = vi.fn(async () => workspace);
-    const app = await createHostServer({
-      requestResponseVault: {} as never,
-
-      agentTools: {} as never,
-      authenticator: { authenticateUser: async () => ownerId } as never,
-      browser: {} as never,
-      commands: {} as never,
-      credentials: {} as never,
-      discovery: testDiscovery,
-      egress: {} as never,
-      files: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime(),
-      runnerAuthenticator: {} as never,
-      runners: {} as never,
-      securityEffects: {} as never,
-      store: {} as never,
-      workspaces: { retry } as never,
-    } satisfies HostServerTestOverrides);
-    try {
-      const response = await injectRpcRequest(app, "commands.dispatch", {
-        idempotencyKey: "workspace-storage-retry",
-        type: "workspace.storage.retry",
-        workspaceId: workspace.id,
-      });
-      expect(response.statusCode).toBe(200);
-      const payload = rpcData(response) as { workspace: Record<string, unknown> };
-      expect(payload.workspace).toMatchObject({
-        capacity: { kind: "host-filesystem" },
-        id: workspace.id,
-        location: { kind: "machine" },
-      });
-      expect(payload.workspace).not.toHaveProperty("backing");
-      expect(payload.workspace).not.toHaveProperty("capacityPolicy");
-      expect(payload.workspace).not.toHaveProperty("createdBy");
-      // A person's retry carries no MCP administration identity.
-      expect(retry).toHaveBeenCalledWith(workspace.id, ownerId, undefined);
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("Personal sharing boundary", () => {
-  it("declares sharing unavailable and rejects issue, exchange, and acceptance", async () => {
-    const ownerId = createId("user");
-    const workspace = localWorkspaceFixture(ownerId, {
-      name: "Private",
-      volumeId: "workspace-personal-private",
-    });
-    const createWorkspaceInvitation = vi.fn();
-    const exchangeInvitation = vi.fn();
-    const acceptInvitation = vi.fn();
-    const session = {
-      absoluteExpiresAt: "2026-09-12T00:00:00.000Z",
-      createdAt: "2026-08-12T00:00:00.000Z",
-      expiresAt: "2026-08-13T00:00:00.000Z",
-      id: "ses_00000000-0000-4000-8000-000000000001",
-      user: {
-        disabledAt: null,
-        displayName: "You",
-        email: "owner@example.com",
-        emailVerified: true,
-        id: ownerId,
-        image: null,
-        instanceRole: "administrator",
-      },
-    } as const;
-    const personalDiscovery = signHostDiscovery(testDiscoveryKeys, {
-      ...testDiscovery.document,
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "personal" as const,
-      },
-    });
-    const diagnostics = new BootstrapNoticeDiagnostics();
-    const app = await createHostServer({
-      requestResponseVault: {} as never,
-
-      agentTools: {} as never,
-      authenticator: {
-        authenticateUser: async () => ownerId,
-        authenticateSession: async () => session,
-        identity: {
-          acceptInvitation,
-          configuration: async () => ({
-            deployment: { kind: "personal" as const, name: "This computer" },
-            emailDeliveryAvailable: false,
-            exposure: "loopback",
-            localPasswordEnabled: false,
-            machineOwner: true,
-            oidcProviders: [],
-            passkeysEnabled: false,
-            portalOrigin: null,
-            publicOrigin: "https://opensteer.example",
-            setupState: "complete",
-            signupPolicy: "invite-only",
-          }),
-          createWorkspaceInvitation,
-          exchangeInvitation,
-          nativeOpenIdConfiguration: () => undefined,
-        },
-        publicOrigin: new URL("https://opensteer.example"),
-        requireExactOrigin: () => undefined,
-      } as never,
-      browser: {
-        latestPlaces: async () => [],
-        bootstrap: async () => ({
-          profileGrants: [],
-          available: false,
-          placements: [],
-          profiles: [],
-          groups: { rows: [], complete: true },
-          tabs: [],
-        }),
-      } as never,
-      commands: {} as never,
-      credentials: {} as never,
-      discovery: personalDiscovery,
-      egress: {} as never,
-      files: {} as never,
-      harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime({ bootstrapDiagnostics: diagnostics }),
-      runnerAuthenticator: {} as never,
-      runners: { identityForEnvironment: () => undefined } as never,
-      securityEffects: {} as never,
-      store: {
-        getExecutionPreferences: async () => emptyExecutionPreferences,
-        getAutomaticModelConfig: async () => emptyAutomaticModelConfig,
-        notificationState: {
-          quietTaskDaysFor: async () => 3,
-          listWorkspacePreferences: async () => [
-            { workspaceId: workspace.id, muted: false, revision: "0" },
-          ],
-        },
-        getWorkspaceForOwner: async () => workspace,
-        listEnvironmentsForUser: async () => [],
-        listHarnessCatalogs: async () => [],
-        listHarnessInstances: async () => [],
-        workspacePageForOwner: async () => ({
-          notificationPreferences: [],
-          window: {
-            byteCount: 2,
-            hasMore: false,
-            itemCount: 1,
-            nextBefore: null,
-            totalItems: 1,
-          },
-          workspaces: [],
-        }),
-      } as never,
-      workspaces: { ensureMainWorkspace: async () => workspace } as never,
-    } satisfies HostServerTestOverrides);
-    try {
-      const bootstrap = await injectRpcRequest(app, "bootstrap.get", {});
-      expect(bootstrap.statusCode).toBe(200);
-      expect(rpcData(bootstrap)).toMatchObject({ workspaceSharingAvailable: false });
-      const warn = vi.spyOn(app.log, "warn");
-      const diagnostic = JSON.stringify({
-        windowMs: 3600,
-        triggers: { "host.machines.changed": 6 },
-        starts: { "host.machines.changed": 6 },
-      });
-      diagnostics.record("host.machines.changed", "computer-apps.status");
-      const observed = await injectRpcRequest(
-        app,
-        "bootstrap.get",
-        {},
-        { [bootstrapDiagnosticHeader]: diagnostic },
-      );
-      expect(observed.statusCode).toBe(200);
-      expect(rpcData(observed)).toEqual(rpcData(bootstrap));
-      expect(warn).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          starts: '{"host.machines.changed":6}',
-          notices: '{"host.machines.changed/computer-apps.status":1}',
-        }),
-        "host.bootstrap.loop",
-      );
-      await injectRpcRequest(app, "bootstrap.get", {}, { [bootstrapDiagnosticHeader]: diagnostic });
-      expect(warn).toHaveBeenCalledTimes(1);
-      warn.mockRestore();
-
-      const issued = await injectRpcRequest(app, "commands.dispatch", {
-        idempotencyKey: "personal-share-attempt",
-        role: "collaborator",
-        type: "workspace.invitation.create",
-        workspaceId: workspace.id,
-      });
-      expect(issued.statusCode).toBe(403);
-      expect(issued.json()).toMatchObject({
-        error: {
-          code: "forbidden",
-          message: "Workspace sharing is unavailable for this Deployment",
-        },
-      });
-
-      const exchanged = await injectRpcRequest(app, "auth.invitation.exchange", {
-        selector: "a".repeat(24),
-        verifier: "b".repeat(32),
-      });
-      expect(exchanged.statusCode).toBe(403);
-
-      const accepted = await injectRpcRequest(app, "auth.invitation.accept", {});
-      expect(accepted.statusCode).toBe(403);
-      expect(createWorkspaceInvitation).not.toHaveBeenCalled();
-      expect(exchangeInvitation).not.toHaveBeenCalled();
-      expect(acceptInvitation).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("Workspace invitation issuance", () => {
-  function invitationServer() {
-    const ownerId = createId("user");
-    const workspace = projectWorkspace(ownerId);
-    const createWorkspaceInvitation = vi.fn(
-      async (input: { readonly intendedEmail?: string; readonly type: "email" | "link" }) => ({
-        invitation: {
-          acceptedAt: null,
-          acceptedBy: null,
-          createdAt: new Date("2026-08-30T00:00:00.000Z"),
-          createdBy: ownerId,
-          expiresAt: new Date("2026-09-06T00:00:00.000Z"),
-          id: createId("workspaceInvitation"),
-          intendedEmail: input.intendedEmail ?? null,
-          revokedAt: null,
-          role: "collaborator" as const,
-          selector: "s".repeat(24),
-          type: input.type,
-          workspaceId: workspace.id,
-        },
-        verifier: "v".repeat(32),
-      }),
-    );
-    return {
-      createWorkspaceInvitation,
-      server: createHostServer({
-        authenticator: {
-          authenticateSession: async () => testAuthenticatedSession(ownerId),
-          identity: { createWorkspaceInvitation, nativeOpenIdConfiguration: () => undefined },
-          publicOrigin: "https://opensteer.example",
-        } as never,
-        discovery: testDiscovery,
-        store: { getWorkspaceForOwner: async () => workspace } as never,
-      } satisfies HostServerTestOverrides),
-      workspace,
-    };
-  }
-
-  it("refuses an invitation whose kind and address disagree", async () => {
-    for (const command of [
-      { invitationType: "email" as const },
-      { intendedEmail: "teammate@example.com" },
-      { lifetimeSeconds: 60 },
-    ]) {
-      const fixture = invitationServer();
-      const app = await fixture.server;
-      try {
-        const refused = await injectRpcRequest(app, "commands.dispatch", {
-          idempotencyKey: "invite-mismatch",
-          role: "collaborator",
-          type: "workspace.invitation.create",
-          workspaceId: fixture.workspace.id,
-          ...command,
-        });
-        expect(refused.statusCode).toBe(400);
-        expect(refused.json()).toMatchObject({ error: { code: "bad_request" }, ok: false });
-        expect(fixture.createWorkspaceInvitation).not.toHaveBeenCalled();
-      } finally {
-        await app.close();
-      }
     }
   });
 });
@@ -2385,7 +2064,7 @@ describe("thread event history route", () => {
   });
 
   it("serves the durable event page and 404s when the Thread is not accessible", async () => {
-    const ownerId = createId("user");
+    const ownerId = fixtureOwnerId;
     const threadId = createId("thread");
     const pending = pendingRequestFixture("browser.access");
     const request = {
@@ -2400,7 +2079,6 @@ describe("thread event history route", () => {
     const page = {
       thread: ThreadViewSchema.parse({
         accessMode: "full-access",
-        inheritsMain: true,
         continuationIdentity: null,
         createdAt: request.createdAt,
         updatedAt: request.createdAt,
@@ -2414,10 +2092,11 @@ describe("thread event history route", () => {
         modelSelection: { modelId: "gpt-5.6-sol", options: {}, providerId: "openai" },
         parentThreadId: null,
         pendingRequests: 0,
-        role: "work",
         status: "idle",
         title: "History",
-        workspaceId: request.originatingWorkspaceId,
+        folder: personalFolder,
+        purpose: "task" as const,
+        teamOrigin: null,
       }),
       readState: { threadId, readSequence: null, unreadSequence: null, asOfSequence: "1" },
       events: [
@@ -2430,7 +2109,9 @@ describe("thread event history route", () => {
           sequence: "1",
           threadId,
           type: "request.resolved" as const,
-          workspaceId: request.originatingWorkspaceId,
+          folder: personalFolder,
+          purpose: "task" as const,
+          teamOrigin: null,
         },
       ],
       threadId,
@@ -2460,9 +2141,7 @@ describe("thread event history route", () => {
       realtime: testRealtime(),
       runnerAuthenticator: {} as never,
       runners: {} as never,
-      securityEffects: {} as never,
       store: { threadEventPageForOwner } as never,
-      workspaces: {} as never,
     } satisfies HostServerTestOverrides);
     try {
       const ok = await injectRpcRequest(app, "thread.events.list", {
@@ -2571,8 +2250,7 @@ describe("thread event history route", () => {
 
 describe("browser start command attribution", () => {
   it("attributes only an authenticated person's explicit start", async () => {
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+    const ownerId = fixtureOwnerId;
     const profileId = "bpr_00000000-0000-4000-8000-000000000001";
     const start = vi
       .fn()
@@ -2585,7 +2263,9 @@ describe("browser start command attribution", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         type: "browser.session.start",
-        workspaceId,
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
         idempotencyKey: "person-browser-start",
         input: { profileId, initialUrl: "https://person.example/" },
       });
@@ -2593,7 +2273,9 @@ describe("browser start command attribution", () => {
       expect(start).toHaveBeenCalledExactlyOnceWith(
         {
           ownerId,
-          workspaceId,
+          folder: personalFolder,
+          purpose: "task",
+          teamOrigin: null,
           profileId,
           initialUrl: "https://person.example/",
           reuseExisting: false,
@@ -2611,15 +2293,13 @@ describe("Thread input command boundary", () => {
     configuration: async () => ({ deployment: { kind: "hosted", name: "Test" } }),
     nativeOpenIdConfiguration: () => undefined,
   };
-  const ownerId = createId("user");
+  const ownerId = fixtureOwnerId;
   const threadId = createId("thread");
-  const workspaceId = createId("workspace");
   const environmentId = createId("environment");
   const now = "2026-09-15T09:00:00.000Z";
 
   const thread = {
     accessMode: "full-access" as const,
-    inheritsMain: true,
     continuationIdentity: null,
     createdAt: now,
     createdBy: ownerId,
@@ -2635,7 +2315,9 @@ describe("Thread input command boundary", () => {
     status: "idle" as const,
     title: "Boundary",
     updatedAt: now,
-    workspaceId,
+    folder: personalFolder,
+    purpose: "task" as const,
+    teamOrigin: null,
   };
 
   function messageResult(policy: "queue" | "steer") {
@@ -2805,7 +2487,7 @@ describe("Thread input command boundary", () => {
 });
 
 describe("durable harness catalogs", () => {
-  const ownerId = createId("user");
+  const ownerId = fixtureOwnerId;
   const environmentId = createId("environment");
   const harnessInstanceId = createId("harnessInstance");
   const threadId = createId("thread");
@@ -2900,7 +2582,7 @@ describe("durable harness catalogs", () => {
     /** An existing-CLI profile belongs to the machine; a private one does not. */
     readonly stateKind?: "ambient" | "isolated";
   }) {
-    const workspace = localWorkspaceFixture(ownerId, { volumeId: "workspace-catalog" });
+    const folder = { computerId: createId("runner"), path: "/tmp/host-catalog-folder" };
     const runnerId = createId("runner");
     const environment = {
       capabilities: [],
@@ -2924,7 +2606,6 @@ describe("durable harness catalogs", () => {
     const createThread = vi.fn(async (input: { readonly modelSelection: unknown }) => ({
       thread: {
         accessMode: "full-access" as const,
-        inheritsMain: true,
         continuationIdentity: null,
         createdAt: "2026-09-15T09:00:00.000Z",
         createdBy: ownerId,
@@ -2937,11 +2618,12 @@ describe("durable harness catalogs", () => {
         parentThreadId: null,
         pendingRequests: 0,
         inputQueuePaused: false,
-        role: "work" as const,
         status: "idle" as const,
         title: "Created",
         updatedAt: "2026-09-15T09:00:00.000Z",
-        workspaceId: workspace.id,
+        folder,
+        purpose: "task" as const,
+        teamOrigin: null,
       },
       asOfSequence: "0",
       wasDuplicate: false,
@@ -3010,7 +2692,6 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: "full-access" as const,
-          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,
@@ -3026,7 +2707,9 @@ describe("durable harness catalogs", () => {
           status: "idle" as const,
           title: "Moved",
           updatedAt: "2026-09-15T09:00:00.000Z",
-          workspaceId: workspace.id,
+          folder,
+          purpose: "task" as const,
+          teamOrigin: null,
         },
       }),
     );
@@ -3078,11 +2761,10 @@ describe("durable harness catalogs", () => {
         harnessInstanceId,
         id: threadId,
       }),
-      getWorkspaceForOwner: async () => workspace,
       notificationState: {
         quietTaskDaysFor: async () => 3,
         listWorkspacePreferences: async () => [
-          { workspaceId: workspace.id, muted: false, revision: "0" },
+          { folder, purpose: "task" as const, teamOrigin: null, muted: false, revision: "0" },
         ],
       },
       listEnvironmentsForUser: async () => (options.visibleToUser === false ? [] : [environment]),
@@ -3109,7 +2791,6 @@ describe("durable harness catalogs", () => {
       workspacePageForOwner: async () => ({
         notificationPreferences: [],
         window: { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
-        workspaces: [],
       }),
     };
     const authenticateSession = vi.fn(
@@ -3126,7 +2807,6 @@ describe("durable harness catalogs", () => {
             emailVerified: true,
             id: ownerId,
             image: null,
-            instanceRole: options.instanceRole ?? "administrator",
           },
         }) as const,
     );
@@ -3135,7 +2815,6 @@ describe("durable harness catalogs", () => {
         asOfSequence: "0",
         thread: {
           accessMode: input.accessMode,
-          inheritsMain: true,
           continuationIdentity: null,
           createdAt: "2026-09-15T09:00:00.000Z",
           createdBy: ownerId,
@@ -3148,11 +2827,12 @@ describe("durable harness catalogs", () => {
           parentThreadId: null,
           pendingRequests: 0,
           inputQueuePaused: false,
-          role: "work" as const,
           status: "idle" as const,
           title: "Access",
           updatedAt: "2026-09-15T09:00:00.000Z",
-          workspaceId: workspace.id,
+          folder,
+          purpose: "task" as const,
+          teamOrigin: null,
         },
       }),
     );
@@ -3181,7 +2861,7 @@ describe("durable harness catalogs", () => {
           authenticateUser: async () => ownerId,
           identity: {
             configuration: async () => ({
-              deployment: { kind: "self-hosted", name: null },
+              deployment: { kind: "personal", name: null },
               emailDeliveryAvailable: false,
               exposure: "networked",
               localPasswordEnabled: true,
@@ -3221,11 +2901,9 @@ describe("durable harness catalogs", () => {
         realtime: testRealtime(),
         runnerAuthenticator: {} as never,
         runners: runners as never,
-        securityEffects: {} as never,
         store: store as never,
-        workspaces: { ensureMainWorkspace: async () => workspace } as never,
       } satisfies HostServerTestOverrides),
-      workspace,
+      folder,
     };
   }
 
@@ -3264,14 +2942,12 @@ describe("durable harness catalogs", () => {
   it.each([
     {
       connected: false,
-      instanceRole: "administrator" as const,
       visibleToUser: true,
       expected: 409,
     },
     { connected: true, instanceRole: "user" as const, visibleToUser: true, expected: 403 },
     {
       connected: true,
-      instanceRole: "administrator" as const,
       visibleToUser: false,
       expected: 404,
     },
@@ -3334,7 +3010,9 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Auto on an engine that cannot",
         type: "thread.create",
-        workspaceId: createId("workspace"),
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
       });
 
       expect(refused.statusCode).toBe(400);
@@ -3364,7 +3042,9 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Supervised",
         type: "thread.create",
-        workspaceId: createId("workspace"),
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
       });
 
       expect(created.statusCode).toBe(200);
@@ -3472,7 +3152,9 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Disconnected Runner",
         type: "thread.create",
-        workspaceId: createId("workspace"),
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
       });
       expect(created.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3495,7 +3177,9 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Never seen",
         type: "thread.create",
-        workspaceId: createId("workspace"),
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
       });
       expect(refused.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3519,7 +3203,9 @@ describe("durable harness catalogs", () => {
         modelSelection,
         title: "Laptop is closed",
         type: "thread.create",
-        workspaceId: createId("workspace"),
+        folder: personalFolder,
+        purpose: "task",
+        teamOrigin: null,
       });
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ error: { retryable: true } });
@@ -4112,66 +3798,6 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("keeps a teammate's existing CLI out of an administrator's reach", async () => {
-    for (const type of ["harness.delete", "harness.authentication.logout"] as const) {
-      const fixture = harnessCatalogServer({
-        catalog: signedInCatalog,
-        connected: true,
-        environmentKind: "local",
-        // The caller is an instance administrator; the Runner is somebody
-        // else's own computer.
-        runnerOwner: createId("user"),
-        stateKind: "ambient",
-      });
-      const app = await fixture.server;
-      try {
-        const refused = await injectRpcRequest(app, "commands.dispatch", {
-          environmentId,
-          harnessInstanceId,
-          idempotencyKey: "teammate-harness",
-          type,
-        });
-        expect(refused.statusCode).toBe(403);
-        expect(refused.json()).toMatchObject({ error: { code: "forbidden" } });
-        expect(fixture.removeHarnessInstance).not.toHaveBeenCalled();
-        expect(fixture.manageHarnessAuthentication).not.toHaveBeenCalled();
-      } finally {
-        await app.close();
-      }
-    }
-  });
-
-  it("lets an administrator rename and disable a teammate's existing CLI", async () => {
-    const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: true,
-      environmentKind: "local",
-      runnerOwner: createId("user"),
-      stateKind: "ambient",
-    });
-    const app = await fixture.server;
-    try {
-      const renamed = await injectRpcRequest(app, "commands.dispatch", {
-        environmentId,
-        harnessInstanceId,
-        idempotencyKey: "rename-harness",
-        name: "Shared CLI",
-        type: "harness.rename",
-      });
-      await injectRpcRequest(app, "commands.dispatch", {
-        enabled: false,
-        environmentId,
-        harnessInstanceId,
-        idempotencyKey: "disable-harness",
-        type: "harness.enabled.set",
-      });
-      expect(renamed.statusCode).toBe(200);
-      expect(fixture.updateHarnessInstance).toHaveBeenCalledTimes(2);
-    } finally {
-      await app.close();
-    }
-  });
-
   it("starts authentication only from an explicit catalog action", async () => {
     for (const catalog of [readyCatalog, { ...authenticationRequiredCatalog, setupMethods: [] }]) {
       const fixture = harnessCatalogServer({
@@ -4268,88 +3894,6 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("lets the person a managed Runner belongs to inspect its AI engine", async () => {
-    const fixture = harnessCatalogServer({
-      catalog: authenticationRequiredCatalog,
-      connected: false,
-      environmentKind: "managed",
-      instanceRole: "user",
-      runnerOwner: ownerId,
-    });
-    const app = await fixture.server;
-    try {
-      for (const method of ["POST", "GET", "DELETE"] as const) {
-        const response = await injectHarnessAuthentication(
-          app,
-          method,
-          environmentId,
-          harnessInstanceId,
-        );
-        expect(response.statusCode).toBe(200);
-        expect(rpcData(response)).toMatchObject({
-          authentication: { status: "not-started" },
-          environmentStatus: "disconnected",
-        });
-      }
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("keeps an unbound managed work location administrator-only", async () => {
-    // A self-hosted Deployment's administrator enrolls managed Runners that
-    // name no owner. Nothing is bound, so nothing changes for them.
-    const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: false,
-      environmentKind: "managed",
-      instanceRole: "user",
-    });
-    const app = await fixture.server;
-    try {
-      for (const method of ["POST", "GET", "DELETE"] as const) {
-        const response = await injectHarnessAuthentication(
-          app,
-          method,
-          environmentId,
-          harnessInstanceId,
-        );
-        expect(response.statusCode).toBe(403);
-        expect(response.json()).toMatchObject({ error: { code: "forbidden" } });
-      }
-      expect(fixture.manageHarnessAuthentication).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
-
-  it("does not admit somebody else's managed Runner even as an existence check", async () => {
-    const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: false,
-      environmentKind: "managed",
-      instanceRole: "user",
-      runnerOwner: createId("user"),
-      visibleToUser: false,
-    });
-    const app = await fixture.server;
-    try {
-      for (const method of ["POST", "GET", "DELETE"] as const) {
-        const response = await injectHarnessAuthentication(
-          app,
-          method,
-          environmentId,
-          harnessInstanceId,
-        );
-        expect(response.statusCode).toBe(404);
-        expect(response.json()).toMatchObject({ error: { code: "not_found" } });
-      }
-      expect(fixture.manageHarnessAuthentication).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
-
   it("tells bootstrap who may sign an AI engine in, under the route's own rule", async () => {
     const administrator = await harnessCatalogServer({
       catalog: readyCatalog,
@@ -4368,7 +3912,6 @@ describe("durable harness catalogs", () => {
       catalog: readyCatalog,
       connected: false,
       environmentKind: "managed",
-      instanceRole: "user",
       runnerOwner: ownerId,
     }).server;
     try {
@@ -4383,7 +3926,6 @@ describe("durable harness catalogs", () => {
       catalog: readyCatalog,
       connected: false,
       environmentKind: "managed",
-      instanceRole: "user",
     }).server;
     try {
       expect(rpcData(await injectRpcRequest(unbound, "bootstrap.get", {}))).toMatchObject({
@@ -4437,149 +3979,6 @@ describe("durable harness catalogs", () => {
       await app.close();
     }
   });
-
-  it("does not remember a work location this person cannot see", async () => {
-    const fixture = harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: true,
-      environmentKind: "managed",
-      instanceRole: "user",
-      visibleToUser: false,
-    });
-    const app = await fixture.server;
-    try {
-      const refused = await injectRpcRequest(app, "commands.dispatch", {
-        idempotencyKey: "remember-an-invisible-location",
-        selection: { environmentId, harnessInstanceId, modelSelection },
-        type: "execution.preferences.remember",
-      });
-
-      expect(refused.statusCode).toBe(404);
-      expect(refused.json()).toMatchObject({ error: { code: "not_found" } });
-      expect(fixture.rememberExecutionChoice).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
-});
-
-describe("Workspace Files routes", () => {
-  it("authorizes Workspace membership and forwards only the bounded directory request", async () => {
-    const ownerId = createId("user");
-    const workspace = projectWorkspace(ownerId);
-    const list = vi.fn(async () => ({
-      cursor: null,
-      entries: [],
-      parentKey: "",
-      revision: "directory_revision_1",
-    }));
-    const preview = vi.fn(async () => ({
-      bytes: new TextEncoder().encode("<script>alert(1)</script>"),
-      metadata: {
-        contentType: "text/html; charset=utf-8",
-        etag: '"file-revision-1"',
-        modifiedAt: null,
-        sizeBytes: 25,
-        truncated: false,
-      },
-    }));
-    const admission = { membershipGeneration: 1, userId: ownerId, workspace };
-    const admitWorkspaceFiles = vi.fn<() => Promise<WorkspaceFilesAdmission | null>>(
-      async () => admission,
-    );
-    const app = await createHostServer({
-      requestResponseVault: {} as never,
-
-      agentTools: {} as never,
-      authenticator: { authenticateUser: async () => ownerId } as never,
-      browser: {} as never,
-      commands: {} as never,
-      credentials: {} as never,
-      discovery: testDiscovery,
-      egress: {} as never,
-      files: { list, preview } as never,
-      harnessAuthenticationCoordinator: {} as never,
-      realtime: testRealtime(),
-      runnerAuthenticator: {} as never,
-      runners: {} as never,
-      securityEffects: {} as never,
-      store: { admitWorkspaceFiles } as never,
-      workspaces: {} as never,
-    } satisfies HostServerTestOverrides);
-    try {
-      const response = await injectRpcRequest(app, "workspace.files.list", {
-        parentKey: "",
-        workspaceId: workspace.id,
-      });
-      expect(response.statusCode).toBe(200);
-      expect(response.headers.etag).toBe('"directory_revision_1"');
-      expect(response.headers["cache-control"]).toBe("private, no-cache");
-      expect(admitWorkspaceFiles).toHaveBeenCalledWith(workspace.id, ownerId);
-      expect(list).toHaveBeenCalledWith(
-        admission,
-        { limit: 200, parentKey: "" },
-        expect.any(AbortSignal),
-      );
-
-      const revalidated = await injectRpcRequest(app, "workspace.files.list", {
-        knownRevision: "directory_revision_1",
-        parentKey: "",
-        retainedCursor: "retained_cursor_token_1",
-        workspaceId: workspace.id,
-      });
-      expect(revalidated.statusCode).toBe(200);
-      expect(list).toHaveBeenLastCalledWith(
-        admission,
-        {
-          knownRevision: "directory_revision_1",
-          limit: 200,
-          parentKey: "",
-          retainedCursor: "retained_cursor_token_1",
-        },
-        expect.any(AbortSignal),
-      );
-
-      const unchangedDirectory = await injectRpcRequest(
-        app,
-        "workspace.files.list",
-        { parentKey: "", workspaceId: workspace.id },
-        { "if-none-match": '"directory_revision_1"' },
-      );
-      expect(unchangedDirectory.statusCode).toBe(304);
-      expect(unchangedDirectory.body).toBe("");
-
-      admitWorkspaceFiles.mockResolvedValueOnce(null);
-      const missing = await injectRpcRequest(app, "workspace.files.list", {
-        parentKey: "",
-        workspaceId: workspace.id,
-      });
-      expect(missing.statusCode).toBe(404);
-      expect(list).toHaveBeenCalledTimes(3);
-
-      admitWorkspaceFiles.mockResolvedValueOnce(admission);
-      const filePreview = await injectRpcRequest(app, "workspace.files.preview", {
-        fileKey: "UkVBRE1FLm1k",
-        workspaceId: workspace.id,
-      });
-      expect(filePreview.statusCode).toBe(200);
-      expect(filePreview.headers["content-disposition"]).toBe("attachment");
-      expect(filePreview.headers["content-security-policy"]).toContain("sandbox");
-      expect(filePreview.headers["x-content-type-options"]).toBe("nosniff");
-      expect(filePreview.headers["cache-control"]).toBe("private, no-cache");
-
-      admitWorkspaceFiles.mockResolvedValueOnce(admission);
-      const unchangedFile = await injectRpcRequest(
-        app,
-        "workspace.files.preview",
-        { fileKey: "UkVBRE1FLm1k", workspaceId: workspace.id },
-        { "if-none-match": '"file-revision-1"' },
-      );
-      expect(unchangedFile.statusCode).toBe(304);
-      expect(unchangedFile.body).toBe("");
-    } finally {
-      await app.close();
-    }
-  });
 });
 
 async function requestRouteServer(options: {
@@ -4627,20 +4026,17 @@ async function requestRouteServer(options: {
     realtime: testRealtime(),
     runnerAuthenticator: {} as never,
     runners: {} as never,
-    securityEffects: {} as never,
     store: {
       getThreadForOwner: vi.fn(async () => ({ id: options.request.originatingThreadId })),
       ...options.store,
       requests,
     } as never,
-    workspaces: {} as never,
   } satisfies HostServerTestOverrides);
 }
 
 function pendingRequestFixture(
   kind: "browser.access" | "harness.input",
 ): Extract<OpensteerRequest, { status: "pending" }> {
-  const workspaceId = createId("workspace");
   return {
     callId: crypto.randomUUID(),
     cancellationReason: null,
@@ -4651,7 +4047,6 @@ function pendingRequestFixture(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: workspaceId,
     payload:
       kind === "harness.input"
         ? { kind }
@@ -4672,7 +4067,7 @@ function pendingRequestFixture(
           }
         : {
             kind: "external",
-            subject: { id: workspaceId, kind: "workspace" },
+            subject: { id: createId("thread"), kind: "thread" },
             title: "Browser access",
           },
     requestedBy: createId("user"),
@@ -4681,7 +4076,6 @@ function pendingRequestFixture(
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: workspaceId,
   };
 }
 
@@ -4691,70 +4085,8 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function projectWorkspace(ownerId: Workspace["createdBy"]): Workspace {
-  const now = new Date().toISOString();
-  const id = createId("workspace");
-  return {
-    backing: {
-      kind: "local-directory",
-      generation: 1,
-      bindingId: createId("workspaceBinding"),
-      ownerEnvironmentId: createId("environment"),
-      storageAuthorityId: createId("storageAuthority"),
-    },
-
-    createdAt: now,
-    createdBy: ownerId,
-    homeThreadId: null,
-    voiceThreadId: null,
-    icon: null,
-    id,
-    kind: "project",
-    name: "Client",
-    status: "ready",
-    storageIssue: null,
-    updatedAt: now,
-  };
-}
-
-function localWorkspaceFixture(
-  ownerId: Workspace["createdBy"],
-  overrides: {
-    readonly id?: Workspace["id"];
-    readonly kind?: Workspace["kind"];
-    readonly name?: string;
-    readonly serviceId?: string;
-    readonly status?: Workspace["status"];
-    readonly storageIssue?: Workspace["storageIssue"];
-    readonly volumeId: string;
-  },
-): Workspace {
-  const now = new Date().toISOString();
-  return {
-    backing: {
-      kind: "local-directory",
-      generation: 1,
-      bindingId: createId("workspaceBinding"),
-      ownerEnvironmentId: createId("environment"),
-      storageAuthorityId: createId("storageAuthority"),
-    },
-
-    createdAt: now,
-    createdBy: ownerId,
-    homeThreadId: null,
-    voiceThreadId: null,
-    icon: null,
-    id: overrides.id ?? createId("workspace"),
-    kind: overrides.kind ?? "main",
-    name: overrides.name ?? "Main",
-    status: overrides.status ?? "ready",
-    storageIssue: overrides.storageIssue ?? null,
-    updatedAt: now,
-  };
-}
-
 it("registers phone previews as a session mutation without durable command admission", async () => {
-  const session = testAuthenticatedSession(createId("user"));
+  const session = testAuthenticatedSession(fixtureOwnerId);
   const register = vi.fn(async () => undefined);
   const authenticator = new HostAuthenticator({
     identity: {

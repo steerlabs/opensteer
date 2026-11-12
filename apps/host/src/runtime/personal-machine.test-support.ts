@@ -15,7 +15,9 @@ import {
 import type { MachineAccessHost } from "./machine-access.test-support.js";
 import { startPersonalRuntime } from "./personal-startup.test-support.js";
 
-export const nativeFsHelperBinary = resolve("apps/runner/native-fs-helper/opensteer-native-fs");
+export const nativeFsHelperBinary = resolve(
+  "apps/runner/native-fs-helper/opensteer-native-fs-test",
+);
 
 export async function createMachineAccessDatabase(serverUrl: string) {
   return cloneTestDatabase("host", { serverUrl });

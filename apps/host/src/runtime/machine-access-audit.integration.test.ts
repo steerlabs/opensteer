@@ -20,14 +20,14 @@ import {
   revokeMachine,
   runShim,
   shellSessionRows,
-  signUpUser,
-  startMachineAccessScenario,
+  additionalOwnerSession,
+  startShellAccessScenario,
   startShim,
   stopShellSession,
   updateAccessPolicy,
   waitForCondition,
-  type MachineAccessScenario,
-} from "./machine-access.test-support.js";
+  type ShellAccessScenario,
+} from "./machine-access-protocol.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 
 /** What the Host recorded about the traffic it carried, and who was told. */
@@ -52,7 +52,7 @@ integration("Machine access audit, transfer and realtime", () => {
     database = undefined;
   }, 120_000);
 
-  let scenario: MachineAccessScenario | undefined;
+  let scenario: ShellAccessScenario | undefined;
   let share = "";
 
   beforeEach(async () => {
@@ -73,7 +73,7 @@ integration("Machine access audit, transfer and realtime", () => {
     async (failOperation) => {
       const source = join(share, "payload.bin");
       const expectedDigest = await writeRandomFile(source, transferBytes);
-      scenario = await startMachineAccessScenario(databaseUrl, {
+      scenario = await startShellAccessScenario(databaseUrl, {
         policy: { ...sharePolicy(share, "read"), commands: true },
       });
       const { alias, host, launch, target } = scenario;
@@ -180,7 +180,7 @@ integration("Machine access audit, transfer and realtime", () => {
 
   it("reports each session's requests newest first, and truncates a flood at 1,000", async () => {
     await writeFile(join(share, "small.txt"), "small body");
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: { ...sharePolicy(share, "read-write"), commands: true, forwarding: true },
     });
     const { alias, host, launch, target } = scenario;
@@ -349,18 +349,14 @@ integration("Machine access audit, transfer and realtime", () => {
     }
   }, 300_000);
 
-  it("tells the machine's owner about each session and tells nobody else", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+  it("tells every owner device about each session and refuses an anonymous viewer", async () => {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
-      signupPolicy: "open",
     });
     const { alias, host, launch, target } = scenario;
-    const bystander = await signUpUser(host, {
-      email: "bystander@example.com",
-      password: "machine-access-bystander-password",
-    });
+    const otherOwnerHeaders = await additionalOwnerSession(host);
     const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, bystander.headers);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
     try {
       expect(await runShim(launch, "ssh", [alias, "echo watched"])).toMatchObject({ code: 0 });
       const started = await waitForValueOf(async () =>
@@ -412,7 +408,8 @@ integration("Machine access audit, transfer and realtime", () => {
         bystanderFeed.messages.filter((message) =>
           String(message.type).startsWith("host.machine.access."),
         ),
-      ).toEqual([]);
+      ).toHaveLength(2);
+      await expect(openRealtime(host, {})).rejects.toThrow("401");
     } finally {
       await ownerFeed.close();
       await bystanderFeed.close();
@@ -430,17 +427,13 @@ integration("Machine access audit, transfer and realtime", () => {
   }, 180_000);
 
   it("tells every connected client the computers list changed, and names nothing", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
-      signupPolicy: "open",
     });
     const { host, target } = scenario;
-    const bystander = await signUpUser(host, {
-      email: "listener@example.com",
-      password: "machine-access-listener-password",
-    });
+    const otherOwnerHeaders = await additionalOwnerSession(host);
     const ownerFeed = await openRealtime(host, host.ownerHeaders);
-    const bystanderFeed = await openRealtime(host, bystander.headers);
+    const bystanderFeed = await openRealtime(host, otherOwnerHeaders);
     const changes = (feed: { readonly messages: readonly Record<string, unknown>[] }) =>
       feed.messages.filter((message) => message.type === "host.machines.changed");
     const settle = async (atLeast: number) => {
@@ -507,7 +500,7 @@ integration("Machine access audit, transfer and realtime", () => {
   }, 180_000);
 
   it("is ready before a byte moves and records the helper's own idle ending", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       idleTimeoutMs: 1_500,
       policy: { commands: true, forwarding: false, reach: "owner", shares: [] },
     });

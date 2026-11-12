@@ -1,11 +1,10 @@
-import { browserDeviceGrantsMigration } from "@opensteer/database";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
 } from "./computer-apps.test-support.js";
 import { channelProviderCatalog } from "@opensteer/channel-core";
 import { createId } from "@opensteer/core";
-import { createDatabase, iphoneDeviceProfileMigration } from "@opensteer/database";
+
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import {
   isComputerAppDefinition,
@@ -24,7 +23,7 @@ import {
   createRunnerAuthenticationSignature,
   createRunnerEnrollmentSignature,
 } from "@opensteer/runner-auth";
-import { sql } from "kysely";
+
 import { generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -53,17 +52,13 @@ import {
   connectPrimary,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
   openRealtime,
   resetMachineAccessDatabase,
   revokeMachine,
-  signUpUser,
-  startMachineAccessHost,
-  startPersonalMachineAccessHost,
+  startMachineAccessWireHost,
   waitForCondition,
-  type MachineAccessHost,
-} from "./machine-access.test-support.js";
-import { createHostRuntime } from "./runtime.js";
+  type MachineAccessWireHost,
+} from "./machine-access-protocol.test-support.js";
 
 // H1–H16, written before implementation. The phone is scripted, not Swift/EventKit.
 const baseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -83,7 +78,7 @@ const offline = (name: string) =>
 
 integration.sequential("iPhone integrations Host contract", () => {
   let database: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
-  let host: MachineAccessHost;
+  let host: MachineAccessWireHost;
   let directory: string;
   const closers: (() => Promise<void>)[] = [];
   const results: { name: string; state: string; errors: string[] }[] = [];
@@ -130,7 +125,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     await database?.drop();
   }, 120_000);
   const start = async () => {
-    host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    host = await startMachineAccessWireHost(database.url, { remoteAccess: true });
     closers.unshift(() => host.close());
     return host;
   };
@@ -340,7 +335,7 @@ integration.sequential("iPhone integrations Host contract", () => {
             maxConcurrentRuns: 1,
             harnessDrivers: [],
             localStorage: {
-              storageAuthorityId: createId("storageAuthority"),
+              storageAuthorityId: `lsa_${randomUUID()}`,
               bindings: [],
               truncated: false,
             },
@@ -437,69 +432,8 @@ integration.sequential("iPhone integrations Host contract", () => {
     }
   }, 120_000);
 
-  it("H16 upgrades existing profile-less Mac and Android rows and reauthenticates them", async () => {
-    await start();
-    const old = [];
-    for (const platform of ["android", "darwin"] as const) {
-      const minted = await mint(host, `historical-${platform}`, null);
-      const descriptor = RunnerDescriptorSchema.parse({
-        ...iphoneDescriptor(),
-        device: {
-          form: platform === "android" ? "phone" : "laptop",
-          platform: platform === "android" ? "android" : "macos",
-        },
-        modules: { integrations: { platform, protocolVersion: platform === "android" ? 4 : 5 } },
-      });
-      const primary = await connectPrimary(host.hostPort, descriptor, { token: minted.token });
-      primary.socket.close();
-      await closed(primary.socket);
-      old.push({ descriptor, privateKey: primary.privateKey });
-    }
-    const before = host;
-    await before.runtime.close();
-    const migrationDatabase = createDatabase({ connectionString: database.url });
-    try {
-      // The old schema has no profile columns. Every row here predates an iPhone.
-      await sql`alter table runners drop column device_profile; alter table runner_enrollments drop column device_profile;`.execute(
-        migrationDatabase,
-      );
-      await iphoneDeviceProfileMigration.up(migrationDatabase);
-      await migrationDatabase
-        .transaction()
-        .execute((transaction) => browserDeviceGrantsMigration.up(transaction));
-      expect(
-        await migrationDatabase.selectFrom("runners").select("deviceProfile").execute(),
-      ).toEqual([{ deviceProfile: null }, { deviceProfile: null }]);
-    } finally {
-      await migrationDatabase.destroy();
-    }
-    const restarted = await createHostRuntime(before.config);
-    await restarted.listen();
-    host = {
-      ...before,
-      runtime: restarted,
-      store: restarted.store,
-      close: async () => {
-        await restarted.close();
-        await before.close();
-      },
-    };
-    for (const { descriptor, privateKey } of old) {
-      const primary = await connectPrimary(
-        host.hostPort,
-        { ...descriptor, bootId: iphoneDescriptor().bootId },
-        { privateKey },
-      );
-      closers.unshift(async () => {
-        primary.socket.close();
-        await closed(primary.socket);
-      });
-    }
-    expect((await machines(host)).filter(({ status }) => status === "online")).toHaveLength(2);
-  });
-
   it("H6 requires the current Personal remote route at mint and admission", async () => {
-    host = await startPersonalMachineAccessHost(database.url);
+    host = await startMachineAccessWireHost(database.url);
     closers.unshift(() => host.close());
     expect(
       (
@@ -522,12 +456,13 @@ integration.sequential("iPhone integrations Host contract", () => {
       ).status,
     ).toBe(403);
     await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "private",
       routeOrigin: "https://personal-iphone.example.test",
     });
     const minted = await mint(host, "personal");
     expect(minted.pairing.hostUrl).toBe("https://personal-iphone.example.test");
-    await configurePersonalRemoteAccess(host, { mode: "off", routeOrigin: null });
+    await configurePersonalRemoteAccess(host, { schemaVersion: 1, mode: "off", routeOrigin: null });
     expect(
       (await refusal(host, iphoneDescriptor(), { token: minted.token })).frames.find(
         ({ type }) => type === "host.error",
@@ -543,20 +478,16 @@ integration.sequential("iPhone integrations Host contract", () => {
       ).consumedAt,
     ).toBeNull();
     await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "private",
       routeOrigin: "https://personal-iphone.example.test",
     });
     keep(await connectPhone(host, minted.token));
   });
 
-  it("H4 H7 H8 H9 H13 isolates owners and enforces owner session approvals and revocation", async () => {
+  it("H4 H7 H8 H9 H13 enforces owner session approvals and revocation", async () => {
     await start();
     const admin = host.ownerHeaders;
-    const owner = await signUpUser(host, {
-      email: "iphone-owner@example.test",
-      password: "iphone-owner-password",
-    });
-    host = { ...host, ownerHeaders: owner.headers, ownerId: owner.userId };
     const phone = keep(await connectPhone(host, (await mint(host, "consent")).token));
     await waitForCondition(async () =>
       (await machines(host)).some(
@@ -569,30 +500,6 @@ integration.sequential("iPhone integrations Host contract", () => {
         ?.apps?.map(({ definitionId }) => definitionId)
         .sort(),
     ).toEqual([...apps].sort());
-    expect(
-      (await testRpcData(host.origin, "machines.list", {}, { headers: admin })).machines.find(
-        ({ id }) => id === phone.runnerId,
-      ),
-    ).toMatchObject({ apps: null, computerUse: null });
-    expect(
-      (
-        await command(
-          host,
-          {
-            type: "integration.computer.setup.request",
-            idempotencyKey: randomUUID(),
-            input: {
-              kind: "app",
-              app: null,
-              access: "read",
-              definitionId: "apple-calendar",
-              runnerId: phone.runnerId,
-            },
-          },
-          admin,
-        )
-      ).status,
-    ).toBe(403);
     for (const definitionId of ["apple-messages", "android-phone"]) {
       const unsupported = await command(host, {
         type: "integration.computer.setup.request",
@@ -721,33 +628,6 @@ integration.sequential("iPhone integrations Host contract", () => {
       .where("runnerId", "=", phone.runnerId)
       .where("integrationDefinitionId", "=", "apple-calendar")
       .executeTakeFirstOrThrow();
-    const adminIntegrations = await testRpcData(
-      host.origin,
-      "integrations.get",
-      {},
-      { headers: admin },
-    );
-    expect(adminIntegrations.connections.some(({ id }) => id === connection.id)).toBe(false);
-    expect(
-      (
-        await testRpcData(host.origin, "integration.computer.setup.list", {}, { headers: admin })
-      ).requests.some(({ runnerId }) => runnerId === phone.runnerId),
-    ).toBe(false);
-    const adminOff = await command(
-      host,
-      { type: "integration.disconnect", idempotencyKey: randomUUID(), connectionId: connection.id },
-      admin,
-    );
-    expect(adminOff.status).toBe(404);
-    expect(
-      (
-        await host.store.database
-          .selectFrom("integrationConnections")
-          .select("status")
-          .where("id", "=", connection.id)
-          .executeTakeFirstOrThrow()
-      ).status,
-    ).toBe("connected");
     expect(
       (
         await command(host, {
@@ -797,11 +677,7 @@ integration.sequential("iPhone integrations Host contract", () => {
     const caller = keep(
       await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "caller",
-          name: "Caller",
-        }),
+        token: host.hostingRunnerEnrollmentToken,
       }),
     );
     const setup = await requestComputerAppSetup(
@@ -971,7 +847,6 @@ integration.sequential("iPhone integrations Host contract", () => {
           alias: "Calendar on observation Mac",
           connectionId: macConnection.connection.id,
           installationId: installation.id,
-          workspaceId: run.workspaceId,
           isDefault: false,
         },
       },
@@ -1042,7 +917,7 @@ integration.sequential("iPhone integrations Host contract", () => {
   }, 120_000);
 });
 
-async function command(host: MachineAccessHost, input: unknown, headers = host.ownerHeaders) {
+async function command(host: MachineAccessWireHost, input: unknown, headers = host.ownerHeaders) {
   return testRpcRequest(
     host.origin,
     "commands.dispatch",
@@ -1053,7 +928,7 @@ async function command(host: MachineAccessHost, input: unknown, headers = host.o
   );
 }
 async function mint(
-  host: MachineAccessHost,
+  host: MachineAccessWireHost,
   idempotencyKey: string,
   profile: "iphone" | null = "iphone",
 ) {
@@ -1071,7 +946,7 @@ async function mint(
   if (minted.type !== "runner.enrollment.createPhone") throw new Error("Wrong command");
   return minted;
 }
-async function machines(host: MachineAccessHost) {
+async function machines(host: MachineAccessWireHost) {
   return (await testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders }))
     .machines;
 }
@@ -1101,7 +976,7 @@ function status(definitionId: string) {
   };
 }
 async function connectPhone(
-  host: MachineAccessHost,
+  host: MachineAccessWireHost,
   token: string,
   descriptor = iphoneDescriptor(),
   reportOnConnect = true,
@@ -1214,7 +1089,7 @@ async function connectPhone(
   }
 }
 async function refusal(
-  host: MachineAccessHost,
+  host: MachineAccessWireHost,
   descriptor: unknown,
   credentials: { token: string } | { privateKey: KeyObject },
 ) {
@@ -1275,7 +1150,7 @@ async function refusal(
   }
 }
 async function grant(
-  host: MachineAccessHost,
+  host: MachineAccessWireHost,
   gateway: Awaited<ReturnType<typeof integrationGateway>>,
   connectionId: string,
   access: IntegrationAccess,

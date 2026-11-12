@@ -48,7 +48,6 @@ const session: AuthenticatedSession = {
     email: "remote-admin@example.test",
     emailVerified: true,
     image: null,
-    instanceRole: "administrator",
     disabledAt: null,
   },
 };
@@ -86,10 +85,24 @@ describe("Personal remote administration intents", () => {
         email: session.user.email,
         emailVerified: true,
         image: null,
-        instanceRole: "administrator",
         disabledAt: null,
       })
       .execute();
+    const deployment = await new (await import("@opensteer/database")).OpensteerStore(
+      database,
+    ).ensureDeployment({
+      canonicalOrigin: "http://127.0.0.1:4310",
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "personal" },
+    });
+    await (
+      await import("@opensteer/database/test-support/personal")
+    ).seedPersonalOwnerResources(database, {
+      deploymentId: deployment.id,
+      userId,
+      path: "/tmp/remote-administration-personal-home",
+    });
   });
   beforeEach(async () => {
     await database.deleteFrom("personalRemoteAdministration").execute();
@@ -1519,11 +1532,11 @@ describe("Personal remote administration intents", () => {
     expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toEqual([]);
   });
 
-  it("refuses non-administrators without writing an intent", async () => {
+  it("refuses a non-owner without writing an intent", async () => {
+    const other = { ...session, user: { ...session.user, id: createId("user") } };
     const administration = service().administration;
-    const member = { ...session, user: { ...session.user, instanceRole: "user" as const } };
     await expect(
-      administration.request(member, { action: "unlink" }, "unauthorized"),
+      administration.request(other, { action: "unlink" }, "unauthorized"),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(await database.selectFrom("personalRemoteAdministration").selectAll().execute()).toEqual(
       [],

@@ -23,7 +23,7 @@ import {
   ownTestDatabaseProducer,
 } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
-import { createDatabase } from "../../../../packages/database/src/connection.js";
+import { createDatabase } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
 import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
@@ -180,7 +180,7 @@ export async function createTwoHostLinkFixture() {
       return { read: false, write: false, manage: false, peopleOnly: false };
     },
   };
-  const links = new TeamEndpointLinks(team.database, access);
+  const links = new TeamEndpointLinks(team.database, access, "Fixture team");
   const code = randomBytes(32).toString("base64url");
   const linkId = createId("teamLink");
   const secret = `ost_link_${randomBytes(32).toString("base64url")}`;

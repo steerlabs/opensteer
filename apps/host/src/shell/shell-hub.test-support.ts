@@ -299,13 +299,11 @@ export function runScope(input: {
   return {
     bindingGeneration: 1,
     environmentId: createId("environment"),
-    membershipGeneration: 1,
     requestedBy: input.requestedBy,
     runId: input.runId ?? createId("run"),
     runnerBootId: "boot",
     runnerId: input.runnerId,
     threadId: createId("thread"),
-    workspaceId: createId("workspace"),
   } as RunToolScope;
 }
 
@@ -317,9 +315,13 @@ export function recordingNotifier() {
     readonly session: ShellSessionSummary;
   }[] = [];
   return {
-    ended: (input: (typeof ended)[number]) => ended.push(input),
+    ended: async (input: (typeof ended)[number]) => {
+      ended.push(input);
+    },
     endedCalls: ended,
-    started: (input: (typeof started)[number]) => started.push(input),
+    started: async (input: (typeof started)[number]) => {
+      started.push(input);
+    },
     startedCalls: started,
   };
 }

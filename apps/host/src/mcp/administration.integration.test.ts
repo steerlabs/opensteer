@@ -230,8 +230,7 @@ describeStore("MCP administration", (it) => {
           agent,
           name,
           input,
-          () =>
-            service.execute({ kind: "person", userId: run.userId, isAdministrator: true }, person),
+          () => service.execute({ kind: "person", userId: run.userId }, person),
           observe,
           different,
         );
