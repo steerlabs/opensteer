@@ -4,6 +4,7 @@ import {
 } from "@opensteer/client/connections";
 import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import { createId, OpensteerError } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileClient } from "../client/mobile-client.js";
@@ -37,7 +38,7 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
  */
 function fixture(
   options: {
-    readonly previews?: Pick<NotificationPreviews, "attach">;
+    readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
     /** Answers a team command in place of the mock team Host. */
     readonly dispatch?: (command: { readonly type: string }) => unknown;
   } = {},
@@ -138,7 +139,7 @@ describe("the one team socket a phone keeps", () => {
 
   it("registers a team's notification preview key once its session is known", async () => {
     const attach = vi.fn();
-    const f = fixture({ previews: { attach } });
+    const f = fixture({ previews: { attach, clear: async () => undefined } });
     f.releaseAcme();
     const session = await f.teams.session(mockTeamId);
     expect(attach).toHaveBeenCalledTimes(1);
@@ -175,6 +176,57 @@ describe("the one team socket a phone keeps", () => {
     expect(sent.at(-1)).toEqual({ type: "team.member.remove", userId: mockTeamReaderId });
     expect(f.teams.computersIn(mockFamilyTeamId)).toEqual([]);
     expect(f.signOut).toHaveBeenCalledWith(mockFamilyTeamId);
+    f.teams.dispose();
+  });
+
+  it("takes an open team off its socket when the team removes the reader", async () => {
+    const attach = vi.fn();
+    const f = fixture({ previews: { attach, clear: async () => undefined } });
+    f.teams.start();
+    await f.teams.select(mockFamilyTeamId);
+    const held = await f.teams.session(mockFamilyTeamId);
+    await vi.waitFor(() => expect(held.getSnapshot().connection).toBe("connected"), {
+      timeout: 2_000,
+    });
+    const host = f.hosts.get(mockFamilyTeamId)!;
+    const read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation((name, input) => {
+      if (name === "team.bootstrap.get")
+        throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+      return read(name, input);
+    });
+    // The team closes the removed member's socket.
+    host.dispose();
+    await vi.waitFor(
+      () => expect(f.teams.team(mockFamilyTeamId)?.state, "never shown as removed").toBe("removed"),
+      { timeout: 2_000 },
+    );
+    expect(f.teams.team(mockFamilyTeamId)?.session).toBeNull();
+    expect(held.getSnapshot().drafts).toEqual({});
+    expect(attach.mock.calls.at(-1)![0].current()).toBe(false);
+    f.teams.dispose();
+  });
+
+  it("never hands back the old person's session once the team's login names someone else", async () => {
+    const f = fixture();
+    f.releaseAcme();
+    const first = await f.teams.session(mockFamilyTeamId);
+    const host = f.hosts.get(mockFamilyTeamId)!;
+    const someoneElse = createId("user");
+    const read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation(async (name, input) => {
+      const answer = await read(name, input);
+      return name === "team.bootstrap.get"
+        ? { ...(answer as object), member: { ...host.bootstrap.member, userId: someoneElse } }
+        : answer;
+    });
+    await first.load(false);
+    expect(first.getSnapshot().ended).toBe("viewer-changed");
+    const next = await f.teams.session(mockFamilyTeamId);
+    expect(next).not.toBe(first);
+    expect(next.getSnapshot().bootstrap?.member.userId ?? null).toBe(null);
+    await next.load(false);
+    expect(next.getSnapshot().bootstrap?.member.userId).toBe(someoneElse);
     f.teams.dispose();
   });
 });

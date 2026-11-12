@@ -232,6 +232,9 @@ export class MobileTeams {
     if (this.#detachClient !== null) return;
     this.#detachClient = this.#client.subscribe(() => {
       const shown = this.#snapshot.computerId;
+      // Signed out of a team, here or by its own screen: its session and partition go.
+      for (const teamId of [...this.#sessions.keys()])
+        if (!this.#signedIn(teamId)) void this.#signedOut(teamId);
       this.#publish();
       // Another computer on screen: its team takes the one socket.
       if (this.#snapshot.computerId !== shown) void this.select(this.#selected);
@@ -354,7 +357,11 @@ export class MobileTeams {
         }),
       );
     }
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId);
+    if (!this.#signedIn(teamId) || this.#states.get(teamId)?.state === "signed-out") {
+      await this.#client.signIn(teamId);
+      this.#states.delete(teamId);
+      this.#publish();
+    }
   }
 
   /**
@@ -364,7 +371,8 @@ export class MobileTeams {
    */
   async session(teamId: string): Promise<TeamSessionClient> {
     const held = this.#sessions.get(teamId);
-    if (held !== undefined) return held;
+    if (held !== undefined && held.getSnapshot().ended === null) return held;
+    if (held !== undefined) this.#ended(teamId, held);
     const connection = this.#connection(teamId);
     if (connection === null) throw new TeamAccessError("This team is no longer on this phone.");
     await this.#loadMemo();
@@ -392,9 +400,13 @@ export class MobileTeams {
       this.#sessions.set(teamId, session);
       this.#detachSessions.set(
         teamId,
-        // Only a name change reaches the team list; rows and badges read the
-        // session themselves, so a typing frame redraws nothing else.
+        // Only a name change or the session ending reaches the team list; rows
+        // and badges read the session themselves, so a typing frame redraws nothing else.
         session.subscribe(() => {
+          if (session.getSnapshot().ended !== null) {
+            this.#ended(teamId, session);
+            return;
+          }
           const name = session.getSnapshot().bootstrap?.teamName;
           if (name === undefined || this.#names.get(teamId) === name) return;
           this.#names.set(teamId, name);
@@ -644,10 +656,7 @@ export class MobileTeams {
   async forget(teamId: string): Promise<void> {
     const userId = this.#memo?.users[teamId];
     if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
-    this.#detachSessions.get(teamId)?.();
-    this.#detachSessions.delete(teamId);
-    this.#sessions.delete(teamId);
-    this.#members.delete(teamId);
+    this.#drop(teamId);
     this.#states.delete(teamId);
     if (this.#memo !== null) {
       const { [teamId]: _forgotten, ...users } = this.#memo.users;
@@ -669,6 +678,46 @@ export class MobileTeams {
       if (connection.source.kind === "manual") await this.#client.remove(teamId);
     }
     this.#publish();
+  }
+
+  /**
+   * The team ended this reader's session: they were removed, must sign in
+   * again, or the team's login now names someone else. The session has already
+   * purged its own partition; this phone stops holding it and says why.
+   */
+  #ended(teamId: string, session: TeamSessionClient): void {
+    if (this.#sessions.get(teamId) !== session) return;
+    const ended = session.getSnapshot().ended;
+    this.#drop(teamId);
+    void this.#previews?.clear(DeploymentIdSchema.parse(teamId));
+    if (ended === "viewer-changed") {
+      // Who the reader is gets learnt again, under the new login.
+      void this.#forgetUser(teamId).then(() => this.select(this.#selected));
+      return;
+    }
+    this.#setState(teamId, ended === "removed" ? "removed" : "signed-out", null);
+  }
+
+  /** Signed out of the team on this phone: its drafts and unsent messages go with it. */
+  async #signedOut(teamId: string): Promise<void> {
+    const userId = this.#memo?.users[teamId];
+    this.#drop(teamId);
+    if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
+    this.#publish();
+  }
+
+  #drop(teamId: string): void {
+    this.#detachSessions.get(teamId)?.();
+    this.#detachSessions.delete(teamId);
+    this.#sessions.delete(teamId);
+    this.#members.delete(teamId);
+  }
+
+  async #forgetUser(teamId: string): Promise<void> {
+    if (this.#memo === null || this.#memo.users[teamId] === undefined) return;
+    const { [teamId]: _forgotten, ...users } = this.#memo.users;
+    this.#memo = { ...this.#memo, users };
+    await this.#saveMemo();
   }
 
   #connection(teamId: string): DeploymentConnection | null {
@@ -803,8 +852,8 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {
-    if (error.code === "unauthorized" || error.code === "forbidden" || error.code === "not_found")
-      return "removed";
+    if (error.code === "unauthorized") return "signed-out";
+    if (error.code === "forbidden" || error.code === "not_found") return "removed";
     if (error.code === "version_mismatch" || error.code === "upgrade_required") return "update-app";
   }
   if (error instanceof TeamAccessError) return "removed";
