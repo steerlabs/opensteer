@@ -383,9 +383,10 @@ final class WindowTests: BrokerTestCase {
     let window = try await shown()
     let login = try XCTUnwrap(window.visibleLogins.first)
     XCTAssertEqual(login.grants.map(\.deploymentName), ["Personal", "Other Opensteer"])
-    XCTAssertEqual(Copy.allowedIn("Main", site: nil), "Allowed for agents in: Main")
+    XCTAssertEqual(Copy.allowedIn("Personal", site: nil), "Allowed for your agent in: Personal")
     XCTAssertEqual(
-      Copy.allowedIn("Main", site: "example.org"), "Allowed for agents in: Main, on example.org")
+      Copy.allowedIn("Personal", site: "example.org"),
+      "Allowed for your agent in: Personal, on example.org")
     let asked = presence.askCount
     await window.removeGrant(try XCTUnwrap(login.grants.first))
     XCTAssertEqual(

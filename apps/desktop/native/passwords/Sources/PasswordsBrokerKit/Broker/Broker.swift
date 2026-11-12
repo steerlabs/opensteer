@@ -1418,7 +1418,7 @@ public final class Broker: IPCServerDelegate {
     guard visit?.serial == live.serial else { throw VaultServiceError.windowLocked }
   }
 
-  /// Remove on "Allowed for agents in": it only reduces what agents may do,
+  /// Remove on "Allowed for your agent in": it only reduces what agents may do,
   /// so it needs no authentication. It removes the grant the line showed,
   /// for its login, never one that replaced it since. Returns the logins
   /// after it while the visit lives.
