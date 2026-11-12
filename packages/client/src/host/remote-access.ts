@@ -4,7 +4,8 @@ import type {
   PersonalRemoteAdministrationStatus,
 } from "@opensteer/protocol";
 import type { DesktopPersonalAccountLinkStatus } from "@opensteer/protocol/desktop";
-import { HostClientRequestError } from "./client.js";
+import { personalRemoteAdministrationChangedReason } from "@opensteer/protocol";
+import { HostClientRequestError, isHostRefusal } from "./client.js";
 import { remoteAccessDisconnectWarning } from "./personal-remote-access.js";
 
 /**
@@ -199,8 +200,6 @@ function goalIntent(
       return { action: "rotate" };
     case "remove-link":
       return { action: "unlink" };
-    case "recover":
-      return { action: "recover" };
     default:
       return null;
   }
@@ -301,8 +300,8 @@ export function nextRemoteAccessStep(
     link !== "linked-elsewhere"
   )
     return { kind: "done" };
-  if (!intent) return { kind: "done" };
-  return { kind: "request", intent: retry ? { action: "recover" } : intent };
+  if (retry) return { kind: "request", intent: { action: "recover", operationId: failed.id } };
+  return intent ? { kind: "request", intent } : { kind: "done" };
 }
 
 function computerName(facts: Pick<RemoteAccessFacts, "computerName">): string {
@@ -535,9 +534,21 @@ export function remoteAccessView(
       secondary: goal === "turn-off" ? [] : stopping,
     });
   };
-  if (run.kind === "failed") return failure(run.goal, run.message);
-  const failed = standingFailure(status);
-  if (failed) return failure(intentGoal(failed.intent), failed.detail ?? somethingWentWrong);
+  const standing = standingFailure(status);
+  const failed =
+    run.kind === "failed"
+      ? run
+      : standing && {
+          goal: intentGoal(standing.intent),
+          message: standing.detail ?? somethingWentWrong,
+        };
+  // A link only Remove link or Repair can fix outranks a change it blocked.
+  const linkFirst =
+    !on &&
+    (link === "linked-elsewhere" || link === "needs-repair") &&
+    failed?.goal !== "remove-link" &&
+    failed?.goal !== "repair-link";
+  if (failed && !linkFirst) return failure(failed.goal, failed.message);
 
   if (access.mode === "connect")
     return settled(
@@ -683,6 +694,11 @@ export class RemoteAccessRunner {
   /** A request the Host has not answered yet; it may still be admitted. */
   #admitting: Promise<void> | null = null;
   /**
+   * A request whose answer never arrived, with the operation the status showed
+   * before it: the Host may hold it though the status doesn't show it yet.
+   */
+  #unanswered: { readonly before: string | null } | null = null;
+  /**
    * A change the Host admitted that the observed status does not show yet,
    * with the operation the status showed before it.
    */
@@ -717,6 +733,7 @@ export class RemoteAccessRunner {
     this.#facts = facts;
     this.#port = port;
     if (this.#unseen && operationId(facts) !== this.#unseen.before) this.#unseen = null;
+    if (this.#unanswered && operationId(facts) !== this.#unanswered.before) this.#unanswered = null;
     // A failure stops standing once what it tried is true anyway.
     if (
       this.#state.kind === "failed" &&
@@ -760,6 +777,7 @@ export class RemoteAccessRunner {
     signal: AbortSignal,
   ): Promise<void> {
     const tried = new Set<RemoteAccessRunStep>();
+    let reread = false;
     let step: RemoteAccessRunStep = "checking";
     try {
       // A request still waiting on the Host may yet be admitted: decide only
@@ -771,7 +789,18 @@ export class RemoteAccessRunner {
       }
       for (;;) {
         signal.throwIfAborted();
-        const next = nextRemoteAccessStep(goal, this.#current(), this.#port, privateOrigin);
+        let next = nextRemoteAccessStep(goal, this.#current(), this.#port, privateOrigin);
+        // Off is the only way to know a change the Host may hold is not left running.
+        if (
+          next.kind === "done" &&
+          goal === "turn-off" &&
+          this.#unanswered &&
+          !tried.has("request")
+        )
+          next = {
+            kind: "request",
+            intent: { action: "configure", mode: "off", privateOrigin: null },
+          };
         if (next.kind === "done") break;
         if (next.kind === "blocked") throw new RemoteAccessPortError(next.message);
         step = next.kind;
@@ -791,7 +820,24 @@ export class RemoteAccessRunner {
           );
         tried.add(next.kind);
         if (next.kind === "request") {
-          await this.#send(next.intent);
+          const { intent } = next;
+          try {
+            await this.#send(intent);
+          } catch (error) {
+            // The failure it would try again was replaced: decide again from what replaced it.
+            if (
+              intent.action !== "recover" ||
+              reread ||
+              !(error instanceof HostClientRequestError) ||
+              error.reason !== personalRemoteAdministrationChangedReason
+            )
+              throw error;
+            reread = true;
+            signal.throwIfAborted();
+            await this.#until(() => operationId(this.#facts) !== intent.operationId, signal);
+            tried.delete("request");
+            continue;
+          }
           signal.throwIfAborted();
           // Busy until the Host's own state shows the change, so the view
           // never flashes back to what it was before.
@@ -845,9 +891,17 @@ export class RemoteAccessRunner {
    */
   #send(intent: PersonalRemoteAdministrationIntent): Promise<void> {
     const before = operationId(this.#facts);
-    const sent = this.#request(intent).then((operation) => {
-      if (operationId(this.#facts) === before) this.#unseen = { before, operation };
-    });
+    const sent = this.#request(intent).then(
+      (operation) => {
+        // The Host admits nothing beside a pending change but Off, which replaces it.
+        this.#unanswered = null;
+        if (operationId(this.#facts) === before) this.#unseen = { before, operation };
+      },
+      (error: unknown) => {
+        if (!isHostRefusal(error)) this.#unanswered = { before };
+        throw error;
+      },
+    );
     const admitting = sent.then(
       () => undefined,
       () => undefined,

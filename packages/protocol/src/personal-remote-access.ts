@@ -247,7 +247,8 @@ export const PersonalRemoteAdministrationIntentSchema = z.discriminatedUnion("ac
   DesktopConfigurePersonalRemoteAccessInputSchema.safeExtend({ action: z.literal("configure") }),
   z.strictObject({ action: z.literal("rotate") }),
   z.strictObject({ action: z.literal("unlink") }),
-  z.strictObject({ action: z.literal("recover") }),
+  /** Tries the failed operation the caller saw again; refused once another change replaced it. */
+  z.strictObject({ action: z.literal("recover"), operationId: z.string().uuid() }),
 ]);
 export type PersonalRemoteAdministrationIntent = z.infer<
   typeof PersonalRemoteAdministrationIntentSchema
@@ -257,8 +258,12 @@ const personalRemoteAdministrationIntentViewSchema = z.discriminatedUnion("actio
   z.object(PersonalRemoteAdministrationIntentSchema.options[0].shape),
   z.object(PersonalRemoteAdministrationIntentSchema.options[1].shape),
   z.object(PersonalRemoteAdministrationIntentSchema.options[2].shape),
-  z.object(PersonalRemoteAdministrationIntentSchema.options[3].shape),
+  // Rows admitted before recover named its operation hold a bare recover.
+  z.object({ action: z.literal("recover") }),
 ]);
+
+/** The conflict reason for a recover whose operation is no longer the latest failed change. */
+export const personalRemoteAdministrationChangedReason = "remote-access-changed";
 
 export const PersonalRemoteAdministrationOperationSchema = z.object({
   id: z.string().uuid(),

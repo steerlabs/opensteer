@@ -9,6 +9,7 @@ import {
 import {
   PersonalRemoteAdministrationIntentSchema,
   PersonalRemoteAdministrationOperationSchema,
+  personalRemoteAdministrationChangedReason,
   type PersonalRemoteAccessStatus,
   type PersonalRemoteAdministrationIntent,
   type PersonalRemoteAdministrationOperation,
@@ -126,6 +127,22 @@ export class PersonalRemoteAdministration {
             });
           return PersonalRemoteAdministrationOperationSchema.parse(replay);
         }
+        const latest = await transaction
+          .selectFrom("personalRemoteAdministration")
+          .selectAll()
+          .orderBy("position", "desc")
+          .limit(1)
+          .executeTakeFirst();
+        // Recover replays the failure the caller saw, never one another device left since.
+        if (
+          intent.action === "recover" &&
+          (latest?.id !== intent.operationId || latest.state !== "failed")
+        )
+          throw new OpensteerError({
+            code: "conflict",
+            reason: personalRemoteAdministrationChangedReason,
+            message: "This changed on another device. Check it and try again.",
+          });
         const active = await transaction
           .selectFrom("personalRemoteAdministration")
           .select("id")
@@ -147,17 +164,8 @@ export class PersonalRemoteAdministration {
             message:
               "Another change is still in progress. Wait for it to finish, or turn this off.",
           });
-        const previous =
-          intent.action === "recover"
-            ? await transaction
-                .selectFrom("personalRemoteAdministration")
-                .selectAll()
-                .orderBy("position", "desc")
-                .limit(1)
-                .executeTakeFirst()
-            : undefined;
-        const recovering = previous?.state === "failed";
-        const effective = recovering ? previous.intent : intent;
+        const previous = intent.action === "recover" ? latest : undefined;
+        const effective = previous ? previous.intent : intent;
         if (
           effective.action === "rotate" ||
           (effective.action === "configure" && effective.mode === "connect")
@@ -180,7 +188,7 @@ export class PersonalRemoteAdministration {
             .insertInto("personalRemoteAdministration")
             .values({
               id,
-              executionId: recovering ? previous.executionId : id,
+              executionId: previous ? previous.executionId : id,
               requestedIntent: intent,
               requestedBy: session.user.id,
               idempotencyKey,

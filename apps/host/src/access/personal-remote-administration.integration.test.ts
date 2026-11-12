@@ -12,7 +12,11 @@ import WebSocket from "ws";
 import { once } from "node:events";
 import { sql, type Selectable } from "kysely";
 import { hostApiVersion } from "@opensteer/deployment-authority";
-import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
+import {
+  rpcSuccess,
+  type HostApiHandlers,
+  type PersonalRemoteAdministrationIntent,
+} from "@opensteer/protocol";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
 import { registerHostApi } from "../server/host-api-registration.js";
@@ -562,7 +566,14 @@ describe("Personal remote administration intents", () => {
       if (kind === "projection" || kind === "revoke") {
         accepted = await recovering.administration.request(
           session,
-          { action: "recover" },
+          {
+            action: "recover",
+            operationId: await seedFailedOperation(
+              kind === "revoke"
+                ? { action: "rotate" }
+                : { action: "configure", mode: "off", privateOrigin: null },
+            ),
+          },
           `recover-${kind}`,
         );
         recovering.administration.release(accepted.id);
@@ -994,7 +1005,18 @@ describe("Personal remote administration intents", () => {
         .selectAll()
         .executeTakeFirstOrThrow();
       const administration = fixture.access.administration;
-      const first = await administration.request(session, { action: "recover" }, "failed-recovery");
+      const first = await administration.request(
+        session,
+        {
+          action: "recover",
+          operationId: await seedFailedOperation({
+            action: "configure",
+            mode: "off",
+            privateOrigin: null,
+          }),
+        },
+        "failed-recovery",
+      );
       administration.release(first.id);
       const app = Fastify();
       await app.register(websocket);
@@ -1069,7 +1091,7 @@ describe("Personal remote administration intents", () => {
         expect(JSON.stringify(status)).not.toContain(fixture.hostCredential);
         const second = await administration.request(
           session,
-          { action: "recover" },
+          { action: "recover", operationId: first.id },
           "retry-recovery",
         );
         expect(second.executionId).toBe(first.executionId);
@@ -1360,7 +1382,11 @@ describe("Personal remote administration intents", () => {
       detach();
     }
     await expect(
-      administration.request(session, { action: "recover" }, "recover-unlinked"),
+      administration.request(
+        session,
+        { action: "recover", operationId: admitted.id },
+        "recover-unlinked",
+      ),
     ).rejects.toMatchObject(refused);
   });
 
@@ -1379,7 +1405,7 @@ describe("Personal remote administration intents", () => {
       });
       const recovered = await administration.request(
         session,
-        { action: "recover" },
+        { action: "recover", operationId: original.id },
         "recover-rotation",
       );
       expect(recovered).toMatchObject({
@@ -1387,6 +1413,14 @@ describe("Personal remote administration intents", () => {
         executionId: original.executionId,
       });
       expect(recovered.id).not.toBe(original.id);
+      // A retry of an admitted recover is the same request, though the failure it named is no longer latest.
+      expect(
+        await administration.request(
+          session,
+          { action: "recover", operationId: original.id },
+          "recover-rotation",
+        ),
+      ).toEqual(recovered);
       await administration
         .progress({}, { operationId: recovered.id, state: "succeeded", detail: null })
         .then(
@@ -1395,6 +1429,41 @@ describe("Personal remote administration intents", () => {
           },
           (error: unknown) => expect(error).toMatchObject({ code: "forbidden" }),
         );
+    } finally {
+      detach();
+    }
+  });
+
+  it("refuses to recover a failure another device's change replaced after it was seen", async () => {
+    await seedAccountLink("active");
+    const administration = service().administration;
+    const executor = {};
+    const detach = administration.attachExecutor(executor);
+    const fail = async (operationId: string) => {
+      administration.release(operationId);
+      await administration.progress(executor, { operationId, state: "failed", detail: "Lost" });
+    };
+    try {
+      const rotation = await administration.request(session, { action: "rotate" }, "rotate");
+      await fail(rotation.id);
+      // This device sees the failed rotation; another turns it off, and that fails too.
+      const off = await administration.request(
+        session,
+        { action: "configure", mode: "off", privateOrigin: null },
+        "other-device-off",
+      );
+      await fail(off.id);
+      await expect(
+        administration.request(
+          session,
+          { action: "recover", operationId: rotation.id },
+          "stale-recover",
+        ),
+      ).rejects.toMatchObject({ code: "conflict", reason: "remote-access-changed" });
+      expect((await administration.status(session)).operation).toMatchObject({ id: off.id });
+      await expect(
+        administration.request(session, { action: "recover", operationId: off.id }, "recover-off"),
+      ).resolves.toMatchObject({ intent: { action: "configure", mode: "off" } });
     } finally {
       detach();
     }
@@ -1623,6 +1692,25 @@ async function seedAccountLink(state: "activating" | "active") {
       updatedAt: now,
     })
     .execute();
+}
+
+/** A change the executor already failed, as an Account step it started leaves behind. */
+async function seedFailedOperation(intent: PersonalRemoteAdministrationIntent): Promise<string> {
+  const id = crypto.randomUUID();
+  await database
+    .insertInto("personalRemoteAdministration")
+    .values({
+      id,
+      executionId: id,
+      requestedIntent: intent,
+      requestedBy: userId,
+      idempotencyKey: `seeded-${id}`,
+      intent,
+      state: "failed",
+      detail: "Couldn't reach Opensteer.",
+    })
+    .execute();
+  return id;
 }
 
 function linkChallenge() {

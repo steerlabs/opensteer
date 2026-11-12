@@ -20,7 +20,11 @@ import { seedMockSubagents } from "./mock-subagents.js";
 import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
 
-import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
+import {
+  AppTabSchema,
+  CreateBrowserProfileBodySchema,
+  personalRemoteAdministrationChangedReason,
+} from "@opensteer/protocol";
 import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
   mockDevicePlugins,
@@ -2912,13 +2916,26 @@ async function executeMockCommand(
       return rpcSuccess({ ended: false, type: command.type });
     case "personal.remoteAccess.request": {
       const id = globalThis.crypto.randomUUID();
+      const latest = client.remoteAdministration.operation;
+      const intent = command.intent;
+      if (
+        intent.action === "recover" &&
+        (latest?.id !== intent.operationId || latest.state !== "failed")
+      )
+        throw new HostClientRequestError({
+          code: "conflict",
+          message: "This changed on another device. Check it and try again.",
+          reason: personalRemoteAdministrationChangedReason,
+          status: 409,
+        });
+      const recovered = intent.action === "recover" ? latest : null;
       client.remoteAdministration = {
         ...client.remoteAdministration,
         revision: client.remoteAdministration.revision + 1,
         operation: {
           id,
-          executionId: id,
-          intent: command.intent,
+          executionId: recovered?.executionId ?? id,
+          intent: recovered?.intent ?? intent,
           state: "pending",
           detail: "Waiting for the Opensteer desktop app to run on this computer.",
         },

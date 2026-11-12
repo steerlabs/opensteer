@@ -56,6 +56,8 @@ Unlink never needs another request from the session it revokes. Revoked credenti
 authenticating before success; their live connections close after the response.
 The Host's admission is the only gate: Connect and key resets (recovered ones too) are refused
 unless the Account link is active with no unlink pending, so no client or executor checks it again.
+Recover names the failed operation its device saw and is refused (`remote-access-changed`) once
+another change follows it, so one device never replays another device's intent.
 Every surface shows remote access through one
 [view model and step runner](../packages/client/src/host/remote-access.ts), which treats a change
 the Host accepted, from any device, as in progress. The latest operation, once failed, stands until

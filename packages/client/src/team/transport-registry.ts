@@ -6,17 +6,25 @@ import {
   type HostTransportOptions,
   type HostNetworkSocket,
 } from "../connections/host-transport.js";
+import type { HostApiClient } from "@opensteer/protocol";
 import { createHttpHostApiClient } from "../host/host-api-client.js";
 import type { WebSocketClient } from "../host/host-session-client.js";
 import { TeamSessionClient, type TeamSessionOptions } from "./team-session-client.js";
 import { teamCacheKey, type TeamCacheScope } from "./persistence.js";
+
+export interface PinnedTeamTransport {
+  readonly transport: HostTransport;
+  readonly rpc: HostApiClient;
+  readonly connect: () => WebSocketClient;
+  readonly files: (scope: TeamCacheScope) => ReturnType<typeof teamFileTransport>;
+}
 
 export function pinnedTeamTransport(
   options: HostTransportOptions & {
     readonly deploymentId: NonNullable<HostTransportOptions["deploymentId"]>;
   },
   baseUrl: URL,
-) {
+): PinnedTeamTransport {
   const transport = new HostTransport({ ...options, expectedKind: "team" });
   const fetch: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(

@@ -465,13 +465,33 @@ describe("RemoteAccessRunner", () => {
     expect(test.request).not.toHaveBeenCalled();
   });
 
-  it("sends a failed change again as recover, so it keeps its identity", async () => {
-    const test = harness(
-      facts({ status: status({}, { operation: operation(connect, "failed") }) }),
-    );
+  it("sends a failed change again as recover of that operation, so it keeps its identity", async () => {
+    const failed = operation(connect, "failed");
+    const test = harness(facts({ status: status({}, { operation: failed }) }));
     test.runner.start("turn-on");
     await test.settled();
-    expect(test.requests).toEqual([{ action: "recover" }]);
+    expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }]);
+  });
+
+  it("re-reads and decides again when another device replaced the failure it tried again", async () => {
+    const failed = operation(connect, "failed");
+    const test = harness(facts({ status: status({}, { operation: failed }) }));
+    test.request.mockImplementationOnce(async (intent) => {
+      test.requests.push(intent);
+      // Another device's Off failed after this one saw the failed turn-on.
+      queueMicrotask(() =>
+        test.set({ status: status({}, { operation: operation(off, "failed") }) }),
+      );
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "This changed on another device. Check it and try again.",
+        reason: "remote-access-changed",
+        status: 409,
+      });
+    });
+    test.runner.start("turn-on");
+    await expect(test.settled()).resolves.toEqual({ kind: "idle" });
+    expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }, connect]);
   });
 
   it("lets Off supersede a pending turn-on rather than failing", async () => {
@@ -541,17 +561,38 @@ describe("RemoteAccessRunner", () => {
     expect(test.requests).toEqual([connect, off]);
   });
 
+  it("turns off a turn-on whose admission answer was lost, though the status still says Off", async () => {
+    const test = harness(facts());
+    let lose!: () => void;
+    test.request.mockImplementationOnce(
+      (intent) =>
+        new Promise((_, reject) => {
+          test.requests.push(intent);
+          lose = () => reject(new TypeError("Failed to fetch"));
+        }),
+    );
+    test.runner.start("turn-on");
+    await vi.waitFor(() => expect(lose).toBeDefined(), { timeout: 1_000 });
+    test.runner.start("turn-off");
+    // The Host may have admitted Connect; only Off settles it.
+    lose();
+    await expect(test.settled()).resolves.toEqual({ kind: "idle" });
+    expect(test.requests).toEqual([connect, off]);
+  });
+
   it("tries a change that failed after the mode changed again, as recover", async () => {
-    const unpublished = facts({ status: { ...on, operation: operation(connect, "failed") } });
+    const failedOn = operation(connect, "failed");
+    const unpublished = facts({ status: { ...on, operation: failedOn } });
     const published = harness(unpublished);
     published.runner.start(remoteAccessActionGoal("try-again", unpublished, { kind: "idle" })!);
     await published.settled();
-    expect(published.requests).toEqual([{ action: "recover" }]);
+    expect(published.requests).toEqual([{ action: "recover", operationId: failedOn.id }]);
 
-    const cleaned = harness(facts({ status: status({}, { operation: operation(off, "failed") }) }));
+    const failedOff = operation(off, "failed");
+    const cleaned = harness(facts({ status: status({}, { operation: failedOff }) }));
     cleaned.runner.start("turn-off");
     await cleaned.settled();
-    expect(cleaned.requests).toEqual([{ action: "recover" }]);
+    expect(cleaned.requests).toEqual([{ action: "recover", operationId: failedOff.id }]);
   });
 
   it("shows a refused private network address and sends the same one again", async () => {
@@ -624,6 +665,28 @@ describe("RemoteAccessRunner", () => {
     await expect(raw.settled()).resolves.toMatchObject({
       message: "Couldn’t add Studio Mac to your account. Try again.",
     });
+  });
+
+  it("offers the link's own fix, not Try again, once a failed step reveals the link is elsewhere or broken", async () => {
+    for (const [link, primary] of [
+      ["linked-elsewhere", "remove-link"],
+      ["needs-repair", "repair-link"],
+    ] as const) {
+      const test = harness(facts({ status: status({ accountLink: null }) }));
+      vi.mocked(test.port.link).mockRejectedValueOnce(new RemoteAccessPortError("No."));
+      test.runner.start("turn-on");
+      const failed = await test.settled();
+      expect(failed).toMatchObject({ kind: "failed" });
+      const now = facts({ link, status: status() });
+      test.set(now);
+      expect(remoteAccessView(now, test.runner.getSnapshot()).primary?.id).toBe(primary);
+      // A Host failure the link blocks gives way the same way.
+      const standing = facts({
+        link,
+        status: status({}, { operation: operation(connect, "failed") }),
+      });
+      expect(remoteAccessView(standing).primary?.id).toBe(primary);
+    }
   });
 
   it("drops a failure once what it tried is true anyway", async () => {
