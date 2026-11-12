@@ -7,6 +7,7 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import type {
+  BrowserSourcesState,
   BrowserSourcePairing,
   BrowserSourceSummary,
 } from "@opensteer/protocol/browser-sources";
@@ -51,7 +52,9 @@ export function ConnectChrome({
   intro = null,
   invitation = null,
   onConnected,
+  sourcesState,
 }: {
+  readonly sourcesState?: BrowserSourcesState | null;
   readonly client: ConnectChromeClient | null;
   readonly compact?: boolean;
   readonly environment: ChromeConnectEnvironment;
@@ -65,12 +68,43 @@ export function ConnectChrome({
   );
   const [error, setError] = useState<string | null>(null);
   const [elsewhere, setElsewhere] = useState<ElsewhereState>({ kind: "idle" });
+  const [extensionDirectory, setExtensionDirectory] = useState<string | null>(null);
+  const sourceState = useRef<Promise<void> | null>(null);
   const known = useRef<ReadonlySet<string> | null>(null);
   const [watchUntil, setWatchUntil] = useState<number | null>(null);
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   const headingId = useId();
   const statusRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    known.current = null;
+  }, [client]);
+
+  useEffect(() => {
+    let active = true;
+    setExtensionDirectory(null);
+    const receive = (state: BrowserSourcesState) => {
+      if (!active) return;
+      known.current ??= new Set(state.sources.map((source) => source.id));
+      setExtensionDirectory(
+        "extensionDirectory" in state && typeof state.extensionDirectory === "string"
+          ? state.extensionDirectory
+          : null,
+      );
+    };
+    sourceState.current = sourcesState
+      ? Promise.resolve(receive(sourcesState))
+      : client
+        ? client.rpc["browser.sources.get"]({})
+            .then(unwrapRpcResult)
+            .then(receive)
+            .catch(() => undefined)
+        : null;
+    return () => {
+      active = false;
+    };
+  }, [client, sourcesState]);
 
   // Detection runs until the extension answers, so installing it in another
   // tab moves this one on by itself.
@@ -143,6 +177,7 @@ export function ConnectChrome({
   /** Every action pairs afresh: a link is one-use and short-lived, so none is kept. */
   const pair = useCallback(async (): Promise<BrowserSourcePairing> => {
     if (!client) throw new Error("Go back to Opensteer and choose Connect Chrome again.");
+    await sourceState.current;
     if (!known.current) {
       const state = unwrapRpcResult(await client.rpc["browser.sources.get"]({}));
       known.current = new Set(state.sources.map((source) => source.id));
@@ -221,7 +256,17 @@ export function ConnectChrome({
       );
       break;
     case "install":
-      body = <InstallSteps compact={compact} environment={environment} />;
+      body = (
+        <InstallSteps
+          compact={compact}
+          environment={environment}
+          extensionDirectory={
+            client && (environment.hostHere || environment.place === "desktop")
+              ? extensionDirectory
+              : null
+          }
+        />
+      );
       break;
     case "ready":
     case "working":
@@ -403,10 +448,13 @@ function ReadyStep({
 function InstallSteps({
   compact,
   environment,
+  extensionDirectory,
 }: {
   readonly compact: boolean;
   readonly environment: ChromeConnectEnvironment;
+  readonly extensionDirectory: string | null;
 }) {
+  const [folderCopied, setFolderCopied] = useState(false);
   const [copied, setCopied] = useState<boolean | null>(null);
   const copy = async () => setCopied(await environment.copy(extensionsPage));
   return (
@@ -422,11 +470,36 @@ function InstallSteps({
             1
           </span>
           <div className="connect-chrome__step-body">
-            <p>Download the extension and unzip it.</p>
-            <a className="btn btn--small" download href="/browser-extension.zip">
-              <Icon name="arrow-up" className="connect-chrome__download-icon" />
-              Download
-            </a>
+            {extensionDirectory ? (
+              <>
+                <p>
+                  Choose <strong>Load unpacked</strong> and pick this folder:
+                </p>
+                <div className="connect-chrome__omnibox">
+                  <code>{extensionDirectory}</code>
+                  <button
+                    className="btn btn--small btn--ghost"
+                    type="button"
+                    onClick={() => void environment.copy(extensionDirectory).then(setFolderCopied)}
+                  >
+                    <Icon name={folderCopied ? "check" : "copy"} />
+                    {folderCopied ? "Copied" : "Copy"}
+                  </button>
+                </div>
+                <p className="connect-chrome__hint">
+                  In the folder picker, press ⌘⇧G to paste a path. Opensteer keeps this folder up to
+                  date.
+                </p>
+              </>
+            ) : (
+              <>
+                <p>Download the extension and unzip it.</p>
+                <a className="btn btn--small" download href="/browser-extension.zip">
+                  <Icon name="arrow-up" className="connect-chrome__download-icon" />
+                  Download
+                </a>
+              </>
+            )}
           </div>
         </li>
         <li className="connect-chrome__step">
@@ -463,7 +536,7 @@ function InstallSteps({
           <div className="connect-chrome__step-body">
             <p>
               Turn on <strong>Developer mode</strong>, choose <strong>Load unpacked</strong>, and
-              pick the unzipped folder.
+              pick {extensionDirectory ? "the folder above" : "the unzipped folder"}.
             </p>
             <div aria-hidden className="connect-chrome__sketch">
               <span className="connect-chrome__sketch-button">Load unpacked</span>

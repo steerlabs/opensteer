@@ -32,6 +32,8 @@ import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import path from "node:path";
+import { syncBrowserExtensionDirectory } from "./browser-extension-directory.js";
 import { logShutdownError, runShutdownStep, type ShutdownLog } from "../app/desktop-shutdown.js";
 import {
   PersonalRuntimeReleaseError,
@@ -102,6 +104,8 @@ const defaultMaximumRestartBackoffMs = 30_000;
 const defaultRestartResetAfterMs = 5 * 60_000;
 
 interface PersonalDeploymentSupervisorOptions {
+  readonly userDataDirectory?: string;
+  readonly syncExtensionDirectory?: typeof syncBrowserExtensionDirectory;
   readonly dataReset?: PersonalDataReset;
   readonly accountIssuer?: URL | string | null;
   readonly allocatePort?: () => Promise<number>;
@@ -206,6 +210,10 @@ interface PersonalOwnerClaimCapability {
  * driver or executable when a selected component is unavailable.
  */
 export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
+  readonly #extensionOptions: Pick<
+    PersonalDeploymentSupervisorOptions,
+    "userDataDirectory" | "syncExtensionDirectory"
+  >;
   readonly #accountIssuer: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
@@ -259,6 +267,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   #ownerClaim: PersonalOwnerClaimCapability | null = null;
 
   constructor(options: PersonalDeploymentSupervisorOptions) {
+    this.#extensionOptions = options;
     this.#dataReset = options.dataReset;
     this.#accountIssuer = options.accountIssuer
       ? new URL(String(options.accountIssuer)).origin
@@ -819,6 +828,20 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   }> {
     let manifest = manifestInput;
     const ownerClaimToken = randomBytes(32).toString("base64url");
+    let extensionDirectory: string | null = null;
+    if (this.#extensionOptions.userDataDirectory) {
+      try {
+        extensionDirectory = await (
+          this.#extensionOptions.syncExtensionDirectory ?? syncBrowserExtensionDirectory
+        )({
+          userDataDirectory: this.#extensionOptions.userDataDirectory,
+          zipPath: path.join(release.assets.webDistribution.directory, "browser-extension.zip"),
+          log: (message) => this.#log("browser-extension-sync", { message }),
+        });
+      } catch (error) {
+        this.#log("browser-extension-sync-failed", { error: safeErrorDetail(error) });
+      }
+    }
     const host = this.#spawn(
       hostSpec(
         release,
@@ -829,6 +852,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#accountIssuer,
         this.#portalOrigin,
         this.#passkeys,
+        extensionDirectory,
       ),
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1738,6 +1762,7 @@ function hostSpec(
   accountIssuer: string | null,
   portalOrigin: string | null,
   passkeys: boolean,
+  extensionDirectory: string | null,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1766,6 +1791,7 @@ function hostSpec(
       OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
       OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
       OPENSTEER_PORT: String(manifest.hostPort),
+      ...(extensionDirectory ? { OPENSTEER_BROWSER_EXTENSION_DIRECTORY: extensionDirectory } : {}),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
       OPENSTEER_RUNTIME_ORIGIN: origin,
