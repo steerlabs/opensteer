@@ -14,7 +14,7 @@ import type { SeedName } from "./mobile-network/fixture.test-support.js";
 const options = process.env.OPENSTEER_MOBILE_BENCH_OPTIONS
   ? z
       .object({
-        profile: z.enum(["all", "lan", "4g", "weak-cell", "edge"]),
+        profile: z.enum(["all", "lan", "4g", "weak-cell", "edge", "cell-target"]),
         seed: z.enum(["all", "light", "heavy", "busy-subagents"]),
         scenario: z.enum(["all", "busy-subagents", ...scenarios]),
         runs: z.coerce.number().int().positive(),
