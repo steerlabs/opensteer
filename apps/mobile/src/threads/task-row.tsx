@@ -37,7 +37,7 @@ import { useReducedMotion } from "react-native-reanimated";
 import { Symbol } from "../ui/symbol.js";
 
 /**
- * One of the reader's tasks, as the sidebar, search and All tasks
+ * One of the reader's tasks, as the sidebar, search and Done
  * all draw it, from the shared task list (`taskList` in `@opensteer/client/host`)
  * and nothing else, on one line: its subject mark, title, and state — "Needs you", a spinner,
  * waiting or failure words, with a separate unread dot and finished time.
@@ -59,8 +59,6 @@ export type TaskShelf = "open" | "done";
 export interface TaskRowProps {
   /** A live row's one second line: the amber ask of a task that needs the reader. */
   readonly ask?: string | null;
-  /** All tasks' second line: where it came from (`#support · Dana's thread`) or its folder, and what it is doing. */
-  readonly detail?: string | null;
   /** The reader has an unsent reply here. */
   readonly drafted?: boolean;
   readonly onOpen: (threadId: string) => void;
@@ -117,7 +115,7 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       ]}
     >
       <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
-      {props.ask == null && props.detail == null ? (
+      {props.ask == null ? (
         <AppText
           maxFontSizeMultiplier={controlFontScaleLimit}
           numberOfLines={1}
@@ -140,9 +138,9 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
             maxFontSizeMultiplier={controlFontScaleLimit}
             numberOfLines={1}
             role="caption"
-            {...(props.ask == null ? { tone: "muted" as const } : { style: styles.ask })}
+            style={styles.ask}
           >
-            {props.ask ?? props.detail}
+            {props.ask}
           </AppText>
         </View>
       )}
