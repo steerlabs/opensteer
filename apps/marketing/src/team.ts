@@ -103,10 +103,7 @@ type Pane =
 type Site = "stripe" | "gmail" | "hubspot";
 /** The hero's pages belong to its own story; in Leo's tabs they show Leo's accounts and customer. */
 const LEOS: ReadonlyArray<readonly [string, string]> = [
-  [
-    HUBSPOT_NOTE,
-    "Duplicate charge on invoice 2291. Refunded the extra $480.00 today.",
-  ],
+  [HUBSPOT_NOTE, "Duplicate charge on invoice 2291. Refunded the extra $480.00 today."],
   ["Rivera &amp; Co.", "Acme"],
   ["alex@riveraco.com", "leo@acme.com"],
   ["Alex Rivera", "Leo Park"],
