@@ -46,7 +46,10 @@ import { createIdentityRpcHandlers, registerIdentityRoutes } from "../identity/i
 import { registerHostApi, carryWebSocketVersion } from "../server/host-api-registration.js";
 import { normalizeHostError } from "../server/http-errors.js";
 import { HostStaticDistribution } from "../server/static-distribution.js";
-import { RemoteAccountAdoptionGrantVerifier } from "../access/account-adoption-grant-verifier.js";
+import {
+  RemoteAccountAdoptionGrantVerifier,
+  RemoteHostedTeamOwnerCheckVerifier,
+} from "../access/account-adoption-grant-verifier.js";
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
@@ -82,6 +85,7 @@ export async function createTeamHostRuntime(input: {
   let account = config.account;
   let authority: HostAuthorityPublisher | undefined;
   let directory: AccountDirectoryPublisher | undefined;
+  let admitted: TeamIdentityAdmission | undefined;
   let stopped = false;
   let step: string | undefined;
   const report = (area: string) => app.log.error({ area }, "Team background service failed");
@@ -118,7 +122,7 @@ export async function createTeamHostRuntime(input: {
       ...(options.accountDirectoryFetch ? { fetch: options.accountDirectoryFetch } : {}),
     });
     directory = new AccountDirectoryPublisher({
-      store: new AccountDirectoryStore(database),
+      store: new AccountDirectoryStore(database, { kind: "team" }),
       publish: (projection) => client.publish(projection),
       onError: () => report("team-directory"),
       ...(options.accountDirectoryIntervalMs
@@ -173,6 +177,7 @@ export async function createTeamHostRuntime(input: {
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
+      generalChannelId: async () => (admitted ? admitted.generalChannelId() : null),
       publishPush: createTeamPushPublisher({
         teamId: deployment.id,
         hostInstanceId: deployment.activeHostInstanceId,
@@ -225,6 +230,18 @@ export async function createTeamHostRuntime(input: {
         issuer,
         ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
       }),
+      hosted: {
+        createGeneralChannel: (transaction, ownerUserId) =>
+          team.chat.createGeneral(transaction, ownerUserId),
+        verifyOwnerCheck: (() => {
+          const verifier = new RemoteHostedTeamOwnerCheckVerifier({
+            audience: deployment.canonicalOrigin,
+            issuer,
+            ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+          });
+          return (assertion: unknown) => verifier.verify(assertion);
+        })(),
+      },
       installAccountBundle: async (bundle) => {
         await persistAccountBundle(config.accountBundlePath, bundle);
         account = {
@@ -239,6 +256,7 @@ export async function createTeamHostRuntime(input: {
         await publishDirectory();
       },
     });
+    admitted = admission;
     const identity = new IdentityService(database, {
       team: admission,
       deployment: { kind: "team", name: config.deploymentName ?? null },
@@ -322,6 +340,7 @@ export async function createTeamHostRuntime(input: {
         capabilities: [
           ...(config.identity.nativeOAuth ? ["native-oauth"] : []),
           "notification-preview-v1",
+          "team-hosted-bootstrap-v1",
         ],
       }),
     );
@@ -347,6 +366,7 @@ export async function createTeamHostRuntime(input: {
     });
     registerTeamSetupRoutes(app, {
       identity,
+      hosted: admission,
       accountPortalOrigin: config.portalOrigin?.origin ?? "https://app.opensteer.com",
     });
     registerTeamBinaryRoutes(app, {

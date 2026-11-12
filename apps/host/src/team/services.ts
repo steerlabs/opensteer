@@ -7,6 +7,7 @@ import {
   type TeamLinkId,
   type TeamAgentRequestId,
   TeamChannelIdSchema,
+  type TeamChannelId,
   type UserId,
 } from "@opensteer/core";
 import {
@@ -77,6 +78,8 @@ export interface TeamServiceOptions {
     command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
   ) => Promise<void>;
   readonly publishPush: (delivery: TeamPushDelivery) => Promise<void>;
+  /** The #general a hosted bootstrap created, where a person lands; null without one. */
+  readonly generalChannelId?: () => Promise<TeamChannelId | null>;
   readonly backgroundError: (area: "team-maintenance" | "team-push") => void;
 }
 export async function startTeamServices(options: TeamServiceOptions) {
@@ -354,6 +357,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
             connectAgent: true,
           },
           sidebar: await chat.directory(actor, undefined, true),
+          generalChannelId: (await options.generalChannelId?.()) ?? null,
         });
       }
       case "team.sidebar.get": {

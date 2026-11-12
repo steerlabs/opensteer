@@ -527,7 +527,22 @@ export interface HostedTeamTable {
   createdAt: Timestamp;
   updatedAt: Timestamp;
   deletedAt: NullableTimestamp;
+  name: string | null;
+  createRequestId: string | null;
+  stage: Generated<HostedTeamStoredStage>;
+  stageMessage: string | null;
+  /** The plaintext first-owner setup token, sealed to this team and generation. */
+  sealedSetupToken: string | null;
+  deploymentId: DeploymentId | null;
+  bootstrapReceipt: JsonValue | null;
+  /** Bumped by each bootstrap claim, so a slower earlier attempt can never write. */
+  bootstrapAttempt: Generated<number>;
+  bootstrapNextAt: NullableTimestamp;
+  bootstrapLeaseUntil: NullableTimestamp;
+  configuringSince: NullableTimestamp;
 }
+
+export type HostedTeamStoredStage = "reserving" | "starting" | "configuring" | "ready" | "failed";
 
 export interface ControlPlaneDatabaseSchema {
   hostedTeams: HostedTeamTable;

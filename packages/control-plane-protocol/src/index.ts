@@ -1080,7 +1080,42 @@ export const teamSetupPaths = {
   exchange: "/v1/team/setup/exchange",
   adoptionProof: "/v1/team/setup/adoption/proof",
   adoptionComplete: "/v1/team/setup/adoption/complete",
+  /** Hosts advertising `team-hosted-bootstrap-v1`: whether an Account is one of the team's owners. */
+  ownerCheck: "/v1/team/setup/owner",
 } as const;
+
+export const HostedTeamOwnerCheckIdSchema =
+  prefixedIdSchema("hto").brand<"HostedTeamOwnerCheckId">();
+
+/**
+ * Account asks a hosted team's Host whether `sub` is an active owner before deleting the team,
+ * because only that Host knows team roles. Signed with Account's key; answers nothing else.
+ */
+export const HostedTeamOwnerCheckClaimsSchema = z
+  .strictObject({
+    tokenUse: z.literal("opensteer-hosted-team-owner-check"),
+    iss: DeploymentOriginSchema,
+    aud: DeploymentOriginSchema,
+    sub: ControlPlaneAccountIdSchema,
+    iat: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    exp: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    jti: HostedTeamOwnerCheckIdSchema,
+    authority: HostAccountAdoptionAuthoritySchema,
+  })
+  .superRefine((claims, context) => {
+    if (claims.exp <= claims.iat || claims.exp - claims.iat > 60) {
+      context.addIssue({ code: "custom", path: ["exp"], message: "Lives at most one minute" });
+    }
+    if (claims.authority.canonicalOrigin !== claims.aud) {
+      context.addIssue({ code: "custom", path: ["aud"], message: "Audience must be the team" });
+    }
+  });
+export type HostedTeamOwnerCheckClaims = z.infer<typeof HostedTeamOwnerCheckClaimsSchema>;
+
+export const HostedTeamOwnerCheckRequestSchema = z.strictObject({
+  assertion: AccountHostSessionGrantSchema,
+});
+export const HostedTeamOwnerCheckResponseSchema = z.object({ owner: z.boolean() });
 
 /**
  * Account's hosted bootstrap: the team Host also commits `owner` as its owner and creates

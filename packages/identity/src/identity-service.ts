@@ -207,15 +207,15 @@ export class IdentityService {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
     return this.#options.team.issueAdoption(proof, parseAccountAdoptionAccount(account));
   }
-  async completeTeamAccountAdoption(grant: unknown, bundle: unknown) {
+  async completeTeamAccountAdoption(grant: unknown, bundle: unknown, hostedBootstrap?: unknown) {
     const team = this.#options.team;
     if (!team)
       throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
-    const provider = await team.completeAdoption(null, grant, bundle);
+    const { provider, receipt } = await team.completeAdoption(null, grant, bundle, hostedBootstrap);
     this.#options = { ...this.#options, oidcProviders: [provider] };
     this.#auth = this.#createAuth();
     await this.#ensureNativeOAuthClients();
-    return { completed: true as const };
+    return { completed: true as const, ...(receipt ? { receipt } : {}) };
   }
 
   async initialize(): Promise<void> {

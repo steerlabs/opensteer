@@ -1,8 +1,13 @@
 import { randomBytes, randomUUID, createHash } from "node:crypto";
-import { createId, type AuthAdmissionId, type UserId } from "@opensteer/core";
+import { createId, type AuthAdmissionId, type TeamChannelId, type UserId } from "@opensteer/core";
 import {
   HostAccountAdoptionBundleSchema,
+  HostedTeamBootstrapReceiptSchema,
+  HostedTeamBootstrapSchema,
   type HostAccountAdoptionBundle,
+  type HostedTeamBootstrap,
+  type HostedTeamBootstrapReceipt,
+  type HostedTeamOwnerCheckClaims,
 } from "@opensteer/control-plane-protocol";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -38,6 +43,20 @@ const proofSchema = z.strictObject({
   consumedAt: z.string().nullable(),
   completed: z.boolean(),
 });
+/** One hosted bootstrap per Host, ever; a replay must name the same team, authority and owner. */
+const hostedBootstrapIdentifier = "team-hosted-bootstrap";
+const StoredHostedBootstrapSchema = HostedTeamBootstrapReceiptSchema.extend({
+  ownerSubject: z.string(),
+  proofId: z.string(),
+});
+type StoredHostedBootstrap = z.infer<typeof StoredHostedBootstrapSchema>;
+
+export interface TeamAdoptionCompletion {
+  readonly provider: OidcProviderConfiguration;
+  /** Present exactly when the completion carried a hosted bootstrap. */
+  readonly receipt?: HostedTeamBootstrapReceipt;
+}
+
 export interface TeamAdmissionProof {
   readonly id: AuthAdmissionId;
   readonly purpose: "setup" | "recovery" | "invitation";
@@ -50,18 +69,73 @@ export class TeamIdentityAdmission {
   readonly #authority: AccountAdoptionAuthority;
   readonly #verifier: AccountAdoptionGrantVerifier;
   readonly #install: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+  readonly #hosted:
+    | {
+        readonly createGeneralChannel: (
+          transaction: Transaction<DatabaseSchema>,
+          ownerUserId: UserId,
+        ) => Promise<TeamChannelId>;
+        readonly verifyOwnerCheck: (assertion: unknown) => Promise<HostedTeamOwnerCheckClaims>;
+      }
+    | undefined;
   constructor(options: {
     access: TeamAccessStore;
     invites: TeamInvitesStore;
     authority: AccountAdoptionAuthority;
     grantVerifier: AccountAdoptionGrantVerifier;
     installAccountBundle: (bundle: HostAccountAdoptionBundle) => Promise<void>;
+    /** Enables Account's hosted bootstrap (`team-hosted-bootstrap-v1`). */
+    hosted?: {
+      createGeneralChannel: (
+        transaction: Transaction<DatabaseSchema>,
+        ownerUserId: UserId,
+      ) => Promise<TeamChannelId>;
+      verifyOwnerCheck: (assertion: unknown) => Promise<HostedTeamOwnerCheckClaims>;
+    };
   }) {
     this.access = options.access;
     this.invites = options.invites;
     this.#authority = options.authority;
     this.#verifier = options.grantVerifier;
     this.#install = options.installAccountBundle;
+    this.#hosted = options.hosted;
+  }
+  get hostedBootstrapAvailable() {
+    return this.#hosted !== undefined;
+  }
+  /** The #general a hosted bootstrap created, while it still exists. */
+  async generalChannelId(): Promise<TeamChannelId | null> {
+    const receipt = await readHostedBootstrap(this.access.database);
+    if (!receipt) return null;
+    const channel = await this.access.database
+      .selectFrom("teamChannels")
+      .select("id")
+      .where("id", "=", receipt.generalChannelId)
+      .where("archivedAt", "is", null)
+      .executeTakeFirst();
+    return channel?.id ?? null;
+  }
+  /**
+   * Whether the Account the signed assertion names is an active owner here. The assertion is
+   * Account's, for this exact Host, and lives a minute; the answer is about that Account only.
+   */
+  async isOwner(assertion: unknown): Promise<boolean> {
+    requireTeam(this.#hosted, "Hosted teams are unavailable");
+    const claims = await this.#hosted.verifyOwnerCheck(assertion);
+    requireTeam(sameAuthority(claims.authority, this.#authority), "Assertion is for another team");
+    const owner = await this.access.database
+      .selectFrom("teamMembers as m")
+      .innerJoin("authAccounts as a", "a.userId", "m.userId")
+      .innerJoin("accountDirectoryProvider as p", "p.providerId", "a.providerId")
+      .innerJoin("users as u", "u.id", "m.userId")
+      .select("m.userId")
+      .where("p.issuer", "=", claims.iss)
+      .where("a.accountId", "=", claims.sub)
+      .where("m.role", "=", "owner")
+      .where("m.state", "=", "active")
+      .where("u.disabledAt", "is", null)
+      .executeTakeFirst();
+    return owner !== undefined;
   }
   async hasOwner() {
     return !!(await this.access.database
@@ -338,10 +412,19 @@ export class TeamIdentityAdmission {
     admission: TeamAdmissionProof | null,
     grant: unknown,
     bundleInput: unknown,
-  ): Promise<OidcProviderConfiguration> {
+    hostedInput?: unknown,
+  ): Promise<TeamAdoptionCompletion> {
     const verified = await this.#verifier.verify(grant);
     const bundle = HostAccountAdoptionBundleSchema.parse(bundleInput);
+    const hosted =
+      hostedInput === undefined ? undefined : HostedTeamBootstrapSchema.parse(hostedInput);
     requireTeam("admissionId" in verified.authorizedBy, "Setup adoption grant required");
+    requireTeam(!hosted || this.#hosted, "Hosted bootstrap is unavailable");
+    // Owner email and name are unsigned display data; the signed subject decides who owns.
+    requireTeam(
+      !hosted || hosted.owner.subject === verified.account.subject,
+      "The owner must be the Account that adopted this team",
+    );
     const admissionId = verified.authorizedBy.admissionId;
     if (admission) requireTeam(admission.id === admissionId);
     const durableAdmission = await this.access.database
@@ -364,20 +447,175 @@ export class TeamIdentityAdmission {
       .digest("base64url")
       .slice(0, 22);
     const providerId = `oidc.opensteer-account.${issuerDigest}`;
-    await this.access.mutate(async (t) => {
-      await this.#recordCompletion(t, durableAdmission, verified, providerId);
-      return { value: undefined, effects: emptyTeamAccessEffects };
-    });
+    const outcome = await this.access.mutate(
+      async (t) => {
+        const prior = hosted ? await readHostedBootstrap(t) : undefined;
+        if (hosted && prior) {
+          // A replay answers the first receipt and changes nobody's membership: the creator may
+          // since have been removed, or ownership may have moved to someone else.
+          requireTeam(
+            prior.hostedTeamId === hosted.hostedTeamId &&
+              prior.ownerSubject === verified.account.subject &&
+              prior.proofId === verified.proofId &&
+              sameAuthority(prior.authority, this.#authority),
+            "This team was already set up",
+          );
+          return { value: { receipt: prior, fresh: false }, effects: emptyTeamAccessEffects };
+        }
+        await this.#recordCompletion(t, durableAdmission, verified, providerId);
+        const receipt = hosted
+          ? await this.#bootstrapOwner(t, durableAdmission, verified.proofId, hosted, providerId)
+          : undefined;
+        return { value: { receipt, fresh: true }, effects: emptyTeamAccessEffects };
+      },
+      async (t, value) => {
+        if (value.fresh && value.receipt) await publishTeamMember(t, value.receipt.ownerUserId);
+      },
+    );
     await this.#install(bundle);
     return {
-      providerId: "opensteer-account",
-      label: "Opensteer Account",
-      issuer: bundle.oidc.issuer,
-      clientId: bundle.oidc.clientId,
-      clientSecret: bundle.oidcClientSecret,
-      allowPrivateNetwork: false,
-      trustedOrigins: [],
+      provider: {
+        providerId: "opensteer-account",
+        label: "Opensteer Account",
+        issuer: bundle.oidc.issuer,
+        clientId: bundle.oidc.clientId,
+        clientSecret: bundle.oidcClientSecret,
+        allowPrivateNetwork: false,
+        trustedOrigins: [],
+      },
+      ...(outcome.receipt ? { receipt: publicReceipt(outcome.receipt) } : {}),
     };
+  }
+  /**
+   * Commits the hosted creator as this team's one owner, signed in through Account like anyone,
+   * and creates #general, all in the completion's transaction.
+   */
+  async #bootstrapOwner(
+    t: Transaction<DatabaseSchema>,
+    admission: TeamAdmissionProof,
+    proofId: string,
+    hosted: HostedTeamBootstrap,
+    providerId: string,
+  ): Promise<StoredHostedBootstrap> {
+    const hostedPort = this.#hosted;
+    requireTeam(hostedPort);
+    requireTeam(
+      !(await t
+        .selectFrom("teamMembers")
+        .select("userId")
+        .where("role", "=", "owner")
+        .where("state", "=", "active")
+        .executeTakeFirst()),
+      "This team already has an owner",
+    );
+    const now = new Date();
+    const enrollment = await t
+      .selectFrom("ownerEnrollments")
+      .select("id")
+      .where("id", "=", admission.subjectSelector as import("@opensteer/core").OwnerEnrollmentId)
+      .where("consumedAt", "is", null)
+      .where("expiresAt", ">", now)
+      .executeTakeFirst();
+    requireTeam(enrollment, "Team setup expired");
+    const linked = await t
+      .selectFrom("authAccounts")
+      .select("userId")
+      .where("providerId", "=", providerId)
+      .where("accountId", "=", hosted.owner.subject)
+      .executeTakeFirst();
+    let userId: UserId;
+    if (linked) {
+      userId = linked.userId as UserId;
+      // Someone this team already knows is never promoted or brought back by setup.
+      requireTeam(
+        !(await t
+          .selectFrom("teamMembers")
+          .select("userId")
+          .where("userId", "=", userId)
+          .executeTakeFirst()),
+        "This Account already belongs to this team",
+      );
+    } else {
+      requireTeam(
+        !(await t
+          .selectFrom("users")
+          .select("id")
+          .where("email", "=", hosted.owner.email)
+          .executeTakeFirst()),
+        "Another person here already uses this email",
+      );
+      userId = createId("user");
+      await t
+        .insertInto("users")
+        .values({
+          id: userId,
+          displayName: hosted.owner.displayName,
+          email: hosted.owner.email,
+          emailVerified: true,
+          image: null,
+          disabledAt: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .execute();
+      await t
+        .insertInto("authAccounts")
+        .values({
+          id: createId("authAccount"),
+          accountId: hosted.owner.subject,
+          providerId,
+          userId,
+          accessToken: null,
+          refreshToken: null,
+          idToken: null,
+          accessTokenExpiresAt: null,
+          refreshTokenExpiresAt: null,
+          scope: null,
+          password: null,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .execute();
+    }
+    await admitTeamMember(t, userId, "owner");
+    await t
+      .updateTable("ownerEnrollments")
+      .set({ consumedAt: now, consumedBy: userId })
+      .where("id", "=", enrollment.id)
+      .execute();
+    await t
+      .updateTable("authAdmissions")
+      .set({ consumedAt: now, consumedBy: userId })
+      .where("id", "=", admission.id)
+      .execute();
+    await appendTeamAudit(t, {
+      actor: { kind: "human", userId },
+      action: "member.admitted",
+      resourceKind: "member",
+      resourceId: userId,
+    });
+    const generalChannelId = await hostedPort.createGeneralChannel(t, userId);
+    const stored: StoredHostedBootstrap = {
+      hostedTeamId: hosted.hostedTeamId,
+      authority: { ...this.#authority },
+      ownerUserId: userId,
+      ownerSubject: hosted.owner.subject,
+      proofId,
+      generalChannelId,
+      completedAt: now.toISOString(),
+    };
+    await t
+      .insertInto("authVerifications")
+      .values({
+        id: createId("authVerification"),
+        identifier: hostedBootstrapIdentifier,
+        value: JSON.stringify(stored),
+        expiresAt: new Date("9999-01-01"),
+        createdAt: now,
+        updatedAt: now,
+      })
+      .execute();
+    return stored;
   }
   async #recordCompletion(
     t: Transaction<DatabaseSchema>,
@@ -434,6 +672,27 @@ export class TeamIdentityAdmission {
       .execute();
   }
 }
+async function readHostedBootstrap(
+  executor: Pick<Transaction<DatabaseSchema>, "selectFrom">,
+): Promise<StoredHostedBootstrap | undefined> {
+  const row = await executor
+    .selectFrom("authVerifications")
+    .select("value")
+    .where("identifier", "=", hostedBootstrapIdentifier)
+    .executeTakeFirst();
+  return row ? StoredHostedBootstrapSchema.parse(JSON.parse(row.value)) : undefined;
+}
+
+function publicReceipt(stored: StoredHostedBootstrap): HostedTeamBootstrapReceipt {
+  return HostedTeamBootstrapReceiptSchema.parse({
+    hostedTeamId: stored.hostedTeamId,
+    authority: stored.authority,
+    ownerUserId: stored.ownerUserId,
+    generalChannelId: stored.generalChannelId,
+    completedAt: stored.completedAt,
+  });
+}
+
 function sameAuthority(
   a: {
     deploymentId: string;

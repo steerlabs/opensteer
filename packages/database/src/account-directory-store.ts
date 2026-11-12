@@ -1,8 +1,8 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
-import "./connection.js";
+import { withDatabaseTransaction } from "./connection.js";
 import { randomBytes } from "node:crypto";
 import { OpensteerError, type UserId } from "@opensteer/core";
-import { sql, type Kysely } from "kysely";
+import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
 // currently exposes. The Host's signed identity document is not part of this
@@ -21,8 +21,19 @@ export interface AccountDirectoryProjection {
 }
 export class AccountDirectoryStore {
   readonly #database: Kysely<DatabaseSchema>;
-  constructor(database: Kysely<DatabaseSchema>) {
+  readonly #transaction: <Result>(
+    action: (transaction: Transaction<DatabaseSchema>) => Promise<Result>,
+  ) => Promise<Result>;
+  /** A team Host has no Personal event state to serialize its directory writes behind. */
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    options: { readonly kind?: "personal" | "team" } = {},
+  ) {
     this.#database = database;
+    this.#transaction =
+      options.kind === "team"
+        ? (action) => withDatabaseTransaction(database, action)
+        : (action) => withPersonalTransaction(database, action);
   }
   async configureProvider(input: {
     readonly issuer: string;
@@ -33,7 +44,7 @@ export class AccountDirectoryStore {
     if (!providerId || providerId.length > 512) {
       throw new TypeError("Account directory provider ID is invalid");
     }
-    await withPersonalTransaction(this.#database, async (transaction) => {
+    await this.#transaction(async (transaction) => {
       await sql`select pg_advisory_xact_lock(hashtextextended('opensteer:account-directory-provider', 0))`.execute(
         transaction,
       );
@@ -78,7 +89,7 @@ export class AccountDirectoryStore {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
       throw new TypeError("Account directory claim limit must be between 1 and 100");
     }
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return this.#transaction(async (transaction) => {
       // `nextAttemptAt` is written by PostgreSQL triggers. Compare it with the
       // database clock as well, avoiding a process/DB clock skew window in
       // which newly committed projections appear not to be ready.

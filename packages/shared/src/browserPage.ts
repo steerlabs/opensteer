@@ -336,6 +336,13 @@ transition:background-color var(--fast) var(--ease-out),color var(--fast) var(--
 .field:focus-within{outline:2px solid var(--ember);outline-offset:2px}
 .field input{flex:1;width:0;min-width:0;height:var(--control);padding:0 2px 0 12px;border:0;background:transparent;color:var(--text);font:inherit;outline:none}
 .field__suffix{padding-right:12px;color:var(--muted);white-space:nowrap}
+.steps{display:grid;gap:10px;list-style:none;padding:0;margin:0}
+.step{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13.5px;line-height:1.4}
+.step::before{content:"";flex:none;width:8px;height:8px;margin:0 4px;border-radius:50%;background:rgb(var(--light) / 18%)}
+.step[data-state="active"]{color:var(--text)}
+.step[data-state="active"]::before{background:var(--ember);animation:pulse 1.6s var(--ease-out) infinite}
+.step[data-state="done"]{color:var(--text-soft)}
+.step[data-state="done"]::before{background:var(--green)}
 .section-title{color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.02em}
 
 /* Masthead */

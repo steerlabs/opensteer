@@ -1,10 +1,21 @@
 import { generateKeyPairSync } from "node:crypto";
 import {
   ControlPlaneAccountIdSchema,
+  HostedTeamBootstrapReceiptSchema,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
-import { DesiredHostedTeamsResponseSchema } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
+  DesiredHostedTeamsResponseSchema,
+  HostedTeamViewSchema,
+  ListHostedTeamsResponseSchema,
+  accountHostedTeamAvailabilityPath,
+  accountHostedTeamPath,
+  accountHostedTeamRetryPath,
+  accountHostedTeamsPath,
+  type HostedTeamView,
+} from "@opensteer/control-plane-protocol/hosted-teams";
+import {
+  createId,
   DeploymentIdSchema,
   HostInstanceIdSchema,
   HostKeyFingerprintSchema,
@@ -28,7 +39,12 @@ import { ControlPlaneStore } from "../database/store.js";
 import { portalCallbackUri, portalOAuthClientId, portalOAuthScopes } from "../portal/portal.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "../server/server.js";
-import { HostedTeamStore } from "./hosted-team-store.js";
+import {
+  HostedTeamOperator,
+  HostedTeamStore,
+  HostedTeamSupersededError,
+} from "./hosted-team-store.js";
+import { HostedTeamSetupTokenCipher } from "./setup-token-cipher.js";
 import { googleServiceAccountVerifier } from "./provisioner-routes.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
@@ -69,9 +85,15 @@ integration("Hosted teams", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
-  const setupCompleteAt = new Set<string>();
+  const cipher = new HostedTeamSetupTokenCipher(config.adoptionOperationKey);
+  let ownerAnswer: boolean | undefined;
+  const ownerChecks: ControlPlaneAccountId[] = [];
   const hostedTeams = new HostedTeamStore(database, {
-    hostSetupComplete: async (origin) => setupCompleteAt.has(origin),
+    cipher,
+    ownerCheck: async ({ accountId }) => {
+      ownerChecks.push(accountId);
+      return ownerAnswer;
+    },
   });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
@@ -108,7 +130,8 @@ integration("Hosted teams", () => {
   });
 
   beforeEach(async () => {
-    setupCompleteAt.clear();
+    ownerAnswer = undefined;
+    ownerChecks.length = 0;
     await sql`truncate table users, hosted_teams cascade`.execute(database);
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
@@ -157,142 +180,346 @@ integration("Hosted teams", () => {
     expect(DesiredHostedTeamsResponseSchema.parse(allowed.json())).toEqual({ teams: [] });
   });
 
-  it("creates a team whose setup link reaches only the creator, and stores only its digest", async () => {
-    const cookie = await portalCookie(owner);
-    const created = await createTeam(cookie, "Acme-Co");
-    expect(created.statusCode).toBe(200);
-    expect(created.headers["cache-control"]).toBe("no-store");
-    const setupUrl = setupLinkIn(created.body);
-    expect(setupUrl.origin).toBe("https://acme-co.teams.opensteer.com");
-    expect(setupUrl.pathname).toBe("/setup");
-    const token = setupUrl.hash.slice(1);
-
-    const [team] = await desiredTeams();
+  it("creates a team once per request through the Account API, sealing its setup token", async () => {
+    const bearer = await accountBearer(owner);
+    const requestId = crypto.randomUUID();
+    const create = () =>
+      server.inject({
+        method: "POST",
+        url: accountHostedTeamsPath,
+        headers: { authorization: bearer },
+        payload: { requestId, name: "Acme Co", slug: "acme-co" },
+      });
+    const [first, second] = await Promise.all([create(), create()]);
+    expect(first.statusCode).toBe(201);
+    const team = HostedTeamViewSchema.parse(first.json());
+    expect(HostedTeamViewSchema.parse(second.json()).id).toBe(team.id);
     expect(team).toMatchObject({
+      name: "Acme Co",
       slug: "acme-co",
-      state: "active",
-      setupGeneration: 1,
-      setupTokenDigest: digestSecret(token),
+      origin: "https://acme-co.teams.opensteer.com",
+      stage: "reserving",
     });
+    expect(team.deploymentId).toBeUndefined();
+
+    const [desired] = await desiredTeams();
+    const row = await database
+      .selectFrom("hostedTeams")
+      .select(["sealedSetupToken"])
+      .executeTakeFirstOrThrow();
+    const token = cipher.open(team.id, 1, row.sealedSetupToken!);
+    expect(desired).toMatchObject({ id: team.id, setupGeneration: 1 });
+    expect(desired!.setupTokenDigest).toBe(digestSecret(token));
     const stored = await sql<{
       readonly row: string;
     }>`select hosted_teams::text as row from hosted_teams`.execute(database);
     expect(stored.rows[0]!.row).not.toContain(token);
+    // Bound to its team and generation: the sealed value opens nowhere else.
+    expect(() => cipher.open(team.id, 2, row.sealedSetupToken!)).toThrow();
+    expect(() => cipher.open(crypto.randomUUID(), 1, row.sealedSetupToken!)).toThrow();
 
-    const stranger = await portalCookie(await createAccount("stranger@example.test"));
+    const listed = await server.inject({
+      method: "GET",
+      url: accountHostedTeamsPath,
+      headers: { authorization: bearer },
+    });
+    expect(ListHostedTeamsResponseSchema.parse(listed.json()).teams.map((t) => t.id)).toEqual([
+      team.id,
+    ]);
+    const stranger = await accountBearer(await createAccount("stranger@example.test"));
     const peek = await server.inject({
       method: "GET",
-      url: `/teams/${team!.id}/status`,
-      headers: { host: portalOrigin.host, cookie: stranger },
+      url: accountHostedTeamPath(team.id),
+      headers: { authorization: stranger },
     });
     expect(peek.statusCode).toBe(404);
+    const availability = async (slug: string) =>
+      (
+        await server.inject({
+          method: "GET",
+          url: `${accountHostedTeamAvailabilityPath}?${new URLSearchParams({ slug })}`,
+          headers: { authorization: stranger },
+        })
+      ).json();
+    expect(await availability("acme-co")).toEqual({ available: false, reason: "taken" });
+    expect(await availability("admin")).toEqual({ available: false, reason: "reserved" });
+    expect(await availability("a--b")).toEqual({ available: false, reason: "invalid" });
+    expect(await availability("acme-two")).toEqual({ available: true });
+    const unauthenticated = await server.inject({ method: "GET", url: accountHostedTeamsPath });
+    expect(unauthenticated.statusCode).toBe(401);
   });
 
-  it("refuses reserved, malformed and taken addresses, and a fourth live team", async () => {
-    const cookie = await portalCookie(owner);
-    expect((await createTeam(cookie, "admin")).statusCode).toBe(400);
-    expect((await createTeam(cookie, "a--b")).statusCode).toBe(400);
-    expect((await createTeam(cookie, "-ab")).statusCode).toBe(400);
-    expect((await createTeam(cookie, "one")).statusCode).toBe(200);
-    const other = await portalCookie(await createAccount("other@example.test"));
-    const taken = await createTeam(other, "one");
-    expect(taken.statusCode).toBe(409);
-    expect(taken.body).toContain("That address is taken");
-    expect((await createTeam(cookie, "two")).statusCode).toBe(200);
-    expect((await createTeam(cookie, "three")).statusCode).toBe(200);
-    const fourth = await createTeam(cookie, "four");
-    expect(fourth.statusCode).toBe(409);
-    expect(fourth.body).toContain("You can have 3 hosted teams");
+  it("holds the per-Account cap and each address under concurrent creates", async () => {
+    const results = await Promise.allSettled(
+      ["one", "two", "three", "four", "five"].map((slug) =>
+        hostedTeams.create(owner, { requestId: crypto.randomUUID(), name: slug, slug }),
+      ),
+    );
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
+    expect(
+      results.flatMap((result) => (result.status === "rejected" ? [result.reason.reason] : [])),
+    ).toEqual(["hosted-team-limit-reached", "hosted-team-limit-reached"]);
 
-    const [one] = await desiredTeams();
-    await postForm(cookie, `/teams/${one!.id}/delete`);
-    expect((await createTeam(cookie, "four")).statusCode).toBe(200);
-    // A deleted team's address is never handed out again.
-    expect((await createTeam(other, "one")).statusCode).toBe(409);
-    const cross = await createTeam(cookie, "cross-origin", "https://evil.test");
-    expect(cross.statusCode).toBe(403);
+    const [left, right] = [
+      await createAccount("left@example.test"),
+      await createAccount("right@example.test"),
+    ];
+    const race = await Promise.allSettled(
+      [left, right].map((account) =>
+        hostedTeams.create(account, { requestId: crypto.randomUUID(), name: "Same", slug: "same" }),
+      ),
+    );
+    expect(race.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(race.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { reason: "hosted-team-address-taken" },
+    });
+
+    // A deleted team's address is never handed out again, and its slot frees up.
+    const [first] = await hostedTeams.listForAccount(owner);
+    await hostedTeams.remove(owner, first!.id);
+    await expect(
+      hostedTeams.create(left, { requestId: crypto.randomUUID(), name: "x", slug: first!.slug }),
+    ).rejects.toMatchObject({ reason: "hosted-team-address-taken" });
+    await expect(
+      hostedTeams.create(owner, { requestId: crypto.randomUUID(), name: "six", slug: "six" }),
+    ).resolves.toMatchObject({ stage: "reserving" });
   });
 
-  it("waits for the provisioner to run the newest setup link before opening it", async () => {
+  it("advances stages only on reports for the current setup generation, and retries with a new token", async () => {
+    const team = await createTeam("waiting");
+    const stage = async () => (await hostedTeams.forAccount(owner, team.id))?.stage;
+    await report(team.id, { phase: "provisioning", observedSetupGeneration: 0 });
+    expect(await stage()).toBe("starting");
+    expect((await report(team.id, { phase: "ready", observedSetupGeneration: 2 })).statusCode).toBe(
+      404,
+    );
+    expect(await stage()).toBe("starting");
+    await report(team.id, { phase: "ready", observedSetupGeneration: 1 });
+    expect(await stage()).toBe("configuring");
+    await report(team.id, {
+      phase: "failed",
+      observedSetupGeneration: 0,
+      message: "The team did not become ready; rollouts are held until it does.",
+    });
+    expect(await hostedTeams.forAccount(owner, team.id)).toMatchObject({
+      stage: "failed",
+      error: { message: "The team server didn’t start. Try again." },
+    });
+
+    const before = (await desiredTeams())[0]!;
+    const retried = await server.inject({
+      method: "POST",
+      url: accountHostedTeamRetryPath(team.id),
+      headers: { authorization: await accountBearer(owner) },
+    });
+    expect(retried.json()).toMatchObject({ stage: "starting" });
+    const after = (await desiredTeams())[0]!;
+    expect(after.setupGeneration).toBe(2);
+    expect(after.setupTokenDigest).not.toBe(before.setupTokenDigest);
+    // The Host still on the old generation says nothing about the new one.
+    await report(team.id, { phase: "ready", observedSetupGeneration: 1 });
+    expect(await stage()).toBe("starting");
+    await report(team.id, { phase: "ready", observedSetupGeneration: 2 });
+    expect(await stage()).toBe("configuring");
+    // Retrying a team that hasn't failed changes nothing.
+    await hostedTeams.retry(owner, team.id);
+    expect((await desiredTeams())[0]!.setupGeneration).toBe(2);
+  });
+
+  it("fences each bootstrap attempt to its claim", async () => {
+    const team = await createTeam("fenced");
+    await report(team.id, { phase: "ready", observedSetupGeneration: 1 });
+    const now = Date.now();
+    const first = await hostedTeams.claimBootstrap(new Date(now));
+    expect(first).toMatchObject({ id: team.id, generation: 1, bootstrapped: false });
+    expect(hostedTeams.openSetupToken(first!)).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+    expect(await hostedTeams.claimBootstrap(new Date(now + 1_000))).toBeUndefined();
+    // The first attempt stalls past its lease; another replica takes the team over.
+    const second = await hostedTeams.claimBootstrap(new Date(now + 3 * 60_000));
+    expect(second!.attempt).toBe(first!.attempt + 1);
+    await expect(
+      hostedTeams.recordBootstrap(first!, { receipt: receiptFor(team.id) }),
+    ).rejects.toBeInstanceOf(HostedTeamSupersededError);
+    await expect(
+      database
+        .transaction()
+        .execute((transaction) => hostedTeams.adoptionGuard(first!)(transaction)),
+    ).rejects.toBeInstanceOf(HostedTeamSupersededError);
+    await hostedTeams.failBootstrap(first!, "stale");
+    expect((await hostedTeams.forAccount(owner, team.id))?.stage).toBe("configuring");
+    await hostedTeams.failBootstrap(second!, "Setup didn’t finish. Try again.");
+    expect((await hostedTeams.forAccount(owner, team.id))?.stage).toBe("failed");
+  });
+
+  it("lets the creator cancel before setup and only the team's owners delete after", async () => {
+    const pending = await createTeam("pending");
+    const member = await createAccount("member@example.test");
+    await expect(hostedTeams.remove(member, pending.id)).rejects.toMatchObject({
+      code: "not_found",
+    });
+    expect((await hostedTeams.remove(owner, pending.id)).stage).toBe("deleting");
+    expect(ownerChecks).toEqual([]);
+
+    const team = await createTeam("owned");
+    const deploymentId = await claim("https://owned.teams.opensteer.com");
+    await database
+      .updateTable("hostedTeams")
+      .set({
+        stage: "ready",
+        deploymentId,
+        bootstrapReceipt: JSON.stringify(receiptFor(team.id)),
+      })
+      .where("id", "=", team.id)
+      .execute();
+    await database
+      .insertInto("deploymentDirectoryEntries")
+      .values({
+        deploymentId,
+        accountId: member,
+        generation: 1,
+        present: true,
+        observedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .execute();
+    expect((await hostedTeams.forAccount(member, team.id))?.stage).toBe("ready");
+    ownerAnswer = false;
+    await expect(hostedTeams.remove(owner, team.id)).rejects.toMatchObject({
+      reason: "hosted-team-owner-required",
+    });
+    // A Host that can't answer leaves it to the team's creator, and nobody else.
+    ownerAnswer = undefined;
+    await expect(hostedTeams.remove(member, team.id)).rejects.toMatchObject({
+      reason: "hosted-team-owner-required",
+    });
+    ownerAnswer = true;
+    const deleting = await server.inject({
+      method: "DELETE",
+      url: accountHostedTeamPath(team.id),
+      headers: { authorization: await accountBearer(member) },
+    });
+    expect(deleting.json()).toMatchObject({ id: team.id, stage: "deleting" });
+    expect(ownerChecks).toEqual([owner, member, member]);
+    expect(await database.selectFrom("deployments").select("id").execute()).toEqual([]);
+  });
+
+  it("creates and follows a team from the portal without a setup link", async () => {
     const cookie = await portalCookie(owner);
-    const first = setupLinkIn((await createTeam(cookie, "waiting")).body).hash.slice(1);
-    const [team] = await desiredTeams();
-    const status = async () =>
+    const form = await server.inject({
+      method: "GET",
+      url: "/teams/new",
+      headers: { host: portalOrigin.host, cookie },
+    });
+    const requestId = /name="requestId" value="([^"]+)"/u.exec(form.body)?.[1];
+    expect(requestId).toBeDefined();
+    const created = await postForm(
+      cookie,
+      "/teams",
+      new URLSearchParams({ requestId: requestId!, name: "Acme", slug: "acme" }).toString(),
+    );
+    expect(created.statusCode).toBe(303);
+    const [team] = await hostedTeams.listForAccount(owner);
+    expect(created.headers.location).toBe(`/teams/${team!.id}`);
+    const progress = await server.inject({
+      method: "GET",
+      url: `/teams/${team!.id}`,
+      headers: { host: portalOrigin.host, cookie },
+    });
+    expect(progress.statusCode).toBe(200);
+    expect(progress.body).toContain("Setting up Acme");
+    expect(progress.body).not.toContain("/setup#");
+    const token = cipher.open(
+      team!.id,
+      1,
+      (
+        await database
+          .selectFrom("hostedTeams")
+          .select("sealedSetupToken")
+          .executeTakeFirstOrThrow()
+      ).sealedSetupToken!,
+    );
+    expect(progress.body).not.toContain(token);
+    expect(
       (
         await server.inject({
           method: "GET",
           url: `/teams/${team!.id}/status`,
           headers: { host: portalOrigin.host, cookie },
         })
-      ).json<{ readonly ready: boolean; readonly phase: string }>();
-    expect(await status()).toMatchObject({ ready: false, phase: "provisioning" });
-    expect(
-      (await report(team!.id, { phase: "ready", observedSetupGeneration: 1 })).statusCode,
-    ).toBe(200);
-    expect(await status()).toMatchObject({ ready: true, phase: "ready" });
-
-    const renewed = await postForm(cookie, `/teams/${team!.id}/setup-link`);
-    expect(renewed.statusCode).toBe(200);
-    const second = setupLinkIn(renewed.body).hash.slice(1);
-    expect(second).not.toBe(first);
-    const [rotated] = await desiredTeams();
-    expect(rotated).toMatchObject({ setupGeneration: 2, setupTokenDigest: digestSecret(second) });
-    expect(await status()).toMatchObject({ ready: false });
-    expect(
-      (await report(team!.id, { phase: "ready", observedSetupGeneration: 3 })).statusCode,
-    ).toBe(404);
-    await report(team!.id, { phase: "ready", observedSetupGeneration: 2 });
-    expect(await status()).toMatchObject({ ready: true });
-
-    // Adoption alone does not finish setup: until an owner signs in, a lost link stays recoverable.
-    await claim("https://waiting.teams.opensteer.com");
-    const adopted = await postForm(cookie, `/teams/${team!.id}/setup-link`);
-    expect(adopted.statusCode).toBe(200);
-    expect((await desiredTeams())[0]).toMatchObject({ setupGeneration: 3 });
-
-    setupCompleteAt.add("https://waiting.teams.opensteer.com");
-    const owned = await postForm(cookie, `/teams/${team!.id}/setup-link`);
-    expect(owned.statusCode).toBe(303);
-    expect(owned.headers.location).toBe("https://waiting.teams.opensteer.com/");
-    expect((await desiredTeams())[0]).toMatchObject({ setupGeneration: 3 });
+      ).json(),
+    ).toMatchObject({ id: team!.id, stage: "reserving" });
+    const taken = await postForm(
+      cookie,
+      "/teams",
+      new URLSearchParams({ requestId: crypto.randomUUID(), name: "A", slug: "acme" }).toString(),
+    );
+    expect(taken.statusCode).toBe(409);
+    expect(taken.body).toContain("That address is taken");
+    const cross = await postForm(cookie, "/teams", "", "https://evil.test");
+    expect(cross.statusCode).toBe(403);
+    expect((await postForm(cookie, `/teams/${team!.id}/delete`)).statusCode).toBe(303);
+    expect((await desiredTeams())[0]).toMatchObject({ state: "deleted", setupTokenDigest: null });
   });
 
   it("suspends, resumes and deletes through the operator path", async () => {
-    const cookie = await portalCookie(owner);
-    await createTeam(cookie, "abuse-case");
-    await hostedTeams.suspend("abuse-case", "spam report 42");
+    await createTeam("abuse-case");
+    const operator = new HostedTeamOperator(database);
+    await operator.suspend("abuse-case", "spam report 42");
     const [suspended] = await desiredTeams();
     expect(suspended).toMatchObject({ state: "suspended" });
-    expect((await postForm(cookie, `/teams/${suspended!.id}/setup-link`)).statusCode).toBe(409);
-    await hostedTeams.unsuspend("abuse-case");
+    expect(await hostedTeams.forAccount(owner, suspended!.id)).toMatchObject({
+      stage: "failed",
+      error: { message: "Opensteer suspended this team." },
+    });
+    await expect(hostedTeams.retry(owner, suspended!.id)).rejects.toMatchObject({
+      code: "conflict",
+    });
+    await operator.unsuspend("abuse-case");
     expect((await desiredTeams())[0]).toMatchObject({ state: "active" });
-    await hostedTeams.deleteBySlug("abuse-case");
+    await operator.deleteBySlug("abuse-case");
     expect((await desiredTeams())[0]).toMatchObject({ state: "deleted", setupTokenDigest: null });
   });
 
   it("deletes a team until the provisioner confirms, removing the Deployment adopted there", async () => {
-    const cookie = await portalCookie(owner);
-    await createTeam(cookie, "gone");
-    const [team] = await desiredTeams();
-    const claimant = await createAccount("claimant@example.test");
-    await claim("https://gone.teams.opensteer.com", claimant);
+    const team = await createTeam("gone");
+    await claim("https://gone.teams.opensteer.com", await createAccount("claimant@example.test"));
 
-    const deleted = await postForm(cookie, `/teams/${team!.id}/delete`);
-    expect(deleted.statusCode).toBe(303);
+    expect((await hostedTeams.remove(owner, team.id)).stage).toBe("deleting");
     expect(await desiredTeams()).toEqual([
-      expect.objectContaining({ id: team!.id, state: "deleted", setupTokenDigest: null }),
+      expect.objectContaining({ id: team.id, state: "deleted", setupTokenDigest: null }),
     ]);
-    const deployments = await database.selectFrom("deployments").select("id").execute();
-    expect(deployments).toEqual([]);
-    expect((await postForm(cookie, `/teams/${team!.id}/delete`)).statusCode).toBe(404);
+    expect(await database.selectFrom("deployments").select("id").execute()).toEqual([]);
+    expect((await hostedTeams.remove(owner, team.id)).stage).toBe("deleting");
 
-    await report(team!.id, { phase: "deleted", observedSetupGeneration: 1, hostImage: null });
+    await report(team.id, { phase: "deleted", observedSetupGeneration: 1, hostImage: null });
     expect(await desiredTeams()).toEqual([]);
+    await expect(hostedTeams.remove(owner, team.id)).rejects.toMatchObject({ code: "not_found" });
+  });
+
+  it("keeps working with the rows and deletes a previous Account release writes", async () => {
+    // The previous release inserts without the setup columns and deletes without clearing them.
+    const id = crypto.randomUUID();
+    await sql`insert into hosted_teams(id,slug,creator_account_id,state,setup_token_digest,setup_generation,phase)
+      values(${id},'older',${owner},'active',${"a".repeat(64)},1,'provisioning')`.execute(database);
+    expect(await hostedTeams.forAccount(owner, id)).toMatchObject({
+      name: "older",
+      stage: "reserving",
+    });
+    const sealed = await createTeam("sealed");
+    await sql`update hosted_teams set state='deleted',setup_token_digest=null,deleted_at=now() where id=${sealed.id}`.execute(
+      database,
+    );
+    const row = await database
+      .selectFrom("hostedTeams")
+      .select(["sealedSetupToken", "state"])
+      .where("id", "=", sealed.id)
+      .executeTakeFirstOrThrow();
+    expect(row).toEqual({ sealedSetupToken: null, state: "deleted" });
   });
 
   it("deletes an Account's hosted teams with the Account", async () => {
     const cookie = await portalCookie(owner);
-    await createTeam(cookie, "with-account");
+    await createTeam("with-account");
     const page = await server.inject({
       method: "GET",
       url: "/account/delete",
@@ -304,24 +531,30 @@ integration("Hosted teams", () => {
 
     const rows = await database
       .selectFrom("hostedTeams")
-      .select(["creatorAccountId", "state", "setupTokenDigest"])
+      .select(["creatorAccountId", "state", "setupTokenDigest", "sealedSetupToken"])
       .execute();
-    expect(rows).toEqual([{ creatorAccountId: null, state: "deleted", setupTokenDigest: null }]);
+    expect(rows).toEqual([
+      { creatorAccountId: null, state: "deleted", setupTokenDigest: null, sealedSetupToken: null },
+    ]);
   });
 
   it("tombstones an Account's teams even when a release that predates them deletes the Account", async () => {
-    const cookie = await portalCookie(owner);
-    await createTeam(cookie, "older-release");
+    await createTeam("older-release");
 
     // The previous Account release deletes the user row knowing nothing about hosted teams.
     await sql`delete from public.users where id = ${owner}`.execute(database);
 
     const row = await database
       .selectFrom("hostedTeams")
-      .select(["creatorAccountId", "state", "setupTokenDigest", "deletedAt"])
+      .select(["creatorAccountId", "state", "setupTokenDigest", "sealedSetupToken", "deletedAt"])
       .where("slug", "=", "older-release")
       .executeTakeFirstOrThrow();
-    expect(row).toMatchObject({ creatorAccountId: null, state: "deleted", setupTokenDigest: null });
+    expect(row).toMatchObject({
+      creatorAccountId: null,
+      state: "deleted",
+      setupTokenDigest: null,
+      sealedSetupToken: null,
+    });
     expect(row.deletedAt).toBeInstanceOf(Date);
     const desired = await hostedTeams.desired();
     expect(desired.find((team) => team.slug === "older-release")?.state).toBe("deleted");
@@ -352,8 +585,24 @@ integration("Hosted teams", () => {
     return `__Host-opensteer.portal=${encodeURIComponent(created.token)}`;
   }
 
-  function createTeam(cookie: string, slug: string, origin = portalOrigin.origin) {
-    return postForm(cookie, "/teams", `slug=${encodeURIComponent(slug)}`, origin);
+  function createTeam(slug: string): Promise<HostedTeamView> {
+    return hostedTeams.create(owner, { requestId: crypto.randomUUID(), name: slug, slug });
+  }
+
+  async function accountBearer(accountId: ControlPlaneAccountId): Promise<string> {
+    const session = await (await auth.$context).internalAdapter.createSession(accountId);
+    const { token } = await auth.api.signJWT({
+      body: {
+        payload: {
+          aud: publicOrigin.origin,
+          iss: publicOrigin.origin,
+          scope: "deployments:read deployments:write",
+          sid: session.id,
+          sub: accountId,
+        },
+      },
+    });
+    return `Bearer ${token}`;
   }
 
   function postForm(cookie: string, url: string, payload = "", origin = portalOrigin.origin) {
@@ -381,7 +630,12 @@ integration("Hosted teams", () => {
 
   async function report(
     id: string,
-    input: { phase: string; observedSetupGeneration: number; hostImage?: string | null },
+    input: {
+      phase: string;
+      observedSetupGeneration: number;
+      hostImage?: string | null;
+      message?: string;
+    },
   ) {
     return server.inject({
       method: "POST",
@@ -395,10 +649,11 @@ integration("Hosted teams", () => {
   }
 
   async function claim(origin: string, accountId: ControlPlaneAccountId = owner) {
+    const id = DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`);
     await database
       .insertInto("deployments")
       .values({
-        id: DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`),
+        id,
         ownerAccountId: accountId,
         name: "Team",
         reachability: "canonical",
@@ -411,8 +666,24 @@ integration("Hosted teams", () => {
         accountLink: null,
       })
       .execute();
+    return id;
   }
 });
+
+function receiptFor(hostedTeamId: string) {
+  return HostedTeamBootstrapReceiptSchema.parse({
+    hostedTeamId,
+    authority: {
+      canonicalOrigin: "https://owned.teams.opensteer.com",
+      deploymentId: DeploymentIdSchema.parse(`dep_${crypto.randomUUID()}`),
+      hostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
+      hostKeyFingerprint: HostKeyFingerprintSchema.parse(`sha256:${"A".repeat(43)}`),
+    },
+    ownerUserId: createId("user"),
+    generalChannelId: createId("teamChannel"),
+    completedAt: new Date().toISOString(),
+  });
+}
 
 async function idToken(
   overrides: {
@@ -433,10 +704,4 @@ async function idToken(
     .setIssuedAt()
     .setExpirationTime("5m")
     .sign(overrides.key ?? googleKey.privateKey);
-}
-
-function setupLinkIn(body: string): URL {
-  const match = /"setupUrl":"(https:\/\/[^"]+)"/u.exec(body);
-  if (!match) throw new Error("The page carries no setup link");
-  return new URL(match[1]!);
 }

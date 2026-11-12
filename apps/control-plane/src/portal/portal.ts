@@ -191,7 +191,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
     const [deployments, hostedTeams] = await Promise.all([
       store.listDeployments(accountId),
-      dependencies.hostedTeams?.listForAccount(accountId),
+      dependencies.hostedTeams?.listCreatedBy(accountId),
     ]);
     const presence = await Promise.all(
       deployments.map((deployment) =>
@@ -250,7 +250,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
     const [owned, hostedTeams] = await Promise.all([
       dependencies.store.ownedDeployments(accountId),
-      dependencies.hostedTeams?.listForAccount(accountId) ?? [],
+      dependencies.hostedTeams?.listCreatedBy(accountId) ?? [],
     ]);
     return sendBrowserPage(reply, {
       body: deleteAccountBody({

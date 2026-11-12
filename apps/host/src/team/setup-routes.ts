@@ -1,12 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { opensteerDesktopApplicationId } from "@opensteer/core";
 import {
+  CompleteTeamSetupAdoptionRequestSchema,
+  CompleteTeamSetupAdoptionResponseSchema,
   HostAccountIdentitySchema,
-  HostAccountAdoptionBundleSchema,
-  HostAccountAdoptionCompletionGrantSchema,
+  HostedTeamOwnerCheckRequestSchema,
+  HostedTeamOwnerCheckResponseSchema,
+  IssueHostAccountAdoptionProofResponseSchema,
+  teamSetupPaths,
 } from "@opensteer/control-plane-protocol";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
-import type { IdentityService } from "@opensteer/identity";
+import type { IdentityService, TeamIdentityAdmission } from "@opensteer/identity";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { assertTeamApiVersion } from "./services.js";
@@ -25,7 +29,12 @@ function headers(request: FastifyRequest) {
 }
 export function registerTeamSetupRoutes(
   app: FastifyInstance,
-  options: { identity: IdentityService; accountPortalOrigin: string },
+  options: {
+    identity: IdentityService;
+    accountPortalOrigin: string;
+    /** Answers Account's hosted-team owner checks; absent on a Host without hosted bootstrap. */
+    hosted?: Pick<TeamIdentityAdmission, "isOwner">;
+  },
 ) {
   const gate = async (request: FastifyRequest) => assertTeamApiVersion(headers(request));
   app.get(teamSetupPagePath, async (_request, reply) => {
@@ -89,22 +98,38 @@ export function registerTeamSetupRoutes(
     void reply.header("cache-control", "no-store");
     return result.data;
   });
-  app.post("/v1/team/setup/adoption/proof", { onRequest: gate }, async (request, reply) => {
+  app.post(teamSetupPaths.adoptionProof, { onRequest: gate }, async (request, reply) => {
     const account = HostAccountIdentitySchema.parse(request.body);
     const proof = await options.identity.issueSetupAccountAdoptionProof(headers(request), account);
     void reply.header("cache-control", "no-store");
-    return { ...proof, authority: proof.deployment, expiresAt: proof.expiresAt.toISOString() };
+    return IssueHostAccountAdoptionProofResponseSchema.parse({
+      proofId: proof.proofId,
+      proofCredential: proof.proofCredential,
+      account: proof.account,
+      authority: proof.deployment,
+      expiresAt: proof.expiresAt.toISOString(),
+    });
   });
-  app.post("/v1/team/setup/adoption/complete", { onRequest: gate }, async (request, reply) => {
-    const input = z
-      .strictObject({
-        grant: HostAccountAdoptionCompletionGrantSchema,
-        bundle: HostAccountAdoptionBundleSchema,
-      })
-      .parse(request.body);
+  app.post(teamSetupPaths.adoptionComplete, { onRequest: gate }, async (request, reply) => {
+    const input = CompleteTeamSetupAdoptionRequestSchema.parse(request.body);
     void reply.header("cache-control", "no-store");
-    return options.identity.completeTeamAccountAdoption(input.grant, input.bundle);
+    return CompleteTeamSetupAdoptionResponseSchema.parse(
+      await options.identity.completeTeamAccountAdoption(
+        input.grant,
+        input.bundle,
+        input.hostedBootstrap,
+      ),
+    );
   });
+  const hosted = options.hosted;
+  if (hosted)
+    app.post(teamSetupPaths.ownerCheck, { onRequest: gate }, async (request, reply) => {
+      const input = HostedTeamOwnerCheckRequestSchema.parse(request.body);
+      void reply.header("cache-control", "no-store");
+      return HostedTeamOwnerCheckResponseSchema.parse({
+        owner: await hosted.isOwner(input.assertion),
+      });
+    });
   app.post("/v1/team/setup/sign-in", { onRequest: gate }, async (request, reply) => {
     const result = await options.identity.beginOidcSignIn({
       headers: headers(request),

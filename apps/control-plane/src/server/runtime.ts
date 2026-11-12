@@ -25,6 +25,12 @@ import { ControlPlaneNotificationStore } from "../notifications/notification-sto
 import { NotificationTokenCipher } from "../notifications/notification-token-cipher.js";
 import { ControlPlaneStore } from "../database/store.js";
 import { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
+import {
+  HostedTeamBootstrapper,
+  hostedTeamOwnerCheck,
+} from "../hosted-teams/hosted-team-bootstrap.js";
+import { HttpHostedTeamHost } from "../hosted-teams/hosted-team-host.js";
+import { HostedTeamSetupTokenCipher } from "../hosted-teams/setup-token-cipher.js";
 import { googleServiceAccountVerifier } from "../hosted-teams/provisioner-routes.js";
 
 const operationResultCleanupIntervalMilliseconds = 5 * 60 * 1_000;
@@ -34,6 +40,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
 }> {
   assertNativeOAuthConfig(config);
   const database = createControlPlaneDatabase({ connectionString: config.databaseUrl });
+  let hostedTeamBootstrap: HostedTeamBootstrapper | undefined;
   try {
     await migrateControlPlaneToLatest(database);
     const appleSignIn = config.appleSignIn;
@@ -53,6 +60,17 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       new CloudflareConnectProvider(config.connectCloudflare),
       { managedConnectDomain: config.connectDomain },
     );
+    const hostedTeamHost = new HttpHostedTeamHost();
+    const hostedTeams = config.hostedTeams
+      ? new HostedTeamStore(database, {
+          cipher: new HostedTeamSetupTokenCipher(config.adoptionOperationKey),
+          ownerCheck: hostedTeamOwnerCheck({
+            host: hostedTeamHost,
+            issuer: config.publicOrigin,
+            sign: async (claims) => (await auth.api.signJWT({ body: { payload: claims } })).token,
+          }),
+        })
+      : undefined;
     const store = new ControlPlaneStore(database, config.publicOrigin, {
       adoptionCompletionGrantIssuer: new BetterAuthAccountAdoptionCompletionGrantIssuer(
         auth,
@@ -107,10 +125,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         authenticator: new ControlPlaneAuthenticator(auth, database, config.publicOrigin),
         connectLifecycle,
         ...(hostedOAuthBroker ? { hostedOAuthBroker } : {}),
-        ...(config.hostedTeams
+        ...(config.hostedTeams && hostedTeams
           ? {
               hostedTeams: {
-                store: new HostedTeamStore(database),
+                store: hostedTeams,
+                kickBootstrap: () => hostedTeamBootstrap?.kick(),
                 verifyProvisioner: googleServiceAccountVerifier({
                   audience: config.publicOrigin.origin,
                   email: config.hostedTeams.provisionerEmail,
@@ -167,6 +186,17 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         : undefined;
     notificationDelivery?.start();
 
+    hostedTeamBootstrap = hostedTeams
+      ? new HostedTeamBootstrapper({
+          teams: hostedTeams,
+          accounts: store,
+          host: hostedTeamHost,
+          issuer: config.publicOrigin,
+          onError: (error) => server.log.error({ err: error }, "Hosted team setup failed"),
+        })
+      : undefined;
+    hostedTeamBootstrap?.start();
+
     const cleanup = setInterval(() => {
       void Promise.all([
         store.purgeExpiredAdoptionResults(),
@@ -182,6 +212,7 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
       close: () => {
         closePromise ??= (async () => {
           clearInterval(cleanup);
+          await hostedTeamBootstrap?.close();
           await notificationDelivery?.close();
           apns?.close();
           await server.close();
