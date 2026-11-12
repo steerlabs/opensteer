@@ -70,10 +70,12 @@ describe("the review's findings", () => {
       (item) => item.kind === "browser" && item.key !== place.key && isMockPage(item),
     )!;
     await settle(100);
-    const answer = deferred<unknown>();
-    vi.spyOn(client, "dispatch").mockImplementationOnce(
-      async () => (await answer.promise) as never,
-    );
+    const answer = deferred<void>();
+    const real = client.dispatch.bind(client);
+    vi.spyOn(client, "dispatch").mockImplementationOnce(async (...args) => {
+      await answer.promise;
+      return real(...args);
+    });
     const field = element<HTMLTextAreaElement>("[data-composer-input]");
     await write(field, "First");
     await click(element(".composer__send"));
@@ -86,9 +88,15 @@ describe("the review's findings", () => {
     expect(element(".context-chip__title").textContent).toBe(place.title);
     // Removed while the first send waits: a choice of the second draft's that sticks.
     await click(element(".context-chip__remove"));
-    await act(async () => answer.resolve({ type: "thread.sendMessage" }));
+    await act(async () => answer.resolve());
     await settle(150);
-    expect(field.value).toBe("Second draft typed before acknowledgement");
+    // The answer opens the task it started; the second draft stays where it was written.
+    expect(history.at(-1)!.path).toMatch(/^\/tasks\//u);
+    await act(async () => goTo!(-1));
+    await settle(100);
+    expect(element<HTMLTextAreaElement>("[data-composer-input]").value).toBe(
+      "Second draft typed before acknowledgement",
+    );
     expect(document.querySelector(".context-chip")).toBeNull();
   });
 
@@ -193,19 +201,7 @@ describe("the review's findings", () => {
     expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
   });
 
-  it("4 · Projects and Automations links keep the place in the middle", async () => {
-    await mount((source) => `/projects${tabSearch(pageTab(source))}`);
-    const place = pageTab();
-    const middle = element(".place");
-    await click(element(".project-row"));
-    expect(history.at(-1)!.path).toMatch(/^\/workspaces\//u);
-    expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    expect(element(".place")).toBe(middle);
-    act(() => root?.unmount());
-    setRoot(null);
-    client.dispose();
-    resetHistory();
-    document.body.replaceChildren();
+  it("4 · Automations links keep the place in the middle", async () => {
     await mount((source) => `/automations${tabSearch(pageTab(source))}`);
     await settle(200);
     const sameMiddle = element(".place");
@@ -220,7 +216,15 @@ describe("the review's findings", () => {
   });
 
   it("5 · a phone's place offers Hide computer: one entry back to the conversation, draft kept", async () => {
-    await mount((source) => `/${tabSearch(pageTab(source))}`, { width: 390 });
+    await mount(
+      (source) => {
+        const task = source
+          .getSnapshot()
+          .threads.find((thread) => thread.listed && thread.purpose === "task")!;
+        return `/tasks/${task.id}${tabSearch(pageTab(source))}`;
+      },
+      { width: 390 },
+    );
     const field = element<HTMLTextAreaElement>("[data-composer-input]");
     await write(field, "Keep this");
     const before = history.length;
@@ -245,16 +249,14 @@ describe("the review's findings", () => {
           release();
         };
       });
-      const run = source
-        .getSnapshot()
-        .runQueue.find((run) => run.status === "running");
+      const run = source.getSnapshot().runQueue.find((run) => run.status === "running");
       const latest = run ? source.runPlace(run.id) : null;
       const other = placeList(source.getSnapshot()).find(
         (item) =>
           item.kind === "browser" &&
           item.key !== (latest ? placeIdentityKey(latest.data.place) : null),
       )!;
-      return `/${tabSearch(other)}`;
+      return `/tasks/${run!.threadId}${tabSearch(other)}`;
     });
     // The viewfinder takes its lease in an effect after mount; under a loaded
     // suite that can outlast any fixed pause, so each step waits for the lease
@@ -392,11 +394,10 @@ describe("the review's findings", () => {
     const listeners = new Set<() => void>();
     await mount((source) => {
       const snapshot = source.getSnapshot();
-      const [threadId, requests] = Object.entries(snapshot.requests).find(
-        ([, list]) =>
-          list.some(
-            (request) => request.status === "pending" && request.presentation.kind === "choice",
-          ),
+      const [threadId, requests] = Object.entries(snapshot.requests).find(([, list]) =>
+        list.some(
+          (request) => request.status === "pending" && request.presentation.kind === "choice",
+        ),
       )!;
       const request = requests.find(
         (item) => item.status === "pending" && item.presentation.kind === "choice",
@@ -457,7 +458,7 @@ describe("the review's findings", () => {
     expect(new URLSearchParams(history.at(-1)!.search).get("messageId")).toBe("msg_anchor");
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // Changing conversation leaves it behind.
-    await click(element(".side-home__main"));
+    await click(element('[aria-label="New task"]'));
     expect(new URLSearchParams(history.at(-1)!.search).has("messageId")).toBe(false);
   });
 });
@@ -492,12 +493,6 @@ describe("stopping a task and finishing it: one Stop", () => {
     return threadId;
   }
 
-  it("Chat offers no Done action", async () => {
-    await mount("/");
-    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
-    expect(document.querySelector(".conv-header__menu")).toBeNull();
-  });
-
   it("confirms shared Done on running work and keeps the composer to reopen it", async () => {
     const own = await startOwnTask("Compare two coworking passes");
     const setDone = vi.spyOn(client, "setTaskDone");
@@ -520,7 +515,6 @@ describe("stopping a task and finishing it: one Stop", () => {
     await settle(100);
     expect(thread(own).doneAt).toBeNull();
     expect(document.querySelector(".input-surface__done")).toBeNull();
-    expect(sidebarRow(own)).not.toBeNull();
   });
 
   it("dismisses Stop when its run ends and never turns that review into a different action", async () => {
@@ -537,18 +531,16 @@ describe("stopping a task and finishing it: one Stop", () => {
     expect(document.querySelector(".shell-error, .toast--error")).toBeNull();
   });
 
-  it("a task stopped from its composer's square moves to Done from its row, still paused", async () => {
+  it("a task stopped from its composer's square moves to Done, never resuming its paused input", async () => {
     const own = await startOwnTask("Price check standing desks");
-    expect(sidebarRow(own)?.querySelector(".side-row-action")).not.toBeNull();
     await click(button("Stop the run")!);
     await settle(100);
     expect(thread(own).inputQueuePaused).toBe(true);
     const resume = vi.spyOn(client, "resumeThreadInputQueue");
-    const action = element<HTMLButtonElement>(".side-row-action", sidebarRow(own)!);
-    expect(action.getAttribute("aria-label")).toBe(`Mark Done: ${thread(own).title}`);
-    await click(action);
+    await openMenu();
+    await click(menuRow("Mark Done")!);
     await settle(100);
-    expect(sidebarRow(own)).toBeNull();
+    expect(thread(own).doneAt).not.toBeNull();
     expect(resume).not.toHaveBeenCalled();
     expect(thread(own).inputQueuePaused).toBe(false);
   });
@@ -920,6 +912,8 @@ describe("a computer that can't show its apps, on the start page", () => {
     // Typing still finds Keynote and says why where Enter's action would be; the keyboard passes
     // over it to the search, and choosing it asks nothing.
     const field = element<HTMLInputElement>(".start-page__input");
+    // Home's composer has the keyboard; the person clicks into the search.
+    await act(async () => field.focus());
     await typeInto(field, "keynote");
     const keynote = [...document.querySelectorAll<HTMLElement>(".start-result")].find(
       (row) => row.querySelector(".start-result__title")?.textContent === "Keynote",
@@ -981,6 +975,7 @@ describe("a computer that can't show its apps, on the start page", () => {
     await act(async () => client.setComputerUseReadiness(mini.id, "permission-required"));
     await settle();
     const field = element<HTMLInputElement>(".start-page__input");
+    await act(async () => field.focus());
     await typeInto(field, "notes");
     await act(async () => {
       field.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
