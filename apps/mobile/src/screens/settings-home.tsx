@@ -30,7 +30,7 @@ export function SettingsScreen() {
         title: team.name,
         onPress: () => navigation.navigate("TeamSettings", { teamId: team.teamId }),
       })),
-      { title: "Join a team", onPress: () => navigation.navigate("JoinTeam", undefined) },
+      { title: "Teams", onPress: () => navigation.navigate("Teams") },
     ],
   };
   return <SettingsHome team={group} />;

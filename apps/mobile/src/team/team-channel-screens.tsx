@@ -41,6 +41,7 @@ import { sendFromComposer } from "./composer-send.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
+import { GeneralWelcome } from "./team-entry-screens.js";
 import type {
   AgentReach,
   ConnectionBannerView,
@@ -145,6 +146,8 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
 
   if (session === null || view === null || view.channel === null || header === null)
     return <PlaceWaiting failure={place.failure} />;
+  const bootstrap = snapshot.bootstrap;
+  const channelName = view.channel.name;
   return (
     <Screen edgeToEdge>
       <Place
@@ -161,6 +164,18 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
             anchorId={landing.anchorId}
             atStart={!view.hasMore}
             channel={header}
+            welcome={
+              bootstrap !== null &&
+              (bootstrap.generalChannelId
+                ? bootstrap.generalChannelId === channelId
+                : channelName === "general") ? (
+                <GeneralWelcome
+                  bootstrap={bootstrap}
+                  teamId={teamId}
+                  teamName={team?.name ?? bootstrap.teamName}
+                />
+              ) : null
+            }
           />
         )}
       </Place>

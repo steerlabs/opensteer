@@ -112,7 +112,7 @@ async function renderOpensteer(): Promise<void> {
     return;
   }
 
-  let previewTeams: Parameters<typeof import("./app.js").App>[0]["previewTeams"] = null;
+  let preview: Parameters<typeof import("./app.js").App>[0]["preview"] = null;
   const [{ App }, hostClient] = await Promise.all([
     import("./app.js"),
     import.meta.env.VITE_OPENSTEER_USE_MOCK === "true"
@@ -128,6 +128,7 @@ async function renderOpensteer(): Promise<void> {
             { browserClientLifecycle },
             {
               MockTeamHost,
+              MockTeamWorld,
               TeamSessionClient,
               createMemoryTeamPersistence,
               busyTeamIds,
@@ -157,14 +158,22 @@ async function renderOpensteer(): Promise<void> {
               const family = new MockTeamHost({ teamId: busyTeamIds[1] });
               seedBusyTeam(acme, { name: "Acme", index: 1 });
               seedBusyTeam(family, { name: "Family", index: 2 });
-              previewTeams = [
-                attach(acme, "https://chat.acme.example"),
-                attach(family, "https://family.example"),
-              ];
+              preview = {
+                world: new MockTeamWorld(),
+                teams: [
+                  attach(acme, "https://chat.acme.example"),
+                  attach(family, "https://family.example"),
+                ],
+              };
               return mockClient();
             }
-            if (search.has("mock-team"))
-              previewTeams = [attach(new MockTeamHost(), "https://chat.acme.example")];
+            // Every preview can create and join hosted teams in memory.
+            preview = {
+              world: new MockTeamWorld(),
+              teams: search.has("mock-team")
+                ? [attach(new MockTeamHost(), "https://chat.acme.example")]
+                : [],
+            };
             return mockClient();
             function mockClient() {
               const subagents = mockSubagentScenes.find(
@@ -230,7 +239,7 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} previewTeams={previewTeams} />
+      <App hostClient={hostClient} preview={preview} />
     </StrictMode>,
   );
 }

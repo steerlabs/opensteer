@@ -118,6 +118,8 @@ import {
   DesktopPersonalOldDataStateSchema,
   DesktopTeamLinkSchema,
   DesktopTeamLinkDeliverySchema,
+  DesktopAccountTeamsCallSchema,
+  DesktopAccountTeamsResultSchema,
   DesktopChooseUsbDeviceInputSchema,
   DesktopReadAgentPhoneArtifactResultSchema,
   DesktopUsbDeviceChoiceSchema,
@@ -332,6 +334,10 @@ const bridge: OpensteerDesktopBridge & ViewerClipboardBridge = Object.freeze({
     invoke<void>(
       desktopBridgeChannels.teamLinkDelivery,
       DesktopTeamLinkDeliverySchema.parse(input),
+    ),
+  accountTeams: async (input: import("@opensteer/protocol/desktop").DesktopAccountTeamsCall) =>
+    DesktopAccountTeamsResultSchema.parse(
+      await invoke(desktopBridgeChannels.accountTeams, DesktopAccountTeamsCallSchema.parse(input)),
     ),
   onTeamLink: (listener: (link: import("@opensteer/protocol/desktop").DesktopTeamLink) => void) => {
     const receive = (_event: Electron.IpcRendererEvent, value: unknown) =>

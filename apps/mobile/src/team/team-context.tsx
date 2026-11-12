@@ -1,4 +1,11 @@
-import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
+import type {
+  AccountTeamsClient,
+  TeamConnectionIntent,
+  TeamCoordinator,
+  TeamCoordinatorSnapshot,
+  TeamSessionClient,
+  TeamSessionSnapshot,
+} from "@opensteer/client/team";
 import type { TeamMember, TeamMessage } from "@opensteer/protocol";
 import { useFocusEffect } from "@react-navigation/native";
 import {
@@ -17,11 +24,46 @@ import { memberDirectory, type MemberDirectory } from "./team-views.js";
 
 const MobileTeamsContext = createContext<MobileTeams | null>(null);
 
+/** Creating, joining and leaving teams, and getting the person's agent into them. */
+export interface TeamEntry {
+  readonly coordinator: TeamCoordinator;
+  readonly account: AccountTeamsClient;
+}
+
+const TeamEntryContext = createContext<TeamEntry | null>(null);
+
 export function MobileTeamsProvider(props: {
   readonly teams: MobileTeams;
+  readonly entry: TeamEntry;
   readonly children: ReactNode;
 }): ReactNode {
-  return <MobileTeamsContext value={props.teams}>{props.children}</MobileTeamsContext>;
+  return (
+    <MobileTeamsContext value={props.teams}>
+      <TeamEntryContext value={props.entry}>{props.children}</TeamEntryContext>
+    </MobileTeamsContext>
+  );
+}
+
+export function useTeamEntry(): TeamEntry {
+  const entry = use(TeamEntryContext);
+  if (entry === null) throw new Error("Team screens need MobileTeamsProvider.");
+  return entry;
+}
+
+export function useCoordinatorSnapshot(): TeamCoordinatorSnapshot {
+  const { coordinator } = useTeamEntry();
+  return useSyncExternalStore(
+    coordinator.subscribe,
+    coordinator.getSnapshot,
+    coordinator.getSnapshot,
+  );
+}
+
+/** Where getting the person's agent into one team stands on this phone, if it was asked. */
+export function useAgentIntent(teamId: string): TeamConnectionIntent | null {
+  return (
+    useCoordinatorSnapshot().intents.find((intent) => intent.teamDeploymentId === teamId) ?? null
+  );
 }
 
 export function useMobileTeams(): MobileTeams {

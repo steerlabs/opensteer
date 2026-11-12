@@ -6,6 +6,7 @@ export const desktopBridgeChannels = {
   personalStartFresh: "opensteer.desktop.personal.start-fresh",
   teamLink: "opensteer.desktop.team-link",
   teamLinkDelivery: "opensteer.desktop.team-link.delivery",
+  accountTeams: "opensteer.desktop.account-teams",
   webLinkDelivery: "opensteer.desktop.webLinkDelivery",
   dictationAvailability: "opensteer.desktop.dictation.availability",
   dictationStart: "opensteer.desktop.dictation.start",

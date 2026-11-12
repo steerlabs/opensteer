@@ -2,6 +2,8 @@ import { useCallback, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation, useNavigate } from "react-router";
 import type { TeamSessionClient, TeamSessionSnapshot } from "@opensteer/client/team";
 import { Dialog } from "../components/dialog.js";
+import { Icon } from "../components/icon.js";
+import { SetupEntries, useTeamDialogs } from "./hosted-teams.js";
 import { TeamTile } from "../components/team/team-marks.js";
 import type { TeamConnection } from "../components/team/team-models.js";
 import {
@@ -95,21 +97,50 @@ export function TeamSwitch({
   readonly side: string;
   readonly tasksBadge: SegmentBadge;
 }) {
-  const { teams } = useTeams();
+  const { coordination, surface, teams } = useTeams();
+  const { openCreate, openInvite } = useTeamDialogs();
   const clients = useStableClients(teams);
   const facts = useSegmentFacts(clients);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [leaving, setLeaving] = useState<TeamAttachment | null>(null);
-  if (teams.length === 0) return null;
   const go = (path: string) => {
     onNavigate();
     void navigate(path);
   };
+  if (teams.length === 0)
+    return surface === "team-web" ? null : (
+      <>
+        <button
+          aria-current={pathname === "/teams" ? "page" : undefined}
+          className="teams-nav"
+          onClick={() => go("/teams")}
+          type="button"
+        >
+          <Icon name="users" />
+          Teams
+        </button>
+        <SetupEntries />
+      </>
+    );
   const menu = (team: TeamAttachment, invites: boolean): TeamMenuActions => ({
     onKnowledge: team.client ? () => go(teamPath(team.teamId, "knowledge")) : undefined,
-    onInvite: invites ? () => go(`/settings/teams/${team.teamId}/invites`) : undefined,
+    onInvite:
+      invites && team.client
+        ? () => {
+            onNavigate();
+            openInvite(team.teamId);
+          }
+        : undefined,
     onSettings: team.client ? () => go(`/settings/teams/${team.teamId}/profile`) : undefined,
     onLeave: team.client ? () => setLeaving(team) : undefined,
+    onCreateTeam: coordination
+      ? () => {
+          onNavigate();
+          openCreate();
+        }
+      : () => go("/teams"),
+    onJoinTeam: () => go("/teams"),
   });
   return (
     <>
@@ -131,6 +162,7 @@ export function TeamSwitch({
           }),
         ]}
       />
+      <SetupEntries />
       {leaving ? (
         <LeaveTeamDialog
           onClose={() => setLeaving(null)}
@@ -210,6 +242,8 @@ export function TeamSideFor({
   const sidebar = useTeamSessionValue(client, selectSidebar);
   const teamName = useTeamSessionValue(client, selectTeamName);
   const canCreate = useTeamSessionValue(client, selectCanCreate);
+  const canInvite = useTeamSessionValue(client, selectCanInvite);
+  const { openInvite } = useTeamDialogs();
   const connection = useTeamSessionValue(client, selectConnection);
   const ended = useTeamSessionValue(client, (snapshot) => snapshot?.ended ?? null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -225,13 +259,19 @@ export function TeamSideFor({
     onBrowseChannels: () => go(teamPath(teamId, "browse")),
     onNewChannel: canCreate ? () => go(teamPath(teamId, "browse?new=1")) : undefined,
     onNewMessage: () => go(teamPath(teamId, "people")),
+    onInvite: canInvite
+      ? () => {
+          onNavigate();
+          openInvite(teamId);
+        }
+      : undefined,
     onRemoveFromSidebar: () =>
       void forget(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
     onRetry: () =>
       ended
         ? surface === "team-web"
           ? window.location.reload()
-          : go(`/join?team=${encodeURIComponent(teamId)}`)
+          : go("/teams")
         : client?.connect(),
   });
   const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
@@ -282,5 +322,7 @@ const selectTeamName = (snapshot: TeamSessionSnapshot | null) =>
   snapshot?.bootstrap?.teamName ?? null;
 const selectCanCreate = (snapshot: TeamSessionSnapshot | null) =>
   snapshot?.bootstrap?.can.createChannel ?? false;
+const selectCanInvite = (snapshot: TeamSessionSnapshot | null) =>
+  snapshot?.bootstrap?.can.manageInvites ?? false;
 const selectConnection = (snapshot: TeamSessionSnapshot | null) =>
   snapshot?.connection ?? "offline";

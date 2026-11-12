@@ -646,14 +646,14 @@ export function AgentUnavailable({
       <AgentOrb size={28} />
       {kind === "not-linked" ? (
         <>
-          <p className="agent-unavailable__title">Connect your Opensteer</p>
+          <p className="agent-unavailable__title">Connect your agent</p>
           <p className="agent-unavailable__body">
-            Your agent works in your own Opensteer, on your computer. Connect it to this team to ask
-            it here. Your message still posts either way.
+            Your agent runs on your computer. Connect it to this team to ask it here. Your message
+            still posts either way.
           </p>
           {onConnect ? (
             <button className="btn btn--small btn--primary" onClick={onConnect} type="button">
-              Connect your Opensteer
+              Connect your agent
             </button>
           ) : null}
         </>

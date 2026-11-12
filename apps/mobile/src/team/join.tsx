@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from "react-native";
-import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
+import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { AppText, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { AgentOrb, TeamTile } from "./team-marks.js";
@@ -12,10 +12,11 @@ export type InviteView =
   | {
       readonly kind: "ready";
       readonly team: TeamTileView;
+      /** "acme.teams.opensteer.com". */
+      readonly host: string;
       /** "Maya Chen", once the team has said; an invite read before sign-in names nobody. */
       readonly inviter: string | null;
-      readonly memberCount: number | null;
-      /** The Opensteer Account the reader joins as: "Tim Jang". */
+      /** The Opensteer Account the reader joins as: "you@example.com". */
       readonly joinAs: string;
       readonly joining: boolean;
       /**
@@ -68,17 +69,16 @@ export function JoinSheetBody(props: {
           <View style={styles.hero}>
             <TeamTile size={56} team={invite.team} />
             <AppText role="displaySmall" style={styles.centerText}>
-              Join {invite.team.name}?
+              Join {invite.team.name}
             </AppText>
             <AppText role="secondary" style={styles.centerText} tone="muted">
-              {invite.inviter === null ? "" : `${invite.inviter} invited you. `}
-              {invite.memberCount === null ? "" : `${peopleHere(invite.memberCount)} `}You'll join
-              as {invite.joinAs}.
+              {[invite.host, invite.inviter === null ? null : `invited by ${invite.inviter}`]
+                .filter(Boolean)
+                .join(" · ")}
             </AppText>
-            <AppText role="caption" style={styles.fine} tone="muted">
-              Your agent stays on your computers. {invite.team.name} sees only what you, or your
-              agent when you ask it, post there. Admins can see what agents read, searched and
-              posted in {invite.team.name}.
+            <AppText role="secondary" style={styles.fine} tone="soft">
+              You'll join as {invite.joinAs}. Your agent will be connected so you can ask it in
+              threads. It stays on your computer and only acts when you ask.
             </AppText>
           </View>
           {invite.computers.length < 2 ? null : (
@@ -122,7 +122,7 @@ export function JoinSheetBody(props: {
               onPress={props.onJoin}
               prominent
             />
-            <SecondaryButton disabled={invite.joining} label="Not now" onPress={props.onClose} />
+            <SecondaryButton disabled={invite.joining} label="Cancel" onPress={props.onClose} />
           </View>
         </View>
       );
@@ -173,10 +173,6 @@ export function JoinSheetBody(props: {
         />
       );
   }
-}
-
-function peopleHere(count: number): string {
-  return count === 1 ? "1 person is here." : `${count} people are here.`;
 }
 
 /**
@@ -360,54 +356,6 @@ export function ConnectOpensteerBody(props: {
   );
 }
 
-/**
- * Where the team's first owner lands after opening the setup link the server
- * printed and signing in: the team is theirs, and the next step is inviting
- * people.
- */
-export function FirstOwnerBody(props: {
-  readonly team: TeamTileView;
-  /** The team's invite link, to share. */
-  readonly inviteLink: string;
-  readonly copied: boolean;
-  readonly onCopy: () => void;
-  readonly onShare: () => void;
-  readonly onOpenGeneral: () => void;
-}): ReactNode {
-  return (
-    <ScrollView contentContainerStyle={[styles.sheet, styles.firstOwner]}>
-      <View style={styles.hero}>
-        <TeamTile size={56} team={props.team} />
-        <AppText role="displaySmall" style={styles.centerText}>
-          {props.team.name} is ready
-        </AppText>
-        <AppText role="secondary" style={styles.centerText} tone="muted">
-          You're its owner. Invite the people you work with; each of them brings their own agent.
-        </AppText>
-      </View>
-      <View style={styles.link}>
-        <AppText numberOfLines={1} role="secondary" style={styles.linkText} tone="soft">
-          {props.inviteLink}
-        </AppText>
-        <Pressable
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={props.onCopy}
-          style={styles.copy}
-        >
-          <AppText role="secondaryMedium" tone="ember">
-            {props.copied ? "Copied" : "Copy"}
-          </AppText>
-        </Pressable>
-      </View>
-      <View style={styles.buttons}>
-        <PrimaryButton label="Invite people" onPress={props.onShare} prominent />
-        <SecondaryButton label="Open #general" onPress={props.onOpenGeneral} />
-      </View>
-    </ScrollView>
-  );
-}
-
 const styles = StyleSheet.create({
   buttons: { gap: space[8] },
   center: { alignItems: "center", justifyContent: "center", minHeight: 240 },
@@ -420,9 +368,7 @@ const styles = StyleSheet.create({
     minHeight: touchTarget + 8,
     paddingHorizontal: space[14],
   },
-  copy: { justifyContent: "center", minHeight: touchTarget },
-  fine: { maxWidth: 320, textAlign: "center" },
-  firstOwner: { flexGrow: 1, justifyContent: "center" },
+  fine: { maxWidth: 340, textAlign: "center" },
   grow: { flex: 1 },
   hero: {
     alignItems: "center",
@@ -438,16 +384,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     width: 56,
   },
-  link: {
-    ...material.control,
-    alignItems: "center",
-    borderRadius: radius.md,
-    flexDirection: "row",
-    gap: space[8],
-    paddingLeft: space[12],
-    paddingRight: space[8],
-  },
-  linkText: { flex: 1 },
   pressed: { backgroundColor: color.surfacePressed },
   sheet: { gap: space[20], padding: space[20] },
   warning: {

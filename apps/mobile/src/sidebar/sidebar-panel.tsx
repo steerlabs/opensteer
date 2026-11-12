@@ -85,7 +85,7 @@ import { AppText, StatusDot } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import type { MobileTeam } from "../team/mobile-teams.js";
-import { useTeamsSnapshot } from "../team/team-context.js";
+import { useCoordinatorSnapshot, useTeamsSnapshot } from "../team/team-context.js";
 import { MentionCount, TeamTile } from "../team/team-marks.js";
 
 /** The root places the drawer switches between. */
@@ -106,6 +106,10 @@ export interface SidebarActions {
   readonly onOpenTask: (deploymentId: string, threadId: string, requestId?: string) => void;
   /** A team's own page: its channels, then its direct messages. */
   readonly onOpenTeam: (teamId: string) => void;
+  /** Create a team or join with an invite. */
+  readonly onTeams: () => void;
+  /** A hosted team still being set up: its progress. */
+  readonly onTeamSetup: (hostedTeamId: string) => void;
   readonly onSchedules: () => void;
   readonly onSearch: (deploymentId: string) => void;
   readonly onSettings: () => void;
@@ -490,7 +494,14 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           />
         </View>
 
-        <TeamRows onOpen={actions.onOpenTeam} openTeamId={props.openTeamId} visible={visible} />
+        <TeamRows
+          current={false}
+          onOpen={actions.onOpenTeam}
+          onSetup={actions.onTeamSetup}
+          onTeams={actions.onTeams}
+          openTeamId={props.openTeamId}
+          visible={visible}
+        />
 
         <View style={styles.tabs}>
           {hostClient === null || model === null ? (
@@ -576,12 +587,17 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
  * reads its own team's count, so a badge changing redraws only that row.
  */
 function TeamRows(props: {
+  /** The Teams page is in front. */
+  readonly current: boolean;
   readonly onOpen: (teamId: string) => void;
+  readonly onSetup: (hostedTeamId: string) => void;
+  readonly onTeams: () => void;
   readonly openTeamId: string | null;
   readonly visible: boolean;
 }): ReactNode {
   const { teams } = useTeamsSnapshot();
-  if (teams.length === 0) return null;
+  const { hostedTeams } = useCoordinatorSnapshot();
+  const settingUp = hostedTeams.filter((team) => team.stage !== "ready");
   // Between the nav's rule above and the tabs' rule below: no rule of its own.
   return (
     <View style={styles.teams}>
@@ -594,6 +610,37 @@ function TeamRows(props: {
           visible={props.visible}
         />
       ))}
+      {settingUp.map((team) => (
+        <DestinationRow
+          accessibilityLabel={`${team.name}, ${team.stage === "failed" ? "setup didn't finish" : "setting up"}`}
+          accessory={
+            team.stage === "failed" ? (
+              <Text
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                style={[type.caption, styles.count]}
+              >
+                Retry
+              </Text>
+            ) : (
+              <ActivityIndicator color={color.muted} size="small" />
+            )
+          }
+          current={false}
+          icon="person.3"
+          key={team.id}
+          label={team.name}
+          muted
+          onPress={() => props.onSetup(team.id)}
+        />
+      ))}
+      {teams.length > 0 || settingUp.length > 0 ? null : (
+        <DestinationRow
+          current={props.current}
+          icon="person.3"
+          label="Teams"
+          onPress={props.onTeams}
+        />
+      )}
     </View>
   );
 }
