@@ -24,6 +24,7 @@ import {
 } from "./proxy.test-support.js";
 import {
   seedPersonal,
+  startMobileNetworkHost,
   type SeedName,
   type MobileNetworkHostFactory,
 } from "./fixture.test-support.js";
@@ -168,11 +169,7 @@ export async function runMobileNetworkSample(options: {
     | { manifest: Awaited<ReturnType<typeof seedPersonal>>["manifest"]; results: ScenarioResult[] }
     | undefined;
   try {
-    if (!options.startPersonal)
-      throw new Error(
-        "The mobile benchmark needs P/I/X's isolated Personal Host factory and hosting Runner ports.",
-      );
-    const host = await options.startPersonal(options.databaseUrl);
+    const host = await (options.startPersonal ?? startMobileNetworkHost)(options.databaseUrl);
     cleanup.push(() => host.close());
     console.info(`Seeding ${options.seed}/${options.profile} run ${options.run}`);
     const fixture = await seedPersonal(host, options.seed, cleanup);

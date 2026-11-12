@@ -142,7 +142,7 @@ integration("phone network performance using the real shared client", () => {
                     : options.scenario === "busy-subagents"
                       ? ["open-subagent-parent", "open-subagent"]
                       : [options.scenario]
-                  : ["cold-attach", "reconnect"],
+                  : ["cold-attach", "open-task", "reconnect"],
                 link: {
                   ...linkProfiles[profile],
                   ...(options?.["stall-every"]
@@ -158,8 +158,12 @@ integration("phone network performance using the real shared client", () => {
               for (const sample of result.results) {
                 if (sample.scenario === "cold-attach") {
                   expect(sample.resume.snapshots).toBe(1);
-                  expect(sample.milestonesMs.homeFirstPage).toBeDefined();
+                  expect(sample.milestonesMs.taskListRenderable).toBeDefined();
                   expect(sample.milestonesMs.tabsLoaded).toBeDefined();
+                  expect(sample.rpc["bootstrap.get"]?.count).toBeGreaterThan(0);
+                }
+                if (sample.scenario === "open-task") {
+                  expect(sample.milestonesMs.historyFirstPage).toBeDefined();
                   expect(
                     sample.rpc["thread.messages.list"]?.count ??
                       sample.rpc["thread.events.list"]?.count,
