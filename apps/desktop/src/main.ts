@@ -486,6 +486,7 @@ async function runDesktop(
   };
   const processSupervisorExecutable = readPersonalProcessSupervisorRelease(resourcesDirectory);
   const personal = new PersonalDeploymentSupervisor({
+    userDataDirectory: app.getPath("userData"),
     accountIssuer: loaded.config.accountUrl,
     catalog: deploymentCatalog,
     computerUse: {
