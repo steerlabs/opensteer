@@ -1,41 +1,28 @@
-import type { Engine } from "./agents.js";
-
 /**
- * Hovering never moves the rail: a highlight glides to the icon under the pointer and a caption
- * under the rail names it. Only the picked engine opens its label, so the row reflows on a pick,
- * never under the pointer.
+ * Hovering never moves the rail: a highlight glides to the icon under the pointer. Only the picked
+ * engine opens its label, so the row reflows on a pick, never under the pointer.
  */
-export function glideRail(
-  set: HTMLElement,
-  buttons: readonly HTMLElement[],
-  engines: readonly Engine[],
-): void {
+export function glideRail(set: HTMLElement, buttons: readonly HTMLElement[]): void {
   if (!matchMedia("(hover: hover)").matches) return;
   const glow = document.createElement("span");
   glow.className = "rail__glow";
-  const tip = document.createElement("span");
-  tip.className = "rail__tip";
-  tip.setAttribute("aria-hidden", "true");
   set.prepend(glow);
-  set.appendChild(tip);
 
   let hovered: HTMLElement | undefined;
+  /** Where a pick happened: the row reflows under a still pointer, so it isn't a new hover. */
+  let pickedAt: readonly [number, number] | undefined;
   let following = 0;
 
   function place(): void {
     if (!hovered) return;
     glow.style.translate = `${hovered.offsetLeft}px 0`;
     glow.style.width = `${hovered.offsetWidth}px`;
-    tip.style.translate = `${hovered.offsetLeft + hovered.offsetWidth / 2}px 0`;
   }
 
-  function show(button: HTMLElement, index: number): void {
-    const engine = engines[index];
-    if (!engine) return;
+  function show(button: HTMLElement): void {
     // The first icon reached gets the highlight in place; later ones glide to it.
     set.classList.toggle("is-entering", !hovered);
     hovered = button;
-    tip.innerHTML = `<b>${engine.name}</b>${engine.plan}`;
     place();
     void set.offsetWidth;
     set.classList.remove("is-entering");
@@ -46,14 +33,26 @@ export function glideRail(
     set.classList.remove("is-hovering");
   }
 
-  buttons.forEach((button, index) => {
-    button.addEventListener("pointerenter", () => show(button, index));
-    // Keyboard users get the same name caption; the row itself stays put.
+  buttons.forEach((button) => {
+    button.addEventListener("pointerenter", () => {
+      if (!pickedAt) show(button);
+    });
+    button.addEventListener("click", (event) => {
+      pickedAt = [event.clientX, event.clientY];
+      hovered = button;
+    });
     button.addEventListener("focus", () => {
-      if (button.matches(":focus-visible")) show(button, index);
+      if (button.matches(":focus-visible")) show(button);
     });
   });
+  set.addEventListener("pointermove", (event) => {
+    if (!pickedAt || (event.clientX === pickedAt[0] && event.clientY === pickedAt[1])) return;
+    pickedAt = undefined;
+    const under = buttons.find((b) => b.matches(":hover"));
+    if (under && under !== hovered) show(under);
+  });
   set.addEventListener("pointerleave", () => {
+    pickedAt = undefined;
     if (!set.contains(document.activeElement) || !set.querySelector(":focus-visible")) hide();
   });
   set.addEventListener("focusout", (event) => {

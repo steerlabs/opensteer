@@ -388,10 +388,10 @@ button {
   color: var(--muted);
   cursor: pointer;
   transition:
-    grid-template-columns 560ms var(--ease-out),
-    color 240ms,
-    background-color 360ms var(--ease-out),
-    box-shadow 360ms;
+    grid-template-columns 420ms cubic-bezier(0.25, 1, 0.5, 1),
+    color 220ms,
+    background-color 280ms ease,
+    box-shadow 280ms ease;
 }
 .eng svg {
   width: 16px;
@@ -402,10 +402,7 @@ button {
   min-width: 0;
   overflow: hidden;
   opacity: 0;
-  filter: blur(3px);
-  transition:
-    opacity 180ms,
-    filter 180ms;
+  transition: opacity 140ms;
 }
 .eng__label span {
   display: block;
@@ -431,10 +428,7 @@ button {
 }
 .eng[aria-pressed="true"] .eng__label {
   opacity: 1;
-  filter: none;
-  transition:
-    opacity 380ms 140ms,
-    filter 380ms 140ms;
+  transition: opacity 260ms 90ms;
 }
 .rail__glow {
   position: absolute;
@@ -453,60 +447,12 @@ button {
     width 420ms var(--ease-out),
     opacity 220ms;
 }
-.rail__tip {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 10px);
-  left: 0;
-  display: flex;
-  gap: 6px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  background: var(--surface-raised);
-  border: 1px solid var(--rim-sheet);
-  box-shadow: var(--lift-float);
-  color: var(--muted);
-  font-size: 12px;
-  white-space: nowrap;
-  opacity: 0;
-  transform: translate(-50%, -4px);
-  pointer-events: none;
-  transition:
-    translate 420ms var(--ease-out),
-    opacity 200ms,
-    transform 320ms var(--ease-out);
-}
-.rail__tip b {
-  color: var(--text);
-  font-weight: 550;
-}
-.rail__set.is-hovering .rail__glow,
-.rail__set.is-hovering .rail__tip {
+.rail__set.is-hovering .rail__glow {
   opacity: 1;
 }
-.rail__set.is-hovering .rail__tip {
-  transform: translate(-50%, 0);
-}
 .rail__set.is-entering .rail__glow,
-.rail__set.is-entering .rail__tip,
-.rail__set.is-following .rail__glow,
-.rail__set.is-following .rail__tip {
+.rail__set.is-following .rail__glow {
   transition-property: opacity, transform;
-}
-.rail__set.is-flash .eng[aria-pressed="true"] {
-  animation: engflash 1100ms var(--ease-out);
-}
-@keyframes engflash {
-  0% {
-    box-shadow:
-      var(--edge-accent),
-      0 0 0 0 color-mix(in srgb, var(--ember) 70%, transparent);
-  }
-  100% {
-    box-shadow:
-      var(--edge-accent),
-      0 0 0 14px color-mix(in srgb, var(--ember) 0%, transparent);
-  }
 }
 
 .show {

@@ -1,5 +1,5 @@
 import "./demo.css";
-import { clamp, find, icon, reducedMotion, restart } from "../dom.js";
+import { clamp, find, icon, reducedMotion } from "../dom.js";
 import { AGENTS, type AgentId, ENGINES, engineOf, ORDER } from "./agents.js";
 import { createClock } from "./clock.js";
 import { glideRail } from "./rail.js";
@@ -109,12 +109,11 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
       const owner = ORDER.find((id) => AGENTS[id].engine === index);
       if (!owner) AGENTS[watched].engine = index;
       select(owner ?? watched, true);
-      restart(rail, "is-flash");
     });
     rail.appendChild(button);
     return button;
   });
-  glideRail(rail, engineButtons, ENGINES);
+  glideRail(rail, engineButtons);
 
   const env: Env = {
     clock,
