@@ -27,10 +27,7 @@ import {
 } from "@opensteer/client/team";
 import { DeploymentIdSchema, type DeploymentId } from "@opensteer/core";
 import type { HostApiClient } from "@opensteer/protocol";
-import type {
-  DesktopAccountTeamsCall,
-  OpensteerDesktopBridge,
-} from "@opensteer/protocol/desktop";
+import type { DesktopAccountTeamsCall, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { z } from "zod";
 import { createDesktopHostFetch } from "../desktop/desktop-host-transport.js";
 
@@ -58,10 +55,7 @@ export function desktopAccountTeams(
     retryHostedTeam: (id) => call({ call: "retry", id }, HostedTeamResponseSchema),
     deleteHostedTeam: (id) => call({ call: "delete", id }, HostedTeamResponseSchema.nullable()),
     issueTeamIdentityGrant: (deploymentId, request) =>
-      call(
-        { call: "identity-grant", deploymentId, request },
-        IssueTeamIdentityGrantResponseSchema,
-      ),
+      call({ call: "identity-grant", deploymentId, request }, IssueTeamIdentityGrantResponseSchema),
   };
 }
 
@@ -107,7 +101,9 @@ export function desktopTeamSessions(
     leave: async (teamDeploymentId) => {
       const client = rpc(teamDeploymentId);
       const me = unwrapRpcResult(await client["team.bootstrap.get"]({})).member.userId;
-      unwrapRpcResult(await client["commands.dispatch"]({ type: "team.member.remove", userId: me }));
+      unwrapRpcResult(
+        await client["commands.dispatch"]({ type: "team.member.remove", userId: me }),
+      );
     },
     forget: (deploymentId) => sessions.forget({ deploymentId }),
   };

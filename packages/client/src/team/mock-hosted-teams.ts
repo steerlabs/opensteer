@@ -285,7 +285,10 @@ export class MockTeamWorld {
           message: "This invite no longer works. Ask for a new one.",
           reason: "invite-invalid",
         });
-      return { teamName: record.name, expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString() };
+      return {
+        teamName: record.name,
+        expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      };
     },
     createLinkCode: async (teamDeploymentId) => {
       const result = unwrapRpcResult(
@@ -316,7 +319,9 @@ export class MockTeamWorld {
   readonly personal: PersonalTeamLinksPort = {
     join: async (_personal, offer) => {
       if (!this.personalOnline) return { kind: "offline" };
-      const origin = [...this.#records.keys()].find((candidate) => offer.includes(new URL(candidate).host));
+      const origin = [...this.#records.keys()].find((candidate) =>
+        offer.includes(new URL(candidate).host),
+      );
       const record = origin ? this.#records.get(origin) : undefined;
       if (!record) throw new Error("That code isn’t for a team you’re in.");
       return {

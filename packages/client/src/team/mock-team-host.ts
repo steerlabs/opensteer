@@ -617,17 +617,24 @@ export class MockTeamHost {
       }
       if (command.type === "team.invite.reset") {
         if (!this.bootstrap.can.manageInvites)
-          throw new OpensteerError({ code: "forbidden", message: "Only invite managers can do that." });
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Only invite managers can do that.",
+          });
         if (this.currentInvite?.invite.id === command.id)
           return { type: command.type, invite: this.currentInvite.invite };
-        const selector = (crypto.randomUUID() + crypto.randomUUID()).replaceAll("-", "").slice(0, 32),
+        const selector = (crypto.randomUUID() + crypto.randomUUID())
+            .replaceAll("-", "")
+            .slice(0, 32),
           verifier = (crypto.randomUUID() + crypto.randomUUID()).replaceAll("-", "").slice(0, 43),
           createdAt = new Date();
         const invite = TeamCurrentInviteSchema.parse({
           id: command.id,
           url: `${this.origin}/invite/${selector}#${verifier}`,
           expiresInDays: command.expiresInDays,
-          expiresAt: new Date(createdAt.getTime() + command.expiresInDays * 86_400_000).toISOString(),
+          expiresAt: new Date(
+            createdAt.getTime() + command.expiresInDays * 86_400_000,
+          ).toISOString(),
           maxUses: command.maxUses,
           usedCount: 0,
           createdBy: this.userId,

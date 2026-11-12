@@ -54,7 +54,10 @@ export const handleAccountTeams =
           error: { status: error.status, reason: error.reason, message: error.message },
         };
       if (error instanceof OpensteerError)
-        return { ok: false, error: { status: 400, reason: error.reason ?? null, message: error.message } };
+        return {
+          ok: false,
+          error: { status: 400, reason: error.reason ?? null, message: error.message },
+        };
       return {
         ok: false,
         error: {

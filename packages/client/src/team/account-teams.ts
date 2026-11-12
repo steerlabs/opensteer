@@ -89,7 +89,13 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
 
   async listHostedTeams(signal?: AbortSignal) {
     return (
-      await this.#json(accountHostedTeamsPath, "GET", ListHostedTeamsResponseSchema, undefined, signal)
+      await this.#json(
+        accountHostedTeamsPath,
+        "GET",
+        ListHostedTeamsResponseSchema,
+        undefined,
+        signal,
+      )
     ).teams;
   }
 

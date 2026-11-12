@@ -168,7 +168,8 @@ function Invite(props: {
             coordinator.joinWithInvite({
               inviteUrl: props.link,
               // A person with no computer joins to chat; no agent connects.
-              personalDeploymentId: computerId === null ? null : DeploymentIdSchema.parse(computerId),
+              personalDeploymentId:
+                computerId === null ? null : DeploymentIdSchema.parse(computerId),
             }),
           )
           .catch((error: unknown) => {

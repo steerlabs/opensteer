@@ -15,11 +15,7 @@ import { VoiceRoute } from "./components/voice-route.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { TeamsProvider, type TeamAttachment } from "./team/team-attachments.js";
-import {
-  mockAccountEmail,
-  mockAccountSubject,
-  type MockTeamWorld,
-} from "@opensteer/client/team";
+import { mockAccountEmail, mockAccountSubject, type MockTeamWorld } from "@opensteer/client/team";
 import { TeamRoutes } from "./team/team-routes.js";
 import { JoinTeamRoute, TeamsRoute } from "./team/join-route.js";
 import { TeamDialogsProvider } from "./team/hosted-teams.js";
@@ -539,95 +535,95 @@ export function App({
       >
         <BrowserRouter>
           <TeamDialogsProvider>
-          <Routes>
-            <Route
-              element={
-                <AppShell
-                  deploymentAccess={deploymentAccess}
-                  desktopBridge={desktopBridge}
-                  desktopDeployment={desktopDeployment}
-                  hostClient={hostClient}
-                  loadError={loadError}
-                  onNotificationTargetOpened={onNotificationTargetOpened}
-                  notificationTarget={notificationTarget}
-                />
-              }
-            >
-              <Route index element={<HomeRoute />} />
-              <Route path="tasks/:threadId" element={<ThreadRoute />} />
-              <Route path="voice" element={<VoiceRoute />} />
-              <Route path="teams" element={<TeamsRoute />} />
-              <Route path="teams/:teamId/*" element={<TeamRoutes />} />
-              <Route path="join" element={<JoinTeamRoute />} />
-              <Route path="live" element={<LiveRedirect />} />
-              <Route path="get-started" element={<SetupPage />} />
+            <Routes>
               <Route
-                path="channels"
-                element={<SettingsRedirect from="/channels" to="/settings/messaging" />}
-              />
-              <Route
-                path="computers/*"
-                element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
-              />
-              <Route
-                path="triggers"
-                element={<SettingsRedirect from="/triggers" to="/automations" />}
-              />
-              <Route path="automations" element={<AutomationsPage />} />
-              <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
-              <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
-              <Route path="settings" element={<SettingsShell />}>
-                <Route
-                  index
-                  element={<SettingsRedirect from="/settings" to="/settings/general" />}
-                />
-                {(
-                  [
-                    "general",
-                    "account",
-                    "messaging",
-                    "external-agents",
-                    "ai",
-                    "plugins",
-                    "sign-ins",
-                  ] as const
-                ).map((section) => (
-                  <Route
-                    key={section}
-                    path={`${section}/*`}
-                    element={<SettingsSectionRoute section={section} />}
+                element={
+                  <AppShell
+                    deploymentAccess={deploymentAccess}
+                    desktopBridge={desktopBridge}
+                    desktopDeployment={desktopDeployment}
+                    hostClient={hostClient}
+                    loadError={loadError}
+                    onNotificationTargetOpened={onNotificationTargetOpened}
+                    notificationTarget={notificationTarget}
                   />
-                ))}
-                <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
-                <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
-                <Route path="devices/computers" element={<ComputersPage />} />
-                <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />
+                }
+              >
+                <Route index element={<HomeRoute />} />
+                <Route path="tasks/:threadId" element={<ThreadRoute />} />
+                <Route path="voice" element={<VoiceRoute />} />
+                <Route path="teams" element={<TeamsRoute />} />
+                <Route path="teams/:teamId/*" element={<TeamRoutes />} />
+                <Route path="join" element={<JoinTeamRoute />} />
+                <Route path="live" element={<LiveRedirect />} />
+                <Route path="get-started" element={<SetupPage />} />
                 <Route
-                  path="sign-ins/chrome/*"
-                  element={<SettingsSectionRoute section="chrome" />}
+                  path="channels"
+                  element={<SettingsRedirect from="/channels" to="/settings/messaging" />}
                 />
                 <Route
-                  path="sign-ins/browsers/*"
-                  element={<SettingsSectionRoute section="browser-profiles" />}
+                  path="computers/*"
+                  element={<SettingsRedirect from="/computers" to="/settings/devices/computers" />}
                 />
                 <Route
-                  path="sign-ins/passwords/*"
-                  element={<SettingsSectionRoute section="passwords" />}
+                  path="triggers"
+                  element={<SettingsRedirect from="/triggers" to="/automations" />}
                 />
-                {settingsRedirects
-                  .filter(([from]) => from.startsWith("/settings/"))
-                  .map(([from, to]) => (
+                <Route path="automations" element={<AutomationsPage />} />
+                <Route path="automations/:triggerId" element={<AutomationDetailPage />} />
+                <Route path="automations/:triggerId/edit" element={<AutomationEditorPage />} />
+                <Route path="settings" element={<SettingsShell />}>
+                  <Route
+                    index
+                    element={<SettingsRedirect from="/settings" to="/settings/general" />}
+                  />
+                  {(
+                    [
+                      "general",
+                      "account",
+                      "messaging",
+                      "external-agents",
+                      "ai",
+                      "plugins",
+                      "sign-ins",
+                    ] as const
+                  ).map((section) => (
                     <Route
-                      key={from}
-                      path={`${from.slice(10)}/*`}
-                      element={<SettingsRedirect from={from} to={to} />}
+                      key={section}
+                      path={`${section}/*`}
+                      element={<SettingsSectionRoute section={section} />}
                     />
                   ))}
-                <Route path="*" element={<SettingsNotFound />} />
+                  <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
+                  <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
+                  <Route path="devices/computers" element={<ComputersPage />} />
+                  <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />
+                  <Route
+                    path="sign-ins/chrome/*"
+                    element={<SettingsSectionRoute section="chrome" />}
+                  />
+                  <Route
+                    path="sign-ins/browsers/*"
+                    element={<SettingsSectionRoute section="browser-profiles" />}
+                  />
+                  <Route
+                    path="sign-ins/passwords/*"
+                    element={<SettingsSectionRoute section="passwords" />}
+                  />
+                  {settingsRedirects
+                    .filter(([from]) => from.startsWith("/settings/"))
+                    .map(([from, to]) => (
+                      <Route
+                        key={from}
+                        path={`${from.slice(10)}/*`}
+                        element={<SettingsRedirect from={from} to={to} />}
+                      />
+                    ))}
+                  <Route path="*" element={<SettingsNotFound />} />
+                </Route>
+                <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
+            </Routes>
           </TeamDialogsProvider>
         </BrowserRouter>
       </TeamsProvider>

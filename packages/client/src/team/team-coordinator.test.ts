@@ -93,7 +93,10 @@ describe("TeamCoordinator", () => {
     first.coordinator.dispose();
     const second = track(start(first.world));
     await second.coordinator.resume();
-    await until(() => second.coordinator.getSnapshot().ready.length === 1, "the resumed team ready");
+    await until(
+      () => second.coordinator.getSnapshot().ready.length === 1,
+      "the resumed team ready",
+    );
     expect(second.opened).toEqual([]);
     expect(second.coordinator.getSnapshot().intents).toMatchObject([
       { hostedTeamId: view.id, teamDeploymentId: view.deploymentId, state: "connected" },
@@ -209,7 +212,10 @@ describe("TeamCoordinator", () => {
     const verify = world.sessions.verify.bind(world.sessions);
     world.sessions.verify = async (origin) => ({ ...(await verify(origin)), capabilities: [] });
     await expect(
-      coordinator.joinWithInvite({ inviteUrl: world.sampleInviteUrl, personalDeploymentId: personal }),
+      coordinator.joinWithInvite({
+        inviteUrl: world.sampleInviteUrl,
+        personalDeploymentId: personal,
+      }),
     ).rejects.toBeInstanceOf(TeamNeedsBrowserError);
   });
 });

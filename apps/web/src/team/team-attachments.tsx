@@ -199,7 +199,8 @@ export function TeamsProvider({
   const members = useMemo(() => {
     const byTeam = new Map<string, { readonly origin: string; readonly name: string }>();
     for (const link of linked)
-      if (link.state !== "leaving") byTeam.set(link.teamId, { origin: link.origin, name: link.teamName });
+      if (link.state !== "leaving")
+        byTeam.set(link.teamId, { origin: link.origin, name: link.teamName });
     for (const intent of intents)
       if (intent.teamDeploymentId && !byTeam.has(intent.teamDeploymentId))
         byTeam.set(intent.teamDeploymentId, {
@@ -248,7 +249,8 @@ export function TeamsProvider({
   }, [reload]);
   // A new agent link shows in the switch as soon as the coordinator records it.
   useEffect(() => {
-    if (intents.some((intent) => intent.state === "connected")) void reload().catch(() => undefined);
+    if (intents.some((intent) => intent.state === "connected"))
+      void reload().catch(() => undefined);
   }, [intents, reload]);
 
   // Desktop keeps a sidebar socket to every team the person is in on this computer.
@@ -266,11 +268,13 @@ export function TeamsProvider({
         try {
           const userId =
             owners.get(teamId) ??
-            (await readTeamUser(desktopTeamSession({
-              bridge,
-              origin: team.origin,
-              scope: { teamDeploymentId: teamId, userId: "pending" },
-            })));
+            (await readTeamUser(
+              desktopTeamSession({
+                bridge,
+                origin: team.origin,
+                scope: { teamDeploymentId: teamId, userId: "pending" },
+              }),
+            ));
           next.set(teamId, await registry.join({ teamDeploymentId: teamId, userId }));
         } catch {
           // Not signed in to that team on this computer yet: it shows as a link.
@@ -299,7 +303,8 @@ export function TeamsProvider({
     async (teamId: string) => {
       const owner = linked.find((row) => row.teamId === teamId)?.ownerUserId;
       const coordinated =
-        coordination !== null && (world === null || worldTeams.some((team) => team.teamId === teamId));
+        coordination !== null &&
+        (world === null || worldTeams.some((team) => team.teamId === teamId));
       if (coordinated) await coordination.coordinator.leaveTeam(DeploymentIdSchema.parse(teamId));
       else {
         const session = sessionOf(teamId);

@@ -3,11 +3,7 @@ import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SegmentedControl } from "../segmented-control.js";
-import {
-  SectionHeader,
-  SettingsGroup,
-  SettingsRow,
-} from "../settings/primitives.js";
+import { SectionHeader, SettingsGroup, SettingsRow } from "../settings/primitives.js";
 import { PersonAvatar, TeamTile } from "./team-marks.js";
 import {
   firstName,

@@ -18,11 +18,7 @@ import {
   SettingsRow,
   SettingsSegmented,
 } from "../components/settings/primitives.js";
-import {
-  GroupsAdmin,
-  PeopleAdmin,
-  type TeamRole,
-} from "../components/team/team-admin.js";
+import { GroupsAdmin, PeopleAdmin, type TeamRole } from "../components/team/team-admin.js";
 import { PeopleOnlyBadge } from "../components/team/team-marks.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";

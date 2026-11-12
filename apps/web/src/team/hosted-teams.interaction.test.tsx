@@ -66,7 +66,10 @@ describe("hosted teams", () => {
     );
     expect(button("Create team").disabled).toBe(true);
     await typeInto(field("Team name"), "Acme");
-    await until(() => /acme\.teams\.opensteer\.com is available/u.test(dialog().textContent ?? ""), "acme available");
+    await until(
+      () => /acme\.teams\.opensteer\.com is available/u.test(dialog().textContent ?? ""),
+      "acme available",
+    );
     await click(button("Create team"));
     await until(() => /\/teams\/dep_[^/]+\/c\//u.test(here()), "the team opened");
     await until(() => document.querySelector(".teams-welcome") !== null, "the welcome card");
@@ -110,9 +113,15 @@ describe("hosted teams", () => {
     await createTeam(world, "Acme");
     const teamId = /\/teams\/(dep_[^/]+)\//u.exec(here())![1]!;
     await act(async () => void goTo!(`/settings/teams/${teamId}/profile`));
-    await until(() => /Your agent is connected/u.test(document.body.textContent ?? ""), "the profile");
+    await until(
+      () => /Your agent is connected/u.test(document.body.textContent ?? ""),
+      "the profile",
+    );
     await click(button("Disconnect"));
-    await until(() => /Your agent isn’t connected/u.test(document.body.textContent ?? ""), "disconnected");
+    await until(
+      () => /Your agent isn’t connected/u.test(document.body.textContent ?? ""),
+      "disconnected",
+    );
     expect(world.joined()).toHaveLength(1);
 
     await click(button("Delete"));

@@ -71,7 +71,12 @@ export function useTeamDialogs(): TeamDialogs {
   return useContext(TeamDialogsContext);
 }
 
-const noSnapshot: TeamCoordinatorSnapshot = { hostedTeams: [], intents: [], watching: null, ready: [] };
+const noSnapshot: TeamCoordinatorSnapshot = {
+  hostedTeams: [],
+  intents: [],
+  watching: null,
+  ready: [],
+};
 const noSubscribe = () => () => undefined;
 
 /** The coordinator's snapshot, or an empty one where teams open in the browser. */
@@ -196,7 +201,11 @@ export function TeamsHome({ portalOrigin }: { readonly portalOrigin: string | nu
             </a>
           ) : null
         ) : (
-          <button className="btn btn--primary teams-card__action" onClick={openCreate} type="button">
+          <button
+            className="btn btn--primary teams-card__action"
+            onClick={openCreate}
+            type="button"
+          >
             Create a team
           </button>
         )}
@@ -232,7 +241,11 @@ export function TeamsHome({ portalOrigin }: { readonly portalOrigin: string | nu
           </button>
         </form>
         {error ? (
-          <p className="teams-field-hint teams-field-hint--error" id={`${inviteId}-error`} role="alert">
+          <p
+            className="teams-field-hint teams-field-hint--error"
+            id={`${inviteId}-error`}
+            role="alert"
+          >
             {error}
           </p>
         ) : null}
@@ -253,11 +266,17 @@ type AddressState =
   | { readonly kind: "idle" | "checking" }
   | { readonly kind: "known"; readonly slug: string; readonly answer: HostedTeamAvailability };
 
-function addressHint(slug: string, state: AddressState): { text: string; tone: "" | "ok" | "error" } {
+function addressHint(
+  slug: string,
+  state: AddressState,
+): { text: string; tone: "" | "ok" | "error" } {
   const local = localAddressHint(slug);
   if (local) return { text: local.hint, tone: slug ? "error" : "" };
   if (state.kind !== "known" || state.slug !== slug) return { text: "Checking…", tone: "" };
-  return { text: availabilityHint(slug, state.answer), tone: state.answer.available ? "ok" : "error" };
+  return {
+    text: availabilityHint(slug, state.answer),
+    tone: state.answer.available ? "ok" : "error",
+  };
 }
 
 function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
@@ -305,7 +324,11 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
     setBusy(true);
     setError(null);
     void coordination.coordinator
-      .createHostedTeam({ name: name.trim(), slug: slug as HostedTeamSlug, personalDeploymentId: personal })
+      .createHostedTeam({
+        name: name.trim(),
+        slug: slug as HostedTeamSlug,
+        personalDeploymentId: personal,
+      })
       .then(onClose, (failure: unknown) => {
         setBusy(false);
         setError(createRefusal(failure));
@@ -328,7 +351,9 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
       title="Create a team"
     >
       <form className="teams-form" id="create-team" onSubmit={submit}>
-        <p className="teams-form__lede">You’ll be its owner. Opensteer runs the team server for you.</p>
+        <p className="teams-form__lede">
+          You’ll be its owner. Opensteer runs the team server for you.
+        </p>
         <div className="field">
           <label className="field__label" htmlFor={nameId}>
             Team name
@@ -374,7 +399,9 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
           </div>
           <p
             aria-live="polite"
-            className={hint.tone ? `teams-field-hint teams-field-hint--${hint.tone}` : "teams-field-hint"}
+            className={
+              hint.tone ? `teams-field-hint teams-field-hint--${hint.tone}` : "teams-field-hint"
+            }
             id={`${slugId}-hint`}
           >
             {hint.text}
@@ -398,7 +425,11 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
 
 function setupSteps(team: HostedTeamView) {
   const at =
-    team.stage === "reserving" ? 0 : team.stage === "starting" || team.stage === "configuring" ? 1 : 2;
+    team.stage === "reserving"
+      ? 0
+      : team.stage === "starting" || team.stage === "configuring"
+        ? 1
+        : 2;
   return [
     `Reserving ${team.slug}.${hostedTeamsDomain}`,
     "Starting your team server",
@@ -435,7 +466,12 @@ function SetupDialog({
       continued={inPlace}
       footer={
         <>
-          <button className="btn btn--ghost teams-setup__cancel" disabled={busy} onClick={cancel} type="button">
+          <button
+            className="btn btn--ghost teams-setup__cancel"
+            disabled={busy}
+            onClick={cancel}
+            type="button"
+          >
             Cancel setup
           </button>
           {failed ? (
@@ -443,9 +479,9 @@ function SetupDialog({
               className="btn btn--primary"
               disabled={busy}
               onClick={() =>
-                void coordinator?.retryHostedTeam(team.id).catch((error: unknown) =>
-                  toast.error(actionErrorMessage(error)),
-                )
+                void coordinator
+                  ?.retryHostedTeam(team.id)
+                  .catch((error: unknown) => toast.error(actionErrorMessage(error)))
               }
               type="button"
             >
@@ -477,7 +513,13 @@ function SetupDialog({
             <span aria-hidden className="teams-steps__dot" />
             <span>{step.label}</span>
             <span className="visually-hidden">
-              {step.state === "done" ? " (done)" : step.state === "active" ? (failed ? " (failed)" : " (in progress)") : ""}
+              {step.state === "done"
+                ? " (done)"
+                : step.state === "active"
+                  ? failed
+                    ? " (failed)"
+                    : " (in progress)"
+                  : ""}
             </span>
           </li>
         ))}
@@ -498,13 +540,23 @@ export function SetupEntries() {
     <ul aria-label="Teams being set up" className="teams-setup-entries">
       {shown.map((team) => (
         <li key={team.id}>
-          <button className="teams-setup-entry" onClick={() => coordinator.watch(team.id)} type="button">
+          <button
+            className="teams-setup-entry"
+            onClick={() => coordinator.watch(team.id)}
+            type="button"
+          >
             <span
               aria-hidden
-              className={team.stage === "failed" ? "teams-setup-entry__dot is-failed" : "teams-setup-entry__dot"}
+              className={
+                team.stage === "failed"
+                  ? "teams-setup-entry__dot is-failed"
+                  : "teams-setup-entry__dot"
+              }
             />
             <span className="teams-setup-entry__text">
-              {team.stage === "failed" ? `${team.name} didn’t finish setting up` : `Setting up ${team.name}`}
+              {team.stage === "failed"
+                ? `${team.name} didn’t finish setting up`
+                : `Setting up ${team.name}`}
             </span>
           </button>
         </li>
@@ -517,7 +569,13 @@ export function SetupEntries() {
 
 type JoinState =
   | { readonly kind: "checking" }
-  | { readonly kind: "ready"; readonly name: string; readonly host: string; readonly joining: boolean; readonly error: string | null }
+  | {
+      readonly kind: "ready";
+      readonly name: string;
+      readonly host: string;
+      readonly joining: boolean;
+      readonly error: string | null;
+    }
   | { readonly kind: "browser"; readonly host: string }
   | { readonly kind: "failed"; readonly message: string };
 
@@ -527,7 +585,10 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
   useEffect(() => {
     const read = readTeamInvite(url);
     if (!read || !coordination) {
-      setState({ kind: "failed", message: "That isn’t an invite link. Copy the whole link and try again." });
+      setState({
+        kind: "failed",
+        message: "That isn’t an invite link. Copy the whole link and try again.",
+      });
       return;
     }
     const host = new URL(read.origin).host;
@@ -556,18 +617,22 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
       return;
     }
     setState({ ...state, joining: true, error: null });
-    void coordination.coordinator.joinWithInvite({ inviteUrl: url, personalDeploymentId: personal }).then(
-      onClose,
-      (error: unknown) =>
+    void coordination.coordinator
+      .joinWithInvite({ inviteUrl: url, personalDeploymentId: personal })
+      .then(onClose, (error: unknown) =>
         setState(
           error instanceof TeamNeedsBrowserError
             ? { kind: "browser", host: state.host }
             : { ...state, joining: false, error: actionErrorMessage(error) },
         ),
-    );
+      );
   };
   const title =
-    state.kind === "ready" ? `Join ${state.name}` : state.kind === "browser" ? "Join in your browser" : "Join a team";
+    state.kind === "ready"
+      ? `Join ${state.name}`
+      : state.kind === "browser"
+        ? "Join in your browser"
+        : "Join a team";
   return (
     <Dialog
       footer={
@@ -576,12 +641,23 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
             <button className="btn btn--ghost" onClick={onClose} type="button">
               Cancel
             </button>
-            <button className="btn btn--primary" disabled={state.joining} onClick={join} type="button">
+            <button
+              className="btn btn--primary"
+              disabled={state.joining}
+              onClick={join}
+              type="button"
+            >
               {state.joining ? "Joining…" : `Join ${state.name}`}
             </button>
           </>
         ) : state.kind === "browser" ? (
-          <a className="btn btn--primary" href={url} onClick={onClose} rel="noreferrer" target="_blank">
+          <a
+            className="btn btn--primary"
+            href={url}
+            onClick={onClose}
+            rel="noreferrer"
+            target="_blank"
+          >
             Open the invite
           </a>
         ) : (
@@ -759,9 +835,18 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
   );
 }
 
-function InviteDialog({ onClose, teamId }: { readonly onClose: () => void; readonly teamId: string }) {
+function InviteDialog({
+  onClose,
+  teamId,
+}: {
+  readonly onClose: () => void;
+  readonly teamId: string;
+}) {
   const team = useTeams().teams.find((candidate) => candidate.teamId === teamId) ?? null;
-  const name = useTeamSessionValue(team?.client ?? null, (snapshot) => snapshot?.bootstrap?.teamName ?? null);
+  const name = useTeamSessionValue(
+    team?.client ?? null,
+    (snapshot) => snapshot?.bootstrap?.teamName ?? null,
+  );
   return (
     <Dialog
       footer={
@@ -773,7 +858,9 @@ function InviteDialog({ onClose, teamId }: { readonly onClose: () => void; reado
       onClose={onClose}
       title={`Invite people to ${name ?? team?.name ?? "the team"}`}
     >
-      <p className="teams-form__lede">Anyone with this link can join with their Opensteer Account.</p>
+      <p className="teams-form__lede">
+        Anyone with this link can join with their Opensteer Account.
+      </p>
       {team?.client ? (
         <InvitePanel client={team.client} />
       ) : (
@@ -793,7 +880,8 @@ export function useAgentLine(team: TeamAttachment | null): AgentLine {
   if (!team) return "none";
   const intent = snapshot.intents.find((row) => row.teamDeploymentId === team.teamId);
   if (intent) return intent.state;
-  if (team.link && team.link.state !== "revoked" && team.link.state !== "leaving") return "connected";
+  if (team.link && team.link.state !== "revoked" && team.link.state !== "leaving")
+    return "connected";
   return "none";
 }
 
@@ -815,7 +903,13 @@ export function useConnectAgent(team: TeamAttachment | null): (() => void) | nul
   };
 }
 
-function AgentSentence({ line, onConnect }: { readonly line: AgentLine; readonly onConnect: (() => void) | null }) {
+function AgentSentence({
+  line,
+  onConnect,
+}: {
+  readonly line: AgentLine;
+  readonly onConnect: (() => void) | null;
+}) {
   if (line === "connected")
     return (
       <span>
@@ -842,8 +936,12 @@ function AgentSentence({ line, onConnect }: { readonly line: AgentLine; readonly
 export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
   const client = team.client;
   const role = useTeamSessionValue(client, (snapshot) => snapshot?.bootstrap?.member.role ?? null);
-  const invites = useTeamSessionValue(client, (snapshot) => snapshot?.bootstrap?.can.manageInvites ?? false);
-  const name = useTeamSessionValue(client, (snapshot) => snapshot?.bootstrap?.teamName ?? null) ?? team.name;
+  const invites = useTeamSessionValue(
+    client,
+    (snapshot) => snapshot?.bootstrap?.can.manageInvites ?? false,
+  );
+  const name =
+    useTeamSessionValue(client, (snapshot) => snapshot?.bootstrap?.teamName ?? null) ?? team.name;
   const line = useAgentLine(team);
   const connect = useConnectAgent(team);
   const { openInvite } = useTeamDialogs();
@@ -871,7 +969,12 @@ export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
         <h2 className="teams-welcome__title" id={`welcome-${team.teamId}`}>
           {owner ? `${name} is ready` : `Welcome to ${name}`}
         </h2>
-        <button aria-label="Dismiss welcome" className="icon-btn icon-btn--small" onClick={hide} type="button">
+        <button
+          aria-label="Dismiss welcome"
+          className="icon-btn icon-btn--small"
+          onClick={hide}
+          type="button"
+        >
           <Icon name="close" />
         </button>
       </header>
@@ -888,7 +991,11 @@ export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
           <li className="teams-welcome__row teams-welcome__row--todo">
             <Icon name="dot" />
             <span className="teams-welcome__grow">Invite your team</span>
-            <button className="btn btn--small btn--primary" onClick={() => openInvite(team.teamId)} type="button">
+            <button
+              className="btn btn--small btn--primary"
+              onClick={() => openInvite(team.teamId)}
+              type="button"
+            >
               Invite people
             </button>
           </li>
@@ -899,7 +1006,13 @@ export function WelcomeCard({ team }: { readonly team: TeamAttachment }) {
 }
 
 /** Delete a hosted team for good: the owner types its name first. */
-function DeleteTeamDialog({ onClose, teamId }: { readonly onClose: () => void; readonly teamId: string }) {
+function DeleteTeamDialog({
+  onClose,
+  teamId,
+}: {
+  readonly onClose: () => void;
+  readonly teamId: string;
+}) {
   const { coordination, teams } = useTeams();
   const team = teams.find((candidate) => candidate.teamId === teamId) ?? null;
   const navigate = useNavigate();

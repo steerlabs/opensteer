@@ -243,7 +243,12 @@ export function readTeamInvite(
 
 export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordinator {
   const listeners = new Set<() => void>();
-  let snapshot: TeamCoordinatorSnapshot = { hostedTeams: [], intents: [], watching: null, ready: [] };
+  let snapshot: TeamCoordinatorSnapshot = {
+    hostedTeams: [],
+    intents: [],
+    watching: null,
+    ready: [],
+  };
   let disposed = false;
   /** Every intent of every Account this device has held; the snapshot shows the signed-in one's. */
   let stored: TeamConnectionIntent[] | null = null;
@@ -260,7 +265,8 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (current === null) throw new Error("Sign in to your Opensteer Account first.");
     return current;
   };
-  const keyOf = (intent: TeamConnectionIntentKey) => `${intent.accountSubject} ${intent.teamOrigin}`;
+  const keyOf = (intent: TeamConnectionIntentKey) =>
+    `${intent.accountSubject} ${intent.teamOrigin}`;
   const mine = () => {
     const current = ports.accountSubject();
     return (stored ?? []).filter((intent) => intent.accountSubject === current);
@@ -345,12 +351,15 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (disposed) return;
     retries.set(
       key,
-      setTimeout(() => {
-        retries.delete(key);
-        const current = intentFor((held) => keyOf(held) === key);
-        if (current?.state !== "pending-offline" || current.teamDeploymentId === null) return;
-        void attemptConnect(current, attempt + 1).catch(() => undefined);
-      }, backoff(offlineBackoff, attempt)),
+      setTimeout(
+        () => {
+          retries.delete(key);
+          const current = intentFor((held) => keyOf(held) === key);
+          if (current?.state !== "pending-offline" || current.teamDeploymentId === null) return;
+          void attemptConnect(current, attempt + 1).catch(() => undefined);
+        },
+        backoff(offlineBackoff, attempt),
+      ),
     );
   };
 
@@ -401,7 +410,8 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (signal.aborted) return;
     // Without a computer of the person's there is nothing left to connect.
     if (intent?.personalDeploymentId === null) await remove(intent);
-    else if (intent) await attemptConnect(await save({ ...intent, teamDeploymentId, updatedAt: now() }));
+    else if (intent)
+      await attemptConnect(await save({ ...intent, teamDeploymentId, updatedAt: now() }));
     if (signal.aborted) return;
     following.delete(view.id);
     const watched = snapshot.watching === view.id;
@@ -444,7 +454,11 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
           } catch (error) {
             if (signal.aborted) return;
             // The team is ready but entering failed: show it as a failed setup to retry.
-            update({ ...view, stage: "failed", error: { message: message(error, "Setup didn’t finish.") } });
+            update({
+              ...view,
+              stage: "failed",
+              error: { message: message(error, "Setup didn’t finish.") },
+            });
             following.delete(initial.id);
             return;
           }
