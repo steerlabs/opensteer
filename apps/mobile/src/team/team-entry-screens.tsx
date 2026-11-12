@@ -42,7 +42,13 @@ import { appear, exit } from "../ui/motion.js";
 import { AppText, Field, PrimaryButton, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
 import { openTeamGeneral } from "./mobile-team-entry.js";
-import { availabilityHint, createRefusal, localAddressHint, slugFromName } from "./team-address.js";
+import {
+  availabilityHint,
+  createRefusal,
+  localAddressHint,
+  slugFromName,
+  slugFromTyping,
+} from "@opensteer/client/team";
 import {
   useAgentIntent,
   useCoordinatorSnapshot,
@@ -224,16 +230,16 @@ export function CreateTeamScreen(): ReactNode {
         : checked.ok
           ? "green"
           : "danger";
-  const ready = name.trim() !== "" && checked?.ok === true && personal !== null;
+  const ready = name.trim() !== "" && checked?.ok === true;
   const create = (): void => {
-    if (!ready || personal === null) return;
+    if (!ready) return;
     setBusy(true);
     setFailure(null);
     void coordinator
       .createHostedTeam({
         name: name.trim(),
         slug: slug as HostedTeamSlug,
-        personalDeploymentId: DeploymentIdSchema.parse(personal),
+        personalDeploymentId: personal === null ? null : DeploymentIdSchema.parse(personal),
       })
       .then(
         (view) => navigation.replace("TeamSetup", { hostedTeamId: view.id }),
@@ -276,7 +282,7 @@ export function CreateTeamScreen(): ReactNode {
             autoCorrect: false,
             onChangeText: (next) => {
               setEdited(true);
-              setSlug(slugFromName(next));
+              setSlug(slugFromTyping(next));
             },
             onSubmitEditing: create,
             placeholder: "acme",
@@ -303,11 +309,6 @@ export function CreateTeamScreen(): ReactNode {
         Team chat, files and knowledge live on Opensteer's servers. Everyone's agents, files and
         logins stay on their own computers.
       </AppText>
-      {personal === null ? (
-        <AppText role="secondary" tone="danger">
-          Choose your computer first: its agent is the one your team can ask.
-        </AppText>
-      ) : null}
       {failure === null ? null : (
         <AppText role="secondary" tone="danger">
           {failure}

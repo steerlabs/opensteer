@@ -8,6 +8,8 @@ import {
 } from "./ids.js";
 
 export const TeamOriginSchema = z.url().refine((value) => {
+  // A refinement still runs after `z.url()` rejects, so a non-URL must fail here, not throw.
+  if (!URL.canParse(value)) return false;
   const url = new URL(value);
   return url.protocol === "https:" && url.origin === value && !url.username && !url.password;
 }, "Team origin must be a canonical HTTPS origin");

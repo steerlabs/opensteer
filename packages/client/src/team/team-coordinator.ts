@@ -26,6 +26,7 @@ import type {
   TeamSessionExchangeRequest,
   TeamSessionExchangeResponse,
 } from "@opensteer/protocol";
+import { delay } from "@opensteer/shared/delay";
 import { z } from "zod";
 import type { AccountTeamsClient } from "./account-teams.js";
 
@@ -51,7 +52,8 @@ export const TeamConnectionIntentSchema = z.strictObject({
   teamOrigin: TeamOriginSchema,
   teamDeploymentId: DeploymentIdSchema.nullable(),
   hostedTeamId: HostedTeamIdSchema.nullable(),
-  personalDeploymentId: DeploymentIdSchema,
+  /** Null for a person with no computer of their own: they chat, and no agent connects. */
+  personalDeploymentId: DeploymentIdSchema.nullable(),
   state: TeamConnectionIntentStateSchema,
   failure: z.string().min(1).max(500).nullable(),
   updatedAt: IsoDateTimeSchema,
@@ -126,7 +128,8 @@ export interface TeamEntered {
   readonly origin: string;
   readonly member: TeamSessionExchangeResponse["member"];
   readonly admitted: boolean;
-  readonly intent: TeamConnectionIntent;
+  /** Null when no computer of the person's was chosen to connect. */
+  readonly intent: TeamConnectionIntent | null;
 }
 
 /** What a coordinator is built from. */
@@ -172,7 +175,7 @@ export interface TeamCoordinator {
   createHostedTeam(input: {
     readonly name: string;
     readonly slug: HostedTeamSlug;
-    readonly personalDeploymentId: DeploymentId;
+    readonly personalDeploymentId: DeploymentId | null;
   }): Promise<HostedTeamView>;
   retryHostedTeam(id: HostedTeamId): Promise<HostedTeamView>;
   /** The setup sheet closed: announce readiness instead of opening the team. */
@@ -186,7 +189,7 @@ export interface TeamCoordinator {
   previewInvite(inviteUrl: string): Promise<TeamInvitePreview>;
   joinWithInvite(input: {
     readonly inviteUrl: string;
-    readonly personalDeploymentId: DeploymentId;
+    readonly personalDeploymentId: DeploymentId | null;
   }): Promise<TeamEntered>;
   connectAgent(input: {
     readonly teamDeploymentId: DeploymentId;
@@ -299,7 +302,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
   };
   const intentBase = (
     origin: string,
-    personalDeploymentId: DeploymentId,
+    personalDeploymentId: DeploymentId | null,
     teamDeploymentId: DeploymentId | null,
     hostedTeamId: HostedTeamId | null,
   ): TeamConnectionIntent =>
@@ -358,11 +361,13 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (held) return held;
     const run = (async () => {
       const teamDeploymentId = intent.teamDeploymentId!;
+      const personal = intent.personalDeploymentId;
+      if (personal === null) return intent;
       await save({ ...intent, state: "connecting", failure: null, updatedAt: now() });
       let next: TeamConnectionIntent;
       try {
         const offer = await ports.sessions.createLinkCode(teamDeploymentId);
-        const joined = await ports.personal.join(intent.personalDeploymentId, offer);
+        const joined = await ports.personal.join(personal, offer);
         next = {
           ...intent,
           state: joined.kind === "joined" ? "connected" : "pending-offline",
@@ -394,11 +399,9 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (view.deploymentId && view.deploymentId !== teamDeploymentId)
       throw new Error("The team answered as a different Deployment.");
     if (signal.aborted) return;
-    if (intent) {
-      await attemptConnect(
-        await save({ ...intent, teamDeploymentId, updatedAt: now() }),
-      );
-    }
+    // Without a computer of the person's there is nothing left to connect.
+    if (intent?.personalDeploymentId === null) await remove(intent);
+    else if (intent) await attemptConnect(await save({ ...intent, teamDeploymentId, updatedAt: now() }));
     if (signal.aborted) return;
     following.delete(view.id);
     const watched = snapshot.watching === view.id;
@@ -446,7 +449,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
             return;
           }
         }
-        await delay(backoff(setupBackoff, attempt++), signal);
+        await delay(backoff(setupBackoff, attempt++), signal).catch(() => undefined);
         if (signal.aborted) return;
         try {
           view = await ports.account.hostedTeam(initial.id, signal);
@@ -512,9 +515,10 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (intent) {
         await remove(intent);
         if (intent.teamDeploymentId) {
-          await ports.personal
-            .leave(intent.personalDeploymentId, intent.teamDeploymentId)
-            .catch(() => undefined);
+          if (intent.personalDeploymentId)
+            await ports.personal
+              .leave(intent.personalDeploymentId, intent.teamDeploymentId)
+              .catch(() => undefined);
           await ports.sessions.forget(intent.teamDeploymentId).catch(() => undefined);
         }
       }
@@ -538,11 +542,14 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (!read) throw new Error("That isn’t an invite link. Copy the whole link and try again.");
       const established = await enter(read.origin, read.invite);
       const teamDeploymentId = established.team.authority.deploymentId;
-      const intent = await coordinator.connectAgent({
-        teamDeploymentId,
-        origin: established.team.authority.canonicalOrigin,
-        personalDeploymentId: input.personalDeploymentId,
-      });
+      const intent =
+        input.personalDeploymentId === null
+          ? null
+          : await coordinator.connectAgent({
+              teamDeploymentId,
+              origin: established.team.authority.canonicalOrigin,
+              personalDeploymentId: input.personalDeploymentId,
+            });
       ports.open(teamDeploymentId);
       return {
         teamDeploymentId,
@@ -569,7 +576,8 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       await load();
       const intent = intentFor((held) => held.teamDeploymentId === teamDeploymentId);
       if (!intent) return;
-      await ports.personal.leave(intent.personalDeploymentId, teamDeploymentId);
+      if (intent.personalDeploymentId)
+        await ports.personal.leave(intent.personalDeploymentId, teamDeploymentId);
       await remove(intent);
     },
 
@@ -580,9 +588,10 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (intent) {
         await remove(intent);
         // A computer that is off keeps a link the team already refuses for a removed member.
-        await ports.personal
-          .leave(intent.personalDeploymentId, teamDeploymentId)
-          .catch(() => undefined);
+        if (intent.personalDeploymentId)
+          await ports.personal
+            .leave(intent.personalDeploymentId, teamDeploymentId)
+            .catch(() => undefined);
       }
       await ports.sessions.forget(teamDeploymentId);
     },
@@ -628,16 +637,4 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
 
 function now(): string {
   return new Date().toISOString();
-}
-
-function delay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done, { once: true });
-    function done() {
-      clearTimeout(timer);
-      signal.removeEventListener("abort", done);
-      resolve();
-    }
-  });
 }

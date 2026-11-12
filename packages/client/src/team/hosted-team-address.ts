@@ -18,6 +18,16 @@ export function slugFromName(name: string): string {
     .replace(/-+$/u, "");
 }
 
+/** What someone types into the address field, kept to address characters as they type. */
+export function slugFromTyping(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/gu, "-")
+    .replace(/-{2,}/gu, "-")
+    .replace(/^-+/u, "")
+    .slice(0, 32);
+}
+
 /** What can be said about an address before Account is asked, or null to ask. */
 export function localAddressHint(
   slug: string,

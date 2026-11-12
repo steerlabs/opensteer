@@ -150,13 +150,32 @@ describe("TeamCoordinator", () => {
       personalDeploymentId: personal,
     });
     expect(entered).toMatchObject({ admitted: true, member: { role: "member" } });
-    expect(entered.intent.state).toBe("connected");
+    expect(entered.intent?.state).toBe("connected");
     expect(opened).toEqual([entered.teamDeploymentId]);
     const linkLeave = vi.spyOn(world.personal, "leave");
     await coordinator.leaveTeam(entered.teamDeploymentId);
     expect(linkLeave).toHaveBeenCalledWith(personal, entered.teamDeploymentId);
     expect(coordinator.getSnapshot().intents).toEqual([]);
     expect(world.joined()).toEqual([]);
+  });
+
+  it("lets a person with no computer create and join, with no agent to connect", async () => {
+    const { coordinator, opened, world } = track(start());
+    const join = vi.spyOn(world.personal, "join");
+    await coordinator.createHostedTeam({
+      name: "Acme",
+      slug: "acme" as HostedTeamSlug,
+      personalDeploymentId: null,
+    });
+    await until(() => opened.length === 1, "the created team opened");
+    const entered = await coordinator.joinWithInvite({
+      inviteUrl: world.sampleInviteUrl,
+      personalDeploymentId: null,
+    });
+    expect(entered.intent).toBeNull();
+    expect(opened).toHaveLength(2);
+    expect(coordinator.getSnapshot().intents).toEqual([]);
+    expect(join).not.toHaveBeenCalled();
   });
 
   it("refuses the last owner leaving and keeps everything", async () => {

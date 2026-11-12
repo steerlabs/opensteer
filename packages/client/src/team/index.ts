@@ -9,4 +9,5 @@ export * from "./files.js";
 export * from "./account-teams.js";
 export * from "./team-coordinator.js";
 export * from "./mock-hosted-teams.js";
+export * from "./hosted-team-address.js";
 export * from "../mock/mock-team-world.js";

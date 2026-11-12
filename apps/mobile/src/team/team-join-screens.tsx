@@ -160,14 +160,15 @@ function Invite(props: {
       onChooseComputer={setComputerId}
       onClose={() => navigation.goBack()}
       onJoin={() => {
-        if (invite.kind !== "ready" || computerId === null) return;
+        if (invite.kind !== "ready") return;
         setInvite({ ...invite, joining: true });
-        const movedTo = computerId !== shown ? computerId : null;
+        const movedTo = computerId !== null && computerId !== shown ? computerId : null;
         void (movedTo === null ? Promise.resolve() : client.select(movedTo))
           .then(() =>
             coordinator.joinWithInvite({
               inviteUrl: props.link,
-              personalDeploymentId: DeploymentIdSchema.parse(computerId),
+              // A person with no computer joins to chat; no agent connects.
+              personalDeploymentId: computerId === null ? null : DeploymentIdSchema.parse(computerId),
             }),
           )
           .catch((error: unknown) => {

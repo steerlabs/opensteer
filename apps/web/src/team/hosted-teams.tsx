@@ -12,10 +12,14 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router";
-import { AccountRequestError } from "@opensteer/client/connections";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import {
+  availabilityHint,
+  createRefusal,
+  localAddressHint,
   readTeamInvite,
+  slugFromName,
+  slugFromTyping,
   TeamNeedsBrowserError,
   type TeamConnectionIntentState,
   type TeamCoordinatorSnapshot,
@@ -245,43 +249,15 @@ export function TeamsHome({ portalOrigin }: { readonly portalOrigin: string | nu
 
 /* ---- Create ---- */
 
-export function slugify(value: string): string {
-  return value
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/gu, "-")
-    .replace(/^-+|-+$/gu, "")
-    .slice(0, 32)
-    .replace(/-+$/u, "");
-}
-
 type AddressState =
-  | { readonly kind: "idle" | "short" | "checking" }
+  | { readonly kind: "idle" | "checking" }
   | { readonly kind: "known"; readonly slug: string; readonly answer: HostedTeamAvailability };
 
 function addressHint(slug: string, state: AddressState): { text: string; tone: "" | "ok" | "error" } {
-  if (!slug) return { text: "Lowercase letters, numbers and dashes.", tone: "" };
-  if (state.kind === "short") return { text: "At least 3 characters.", tone: "error" };
+  const local = localAddressHint(slug);
+  if (local) return { text: local.hint, tone: slug ? "error" : "" };
   if (state.kind !== "known" || state.slug !== slug) return { text: "Checking…", tone: "" };
-  if (state.answer.available) return { text: `${slug}.${hostedTeamsDomain} is available`, tone: "ok" };
-  return {
-    text:
-      state.answer.reason === "reserved"
-        ? "That address is reserved."
-        : state.answer.reason === "taken"
-          ? "Someone already uses that address."
-          : "Use lowercase letters, numbers and single dashes.",
-    tone: "error",
-  };
-}
-
-function createFailure(error: unknown): string {
-  if (error instanceof AccountRequestError) {
-    if (error.reason === "hosted-team-address-taken") return "Someone already uses that address.";
-    if (error.reason === "hosted-team-limit-reached")
-      return "You already have 3 teams. Delete one to create another.";
-  }
-  return actionErrorMessage(error);
+  return { text: availabilityHint(slug, state.answer), tone: state.answer.available ? "ok" : "error" };
 }
 
 function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
@@ -295,9 +271,7 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
   const nameId = useId();
   const slugId = useId();
   useEffect(() => {
-    if (!slug) return setAddress({ kind: "idle" });
-    if (slug.length < 3) return setAddress({ kind: "short" });
-    if (!coordination) return;
+    if (localAddressHint(slug) || !coordination) return setAddress({ kind: "idle" });
     setAddress({ kind: "checking" });
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -334,7 +308,7 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
       .createHostedTeam({ name: name.trim(), slug: slug as HostedTeamSlug, personalDeploymentId: personal })
       .then(onClose, (failure: unknown) => {
         setBusy(false);
-        setError(createFailure(failure));
+        setError(createRefusal(failure));
       });
   };
   return (
@@ -368,7 +342,7 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
             onChange={(event) => {
               const next = event.currentTarget.value;
               setName(next);
-              if (!edited) setSlug(slugify(next));
+              if (!edited) setSlug(slugFromName(next));
             }}
             placeholder="Acme"
             value={name}
@@ -388,7 +362,7 @@ function CreateTeamDialog({ onClose }: { readonly onClose: () => void }) {
               id={slugId}
               onChange={(event) => {
                 setEdited(true);
-                setSlug(slugify(event.currentTarget.value));
+                setSlug(slugFromTyping(event.currentTarget.value));
               }}
               placeholder="acme"
               spellCheck={false}
@@ -963,7 +937,7 @@ function DeleteTeamDialog({ onClose, teamId }: { readonly onClose: () => void; r
                 },
                 (failure: unknown) => {
                   setBusy(false);
-                  setError(createFailure(failure));
+                  setError(createRefusal(failure));
                 },
               );
             }}
