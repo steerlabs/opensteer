@@ -11,7 +11,7 @@ import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { MockHostClient } from "@opensteer/client/mock";
-import { markColorPaint, homeCursorPaint } from "@opensteer/client/host";
+import { markColorPaint } from "@opensteer/client/host";
 import type { Page } from "playwright-core";
 import { expectThat, finishJourney, journeyChecks, openMockWeb } from "./mock-web-journey.js";
 
@@ -197,7 +197,7 @@ try {
       const snapshot = client.getSnapshot();
       const task = snapshot.threads.find(
         (thread) =>
-          thread.listed && thread.id !== snapshot.homeThreadId && thread.status === "idle",
+          thread.listed && thread.purpose === "task" && thread.status === "idle",
       )!;
       const unread = snapshot.threadReadStates[task.id]?.unreadSequence;
       if (unread) await client.markThreadRead(task.id, unread);
@@ -375,7 +375,6 @@ await finishJourney(directory, checks, {
   artifactDirectory: directory,
   screenshots,
   palette: markColorPaint,
-  homeCursorPaint,
   command: "pnpm --filter @opensteer/web test:task-marks",
   head: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
   viewport: { width: 1440, height: 1000 },
