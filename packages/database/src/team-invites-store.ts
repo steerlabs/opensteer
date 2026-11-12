@@ -173,7 +173,10 @@ export class TeamInvitesStore {
       return { value: this.#current(row, verifier), effects: emptyTeamAccessEffects };
     });
   }
-  /** The reusable invite while it still admits someone; `null` once it is revoked, expired or used up. */
+  /**
+   * The reusable invite while it still admits someone; `null` once it is revoked, expired or used
+   * up, or when its sealed verifier no longer opens (the Host's secret changed), so a manager resets.
+   */
   async current(actor: TeamActor): Promise<{ invite: TeamCurrentInvite | null }> {
     const verifiers = this.#requireVerifiers();
     return this.access.database.transaction().execute(async (transaction) => {
@@ -190,7 +193,8 @@ export class TeamInvitesStore {
         (row.maxUses !== null && row.usedCount >= row.maxUses)
       )
         return { invite: null };
-      return { invite: this.#current(row, await verifiers.open(row.id, row.sealedVerifier)) };
+      const verifier = await verifiers.open(row.id, row.sealedVerifier).catch(() => null);
+      return { invite: verifier === null ? null : this.#current(row, verifier) };
     });
   }
   /**

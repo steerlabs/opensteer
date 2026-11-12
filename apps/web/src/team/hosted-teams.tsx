@@ -804,9 +804,9 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
             disabled={busy}
             id={expiryId}
             onChange={(event) =>
-              void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays).catch(
-                (failure: unknown) => toast.error(actionErrorMessage(failure)),
-              )
+              void reset(Number(event.currentTarget.value) as TeamInviteExpiryDays)
+                .then(() => toast.success("New link made"))
+                .catch((failure: unknown) => toast.error(actionErrorMessage(failure)))
             }
             value={invite.expiresInDays}
           >
@@ -816,6 +816,7 @@ export function InvitePanel({ client }: { readonly client: TeamSessionClient }) 
               </option>
             ))}
           </select>
+          <span className="field__hint">Changing it makes a new link</span>
         </div>
         <button
           className="btn btn--ghost btn--small teams-invite__reset"

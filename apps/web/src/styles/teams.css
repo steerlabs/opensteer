@@ -422,6 +422,7 @@
 
 .teams-invite__expiry {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-10);
 }

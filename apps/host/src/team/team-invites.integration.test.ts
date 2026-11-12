@@ -99,6 +99,18 @@ describe("reusable team invites", () => {
     expect((await invites.page(owner)).invites).toEqual([]);
   });
 
+  it("shows no link once the Host's secret changed, and a reset makes a working one", async () => {
+    await reset();
+    const rotated = new TeamInvitesStore(
+      access,
+      "https://team.example.invalid",
+      createTeamInviteVerifierVault("r".repeat(40), fixture.deploymentId),
+    );
+    await expect(rotated.current(owner)).resolves.toEqual({ invite: null });
+    const fresh = await rotated.reset(owner, createId("teamInvite"), 7, null);
+    await expect(rotated.current(owner)).resolves.toEqual({ invite: fresh });
+  });
+
   it("refuses an admission whose invite was reset after the person proved it", async () => {
     const old = await reset();
     const { selector } = secret(old.url);
