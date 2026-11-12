@@ -3690,10 +3690,18 @@ function attachRealtimeSocket(
       await peer.send(projected.data);
     },
   } satisfies RealtimeSink;
-  const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
-    maxBytes: 4 * maxWebSocketFrameBytes,
-    maxItems: 64,
-  });
+  type ClientToHostMessage = z.infer<typeof ClientToHostMessageSchema>;
+  const limits = { maxBytes: 4 * maxWebSocketFrameBytes, maxItems: 64 };
+  const inbox = new BoundedAsyncInbox<{
+    readonly message: Exclude<ClientToHostMessage, { type: "client.browser.resync" }>;
+    readonly bytes: number;
+  }>(limits);
+  const browserInbox = new BoundedAsyncInbox<{
+    readonly message: Extract<ClientToHostMessage, { type: "client.browser.resync" }>;
+    readonly bytes: number;
+  }>(limits);
+  let queuedBytes = 0;
+  let queuedItems = 0;
   let unsubscribe: (() => void) | undefined;
   let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
   let realtimeClosed = false;
@@ -3706,26 +3714,72 @@ function attachRealtimeSocket(
   const cancelExpiration = scheduleWebSocketExpiration(expiresAt, () =>
     realtime.closeSession(session.id),
   );
-  socket.on("message", (frame, isBinary) => {
-    try {
-      const buffer = rawDataBuffer(frame);
-      if (buffer.byteLength > maxWebSocketFrameBytes) {
-        throw badMessage("Client message is too large");
-      }
-      inbox.push({ bytes: buffer.byteLength, value: { frame: buffer, isBinary } });
-    } catch (error) {
-      inbox.close(error);
-      if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
-    }
-  });
   const close = () => {
+    if (realtimeClosed) return;
     realtimeClosed = true;
     browserStream?.close();
     cancelExpiration();
     inbox.close();
+    browserInbox.close();
     unregister();
     unsubscribe?.();
   };
+  const failed = (error: unknown) => {
+    close();
+    closeProtocolSocket(socket, error);
+  };
+  socket.on("message", (frame, isBinary) => {
+    if (realtimeClosed) return;
+    let buffer: Buffer;
+    try {
+      buffer = rawDataBuffer(frame);
+      if (
+        buffer.byteLength > maxWebSocketFrameBytes ||
+        queuedBytes + buffer.byteLength > limits.maxBytes ||
+        queuedItems >= limits.maxItems
+      )
+        throw badMessage("Client input queue exceeded");
+    } catch {
+      close();
+      if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
+      return;
+    }
+    try {
+      if (isBinary) throw badMessage("Client messages must be JSON text");
+      const message = ClientToHostMessageSchema.parse(parseFrame(buffer));
+      // Refuse another epoch before either stream can process its following frames.
+      if (
+        message.type === "client.subscribe" &&
+        (message.cursor.apiVersion !== hostApiVersion ||
+          message.cursor.deploymentId !== deploymentId)
+      ) {
+        close();
+        void sink
+          .send({
+            error: {
+              code: "bad_message",
+              message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+              reason: unsupportedVersionReason,
+              retryable: false,
+            },
+            type: "host.error",
+          })
+          .then(() =>
+            sink.close(unsupportedVersionCloseCode, "Unsupported Opensteer protocol version"),
+          )
+          .catch(failed);
+        return;
+      }
+      const bytes = buffer.byteLength;
+      queuedBytes += bytes;
+      queuedItems++;
+      if (message.type === "client.browser.resync")
+        browserInbox.push({ bytes, value: { message, bytes } });
+      else inbox.push({ bytes, value: { message, bytes } });
+    } catch (error) {
+      failed(error);
+    }
+  });
   socket.once("close", (code, reason) => {
     close();
     try {
@@ -3751,61 +3805,40 @@ function attachRealtimeSocket(
   });
   socket.once("error", close);
   void (async () => {
-    for await (const item of inbox) {
-      if (item.isBinary) throw badMessage("Client messages must be JSON text");
-      const message = ClientToHostMessageSchema.parse(parseFrame(item.frame));
+    for await (const { message, bytes } of browserInbox) {
+      queuedBytes -= bytes;
+      queuedItems--;
+      if (realtimeClosed) break;
+      if (browserStream) browserStream.resync(message.groupId);
+      else if (!message.groupId) {
+        const attached = await browser.clientStreams.attach(
+          session.user.id,
+          { send: (message) => sink.send(message), bufferedAmount: () => socket.bufferedAmount },
+          message.continuation,
+        );
+        if (realtimeClosed) attached.close();
+        else browserStream = attached;
+      }
+    }
+  })().catch(failed);
+  void (async () => {
+    for await (const { message, bytes } of inbox) {
+      queuedBytes -= bytes;
+      queuedItems--;
+      if (realtimeClosed) break;
       if (message.type === "client.ping") {
         await sink.send({ nonce: message.nonce, type: "host.pong" });
         continue;
       }
       if (message.type === "client.ack") continue;
-      if (message.type === "client.browser.resync") {
-        if (browserStream) browserStream.resync(message.groupId);
-        else if (!message.groupId) {
-          const attached = await browser.clientStreams.attach(
-            session.user.id,
-            {
-              send: (message) => sink.send(message),
-              bufferedAmount: () => socket.bufferedAmount,
-            },
-            message.continuation,
-          );
-          if (realtimeClosed) attached.close();
-          else browserStream = attached;
-        }
-        continue;
-      }
       if (message.type === "client.watch-node") {
         if (!unsubscribe) throw badMessage("Subscribe before watching a subagent");
-        realtime.watchNode({
-          sinkId: sink.id,
-          nodeId: message.nodeId,
-        });
+        realtime.watchNode({ sinkId: sink.id, nodeId: message.nodeId });
         continue;
       }
       if (subscribed) throw badMessage("Client is already subscribed");
-      // Nothing is streamed to a client on another epoch: the events it would
-      // receive are exactly what the epoch governs, so the refusal comes
-      // before the subscription rather than after the first frame it cannot
-      // read. The `host.error` says why and the close code says it is final.
-      if (
-        message.cursor.apiVersion !== hostApiVersion ||
-        message.cursor.deploymentId !== deploymentId
-      ) {
-        await sink.send({
-          error: {
-            code: "bad_message",
-            message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
-            reason: unsupportedVersionReason,
-            retryable: false,
-          },
-          type: "host.error",
-        });
-        sink.close(unsupportedVersionCloseCode, "Unsupported Opensteer protocol version");
-        return;
-      }
       try {
-        unsubscribe = await realtime.subscribe({
+        const subscription = await realtime.subscribe({
           afterSequence: message.cursor.afterSequence,
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
           ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
@@ -3815,6 +3848,8 @@ function attachRealtimeSocket(
           userId: session.user.id,
           deploymentId: message.cursor.deploymentId,
         });
+        if (realtimeClosed) subscription();
+        else unsubscribe = subscription;
         subscribed = true;
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "forbidden") {
@@ -3833,10 +3868,7 @@ function attachRealtimeSocket(
         throw error;
       }
     }
-  })().catch((error) => {
-    inbox.close(error);
-    closeProtocolSocket(socket, error);
-  });
+  })().catch(failed);
 }
 
 /**

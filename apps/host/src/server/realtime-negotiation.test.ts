@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createHostServer, type HostServerDependencies } from "../server.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import { hostServerTestDependencies } from "./host-server-test-harness.js";
+import { BrowserClientStreams } from "../browser/browser-client-streams.js";
 
 const testDiscovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
   canonicalOrigin: "https://opensteer.example",
@@ -27,6 +28,192 @@ const testDiscovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
  * refusal is a frame and a close code, neither of which `app.inject` can carry.
  */
 describe("realtime version negotiation", () => {
+  it("delivers the browser catalog while the personal snapshot is still pending", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const published = Promise.withResolvers<void>();
+    const removed = Promise.withResolvers<void>();
+    const watchNode = vi.fn();
+    const streams = new BrowserClientStreams({
+      authorityGeneration: () => 0,
+      groupIds: async () => [],
+      readGroups: async () => [],
+      readTabs: async () => [],
+      groupId: async () => null,
+      live: () => undefined,
+      occupants: () => [],
+      onError: (error) => {
+        throw error;
+      },
+    });
+    const { close, socket } = await realtimeSocket(
+      async ({ sink }) => {
+        entered.resolve();
+        await release.promise;
+        await sink.send({ type: "host.synchronized", sequence: zeroSequence });
+        published.resolve();
+        return () => removed.resolve();
+      },
+      {
+        browser: { clientStreams: streams } as unknown as HostServerDependencies["browser"],
+        watchNode,
+      },
+    );
+    const frames: HostToClientMessage[] = [];
+    const catalog = Promise.withResolvers<void>();
+    const pong = Promise.withResolvers<void>();
+    socket.on("message", (raw) => {
+      const frame = HostToClientMessageSchema.parse(JSON.parse(raw.toString()));
+      frames.push(frame);
+      if (frame.type === "host.browser-groups" && frame.stream.op === "end") catalog.resolve();
+      if (frame.type === "host.pong") pong.resolve();
+    });
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          apiVersion: hostApiVersion,
+          threadId: null,
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
+        }),
+      );
+      await withTimeout(entered.promise, 1000, {
+        timeoutError: () => new Error("Personal snapshot never started"),
+      });
+      socket.send(JSON.stringify({ type: "client.watch-node", nodeId: null }));
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      await withTimeout(catalog.promise, 1000, {
+        timeoutError: () => new Error("Browser catalog waited for the personal snapshot"),
+      });
+      expect(frames.map(({ type }) => type)).toEqual([
+        "host.browser-groups",
+        "host.browser-groups",
+      ]);
+      expect(watchNode).not.toHaveBeenCalled();
+      release.resolve();
+      socket.send(JSON.stringify({ type: "client.ping", nonce: "personal-resumed" }));
+      await withTimeout(pong.promise, 1000, {
+        timeoutError: () => new Error("Personal stream did not finish its queued messages"),
+      });
+      expect(watchNode).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await withTimeout(published.promise, 1000, {
+        timeoutError: () => new Error("Personal stream did not resume"),
+      });
+      await close();
+      await withTimeout(removed.promise, 1000, {
+        timeoutError: () => new Error("Personal subscription was not removed"),
+      });
+      streams.close();
+    }
+  });
+
+  it("removes a personal subscription that finishes after its socket closes", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const removed = Promise.withResolvers<void>();
+    const { close, socket } = await realtimeSocket(async () => {
+      entered.resolve();
+      await release.promise;
+      return () => removed.resolve();
+    });
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          apiVersion: hostApiVersion,
+          threadId: null,
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
+        }),
+      );
+      await withTimeout(entered.promise, 1000, {
+        timeoutError: () => new Error("Personal subscription never started"),
+      });
+      await close();
+      release.resolve();
+      await withTimeout(removed.promise, 1000, {
+        timeoutError: () => new Error("Closed socket retained its late personal subscription"),
+      });
+    } finally {
+      release.resolve();
+      await close();
+    }
+  });
+
+  it("keeps the combined input bound while both streams are pending", async () => {
+    const personalEntered = Promise.withResolvers<void>();
+    const browserEntered = Promise.withResolvers<void>();
+    const releasePersonal = Promise.withResolvers<void>();
+    const releaseBrowser = Promise.withResolvers<void>();
+    const { close, socket } = await realtimeSocket(
+      async () => {
+        personalEntered.resolve();
+        await releasePersonal.promise;
+        return () => undefined;
+      },
+      {
+        browser: {
+          clientStreams: {
+            attach: async () => {
+              browserEntered.resolve();
+              await releaseBrowser.promise;
+              return { resync: () => undefined, close: () => undefined };
+            },
+          },
+        } as unknown as HostServerDependencies["browser"],
+      },
+    );
+    try {
+      socket.send(
+        JSON.stringify({
+          type: "client.subscribe",
+          apiVersion: hostApiVersion,
+          threadId: null,
+          cursor: {
+            deploymentId: testDiscovery.document.deploymentId,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
+        }),
+      );
+      await withTimeout(personalEntered.promise, 1000, {
+        timeoutError: () => new Error("Personal stream never became pending"),
+      });
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
+      await withTimeout(browserEntered.promise, 1000, {
+        timeoutError: () => new Error("Browser stream never became pending"),
+      });
+      const closed = closedWith(socket);
+      for (let index = 0; index < 65; index++)
+        socket.send(
+          JSON.stringify(
+            index % 2
+              ? { type: "client.ack", sequence: zeroSequence }
+              : { type: "client.browser.resync" },
+          ),
+        );
+      expect(
+        await withTimeout(closed, 1000, {
+          timeoutError: () => new Error("Combined input queue exceeded its bound without closing"),
+        }),
+      ).toBe(1009);
+    } finally {
+      releasePersonal.resolve();
+      releaseBrowser.resolve();
+      await close();
+    }
+  });
+
   it("projects the Host's realtime output through its declared schema", async () => {
     const { close, socket } = await realtimeSocket(async ({ sink, deploymentId }) => {
       await sink.send({
@@ -172,7 +359,10 @@ describe("realtime version negotiation", () => {
   });
   it("refuses a subscription on another epoch with a final close, before subscribing", async () => {
     const subscribe = vi.fn();
-    const { close, socket } = await realtimeSocket(subscribe);
+    const attach = vi.fn();
+    const { close, socket } = await realtimeSocket(subscribe, {
+      browser: { clientStreams: { attach } } as unknown as HostServerDependencies["browser"],
+    });
     try {
       socket.send(
         JSON.stringify({
@@ -186,6 +376,7 @@ describe("realtime version negotiation", () => {
           },
         }),
       );
+      socket.send(JSON.stringify({ type: "client.browser.resync" }));
 
       const refusal = await nextMessage(socket);
       expect(refusal).toEqual({
@@ -199,6 +390,7 @@ describe("realtime version negotiation", () => {
       });
       expect(await closedWith(socket)).toBe(unsupportedVersionCloseCode);
       expect(subscribe).not.toHaveBeenCalled();
+      expect(attach).not.toHaveBeenCalled();
     } finally {
       await close();
     }
@@ -231,6 +423,10 @@ describe("realtime version negotiation", () => {
 
 async function realtimeSocket(
   subscribe: HostServerDependencies["realtime"]["subscribe"],
+  options: {
+    browser?: HostServerDependencies["browser"];
+    watchNode?: HostServerDependencies["realtime"]["watchNode"];
+  } = {},
 ): Promise<{ readonly close: () => Promise<void>; readonly socket: WebSocket }> {
   const userId = createId("user");
   const app = await createHostServer(
@@ -256,10 +452,12 @@ async function realtimeSocket(
         },
       } as never,
       discovery: testDiscovery,
+      ...(options.browser ? { browser: options.browser } : {}),
       realtime: {
         broadcast: () => undefined,
         registerConnection: () => () => undefined,
         subscribe,
+        watchNode: options.watchNode ?? (() => undefined),
       } as never,
     }),
   );

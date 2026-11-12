@@ -142,8 +142,9 @@ interface Reader {
   readonly requests: string[];
   dispose(): void;
   getSnapshot(): HostSnapshot;
+  diagnostics(): unknown;
   refresh(): Promise<void>;
-  waitForSnapshot(predicate: (snapshot: HostSnapshot) => boolean): Promise<void>;
+  waitForSnapshot(predicate: (snapshot: HostSnapshot) => boolean, phase?: string): Promise<void>;
 }
 
 /**
@@ -163,10 +164,18 @@ async function reader(
       readonly reconnectMaxDelayMs: number;
       readonly refreshIntervalMs: number;
       readonly webSocketFactory: (url: string) => unknown;
-    }) => Omit<Reader, "requests" | "sockets"> & {
+    }) => Omit<Reader, "requests" | "sockets" | "diagnostics"> & {
       load(): Promise<void>;
       subscribe(listener: () => void): () => void;
     };
+  };
+  const started = performance.now();
+  const moments: Record<string, { count: number; firstMs: number; lastMs: number }> = {};
+  const note = (name: string) => {
+    const at = Math.round(performance.now() - started);
+    const moment = (moments[name] ??= { count: 0, firstMs: at, lastMs: at });
+    moment.count++;
+    moment.lastMs = at;
   };
   const requests: string[] = [];
   const sockets: WebSocket[] = [];
@@ -182,6 +191,7 @@ async function reader(
         request.headers.set(name, value);
       requests.push(new URL(request.url).pathname);
       const response = await fetch(request);
+      note(`response:${new URL(request.url).pathname}`);
       if (request.url.includes("bootstrap.get") && delayBootstrapMs)
         await new Promise((resolve) => setTimeout(resolve, delayBootstrapMs));
       await beforeResponse?.(request);
@@ -194,27 +204,68 @@ async function reader(
       const socket = new WebSocket(url, {
         headers: { ...host.ownerHeaders, origin: host.origin.origin },
       });
+      socket.on("message", (raw, isBinary) => {
+        if (isBinary) {
+          note("binary-frame");
+          return;
+        }
+        try {
+          const frame = JSON.parse(rawDataBuffer(raw).toString()) as {
+            type: string;
+            stream?: { op: string };
+          };
+          note(`${frame.type}${frame.stream ? `:${frame.stream.op}` : ""}`);
+        } catch {
+          note("unreadable-frame");
+        }
+      });
       sockets.push(socket);
       return socket;
     },
   });
   await client.load();
+  note("load.returned");
+  const diagnostics = () => ({
+    elapsedMs: Math.round(performance.now() - started),
+    moments,
+    requests,
+    tabCounts: client
+      .getSnapshot()
+      .browserSessions.reduce<Record<string, number>>((counts, session) => {
+        const size = client.getSnapshot().browserTabs?.sessionTabs(session.id).length ?? 0;
+        counts[size] = (counts[size] ?? 0) + 1;
+        return counts;
+      }, {}),
+  });
   return {
     dispose: () => client.dispose(),
     getSnapshot: () => client.getSnapshot(),
+    diagnostics,
     refresh: () => client.refresh(),
-    waitForSnapshot: async (predicate) => {
-      if (predicate(client.getSnapshot())) return;
+    waitForSnapshot: async (predicate, phase = "catalog") => {
+      note(`wait:${phase}`);
+      if (predicate(client.getSnapshot())) {
+        note(`ready:${phase}`);
+        return;
+      }
       let unsubscribe = () => {};
       try {
         await withTimeout(
           new Promise<void>((resolve) => {
             unsubscribe = client.subscribe(() => {
-              if (predicate(client.getSnapshot())) resolve();
+              if (predicate(client.getSnapshot())) {
+                note(`ready:${phase}`);
+                resolve();
+              }
             });
           }),
           5_000,
-          { timeoutError: () => new Error("Reader did not acknowledge catalog") },
+          {
+            timeoutError: () =>
+              new Error(
+                `Reader did not acknowledge catalog (${phase}): ${JSON.stringify(diagnostics())}`,
+              ),
+          },
         );
       } finally {
         unsubscribe();
@@ -978,6 +1029,7 @@ integration("Browser presence and conversation usage", () => {
         snapshot.browserSessions.every(
           (session) => (snapshot.browserTabs?.sessionTabs(session.id) ?? []).length === 64,
         ),
+      "initial cold catalog",
     );
     const loaded = client.getSnapshot().browserSessions;
     expect(loaded).toHaveLength(150);
@@ -1007,6 +1059,7 @@ integration("Browser presence and conversation usage", () => {
         (snapshot.browserTabs?.sessionTabs(sessionId) ?? []).every(
           (tab) => tab.title === "Revised" && tab.occupants.length === 16,
         ) === true,
+      "updated cold catalog",
     );
     const refused = await testRpcRequest(
       host.origin,
@@ -1027,6 +1080,7 @@ integration("Browser presence and conversation usage", () => {
               tabIds: (session.browserTabs?.sessionTabs(session?.id) ?? []).map((tab) => tab.id),
             })),
             occupied,
+            diagnostics: client.diagnostics(),
             bytes,
             requests: client.requests,
             delayBootstrapMs: 350,
