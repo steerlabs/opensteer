@@ -501,7 +501,6 @@ async function runDesktop(
       supervisorExecutable: processSupervisorExecutable,
     }),
     passkeys: loaded.config.personal.passkeys === true,
-    knowledge: loaded.config.personal.knowledge === true,
     portalOrigin: loaded.config.portalUrl,
     releaseDirectory: loaded.config.personal.releaseDirectory,
     userEnvironment: personalUserEnvironment,

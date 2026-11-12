@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { TeamChannelIdSchema, TeamMessageIdSchema } from "./ids.js";
+import {
+  DeploymentIdSchema,
+  TeamChannelIdSchema,
+  TeamMessageIdSchema,
+  TeamNoticeIdSchema,
+} from "./ids.js";
 
 export const TeamOriginSchema = z.url().refine((value) => {
   const url = new URL(value);
@@ -80,6 +85,45 @@ export function parseTeamPageAppLink(
       return null;
     const page = url.searchParams.get("url");
     return page === null ? null : parseTeamPageLink(page);
+  } catch {
+    return null;
+  }
+}
+
+export const TeamNoticeLinkSchema = z.strictObject({
+  origin: TeamOriginSchema,
+  teamId: DeploymentIdSchema,
+  noticeId: TeamNoticeIdSchema,
+});
+export type TeamNoticeLink = z.infer<typeof TeamNoticeLinkSchema>;
+
+export function teamNoticeAppLink(input: TeamNoticeLink, applicationScheme: string): string {
+  if (!/^[a-z][a-z0-9+.-]*$/i.test(applicationScheme))
+    throw new Error("Invalid application scheme");
+  const link = TeamNoticeLinkSchema.parse(input);
+  return `${applicationScheme}:/team-notice?${new URLSearchParams(link)}`;
+}
+
+export function parseTeamNoticeAppLink(
+  value: string,
+  applicationScheme: string,
+): TeamNoticeLink | null {
+  try {
+    const url = new URL(value);
+    if (
+      url.protocol !== `${applicationScheme}:` ||
+      url.host ||
+      url.pathname !== "/team-notice" ||
+      value.includes("#") ||
+      url.searchParams.size !== 3
+    )
+      return null;
+    const parsed = TeamNoticeLinkSchema.safeParse({
+      origin: url.searchParams.get("origin"),
+      teamId: url.searchParams.get("teamId"),
+      noticeId: url.searchParams.get("noticeId"),
+    });
+    return parsed.success ? parsed.data : null;
   } catch {
     return null;
   }
