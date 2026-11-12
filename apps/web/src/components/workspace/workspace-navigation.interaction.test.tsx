@@ -637,6 +637,23 @@ describe("native places", () => {
 });
 
 describe("a channel and back", () => {
+  it("searches a channel from its button and from ⌘F", async () => {
+    await mount(`/teams/${mockTeamId}/c/${mockTeamChannelId}`, { team: true });
+    const scoped = { path: `/teams/${mockTeamId}/search`, search: `?in=${mockTeamChannelId}` };
+    await click(element('.channel button[aria-label^="Search"]'));
+    expect(history.at(-1)).toMatchObject(scoped);
+
+    await act(async () => goTo!(-1));
+    await settle();
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true }),
+      );
+    });
+    await settle();
+    expect(history.at(-1)).toMatchObject(scoped);
+  });
+
   it("Back after jumping into a channel restores the conversation and the page beside it", async () => {
     await mount((source) => `/tasks/${delegating(source)}${tabSearch(pageTab(source))}`, {
       team: true,

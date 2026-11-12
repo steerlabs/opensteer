@@ -41,7 +41,7 @@ import { useToast } from "../components/toast.js";
 import { useWorkspace } from "../components/workspace/workspace-context.js";
 import { DrawerButton } from "../components/workspace/place-stage.js";
 import { SidebarRestoreButton } from "../components/sidebar-chrome.js";
-import { actionErrorMessage } from "../ui-utils.js";
+import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
 import { useTeams, useTeamSession } from "./team-attachments.js";
 import { useKnowledge } from "./team-knowledge.js";
 import { channelPath } from "./team-paths.js";
@@ -255,6 +255,23 @@ function ChannelScreenFor({
   const can = timeline?.channel?.can ?? entry?.channel.can ?? null;
   const go = (path: string, keepPlace = true) =>
     void navigate({ pathname: path, search: keepPlace ? search : "" });
+  const searchChannel = () =>
+    void navigate({
+      pathname: `/teams/${encodeURIComponent(team.teamId)}/search`,
+      search: `?${new URLSearchParams({ in: channelId })}`,
+    });
+  // ⌘F / Ctrl+F searches the whole channel, not the messages the page happens to hold.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (fromLivePage(event)) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "f") {
+        event.preventDefault();
+        searchChannel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
   const params = new URLSearchParams(search);
   const pane = params.get("details") ? "details" : params.get("members") ? "members" : null;
   const setPane = (next: "details" | "members" | null) => {
@@ -745,8 +762,7 @@ function ChannelScreenFor({
       menu={{
         onOpenDetails: () => setPane("details"),
         onOpenMembers: () => setPane("members"),
-        onSearch: () =>
-          go(`/teams/${encodeURIComponent(team.teamId)}/search?in=${channelId}`, false),
+        onSearch: searchChannel,
         onMarkRead: () => {
           const latest = timeline?.messages.at(-1)?.id;
           if (latest) void client.markRead(channelId, latest).catch(report);
