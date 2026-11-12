@@ -29,7 +29,7 @@ SOFTWARE.
 
 ## Lucide
 
-The Workspace icon artwork in `packages/client/src/host/workspace-icon-art.ts` is taken from
+The icon artwork in `packages/client/src/host/icon-art.ts` is taken from
 [Lucide](https://lucide.dev) 1.26.0, which carries this licence (including the Feather notice for
 the icons derived from it).
 

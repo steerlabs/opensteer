@@ -194,9 +194,18 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "apps/web/src/components/onboarding.tsx": {
     counts: {
+      "config.deployment.kind": 1,
       kind: 2,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason:
+      "The sign-in door names and describes a team server or this computer; it grants nothing.",
+  },
+  "apps/web/src/components/places/place-menu.tsx": {
+    counts: {
+      "row.kind": 1,
+    },
+    reason:
+      "The computer switcher lists personal Deployments; a team server is the team switch, not a computer.",
   },
   "apps/web/src/components/settings/copy.ts": {
     counts: {
@@ -355,6 +364,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
+  "scripts/bench-mobile-network.ts": {
+    counts: { "values.seed!": 1 },
+    reason: "Benchmark seed labels include team; this is not a Deployment authority decision.",
+  },
   "scripts/dev.ts": {
     counts: {
       kind: 3,
@@ -393,10 +406,14 @@ const sqlExceptions: Record<
 > = {
   "packages/database/src/baseline-schema.ts": {
     reason:
-      "Fresh schema validates exactly the two supported deployment shapes; services are composed by deploymentPolicy.",
+      "Fresh schema validates exactly the two supported deployment shapes, and the Account directory lists who signs in: the personal owner or active team members. Services are composed by deploymentPolicy.",
     decisions: {
       "baseline/deployments_shape": {
         'deployment_shape in (\'{"kind":"personal"}\'::jsonb, \'{"kind":"team"}\'::jsonb))': 1,
+      },
+      "baseline/opensteer_refresh_account_directory_user": {
+        "d.deployment_shape->>'kind'='personal' and u.id=(": 1,
+        "d.deployment_shape->>'kind'='team' and exists (": 1,
       },
     },
   },

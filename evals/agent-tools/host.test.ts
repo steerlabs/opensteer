@@ -354,7 +354,6 @@ it("reads back successful Trigger writes and the requested one-shot time", async
       arguments: {
         action: "create",
         name: "Reminder: finish deleting memory",
-        anchorThreadId: "home",
         source: { kind: "schedule", at: "2027-01-01T09:05:00-05:00" },
         program: {
           language: "typescript",

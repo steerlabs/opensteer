@@ -300,9 +300,6 @@
     "no-real-time-wait-in-tests:ecaa3ffa0d18cfd8f4fc": 1,
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },
-  "apps/host/src/agents/previous-release-compat.integration.test.ts": {
-    "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
-  },
   "apps/host/src/agents/realtime-recovery.integration.test.ts": {
     "no-unreasoned-skip-or-retry:048eb28ff6863259b257": 1
   },

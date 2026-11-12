@@ -26,19 +26,18 @@ const runtime = JSON.stringify({
   files: [],
 });
 it("seeds only setup intent bound to the actual runtime, without a database or owner", () => {
-  const intent = personalSetupIntent(runtime, "/private/temp/check", 4101, 4102);
+  const intent = personalSetupIntent(runtime, 4101, 4102);
   expect(intent).toMatchObject({
     databaseInitialized: false,
     ownerInitialized: false,
     hostKeyFingerprint: null,
     revision: 0,
-    workspaceRoot: "/private/temp/check/Workspaces",
   });
   expect(intent.release.manifestSha256).toBe(createHash("sha256").update(runtime).digest("hex"));
-  expect(() => personalSetupIntent(runtime, "/private/temp/check", 4101, 4101)).toThrow();
+  expect(() => personalSetupIntent(runtime, 4101, 4101)).toThrow();
 });
 it("requires the supervisor's matching Personal selection rather than an empty or unrelated profile", () => {
-  const intent = personalSetupIntent(runtime, "/private/temp/check", 4101, 4102);
+  const intent = personalSetupIntent(runtime, 4101, 4102);
   expect(
     personalSelectionReady(JSON.stringify(emptyDeploymentCatalog()), intent.deploymentId),
   ).toBe(false);
@@ -56,7 +55,7 @@ it("requires the supervisor's matching Personal selection rather than an empty o
       hostInstanceId: intent.hostInstanceId,
       canonicalOrigin: "http://127.0.0.1:4101",
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      deploymentShape: { kind: "personal" },
     }),
     createdAt: now,
     updatedAt: now,

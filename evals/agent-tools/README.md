@@ -11,7 +11,7 @@ credentials:
 
 ```sh
 pnpm exec vitest run evals/agent-tools
-pnpm eval:agent-tools --engine codex --case workspace-model-discovery-gap --samples 1
+pnpm eval:agent-tools --engine codex --case delegated-model-discovery-gap --samples 1
 pnpm eval:agent-tools --engine claude --area memory --validate   # selection only, no engine
 pnpm eval:agent-tools --engine codex --baseline /absolute/baseline/results.jsonl
 ```
@@ -45,7 +45,7 @@ fixture label and selects no tools or authority.
   the arguments.
 - `expect.files` runs before cleanup. A missing path fails a positive match and passes a
   prohibition; a symlink makes the sample incomplete; `.eval-*` directories are never read.
-- `after` chains a case onto an earlier one, moving the producer's actual Workspace files into
+- `after` chains a case onto an earlier one, moving the producer's actual task folder files into
   a fresh session of the same engine before the next stage's fixtures apply.
 
 Known limits: the memory cold-read pair uses hand-authored Markdown, so it does not prove

@@ -14,7 +14,6 @@ import XCTest
 final class WireFixtureTests: XCTestCase {
   private static let transactionId = "6f1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071"
   private static let loginId = "8d1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071"
-  private static let workspaceId = "dep_00000000-0000-4000-8000-000000000003"
 
   static var fixtureURL: URL {
     URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()

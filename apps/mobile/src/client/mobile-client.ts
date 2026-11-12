@@ -180,6 +180,8 @@ export interface MobileClientOptions {
   readonly catalogFilePath: string;
   readonly quietSeenFilePath: string;
   readonly draftsFilePath: string;
+  /** Removes a new-task draft's local attachment copies once the draft is gone. */
+  readonly forgetDraftFiles?: Parameters<typeof createThreadDraftStore>[0]["forgetDraftFiles"];
   readonly usageNoticesFilePath: string;
   readonly fetch: HostFetch;
   /** Everything that reaches a Host: what to present, what to attach, what epoch. */
@@ -392,10 +394,7 @@ export class MobileClient {
     });
     this.drafts = createThreadDraftStore({
       filePath: options.draftsFilePath,
-      forgetDraftFiles: async (scope, localUris) => {
-        const { forgetDraftFiles } = await import("../thread/draft-attachments.js");
-        forgetDraftFiles(scope, localUris);
-      },
+      ...(options.forgetDraftFiles ? { forgetDraftFiles: options.forgetDraftFiles } : {}),
       now: options.now ?? (() => new Date()),
       privateFiles: options.privateFiles,
     });

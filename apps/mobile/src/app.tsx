@@ -48,6 +48,7 @@ import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
+import { forgetDraftFiles } from "./thread/draft-attachments.js";
 import {
   mockDeploymentConnections,
   mockDeploymentId,
@@ -286,6 +287,7 @@ function mobileClient(): MobileRoot {
     catalogFilePath: `${root}${storeName}/deployments.json`,
     quietSeenFilePath: `${root}${storeName}/quiet-seen.json`,
     draftsFilePath: `${root}${storeName}/drafts-v3.json`,
+    forgetDraftFiles,
     usageNoticesFilePath: `${root}${storeName}/usage-notices.json`,
     fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
     hostPort: configuration.mock

@@ -5,7 +5,6 @@ import {
   IsoDateTimeSchema,
   RunIdSchema,
   SequenceSchema,
-  TaskFolderSchema,
   TeamAgentRequestIdSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
@@ -29,7 +28,6 @@ import {
 import { TeamSqlInputSchema, TeamSqlResultSchema } from "./team-knowledge.js";
 import { ProtocolErrorSchema } from "./common.js";
 
-export const teamLinkCredentialPrefix = "ost_link_";
 export const TeamLinkCredentialSchema = z.string().regex(/^ost_link_[A-Za-z0-9_-]{43}$/);
 export const TeamLinkCodeSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const TeamLinkOfferSchema = z.strictObject({
@@ -192,11 +190,6 @@ export const TeamLinkServerFrameSchema = z.discriminatedUnion("type", [
   z.strictObject({ type: z.literal("pong") }),
 ]);
 export type TeamLinkServerFrame = z.infer<typeof TeamLinkServerFrameSchema>;
-export const PersonalTeamChannelFolderSchema = z.strictObject({
-  teamId: DeploymentIdSchema,
-  channelId: TeamChannelIdSchema,
-  folder: TaskFolderSchema,
-});
 
 export function serializeTeamLinkOffer(offer: TeamLinkOffer): string {
   const parsed = TeamLinkOfferSchema.parse(offer);
@@ -247,4 +240,3 @@ export const TeamBinaryUploadHeadersSchema = TeamBinaryRouteHeadersSchema.extend
       }
     }, "Invalid upload metadata"),
 });
-export const TeamUploadPartSchema = z.enum(["original", "preview"]);

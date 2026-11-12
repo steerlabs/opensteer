@@ -8,7 +8,7 @@ import {
   type TaskFolder,
 } from "@opensteer/core";
 import { homeDraftId } from "../home/home-draft.js";
-import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
+import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-scope.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { z } from "zod";
 
