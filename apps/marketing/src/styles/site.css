@@ -363,20 +363,24 @@ button {
   font-size: 13px;
 }
 .rail__set {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
-  gap: 2px;
   padding: 4px;
   border-radius: 999px;
   background: var(--sheen), var(--fill-quiet);
   border: 1px solid var(--rim-plate);
   box-shadow: var(--edge-plate);
 }
+/* The picked engine opens its label to its own width: a 0fr to 1fr track animates smoothly. */
 .eng {
-  display: inline-flex;
+  position: relative;
+  z-index: 1;
+  display: inline-grid;
+  grid-template-columns: 16px 0fr;
   align-items: center;
   height: 32px;
-  min-width: 34px;
   padding: 0 9px;
   border: 0;
   border-radius: 999px;
@@ -384,42 +388,110 @@ button {
   color: var(--muted);
   cursor: pointer;
   transition:
-    color 200ms,
-    background-color 300ms;
+    grid-template-columns 560ms var(--ease-out),
+    color 240ms,
+    background-color 360ms var(--ease-out),
+    box-shadow 360ms;
 }
 .eng svg {
   width: 16px;
   height: 16px;
-  flex: none;
+  transition: transform 360ms var(--ease-bubble);
 }
-.eng span {
-  display: block;
-  max-width: 0;
-  margin-left: 0;
+.eng__label {
+  min-width: 0;
   overflow: hidden;
-  white-space: nowrap;
   opacity: 0;
+  filter: blur(3px);
+  transition:
+    opacity 180ms,
+    filter 180ms;
+}
+.eng__label span {
+  display: block;
+  padding-left: 7px;
   font-size: 13px;
   font-weight: 550;
-  transition:
-    max-width 420ms var(--ease-out),
-    margin-left 420ms var(--ease-out),
-    opacity 300ms;
+  white-space: nowrap;
 }
 .eng:hover {
   color: var(--text);
 }
-.eng:hover span,
-.eng:focus-visible span,
-.eng[aria-pressed="true"] span {
-  max-width: 96px;
-  margin-left: 7px;
-  opacity: 1;
+.eng:hover svg {
+  transform: scale(1.12);
 }
 .eng[aria-pressed="true"] {
+  grid-template-columns: 16px 1fr;
   background: var(--sheen-accent), var(--ember);
   color: var(--ink-on-ember);
   box-shadow: var(--edge-accent);
+}
+.eng[aria-pressed="true"] svg {
+  transform: none;
+}
+.eng[aria-pressed="true"] .eng__label {
+  opacity: 1;
+  filter: none;
+  transition:
+    opacity 380ms 140ms,
+    filter 380ms 140ms;
+}
+.rail__glow {
+  position: absolute;
+  z-index: 0;
+  top: 4px;
+  left: 0;
+  width: 34px;
+  height: 32px;
+  border-radius: 999px;
+  background: var(--fill-plate-hover);
+  box-shadow: var(--edge-plate);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    translate 420ms var(--ease-out),
+    width 420ms var(--ease-out),
+    opacity 220ms;
+}
+.rail__tip {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 10px);
+  left: 0;
+  display: flex;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--rim-sheet);
+  box-shadow: var(--lift-float);
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, -4px);
+  pointer-events: none;
+  transition:
+    translate 420ms var(--ease-out),
+    opacity 200ms,
+    transform 320ms var(--ease-out);
+}
+.rail__tip b {
+  color: var(--text);
+  font-weight: 550;
+}
+.rail__set.is-hovering .rail__glow,
+.rail__set.is-hovering .rail__tip {
+  opacity: 1;
+}
+.rail__set.is-hovering .rail__tip {
+  transform: translate(-50%, 0);
+}
+.rail__set.is-entering .rail__glow,
+.rail__set.is-entering .rail__tip,
+.rail__set.is-following .rail__glow,
+.rail__set.is-following .rail__tip {
+  transition-property: opacity, transform;
 }
 .rail__set.is-flash .eng[aria-pressed="true"] {
   animation: engflash 1100ms var(--ease-out);
