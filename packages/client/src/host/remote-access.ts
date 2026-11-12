@@ -177,7 +177,11 @@ function outstanding(
 
 function intentGoal(intent: PersonalRemoteAdministrationOperation["intent"]): RemoteAccessGoal {
   if (intent.action === "configure")
-    return intent.mode === "connect" ? "turn-on" : intent.mode === "off" ? "turn-off" : "recover";
+    return intent.mode === "connect"
+      ? "turn-on"
+      : intent.mode === "off"
+        ? "turn-off"
+        : "use-private";
   if (intent.action === "rotate") return "reset-key";
   if (intent.action === "unlink") return "remove-link";
   return "recover";
@@ -258,9 +262,9 @@ export function nextRemoteAccessStep(
   // or Connect setup is the same change to the Account, not a second one.
   // It still has work left even when the mode already matches.
   const failed = standingFailure(status);
-  const retry =
-    failed !== null &&
-    (goal === "recover" || (intent !== null && sameIntent(failed.intent, intent)));
+  // Only the very change this goal names is tried again; another device's
+  // failure is never replayed in its place.
+  const retry = failed !== null && intent !== null && sameIntent(failed.intent, intent);
   if (goal === "recover" && !retry) return { kind: "done" };
   if (goal === "repair-link") {
     if (link !== "needs-repair") return { kind: "done" };
@@ -641,30 +645,45 @@ export function remoteAccessView(
 }
 
 /** The goal a view action starts, given the state it was offered in. */
+export interface RemoteAccessChoice {
+  readonly goal: RemoteAccessGoal;
+  /** The address `use-private` sets, including when trying a failed one again. */
+  readonly privateOrigin: string | null;
+}
+
 export function remoteAccessActionGoal(
   id: RemoteAccessActionId,
   facts: RemoteAccessFacts,
   run: RemoteAccessRunState,
-): RemoteAccessGoal | null {
+): RemoteAccessChoice | null {
+  const choice = (goal: RemoteAccessGoal): RemoteAccessChoice => ({ goal, privateOrigin: null });
   switch (id) {
     case "turn-on":
     case "use-account":
-      return "turn-on";
+      return choice("turn-on");
     case "turn-off":
     case "cancel":
-      return "turn-off";
+      return choice("turn-off");
     case "reset-key":
-      return "reset-key";
+      return choice("reset-key");
     case "remove-link":
-      return "remove-link";
+      return choice("remove-link");
     case "finish-adding":
-      return "finish-adding";
+      return choice("finish-adding");
     case "repair-link":
-      return "repair-link";
+      return choice("repair-link");
     case "try-again": {
-      if (run.kind === "failed") return run.goal;
+      if (run.kind === "failed")
+        return { goal: run.goal, privateOrigin: run.privateOrigin ?? null };
       const failed = facts.status ? standingFailure(facts.status) : null;
-      return failed ? intentGoal(failed.intent) : null;
+      if (!failed || failed.intent.action === "recover") return null;
+      return {
+        goal: intentGoal(failed.intent),
+        privateOrigin:
+          failed.intent.action === "configure" && failed.intent.mode === "private"
+            ? failed.intent.privateOrigin
+            : null,
+      };
     }
     case "add-device":
       return null;
@@ -777,7 +796,6 @@ export class RemoteAccessRunner {
     signal: AbortSignal,
   ): Promise<void> {
     const tried = new Set<RemoteAccessRunStep>();
-    let reread = false;
     let step: RemoteAccessRunStep = "checking";
     try {
       // A request still waiting on the Host may yet be admitted: decide only
@@ -824,19 +842,17 @@ export class RemoteAccessRunner {
           try {
             await this.#send(intent);
           } catch (error) {
-            // The failure it would try again was replaced: decide again from what replaced it.
+            // The failure it would try again was replaced. Once the status shows
+            // what replaced it, this run ends: the person sees that instead.
             if (
               intent.action !== "recover" ||
-              reread ||
               !(error instanceof HostClientRequestError) ||
               error.reason !== personalRemoteAdministrationChangedReason
             )
               throw error;
-            reread = true;
             signal.throwIfAborted();
             await this.#until(() => operationId(this.#facts) !== intent.operationId, signal);
-            tried.delete("request");
-            continue;
+            break;
           }
           signal.throwIfAborted();
           // Busy until the Host's own state shows the change, so the view

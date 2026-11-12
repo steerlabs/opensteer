@@ -360,13 +360,13 @@ describe("remoteAccessView", () => {
 
   it("tries a failed change again as the change that failed", () => {
     const failedOff = facts({ status: { ...on, operation: operation(off, "failed") } });
-    expect(remoteAccessActionGoal("try-again", failedOff, { kind: "idle" })).toBe("turn-off");
+    expect(remoteAccessActionGoal("try-again", failedOff, { kind: "idle" })?.goal).toBe("turn-off");
     expect(
       remoteAccessActionGoal("try-again", facts(), {
         goal: "remove-link",
         kind: "failed",
         message: "x",
-      }),
+      })?.goal,
     ).toBe("remove-link");
   });
 });
@@ -473,7 +473,7 @@ describe("RemoteAccessRunner", () => {
     expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }]);
   });
 
-  it("re-reads and decides again when another device replaced the failure it tried again", async () => {
+  it("stops, and shows what replaced it, when another device replaced the failure it tried again", async () => {
     const failed = operation(connect, "failed");
     const test = harness(facts({ status: status({}, { operation: failed }) }));
     test.request.mockImplementationOnce(async (intent) => {
@@ -491,7 +491,36 @@ describe("RemoteAccessRunner", () => {
     });
     test.runner.start("turn-on");
     await expect(test.settled()).resolves.toEqual({ kind: "idle" });
-    expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }, connect]);
+    expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }]);
+  });
+
+  it("tries again only the private address that failed, never another device's change", async () => {
+    const privateA = {
+      action: "configure" as const,
+      mode: "private" as const,
+      privateOrigin: "https://a.example",
+    };
+    const failed = operation(privateA, "failed");
+    const seen = facts({ status: status({}, { operation: failed }) });
+    const test = harness(seen);
+    const choice = remoteAccessActionGoal("try-again", seen, { kind: "idle" });
+    expect(choice).toEqual({ goal: "use-private", privateOrigin: "https://a.example" });
+    test.request.mockImplementationOnce(async (intent) => {
+      test.requests.push(intent);
+      // Another device's Off failed after this one saw the failed address.
+      queueMicrotask(() =>
+        test.set({ status: status({}, { operation: operation(off, "failed") }) }),
+      );
+      throw new HostClientRequestError({
+        code: "conflict",
+        message: "This changed on another device. Check it and try again.",
+        reason: "remote-access-changed",
+        status: 409,
+      });
+    });
+    test.runner.start(choice!.goal, choice!.privateOrigin);
+    await expect(test.settled()).resolves.toEqual({ kind: "idle" });
+    expect(test.requests).toEqual([{ action: "recover", operationId: failed.id }]);
   });
 
   it("lets Off supersede a pending turn-on rather than failing", async () => {
@@ -584,7 +613,9 @@ describe("RemoteAccessRunner", () => {
     const failedOn = operation(connect, "failed");
     const unpublished = facts({ status: { ...on, operation: failedOn } });
     const published = harness(unpublished);
-    published.runner.start(remoteAccessActionGoal("try-again", unpublished, { kind: "idle" })!);
+    published.runner.start(
+      remoteAccessActionGoal("try-again", unpublished, { kind: "idle" })!.goal,
+    );
     await published.settled();
     expect(published.requests).toEqual([{ action: "recover", operationId: failedOn.id }]);
 

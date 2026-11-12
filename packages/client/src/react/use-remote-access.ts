@@ -78,8 +78,8 @@ export function useRemoteAccess(input: {
         void pair?.();
         return;
       }
-      const goal = remoteAccessActionGoal(action, facts, run);
-      if (goal) runner.start(goal, run.kind === "failed" ? (run.privateOrigin ?? null) : null);
+      const choice = remoteAccessActionGoal(action, facts, run);
+      if (choice) runner.start(choice.goal, choice.privateOrigin);
     },
     [facts, pair, run, runner],
   );
