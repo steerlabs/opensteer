@@ -1,6 +1,8 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Client as PgClient } from "pg";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import {
   advanceExecutionClock,
@@ -121,6 +123,7 @@ const heldText = Array.from(
 integration("Runs that outlive their connection", () => {
   const clockMilestones: unknown[] = [];
   let stack: VerticalStack | undefined;
+  let restoreDatabaseQuery: (() => void) | undefined;
   const temporary: string[] = [];
   afterAll(async () => {
     const directory =
@@ -136,6 +139,8 @@ integration("Runs that outlive their connection", () => {
     console.info(`Runner reattach clock evidence: ${directory}`);
   });
   afterEach(async () => {
+    restoreDatabaseQuery?.();
+    restoreDatabaseQuery = undefined;
     await stack?.close();
     stack = undefined;
     for (const path of temporary.splice(0))
@@ -1299,6 +1304,37 @@ integration("Runs that outlive their connection", () => {
       30_000,
       "initial projections",
     );
+    // Observe each writer's own backend without changing its SQL or lock acquisition.
+    const writer = new AsyncLocalStorage<"answer" | "sibling">();
+    const backendPids = new Map<"answer" | "sibling", number>();
+    const query = PgClient.prototype.query;
+    restoreDatabaseQuery = () => {
+      PgClient.prototype.query = query;
+    };
+    PgClient.prototype.query = function (this: PgClient, ...args: unknown[]) {
+      const role = writer.getStore();
+      const statement = typeof args[0] === "string" ? args[0] : (args[0] as { text?: string }).text;
+      if (
+        role &&
+        !backendPids.has(role) &&
+        statement === 'select "deployment_id" from "deployment_event_state" for no key update'
+      ) {
+        backendPids.set(role, (this as PgClient & { processID: number }).processID);
+      }
+      return Reflect.apply(query, this, args);
+    } as typeof query;
+    const enqueue = active.host.store.enqueueRunnerControl.bind(active.host.store);
+    vi.spyOn(active.host.store, "enqueueRunnerControl").mockImplementation((input) =>
+      input.type === "request.respond" && input.requestId === request.id
+        ? writer.run("answer", () => enqueue(input))
+        : enqueue(input),
+    );
+    const commit = active.host.store.commitRunnerEvent.bind(active.host.store);
+    vi.spyOn(active.host.store, "commitRunnerEvent").mockImplementation((input) =>
+      input.event.runId === streamingRun
+        ? writer.run("sibling", () => commit(input))
+        : commit(input),
+    );
     const locked = Promise.withResolvers<number>();
     const unlock = Promise.withResolvers<void>();
     const blocker = active.host.store.database.transaction().execute(async (transaction) => {
@@ -1316,9 +1352,14 @@ integration("Runs that outlive their connection", () => {
     void blocker.catch(locked.reject);
     const blockerPid = await locked.promise;
     const contention: number[][] = [];
+    const backendSamples: unknown[] = [];
     const waiting = async () => {
       const result = await sql<{
         pid: number;
+        query: string;
+        xactStart: Date;
+        backendStart: Date;
+        waitEvent: string;
       }>`
         with recursive blocked(pid) as (
           select pid from pg_stat_activity
@@ -1328,10 +1369,14 @@ integration("Runs that outlive their connection", () => {
           join blocked on blocked.pid = any(pg_blocking_pids(activity.pid))
           where activity.datname = current_database()
         )
-        select pid from blocked order by pid
+        select activity.pid, activity.query, activity.xact_start, activity.backend_start,
+          activity.wait_event, pg_blocking_pids(activity.pid) as blockers
+        from blocked join pg_stat_activity activity using (pid) order by pid
       `.execute(active.host.store.database);
-      contention.push(result.rows.map(({ pid }) => pid));
-      return result.rows.length;
+      const pids = result.rows.map(({ pid }) => pid);
+      contention.push(pids);
+      backendSamples.push({ at: new Date().toISOString(), backends: result.rows });
+      return pids;
     };
     const key = `respond-${randomUUID()}`;
     const answer = testRpcData(
@@ -1359,9 +1404,24 @@ integration("Runs that outlive their connection", () => {
     try {
       // Queue the answer ahead of one sibling event on the same held row.
       // Acceptance must bypass that event while the answer holds the personal event fence.
-      await waitFor(async () => (await waiting()) === 1, 30_000, "blocked answer");
+      await waitFor(
+        async () => (await waiting()).includes(backendPids.get("answer")!),
+        30_000,
+        "blocked answer",
+      );
+      expect(backendPids.has("sibling")).toBe(false);
       await advanceSibling();
-      await waitFor(async () => (await waiting()) >= 2, 30_000, "blocked sibling event");
+      await waitFor(
+        async () => {
+          const pids = await waiting();
+          return (
+            pids.includes(backendPids.get("answer")!) && pids.includes(backendPids.get("sibling")!)
+          );
+        },
+        30_000,
+        "blocked sibling event",
+      );
+      expect(backendPids.get("answer")).not.toBe(backendPids.get("sibling"));
     } finally {
       unlock.resolve();
       await blocker;
@@ -1392,6 +1452,8 @@ integration("Runs that outlive their connection", () => {
         {
           blockerPid,
           contention,
+          backendSamples,
+          backendPids: Object.fromEntries(backendPids),
           askingRun,
           streamingRun,
           connectionGenerations: {

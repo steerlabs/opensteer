@@ -1215,6 +1215,22 @@ export class ChannelStore {
   }
 
   async claimIngress(workerId: string, leaseMs = 30_000): Promise<ClaimedIngress | null> {
+    const now = new Date();
+    const candidate = await this.#database
+      .selectFrom("channelIngressEvents")
+      .select("id")
+      .where((eb) =>
+        eb.or([
+          eb.and([eb("status", "=", "leased"), eb("claimExpiresAt", "<", now)]),
+          eb.and([
+            eb("status", "=", "pending"),
+            eb.or([eb("nextAttemptAt", "<=", now), eb("attempts", ">=", ingressAttemptCeiling)]),
+          ]),
+        ]),
+      )
+      .limit(1)
+      .executeTakeFirst();
+    if (!candidate) return null;
     await withPersonalTransaction(this.#database, async (transaction) => {
       const now = new Date();
       const maintenance = await transaction

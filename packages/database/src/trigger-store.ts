@@ -1297,6 +1297,15 @@ export class TriggerStore {
     readonly occurrences: readonly TriggerOccurrence[];
     readonly changed: boolean;
   }> {
+    const candidate = await this.#database
+      .selectFrom("triggers")
+      .select("id")
+      .where("kind", "=", "schedule")
+      .where("status", "=", "active")
+      .where("nextFireAt", "<=", now)
+      .limit(1)
+      .executeTakeFirst();
+    if (!candidate) return { occurrences: [], changed: false };
     return withPersonalTransaction(this.#database, async (transaction) => {
       const due = await transaction
         .selectFrom("triggers")
