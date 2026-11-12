@@ -564,6 +564,27 @@ export const hostedTeamsMigration: Migration = {
         check ((state = 'deleted') = (setup_token_digest is null))
       )
     `.execute(database);
+    // Any release may delete the creator's Account, including one that predates hosted teams;
+    // the database tombstones the team so it never outlives its Account.
+    await sql`
+      create function public.hosted_teams_tombstone_orphan() returns trigger
+      language plpgsql as $$
+      begin
+        new.state := 'deleted';
+        new.setup_token_digest := null;
+        new.deleted_at := coalesce(new.deleted_at, now());
+        new.updated_at := now();
+        return new;
+      end
+      $$
+    `.execute(database);
+    await sql`
+      create trigger hosted_teams_tombstone_orphan
+      before update of creator_account_id on public.hosted_teams
+      for each row
+      when (new.creator_account_id is null and old.creator_account_id is not null)
+      execute function public.hosted_teams_tombstone_orphan()
+    `.execute(database);
     await sql`
       create index hosted_teams_creator on public.hosted_teams (creator_account_id, created_at)
       where state <> 'deleted'

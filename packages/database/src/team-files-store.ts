@@ -117,6 +117,11 @@ export class TeamFilesStore {
     requestId?: TeamAgentRequestId,
   ) {
     metadata = TeamBinaryUploadMetadataSchema.parse(metadata);
+    const image = metadata.mediaType.startsWith("image/");
+    requireTeam(
+      image === metadata.previewSizeBytes > 0,
+      "Only images carry a preview, and need one",
+    );
     return this.access.contentWrite(actor, channelId, async (t, a) => {
       requireTeam(a.post);
       await activeUploadRequest(t, this.access, actor, channelId, requestId);
@@ -152,7 +157,8 @@ export class TeamFilesStore {
             ),
           )
           .executeTakeFirstOrThrow();
-        if (Number(used) + metadata.sizeBytes + metadata.previewSizeBytes > this.#storageLimitBytes)
+        const reserved = metadata.sizeBytes + (image ? teamPreviewMaxBytes : 0);
+        if (Number(used) + reserved > this.#storageLimitBytes)
           throw new OpensteerError({
             code: "resource_exhausted",
             reason: teamStorageFullReason,
@@ -229,7 +235,8 @@ export class TeamFilesStore {
       requireTeam(
         input.receivedBytes === Number(row.sizeBytes) &&
           input.sha256 === row.sha256 &&
-          input.previewSizeBytes <= 65536,
+          input.previewSizeBytes <=
+            (row.declaredType.startsWith("image/") ? teamPreviewMaxBytes : 0),
         "File size or digest mismatch",
       );
       const complete = await t

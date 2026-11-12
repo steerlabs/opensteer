@@ -598,6 +598,14 @@ describe("team transaction authority", () => {
     });
     const first = metadata(30, "image/png");
     await files.begin(owner, c.id, first);
+    // An unfinished image holds the largest preview it may still send, so a small declared
+    // preview cannot squeeze one in; and only images carry previews at all.
+    await expect(files.begin(owner, c.id, metadata(10, "image/png"))).rejects.toMatchObject({
+      reason: "team-storage-full",
+    });
+    await expect(
+      files.begin(owner, c.id, { ...metadata(10), previewSizeBytes: 10 }),
+    ).rejects.toThrow();
     const racing = await Promise.allSettled([
       files.begin(owner, c.id, metadata(50)),
       files.begin(owner, c.id, metadata(50)),

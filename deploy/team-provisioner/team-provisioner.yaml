@@ -50,9 +50,17 @@ spec:
                 name: OPENSTEER_TEAM_POSTGRES_IMAGE,
                 value: "docker.io/library/postgres:18-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15",
               }
+          ports:
+            - { name: readiness, containerPort: 8081 }
+          # Ready only after a whole reconcile pass succeeds, so a release that cannot reach
+          # Account or list teams fails its rollout and is rolled back.
+          readinessProbe:
+            httpGet: { path: /readyz, port: readiness }
+            periodSeconds: 5
+            failureThreshold: 2
           resources:
-            requests: { cpu: 250m, memory: 512Mi }
-            limits: { memory: 512Mi }
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 256Mi }
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

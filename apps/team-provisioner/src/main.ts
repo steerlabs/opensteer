@@ -1,9 +1,13 @@
+import { createServer } from "node:http";
 import { AccountClient, workloadIdentityToken } from "./account.js";
 import { loadProvisionerConfig } from "./config.js";
 import { KubernetesClient } from "./kubernetes.js";
 import { Reconciler } from "./reconcile.js";
 
 const passIntervalMilliseconds = 10_000;
+/** Ready only while whole passes succeed: Account admits this identity and the cluster lists teams. */
+const readyWithinMilliseconds = 3 * passIntervalMilliseconds;
+const readinessPort = 8081;
 
 function log(event: string, fields: Readonly<Record<string, unknown>> = {}): void {
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...fields }));
@@ -24,6 +28,11 @@ async function main(): Promise<void> {
     hostImage: config.images.host,
     gatewayImage: config.images.gateway,
   });
+  let lastPassAt = 0;
+  const readiness = createServer((request, response) => {
+    const ready = request.url === "/readyz" && Date.now() - lastPassAt < readyWithinMilliseconds;
+    response.writeHead(ready ? 200 : 503).end();
+  }).listen(readinessPort);
   let stopping = false;
   let wake: (() => void) | undefined;
   const stop = () => {
@@ -35,6 +44,7 @@ async function main(): Promise<void> {
   while (!stopping) {
     try {
       await reconciler.pass();
+      lastPassAt = Date.now();
     } catch (error) {
       log("pass.failed", { error: error instanceof Error ? error.message : String(error) });
     }
@@ -43,6 +53,7 @@ async function main(): Promise<void> {
       setTimeout(resolve, passIntervalMilliseconds);
     });
   }
+  readiness.close();
   log("provisioner.stopped");
 }
 

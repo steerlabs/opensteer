@@ -50,10 +50,6 @@ export class TeamFileService {
     requestId?: TeamAgentRequestId,
     signal?: AbortSignal,
   ) {
-    requireTeam(
-      !metadata.mediaType.startsWith("image/") || metadata.previewSizeBytes > 0,
-      "Image preview required",
-    );
     const row = await this.store.begin(actor, channelId, metadata, requestId);
     requireTeam(row.state !== "deleting");
     requireTeam(!this.#uploads.has(row.id), "Upload already in progress");

@@ -297,6 +297,24 @@ integration("Hosted teams", () => {
     expect(rows).toEqual([{ creatorAccountId: null, state: "deleted", setupTokenDigest: null }]);
   });
 
+  it("tombstones an Account's teams even when a release that predates them deletes the Account", async () => {
+    const cookie = await portalCookie(owner);
+    await createTeam(cookie, "older-release");
+
+    // The previous Account release deletes the user row knowing nothing about hosted teams.
+    await sql`delete from public.users where id = ${owner}`.execute(database);
+
+    const row = await database
+      .selectFrom("hostedTeams")
+      .select(["creatorAccountId", "state", "setupTokenDigest", "deletedAt"])
+      .where("slug", "=", "older-release")
+      .executeTakeFirstOrThrow();
+    expect(row).toMatchObject({ creatorAccountId: null, state: "deleted", setupTokenDigest: null });
+    expect(row.deletedAt).toBeInstanceOf(Date);
+    const desired = await hostedTeams.desired();
+    expect(desired.find((team) => team.slug === "older-release")?.state).toBe("deleted");
+  });
+
   async function createAccount(email: string): Promise<ControlPlaneAccountId> {
     const id = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
     const now = new Date();
