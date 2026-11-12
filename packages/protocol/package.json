@@ -32,6 +32,7 @@
   "dependencies": {
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/browser-source-wire": "workspace:*",
     "@opensteer/channel-core": "workspace:*",
     "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",

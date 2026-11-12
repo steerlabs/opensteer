@@ -17,6 +17,7 @@
   "dependencies": {
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@opensteer/browser-source-wire": "workspace:*",
     "@opensteer/core": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "zod": "catalog:"
