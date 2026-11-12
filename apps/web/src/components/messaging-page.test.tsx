@@ -130,9 +130,9 @@ describe("AccountRoutes", () => {
     await type(input(container), "C0123ABC");
     // Agent home until another folder is chosen, from the folder chip.
     await act(async () => button(container, "Agent home").click());
-    const supportRow = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
-      (row) => row.textContent?.startsWith("support"),
-    );
+    const supportRow = [
+      ...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'),
+    ].find((row) => row.textContent?.startsWith("support"));
     if (!supportRow) throw new Error("Missing the support folder.");
     await act(async () => supportRow.click());
     const [accessSelect] = [...container.querySelectorAll("select")];
@@ -416,7 +416,10 @@ function binding(
     selector: { ...selector, conversationType: null, scopeId: null, threadId: null },
     status,
     updatedAt: "2026-01-01T00:00:00.000Z",
-    folder: { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/ada/Opensteer" },
+    folder: {
+      computerId: "rnr_00000000-0000-4000-8000-000000000001",
+      path: "/Users/ada/Opensteer",
+    },
   });
 }
 

@@ -1009,7 +1009,10 @@ function ProviderCredentials({
   );
 }
 
-function ChannelDestination({ draft, setDraft }: DraftProps & { provider: ChannelProviderManifest }) {
+function ChannelDestination({
+  draft,
+  setDraft,
+}: DraftProps & { provider: ChannelProviderManifest }) {
   return (
     <div className="card">
       <div className="card__form">
@@ -1088,8 +1091,7 @@ function ChannelReview({
   const rows: { detail: string; title: string }[] = [
     { detail: `${provider.label} · verified on connect`, title: "Connected account" },
     {
-      detail:
-        draft.routingMode === "dedicated" ? "One folder" : "Shared bot with routes",
+      detail: draft.routingMode === "dedicated" ? "One folder" : "Shared bot with routes",
       title: "Bot role",
     },
     { detail: `${folderName ?? "Agent home"} — ${routeSummary}`, title: "Where it works" },
@@ -1101,7 +1103,10 @@ function ChannelReview({
       title: "Channels",
     },
     { detail: senderLabel(draft.accessPolicy.directMessages.mode), title: "Direct messages" },
-    { detail: `Runs started from ${provider.label} use your Opensteer access.`, title: "Authority" },
+    {
+      detail: `Runs started from ${provider.label} use your Opensteer access.`,
+      title: "Authority",
+    },
     { detail: "Default AI engine", title: "Runs on" },
   ];
   return (
