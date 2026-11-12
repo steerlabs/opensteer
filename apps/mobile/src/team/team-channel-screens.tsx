@@ -87,19 +87,28 @@ type Navigation = NativeStackNavigationProp<RootParamList>;
 
 /** A channel or DM. Its tabs are rows in Details on a phone. */
 export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): ReactNode {
-  const { teamId, channelId } = props.route.params;
+  const { teamId, channelId, messageId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
   const view = snapshot.channel?.scope.channelId === channelId ? snapshot.channel : null;
+  const landing = useLanding(session, channelId, messageId ?? null, (reply) =>
+    navigation.replace("TeamThread", {
+      teamId,
+      channelId,
+      rootId: reply.threadRootId!,
+      replyId: reply.id,
+    }),
+  );
   useFocusEffect(
     useCallback(() => {
-      if (session === null) return;
+      // A link's message selects its own place; after that this is any other visit.
+      if (session === null || !landing.settled) return;
       if (session.getSnapshot().channel?.scope.channelId !== channelId)
         session.selectChannel(TeamChannelIdSchema.parse(channelId));
       else if (session.getSnapshot().thread !== null)
         session.selectThread(TeamChannelIdSchema.parse(channelId), null);
-    }, [channelId, session]),
+    }, [channelId, landing.settled, session]),
   );
   const people = useTeamMembers(teamId);
   const memberCount = useChannelMemberCount(session, channelId);
@@ -145,7 +154,14 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
         teamId={teamId}
         view={view}
       >
-        {(place) => <ChannelScreenBody {...place} atStart={!view.hasMore} channel={header} />}
+        {(place) => (
+          <ChannelScreenBody
+            {...place}
+            anchorId={landing.anchorId}
+            atStart={!view.hasMore}
+            channel={header}
+          />
+        )}
       </Place>
     </Screen>
   );
@@ -153,7 +169,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
 
 /** A thread under one message, pushed full screen; Back returns to its channel. */
 export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): ReactNode {
-  const { teamId, channelId, rootId } = props.route.params;
+  const { teamId, channelId, rootId, replyId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
@@ -161,16 +177,17 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
     snapshot.thread?.scope.kind === "thread" && snapshot.thread.scope.rootId === rootId
       ? snapshot.thread
       : null;
+  const landing = useLanding(session, channelId, replyId ?? null, null);
   useFocusEffect(
     useCallback(() => {
-      if (session === null) return;
+      if (session === null || !landing.settled) return;
       const held = session.getSnapshot().thread;
       if (held?.scope.kind !== "thread" || held.scope.rootId !== rootId)
         session.selectThread(
           TeamChannelIdSchema.parse(channelId),
           TeamMessageIdSchema.parse(rootId),
         );
-    }, [channelId, rootId, session]),
+    }, [channelId, landing.settled, rootId, session]),
   );
   const people = useTeamMembers(teamId);
   const channelName = view?.channel?.name ?? null;
@@ -207,6 +224,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
         {(place) => (
           <ThreadScreenBody
             {...place}
+            anchorId={landing.anchorId}
             replyCount={root.replySummary.count}
             root={rootView(root, place.viewerId, people.directory)}
           />
@@ -214,6 +232,45 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
       </Place>
     </Screen>
   );
+}
+
+/**
+ * A link's message, asked of the team once per screen: it is loaded with the
+ * pages around it, and its id comes back to be scrolled to once mounted. A
+ * reply named from a channel moves to its thread instead.
+ */
+function useLanding(
+  session: TeamSessionClient | null,
+  channelId: string,
+  messageId: string | null,
+  /** From a channel: a reply opens its thread. A thread passes null and holds its replies. */
+  onReply: ((reply: TeamMessage) => void) | null,
+): { readonly anchorId: string | null; readonly settled: boolean } {
+  const [landed, setLanded] = useState<{
+    readonly messageId: string;
+    readonly anchorId: string | null;
+  } | null>(null);
+  const asked = useRef<string | null>(null);
+  const reply = useRef(onReply);
+  reply.current = onReply;
+  useEffect(() => {
+    if (session === null || messageId === null || asked.current === messageId) return;
+    asked.current = messageId;
+    void session
+      .landMessage(TeamChannelIdSchema.parse(channelId), TeamMessageIdSchema.parse(messageId))
+      .then(
+        (message) => {
+          if (message?.threadRootId != null && reply.current !== null) reply.current(message);
+          else setLanded({ messageId, anchorId: message?.id ?? null });
+        },
+        // Gone, or no longer the reader's to see: the place opens as it would without it.
+        () => setLanded({ messageId, anchorId: null }),
+      );
+  }, [channelId, messageId, session]);
+  if (messageId === null) return { anchorId: null, settled: true };
+  return landed?.messageId === messageId
+    ? { anchorId: landed.anchorId, settled: true }
+    : { anchorId: null, settled: false };
 }
 
 function rootView(root: TeamMessage, viewerId: string, directory: MemberDirectory): MessageView {

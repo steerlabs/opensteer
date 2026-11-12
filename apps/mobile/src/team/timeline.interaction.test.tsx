@@ -9,6 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
  * which is what lets the screen mark the channel read.
  */
 const harness = vi.hoisted(() => ({
+  scrollToIndex: vi.fn(),
   scrollToOffset: vi.fn(),
   scroll: null as ((y: number) => void) | null,
 }));
@@ -30,7 +31,10 @@ vi.mock("react-native", () => ({
     readonly ref?: Ref<unknown>;
     readonly onScroll: (event: { nativeEvent: { contentOffset: { y: number } } }) => void;
   }) => {
-    useImperativeHandle(props.ref, () => ({ scrollToOffset: harness.scrollToOffset }));
+    useImperativeHandle(props.ref, () => ({
+      scrollToIndex: harness.scrollToIndex,
+      scrollToOffset: harness.scrollToOffset,
+    }));
     harness.scroll = (y) => props.onScroll({ nativeEvent: { contentOffset: { y } } });
     return <div />;
   },
@@ -95,4 +99,37 @@ it("scrolls to the newest message on 'N new', and follows only once the list is 
 
   act(() => harness.scroll!(0));
   expect(onFollowingChange).toHaveBeenCalledExactlyOnceWith(true);
+});
+
+it("brings a linked message into view once it has loaded, and only once", () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  root = createRoot(host);
+  const message = (id: string) => ({ kind: "message", message: { id } }) as never;
+  const draw = (items: readonly never[]) =>
+    act(() =>
+      root!.render(
+        <Timeline
+          actions={{ onFollowingChange: () => undefined, onLoadOlder: () => undefined } as never}
+          anchorId="7"
+          clearance={0}
+          intro={null}
+          items={items}
+          jump={null}
+          typing={null}
+        />,
+      ),
+    );
+  // The newest page arrives first; the linked message is not in it yet.
+  draw([message("90"), message("91")]);
+  expect(harness.scrollToIndex).not.toHaveBeenCalled();
+  // Its page lands: newest first, it is the third row from the bottom.
+  draw([message("6"), message("7"), message("8"), message("90"), message("91")]);
+  expect(harness.scrollToIndex).toHaveBeenCalledExactlyOnceWith({
+    animated: false,
+    index: 3,
+    viewPosition: 0.5,
+  });
+  draw([message("6"), message("7"), message("8"), message("90"), message("91"), message("92")]);
+  expect(harness.scrollToIndex).toHaveBeenCalledTimes(1);
 });

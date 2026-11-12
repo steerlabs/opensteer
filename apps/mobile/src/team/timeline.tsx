@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import {
   FlatList,
   Pressable,
@@ -60,11 +60,34 @@ export function Timeline(props: {
   readonly clearance: number;
   /** "Leo is typing"; the line is held empty when nobody is. */
   readonly typing: string | null;
+  /** The message a link, a notification or search named: brought into view and marked. */
+  readonly anchorId?: string | null;
 }): ReactNode {
   const { actions } = props;
   const newestFirst = useMemo(() => [...props.items].reverse(), [props.items]);
   const list = useRef<FlatList<TimelineItem>>(null);
   const following = useRef(true);
+  const anchorId = props.anchorId ?? null;
+  const anchorIndex =
+    anchorId === null
+      ? -1
+      : newestFirst.findIndex((item) => item.kind === "message" && item.message.id === anchorId);
+  // Once, when the named row is first among the loaded rows; never before it has arrived.
+  const revealed = useRef<string | null>(null);
+  const attempts = useRef(0);
+  const retry = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (anchorId === null || anchorIndex < 0 || revealed.current === anchorId) return;
+    revealed.current = anchorId;
+    attempts.current = 0;
+    list.current?.scrollToIndex({ animated: false, index: anchorIndex, viewPosition: 0.5 });
+  }, [anchorId, anchorIndex]);
+  useEffect(
+    () => () => {
+      if (retry.current !== null) clearTimeout(retry.current);
+    },
+    [],
+  );
   const onScroll = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const near = event.nativeEvent.contentOffset.y <= followDistance;
@@ -81,8 +104,14 @@ export function Timeline(props: {
     [],
   );
   const renderItem = useCallback(
-    ({ item }: ListRenderItemInfo<TimelineItem>) => <TimelineRow actions={actions} item={item} />,
-    [actions],
+    ({ item }: ListRenderItemInfo<TimelineItem>) => (
+      <TimelineRow
+        actions={actions}
+        anchored={item.kind === "message" && item.message.id === anchorId}
+        item={item}
+      />
+    ),
+    [actions, anchorId],
   );
   return (
     <View style={styles.fill}>
@@ -100,6 +129,18 @@ export function Timeline(props: {
         onEndReached={actions.onLoadOlder}
         onEndReachedThreshold={0.6}
         onScroll={onScroll}
+        // `scrollToIndex` needs somewhere to go before the row it names has been
+        // measured: FlatList's own estimate, then one more layout pass lands on it.
+        onScrollToIndexFailed={({ averageItemLength, index }) => {
+          list.current?.scrollToOffset({ animated: false, offset: averageItemLength * index });
+          if (attempts.current >= 3) return;
+          attempts.current += 1;
+          if (retry.current !== null) clearTimeout(retry.current);
+          retry.current = setTimeout(
+            () => list.current?.scrollToIndex({ animated: false, index, viewPosition: 0.5 }),
+            150,
+          );
+        }}
         ref={list}
         renderItem={renderItem}
         scrollEventThrottle={100}
@@ -125,6 +166,7 @@ function itemKey(item: TimelineItem): string {
 
 function TimelineRow(props: {
   readonly actions: TimelineActions;
+  readonly anchored: boolean;
   readonly item: TimelineItem;
 }): ReactNode {
   const { actions, item } = props;
@@ -144,7 +186,13 @@ function TimelineRow(props: {
     case "system":
       return <SystemLine text={item.text} />;
     case "message":
-      return <MessageRow actions={actions} message={item.message} />;
+      return props.anchored ? (
+        <View style={styles.anchored}>
+          <MessageRow actions={actions} message={item.message} />
+        </View>
+      ) : (
+        <MessageRow actions={actions} message={item.message} />
+      );
     case "card":
       return (
         <AgentCardRow
@@ -258,6 +306,7 @@ export function ChannelIntro(props: {
 }
 
 const styles = StyleSheet.create({
+  anchored: { backgroundColor: color.emberWash },
   fill: { flex: 1 },
   inset: { paddingHorizontal: space[14] },
   instructions: {
