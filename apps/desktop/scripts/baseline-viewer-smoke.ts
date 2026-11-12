@@ -149,7 +149,6 @@ let attachment: BrowserAttachment | undefined;
 let nativeWrites = 0;
 let inspectTarget: (() => Promise<unknown>) | undefined;
 let peer: WebSocket | undefined;
-let snapshot: Extract<BrowserServerMessage, { type: "browser.snapshot" }> | undefined;
 const mock = new MockHostClient({ latencyMs: 0 });
 const launcher = new ElectronBrowserLauncher({
   downloads: {
@@ -290,11 +289,10 @@ server.on("upgrade", (request, socket, head) => {
   }
   wss.handleUpgrade(request, socket, head, (ws) => {
     peer = ws;
-    assert(snapshot);
+    assert(runtimeSnapshot);
     requestedVersion =
       new URL(request.url!, "http://fixture").searchParams.get("editing") === "2" ? 2 : 1;
-    viewerVersion = browserViewerEditingVersion(snapshot, requestedVersion);
-    assert(runtimeSnapshot);
+    viewerVersion = browserViewerEditingVersion(runtimeSnapshot, requestedVersion);
     ws.send(
       JSON.stringify(browserViewerMessage({ ...runtimeSnapshot, surfaces: [] }, viewerVersion)),
     );
@@ -371,16 +369,15 @@ async function main() {
       sendServer: async (message) => {
         runtimeMessages.push(message);
         const projected = project(message);
-        if (projected?.type === "browser.snapshot") snapshot = projected;
         if (projected && peer?.readyState === WebSocket.OPEN) peer.send(JSON.stringify(projected));
       },
       sendFrame: async (frame) => {
         if (peer?.readyState === WebSocket.OPEN) peer.send(encodeBrowserFrame(frame));
       },
     });
-    assert(snapshot);
-    assert.equal(snapshot.editingVersion, rawBaseline ? undefined : 2);
-    assert.equal(snapshot.clipboard, rawBaseline ? undefined : false);
+    assert(runtimeSnapshot);
+    assert.equal(runtimeSnapshot.editingVersion, rawBaseline ? undefined : 2);
+    assert.equal(runtimeSnapshot.clipboard, rawBaseline ? undefined : false);
     assert.equal(browser?.clipboard, undefined);
     const surfaceId = tabStream.meta?.activeId;
     assert(surfaceId);
@@ -847,8 +844,8 @@ async function main() {
           records,
           nativeWrites,
           rendererErrors,
-          editingVersion: snapshot?.editingVersion ?? null,
-          clipboard: snapshot?.clipboard,
+          editingVersion: runtimeSnapshot?.editingVersion ?? null,
+          clipboard: runtimeSnapshot?.clipboard,
           requestedVersion,
           viewerVersion,
           fixture:
