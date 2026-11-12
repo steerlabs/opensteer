@@ -9,23 +9,22 @@ import { Icon, type IconName } from "./icon.js";
 export function StartFreshScreen({
   agentHome = "~/Opensteer",
   error = null,
-  onQuit,
-  onReveal,
+  moves,
+  onNotNow,
   onStartFresh,
-  setAsidePath,
   working = false,
 }: {
   readonly agentHome?: string;
   /** Why the last try failed; the old data is still where it was. */
   readonly error?: string | null;
-  readonly onQuit: () => void;
-  /** Shows the folder the old data will be moved into. */
-  readonly onReveal?: (() => void) | undefined;
+  /** Every path set aside, in the order the desktop moves them; the first is the data itself. */
+  readonly moves: readonly { readonly source: string; readonly destination: string }[];
+  /** Leaves the old data alone, for the other ways this window can go on. */
+  readonly onNotNow: () => void;
   readonly onStartFresh: () => void;
-  /** Where the earlier data goes, e.g. "Application Support/Opensteer/Earlier 2026-11-11". */
-  readonly setAsidePath: string;
   readonly working?: boolean;
 }) {
+  const setAsidePath = moves[0]?.destination ?? "";
   return (
     <main className="start-fresh">
       <div className="start-fresh__card">
@@ -39,16 +38,17 @@ export function StartFreshScreen({
         <ul className="start-fresh__facts">
           <Fact icon="history" title="Set aside, not deleted">
             Your earlier tasks and settings, the browser profiles they used, and their saved sign-in
-            keys move to <code>{setAsidePath}</code>
-            {onReveal ? (
-              <>
-                {" "}
-                <button className="start-fresh__link" onClick={onReveal} type="button">
-                  Show in Finder
-                </button>
-              </>
-            ) : null}
-            .
+            keys move to <code>{setAsidePath}</code>.
+            <details className="start-fresh__moves">
+              <summary>Everything that moves</summary>
+              <ul>
+                {moves.map((move) => (
+                  <li key={move.source}>
+                    <code>{move.source}</code> → <code>{move.destination}</code>
+                  </li>
+                ))}
+              </ul>
+            </details>
           </Fact>
           <Fact icon="home" title="Untouched">
             <code>{agentHome}</code>, your agent’s home folder, with its memory and AGENTS.md.
@@ -65,8 +65,8 @@ export function StartFreshScreen({
           </p>
         ) : null}
         <div className="start-fresh__actions">
-          <button className="btn btn--ghost" disabled={working} onClick={onQuit} type="button">
-            Quit Opensteer
+          <button className="btn btn--ghost" disabled={working} onClick={onNotNow} type="button">
+            Not now
           </button>
           <button
             aria-disabled={working}

@@ -857,15 +857,22 @@ a.home-task:hover {
   overflow-wrap: anywhere;
 }
 
-.start-fresh__link {
-  color: var(--text-soft);
-  text-decoration: underline;
-  text-decoration-color: var(--line-hover);
-  text-underline-offset: 3px;
+.start-fresh__moves {
+  margin-top: var(--space-6);
 }
 
-.start-fresh__link:hover {
-  color: var(--text);
+.start-fresh__moves summary {
+  color: var(--text-soft);
+  cursor: pointer;
+}
+
+.start-fresh__moves ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
 }
 
 .start-fresh .notice {

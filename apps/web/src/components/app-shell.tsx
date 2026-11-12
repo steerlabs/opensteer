@@ -35,6 +35,7 @@ import {
   type ReactNode,
 } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { receiveDesktopTeamLinks, teamLinkPath } from "../desktop/team-links.js";
 import {
   DesktopNotificationTargetSchema,
   DesktopUseComputerViewInputSchema,
@@ -359,10 +360,7 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  const webLinkReady = desktopWebLinksReady(
-    true,
-    snapshot,
-  );
+  const webLinkReady = desktopWebLinksReady(true, snapshot);
   useEffect(() => {
     if (
       !webLinkReady ||
@@ -418,6 +416,14 @@ export function AppShell({
     hostClient,
     toast,
   ]);
+  // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
+  const navigateTo = useNavigate();
+  useEffect(() => {
+    if (!suppliedDesktopBridge) return;
+    return receiveDesktopTeamLinks(suppliedDesktopBridge, (url) => {
+      void navigateTo(teamLinkPath(url));
+    });
+  }, [navigateTo, suppliedDesktopBridge]);
   // The remembered place reopens once per viewer for the shell's life: Settings
   // unmounts the workspace's keys, and coming back from it is not a launch.
   const placeRestored = useRef<string | null>(null);

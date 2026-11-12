@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate, useSearchParams } from "react-router";
 import { parseTeamPageLink, teamPageUrl } from "@opensteer/core";
 import { parseTeamLinkOffer } from "@opensteer/protocol";
@@ -23,18 +23,19 @@ export function JoinTeamRoute() {
     busy: false,
     error: null,
   });
+  // A channel or message link of a team this computer is in opens there at once.
+  const linked = params.get("link");
+  useEffect(() => {
+    const path = linked ? joinedTeamPath(linked, teams) : null;
+    if (path) void navigate(path, { replace: true });
+  }, [linked, navigate, teams]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const value = text.trim();
     const page = parseTeamPageLink(value);
     if (page) {
-      const team = teams.find((candidate) => candidate.origin === page.origin);
-      if (team && page.target.kind !== "invite")
-        void navigate(
-          channelPath(team.teamId, page.target.channelId, {
-            messageId: page.target.kind === "message" ? page.target.messageId : null,
-          }),
-        );
+      const path = joinedTeamPath(value, teams);
+      if (path) void navigate(path);
       else window.open(teamPageUrl(page), "_blank", "noopener,noreferrer");
       return;
     }
@@ -78,4 +79,19 @@ export function JoinTeamRoute() {
       </form>
     </div>
   );
+}
+
+/** Where a team page link opens in this app, when it names a channel of a team already joined. */
+export function joinedTeamPath(
+  url: string,
+  teams: readonly { readonly origin: string; readonly teamId: string }[],
+): string | null {
+  const page = parseTeamPageLink(url);
+  if (!page || page.target.kind === "invite") return null;
+  const team = teams.find((candidate) => candidate.origin === page.origin);
+  return team
+    ? channelPath(team.teamId, page.target.channelId, {
+        messageId: page.target.kind === "message" ? page.target.messageId : null,
+      })
+    : null;
 }
