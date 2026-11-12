@@ -15,7 +15,7 @@ import {
 } from "@react-navigation/native-stack";
 import { Platform } from "react-native";
 import type { SurfacesRoute } from "./browser/surface-route.js";
-import { AddIphoneScreen } from "./iphone-apps/add-iphone.js";
+import { PhoneReadyScreen, SetUpPhoneScreen } from "./phone-setup/setup-screen.js";
 import { headerActions, stackScreenOptions } from "./navigation-header.js";
 import { AddDeploymentScreen } from "./screens/add-deployment.js";
 import { AddPersonalScreen } from "./screens/add-personal.js";
@@ -502,16 +502,19 @@ const RootStack = createNativeStackNavigator({
         title: "Connect an agent",
       }),
     },
-    AddIphone: {
-      screen: AddIphoneScreen,
-      // Draws its own bar: Android's form sheet has no native header.
+    // A full-screen step with its own native bar, pushed over Home after
+    // sign-in; it leaves only forward, to Ready.
+    SetUpPhone: {
+      screen: SetUpPhoneScreen,
       options: {
+        gestureEnabled: false,
         headerShown: false,
-        presentation: screenPresentations.AddIphone,
-        sheetAllowedDetents: [0.95],
-        sheetGrabberVisible: true,
-        title: `Add this ${thisPhoneNoun}`,
+        title: `Set up this ${thisPhoneNoun}`,
       },
+    },
+    PhoneReady: {
+      screen: PhoneReadyScreen,
+      options: { gestureEnabled: false, headerShown: false, title: "Ready" },
     },
     // Asked once, over Home, the first time this phone reaches a computer. It
     // sizes to its content and is dismissed like any sheet.
@@ -625,7 +628,12 @@ type OpensteerRootParamList = {
   readonly QuietlyMoved: { readonly deploymentId: string };
   readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
-  readonly AddIphone: { readonly deploymentId: string };
+  readonly SetUpPhone: { readonly deploymentId: string };
+  readonly PhoneReady: {
+    readonly deploymentId: string;
+    readonly name: string;
+    readonly outcome: import("./phone-setup/phone-setup.js").PhoneSetupState;
+  };
   readonly AgentAuthorization: { readonly deploymentId: string; readonly requestId: string };
   /** A pairing link or scanned code fills the form; the person still confirms it. */
   readonly AddPersonal:

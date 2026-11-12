@@ -1,14 +1,4 @@
-import {
-  computerGlyph,
-  computerRole,
-  computerRoleLabel,
-  computersOverview,
-  computerStatus,
-  computerUses,
-  hostsDeployment,
-  type ComputerAppsData,
-  type ComputerGlyph,
-} from "@opensteer/client/computers";
+import { hostsDeployment, type ComputerGlyph } from "@opensteer/client/computers";
 import {
   passwordsElsewhere,
   passwordsCardsFact,
@@ -16,7 +6,6 @@ import {
   passwordsSettingsLabel,
   passwordsSettingsSubtitle,
 } from "@opensteer/client/host";
-import { computerUseMachineLine, isAgentPhone } from "@opensteer/client/integrations";
 import { otherDeviceLine, type OtherDeviceLine } from "@opensteer/client/settings";
 import { maximumNotificationDevicesPerAccount } from "@opensteer/core";
 import type { HarnessInstallation, MachineSummary, OtherDevice } from "@opensteer/protocol";
@@ -288,29 +277,6 @@ export function notificationSettingsModel(
   }
 }
 
-/**
- * What computer use on a Mac or an agent phone needs from its owner, or is
- * doing, right now — the one thing worth reading about it from a phone before
- * its page is open. A Mac without the desktop app is not news; an agent phone
- * that cannot be used, because it is paused on the phone, is.
- */
-function computerUseNow(machine: MachineSummary, hostConnected: boolean): string | null {
-  const report = machine.computerUse;
-  if (!report || machine.status !== "online") return null;
-  return report.sessions.length > 0 ||
-    report.state === "permission-required" ||
-    (report.state === "unavailable" && isAgentPhone(machine))
-    ? computerUseMachineLine(machine, hostConnected)
-    : null;
-}
-
-/**
- * A computer is added from itself and an Agent Phone from a computer it is
- * plugged into — never from this app — so the section says where.
- */
-export const computersSettingsFooter =
-  "To add a computer, open Opensteer on it and choose Add. To add an Agent Phone, plug it into a computer and choose Add a phone.";
-
 export const browserProfilesSettingsRow = {
   detail: "Separate browsers with their own sign-ins",
   title: "Browser profiles",
@@ -387,56 +353,6 @@ export function passwordsSettingsModel(input: {
 export type ComputerSymbol =
   "desktopcomputer" | "laptopcomputer" | "macmini" | "server.rack" | "smartphone";
 
-/** One row of Settings → Computers: where the Opensteer runs, or one computer. */
-export interface ComputerSettingsRow {
-  readonly detail: string;
-  readonly key: string;
-  /** What tapping the row opens, or null for a row that only says something. */
-  readonly opens: ComputerSettingsDestination | null;
-  readonly name: string;
-  readonly symbol: ComputerSymbol;
-}
-
-/**
- * A computer's page — in the open Deployment unless another is named — or
- * adding this iPhone to the open Deployment.
- */
-export type ComputerSettingsDestination =
-  | { readonly deploymentId?: string; readonly kind: "computer"; readonly machineId: string }
-  | { readonly kind: "add-iphone" };
-
-/**
- * This phone, which lends its browser and, on an iPhone, its own Calendar,
- * Contacts and more. Null on a phone that cannot be added, which then has no
- * row of its own.
- */
-export interface ThisIphoneSettings {
-  /** What it is called where its name is not enough. */
-  readonly noun: "iPhone" | "phone";
-  /** Its last removal still waits for a restart to erase its browser profiles. */
-  readonly pendingErasure: boolean;
-  /** Whether this phone has apps to share, as its own build reports them. */
-  readonly sharesApps: boolean;
-  /** Requests waiting for an answer on this iPhone. */
-  readonly approvals: number;
-  /** Whether the open Deployment's Host can take an iPhone. */
-  readonly available: boolean;
-  readonly deploymentName: string;
-  readonly deviceName: string;
-  /** The Deployment this iPhone is added, or being added, to. */
-  readonly heldBy: {
-    readonly deploymentId: string;
-    readonly deploymentName: string;
-    readonly enrollmentId: string | null;
-    readonly name: string;
-    readonly runnerId: string;
-    readonly state: "enrolled" | "pending";
-  } | null;
-  /** The open Deployment's Host removed this iPhone since it was last added. */
-  readonly removed: boolean;
-  readonly selectedDeploymentId: string;
-}
-
 /** Each computer's shape as the symbol it is drawn with. */
 export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = {
   compact: "macmini",
@@ -446,52 +362,6 @@ export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = 
   phone: "smartphone",
   server: "server.rack",
 };
-
-/**
- * The open Opensteer's computers in the words the Computers page uses on
- * every other device: where it runs first, then each computer with what it
- * does for agents and whether it is there.
- */
-export function computersSettingsRows(input: {
-  readonly apps: ComputerAppsData | null;
-  readonly deploymentName: string;
-  readonly here?: ThisIphoneSettings | null;
-  readonly hostConnected: boolean;
-  readonly machines: readonly MachineSummary[];
-  readonly publicOrigin: string | null;
-}): readonly ComputerSettingsRow[] {
-  const here = input.here ?? null;
-  const heldHere =
-    here?.heldBy?.deploymentId === here?.selectedDeploymentId ? (here?.heldBy ?? null) : null;
-  // This iPhone is its own row, after where Opensteer runs: never again as a
-  // computer, and never as the code its own add is still using.
-  const machines = input.machines.filter(
-    ({ id }) => heldHere === null || (id !== heldHere.runnerId && id !== heldHere.enrollmentId),
-  );
-  const overview = computersOverview({ ...input, hereId: null, machines });
-  const home = overview.home;
-  const homeStatus = home.machine ? computerStatus(home.machine).label : "Starting";
-  const rows: ComputerSettingsRow[] = [
-    {
-      detail: `Your Opensteer runs here · ${homeStatus}`,
-      key: "home",
-      opens: home.machine ? { kind: "computer", machineId: home.machine.id } : null,
-      name: home.name,
-      symbol: home.machine ? computerSymbols[computerGlyph(home.machine)] : "desktopcomputer",
-    },
-  ];
-  if (here !== null) rows.push(thisIphoneRow(here, heldHere, input));
-  for (const machine of overview.groups.flatMap((group) => group.machines)) {
-    rows.push({
-      detail: computerSettingsDetail(machine, input),
-      key: machine.id,
-      opens: { kind: "computer", machineId: machine.id },
-      name: machine.name,
-      symbol: computerSymbols[computerGlyph(machine)],
-    });
-  }
-  return rows;
-}
 
 /** One row of Settings → Devices → Other devices: a device a plugin's server reaches. */
 export interface OtherDeviceSettingsRow {
@@ -530,91 +400,6 @@ export function otherDevicesSettingsRows(
       symbol: otherDeviceSymbols[device.kind],
     };
   });
-}
-
-/** What a computer does for agents and whether it is there, in the Computers page's words. */
-function computerSettingsDetail(
-  machine: MachineSummary,
-  input: { readonly apps: ComputerAppsData | null; readonly hostConnected: boolean },
-): string {
-  const uses = computerUses(machine, input.apps);
-  const role = computerRole(machine, uses, input.apps !== null);
-  return [
-    role ? computerRoleLabel[role] : null,
-    computerUseNow(machine, input.hostConnected) ?? computerStatus(machine).label,
-  ]
-    .filter((part): part is string => part !== null)
-    .join(" · ");
-}
-
-/** "You're here": this iPhone, added here, added elsewhere, or not yet added. */
-function thisIphoneRow(
-  here: ThisIphoneSettings,
-  heldHere: ThisIphoneSettings["heldBy"],
-  input: {
-    readonly apps: ComputerAppsData | null;
-    readonly hostConnected: boolean;
-    readonly machines: readonly MachineSummary[];
-  },
-): ComputerSettingsRow {
-  const opensteer = `Opensteer on ${here.deploymentName}`;
-  const held = here.heldBy;
-  // Nothing opens until a restart has erased it: adding it again must wait for that.
-  if (here.pendingErasure)
-    return {
-      detail: "You're here · Restart Opensteer to finish removing it",
-      key: "this-iphone",
-      name: here.deviceName,
-      opens: null,
-      symbol: "smartphone",
-    };
-  if (held !== null && held.deploymentId !== here.selectedDeploymentId) {
-    const machineId = held.state === "pending" ? held.enrollmentId : held.runnerId;
-    return {
-      detail: `You're here · ${held.state === "pending" ? "Being added" : "Added"} to ${held.deploymentName}`,
-      key: "this-iphone",
-      name: held.name,
-      opens:
-        machineId === null
-          ? null
-          : { deploymentId: held.deploymentId, kind: "computer", machineId },
-      symbol: "smartphone",
-    };
-  }
-  if (heldHere?.state === "enrolled") {
-    const machine = input.machines.find(({ id }) => id === heldHere.runnerId) ?? null;
-    return {
-      detail:
-        here.approvals > 0
-          ? `You're here · ${here.approvals} waiting for you`
-          : machine === null
-            ? "You're here"
-            : `You're here · ${computerSettingsDetail(machine, input)}`,
-      key: heldHere.runnerId,
-      name: machine?.name ?? heldHere.name,
-      opens: { kind: "computer", machineId: heldHere.runnerId },
-      symbol: "smartphone",
-    };
-  }
-  return here.available
-    ? {
-        detail: here.removed
-          ? `You're here · Removed from ${opensteer}`
-          : here.sharesApps
-            ? "You're here · Share its Calendar, Contacts and more"
-            : "You're here · Not added",
-        key: "this-iphone",
-        name: here.deviceName,
-        opens: { kind: "add-iphone" },
-        symbol: "smartphone",
-      }
-    : {
-        detail: `You're here · Update ${opensteer} to add this ${here.noun}`,
-        key: "this-iphone",
-        name: here.deviceName,
-        opens: null,
-        symbol: "smartphone",
-      };
 }
 
 /** Registration needs the Account credential, so it must be revoked first. */

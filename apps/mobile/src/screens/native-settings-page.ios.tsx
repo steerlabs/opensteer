@@ -36,6 +36,7 @@ import {
   foregroundStyle,
   frame,
   listStyle,
+  onSubmit,
   searchable,
   navigationTitle,
   shapes,
@@ -55,7 +56,7 @@ import type {
   NativeSettingsStep,
   NativeSettingsTone,
 } from "./native-settings-page.types.js";
-import { Chevron, IdentityMark, Lines } from "./settings-form-primitives.ios.js";
+import { Chevron, IdentityMark, Lines, Tile } from "./settings-form-primitives.ios.js";
 
 const toneColor: Record<NativeSettingsTone, string> = {
   neutral: color.muted,
@@ -200,6 +201,7 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
           onPress={row.onPress}
         >
           <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+            {row.symbol === undefined ? null : <Tile symbol={row.symbol} />}
             <Lines detail={row.detail ?? null} title={row.label} />
             <Spacer />
             {row.opens === true ? <Chevron /> : null}
@@ -346,6 +348,11 @@ function Input({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "inpu
   return row.secure ? (
     <SecureField text={text} placeholder={row.label} onTextChange={row.onChange} />
   ) : (
-    <TextField text={text} placeholder={row.label} onTextChange={row.onChange} />
+    <TextField
+      text={text}
+      placeholder={row.label}
+      onTextChange={row.onChange}
+      modifiers={row.onSubmit === undefined ? [] : [onSubmit(row.onSubmit)]}
+    />
   );
 }
