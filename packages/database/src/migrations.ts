@@ -13,6 +13,18 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
           },
         },
+        "0003_devices": {
+          async up(database) {
+            await sql`
+              update runners set access_policy =
+                jsonb_build_object('browser', true, 'apps', true) || access_policy;
+              alter table auth_sessions add column device_id text null references runners(id);
+              create index auth_sessions_device_id_idx on auth_sessions(device_id);
+              alter table runner_enrollments add column initial_access jsonb null;
+              alter table runner_enrollments add column prepared_identity jsonb null;
+            `.execute(database);
+          },
+        },
       };
     },
   };

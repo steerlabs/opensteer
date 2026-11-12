@@ -235,7 +235,12 @@ import {
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
 
-import { DeviceInitialAccessSchema, DeviceSessionBindingProofSchema } from "./devices.js";
+import {
+  DeviceInitialAccessSchema,
+  DevicePreparedIdentitySchema,
+  DeviceRefusalContextSchema,
+  DeviceSessionBindingProofSchema,
+} from "./devices.js";
 import { MachineSummarySchema } from "./machines.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
@@ -305,6 +310,8 @@ export {
 } from "@opensteer/deployment-authority";
 
 export const HostApiErrorSchema = z.object({
+  machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+  capability: DeviceRefusalContextSchema.shape.capability.optional(),
   code: OpensteerErrorCodeSchema,
   message: z.string().min(1),
   reason: z.string().min(1).optional(),
@@ -703,6 +710,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(120),
     access: DeviceInitialAccessSchema.optional(),
+    preparedIdentity: DevicePreparedIdentitySchema.optional(),
     type: z.literal("runner.enrollment.createLocal"),
   }),
 
@@ -716,6 +724,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     name: z.string().trim().min(1).max(120),
     profile: z.literal("iphone").optional(),
     access: DeviceInitialAccessSchema.optional(),
+    preparedIdentity: DevicePreparedIdentitySchema.optional(),
     type: z.literal("runner.enrollment.createPhone"),
   }),
   /**

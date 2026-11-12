@@ -1,3 +1,4 @@
+import { requireDeviceAccess } from "../administration/device-access.js";
 import { digestSecret } from "@opensteer/shared/secretDigest";
 import { PersonalTabStore } from "@opensteer/database";
 import { resolveTeamTaskExecution } from "./team-task-execution.js";
@@ -670,6 +671,8 @@ export async function createHostRuntime(
     let displayStreams: DisplayStreamHub | undefined;
     let pluginPackages: PluginPackageService | undefined;
     const computerApps = new ComputerAppHub({
+      requireAgentAccess: (runnerId) =>
+        requireDeviceAccess(database, runnerId, "apps", runners.isRunnerConnected(runnerId)),
       packageSource: (serverId, runnerId, launch) =>
         pluginPackages?.computerSource(serverId, runnerId, launch),
       knownDefinitionIds: () => computerAppDefinitionIds,
@@ -794,6 +797,25 @@ export async function createHostRuntime(
     const browserTabGroups = new BrowserTabGroupStore(database);
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
+      requireAgentAccess: (runnerId) =>
+        requireDeviceAccess(database, runnerId, "browser", runners.isRunnerConnected(runnerId)),
+      detachRunnerAgents: async (runnerId) => {
+        const sessions = await database
+          .selectFrom("browserSessions")
+          .select("id")
+          .where("runnerId", "=", runnerId)
+          .execute();
+        if (!sessions.length) return [];
+        await database
+          .deleteFrom("browserSessionAttachments")
+          .where(
+            "sessionId",
+            "in",
+            sessions.map((row) => row.id),
+          )
+          .execute();
+        return sessions.map((row) => row.id);
+      },
       deploymentId: deployment.id,
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
@@ -2263,6 +2285,7 @@ export async function createHostRuntime(
     const administration = new AdministrationToolHandlers(
       new AdministrationService(
         {
+          authenticator,
           store,
           commands,
           apps,

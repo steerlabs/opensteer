@@ -178,8 +178,10 @@ export const DevicesOverviewViewSchema = z.object({
         ownership: true,
         status: true,
         allowedModules: true,
+        kind: true,
+        access: true,
         revocable: true,
-      }),
+      }).extend({ access: MachineSummarySchema.shape.access.optional() }),
     )
     .max(400),
   /** Devices that run no Opensteer, reached through a plugin's server; a Host before devices sends none. */

@@ -104,3 +104,5 @@ export * from "./deployment-store.js";
 export { eventFromRow } from "./deployment-events.js";
 
 export { systemPrincipalId } from "./store-primitives.js";
+
+export * from "./device-store.js";

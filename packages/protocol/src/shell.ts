@@ -1,3 +1,4 @@
+import { DeviceRefusalContextSchema } from "./devices.js";
 import {
   IsoDateTimeSchema,
   RunIdSchema,
@@ -470,6 +471,8 @@ export type ShellDataTicketClaims = z.infer<typeof ShellDataTicketClaimsSchema>;
  * it.
  */
 export const ShellConnectErrorCodeSchema = z.enum([
+  "device-access-off",
+  "device-offline",
   "run_invalid",
   "target_unknown",
   "target_offline",
@@ -483,6 +486,8 @@ export type ShellConnectErrorCode = z.infer<typeof ShellConnectErrorCodeSchema>;
 export const ShellConnectErrorSchema = z.strictObject({
   error: z.strictObject({
     code: ShellConnectErrorCodeSchema,
+    machineId: DeviceRefusalContextSchema.shape.machineId.optional(),
+    capability: DeviceRefusalContextSchema.shape.capability.optional(),
     message: z.string().min(1).max(512),
   }),
 });

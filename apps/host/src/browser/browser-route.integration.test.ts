@@ -3,6 +3,7 @@ import { hostApiVersionHeader } from "@opensteer/protocol";
 import { browserRows } from "./browser-rows.test-support.js";
 import {
   connectCallerMachine,
+  dispatchCallerRun,
   startPrivateMachineHost,
   type CallerMachine,
   type MachineAccessHost,
@@ -319,6 +320,64 @@ integration("Host browser broker vertical", () => {
     if (freshSession.type !== "browser.session.start") throw new Error("Session command mismatch.");
     expect(freshSession.session).toMatchObject({ profileId: null, state: "ready" });
     expect(browserRuntime.lastClaims()?.identity).toEqual({ kind: "fresh" });
+
+    const agentRun = await dispatchCallerRun(personalHost, caller, {
+      key: "device-browser-fence",
+      title: "Use this browser",
+    });
+    try {
+      const input = {
+        agentBindingId: `run:${agentRun.runId}`,
+        ownerId: owner.id,
+        sessionId: freshSession.session.id,
+      };
+      await runtime.browser.openAgentSession(input);
+      let agentClosed = false;
+      const agent = await runtime.browser.attachCdpForAgent(
+        input,
+        () => {},
+        () => {
+          agentClosed = true;
+        },
+      );
+      const before = await runtime.store.database
+        .selectFrom("runners")
+        .select(["accessPolicy", "accessPolicyRevision"])
+        .where("id", "=", browserRuntime.runnerId)
+        .executeTakeFirstOrThrow();
+      await testRpcData(
+        origin,
+        "commands.dispatch",
+        {
+          type: "machine.access.update",
+          idempotencyKey: "browser-off",
+          runnerId: browserRuntime.runnerId,
+          expectedRevision: before.accessPolicyRevision,
+          policy: { ...before.accessPolicy, browser: false },
+        },
+        { headers: sessionHeaders },
+      );
+      expect(agentClosed).toBe(true);
+      await expect(agent.dispatch({ method: "Target.getTargets" })).rejects.toThrow(
+        "attachment has ended",
+      );
+      await expect(runtime.browser.openAgentSession(input)).rejects.toMatchObject({
+        reason: "device-access-off",
+        machineId: browserRuntime.runnerId,
+        capability: "browser",
+      });
+      expect(browserRuntime.streamOpen()).toBe(true);
+      const after = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
+      expect(after.browser.profileHomes).toContain(browserRuntime.runnerId);
+      const person = await runtime.browser.start({
+        fresh: true,
+        ownerId: owner.id,
+        placement: { kind: "runner", runnerId: browserRuntime.runnerId },
+      });
+      expect(person.session.state).toBe("ready");
+    } finally {
+      await agentRun.complete();
+    }
 
     const stopped = await testRpcRequest(
       origin,

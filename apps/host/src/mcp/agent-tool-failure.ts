@@ -1,3 +1,4 @@
+import { DeviceAccessRefusal } from "../administration/device-access.js";
 import type { AgentToolAccess, AgentToolFailure } from "@opensteer/agent-tools";
 import { OpensteerError } from "@opensteer/core";
 import { formatIssues } from "@opensteer/shared/validationIssues";
@@ -23,6 +24,9 @@ export function agentToolFailure(error: unknown, access: AgentToolAccess): Agent
   }
   if (error instanceof OpensteerError && error.code !== "internal") {
     return {
+      ...(error instanceof DeviceAccessRefusal
+        ? { machineId: error.machineId, capability: error.capability }
+        : {}),
       code: error.code,
       message: error.message,
       next: error.next,

@@ -1,3 +1,11 @@
+import { consumeAnonymousRateLimit } from "./identity/anonymous-rate-limit.js";
+import { deviceAccess } from "@opensteer/protocol";
+import {
+  deviceMembershipTurn,
+  removeSignedDevice,
+  signOutDeviceSession,
+} from "./administration/device-removal.js";
+import { RunnerLeaveRequestSchema, RunnerLeaveResponseSchema } from "@opensteer/protocol";
 import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
 import type { PersonalExecution } from "./runtime/personal-execution.js";
 import type { PersonalTeamLinks } from "./team-links/service.js";
@@ -939,11 +947,7 @@ export async function createHostServer(
     // owner. They are not a `shell` fact: a computer can lend one app without
     // accepting connections at all, so ownership is resolved for every machine
     // that advertises either module.
-    const manageable = active.filter(
-      (runner) =>
-        runner.moduleDescriptors.shell !== undefined ||
-        runner.moduleDescriptors.integrations !== undefined,
-    );
+    const manageable = active;
     const ownership =
       manageable.length === 0
         ? new Map<RunnerId, MachineOwnershipRecord>()
@@ -996,24 +1000,26 @@ export async function createHostServer(
     }
     const access = new Map<string, MachineAccessView>(
       await Promise.all(
-        managed
-          .filter((runner) => runner.moduleDescriptors.shell !== undefined)
-          .map(async (runner): Promise<[string, MachineAccessView]> => {
-            const stored = await dependencies.store.listActiveShellSessions(runner.id);
-            // The row's counters are zero until a session ends, so the live ones
-            // are overlaid from the hub; a session the hub no longer holds is
-            // one whose final counters are already written.
-            const live = dependencies.shellControl.liveSessionBytes(runner.id);
-            return [
-              runner.id,
-              {
-                activeSessions: stored.map((summary) => ({ ...summary, ...live.get(summary.id) })),
-                ownerReachAvailable: ownership.get(runner.id)?.effectiveOwner !== null,
-                policy: runner.accessPolicy,
-                revision: runner.accessPolicyRevision,
+        managed.map(async (runner): Promise<[string, MachineAccessView]> => {
+          const stored = await dependencies.store.listActiveShellSessions(runner.id);
+          // The row's counters are zero until a session ends, so the live ones
+          // are overlaid from the hub; a session the hub no longer holds is
+          // one whose final counters are already written.
+          const live = dependencies.shellControl.liveSessionBytes(runner.id);
+          return [
+            runner.id,
+            {
+              activeSessions: stored.map((summary) => ({ ...summary, ...live.get(summary.id) })),
+              ownerReachAvailable: ownership.get(runner.id)?.effectiveOwner !== null,
+              policy: {
+                ...runner.accessPolicy,
+                browser: deviceAccess(runner.accessPolicy).browser,
+                apps: deviceAccess(runner.accessPolicy).apps,
               },
-            ];
-          }),
+              revision: runner.accessPolicyRevision,
+            },
+          ];
+        }),
       ),
     );
     return {
@@ -1573,7 +1579,7 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     if (isAdministrationCommand(command))
-      return administration.execute({ kind: "person", userId }, command);
+      return administration.execute({ kind: "person", userId }, command, context.afterResponse);
     switch (command.type) {
       case "settings.plugin.enabled.set": {
         const result = await dependencies.integrations.platform.store.settings.setEnabled(
@@ -2081,16 +2087,16 @@ export async function createHostServer(
         return { ...envelope, type: command.type };
       }
       case "machine.session.bind":
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Device session binding is not yet supported",
-        });
+        await deviceMembershipTurn(dependencies.store, () =>
+          dependencies.store.bindDeviceSession({
+            machineId: command.machineId,
+            sessionId: session.id,
+            userId,
+            proof: command.proof,
+          }),
+        );
+        return { type: command.type };
       case "machine.access.update": {
-        if (command.policy.browser !== undefined || command.policy.apps !== undefined)
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Device access switches are not yet supported",
-          });
         await requireMachineAccessManagement(
           dependencies.store,
           {
@@ -2098,36 +2104,34 @@ export async function createHostServer(
           },
           command.runnerId,
         );
-        // Inside this machine's admission turn: an activation that is part-way
-        // through re-reading the policy it was admitted under must either see
-        // the old revision and finish, or see the new one and end — never
-        // commit against a revision this write already replaced.
         const result = await dependencies.shellControl.withMachineAdmission(command.runnerId, () =>
-          dependencies.store.updateMachineAccessPolicy({
-            allowDeployment: true,
-            expectedRevision: command.expectedRevision,
-            idempotency: { key: command.idempotencyKey, requestedBy: userId },
-            ownerId: userId,
-            policy: command.policy,
-            runnerId: command.runnerId,
-          }),
+          dependencies.computerApps.withRunnerAdmission(command.runnerId, () =>
+            dependencies.browser.withRunnerAdmission(command.runnerId, async () => {
+              const result = await dependencies.store.updateMachineAccessPolicy({
+                allowDeployment: true,
+                expectedRevision: command.expectedRevision,
+                idempotency: { key: command.idempotencyKey, requestedBy: userId },
+                ownerId: userId,
+                policy: command.policy,
+                runnerId: command.runnerId,
+              });
+              if (result.outcome === "updated" && !result.replayed) {
+                if (result.changed.shell)
+                  await dependencies.shellControl.endMachineSessions(
+                    command.runnerId,
+                    "policy-changed",
+                  );
+                if (result.changed.browser && !deviceAccess(command.policy).browser)
+                  await dependencies.browser.disableAgentAccess(command.runnerId);
+                if (result.changed.apps && !deviceAccess(command.policy).apps)
+                  await dependencies.computerApps.disableAgentAccess(command.runnerId);
+              }
+              return result;
+            }),
+          ),
         );
-        if (result.outcome === "conflict") {
-          // Nothing was written, so nothing about the live sessions changed.
+        if (result.outcome === "conflict")
           return { outcome: "conflict" as const, type: command.type };
-        }
-        // Every write bumps the revision, an equal-value one included: the
-        // policy a live session is running under is a snapshot taken when it
-        // opened, and the only honest way to apply a new one is to end them
-        // and let the next `ssh` start under it. A replay is not a write: it
-        // committed nothing, and the sessions open now may well have started
-        // after the save it is replaying, under the policy it describes.
-        if (!result.replayed) {
-          await dependencies.shellControl.endMachineSessions(command.runnerId, "policy-changed");
-        }
-        // A replay wrote nothing, but the row it is replaying is what this
-        // caller is about to read back, and the revision it reports is already
-        // live for everybody else.
         notifyMachinesChanged(dependencies.realtime, "machine.command");
         return { outcome: "updated" as const, revision: result.revision, type: command.type };
       }
@@ -2174,19 +2178,17 @@ export async function createHostServer(
         return { type: command.type, access };
       }
       case "session.revoke":
-        await dependencies.authenticator.identity.revokeSession(
+        await signOutDeviceSession(
+          { ...dependencies, publishDeploymentEvent },
           session,
           command.sessionId,
           context.afterResponse,
         );
         return { type: command.type };
       case "runner.enrollment.createLocal": {
-        if (command.access !== undefined)
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Initial device access is not yet supported",
-          });
         const enrollment = await dependencies.runnerAuthenticator.createEnrollment({
+          ...(command.access ? { access: command.access } : {}),
+          ...(command.preparedIdentity ? { preparedIdentity: command.preparedIdentity } : {}),
           allowedModules: command.allowedModules,
           createdBy: userId,
           idempotencyKey: command.idempotencyKey,
@@ -2203,16 +2205,13 @@ export async function createHostServer(
         };
       }
       case "runner.enrollment.createPhone": {
-        if (command.access !== undefined)
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Initial device access is not yet supported",
-          });
         // Where the phone will reach this Host is settled before anything is
         // minted: a token for an address no phone can use is one nobody can
         // redeem, and a Personal Deployment with remote access off has none.
         const pairing = await agentPhoneHostTarget(dependencies);
         const enrollment = await dependencies.runnerAuthenticator.createPhoneEnrollment({
+          ...(command.access ? { access: command.access } : {}),
+          ...(command.preparedIdentity ? { preparedIdentity: command.preparedIdentity } : {}),
           createdBy: userId,
           idempotencyKey: command.idempotencyKey,
           lifetimeSeconds: 600,
@@ -2350,7 +2349,16 @@ export async function createHostServer(
   const handleCoreCommand = async (command: CoreCommand, context: HostApiServerContext) =>
     hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context));
 
-  const identityRpcHandlers = createIdentityRpcHandlers(dependencies.authenticator);
+  const identityRpcHandlers = createIdentityRpcHandlers(
+    dependencies.authenticator,
+    (session, sessionId, afterResponse) =>
+      signOutDeviceSession(
+        { ...dependencies, publishDeploymentEvent },
+        session,
+        sessionId,
+        afterResponse,
+      ),
+  );
 
   registerHostApi(app, dependencies.authenticator, {
     ...createHostApiHandlers(
@@ -2399,6 +2407,29 @@ export async function createHostServer(
     },
   });
 
+  app.post(
+    "/v1/runner/leave",
+    { config: unversionedRoute, bodyLimit: 8 * 1024 },
+    async (request, reply) => {
+      if (
+        !(await consumeAnonymousRateLimit(
+          dependencies.store.database,
+          `device-leave:${request.ip}`,
+          30,
+          new Date(),
+        ))
+      )
+        throw new OpensteerError({
+          code: "resource_exhausted",
+          message: "Too many device leave requests",
+        });
+      const proof = RunnerLeaveRequestSchema.parse(request.body);
+      await removeSignedDevice({ ...dependencies, publishDeploymentEvent }, proof);
+      return reply
+        .header("cache-control", "no-store")
+        .send(RunnerLeaveResponseSchema.parse({ outcome: "removed" }));
+    },
+  );
   app.get("/v1/runner/attachments", async (request, reply) => {
     const token = requireBearerToken(request);
     const query = z.strictObject({ after: AttachmentIdSchema.optional() }).parse(request.query);
@@ -2763,6 +2794,7 @@ export function advertisedCapabilities(
   >,
 ): readonly HostCapability[] {
   return [
+    "devices-v1",
     "automatic-models-v1",
     "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),

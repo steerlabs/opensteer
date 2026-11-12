@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RunnerIdSchema } from "@opensteer/core";
 
 export const DeviceInitialAccessSchema = z.strictObject({
   browser: z.boolean(),
@@ -19,3 +20,15 @@ export const RunnerLeaveRequestSchema = z.strictObject({
 export type RunnerLeaveRequest = z.infer<typeof RunnerLeaveRequestSchema>;
 export const RunnerLeaveResponseSchema = z.object({ outcome: z.literal("removed") });
 export type RunnerLeaveResponse = z.infer<typeof RunnerLeaveResponseSchema>;
+
+export const DevicePreparedIdentitySchema = z.strictObject({
+  runnerId: RunnerIdSchema,
+  publicKeyPem: z.string().min(1).max(4096),
+});
+export type DevicePreparedIdentity = z.infer<typeof DevicePreparedIdentitySchema>;
+
+export const DeviceRefusalContextSchema = z.object({
+  machineId: RunnerIdSchema,
+  capability: z.enum(["browser", "apps", "files"]),
+});
+export type DeviceRefusalContext = z.infer<typeof DeviceRefusalContextSchema>;

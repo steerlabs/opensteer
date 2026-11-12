@@ -148,6 +148,10 @@ describe("RunnerAuthenticator enrollment issuance", () => {
     const replay = await authenticator.createEnrollment(request);
 
     expect(replay).toEqual(first);
+    expect(createRunnerEnrollment.mock.calls[0]?.[0]).toMatchObject({
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      issuanceModules: ["agents"],
+    });
     expect(first.enrollmentId).toBe(durable?.id);
     expect(first.token).toHaveLength(86);
     expect(durable?.tokenHash).toBe(hashRunnerEnrollmentToken(first.token));

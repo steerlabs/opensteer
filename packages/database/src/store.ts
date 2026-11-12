@@ -1,3 +1,4 @@
+import { bindDeviceSession, revokeDeviceSession, leaveDevice } from "./device-store.js";
 import { enqueueNodeStop } from "./node-control.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 import * as backgroundModelStore from "./background-model-store.js";
@@ -343,6 +344,7 @@ export class OpensteerStore {
       readonly allowOtherOwners?: boolean;
     } = {},
   ): Promise<{
+    readonly endedSessionIds: readonly import("@opensteer/core").AuthSessionId[];
     readonly deletedBrowserProfiles: readonly {
       readonly id: BrowserProfileId;
       readonly ownerId: UserId;
@@ -354,6 +356,15 @@ export class OpensteerStore {
     readonly revokedComputerConnectionIds: readonly IntegrationConnectionId[];
   }> {
     return runnerStore.revokeRunner(this.#database, this.#links, runnerId, ownerId, options);
+  }
+  async bindDeviceSession(input: Parameters<typeof bindDeviceSession>[1]) {
+    return bindDeviceSession(this.#database, input);
+  }
+  async revokeDeviceSession(input: Parameters<typeof revokeDeviceSession>[2]) {
+    return revokeDeviceSession(this.#database, this.#links, input);
+  }
+  async leaveDevice(input: Parameters<typeof leaveDevice>[2]) {
+    return leaveDevice(this.#database, this.#links, input);
   }
   async openPhoneTab(runnerId: RunnerId): Promise<boolean> {
     return runnerStore.openPhoneTab(this.#database, runnerId);
@@ -391,6 +402,11 @@ export class OpensteerStore {
         readonly outcome: "updated";
         readonly replayed: boolean;
         readonly revision: number;
+        readonly changed: {
+          readonly shell: boolean;
+          readonly browser: boolean;
+          readonly apps: boolean;
+        };
       }
   > {
     return machineStore.updateMachineAccessPolicy(this.#database, input);
@@ -496,6 +512,8 @@ export class OpensteerStore {
   }
   async createRunnerEnrollment(input: {
     readonly issuanceModules?: readonly RunnerModuleName[];
+    readonly initialAccess?: import("@opensteer/protocol").DeviceInitialAccess;
+    readonly preparedIdentity?: import("@opensteer/protocol").DevicePreparedIdentity;
     readonly deviceProfile?: import("@opensteer/protocol").RunnerDeviceProfile;
     /**
      * The exact modules the computer redeeming this token may advertise.

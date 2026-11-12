@@ -1,3 +1,4 @@
+import { removeDevice } from "./device-removal.js";
 import { KeyedMutationQueue } from "@opensteer/shared/mutationQueue";
 import { createHash } from "node:crypto";
 import { type AdministrationCommandIdentity, requirePersonalOwner } from "@opensteer/database";
@@ -32,6 +33,7 @@ export type AdministrationCaller =
     } & AdministrationActor);
 export type AdministrationDependencies = Pick<
   HostServerDependencies,
+  | "authenticator"
   | "store"
   | "commands"
   | "apps"
@@ -129,15 +131,17 @@ export class AdministrationService {
   async execute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
+    afterResponse?: (effect: () => void) => void,
   ): Promise<HostApiCommandOutput> {
-    if (caller.kind === "person") return this.#authorizedExecute(caller, command);
+    if (caller.kind === "person") return this.#authorizedExecute(caller, command, afterResponse);
     return this.#mutations.run(JSON.stringify([caller.userId, command.idempotencyKey]), () =>
-      this.#authorizedExecute(caller, command),
+      this.#authorizedExecute(caller, command, afterResponse),
     );
   }
   async #authorizedExecute(
     caller: AdministrationCaller,
     command: AdministrationCommand,
+    afterResponse?: (effect: () => void) => void,
   ): Promise<HostApiCommandOutput> {
     await this.authorize(caller, command);
     const actor = await this.actor(caller);
@@ -158,7 +162,7 @@ export class AdministrationService {
             .parse(replay.result),
         });
     }
-    const result = await this.#execute(caller, actor, command, administration);
+    const result = await this.#execute(caller, actor, command, administration, afterResponse);
     if (
       command.type.startsWith("harness.") ||
       command.type.startsWith("automaticModels.") ||
@@ -265,11 +269,10 @@ export class AdministrationService {
     actor: AdministrationActor,
     command: AdministrationCommand,
     administration?: AdministrationCommandIdentity | undefined,
+    afterResponse?: (effect: () => void) => void,
   ): Promise<HostApiCommandOutput> {
     const { userId } = actor;
     const dependencies = this.dependencies;
-    const publishDeploymentEvent =
-      dependencies.publishDeploymentEvent ?? ((event) => dependencies.realtime.publish(event));
     if (isIntegrationAdministrationCommand(command)) {
       const result = await executeIntegrationAdministration(
         {
@@ -512,43 +515,13 @@ export class AdministrationService {
         };
       }
       case "machine.revoke": {
-        const allowDeployment = true;
-        const runnerId = RunnerIdSchema.parse(command.machineId);
-        // Order matters and is the whole point of the operation. The durable
-        // write lands first — tombstone plus generation bump, plus every module
-        // effect that outlives a socket — so a Host that dies mid-revocation
-        // still refuses this machine on its next connection. Only then are the
-        // live streams torn down, which is what stops work already in flight.
-        const revoked = await dependencies.shellControl.withMachineAdmission(runnerId, () =>
-          dependencies.computerApps.withRunnerAdmission(runnerId, () =>
-            dependencies.store.revokeRunner(runnerId, userId, {
-              administration,
-              allowDeployment,
-            }),
-          ),
+        await removeDevice(
+          dependencies,
+          RunnerIdSchema.parse(command.machineId),
+          userId,
+          { administration, allowDeployment: true },
+          afterResponse,
         );
-        // Between the durable write and the stream teardown: a session ended
-        // before the tombstone landed could be reopened by a caller that raced
-        // the revoke, and one ended after the stream went would have already
-        // been recorded as a disconnection rather than as this revocation.
-        await dependencies.shellControl.endMachineSessions(runnerId, "machine-revoked");
-        await dependencies.runners.revoke(runnerId);
-        dependencies.channels.relay.forget(runnerId);
-        // The apps this computer was lending are gone with its connections, and
-        // a call still waiting on its stream is answered by the loss rules.
-        dependencies.computerApps.detachRunner(runnerId, "revoked");
-        for (const sessionId of revoked.closedBrowserSessions) {
-          dependencies.browser.abandonSession(sessionId);
-        }
-        await dependencies.browser.profilesRemoved(revoked.deletedBrowserProfiles);
-        // The queued work this machine will now never claim has been failed
-        // durably; these are the terminal events its Threads are waiting on.
-        for (const event of revoked.events) publishDeploymentEvent(event);
-        for (const event of revoked.requestEvents) publishDeploymentEvent(event);
-        if (revoked.cancelledRequestIds.length > 0) {
-          dependencies.integrations.continuations.notify();
-        }
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
         return {
           type: command.type,
         };
