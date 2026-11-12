@@ -1836,6 +1836,15 @@ export class IdentityService {
       .update("opensteer-local-machine-owner-password-v1")
       .digest("base64url");
     if (administrator) {
+      // Every Host start claims again; the session the caller already holds is
+      // kept, so restarts don't leave a trail of "Opensteer app" sessions.
+      const held = await this.#authenticateSessionCookie(headers);
+      if (
+        held?.user.id === administrator.id &&
+        Date.parse(held.absoluteExpiresAt) - Date.now() > absoluteSessionMilliseconds / 2
+      ) {
+        return { data: { session: held }, headers: new Headers(), status: 200 };
+      }
       const signedIn = await this.#signInPassword({ email, password }, headers);
       return {
         data: { session: signedIn.data.session },

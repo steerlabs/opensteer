@@ -1597,6 +1597,17 @@ integration("IdentityService", () => {
       .selectFrom("ownerEnrollments")
       .selectAll()
       .executeTakeFirstOrThrow();
+    // The desktop claims again on every Host start; the session it still holds is kept.
+    const restarted = await identity.claimLocalMachineOwner(
+      token,
+      new Headers({ cookie: cookieHeader(first.headers), origin }),
+    );
+    expect(restarted.data.session.id).toBe(first.data.session.id);
+    expect(restarted.headers.getSetCookie()).toEqual([]);
+    await expect(database.selectFrom("authSessions").select("id").execute()).resolves.toEqual([
+      { id: first.data.session.id },
+    ]);
+
     const restored = await identity.claimLocalMachineOwner(token, new Headers({ origin }));
     expect(restored.data.session.user.id).toBe(first.data.session.user.id);
     expect(restored.data.session.id).not.toBe(first.data.session.id);

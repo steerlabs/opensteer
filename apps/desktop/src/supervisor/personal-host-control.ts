@@ -278,6 +278,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     );
     // The process-launch capability bootstraps the desktop's ordinary owner
     // session after every Host start; it grants no extra administrative powers.
+    // The Host keeps the session this partition already holds instead of minting one.
     await this.claimOwner(origin, manifest, claimToken, signal);
     response = await this.#request(
       manifest.deploymentId,
