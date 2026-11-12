@@ -9,11 +9,7 @@ import {
 import { type Kysely } from "kysely";
 import { type DatabaseSchema } from "./schema.js";
 import { jsonValue, boundedLimit } from "./store-primitives.js";
-import {
-  deploymentOwnedExecutionIsAvailableToUser,
-  managedEnvironmentBindingAllowsUser,
-  executionEnvironmentIsAvailableToUser,
-} from "./execution-authority.js";
+import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
 
 export interface ExecutionEnvironmentRecord {
   readonly capabilities: readonly string[];
@@ -65,10 +61,6 @@ export async function listEnvironmentsForUser(
   limit = 1_000,
   page?: { readonly afterId?: EnvironmentId; readonly id?: EnvironmentId },
 ): Promise<readonly ExecutionEnvironmentRecord[]> {
-  const deploymentOwnedAvailable = await deploymentOwnedExecutionIsAvailableToUser(
-    database,
-    userId,
-  );
   let query = database
     .selectFrom("executionEnvironments")
     .innerJoin("runners", "runners.id", "executionEnvironments.runnerId")
@@ -79,13 +71,10 @@ export async function listEnvironmentsForUser(
       "executionEnvironments.name",
       "executionEnvironments.runnerId",
     ])
-    .where((expression) =>
-      expression.or([
-        ...(deploymentOwnedAvailable ? [expression("runners.ownerKind", "=", "deployment")] : []),
-        expression("runners.ownerUserId", "=", userId),
-      ]),
-    )
-    .where((expression) => managedEnvironmentBindingAllowsUser(expression, userId))
+    .innerJoin("personalSettings", "personalSettings.agentHomeComputerId", "runners.id")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .where("personalSettings.ownerId", "=", userId)
+    .where("users.disabledAt", "is", null)
     .where("runners.revokedAt", "is", null)
     .orderBy(page ? "executionEnvironments.id" : "executionEnvironments.createdAt", "asc")
     .limit(boundedLimit(limit, 1_000));

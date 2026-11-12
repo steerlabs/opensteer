@@ -1,8 +1,11 @@
 import {
   withAdministrationTransaction,
+  administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { withDatabaseTransaction } from "./connection.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import {
   type HarnessId,
   type EnvironmentId,
@@ -34,10 +37,6 @@ import {
   boundedLimit,
 } from "./store-primitives.js";
 import { isDeepStrictEqual } from "node:util";
-import {
-  deploymentOwnedExecutionIsAvailableToUser,
-  managedEnvironmentBindingAllowsUser,
-} from "./execution-authority.js";
 
 export interface HarnessInstanceRecord {
   readonly config: unknown;
@@ -335,10 +334,6 @@ export async function listAgentHarnessInstancesForUser(
     readonly limit?: number;
   } = {},
 ): Promise<readonly HarnessInstanceRecord[]> {
-  const deploymentOwnedAvailable = await deploymentOwnedExecutionIsAvailableToUser(
-    database,
-    userId,
-  );
   let query = database
     .selectFrom("harnessInstances")
     .innerJoin(
@@ -350,13 +345,10 @@ export async function listAgentHarnessInstancesForUser(
     .selectAll("harnessInstances")
     .where("harnessInstances.removedAt", "is", null)
     .where("runners.revokedAt", "is", null)
-    .where((expression) =>
-      expression.or([
-        ...(deploymentOwnedAvailable ? [expression("runners.ownerKind", "=", "deployment")] : []),
-        expression("runners.ownerUserId", "=", userId),
-      ]),
-    )
-    .where((expression) => managedEnvironmentBindingAllowsUser(expression, userId))
+    .innerJoin("personalSettings", "personalSettings.agentHomeComputerId", "runners.id")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .where("personalSettings.ownerId", "=", userId)
+    .where("users.disabledAt", "is", null)
     .orderBy("harnessInstances.id", "asc")
     .limit(boundedLimit(options.limit ?? 65, 1_000));
   if (!options.includeDisabled) query = query.where("harnessInstances.enabled", "=", true);
@@ -964,11 +956,13 @@ export async function getExecutionPreferences(
   userId: UserId,
 ): Promise<ExecutionPreferences> {
   const row = await database
-    .selectFrom("userExecutionPreferences")
-    .select("preferences")
-    .where("userId", "=", userId)
+    .selectFrom("personalSettings")
+    .select("executionPreferences")
+    .where("ownerId", "=", userId)
     .executeTakeFirst();
-  return row ? ExecutionPreferencesSchema.parse(row.preferences) : emptyExecutionPreferences;
+  return row
+    ? ExecutionPreferencesSchema.parse(row.executionPreferences)
+    : emptyExecutionPreferences;
 }
 
 /**
@@ -987,26 +981,26 @@ export async function rememberExecutionChoice(
   choice: ExecutionChoice,
   administration?: AdministrationCommandIdentity | undefined,
 ): Promise<ExecutionPreferences> {
-  return withAdministrationTransaction(database, administration, async (transaction) => {
-    const existing = await transaction
-      .selectFrom("userExecutionPreferences")
-      .select("preferences")
-      .where("userId", "=", userId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    const merged = rememberExecutionChoiceInStore(
-      existing ? ExecutionPreferencesSchema.parse(existing.preferences) : emptyExecutionPreferences,
-      choice,
-    );
-    const updatedAt = new Date();
-    await transaction
-      .insertInto("userExecutionPreferences")
-      .values({ preferences: jsonValue(merged), updatedAt, userId })
-      .onConflict((conflict) =>
-        conflict.column("userId").doUpdateSet({ preferences: jsonValue(merged), updatedAt }),
-      )
-      .execute();
-    return merged;
+  return withPersonalTransaction(database, async (transaction) => {
+    await requirePersonalOwner(transaction, userId);
+    return administrationCommand(transaction, administration, async () => {
+      const existing = await transaction
+        .selectFrom("personalSettings")
+        .select("executionPreferences")
+        .where("ownerId", "=", userId)
+        .forNoKeyUpdate()
+        .executeTakeFirstOrThrow();
+      const merged = rememberExecutionChoiceInStore(
+        ExecutionPreferencesSchema.parse(existing.executionPreferences),
+        choice,
+      );
+      await transaction
+        .updateTable("personalSettings")
+        .set({ executionPreferences: jsonValue(merged) })
+        .where("ownerId", "=", userId)
+        .execute();
+      return merged;
+    });
   });
 }
 

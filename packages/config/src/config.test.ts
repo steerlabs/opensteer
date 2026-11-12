@@ -21,14 +21,14 @@ const localHostEnvironment = {
   OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
   OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
   OPENSTEER_CANONICAL_ORIGIN: "http://localhost:4310",
+  OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token,
 } as const;
 
 const hostEnvironment = {
   OPENSTEER_AUTH_SECRET: "identity-secret-that-is-at-least-thirty-two-bytes",
   OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
   OPENSTEER_CANONICAL_ORIGIN: "http://localhost:4310",
-  OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-  OPENSTEER_DEPLOYMENT_KIND: "server",
+  OPENSTEER_DEPLOYMENT_KIND: "team",
 } as const;
 
 /** The axes a Host that anything on the network can reach has to declare. */
@@ -52,22 +52,15 @@ describe("configuration", () => {
     expect(config.bindAddress).toBe("127.0.0.1");
     expect(config.account).toBeUndefined();
     expect(config.canonicalOrigin).toEqual(new URL("http://localhost:4310"));
-    expect(config.workspace).toEqual({
-      deletionRetentionDays: 14,
-      shape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-      storage: {
-        kind: "local-directory",
-        ownerEnvironmentId: "env_00000000-0000-4000-8000-000000000001",
-      },
+    expect(config.deploymentShape).toEqual({ kind: "personal" });
+    expect(config.personal).toMatchObject({
+      environmentId: "env_00000000-0000-4000-8000-000000000001",
     });
     expect(config.runtimeOrigin).toEqual(config.canonicalOrigin);
     expect(config.browserRuntime).toEqual({ attachKeyId: "host-v1" });
     expect(config.identity.signupPolicy).toBe("invite-only");
     expect(config.identity.localPasswordEnabled).toBe(true);
-    expect(config.identity.nativeOAuth?.clients).toEqual(opensteerHostNativeOAuthClients);
+    expect(config.identity.nativeOAuth).toBeUndefined();
   });
 
   it("allows production HTTP only for an exact loopback Personal Host", () => {
@@ -76,7 +69,6 @@ describe("configuration", () => {
       OPENSTEER_CANONICAL_ORIGIN: "http://127.0.0.1:4310",
       OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
       OPENSTEER_DEPLOYMENT_ID: createId("deployment"),
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_INSTANCE_ID: createId("hostInstance"),
       OPENSTEER_HOST_KEY_FINGERPRINT: `sha256:${"A".repeat(43)}`,
@@ -84,7 +76,7 @@ describe("configuration", () => {
       OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
       OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "personal-owner-claim".padEnd(32, "x"),
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       OPENSTEER_MODE: "production",
       OPENSTEER_RUNTIME_ORIGIN: "http://localhost:4310",
     } as const;
@@ -150,35 +142,24 @@ describe("configuration", () => {
     ).toThrow(/must use HTTPS in production/u);
   });
 
-  it("rejects incomplete or non-Personal explicit Deployment identities", () => {
+  it("rejects incomplete explicit Deployment identities", () => {
     expect(() =>
       parseHostConfig({
         ...localHostEnvironment,
         OPENSTEER_DEPLOYMENT_ID: createId("deployment"),
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "personal",
       }),
     ).toThrow(/must be configured together/u);
-
-    expect(() =>
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_DEPLOYMENT_ID: createId("deployment"),
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_HOST_INSTANCE_ID: createId("hostInstance"),
-        OPENSTEER_HOST_KEY_FINGERPRINT: `sha256:${"A".repeat(43)}`,
-      }),
-    ).toThrow(/only for a loopback Personal Host/u);
   });
 
   it("requires the Desktop-held owner proof only for unmanaged Personal loopback", () => {
     const personal = {
       ...localHostEnvironment,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
     } as const;
-    expect(() => parseHostConfig(personal)).toThrow(/requires an app-held local owner claim/u);
+    expect(() =>
+      parseHostConfig({ ...personal, OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: undefined }),
+    ).toThrow(/requires an app-held local owner claim/u);
     expect(
       parseHostConfig({
         ...personal,
@@ -187,7 +168,7 @@ describe("configuration", () => {
     ).toHaveLength(32);
     expect(() =>
       parseHostConfig({
-        ...localHostEnvironment,
+        ...hostEnvironment,
         OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "misplaced-owner-claim".padEnd(32, "x"),
       }),
     ).toThrow(/allowed only for an unmanaged loopback Personal Host/u);
@@ -200,35 +181,30 @@ describe("configuration", () => {
         OPENSTEER_MODE: "production",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       }),
-    ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/u);
+    ).toThrow(/requires OPENSTEER_DEPLOYMENT_KIND/u);
 
     const productionConfig = parseHostConfig({
-      ...localHostEnvironment,
+      ...hostEnvironment,
       OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
+      OPENSTEER_DEPLOYMENT_KIND: "team",
       OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
       OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       OPENSTEER_MODE: "production",
       OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
     });
-    expect(productionConfig.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
+    expect(productionConfig.deploymentShape).toEqual({
+      kind: "team" as const,
     });
     expect(
       parseHostConfig({
-        ...localHostEnvironment,
+        ...hostEnvironment,
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "team",
         OPENSTEER_HOST_PRIVATE_KEY_PATH: "/keys/host.key",
         OPENSTEER_HOST_PUBLIC_KEY_PATH: "/keys/host.pub",
         OPENSTEER_HOST_RELEASE_VERSION: "1.2.3",
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/data/workspace-bindings.json",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/data/workspaces",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
         OPENSTEER_MODE: "production",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
         OPENSTEER_WEB_DISTRIBUTION_DIRECTORY: "/release/web",
@@ -269,7 +245,6 @@ describe("configuration", () => {
   it("keeps a Personal Deployment off its own OAuth authorization server", () => {
     const personalEnvironment = {
       ...localHostEnvironment,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: "personal-owner-claim".padEnd(32, "x"),
     } as const;
@@ -280,13 +255,6 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({ ...personalEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }),
     ).toThrow(/Personal Deployment cannot serve native OAuth/u);
-    expect(personal.knowledge).toBe(false);
-    expect(parseHostConfig({ ...personalEnvironment, OPENSTEER_KNOWLEDGE: "1" }).knowledge).toBe(
-      true,
-    );
-    expect(() => parseHostConfig({ ...hostEnvironment, OPENSTEER_KNOWLEDGE: "1" })).toThrow(
-      /knowledge trial runs only on a Personal Deployment/u,
-    );
     expect(
       parseHostConfig({ ...hostEnvironment, OPENSTEER_NATIVE_OAUTH_ENABLED: "true" }).identity
         .nativeOAuth?.clients,
@@ -315,8 +283,7 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "team",
         OPENSTEER_ACCOUNT_BUNDLE_PATH: writeAccountAdoptionBundle(productionBundle),
         OPENSTEER_CREDENTIAL_KEY_PATH: "/keys/credentials.key",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
@@ -365,8 +332,7 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "team",
         OPENSTEER_FILES_SERVICE_URL: "http://files:4315",
         OPENSTEER_MODE: "production",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
@@ -396,8 +362,6 @@ describe("configuration", () => {
     expect(() =>
       parseRunnerConfig({
         OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: ".opensteer/registry.json",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: ".opensteer/workspaces",
         OPENSTEER_NODE_EXECUTABLE: "relative-node",
       }),
     ).toThrow(/absolute path/u);
@@ -407,45 +371,32 @@ describe("configuration", () => {
     expect(() =>
       parseRunnerConfig({
         OPENSTEER_HOST_URL: "https://host.example",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
         OPENSTEER_MODE: "production",
       }),
-    ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/u);
+    ).toThrow(/requires OPENSTEER_DEPLOYMENT_KIND/u);
   });
 
   it("allows production plaintext only on loopback", () => {
     const personal = parseRunnerConfig({
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
       OPENSTEER_MODE: "production",
     });
     expect(personal.deploymentShape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
       kind: "personal" as const,
     });
 
     expect(
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
         OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
         OPENSTEER_MODE: "production",
-        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
       }).hostUrl,
     ).toEqual(new URL("http://127.0.0.1:4310"));
     expect(() =>
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "personal",
         OPENSTEER_HOST_URL: "https://personal.example",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
         OPENSTEER_MODE: "production",
       }),
     ).toThrow(/requires a loopback OPENSTEER_HOST_URL/u);
@@ -457,7 +408,6 @@ describe("configuration", () => {
     for (const runnerKind of ["local", "managed"] as const) {
       expect(
         parseRunnerConfig({
-          OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
           OPENSTEER_DEPLOYMENT_KIND: "personal",
           OPENSTEER_HOST_URL: "https://personal.example",
           OPENSTEER_MODE: "production",
@@ -468,7 +418,6 @@ describe("configuration", () => {
     }
     expect(() =>
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
         OPENSTEER_DEPLOYMENT_KIND: "personal",
         OPENSTEER_HOST_URL: "https://personal.example",
         OPENSTEER_MODE: "production",
@@ -484,8 +433,6 @@ describe("configuration", () => {
       OPENSTEER_BROWSER_BRIDGE_URL: "http://127.0.0.1:4320",
       OPENSTEER_BROWSER_RUNTIME_ID: "browser-runtime-1",
       OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
     } as const;
 
     const everything = parseRunnerConfig(agentsEnvironment);
@@ -503,10 +450,9 @@ describe("configuration", () => {
 
   it("starts a reach-only Runner from the settings the desktop actually sends", () => {
     // A computer that only offers shell receives no execution inputs at all:
-    // no Workspace roots, no Workspace storage, no browser bridge, no skills.
+    // no browser bridge or skills.
     const config = parseRunnerConfig({
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
+      OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_URL: "https://host.example",
       OPENSTEER_MODE: "production",
       OPENSTEER_NATIVE_FS_HELPER: "/Applications/Opensteer.app/helpers/opensteer-native-fs",
@@ -520,48 +466,22 @@ describe("configuration", () => {
 
     expect(config.modules).toEqual(["shell"]);
     expect(config.enrollmentToken).toBe(token);
-    expect(config.workspaceBackings).toEqual([]);
     expect(config.browserBridge).toBeUndefined();
-  });
-
-  it("parses a reach-only Runner with no Workspace storage of its own", () => {
-    const config = parseRunnerConfig({
-      OPENSTEER_HOST_URL: "https://host.example",
-      OPENSTEER_RUNNER_KIND: "local",
-      OPENSTEER_RUNNER_MODULES: "shell",
-    });
-
-    expect(config.modules).toEqual(["shell"]);
-    expect(config.workspaceBackings).toEqual([]);
-    expect(config.localWorkspaceRoot).toBeUndefined();
-    expect(config.localWorkspaceRegistryPath).toBeUndefined();
-
-    // The desktop restarts the same computer with the other module set from the
-    // environment it already built, so leftover storage settings are inert.
-    expect(
-      parseRunnerConfig({
-        OPENSTEER_HOST_URL: "https://host.example",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
-        OPENSTEER_RUNNER_KIND: "local",
-        OPENSTEER_RUNNER_MODULES: "shell",
-      }).localWorkspaceRoot,
-    ).toBeUndefined();
   });
 
   it("allows a browser relay without execution", () => {
     const config = parseRunnerConfig({
       OPENSTEER_HOST_URL: "https://host.example",
+      OPENSTEER_RUNNER_KIND: "local",
       OPENSTEER_RUNNER_MODULES: "browser",
     });
     expect(config.modules).toEqual(["browser"]);
-    expect(config.workspaceBackings).toEqual([]);
-    expect(config.localWorkspaceRoot).toBeUndefined();
   });
 
   it("takes the computer use bridge as a loopback pair or not at all", () => {
     const base = {
       OPENSTEER_HOST_URL: "https://host.example",
+      OPENSTEER_RUNNER_KIND: "local",
       OPENSTEER_RUNNER_MODULES: "integrations",
     } as const;
     const token = "c".repeat(32);
@@ -614,8 +534,6 @@ describe("configuration", () => {
       expect(() =>
         parseRunnerConfig({
           OPENSTEER_HOST_URL: "https://host.example",
-          OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
-          OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
           OPENSTEER_RUNNER_MODULES: modules,
         }),
       ).toThrow(/OPENSTEER_RUNNER_MODULES|expected string to have/u);
@@ -625,51 +543,30 @@ describe("configuration", () => {
   it("rejects Runner origins that cannot carry Host capability traffic", () => {
     expect(() =>
       parseRunnerConfig({
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "personal",
         OPENSTEER_HOST_URL: "https://host.example/path?query=true",
-        OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
-        OPENSTEER_LOCAL_WORKSPACE_ROOT: "/var/lib/opensteer/workspaces",
-        OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/var/lib/opensteer/registry.json",
       }),
     ).toThrow(/HTTP\(S\) origin/u);
   });
 
   it("accepts self-host production axes with the private HTTPS gateway origin", () => {
     const config = parseHostConfig({
-      ...localHostEnvironment,
+      ...hostEnvironment,
       OPENSTEER_BIND_ADDRESS: "0.0.0.0",
       OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
       OPENSTEER_CREDENTIAL_KEY_PATH: "/run/secrets/credential.key",
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
+      OPENSTEER_DEPLOYMENT_KIND: "team",
       OPENSTEER_HOST_PRIVATE_KEY_PATH: "/var/lib/opensteer/keys/host-private.pem",
       OPENSTEER_HOST_PUBLIC_KEY_PATH: "/var/lib/opensteer-public/host-public.pem",
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       OPENSTEER_MODE: "production",
       OPENSTEER_RUNTIME_ORIGIN: "https://gateway:8443",
     });
 
     expect(config.runtimeOrigin).toEqual(new URL("https://gateway:8443"));
-    expect(config.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
+    expect(config.deploymentShape).toEqual({
+      kind: "team" as const,
     });
-    expect(config.acceptsExternalRunners).toBe(false);
-  });
-
-  it("refuses a private runtime origin once a Deployment accepts lent machines", () => {
-    expect(() =>
-      parseHostConfig({
-        ...localHostEnvironment,
-        OPENSTEER_ACCEPTS_EXTERNAL_RUNNERS: "true",
-        OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
-        OPENSTEER_RUNTIME_ORIGIN: "https://gateway:8443",
-      }),
-    ).toThrow(/accepts external Runners requires OPENSTEER_RUNTIME_ORIGIN/u);
   });
 
   it("accepts exactly the reachable deployment kind and exposure combinations", () => {
@@ -678,30 +575,25 @@ describe("configuration", () => {
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token,
     });
-    expect(personal.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
+    expect(personal.deploymentShape).toEqual({
       kind: "personal",
     });
     expect(personal.exposure).toBe("loopback");
 
     const server = parseHostConfig({
-      ...localHostEnvironment,
+      ...hostEnvironment,
       OPENSTEER_BIND_ADDRESS: "0.0.0.0",
       OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_DEPLOYMENT_KIND: "team",
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
     });
-    expect(server.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server",
+    expect(server.deploymentShape).toEqual({
+      kind: "team",
     });
     expect(server.exposure).toBe("networked");
 
     const development = parseHostConfig(localHostEnvironment);
-    expect(development.workspace.shape).toEqual({
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server",
-    });
+    expect(development.deploymentShape).toEqual({ kind: "personal" });
     expect(development.exposure).toBe("loopback");
 
     expect(() =>
@@ -711,7 +603,7 @@ describe("configuration", () => {
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
         OPENSTEER_DEPLOYMENT_KIND: "personal",
         OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: token,
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
       }),
     ).toThrow(/Personal Deployment must be confined to loopback/u);
 
@@ -729,13 +621,12 @@ describe("configuration", () => {
   it("accepts an operator-held first-owner code only where enrollment establishes the owner", () => {
     expect(
       parseHostConfig({
-        ...localHostEnvironment,
+        ...hostEnvironment,
         OPENSTEER_BIND_ADDRESS: "0.0.0.0",
         OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: createId("environment"),
-        OPENSTEER_DEPLOYMENT_KIND: "server",
-        OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+        OPENSTEER_DEPLOYMENT_KIND: "team",
       }).identity.initialOwnerEnrollment,
     ).toEqual({ lifetimeSeconds: 24 * 60 * 60, token });
     expect(() =>
@@ -743,7 +634,7 @@ describe("configuration", () => {
         ...localHostEnvironment,
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
       }),
-    ).toThrow(/allowed only for a networked Deployment/u);
+    ).toThrow(/Personal Host uses the app-held local owner claim/u);
   });
 
   it("rejects a portal origin that is not a bare, secure origin", () => {
@@ -837,8 +728,6 @@ describe("Host exposure", () => {
 describe("Runner enrollment token delivery", () => {
   const runnerEnvironment = {
     OPENSTEER_HOST_URL: "http://127.0.0.1:4310",
-    OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: ".opensteer/host/workspace-bindings.v1.json",
-    OPENSTEER_LOCAL_WORKSPACE_ROOT: ".opensteer/workspaces",
   } as const;
 
   it("prefers an inherited file descriptor over the environment", async () => {

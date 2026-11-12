@@ -1,9 +1,4 @@
 export * from "./account-directory-store.js";
-export * from "./access-store.js";
-export * from "./access-effects.js";
-export { mutateTeamInvitation, readTeamInvitation } from "./team-invitation-store.js";
-export * from "./team-access-read-store.js";
-export * from "./team-connection-store.js";
 export * from "./run-tool-admission.js";
 export * from "./attachment-store.js";
 export * from "./app-store.js";
@@ -14,8 +9,6 @@ export * from "./command-delivery.js";
 export * from "./node-control.js";
 export * from "./connection.js";
 export * from "./deployment-authority.js";
-export * from "./deployment-execution-authority.js";
-export * from "./project-runtime-settings-store.js";
 export * from "./integration-auth-attempt-store.js";
 export * from "./integration-platform-store.js";
 export * from "./integration-store.js";
@@ -28,7 +21,6 @@ export * from "./store.js";
 export * from "./trigger-store.js";
 
 export * from "./browser-tab-group-store.js";
-export * from "./workspace-tab-store.js";
 
 export { BrowserHistoryStore } from "./browser-history-store.js";
 export * from "./browser-profile-storage-store.js";
@@ -58,7 +50,6 @@ export {
 } from "./thread-inbox.js";
 
 export * from "./plugin-settings-store.js";
-export type { WorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
 export * from "./administration-command.js";
 export * from "./background-model-store.js";
 export * from "./personal-desktop-update-store.js";
@@ -104,3 +95,7 @@ export * from "./run-personal-context.js";
 export type { PersonalSnapshotResourcesReader } from "./snapshot-store.js";
 
 export { personalTeamRunOutcome, type PersonalTeamRunOutcome } from "./personal-team-run-store.js";
+
+export * from "./deployment-store.js";
+
+export { eventFromRow } from "./deployment-events.js";

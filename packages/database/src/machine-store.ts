@@ -804,19 +804,17 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  return deployment
-    ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
-    : false;
+  return deployment ? deploymentPolicy(deployment.deploymentShape).services.personal : false;
 }
 
 /** A Personal Deployment has exactly one established owner. */
 export async function personalDeploymentOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | null> {
+  if (!(await isPersonalDeployment(database))) return null;
   const owner = await database
     .selectFrom("users")
     .select("id")
-    .where("instanceRole", "=", "administrator")
     .where("disabledAt", "is", null)
     .orderBy("createdAt", "asc")
     .executeTakeFirst();

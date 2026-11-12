@@ -30,6 +30,9 @@ export class PersonalDesktopUpdateStore {
     this.database = database;
   }
 
+  async authorize(userId: import("@opensteer/core").UserId): Promise<void> {
+    await requirePersonalOwner(this.database, userId);
+  }
   async latest(): Promise<DesktopUpdateOperation | null> {
     const row = await this.database
       .selectFrom("personalDesktopUpdate")

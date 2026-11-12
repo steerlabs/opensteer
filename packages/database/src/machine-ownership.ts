@@ -40,7 +40,7 @@ export async function machineOwnershipIn(
   if (
     !runnerRunsItsDeployment({
       deploymentIsPersonal: deployment
-        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
+        ? deploymentPolicy(deployment.deploymentShape).services.personal
         : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
@@ -51,7 +51,6 @@ export async function machineOwnershipIn(
   const owner = await database
     .selectFrom("users")
     .select("id")
-    .where("instanceRole", "=", "administrator")
     .where("disabledAt", "is", null)
     .orderBy("createdAt", "asc")
     .executeTakeFirst();

@@ -163,7 +163,7 @@ export interface IntegrationOAuthAccountBindingValue {
   readonly linkGeneration: string;
 }
 export interface IntegrationOAuthAccountBinding extends IntegrationOAuthAccountBindingValue {
-  readonly kind: "personal" | "server";
+  readonly kind: "personal";
 }
 
 export interface IntegrationRepository {
