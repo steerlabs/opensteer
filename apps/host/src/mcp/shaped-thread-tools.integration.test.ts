@@ -1532,7 +1532,7 @@ describeStore("shaped agent Thread tools", (it) => {
     await expect(s.read({ view: "activity" }, actor)).rejects.toMatchObject({ code: "forbidden" });
     const part = {
       type: "computer-app",
-      machineId: nativeRunner,
+      machineId: createId("runner"),
       app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
       name: "Private Notes",
     };
@@ -2092,6 +2092,6 @@ describeStore("shaped agent Thread tools", (it) => {
         { runId: delegated.run.id },
         { ...s.caller, userId: reader, claims: { ...s.caller.claims, requestedBy: reader } },
       ),
-    ).rejects.toThrow("unavailable");
+    ).rejects.toMatchObject({ code: "forbidden", message: "The personal owner is required." });
   });
 });
