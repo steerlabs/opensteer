@@ -152,7 +152,7 @@ function fix(connection: ConnectionView): HTMLElement | null {
           h(
             "p",
             {},
-            `This Opensteer needs an update before Chrome can connect. Update Opensteer on the computer that runs ${name}, then choose Try again.`,
+            `This Opensteer needs an update before Chrome can connect. Update Opensteer on the computer that runs ${name}; this reconnects by itself once it has.`,
           ),
           h(
             "div.notice__actions",
@@ -171,7 +171,11 @@ function fix(connection: ConnectionView): HTMLElement | null {
       return h(
         "div.notice.notice--warn",
         {},
-        h("p", {}, "This Opensteer was reset or replaced. Connect again from Opensteer."),
+        h(
+          "p",
+          {},
+          "A different Opensteer answered at this address. If yours was reset, connect again from Opensteer; otherwise this reconnects by itself.",
+        ),
       );
     case "route-changed":
     case "ended":

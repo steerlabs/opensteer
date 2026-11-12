@@ -131,19 +131,32 @@ function dropSocket(current: Link, state: ConnectionState, reason?: string): voi
   }
 }
 
-const persistedStates = new Set<ConnectionState>([
+const persistedStates = new Set<ConnectionState>(["ended", "route-changed", "update-required"]);
+/**
+ * Named, but still retrying: nothing secret leaves before the Host's proof, and
+ * a Host updates itself, so these clear once the right, current Host answers.
+ */
+const retryingStates = new Set<ConnectionState>([
+  "offline",
   "different-opensteer",
-  "ended",
-  "route-changed",
-  "update-required",
   "host-outdated",
 ]);
 
 function persistedState(connection: Connection): HeldState | null {
   const held = connection.held;
-  if (!held || (held.state === "update-required" && held.version !== browserSourceWireCurrent))
-    return null;
+  if (!held || !persistedStates.has(held.state)) return null;
+  if (held.state === "update-required" && held.version !== browserSourceWireCurrent) return null;
   return held.state;
+}
+
+function pause(
+  current: Link,
+  generation: number,
+  state: "different-opensteer" | "host-outdated",
+): void {
+  if (generation !== current.generation) return;
+  dropSocket(current, state, "Stopped by extension");
+  scheduleReconnect(current);
 }
 
 async function connectLink(current: Link): Promise<void> {
@@ -175,7 +188,7 @@ async function connectLink(current: Link): Promise<void> {
   // A retry Chrome makes by itself leaves an offline connection saying so
   // until one succeeds, rather than flickering through Connecting on every
   // attempt; an attempt someone asked for says it is connecting.
-  if (current.state !== "offline") current.state = "connecting";
+  if (!retryingStates.has(current.state)) current.state = "connecting";
   current.ready = false;
   let socket: WebSocket;
   try {
@@ -319,7 +332,9 @@ async function receive(
       else reject(current, generation, "Proof required");
       return;
     }
-    await hold(connection, current, generation, refusal(message));
+    const refused = refusal(message);
+    if (refused === "host-outdated") pause(current, generation, refused);
+    else await hold(connection, current, generation, refused);
     return;
   }
   if (message.type === "source.proof") {
@@ -336,19 +351,18 @@ async function receive(
         sourceId: connection.sourceId,
       })
     ) {
-      await hold(connection, current, generation, "different-opensteer");
+      pause(current, generation, "different-opensteer");
       return;
     }
     handshake.nonce = null;
     handshake.proofAccepted = true;
     const negotiated = message.wire ?? 4;
-    if (negotiated < browserSourceWireFloor || negotiated > browserSourceWireCurrent) {
-      await hold(
-        connection,
-        current,
-        generation,
-        negotiated < browserSourceWireFloor ? "host-outdated" : "update-required",
-      );
+    if (negotiated < browserSourceWireFloor) {
+      pause(current, generation, "host-outdated");
+      return;
+    }
+    if (negotiated > browserSourceWireCurrent) {
+      await hold(connection, current, generation, "update-required");
       return;
     }
     send(current, generation, {

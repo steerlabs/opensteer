@@ -121,9 +121,13 @@ export function migrateConnection(raw: unknown): Connection | null {
 type Quarantine = { id: string; raw: unknown };
 async function readState(): Promise<{ connections: Connection[]; quarantined: Quarantine[] }> {
   const stored = await chrome.storage.local.get([connectionsKey, "quarantined"]);
-  const quarantined = z
-    .array(z.object({ id: z.string(), raw: z.unknown() }))
-    .parse(stored.quarantined ?? []);
+  const kept = z
+    .array(z.object({ id: z.string().min(1).max(64), raw: z.unknown() }))
+    .safeParse(stored.quarantined ?? []);
+  // A damaged quarantine list is itself kept, never discarded.
+  const quarantined: Quarantine[] = kept.success
+    ? kept.data
+    : [{ id: crypto.randomUUID(), raw: stored.quarantined }];
   const connections: Connection[] = [];
   const original = stored[connectionsKey];
   const entries = Array.isArray(original) ? original : original === undefined ? [] : [original];

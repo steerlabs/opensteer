@@ -116,6 +116,8 @@ const host = {
   // impostor: another identity; squatter: replays this Deployment's public
   // discovery document but cannot sign; other: a different, honest Deployment.
   wire: 4,
+  // When set, every hello is refused as unsupported with this supported version.
+  refuseVersion: null,
   pairAttempts: [],
   loopbackMode: "down", // "down" | "impostor" | "squatter" | "other" | "up"
   remoteDown: false,
@@ -360,6 +362,17 @@ function acceptSocket(origin, client) {
           ...(host.wire === 4 ? {} : { wire: host.wire, future: true }),
         }),
       );
+      return;
+    }
+    if (message.type === "source.hello" && host.refuseVersion !== null) {
+      client.send(
+        JSON.stringify({
+          type: "source.error",
+          code: "unsupported-version",
+          supportedVersion: host.refuseVersion,
+        }),
+      );
+      client.close(1008, "Browser extension update required");
       return;
     }
     if (message.type === "source.hello") {
@@ -1052,9 +1065,19 @@ try {
   );
   await openPopup();
   await popup
-    .getByText("This Opensteer was reset or replaced. Connect again from Opensteer.")
+    .getByText("A different Opensteer answered at this address.", { exact: false })
     .waitFor();
-  passed("reachable wrong-key proof holds different-opensteer without releasing token");
+  assert.equal((await connections())[0].held, undefined);
+  const retriesBefore = host.frames.length;
+  await waitUntil(
+    () => host.frames.length > retriesBefore,
+    "retry after a wrong-key proof",
+    30_000,
+  );
+  assert.ok(
+    host.frames.slice(framesBefore).every((frame) => !frame.messages.includes("source.hello")),
+  );
+  passed("a wrong-key proof shows different-opensteer and keeps retrying, never sending the token");
   host.proofMode = "pre-proof-unauthorized";
   await popup.evaluate(
     (sourceId) => chrome.runtime.sendMessage({ type: "ui.retry", sourceId }),
@@ -1098,29 +1121,24 @@ try {
   await popup.getByText("Connected", { exact: true }).waitFor();
   passed("a newer Opensteer asks to update the extension from it, until Try again");
 
-  host.clients.get(sourceId).send(
-    JSON.stringify({
-      type: "source.error",
-      code: "unsupported-version",
-      supportedVersion: browserSourceProtocolVersion - 1,
-    }),
-  );
+  host.refuseVersion = browserSourceProtocolVersion - 1;
+  host.clients.get(sourceId).terminate();
   await waitUntil(
     async () => (await status()).value.connections[0].state === "host-outdated",
     "Opensteer update needed",
   );
-  assert.equal((await connections())[0].held.state, "host-outdated");
-  framesNow = host.frames.length;
-  await sleep(2_500);
-  assert.equal(host.frames.length, framesNow);
+  assert.equal((await connections())[0].held, undefined);
   await openPopup();
   await popup.getByText("Opensteer update needed").waitFor();
   await popup.getByText("This Opensteer needs an update").waitFor();
   assert.equal(await popup.getByRole("link", { name: "Download update" }).count(), 0);
   await shoot(popup, "popup-opensteer-outdated", "body");
-  await popup.getByRole("button", { name: "Try again" }).click();
-  await popup.getByText("Connected", { exact: true }).waitFor();
-  passed("an older Opensteer asks for an Opensteer update and never offers its extension");
+  // Opensteer updates itself; the extension reconnects without anyone choosing Try again.
+  host.refuseVersion = null;
+  await popup.getByText("Connected", { exact: true }).waitFor({ timeout: 90_000 });
+  passed(
+    "an older Opensteer asks for an Opensteer update, never offers its extension, and reconnects once updated",
+  );
 
   // A Host that moved says so before its proof; only its signature makes that count.
   const refuseBeforeProof = async (mode) => {
@@ -1373,7 +1391,7 @@ try {
   );
   await openPopup();
   await popup.getByText("Connected", { exact: true }).waitFor();
-  passed("proof below the supported floor holds host-outdated before sending the token");
+  passed("proof below the supported floor shows host-outdated before sending the token");
 
   await popup.getByRole("button", { name: "Disconnect", exact: true }).click();
   await popup.getByText("Home removes this Chrome too.").waitFor();

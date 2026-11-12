@@ -214,9 +214,18 @@ importers:
       '@fontsource-variable/inter':
         specifier: ^5.3.0
         version: 5.3.0
+      '@opensteer/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@opensteer/database':
         specifier: workspace:*
         version: link:../../packages/database
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../../packages/deployment-authority
+      '@opensteer/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@types/ws':
         specifier: 'catalog:'
         version: 8.18.1
