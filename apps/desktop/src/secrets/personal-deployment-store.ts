@@ -100,7 +100,6 @@ const personalDeploymentManifestFields = {
   runnerId: RunnerIdSchema,
   setupIntentId: z.uuid(),
   updatedAt: IsoDateTimeSchema,
-  workspaceRoot: z.string().min(1).max(4_096),
 };
 
 export const PersonalDeploymentManifestSchema = z
@@ -118,17 +117,9 @@ function refinePersonalDeploymentManifest(
     readonly hostPort: number;
     readonly postgresPort: number;
     readonly updatedAt: string;
-    readonly workspaceRoot: string;
   },
   context: z.RefinementCtx,
 ): void {
-  if (!path.isAbsolute(manifest.workspaceRoot)) {
-    context.addIssue({
-      code: "custom",
-      message: "Personal Workspace root must be absolute",
-      path: ["workspaceRoot"],
-    });
-  }
   if (manifest.hostPort === manifest.postgresPort) {
     context.addIssue({
       code: "custom",
@@ -153,8 +144,6 @@ export interface PersonalDeploymentPreparedPaths extends DesktopDeploymentPaths 
   /** The messaging service's own Runner identity and data directory lease. */
   readonly messagingDataDirectory: string;
   readonly postgresLogPath: string;
-  readonly workspaceRegistryPath: string;
-  readonly workspaceRoot: string;
 }
 
 export interface PersonalDeploymentFilesystemPort {
@@ -419,10 +408,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     manifestInput: PersonalDeploymentManifest,
   ): Promise<PersonalDeploymentPreparedPaths> {
     const manifest = PersonalDeploymentManifestSchema.parse(manifestInput);
-    const workspaceRoot = path.resolve(manifest.workspaceRoot);
-    if (workspaceRoot !== manifest.workspaceRoot) {
-      throw new Error("Personal Workspace root must already be normalized.");
-    }
     const paths = this.#privateFiles
       ? await preparePrivateDesktopDeploymentDirectories(
           this.#privateFiles,
@@ -437,8 +422,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     const messagingDataDirectory = path.join(paths.rootDirectory, "channel-runtime");
     await ensurePersonalDirectory(messagingDataDirectory);
     await ensurePersonalDirectory(paths.logsDirectory);
-    await ensurePersonalDirectory(path.dirname(workspaceRoot));
-    await ensurePersonalDirectory(workspaceRoot);
     const available = await availableBytes(paths.rootDirectory);
     if (available < this.#minimumFreeBytes) {
       throw new PersonalFilesystemError(
@@ -458,10 +441,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
       hostPublicKeyPath: path.join(paths.hostDataDirectory, "host-public.pem"),
       messagingDataDirectory,
       postgresLogPath: path.join(paths.logsDirectory, "postgresql.log"),
-      // The protected registry belongs to the process that owns the disk,
-      // which is now the co-located Runner rather than the Host.
-      workspaceRegistryPath: path.join(paths.runnerDataDirectory, "workspace-bindings.v1.json"),
-      workspaceRoot,
     };
   }
 }
@@ -517,7 +496,6 @@ function assertStableIdentity(
     "runnerId",
     "schemaVersion",
     "setupIntentId",
-    "workspaceRoot",
   ] as const) {
     if (previous[key] !== next[key]) {
       throw new Error(`Personal deployment identity field ${key} is immutable.`);

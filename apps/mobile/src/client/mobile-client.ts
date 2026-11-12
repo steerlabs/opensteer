@@ -392,6 +392,10 @@ export class MobileClient {
     });
     this.drafts = createThreadDraftStore({
       filePath: options.draftsFilePath,
+      forgetDraftFiles: async (scope, localUris) => {
+        const { forgetDraftFiles } = await import("../thread/draft-attachments.js");
+        forgetDraftFiles(scope, localUris);
+      },
       now: options.now ?? (() => new Date()),
       privateFiles: options.privateFiles,
     });

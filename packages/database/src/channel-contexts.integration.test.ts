@@ -7,11 +7,12 @@ import { createId, HarnessIdSchema, type UserId } from "@opensteer/core";
 import { expect } from "vitest";
 import { sql } from "kysely";
 import { ChannelStore } from "./channel-store.js";
-import { runAllowsPersonalContext } from "./run-personal-context.js";
+import { runAllowsPersonalContext, threadAllowsPersonalContext } from "./run-personal-context.js";
 import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import {
   describeStore,
   pendingEvent,
+  testModelSelection,
   type StoreFixture,
 } from "./store.integration.test-support.js";
 
@@ -316,4 +317,129 @@ describeStore("personal Messaging conversation contexts", (it) => {
       .execute();
     expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(false);
   });
+  for (const conversation of ["channel", "group", "dm", "owner-dm"] as const) {
+    it(`keeps ${conversation} personal context through delegation and later worker turns`, async ({
+      storeFixture: f,
+    }) => {
+      const p = await setup(f, `delegated-${conversation}`);
+      await p.link("owner", p.userId);
+      const ownerDm = conversation === "owner-dm";
+      const root = await p.adopt(
+        "delegate-root",
+        ownerDm ? "owner" : "guest",
+        ownerDm ? "dm" : conversation,
+      );
+      if (!root.run) throw new Error("Messaging message did not reserve a Run");
+      await startPersonalQueuedRunFixture(f.store, root.run.id);
+      const delegate = (
+        run: Pick<NonNullable<typeof root.run>, "id" | "threadId">,
+        key: string,
+        threadId?: typeof root.input.threadId,
+      ) =>
+        f.store.delegateThread({
+          accessMode: "auto",
+          createdBy: p.userId,
+          environmentId: p.environmentId,
+          harnessInstanceId: p.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          origin: { kind: "run", parentRunId: run.id, parentThreadId: run.threadId },
+          task: [{ type: "text", text: "Work for this conversation" }],
+          title: key,
+          ...(threadId ? { threadId } : {}),
+        });
+      const complete = async (
+        run: NonNullable<typeof root.run>,
+        started: Awaited<ReturnType<typeof startPersonalQueuedRunFixture>>,
+      ) => {
+        await f.store.commitRunnerEvent({
+          environmentId: p.environmentId,
+          runnerId: p.runnerId,
+          runnerBootId: started.runnerBootId,
+          event: pendingEvent({
+            type: "assistant.message",
+            environmentId: p.environmentId,
+            threadId: run.threadId,
+            runId: run.id,
+            bindingGeneration: started.bindingGeneration,
+            ordinal: 1,
+            data: { messageId: createId("message"), content: [{ type: "text", text: "Done" }] },
+          }),
+        });
+        await f.store.commitRunnerEvent({
+          environmentId: p.environmentId,
+          runnerId: p.runnerId,
+          runnerBootId: started.runnerBootId,
+          event: pendingEvent({
+            type: "run.completed",
+            environmentId: p.environmentId,
+            threadId: run.threadId,
+            runId: run.id,
+            bindingGeneration: started.bindingGeneration,
+            ordinal: 2,
+            data: { status: "completed" },
+          }),
+        });
+      };
+      let reusedPersonal: Awaited<ReturnType<typeof delegate>> | undefined;
+      if (conversation === "channel") {
+        const ordinary = await f.store.enqueueThreadInput({
+          requestedBy: p.userId,
+          threadId: p.thread.id,
+          content: [{ type: "text", text: "Private work" }],
+          source: { kind: "human" },
+          policy: "queue",
+          idempotencyKey: "ordinary-personal",
+        });
+        if (!ordinary.run) throw new Error("Personal message did not reserve a Run");
+        await startPersonalQueuedRunFixture(f.store, ordinary.run.id);
+        reusedPersonal = await delegate(ordinary.run, "personal-worker");
+        expect(await runAllowsPersonalContext(f.database, reusedPersonal.run.id)).toBe(true);
+        const personalRunning = await startPersonalQueuedRunFixture(f.store, reusedPersonal.run.id);
+        await complete(reusedPersonal.run, personalRunning);
+      }
+      const child = await delegate(root.run, "worker", reusedPersonal?.thread.id);
+      if (reusedPersonal)
+        expect(child.run.providerSessionId).not.toBe(reusedPersonal.run.providerSessionId);
+      expect(await runAllowsPersonalContext(f.database, child.run.id)).toBe(ownerDm);
+      expect(
+        await f.database
+          .selectFrom("providerSessions")
+          .select("personalContext")
+          .where("id", "=", child.run.providerSessionId!)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ personalContext: ownerDm });
+      const running = await startPersonalQueuedRunFixture(f.store, child.run.id);
+
+      await complete(child.run, running);
+      const reused = await delegate(root.run, "worker-reused", child.thread.id);
+      expect(await runAllowsPersonalContext(f.database, reused.run.id)).toBe(ownerDm);
+      const later = await f.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Continue later" }],
+        idempotencyKey: "later-worker-turn",
+        policy: "queue",
+        requestedBy: p.userId,
+        source: { kind: "human" },
+        threadId: child.thread.id,
+      });
+      expect(later.run).toBeNull();
+      const resumed = await startPersonalQueuedRunFixture(f.store, reused.run.id);
+      await complete(reused.run, resumed);
+      const next = await f.database
+        .selectFrom("runs")
+        .selectAll()
+        .where("seedInputId", "=", later.message.id)
+        .executeTakeFirstOrThrow();
+      expect(await runAllowsPersonalContext(f.database, next.id)).toBe(ownerDm);
+      expect(next.teamRequestId).toBeNull();
+      await startPersonalQueuedRunFixture(f.store, next.id);
+      const grandchild = await delegate(next, "grandchild");
+      expect(await runAllowsPersonalContext(f.database, grandchild.run.id)).toBe(ownerDm);
+      await startPersonalQueuedRunFixture(f.store, grandchild.run.id);
+      expect((await f.store.loadRunDispatchContext(grandchild.command.id)).personalContext).toBe(
+        ownerDm,
+      );
+      expect(await threadAllowsPersonalContext(f.database, p.thread.id, p.userId)).toBe(true);
+    });
+  }
 });

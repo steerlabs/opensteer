@@ -3,7 +3,6 @@ import type { NativeOAuthIdentity } from "@opensteer/client/auth";
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync } from "node:fs";
 import { arch as hostArchitecture, platform as hostPlatform } from "node:os";
-import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -62,7 +61,6 @@ export interface DesktopLocalExecutionConfiguration {
 export interface DesktopPersonalDeploymentConfiguration {
   readonly passkeys?: boolean;
   readonly releaseDirectory: string;
-  readonly workspaceRoot: string;
 }
 
 export interface LoadedDesktopConfiguration {
@@ -90,7 +88,6 @@ const EnvironmentSchema = z.object({
   OPENSTEER_DESKTOP_PORTAL_URL: z.string().optional(),
   OPENSTEER_DESKTOP_RUNNER_WORKER: z.string().optional(),
   OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR: z.string().optional(),
-  OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT: z.string().optional(),
 });
 
 export function readDesktopConfiguration(
@@ -188,11 +185,7 @@ export function readDesktopConfiguration(
       );
     }
   }
-  if (
-    options.packaged &&
-    (optional(parsed.OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR) ||
-      optional(parsed.OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT))
-  ) {
+  if (options.packaged && optional(parsed.OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR)) {
     throw new Error("Packaged Personal runtime paths cannot be overridden.");
   }
   const personal: DesktopPersonalDeploymentConfiguration = {
@@ -201,11 +194,6 @@ export function readDesktopConfiguration(
       optional(parsed.OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR) ??
         path.join(resourcesDirectory, "personal-runtime"),
       "OPENSTEER_DESKTOP_PERSONAL_RELEASE_DIR",
-    ),
-    workspaceRoot: absolutePath(
-      optional(parsed.OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT) ??
-        path.join(homedir(), "Opensteer", "Workspaces"),
-      "OPENSTEER_DESKTOP_PERSONAL_WORKSPACE_ROOT",
     ),
   };
 

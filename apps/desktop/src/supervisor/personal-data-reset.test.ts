@@ -154,7 +154,6 @@ describe("Personal old database reset", () => {
         postgresPort: 15432,
         name: "Test",
         revision: 0,
-        workspaceRoot: path.join(root, "Opensteer"),
         release: {
           architecture: "arm64",
           operatingSystem: "darwin",

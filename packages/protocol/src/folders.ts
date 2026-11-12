@@ -7,10 +7,6 @@ export const PersonalExecutionLocationSchema = z.strictObject({
   agentHome: TaskFolderSchema,
 });
 export type PersonalExecutionLocation = z.infer<typeof PersonalExecutionLocationSchema>;
-export const FolderAdmissionSchema = z.strictObject({
-  folder: TaskFolderSchema,
-  can: z.strictObject({ executeTasks: z.boolean() }),
-});
 
 export const TaskRuntimeFenceSchema = RunnerConnectionFenceSchema.extend({
   environmentId: EnvironmentIdSchema,

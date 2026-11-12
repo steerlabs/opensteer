@@ -1,3 +1,4 @@
+import { parseHostConfig } from "@opensteer/config";
 import { PersonalDataReset, PersonalOldDatabaseError } from "./personal-data-reset.js";
 import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -145,22 +146,25 @@ describe("PersonalDeploymentSupervisor", () => {
     ]);
     const host = fixture.processes.specs[3]!;
     const runner = fixture.processes.specs[4]!;
+    const config = parseHostConfig({ ...host.environment, ...host.secretEnvironment });
+    expect(config.mode).toBe("production");
+    expect(config.personal).toMatchObject({
+      environmentId: runner.environment.OPENSTEER_ENVIRONMENT_ID,
+      nativeFsHelperPath: fixture.releaseValue.entrypoints.nativeFsHelper,
+    });
     expect(host.environment).toMatchObject({
       OPENSTEER_DEPLOYMENT_NAME: defaultPersonalDeploymentName(),
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     });
-    // The Host names the machine, the Runner owns the disk.
     expect(host.environment).not.toHaveProperty("OPENSTEER_HOST_NATIVE_FS_HELPER");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_ROOT");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH");
-    expect(runner.environment.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH).toContain("runner");
     expect(host.secretEnvironment?.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toMatch(
       /^[A-Za-z0-9_-]{43}$/u,
     );
     expect(runner.environment.OPENSTEER_ENVIRONMENT_ID).toBe(
-      host.environment.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID,
+      host.environment.OPENSTEER_HOSTING_ENVIRONMENT_ID,
     );
     expect(runner.environment).toMatchObject({
       OPENSTEER_BROWSER_HARNESS: fixture.releaseValue.entrypoints.browserHarness,
@@ -168,7 +172,6 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_NATIVE_FS_HELPER: fixture.releaseValue.entrypoints.nativeFsHelper,
       OPENSTEER_NODE_EXECUTABLE: fixture.releaseValue.entrypoints.node,
       OPENSTEER_RUNNER_NAME: defaultPersonalDeploymentName(),
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
     });
     expect(fixture.processes.specs.some(({ executable }) => /docker/iu.test(executable))).toBe(
       false,
@@ -1428,7 +1431,6 @@ function supervisorFixture(
     shutdownTimeoutMs: 500,
     startupTimeoutMs: 500,
     ...(userEnvironment ? { userEnvironment } : {}),
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
   });
   return {
     browsers,
@@ -1512,8 +1514,6 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
     runnerDataDirectory: "/data/runner",
     runtimeDirectory: "/data/runtime",
     temporaryDirectory: "/data/tmp",
-    workspaceRegistryPath: "/data/runner/workspace-bindings.v1.json",
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
   };
 
   constructor(manifest: PersonalDeploymentManifest | null) {
@@ -1684,7 +1684,6 @@ function deploymentManifest(
     schemaVersion: 3,
     setupIntentId: "019ff6c2-309a-7380-9093-e126eb2bda4b",
     updatedAt: "2026-08-12T12:00:00.000Z",
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
     ...overrides,
   };
 }

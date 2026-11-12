@@ -629,6 +629,5 @@ function manifest(): PersonalDeploymentManifest {
     schemaVersion: 3,
     setupIntentId: "019ff6c2-309a-7380-9093-e126eb2bda4b",
     updatedAt: "2026-08-12T12:00:00.000Z",
-    workspaceRoot: "/tmp/Opensteer/Workspaces",
   };
 }
