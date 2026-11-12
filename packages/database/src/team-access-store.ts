@@ -140,20 +140,33 @@ export class TeamAccessStore {
     actor: TeamActor,
     channelId: TeamChannelId,
   ) {
-    const result = await sql<{
-      read: boolean;
-      post: boolean;
-      manage: boolean;
-      peopleOnly: boolean;
-    }>`${teamGroupPaths(actor.userId)}
-      select c.people_only,
+    return (
+      (await this.channels(transaction, actor, [channelId])).get(channelId) ?? {
+        read: false,
+        post: false,
+        manage: false,
+        peopleOnly: false,
+      }
+    );
+  }
+  async channels(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelIds: readonly TeamChannelId[],
+  ) {
+    type Authority = { read: boolean; post: boolean; manage: boolean; peopleOnly: boolean };
+    if (!channelIds.length) return new Map<TeamChannelId, Authority>();
+    const result = await sql<
+      Authority & { channelId: TeamChannelId }
+    >`${teamGroupPaths(actor.userId)}
+      select c.id as channel_id,c.people_only,
       coalesce(bool_or(a.subject_id is not null),false) and (not c.people_only or ${actor.kind}='human') as read,
       coalesce(bool_or(a.level='post'),false) and c.archived_at is null and (not c.people_only or ${actor.kind}='human') as post,
       (${actor.kind}='human' and (coalesce(bool_or(a.manage),false) or (c.kind in ('public','private') and m.role in ('owner','admin')))) as manage
       from team_channels c join team_members m on m.user_id=${actor.userId} and m.state='active'
       left join team_channel_members a on a.channel_id=c.id and ((a.subject_kind='person' and a.subject_id=m.user_id) or (a.subject_kind='group' and a.subject_id in(select id from member_groups)))
-      where c.id=${channelId} group by c.id,m.role`.execute(transaction);
-    return result.rows[0] ?? { read: false, post: false, manage: false, peopleOnly: false };
+      where c.id in (${sql.join(channelIds)}) group by c.id,m.role`.execute(transaction);
+    return new Map(result.rows.map(({ channelId, ...authority }) => [channelId, authority]));
   }
   async topic(
     transaction: Transaction<DatabaseSchema>,

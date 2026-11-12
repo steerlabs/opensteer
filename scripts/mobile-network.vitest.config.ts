@@ -5,7 +5,12 @@ export default defineConfig({
   ...integration,
   test: {
     ...integration.test,
-    include: ["tests/mobile-network-bench.integration.test.ts"],
+    include: JSON.parse(process.env.OPENSTEER_MOBILE_BENCH_OPTIONS ?? "{}").seed?.startsWith("team")
+      ? ["tests/team-mobile-network.integration.test.ts"]
+      : [
+          "tests/mobile-network-bench.integration.test.ts",
+          "tests/team-mobile-network.integration.test.ts",
+        ],
     maxWorkers: 1,
     testTimeout: 3_600_000,
     hookTimeout: 60_000,

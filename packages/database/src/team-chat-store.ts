@@ -88,12 +88,12 @@ export async function teamMessageViews(
       count: string;
       latestMessageId: TeamMessageId | null;
       repliers: UserId[];
-    }>`select r.id as root_id,count(m.id)::text as count,max(m.id)::text as latest_message_id,
+    }>`select m.thread_root_id as root_id,count(*)::text as count,max(m.id)::text as latest_message_id,
       array(select distinct on (recent.author_user_id) recent.author_user_id from
-        (select author_user_id,max(id) as id from team_messages where thread_root_id=r.id and deleted_at is null group by author_user_id order by max(id) desc limit 4) recent order by recent.author_user_id) as repliers
-      from team_messages r left join team_messages m on m.thread_root_id=r.id and m.deleted_at is null where r.id in (${sql.join(ids)}) group by r.id`.execute(
-      database,
-    ),
+        (select author_user_id,max(id) as id from team_messages where channel_id=m.channel_id and thread_root_id=m.thread_root_id and deleted_at is null group by author_user_id order by max(id) desc limit 4) recent order by recent.author_user_id) as repliers
+      from team_messages m where m.channel_id in (${sql.join([...new Set(rows.map((row) => row.channelId))])})
+      and m.thread_root_id in (${sql.join(ids)}) and m.deleted_at is null
+      group by m.channel_id,m.thread_root_id`.execute(database),
   ]);
   return rows.map((row) => {
     const summary = summaries.rows.find((r) => r.rootId === row.id);
@@ -173,33 +173,47 @@ export class TeamChatStore {
     rootId: TeamMessageId,
     messageId: TeamMessageId | null = null,
   ): Promise<TeamSource> {
-    requireTeam((await this.access.channel(transaction, actor, channelId)).read);
-    const channel = await transaction
-      .selectFrom("teamChannels")
-      .selectAll()
-      .where("id", "=", channelId)
-      .executeTakeFirstOrThrow();
-    const count =
-      (
-        await sql<{
-          count: string;
-        }>`select count(*)::text as count from team_members m where m.state='active' and ${channelId} in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}`.execute(
-          transaction,
-        )
-      ).rows[0]?.count ?? "0";
     return {
       teamId: this.identity.teamId,
       channelId,
       threadRootId: rootId,
       messageId,
-      audience: {
-        teamName: this.identity.teamName,
-        channelName: channel.name ?? "Direct message",
-        channelKind: channel.kind,
-        peopleOnly: channel.peopleOnly,
-        memberCount: Number(count),
-      },
+      audience: (await this.#sourceAudiences(transaction, actor, [channelId])).get(channelId)!,
     };
+  }
+  async #sourceAudiences(
+    transaction: Transaction<DatabaseSchema>,
+    actor: TeamActor,
+    channelIds: readonly TeamChannelId[],
+  ) {
+    const ids = [...new Set(channelIds)];
+    if (!ids.length) return new Map<TeamChannelId, TeamSource["audience"]>();
+    const rows = (
+      await sql<{
+        id: TeamChannelId;
+        name: string | null;
+        kind: TeamSource["audience"]["channelKind"];
+        peopleOnly: boolean;
+        memberCount: string;
+      }>`select c.id,c.name,c.kind,c.people_only,
+      (select count(*)::text from team_members m where m.state='active' and c.id in ${teamReadableChannelIds(sql.ref("m.userId"), "human")}) as member_count
+      from team_channels c where c.id in (${sql.join(ids)}) and c.id in ${teamReadableChannels(actor)}`.execute(
+        transaction,
+      )
+    ).rows;
+    requireTeam(rows.length === ids.length);
+    return new Map(
+      rows.map((channel) => [
+        channel.id,
+        {
+          teamName: this.identity.teamName,
+          channelName: channel.name ?? "Direct message",
+          channelKind: channel.kind,
+          peopleOnly: channel.peopleOnly,
+          memberCount: Number(channel.memberCount),
+        },
+      ]),
+    );
   }
   async channelView(
     transaction: Transaction<DatabaseSchema>,
@@ -1383,19 +1397,22 @@ export class TeamChatStore {
         );
       const rows = await query.orderBy("id", "desc").limit(51).execute();
       const messages = await teamMessageViews(t, rows.slice(0, 50));
+      const audiences = await this.#sourceAudiences(
+        t,
+        actor,
+        messages.map((message) => message.channelId),
+      );
       return {
-        results: await Promise.all(
-          messages.map(async (message) => ({
-            message,
-            source: await this.source(
-              t,
-              actor,
-              message.channelId,
-              message.threadRootId ?? message.id,
-              message.id,
-            ),
-          })),
-        ),
+        results: messages.map((message) => ({
+          message,
+          source: {
+            teamId: this.identity.teamId,
+            channelId: message.channelId,
+            threadRootId: message.threadRootId ?? message.id,
+            messageId: message.id,
+            audience: audiences.get(message.channelId)!,
+          },
+        })),
         hasMore: rows.length > 50,
       };
     });
@@ -1490,9 +1507,46 @@ export class TeamChatStore {
         if (after) query = query.where("id", ">", after);
         if (channelIds) query = query.where("id", "in", [...channelIds]);
         const rows = await query.orderBy("id").limit(51).execute();
+        const pageRows = rows.slice(0, 50),
+          ids = pageRows.map((row) => row.id);
+        const authorities = await this.access.channels(t, actor, ids);
+        const states = ids.length
+          ? await t
+              .selectFrom("teamChannelMemberState")
+              .selectAll()
+              .where("channelId", "in", ids)
+              .where("userId", "=", actor.userId)
+              .execute()
+          : [];
+        const stateByChannel = new Map(states.map((row) => [row.channelId, row]));
+        const unreadRows = ids.length
+          ? (
+              await sql<{
+                channelId: TeamChannelId;
+                unread: boolean;
+                mentionCount: string;
+              }>`select c.id as channel_id,
+          exists(select 1 from team_messages m where m.channel_id=c.id and m.id>coalesce(s.last_read_message_id,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as unread,
+          (select count(*)::text from team_mentions n join team_messages m on m.id=n.message_id where n.channel_id=c.id and n.target_user_id=${actor.userId} and n.target_kind='person' and m.id>coalesce(s.last_read_message_id,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as mention_count
+          from team_channels c left join team_channel_member_state s on s.channel_id=c.id and s.user_id=${actor.userId}
+          where c.id in (${sql.join(ids)})`.execute(t)
+            ).rows
+          : [];
+        const unreadByChannel = new Map(unreadRows.map((row) => [row.channelId, row]));
+        const linked = !!(await t
+          .selectFrom("teamLinks")
+          .select("id")
+          .where("ownerUserId", "=", actor.userId)
+          .where("state", "=", "active")
+          .executeTakeFirst());
         const channels = [];
-        for (const row of rows.slice(0, 50)) {
-          const authority = await this.access.channel(t, actor, row.id);
+        for (const row of pageRows) {
+          const authority = authorities.get(row.id) ?? {
+            read: false,
+            post: false,
+            manage: false,
+            peopleOnly: false,
+          };
           const summary = {
             id: row.id,
             kind: row.kind,
@@ -1507,32 +1561,11 @@ export class TeamChatStore {
               manage: authority.manage,
               join: !authority.read && row.kind === "public" && !row.archivedAt,
               leave: authority.read && (row.kind === "public" || row.kind === "private"),
-              wakeOwnAgent:
-                authority.post &&
-                !authority.peopleOnly &&
-                !!(await t
-                  .selectFrom("teamLinks")
-                  .select("id")
-                  .where("ownerUserId", "=", actor.userId)
-                  .where("state", "=", "active")
-                  .executeTakeFirst()),
+              wakeOwnAgent: authority.post && !authority.peopleOnly && linked,
             },
           };
-          const state = await t
-            .selectFrom("teamChannelMemberState")
-            .selectAll()
-            .where("channelId", "=", row.id)
-            .where("userId", "=", actor.userId)
-            .executeTakeFirst();
-          const unread = (
-            await sql<{
-              unread: boolean;
-              mentionCount: string;
-            }>`select exists(select 1 from team_messages m where m.channel_id=${row.id} and m.id>coalesce(${state?.lastReadMessageId ?? null}::bigint,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as unread,
-          (select count(*)::text from team_mentions n join team_messages m on m.id=n.message_id where n.channel_id=${row.id} and n.target_user_id=${actor.userId} and n.target_kind='person' and m.id>coalesce(${state?.lastReadMessageId ?? null}::bigint,0) and m.deleted_at is null and not(m.author_kind='human' and m.author_user_id=${actor.userId})) as mention_count`.execute(
-              t,
-            )
-          ).rows[0]!;
+          const state = stateByChannel.get(row.id);
+          const unread = unreadByChannel.get(row.id)!;
           channels.push({
             channel: summary,
             unread: unread.unread,
