@@ -8,6 +8,7 @@ import {
   withPersonalTransaction,
   type DatabaseSchema,
 } from "@opensteer/database";
+import type { RealtimeHub } from "@opensteer/orchestration";
 import type { Kysely } from "kysely";
 import { FolderAdmissionService } from "../threads/folder-admission-service.js";
 
@@ -17,6 +18,7 @@ export async function initializePersonalState(
     readonly environmentId: EnvironmentId;
     readonly agentHome: string;
   },
+  realtime: Pick<RealtimeHub, "sendToUsers">,
 ): Promise<FolderAdmissionService | null> {
   const ownerId = await personalDeploymentOwner(database);
   const hosting = await database
@@ -34,9 +36,9 @@ export async function initializePersonalState(
     .executeTakeFirst();
   if (!existing) await mkdir(config.agentHome, { recursive: true });
   const path = await realpath(config.agentHome);
-  await withPersonalTransaction(database, async (transaction) => {
-    await initializePersonalSettings(transaction, ownerId, { computerId: hosting.id, path });
-  });
+  const created = await withPersonalTransaction(database, (transaction) =>
+    initializePersonalSettings(transaction, ownerId, { computerId: hosting.id, path }),
+  );
   const settings = await personalSettings(database);
   if (
     settings.ownerId !== ownerId ||
@@ -47,6 +49,7 @@ export async function initializePersonalState(
       code: "conflict",
       message: "Personal owner and agent home do not match durable Host state",
     });
+  if (created) realtime.sendToUsers([ownerId], { type: "host.machines.changed" });
   return new FolderAdmissionService({
     hostingComputerId: hosting.id,
     ownerId,

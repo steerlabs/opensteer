@@ -38,7 +38,7 @@ export async function initializePersonalSettings(
     })
     .onConflict((c) => c.doNothing())
     .execute();
-  await transaction
+  const inserted = await transaction
     .insertInto("personalSettings")
     .values({
       singletonKey: "personal",
@@ -52,7 +52,8 @@ export async function initializePersonalSettings(
       backgroundModelPreferences: emptyAutomaticModelConfig,
     })
     .onConflict((c) => c.column("singletonKey").doNothing())
-    .execute();
+    .executeTakeFirstOrThrow();
+  return (inserted.numInsertedOrUpdatedRows ?? 0n) > 0n;
 }
 
 export async function findPersonalSettings(database: Kysely<DatabaseSchema>) {
