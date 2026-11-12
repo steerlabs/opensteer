@@ -298,6 +298,8 @@ export class MockTeamWorld {
       }
       return { admitted, member: record.host.bootstrap.member, team: record.verified };
     },
+    // The browser sign-in of an older team server ends the same way in memory.
+    signIn: (team, invite) => this.sessions.exchange(team, invite),
     previewInvite: async (team, invite) => {
       const record = this.#reachable().get(team.authority.canonicalOrigin);
       if (!record?.invite || record.invite.verifier !== invite.verifier)

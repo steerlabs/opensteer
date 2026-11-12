@@ -20,7 +20,6 @@ import {
   readTeamInvite,
   slugFromName,
   slugFromTyping,
-  TeamNeedsBrowserError,
   type TeamConnectionIntentState,
   type TeamCoordinatorSnapshot,
   type TeamSessionClient,
@@ -197,7 +196,7 @@ export function TeamsHome({ portalOrigin }: { readonly portalOrigin: string | nu
               rel="noreferrer"
               target="_blank"
             >
-              Create a team
+              Create
             </a>
           ) : null
         ) : (
@@ -206,7 +205,7 @@ export function TeamsHome({ portalOrigin }: { readonly portalOrigin: string | nu
             onClick={openCreate}
             type="button"
           >
-            Create a team
+            Create
           </button>
         )}
       </section>
@@ -576,7 +575,6 @@ type JoinState =
       readonly joining: boolean;
       readonly error: string | null;
     }
-  | { readonly kind: "browser"; readonly host: string }
   | { readonly kind: "failed"; readonly message: string };
 
 function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly url: string }) {
@@ -620,19 +618,10 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
     void coordination.coordinator
       .joinWithInvite({ inviteUrl: url, personalDeploymentId: personal })
       .then(onClose, (error: unknown) =>
-        setState(
-          error instanceof TeamNeedsBrowserError
-            ? { kind: "browser", host: state.host }
-            : { ...state, joining: false, error: actionErrorMessage(error) },
-        ),
+        setState({ ...state, joining: false, error: actionErrorMessage(error) }),
       );
   };
-  const title =
-    state.kind === "ready"
-      ? `Join ${state.name}`
-      : state.kind === "browser"
-        ? "Join in your browser"
-        : "Join a team";
+  const title = state.kind === "ready" ? `Join ${state.name}` : "Join a team";
   return (
     <Dialog
       footer={
@@ -650,16 +639,6 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
               {state.joining ? "Joining…" : `Join ${state.name}`}
             </button>
           </>
-        ) : state.kind === "browser" ? (
-          <a
-            className="btn btn--primary"
-            href={url}
-            onClick={onClose}
-            rel="noreferrer"
-            target="_blank"
-          >
-            Open the invite
-          </a>
         ) : (
           <button className="btn" onClick={onClose} type="button">
             Close
@@ -677,11 +656,6 @@ function JoinDialog({ onClose, url }: { readonly onClose: () => void; readonly u
       ) : state.kind === "failed" ? (
         <p className="notice notice--error" role="alert">
           {state.message}
-        </p>
-      ) : state.kind === "browser" ? (
-        <p className="teams-form__lede">
-          {state.host} runs an older team server. Open the invite in your browser to join; the team
-          then appears here.
         </p>
       ) : (
         <div className="teams-join">
@@ -873,14 +847,14 @@ function InviteDialog({
 
 /* ---- Your agent, and the ways out ---- */
 
-export type AgentLine = TeamConnectionIntentState | "none";
+export type AgentLine = Exclude<TeamConnectionIntentState, "no-agent"> | "none";
 
 /** Whether this person's agent can be asked in a team, from what this device knows. */
 export function useAgentLine(team: TeamAttachment | null): AgentLine {
   const snapshot = useCoordinatorSnapshot();
   if (!team) return "none";
   const intent = snapshot.intents.find((row) => row.teamDeploymentId === team.teamId);
-  if (intent) return intent.state;
+  if (intent && intent.state !== "no-agent") return intent.state;
   if (team.link && team.link.state !== "revoked" && team.link.state !== "leaving")
     return "connected";
   return "none";

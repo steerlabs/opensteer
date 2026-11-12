@@ -47,7 +47,7 @@ const sampleInvite = (world: MockTeamWorld) => world.sampleInviteUrl;
 
 async function createTeam(world: MockTeamWorld, name: string) {
   await mount("/teams", { world });
-  await click(button("Create a team"));
+  await click(button("Create"));
   await typeInto(field("Team name"), name);
   await until(() => /is available/u.test(dialog().textContent ?? ""), "the address checked");
   await click(button("Create team"));
@@ -58,7 +58,7 @@ describe("hosted teams", () => {
   it("creates a team, refusing a taken address, and lands in #general as its owner", async () => {
     const world = new MockTeamWorld({ pace: 0 });
     await mount("/teams", { world });
-    await click(button("Create a team"));
+    await click(button("Create"));
     await typeInto(field("Team name"), "Taken");
     await until(
       () => /Someone already uses that address/u.test(dialog().textContent ?? ""),

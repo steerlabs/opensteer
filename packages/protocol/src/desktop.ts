@@ -1477,6 +1477,8 @@ export const DesktopTeamSessionsCallSchema = z.discriminatedUnion("call", [
     origin: TeamOriginSchema,
     invite: TeamInviteSecretSchema.nullable(),
   }),
+  /** A team older than `team-session-exchange-v1`: its own sign-in in the system browser. */
+  z.strictObject({ call: z.literal("sign-in"), origin: TeamOriginSchema }),
   z.strictObject({
     call: z.literal("restore"),
     origin: TeamOriginSchema,

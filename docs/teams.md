@@ -39,7 +39,7 @@ removed person only if it was created after their removal, on every admission pa
 assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
 storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified
 discovery until Account's directory lists it, and is restored from the device's connection intent
-if the app restarts before then.
+if the app restarts before then; the intent is kept even when no agent connects from that device.
 
 ## Access and removal
 

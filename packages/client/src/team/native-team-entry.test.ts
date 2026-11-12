@@ -2,9 +2,10 @@ import { createId, type DeploymentId } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { TeamMemberSchema } from "@opensteer/protocol";
 import { describe, expect, it, vi } from "vitest";
-import { TeamEntryRefusedError } from "../auth/native-oauth.js";
+import { TeamEntryRefusedError, type HostOAuthState } from "../auth/native-oauth.js";
 import {
   DeploymentCatalogStore,
+  type DeploymentConnection,
   type VerifiedHostEndpoint,
 } from "../connections/deployment-catalog.js";
 import {
@@ -56,14 +57,32 @@ function setup() {
     privateFiles: new MemoryPrivateFilesystem(),
   });
   let signedIn = false;
+  const listeners = new Set<(state: HostOAuthState) => void>();
+  const state = (connection: DeploymentConnection, status: HostOAuthState["status"]) =>
+    ({ connection, detail: null, key: "", status }) as HostOAuthState;
   const oauth = {
     accountAuthorizationLease: async () => lease,
+    // Like desktop: the browser opens and the call returns; the callback lands later.
+    beginHostSignIn: vi.fn(async (connection: DeploymentConnection) => {
+      const authorizing = state(connection, "authorizing");
+      for (const listener of listeners) listener(authorizing);
+      return authorizing;
+    }),
     exchangeTeamSession: vi.fn(async () => {
       signedIn = true;
       return { admitted: true, member };
     }),
     hostCredentialState: () => ({ status: signedIn ? "signed-in" : "signed-out" }) as never,
     signOutHost: vi.fn(async () => ({}) as never),
+    subscribeHostCredentials: (listener: (state: HostOAuthState) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  /** The browser sign-in of `connection` ends as `status`. */
+  const callback = (connection: DeploymentConnection, status: HostOAuthState["status"]) => {
+    if (status === "signed-in") signedIn = true;
+    for (const listener of listeners) listener(state(connection, status));
   };
   const ids = async () =>
     (await catalog.load()).deployments.map(({ authority }) => authority.document.deploymentId);
@@ -71,6 +90,8 @@ function setup() {
     catalog,
     oauth,
     ids,
+    callback,
+    listeners,
     signOut: () => (signedIn = false),
     entry: new NativeTeamEntry({ oauth, catalog }),
   };
@@ -121,5 +142,34 @@ describe("NativeTeamEntry", () => {
     verify.mockClear();
     await entry.restore(id, verify);
     expect(verify).not.toHaveBeenCalled();
+  });
+
+  it("signs in to an older team in the browser, settling only when the callback lands", async () => {
+    const { callback, catalog, entry, ids, listeners, oauth, signOut } = setup();
+    const older = team();
+    const settled = vi.fn();
+    const signingIn = entry.signIn(older).then(settled, settled);
+    await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledOnce());
+    const [kept] = (await catalog.load()).deployments;
+    // Added as if by hand: the team's own sign-in, not an Account entry waiting on the directory.
+    expect(kept).toMatchObject({ kind: "team", source: { kind: "manual" } });
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    callback(kept!, "signed-in");
+    await signingIn;
+    expect(settled).toHaveBeenCalledWith(undefined);
+    expect(listeners.size).toBe(0);
+
+    // Stopped or expired in the browser: an error, and nothing kept of a team never entered.
+    signOut();
+    const stopped = team();
+    const failing = entry.signIn(stopped);
+    await vi.waitFor(() => expect(oauth.beginHostSignIn).toHaveBeenCalledTimes(2));
+    const held = (await catalog.load()).deployments.find(
+      ({ authority }) => authority.document.deploymentId === stopped.discovery.deploymentId,
+    )!;
+    callback(held, "signed-out");
+    await expect(failing).rejects.toThrow(/sign-in/iu);
+    expect(await ids()).toEqual([older.discovery.deploymentId]);
   });
 });

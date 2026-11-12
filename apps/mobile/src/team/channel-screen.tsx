@@ -138,7 +138,7 @@ function PlaceStart(props: { readonly channel: ChannelHeaderView }): ReactNode {
       description={channel.description}
       instructions={channel.instructions}
       peopleOnly={channel.peopleOnly}
-      title={`Welcome to #${channel.name}`}
+      title={`This is the start of #${channel.name}`}
     />
   );
 }

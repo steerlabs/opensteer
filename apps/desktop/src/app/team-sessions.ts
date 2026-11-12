@@ -40,6 +40,12 @@ export class DesktopTeamSessions {
         this.#verified.delete(call.origin);
         return this.#entry.enter(verified, call.invite);
       }
+      case "sign-in": {
+        const verified = this.#verified.get(call.origin) ?? (await this.#verify(call.origin));
+        this.#verified.delete(call.origin);
+        await this.#entry.signIn(verified);
+        return null;
+      }
       case "restore":
         await this.#entry.restore(call.deploymentId, () => this.#verify(call.origin));
         return null;

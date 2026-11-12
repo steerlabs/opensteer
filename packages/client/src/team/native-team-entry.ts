@@ -13,7 +13,11 @@ import {
   type TeamSessionExchangeResponse,
 } from "@opensteer/protocol";
 import { z } from "zod";
-import { TeamEntryRefusedError, type NativeOAuthManager } from "../auth/native-oauth.js";
+import {
+  TeamEntryRefusedError,
+  type HostOAuthState,
+  type NativeOAuthManager,
+} from "../auth/native-oauth.js";
 import {
   deploymentConnectionFromVerifiedEndpoints,
   verifyAccessEndpoint,
@@ -84,11 +88,16 @@ export async function previewTeamInvite(
 
 type TeamEntryOAuth = Pick<
   NativeOAuthManager,
-  "accountAuthorizationLease" | "exchangeTeamSession" | "hostCredentialState" | "signOutHost"
+  | "accountAuthorizationLease"
+  | "beginHostSignIn"
+  | "exchangeTeamSession"
+  | "hostCredentialState"
+  | "signOutHost"
+  | "subscribeHostCredentials"
 >;
 type TeamEntryCatalog = Pick<
   DeploymentCatalogStore,
-  "addPendingAccountDeployment" | "load" | "remove"
+  "addPendingAccountDeployment" | "load" | "remove" | "upsert"
 >;
 
 /**
@@ -117,6 +126,22 @@ export class NativeTeamEntry {
       // Someone the team turned away keeps no entry for it.
       if (held === null)
         await this.#catalog.remove(verified.discovery.deploymentId).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * A team whose server predates native team sessions: kept as if added by hand, then its own
+   * sign-in in the system browser. Settles once the callback lands, or the flow is stopped or
+   * expires; an invite is accepted afterwards over the team's API.
+   */
+  async signIn(verified: VerifiedHostEndpoint): Promise<void> {
+    const deploymentId = verified.discovery.deploymentId;
+    const held = await this.#held(deploymentId);
+    try {
+      await this.#browserSignIn(held ?? (await this.#keepManual(verified)));
+    } catch (error) {
+      if (held === null) await this.#catalog.remove(deploymentId).catch(() => undefined);
       throw error;
     }
   }
@@ -153,6 +178,49 @@ export class NativeTeamEntry {
         (connection) => connection.authority.document.deploymentId === deploymentId,
       ) ?? null
     );
+  }
+
+  async #keepManual(verified: VerifiedHostEndpoint): Promise<DeploymentConnection> {
+    const deploymentId = verified.discovery.deploymentId;
+    const catalog = await this.#catalog.upsert(
+      deploymentConnectionFromVerifiedEndpoints({
+        accountAccess: null,
+        endpoints: [verified],
+        kind: "team",
+        name: new URL(verified.discovery.canonicalOrigin).hostname,
+        source: { kind: "manual" },
+      }),
+    );
+    const kept = catalog.deployments.find(
+      (connection) => connection.authority.document.deploymentId === deploymentId,
+    );
+    if (!kept) throw new Error("The team couldn’t be kept on this device.");
+    return kept;
+  }
+
+  async #browserSignIn(connection: DeploymentConnection): Promise<void> {
+    if (this.#oauth.hostCredentialState(connection).status === "signed-in") return;
+    const deploymentId = connection.authority.document.deploymentId;
+    let stop = () => {};
+    const ended = new Promise<HostOAuthState>((resolve) => {
+      let authorizing = false;
+      stop = this.#oauth.subscribeHostCredentials((state) => {
+        if (state.connection.authority.document.deploymentId !== deploymentId) return;
+        if (state.status === "authorizing") authorizing = true;
+        else if (authorizing) resolve(state);
+      });
+    });
+    try {
+      const begun = await this.#oauth.beginHostSignIn(connection);
+      const final = begun.status === "authorizing" ? await ended : begun;
+      if (final.status !== "signed-in")
+        throw new ClientOperationError(
+          final.detail ?? "The team’s sign-in didn’t finish. Try again.",
+          "blocked",
+        );
+    } finally {
+      stop();
+    }
   }
 
   async #keep(

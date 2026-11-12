@@ -112,7 +112,7 @@ export function TeamsScreen(): ReactNode {
               </AppText>
             </View>
           </View>
-          <PrimaryButton label="Create a team" onPress={() => navigation.navigate("CreateTeam")} />
+          <PrimaryButton label="Create" onPress={() => navigation.navigate("CreateTeam")} />
         </View>
         <View style={styles.card}>
           <View>
@@ -669,10 +669,11 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
 
 /** What the welcome card and team settings say about the person's agent in one team. */
 export function agentWords(
-  intent: TeamConnectionIntent | null,
+  asked: TeamConnectionIntent | null,
   linked: boolean,
   handle: string | null,
 ): { readonly line: string; readonly tone: "done" | "busy" | "waiting" | "failed" | "none" } {
+  const intent = asked?.state === "no-agent" ? null : asked;
   const mention = handle === null ? "@your agent" : `@${handle}-agent`;
   if (intent?.state === "connected" || (intent === null && linked))
     return {

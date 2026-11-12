@@ -708,8 +708,8 @@ function ChannelScreenFor({
             intro={
               general ? (
                 <>
-                  <WelcomeCard team={team} />
                   <ChannelIntro channel={channel} />
+                  <WelcomeCard team={team} />
                 </>
               ) : (
                 <ChannelIntro channel={channel} />

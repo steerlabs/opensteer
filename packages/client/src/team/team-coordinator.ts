@@ -32,19 +32,22 @@ import type { AccountTeamsClient } from "./account-teams.js";
 /**
  * Where getting a person's agent into a team stands. An offline personal computer is
  * `pending-offline`, never `failed`: the coordinator retries with a fresh link code once it is
- * reachable.
+ * reachable. `no-agent` is a team entered with no agent here (no computer of the person's, or
+ * disconnected); the intent still keeps the team on the device.
  */
 export const TeamConnectionIntentStateSchema = z.enum([
   "connecting",
   "connected",
   "pending-offline",
   "failed",
+  "no-agent",
 ]);
 export type TeamConnectionIntentState = z.infer<typeof TeamConnectionIntentStateSchema>;
 
 /**
- * Persisted per device so a restart resumes the connection. Keyed by Account and team origin;
- * the team Deployment id is null while a hosted team is still being set up.
+ * Persisted per device so a restart resumes the connection and restores the team until Account's
+ * directory lists it. Keyed by Account and team origin; the team Deployment id is null while a
+ * hosted team is still being set up.
  */
 export const TeamConnectionIntentSchema = z.strictObject({
   accountSubject: ControlPlaneAccountIdSchema,
@@ -106,9 +109,9 @@ export interface TeamSessionPort {
   }): Promise<void>;
   /**
    * Older team servers without `team-session-exchange-v1`: the native browser sign-in, then
-   * `team.invite.accept` when an invite is given. Absent where the surface has none.
+   * `team.invite.accept` when an invite is given.
    */
-  signIn?(team: VerifiedTeam, invite: TeamInviteSecret | null): Promise<TeamSessionEstablished>;
+  signIn(team: VerifiedTeam, invite: TeamInviteSecret | null): Promise<TeamSessionEstablished>;
   previewInvite(team: VerifiedTeam, invite: TeamInviteSecret): Promise<TeamInvitePreviewResponse>;
   /** `team.link.code.create` with the held session; answers the offer text. */
   createLinkCode(teamDeploymentId: DeploymentId): Promise<string>;
@@ -140,8 +143,8 @@ export interface TeamEntered {
   readonly origin: string;
   readonly member: TeamSessionExchangeResponse["member"];
   readonly admitted: boolean;
-  /** Null when no computer of the person's was chosen to connect. */
-  readonly intent: TeamConnectionIntent | null;
+  /** `no-agent` when no computer of the person's was chosen to connect. */
+  readonly intent: TeamConnectionIntent;
 }
 
 /** What a coordinator is built from. */
@@ -214,16 +217,6 @@ export interface TeamCoordinator {
   /** Picks up persisted intents and outstanding hosted teams after launch, resume or sign-in. */
   resume(): Promise<void>;
   dispose(): void;
-}
-
-/** The team Host is older than native sessions and this surface has no browser sign-in. */
-export class TeamNeedsBrowserError extends Error {
-  readonly origin: string;
-  constructor(origin: string) {
-    super("This team’s server is older. Open the invite in your browser to join.");
-    this.name = "TeamNeedsBrowserError";
-    this.origin = origin;
-  }
 }
 
 /** Polls of one outstanding hosted team, in ms; the last repeats. */
@@ -329,7 +322,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       teamDeploymentId,
       hostedTeamId,
       personalDeploymentId,
-      state: "connecting",
+      state: personalDeploymentId === null ? "no-agent" : "connecting",
       failure: null,
       updatedAt: new Date().toISOString(),
     });
@@ -341,11 +334,9 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     signal?: AbortSignal,
   ): Promise<TeamSessionEstablished> => {
     const team = await ports.sessions.verify(origin, signal);
-    if (!team.capabilities.includes("team-session-exchange-v1")) {
-      if (!ports.sessions.signIn) throw new TeamNeedsBrowserError(origin);
-      return ports.sessions.signIn(team, invite);
-    }
-    return ports.sessions.exchange(team, invite, signal);
+    return team.capabilities.includes("team-session-exchange-v1")
+      ? ports.sessions.exchange(team, invite, signal)
+      : ports.sessions.signIn(team, invite);
   };
 
   const scheduleRetry = (intent: TeamConnectionIntent, attempt: number) => {
@@ -404,6 +395,20 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     return run;
   };
 
+  /** A team entered with no agent to connect here, kept so a restart still restores it. */
+  const keepWithoutAgent = async (origin: string, teamDeploymentId: DeploymentId) => {
+    clearTimeout(retries.get(keyOf({ accountSubject: subject(), teamOrigin: origin })));
+    const held = intentFor((intent) => intent.teamOrigin === origin);
+    return save({
+      ...(held ?? intentBase(origin, null, teamDeploymentId, null)),
+      teamDeploymentId,
+      personalDeploymentId: null,
+      state: "no-agent",
+      failure: null,
+      updatedAt: now(),
+    });
+  };
+
   /** A team entered before a restart stays on the device; its agent picks up where it was. */
   const restoreThenConnect = async (
     intent: TeamConnectionIntent,
@@ -428,10 +433,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     if (view.deploymentId && view.deploymentId !== teamDeploymentId)
       throw new Error("The team answered as a different Deployment.");
     if (signal.aborted) return;
-    // Without a computer of the person's there is nothing left to connect.
-    if (intent?.personalDeploymentId === null) await remove(intent);
-    else if (intent)
-      await attemptConnect(await save({ ...intent, teamDeploymentId, updatedAt: now() }));
+    if (intent) await attemptConnect(await save({ ...intent, teamDeploymentId, updatedAt: now() }));
     if (signal.aborted) return;
     following.delete(view.id);
     const watched = snapshot.watching === view.id;
@@ -576,18 +578,19 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (!read) throw new Error("That isn’t an invite link. Copy the whole link and try again.");
       const established = await enter(read.origin, read.invite);
       const teamDeploymentId = established.team.authority.deploymentId;
+      const origin = established.team.authority.canonicalOrigin;
       const intent =
         input.personalDeploymentId === null
-          ? null
+          ? await keepWithoutAgent(origin, teamDeploymentId)
           : await coordinator.connectAgent({
               teamDeploymentId,
-              origin: established.team.authority.canonicalOrigin,
+              origin,
               personalDeploymentId: input.personalDeploymentId,
             });
       ports.open(teamDeploymentId);
       return {
         teamDeploymentId,
-        origin: established.team.authority.canonicalOrigin,
+        origin,
         member: established.member,
         admitted: established.admitted,
         intent,
@@ -612,7 +615,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (!intent) return;
       if (intent.personalDeploymentId)
         await ports.personal.leave(intent.personalDeploymentId, teamDeploymentId);
-      await remove(intent);
+      await keepWithoutAgent(intent.teamOrigin, teamDeploymentId);
     },
 
     async leaveTeam(teamDeploymentId) {

@@ -1,6 +1,5 @@
 import { HostVersionMismatchError } from "@opensteer/client/connections";
 import { HostClientRequestError, unwrapRpcResult } from "@opensteer/client/host";
-import { TeamNeedsBrowserError } from "@opensteer/client/team";
 import { DeploymentIdSchema } from "@opensteer/core";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -172,14 +171,7 @@ function Invite(props: {
                 computerId === null ? null : DeploymentIdSchema.parse(computerId),
             }),
           )
-          .catch((error: unknown) => {
-            if (error instanceof TeamNeedsBrowserError) {
-              navigation.goBack();
-              void Linking.openURL(props.link);
-              return;
-            }
-            setInvite(inviteFailure(error, host, invite.team));
-          });
+          .catch((error: unknown) => setInvite(inviteFailure(error, host, invite.team)));
       }}
       onOpenTeam={() => {
         const team = teams.teamAt(intent.origin);
