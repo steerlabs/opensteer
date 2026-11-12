@@ -165,7 +165,7 @@ const deployment = DesktopDeploymentSummarySchema.parse({
   activeOrigin: "https://server.example.test",
   canonicalOrigin: "https://server.example.test",
   id: createId("deployment"),
-  kind: "self-hosted",
+  kind: "personal",
   lastUsedAt: "2026-08-20T10:00:00.000Z",
   name: "Server",
   onThisComputer: false,

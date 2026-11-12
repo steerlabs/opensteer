@@ -126,7 +126,7 @@ function teamConnection() {
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin: canonicalOrigin, verifiedAt: now }],
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: null,
     name: "Cloud",
     reachability: "canonical",

@@ -1345,7 +1345,7 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
           kind: "app",
         });
         // The delegated worker acts in the automation's page.
-        worker = Object.values(snapshot.assignments)[0]!.workerThread.id;
+        worker = snapshot.threads.find(({ title }) => title === "Book a table for Friday")!.id;
         host.actInPlace(
           worker,
           placeList(host.getSnapshot()).find(({ title }) => title === "Flight award alerts")!.key,
@@ -1384,13 +1384,17 @@ describe("J1: Tabs from the sidebar lists every tab this person may see", () => 
     // Who is in a place, said as the page's pill says it; green only where acting.
     const workerTitle = snapshot.threads.find(({ id }) => id === worker)!.title;
     expect(row(screen, "Flight award alerts").getAttribute("aria-label")).toBe(
-      `Flight award alerts, www.united.com, Guest, ${workerTitle}, working here`,
+      `Flight award alerts, www.google.com, Guest, ${workerTitle}, working here`,
     );
     expect(row(screen, "Flight award alerts").dataset["testid"]).toBe("place:acting");
     expect(row(screen, "Friday dinner").getAttribute("aria-label")).toBe(
-      "Friday dinner, resy.com, Work, Review storage integration, idle",
+      "Friday dinner, resy.com, Work, Build the new architecture, working here",
     );
-    expect(row(screen, "Friday dinner").dataset["testid"]).toBe("place:idle");
+    expect(row(screen, "Friday dinner").dataset["testid"]).toBe("place:acting");
+    expect(row(screen, "storage documentation").getAttribute("aria-label")).toBe(
+      "storage documentation, github.com, Work, Review storage integration, idle",
+    );
+    expect(row(screen, "storage documentation").dataset["testid"]).toBe("place:idle");
     expect(row(screen, "Q4 roadmap – Linear").getAttribute("aria-label")).toBe(
       "Q4 roadmap – Linear, linear.app, Work",
     );

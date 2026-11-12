@@ -632,7 +632,7 @@ function openMessage() {
     },
     dataTicket: "aaaa.bbbb.cccc",
     machineName: "Target machine",
-    policy: { commands: true, forwarding: true, shares: [] },
+    policy: { reach: "owner", commands: true, forwarding: true, shares: [] },
     sessionId,
     type: "host.shell.session.open" as const,
   };

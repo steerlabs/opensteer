@@ -279,7 +279,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     expect(dashboard).toHaveBeenCalledTimes(2);
   });
 
-  it("offers a project's access beside the key form, and the key answers with it", async () => {
+  it("connects an API key with the requested access", async () => {
     const loaded = apiKeyRequest();
     loaded.platform.installations[0]!.tools = [
       { annotations: { readOnlyHint: false }, connectionId: null, serverId: "server-provider" },
@@ -329,11 +329,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
     const container = await mountThreadAction(record);
     const key = container.querySelector<HTMLInputElement>('input[type="password"]');
     if (!key) throw new Error("The Connect card never showed the API key field.");
-    const readWrite = container.querySelector<HTMLButtonElement>(
-      '.connect-card__access [data-value="read-write"]',
-    );
-    if (!readWrite) throw new Error("The key form hid the project's access choice.");
-    await act(async () => readWrite.click());
+    expect(container.querySelector(".connect-card__access")).toBeNull();
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
         key,
@@ -346,7 +342,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       expect(dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
           response: expect.objectContaining({
-            value: expect.objectContaining({ access: "read-write" }),
+            value: expect.objectContaining({ access: "read" }),
           }),
           type: "request.respond",
         }),

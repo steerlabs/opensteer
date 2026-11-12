@@ -688,7 +688,7 @@ interface PageInput {
   readonly desktopAccess?: "connect" | "native" | "owner";
   readonly client: MockHostClient;
   readonly desktopBridge?: OpensteerDesktopBridge | null;
-  readonly desktopDeploymentKind?: "personal" | "self-hosted";
+  readonly desktopDeploymentKind?: "personal" | "team";
   readonly desktopDeploymentName?: string;
   readonly localExecutionStatus?: ShellContext["localExecutionStatus"];
   /** Whether the desktop app supervises the Deployment on the computer it runs on. */
@@ -728,7 +728,7 @@ function pageElement(input: PageInput) {
         activeOrigin: "https://opensteer.example.test",
         canonicalOrigin: "https://opensteer.example.test",
         id: input.localExecutionStatus?.deploymentId ?? createId("deployment"),
-        kind: input.desktopDeploymentKind ?? "self-hosted",
+        kind: input.desktopDeploymentKind ?? "personal",
         lastUsedAt: null,
         name: input.desktopDeploymentName ?? "Mac mini",
         onThisComputer: input.onThisComputer ?? false,

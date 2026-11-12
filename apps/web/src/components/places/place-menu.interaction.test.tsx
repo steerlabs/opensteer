@@ -30,7 +30,7 @@ async function mount(overrides: Partial<DeploymentAccessDeployment> = {}, expire
       {
         id,
         name: "Lab server",
-        kind: "self-hosted",
+        kind: "personal",
         access: "native",
         activeOrigin: "https://lab.example.test",
         canonicalOrigin: "https://lab.example.test",

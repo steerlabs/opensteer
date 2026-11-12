@@ -347,7 +347,7 @@ describe("IntegrationConnectCard", () => {
       expect(grants).toHaveLength(requestState === "settled by the Host" ? 0 : 1);
       if (requestState === "still pending")
         expect(grants[0]?.[0]).toMatchObject({
-          response: { value: { access: "read", connectionId: id, decision: "fulfilled" } },
+          response: { value: { access: "read-write", connectionId: id, decision: "fulfilled" } },
         });
     },
   );
@@ -621,7 +621,7 @@ describe("IntegrationConnectCard", () => {
           response: {
             kind: "external",
             value: {
-              access: "read",
+              access: "read-write",
               alias: `Account ${returnsConnectionId ? "A" : "B"}`,
               isDefault: false,
               connectionId: returnsConnectionId ? accountA.id : accountB.id,

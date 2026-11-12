@@ -131,9 +131,10 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
       "connection.kind": 4,
+      "connection?.kind": 1,
       "connection.authority.document.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "Credential and attention reads distinguish personal computers from team sessions.",
   },
   "apps/mobile/src/notifications/notification-routing.ts": {
     counts: {
