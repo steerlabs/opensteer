@@ -73,7 +73,7 @@ type NativeDestinationSource<Source extends NativeViewerSource> = Source extends
 }
   ? { readonly computerSessionId: string; readonly source?: Source }
   : { readonly computerSessionId?: never; readonly source: Source };
-/** Existing conversation callers keep task-only destinations; workspace places opt into owner sources. */
+
 export type SurfaceDestination<
   Source extends NativeViewerSource = Extract<NativeViewerSource, { kind: "task-session" }>,
 > =
@@ -86,18 +86,18 @@ export type SurfaceDestination<
     } & NativeDestinationSource<Source>)
   /** A phone is its own address: its tab shows whichever live view it has. */
   | { readonly kind: "phone"; readonly machineId: string };
-export type WorkspaceSurfaceDestination =
+export type PersonalSurfaceDestination =
   | SurfaceDestination<NativeViewerSource>
   | { readonly kind: "opensteer-app"; readonly appId: string };
 export function nativeViewerSource(
-  destination: Extract<WorkspaceSurfaceDestination, { kind: "app" }>,
+  destination: Extract<PersonalSurfaceDestination, { kind: "app" }>,
 ): NativeViewerSource {
   if (destination.source) return destination.source;
   return { kind: "task-session", sessionId: destination.computerSessionId! };
 }
 
 /** Where a person's own view of an app or phone is shown: its exact generation, never a task's session. */
-export function ownerViewDestination(view: ComputerView): WorkspaceSurfaceDestination {
+export function ownerViewDestination(view: ComputerView): PersonalSurfaceDestination {
   const source = { kind: "owner-view" as const, viewId: view.viewId, generation: view.generation };
   return view.target.kind === "app"
     ? {
@@ -136,7 +136,6 @@ const liveWorkKeys = ["tasks", "activeTasks", "waitingRequests"] as const;
 export type LiveWorkSource = ConversationSurfaceSource &
   Pick<HostSnapshot, (typeof liveWorkKeys)[number]>;
 
-/** The cross-Workspace overview, independent of opened conversations and transcript streaming. */
 export function sameLiveWorkSource(previous: LiveWorkSource, next: LiveWorkSource): boolean {
   return (
     sameConversationSurfaceSource(previous, next) &&

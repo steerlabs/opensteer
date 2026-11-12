@@ -28,11 +28,12 @@
   "dependencies": {
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/browser-profile": "workspace:*",
+    "@opensteer/core": "workspace:*",
+    "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/protocol": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "ws": "catalog:",
-    "zod": "catalog:",
-    "@opensteer/core": "workspace:*"
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@simplewebauthn/server": "14.0.3",

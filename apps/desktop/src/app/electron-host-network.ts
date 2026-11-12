@@ -49,7 +49,10 @@ export class ElectronHostNetwork implements HostNetwork {
     events: HostNetworkSocketEvents,
   ): HostNetworkSocket {
     const socket = new net.WebSocket(input.url, {
-      headers: input.authorization ? { authorization: input.authorization } : {},
+      headers: {
+        ...input.headers,
+        ...(input.authorization ? { authorization: input.authorization } : {}),
+      },
       origin: input.requestOrigin,
       session: this.#session(input.deploymentId),
       useSessionCookies: true,

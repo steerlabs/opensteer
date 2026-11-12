@@ -30,7 +30,6 @@ describe("place wire contracts", () => {
     const activity = {
       place: { kind: "browser", sessionId: createBrowserSessionId(), surfaceId: "tab-x" },
       threadId: createId("thread"),
-      home: false,
       runId: createId("run"),
       generation: 1,
       seq: 1,

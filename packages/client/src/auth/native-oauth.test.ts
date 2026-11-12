@@ -9,6 +9,7 @@ import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentConnectionSchema,
+  DeploymentCatalogSchema,
   type AccountDeploymentConnectionSource,
   type DeploymentCatalog,
   type DeploymentConnection,
@@ -1130,7 +1131,7 @@ async function managerFixture(
     readonly writeFailure?: string;
   } = {},
 ) {
-  const connection = deploymentConnection("self-hosted");
+  const connection = deploymentConnection("team");
   const catalog = {
     current: catalogFor(connection),
     load: async () => catalog.current,
@@ -1278,7 +1279,7 @@ function signDiscovery(document: HostDiscoveryDocument): HostDiscoveryEnvelope {
   return signTestDiscoveryEnvelope(document, discoveryKeys);
 }
 
-function deploymentConnection(kind: "self-hosted" | "self-hosted"): DeploymentConnection {
+function deploymentConnection(kind: "team" | "team"): DeploymentConnection {
   const deploymentId = createId("deployment");
   return DeploymentConnectionSchema.parse({
     authority: signDiscovery({
@@ -1287,8 +1288,7 @@ function deploymentConnection(kind: "self-hosted" | "self-hosted"): DeploymentCo
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -1313,7 +1313,7 @@ function catalogFor(connection: DeploymentConnection): DeploymentCatalog {
   return {
     deployments: [connection],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
     updatedAt: "2026-08-11T18:00:00.000Z",
   };

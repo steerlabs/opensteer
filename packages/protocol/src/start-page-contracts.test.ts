@@ -31,7 +31,7 @@ describe("start-page wire contracts", () => {
       {},
       { ...session, ...identity },
       { ...session, placement: { kind: "runner", runnerId: machineId } },
-      { ...identity, workspaceId: "wsp_forged" },
+      { ...identity, workspaceId: "removed" },
       { ...identity, url: "javascript:alert(1)" },
       { ...identity, url: "https://user:secret@example.com" },
     ])

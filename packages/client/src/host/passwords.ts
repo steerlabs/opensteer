@@ -26,34 +26,12 @@ export const passwordsAppName = "Opensteer Passwords";
  * ------------------------------------------------------------------------- */
 
 /** The promise every sign-in card makes, word for word the same everywhere. */
-export function passwordSignInPrivacy(site: string, permissionVersion?: 5): string {
-  if (permissionVersion === 5)
-    return `Agents can type your saved login on ${browserSiteLabel(site)} and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
-  return `Opensteer fills your password into ${browserSiteLabel(site)} for them — it never sends it to the agent, but the website page holds it once filled. Sign-ins can stay saved in the browser profile.`;
+export function passwordSignInPrivacy(site: string): string {
+  return `Your agents can type your saved login on ${browserSiteLabel(site)} and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
 }
-
-export function passwordSignInConsent(
-  workspaceName: string,
-  site: string,
-  account: string,
-  permissionVersion?: 5,
-): string {
-  if (permissionVersion === 5)
-    return `Agents in ${workspaceName} want to use your saved login ${account} for ${browserSiteLabel(site)}. They can type it on this website and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.`;
-  return `Let agents in ${workspaceName} sign in to ${browserSiteLabel(site)} as ${account}. ${passwordSignInPrivacy(site)}`;
+export function passwordSignInConsent(site: string, account: string): string {
+  return `Let your agents sign in to ${browserSiteLabel(site)} as ${account}. ${passwordSignInPrivacy(site)}`;
 }
-
-/** The agent wrote the reason, so it is labelled as the agent's and never as Opensteer's. */
-export const passwordSignInReasonLabel = "Agent’s reason";
-export const passwordSignInAccountLegend = "Sign in as";
-export const passwordSignInAllowLabel = "Allow";
-export const passwordSignInOnceLabel = "Only this time";
-export const passwordSignInDeclineLabel = "Don’t allow";
-export const passwordSignInDecliningLabel = "Declining…";
-/** While the Host settles Allow or Only this time. */
-export const passwordSignInConfirming = "Allowing agents to sign in…";
-/** The Mac no longer runs a sign-in whose Request the Host has not settled yet. */
-export const passwordSignInGone = "This sign-in is no longer running.";
 
 export function passwordSignInNoAccount(site: string): string {
   return `No saved password for ${browserSiteLabel(site)}.`;
@@ -169,8 +147,8 @@ function accountUpdated(updatedAt: string, day: boolean): string {
 }
 
 /** What Allow keeps that Only this time does not, once an account is chosen. */
-export function passwordSignInAllowRemembers(workspaceName: string, username: string): string {
-  return `Allow lets agents in ${workspaceName} sign in as ${username} from now on.`;
+export function passwordSignInAllowRemembers(username: string): string {
+  return `Allow lets your agents sign in as ${username} from now on.`;
 }
 
 /** "Expires in 14 minutes", or "Expired" once the deadline has passed. */
@@ -468,7 +446,7 @@ export function passwordsWaitingDetail(count: number): string {
 export const passwordsCardsFact =
   "Cards work on websites only. Every use needs a fresh approval, lasting up to 30 minutes; it does not approve a charge.";
 export const passwordsHowItWorks = [
-  "You allow an account once per Workspace from any device signed in to this Opensteer. After that, agents there can use it to sign in on their own.",
+  "You allow an account from any device signed in to this Opensteer. Your agents can then use it for your tasks.",
   "Take that access away any time in the Passwords window.",
   "Sign-ins can stay saved in the browser profile.",
   "Sites you allowed from Chrome keep using Chrome.",

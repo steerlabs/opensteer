@@ -1,6 +1,10 @@
+import { TaskFolderSchema } from "@opensteer/core";
+import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
+import type { FolderAdmissionService } from "./threads/folder-admission-service.js";
+import type { PersonalTeamLinks } from "./team-links/service.js";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
-import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
+
 import { readAutomaticModelPreview } from "./agents/automatic-models.js";
 import { registerDesktopUpdateMaintenance } from "./access/personal-desktop-update-routes.js";
 import { ThreadService, assertAccessModeEnforceable } from "./threads/thread-service.js";
@@ -8,13 +12,7 @@ import {
   AdministrationService,
   isAdministrationCommand,
 } from "./administration/administration-service.js";
-import {
-  boundRunnerEnvironmentIds,
-  harnessView,
-  harnessAuthenticationIsAllowed,
-  requireMachineAccessManagement,
-  workspaceView,
-} from "./administration/authority.js";
+import { harnessView, requireMachineAccessManagement } from "./administration/authority.js";
 import {
   connectionCredentialPrefix,
   connectionRequestOrigin,
@@ -27,7 +25,7 @@ import { afterResponse } from "./server/after-response.js";
 import type { AppService } from "./apps/app-service.js";
 import { AppGateway, hasAppAuthority } from "./apps/app-gateway.js";
 import { createAppHandlers, registerAppRoutes } from "./apps/app-routes.js";
-import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
+
 import { AgentPhoneUpdateHub } from "./agent-phone/update-hub.js";
 import type { AgentPhoneUpdateRelease } from "./agent-phone/update-release.js";
 import type { BrowserTabGroupService } from "./browser/browser-tab-group-service.js";
@@ -81,8 +79,6 @@ import {
   HarnessInstanceIdSchema,
   OpensteerError,
   TriggerRevisionIdSchema,
-  WorkspaceIdSchema,
-  deploymentSupportsSharing,
   runnerAgentToolsFailure,
   unsupportedVersionReason,
   type AgentEvent,
@@ -91,7 +87,6 @@ import {
   type HarnessInstanceId,
   type HarnessInstanceStateKind,
   type RunnerId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import {
   machineIsManagedBy,
@@ -100,7 +95,6 @@ import {
   runnerIdentityRevokedReason,
   type MachineOwnershipRecord,
   type OpensteerStore,
-  type WorkspaceInvitationRecord,
 } from "@opensteer/database";
 import {
   HostDescriptorSchema,
@@ -143,7 +137,7 @@ import {
   RunnerToHostMessageSchema,
   RunnerWireProofSchema,
   ShellModuleToHostMessageSchema,
-  WorkspaceFileKeySchema,
+  FolderFileKeySchema,
   agentPhoneOutdatedReason,
   agentToolPayloadMaxSerializedBytes,
   browserViewerCloseCodes,
@@ -154,8 +148,6 @@ import {
   rpcSuccess,
   threadPageMaxItems,
   unsupportedVersionCloseCode,
-  workspaceDirectoryPageDefaultEntries,
-  workspacePageMaxItems,
   type AgentPhoneHostTarget,
   type ComputerUseSessionSummary,
   type HarnessAuthenticationState,
@@ -176,7 +168,6 @@ import {
   type RunnerHarnessDriver,
   type RunnerModuleName,
   type ShellModuleEvent,
-  type WorkspaceView,
   runFileMaxBytes,
   runFileNameHeader,
   runFileTransferContentType,
@@ -230,7 +221,6 @@ import {
   notifyingHarnessCatalogRecorder,
 } from "./agents/harness-catalogs.js";
 import type { RunnerAuthenticator } from "./agents/runner-authenticator.js";
-import type { SecurityEffectService } from "./agents/security-effect-service.js";
 import type { AttachmentService } from "./attachments/attachment-service.js";
 import type { RunFileRelay } from "./integrations/run-file-relay.js";
 import { browserRuntimeCompatibilityReason } from "./browser/browser-runtime-compatibility.js";
@@ -257,11 +247,7 @@ import type { ComputerUseService } from "./computer-use/computer-use-service.js"
 import type { DisplayStreamHub } from "./computer-use/display-stream-hub.js";
 import type { CredentialService } from "./identity/credential-service.js";
 import type { HarnessAuthenticationCoordinator } from "./identity/harness-authentication-coordinator.js";
-import {
-  createIdentityRpcHandlers,
-  registerIdentityRoutes,
-  requireInstanceAdministrator,
-} from "./identity/identity-routes.js";
+import { createIdentityRpcHandlers, registerIdentityRoutes } from "./identity/identity-routes.js";
 import {
   sealRequestResponse,
   type RequestResponseVault,
@@ -301,7 +287,11 @@ import {
 import { drainConnectionsWithin } from "./server/connection-drain.js";
 import type { EgressService } from "./server/egress-service.js";
 import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
-import { registerHostApi } from "./server/host-api-registration.js";
+import {
+  registerHostApi,
+  requireNegotiatedVersion,
+  carryWebSocketVersion,
+} from "./server/host-api-registration.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
 import { requestAbortSignal } from "./server/request-abort-signal.js";
@@ -319,9 +309,7 @@ import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trig
 import type { TriggerService } from "./triggers/trigger-service.js";
 import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
 import type { WatchProgramService } from "./triggers/watch-program-service.js";
-import type { WorkspaceFilesService } from "./workspace/files/workspace-files-service.js";
-import type { WorkspaceDeletionService } from "./workspace/workspace-deletion-service.js";
-import type { WorkspaceService } from "./workspace/workspace-service.js";
+import type { FolderFilesService } from "./threads/folder-files-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -350,7 +338,7 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
   environmentId: EnvironmentIdSchema,
   harnessInstanceId: HarnessInstanceIdSchema,
 });
-const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeySchema });
+
 /**
  * Machines is a whole-inventory view, not a feed: a Deployment with more
  * computers than one page holds is not a shape this surface serves, so it asks
@@ -359,11 +347,14 @@ const WorkspaceFileContentQuerySchema = z.strictObject({ file: WorkspaceFileKeyS
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
-  readonly teamAdministration?: import("./team/team-administration-service.js").TeamAdministrationService;
+  readonly folders: Pick<
+    FolderAdmissionService,
+    "admit" | "resolve" | "canExecute" | "assertAvailable"
+  >;
+  readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
   readonly passkeys?: boolean;
-  readonly knowledge?: boolean;
   readonly fetch?: typeof globalThis.fetch;
   readonly attachments: AttachmentService;
   readonly runFiles: RunFileRelay;
@@ -404,7 +395,7 @@ export interface HostServerDependencies {
   readonly credentials: CredentialService;
   readonly discovery: HostDiscoveryEnvelope;
   readonly egress: EgressService;
-  readonly files: WorkspaceFilesService;
+  readonly files: FolderFilesService;
   readonly integrations: {
     readonly authAttempts: IntegrationAuthAttemptLifecycle;
     readonly continuations: ContinuationService;
@@ -423,10 +414,9 @@ export interface HostServerDependencies {
   /** What active Runs are streaming, for readers that open a Thread mid-turn. */
   readonly liveRuns: Pick<LiveRunRegistry, "threadFrames">;
   readonly realtime: RealtimeHub;
-  readonly publishWorkspaceEvent?: (event: AgentEvent) => void;
+  readonly publishDeploymentEvent?: (event: AgentEvent) => void;
   readonly runnerAuthenticator: RunnerAuthenticator;
   readonly runners: RunnerRegistry;
-  readonly securityEffects: SecurityEffectService;
   /** The Host's end of every `shell` module control stream. */
   readonly shellControl: ShellControlStreamHandler;
   /** Present when web distribution is packaged. */
@@ -439,8 +429,6 @@ export interface HostServerDependencies {
     readonly watchPrograms: WatchProgramService;
     readonly watchBrowserTokens: WatchCapabilityTokenService<"opensteer-watch-browser-cdp">;
   };
-  readonly workspaceDeletion: Pick<WorkspaceDeletionService, "recover" | "requestDeletion">;
-  readonly workspaces: WorkspaceService;
 }
 
 export async function createHostServer(
@@ -448,8 +436,8 @@ export async function createHostServer(
   options: { readonly logger?: boolean | Record<string, unknown> } = {},
 ): Promise<FastifyInstance> {
   const threadService = new ThreadService(dependencies);
-  const publishWorkspaceEvent =
-    dependencies.publishWorkspaceEvent ??
+  const publishDeploymentEvent =
+    dependencies.publishDeploymentEvent ??
     ((event: AgentEvent) => dependencies.realtime.publish(event));
   const app = Fastify({
     bodyLimit: maxWebSocketFrameBytes,
@@ -467,7 +455,18 @@ export async function createHostServer(
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
-  app.addHook("onRequest", rejectDuplicateCredentialHeaders);
+  app.addHook("onRequest", async (request) => {
+    carryWebSocketVersion(request, "personal");
+    if (
+      request.url.startsWith("/v1/") &&
+      !request.url.startsWith("/v1/rpc/") &&
+      !request.url.startsWith("/v1/local-bootstrap")
+    )
+      requireNegotiatedVersion(request);
+  });
+  app.addHook("onRequest", async (request) => {
+    if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
+  });
   await registerResponseCompression(app);
   const harnessCatalogs = {
     ...notifyingHarnessCatalogRecorder(dependencies.store, dependencies.realtime),
@@ -482,7 +481,7 @@ export async function createHostServer(
   });
   app.addHook("onClose", async () => harnessCatalogReconciliations.close());
   const administration = new AdministrationService(
-    dependencies,
+    { ...dependencies, publishDeploymentEvent },
     (id) => harnessCatalogReconciliations.schedule(id),
     (fields, message) => app.log.warn(fields, message),
   );
@@ -528,24 +527,18 @@ export async function createHostServer(
     }
   >();
   const realtimeSocketSessions = new WeakMap<object, AuthenticatedSession>();
-  const workspaceSharingAvailable = deploymentSupportsSharing(
-    dependencies.discovery.document.deploymentShape,
-  );
   registerAppRoutes(app, dependencies.apps);
   registerIdentityRoutes(app, dependencies.authenticator, {
     ...(dependencies.accountAdoption
       ? { acknowledgeAccountAdoption: dependencies.accountAdoption.acknowledge }
       : {}),
-    workspaceSharingAvailable,
+    assertOwner: (userId) => requirePersonalOwner(dependencies.store.database, userId),
   });
   const connectionRoutes = dependencies.connections
     ? {
         oauth: dependencies.connections,
         canonicalOrigin: dependencies.discovery.document.canonicalOrigin,
-        loopbackOriginAliases: deploymentPolicy({
-          kind: dependencies.discovery.document.deploymentShape.kind,
-          defaultWorkspaceBacking: "local-directory",
-        }).loopbackOriginAliases,
+        loopbackOriginAliases: true,
         remoteOrigin: async () =>
           (await dependencies.personalRemoteAccess?.service.status())?.route?.document.route
             .origin ?? null,
@@ -625,6 +618,7 @@ export async function createHostServer(
     setBrowserSourceExtensionCors(reply, request.headers.origin);
     void reply.header("cache-control", "no-store");
     return HostDescriptorSchema.parse({
+      kind: "personal",
       apiVersion: hostApiVersion,
       authority: dependencies.discovery,
       bootstrapMethods: await advertisedBootstrapMethods(dependencies),
@@ -635,6 +629,7 @@ export async function createHostServer(
     app,
     dependencies.authenticator,
     dependencies.personalRemoteAccess?.service.desktopUpdates ?? null,
+    dependencies.store.database,
   );
   // One optional subsystem, one registration decision. A Deployment without
   // Personal reachability does not answer on these paths at all, so no handler
@@ -664,7 +659,7 @@ export async function createHostServer(
       const authenticated = await dependencies.authenticator.authenticateSessionContext(
         request.headers,
       );
-      requireInstanceAdministrator(authenticated.session);
+      await requirePersonalOwner(dependencies.store.database, authenticated.session.user.id);
       return reply.header("cache-control", "no-store").send(await personalRemoteAccess.status());
     });
     app.put("/v1/personal-remote-access", async (request, reply) => {
@@ -867,10 +862,7 @@ export async function createHostServer(
     session: Awaited<ReturnType<HostAuthenticator["authenticateSession"]>>,
     environmentIdInput: string,
   ) => {
-    return administration.admitHarnessManagement(
-      { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
-      environmentIdInput,
-    );
+    return administration.admitHarnessManagement({ userId: session.user.id }, environmentIdInput);
   };
 
   /** Resolves the work location and settles, in one place for all three
@@ -903,31 +895,33 @@ export async function createHostServer(
     });
   }
 
-  app.get<{ Params: { workspaceId: string } }>(
-    "/v1/workspaces/:workspaceId/files/download",
-    async (request, reply) => {
-      const userId = await dependencies.authenticator.authenticateUser(request.headers);
-      const workspaceId = WorkspaceIdSchema.parse(request.params.workspaceId);
-      const admission = await dependencies.store.admitWorkspaceFiles(workspaceId, userId);
-      if (!admission) {
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      }
-      const query = WorkspaceFileContentQuerySchema.parse(request.query);
-      const signal = requestAbortSignal(request.raw, reply.raw);
-      const response = await dependencies.files.download(admission, query.file, signal);
-      for (const header of ["content-length", "content-type", "etag", "last-modified"] as const) {
-        const value = response.headers.get(header);
-        if (value) void reply.header(header, value);
-      }
-      void reply
-        .header("cache-control", "private, no-store")
-        .header("content-disposition", "attachment")
-        .header("content-security-policy", "default-src 'none'; sandbox")
-        .header("x-content-type-options", "nosniff");
-      if (!response.body) return reply.send(Buffer.alloc(0));
-      return reply.send(Readable.from(response.body as AsyncIterable<Uint8Array>));
-    },
-  );
+  app.post("/v1/folders/files/download", async (request, reply) => {
+    const userId = await dependencies.authenticator.authenticateUser(request.headers, {
+      mutation: true,
+    });
+    await requirePersonalOwner(dependencies.store.database, userId);
+    const input = z
+      .strictObject({ folder: TaskFolderSchema, file: FolderFileKeySchema })
+      .parse(request.body);
+    const folder = await dependencies.folders.admit(input.folder);
+    const response = await dependencies.files.download(
+      folder,
+      input.file,
+      requestAbortSignal(request.raw, reply.raw),
+    );
+    for (const header of ["content-length", "content-type", "etag", "last-modified"] as const) {
+      const value = response.headers.get(header);
+      if (value) void reply.header(header, value);
+    }
+    void reply
+      .header("cache-control", "private, no-store")
+      .header("content-disposition", "attachment")
+      .header("content-security-policy", "default-src 'none'; sandbox")
+      .header("x-content-type-options", "nosniff");
+    return reply.send(
+      response.body ? Readable.from(response.body as AsyncIterable<Uint8Array>) : Buffer.alloc(0),
+    );
+  });
 
   app.post<{ Params: { profileId: string } }>(
     "/v1/browser-profiles/:profileId/ready",
@@ -952,7 +946,8 @@ export async function createHostServer(
     session: NonNullable<HostApiServerContext["session"]>,
   ): Promise<Omit<MachineProjectionInput, "deploymentOwnsMainComputer">> => {
     const ownerId = session.user.id;
-    const includeDeployment = session.user.instanceRole === "administrator";
+    await requirePersonalOwner(dependencies.store.database, ownerId);
+    const includeDeployment = true;
     const [runnerPage, pendingRunners] = await Promise.all([
       dependencies.store.listRunners({
         includeDeployment,
@@ -972,10 +967,8 @@ export async function createHostServer(
     const environmentIds = [
       ...new Set(active.flatMap((runner) => runner.moduleDescriptors.agents?.environmentIds ?? [])),
     ];
-    const [localWorkspaces, threadsByEnvironment] = await Promise.all([
-      dependencies.store.listLocalWorkspacesForEnvironments(environmentIds),
-      dependencies.store.countLiveThreadsByEnvironment(environmentIds),
-    ]);
+    const threadsByEnvironment =
+      await dependencies.store.countLiveThreadsByEnvironment(environmentIds);
     // Access is read only for the machines this viewer manages and only for the
     // ones that can have any: reach is not disclosed to anyone else, and a
     // machine that does not advertise `shell` — an older Runner, a Windows one,
@@ -1002,10 +995,7 @@ export async function createHostServer(
         : await dependencies.store.effectiveMachineOwners(manageable.map((runner) => runner.id));
     const managed = manageable.filter((runner) => {
       const owners = ownership.get(runner.id);
-      return (
-        owners !== undefined &&
-        machineIsManagedBy(owners, ownerId, { allowDeployment: includeDeployment })
-      );
+      return owners !== undefined && machineIsManagedBy(owners, ownerId);
     });
     const apps = new Map<string, readonly MachineAppStatus[]>();
     const computerViews = new Map<
@@ -1078,7 +1068,6 @@ export async function createHostServer(
       computerViews,
       computerUseDisplayStreamSupported,
       computerUsePolicies,
-      localWorkspaces,
       pendingRunners,
       runners: runnerPage.runners.map((runner) => ({
         updateRequired: runner.updateRequired,
@@ -1139,14 +1128,11 @@ export async function createHostServer(
   const machineSummaries = async (session: NonNullable<HostApiServerContext["session"]>) =>
     projectMachines({
       ...(await machineRegistryRows(session)),
-      deploymentOwnsMainComputer: deploymentPolicy({
-        kind: dependencies.discovery.document.deploymentShape.kind,
-        defaultWorkspaceBacking: "local-directory",
-      }).deploymentOwnsMainComputer,
+      deploymentOwnsMainComputer: true,
     });
 
   const coreRpcHandlers = {
-    ...createVoiceHandlers({ ...dependencies, publishWorkspaceEvent, threads: threadService }),
+    ...createVoiceHandlers({ ...dependencies, publishDeploymentEvent, threads: threadService }),
     "agentPhone.target.get": async (_input, context) => {
       requireRpcSession(context);
       return rpcSuccess(
@@ -1180,92 +1166,73 @@ export async function createHostServer(
         ),
       ),
     "bootstrap.get": async (_input, context) => {
-      const session = requireRpcSession(context);
-      const ownerId = session.user.id;
-      const diagnosticHeader = context.headers[bootstrapDiagnosticHeader];
-      if (diagnosticHeader !== undefined) {
-        const diagnostic = dependencies.realtime.bootstrapDiagnostics.report(diagnosticHeader);
-        if (diagnostic) app.log.warn(diagnostic, "host.bootstrap.loop");
-      }
-      const homeWorkspace = await dependencies.workspaces
-        .ensureMainWorkspace(ownerId)
-        .catch((error: unknown) => {
-          app.log.error({ err: error, ownerId }, "Main Workspace could not be ensured");
-          return null;
-        });
+      const session = requireRpcSession(context),
+        ownerId = session.user.id;
+      await requirePersonalOwner(dependencies.store.database, ownerId);
+      const settings = await findPersonalSettings(dependencies.store.database);
       const environments = await dependencies.store.listEnvironmentsForUser(ownerId);
       const [
-        workspacePage,
         visibleHarnesses,
         browser,
         identityConfig,
         executionPreferences,
         automaticModels,
         quietTaskDays,
+        machines,
+        storedCatalogs,
       ] = await Promise.all([
-        dependencies.store.workspacePageForOwner({ ownerId }),
         dependencies.store.listHarnessInstances({
           environmentIds: environments.map(({ id }) => id),
         }),
-        dependencies.browser.bootstrap(ownerId),
+        settings
+          ? dependencies.browser.bootstrap(ownerId)
+          : {
+              available: false,
+              groups: { rows: [], complete: true },
+              tabs: [],
+              placements: [],
+              profiles: [],
+              profileHomes: [],
+            },
         dependencies.authenticator.identity.configuration(),
         dependencies.store.getExecutionPreferences(ownerId),
         dependencies.store.getAutomaticModelConfig(ownerId),
         dependencies.store.notificationState.quietTaskDaysFor(ownerId),
+        machineSummaries(session),
+        dependencies.store.listHarnessCatalogs(environments.map(({ id }) => id)),
       ]);
-      const storedCatalogs = await dependencies.store.listHarnessCatalogs(
-        environments.map((environment) => environment.id),
-      );
-      const isInstanceAdministrator = session.user.instanceRole === "administrator";
-      const boundEnvironmentIds = isInstanceAdministrator
-        ? new Set<EnvironmentId>()
-        : await boundRunnerEnvironmentIds(dependencies.store, ownerId);
-      const environmentSummaries = environments.map((environment) => {
-        const runner = dependencies.runners.identityForEnvironment(environment.id);
-        const connected = runner !== undefined;
-        return {
-          ...environment,
-          connected,
-          harnessAuthenticationAllowed: harnessAuthenticationIsAllowed({
-            boundEnvironmentIds,
-            environment,
-            isInstanceAdministrator,
-          }),
-          harnessCatalogs: storedCatalogs
-            .filter((record) => record.environmentId === environment.id)
-            .map((record) => ({ ...record.catalog, capturedAt: record.capturedAt.toISOString() })),
-          harnessDrivers: runner ? harnessDriversView(runner) : [],
-          providerStateModes: runner?.modules.agents?.providerStateModes ?? [],
-          status: connected ? "connected" : "disconnected",
-          workspaceBackings: runner?.modules.agents?.workspaceBackings ?? [],
-        };
-      });
-      const machines = await machineSummaries(session);
-      const notificationPreferences =
-        homeWorkspace && !workspacePage.workspaces.some(({ id }) => id === homeWorkspace.id)
-          ? [
-              ...workspacePage.notificationPreferences,
-              ...(await dependencies.store.notificationState.listWorkspacePreferences({
-                userId: ownerId,
-                workspaceIds: [homeWorkspace.id],
-              })),
-            ]
-          : workspacePage.notificationPreferences;
       return rpcSuccess(
         HostBootstrapSchema.parse({
-          browser,
-          appTabs: await dependencies.apps.listTabs(ownerId),
-          latestPlaces: await dependencies.browser.latestPlaces(ownerId),
-          notificationPreferences,
           deploymentId: dependencies.discovery.document.deploymentId,
-          deploymentShape: dependencies.discovery.document.deploymentShape,
-          deploymentPolicy: deploymentClientPolicy(
-            deploymentPolicy({
-              kind: dependencies.discovery.document.deploymentShape.kind,
-              defaultWorkspaceBacking: "local-directory",
-            }),
-          ),
-          environments: environmentSummaries,
+          sessionId: session.id,
+          personalSettings: settings,
+          can: {
+            createTasks: settings !== null,
+            useVoice: settings !== null,
+            manageComputers: true,
+            managePrivateResources: true,
+          },
+          browser,
+          appTabs: settings ? await dependencies.apps.listTabs(ownerId) : [],
+          latestPlaces: settings ? await dependencies.browser.latestPlaces(ownerId) : [],
+          environments: environments.map((environment) => {
+            const runner = dependencies.runners.identityForEnvironment(environment.id);
+            return {
+              ...environment,
+              connected: !!runner,
+              harnessAuthenticationAllowed: true,
+              harnessCatalogs: storedCatalogs
+                .filter((record) => record.environmentId === environment.id)
+                .map((record) => ({
+                  ...record.catalog,
+                  capturedAt: record.capturedAt.toISOString(),
+                })),
+              harnessDrivers: runner ? harnessDriversView(runner) : [],
+              providerStateModes: runner?.modules.agents?.providerStateModes ?? [],
+              status: runner ? "connected" : "disconnected",
+              can: { executeTasks: dependencies.folders.canExecute(environment.id) },
+            };
+          }),
           executionPreferences,
           quietTaskDays,
           harnesses: visibleHarnesses.map((harness) => ({
@@ -1274,23 +1241,10 @@ export async function createHostServer(
               harness.sourceId !== "openai-compatible" &&
               !automaticModels.excludedAccounts.includes(harness.id),
           })),
-          homeWorkspace: homeWorkspace
-            ? await workspaceView(dependencies.workspaces, homeWorkspace)
-            : null,
           identityConfig,
           machines,
-          ...(context.surface ? { sessionSurface: context.surface } : {}),
-          sessionId: session.id,
+          sessionSurface: context.surface ?? "canonical",
           user: session.user,
-          workspaceSharingAvailable: deploymentSupportsSharing(
-            dependencies.discovery.document.deploymentShape,
-          ),
-          workspaces: await Promise.all(
-            workspacePage.workspaces.map((workspace) =>
-              decorateWorkspaceView(dependencies.workspaces, workspace),
-            ),
-          ),
-          workspaceWindow: workspacePage.window,
         }),
       );
     },
@@ -1360,7 +1314,7 @@ export async function createHostServer(
       const session = requireRpcSession(context);
       await requireMachineAccessManagement(
         dependencies.store,
-        { userId: session.user.id, isAdministrator: session.user.instanceRole === "administrator" },
+        { userId: session.user.id },
         input.runnerId,
       );
       // The store bounds this page to both the item limit and 16 MiB serialized,
@@ -1566,84 +1520,62 @@ export async function createHostServer(
         hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "workspace.catalog.list": async (input, context) => {
-      const page = await dependencies.store.workspacePageForOwner({
-        ...(input.before ? { before: input.before } : {}),
-        maxItems: Math.min(input.limit ?? workspacePageMaxItems, workspacePageMaxItems),
-        ownerId: requireRpcSession(context).user.id,
-      });
-      return rpcSuccess({
-        ...page,
-        workspaces: await Promise.all(
-          page.workspaces.map((workspace) =>
-            decorateWorkspaceView(dependencies.workspaces, workspace),
-          ),
-        ),
-      });
-    },
-    "workspace.files.list": async (input, context) => {
-      const admission = await dependencies.store.admitWorkspaceFiles(
-        input.workspaceId,
-        requireRpcSession(context).user.id,
-      );
-      if (!admission) {
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      }
+    "folder.files.list": async (input, context) => {
+      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
       const page = await dependencies.files.list(
-        admission,
+        await dependencies.folders.admit(input.folder),
         {
-          ...(input.cursor ? { cursor: input.cursor } : {}),
-          ...(input.retainedCursor ? { retainedCursor: input.retainedCursor } : {}),
-          ...(input.knownRevision ? { knownRevision: input.knownRevision } : {}),
-          limit: workspaceDirectoryPageDefaultEntries,
           parentKey: input.parentKey,
+          ...(input.cursor ? { cursor: input.cursor } : {}),
+          limit: 200,
         },
         context.signal,
       );
-      context.setHeader("etag", `"${page.revision}"`);
       return rpcSuccess(page);
     },
-    "workspace.files.preview": async (input, context) => {
-      const admission = await dependencies.store.admitWorkspaceFiles(
-        input.workspaceId,
-        requireRpcSession(context).user.id,
+    "folder.files.preview": async (input, context) => {
+      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
+      const result = await dependencies.files.preview(
+        await dependencies.folders.admit(input.folder),
+        input.fileKey,
+        context.signal,
       );
-      if (!admission) {
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      }
       return rpcSuccess(
-        hostApi["workspace.files.preview"].success.parse(
-          await dependencies.files.preview(admission, input.fileKey, context.signal),
-        ),
+        hostApi["folder.files.preview"].success.parse({
+          metadata: result.metadata,
+          content: Buffer.from(result.bytes).toString("base64"),
+        }),
       );
     },
-    "workspace.invitations.list": async (input, context) =>
-      rpcSuccess({
-        invitations: (
-          await dependencies.store.listActiveWorkspaceInvitations(
-            input.workspaceId,
-            requireRpcSession(context).user.id,
-          )
-        ).map(serializeInvitation),
-      }),
-    "workspace.members.list": async (input, context) =>
-      rpcSuccess({
-        members: (
-          await dependencies.store.listWorkspaceMembers(
-            input.workspaceId,
-            requireRpcSession(context).user.id,
-          )
-        ).map((member) => ({ ...member, joinedAt: member.joinedAt.toISOString() })),
-      }),
-    "workspace.prefetch": async (input, context) => {
-      const workspace = await dependencies.store.getWorkspaceForOwner(
-        input.workspaceId,
-        requireRpcSession(context).user.id,
-      );
-      if (!workspace || workspace.status === "deleted") {
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      }
-      return rpcSuccess({});
+    "attention.get": async (_input, context) =>
+      rpcSuccess(
+        await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
+      ),
+    "needsYou.get": async (input, context) =>
+      rpcSuccess(
+        await needsYouPage(dependencies.store.database, {
+          ...(input.before ? { before: input.before } : {}),
+          ...(input.limit ? { limit: input.limit } : {}),
+          userId: requireRpcSession(context).user.id,
+        }),
+      ),
+    "teams.links.list": async (_input, context) => {
+      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
+      return rpcSuccess({ links: await (await dependencies.teamLinks()).list() });
+    },
+    "teams.channelFolder.get": async (input, context) => {
+      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
+      return rpcSuccess({
+        folder: await (await dependencies.teamLinks()).folder(input.teamId, input.channelId),
+      });
+    },
+    "teams.threadTask.get": async (input, context) => {
+      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
+      return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
+    },
+    "teams.replyTask.get": async (input, context) => {
+      const ownerId = requireRpcSession(context).user.id;
+      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
     },
     "tasks.list": async (input, context) =>
       rpcSuccess(
@@ -1654,7 +1586,6 @@ export async function createHostServer(
             ...(input.done ? { done: true } : {}),
             maxItems: Math.min(input.limit ?? threadPageMaxItems, threadPageMaxItems),
             userId: requireRpcSession(context).user.id,
-            ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
           }),
         ),
       ),
@@ -1674,6 +1605,14 @@ export async function createHostServer(
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
+    | "folder.files.list"
+    | "folder.files.preview"
+    | "attention.get"
+    | "needsYou.get"
+    | "teams.links.list"
+    | "teams.channelFolder.get"
+    | "teams.threadTask.get"
+    | "teams.replyTask.get"
     | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"
@@ -1698,12 +1637,6 @@ export async function createHostServer(
     | "thread.inputQueue.get"
     | "thread.live.get"
     | "thread.requests.list"
-    | "workspace.catalog.list"
-    | "workspace.files.list"
-    | "workspace.files.preview"
-    | "workspace.invitations.list"
-    | "workspace.members.list"
-    | "workspace.prefetch"
   >;
 
   const executeCoreCommand = async (command: CoreCommand, context: HostApiServerContext) => {
@@ -1721,10 +1654,7 @@ export async function createHostServer(
     const session = requireRpcSession(context);
     const userId = session.user.id;
     if (isAdministrationCommand(command))
-      return administration.execute(
-        { kind: "person", userId, isAdministrator: session.user.instanceRole === "administrator" },
-        command,
-      );
+      return administration.execute({ kind: "person", userId }, command);
     switch (command.type) {
       case "settings.plugin.enabled.set": {
         const result = await dependencies.integrations.platform.store.settings.setEnabled(
@@ -1734,19 +1664,19 @@ export async function createHostServer(
         dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
         return result;
       }
-      case "settings.plugin.placement.set": {
-        const result = await dependencies.integrations.platform.setPluginPlacement(userId, command);
-        const affected =
-          command.target.kind === "plugin" || command.target.kind === "specialist"
-            ? await dependencies.integrations.platform.store.settings.affectedViewers({
-                pluginId: command.target.pluginId,
-              })
-            : [];
-        dependencies.realtime.sendToUsers([...new Set([userId, ...affected])], {
-          type: "host.plugins-changed",
-        });
-        return result;
-      }
+      case "teams.link.join":
+        return {
+          type: command.type,
+          link: await (await dependencies.teamLinks()).join(command.link),
+        };
+      case "teams.link.leave":
+        await (await dependencies.teamLinks()).leave(command.teamId);
+        return { type: command.type };
+      case "teams.channelFolder.set":
+        await (
+          await dependencies.teamLinks()
+        ).setFolder(command.teamId, command.channelId, command.folder);
+        return { type: command.type };
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({
           threadId: command.threadId,
@@ -1754,20 +1684,12 @@ export async function createHostServer(
           userId,
         });
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
-        if (thread) dependencies.realtime.publishReadState(userId, thread.workspaceId, state);
-        // A task read here is no longer bold on the reader's other clients,
-        // which may follow other Workspaces than this Thread's.
+        if (thread) dependencies.realtime.publishReadState(userId, state);
+        // A task read here is no longer bold on the reader's other clients.
         dependencies.realtime.publishViewerTasksChanged(userId);
         return { type: command.type, state };
       }
-      case "thread.done.set":
-        throw new OpensteerError({
-          code: "bad_request",
-          reason: "shared-task-done-required",
-          message:
-            "Update Opensteer on this device to mark tasks Done. Done now stops the task for everyone.",
-        });
-      case "thread.shared-done.set": {
+      case "thread.done.set": {
         const result = await dependencies.commands.setThreadDone({
           done: command.done,
           threadId: command.threadId,
@@ -1800,7 +1722,6 @@ export async function createHostServer(
       case "attachment.upload.create":
         return {
           attachment: await dependencies.attachments.reserve({
-            workspaceId: command.workspaceId,
             uploaderId: userId,
             name: command.name,
             mediaType: command.mediaType,
@@ -1812,114 +1733,6 @@ export async function createHostServer(
       case "attachment.upload.discard":
         await dependencies.attachments.discard(command.attachmentId, userId);
         return { type: command.type };
-      case "workspace.create": {
-        const workspace = await dependencies.workspaces.create({
-          createdBy: userId,
-          ...(command.icon ? { icon: command.icon } : {}),
-          idempotencyKey: command.idempotencyKey,
-          kind: "project",
-          name: command.name,
-        });
-        dependencies.realtime.sendToUsers([userId], { type: "host.plugins-changed" });
-        if (workspace.storageIssue) {
-          app.log.warn(
-            { storageIssue: workspace.storageIssue.code, workspaceId: workspace.id },
-            "Workspace storage provisioning did not reach ready",
-          );
-        }
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.adoptRelocated": {
-        const workspace = await dependencies.workspaces.adoptRelocated(command.workspaceId, userId);
-        return {
-          type: command.type,
-          workspace: await workspaceView(dependencies.workspaces, workspace),
-        };
-      }
-      case "workspace.invitation.create": {
-        if (!deploymentSupportsSharing(dependencies.discovery.document.deploymentShape)) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Workspace sharing is unavailable for this Deployment",
-          });
-        }
-        const workspace = await dependencies.store.getWorkspaceForOwner(
-          command.workspaceId,
-          userId,
-        );
-        if (workspace?.kind === "main") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Main cannot be shared. Invite people to a Project instead.",
-          });
-        }
-        const result = await dependencies.authenticator.identity.createWorkspaceInvitation({
-          createdBy: userId,
-          idempotencyKey: command.idempotencyKey,
-          ...(command.intendedEmail === undefined ? {} : { intendedEmail: command.intendedEmail }),
-          lifetimeSeconds: command.lifetimeSeconds,
-          role: command.role,
-          type: command.invitationType,
-          workspaceId: command.workspaceId,
-        });
-        const invitationUrl = new URL(
-          `/invite/${result.invitation.selector}`,
-          dependencies.authenticator.publicOrigin,
-        );
-        invitationUrl.hash = result.verifier;
-        return {
-          invitation: serializeInvitation(result.invitation),
-          invitationUrl: invitationUrl.toString(),
-          type: command.type,
-        };
-      }
-      case "workspace.invitation.revoke":
-        await dependencies.store.revokeWorkspaceInvitation({
-          actorId: userId,
-          invitationId: command.invitationId,
-          workspaceId: command.workspaceId,
-        });
-        return { type: command.type };
-      case "workspace.member.update": {
-        const changed = await dependencies.store.changeWorkspaceMembership({
-          actorId: userId,
-          ...(command.role ? { role: command.role } : {}),
-          ...(command.state ? { state: command.state } : {}),
-          targetUserId: command.userId,
-          workspaceId: command.workspaceId,
-        });
-        dependencies.realtime.publishViewerTasksChanged(changed.membership.userId);
-        dependencies.realtime.sendToUsers([changed.membership.userId], {
-          type: "host.plugins-changed",
-        });
-        for (const event of changed.requestEvents) publishWorkspaceEvent(event);
-        void dependencies.securityEffects
-          .reconcile()
-          .catch((error) => app.log.error({ err: error }, "Workspace revocation effects failed"));
-        const member = await dependencies.store.userById(changed.membership.userId);
-        if (!member) {
-          throw new OpensteerError({ code: "internal", message: "Workspace member is missing" });
-        }
-        return {
-          membership: {
-            displayName: member.displayName,
-            email: member.email,
-            emailVerified: member.emailVerified,
-            generation: changed.membership.generation,
-            id: changed.membership.id,
-            invitedBy: changed.membership.invitedBy,
-            joinedAt: changed.membership.joinedAt.toISOString(),
-            role: changed.membership.role,
-            state: changed.membership.state,
-            userId: changed.membership.userId,
-            workspaceId: changed.membership.workspaceId,
-          },
-          type: command.type,
-        };
-      }
       case "thread.create":
         return threadService.create({ kind: "person", userId }, command);
 
@@ -2045,8 +1858,6 @@ export async function createHostServer(
               // longer be answered at all.
               case "browser.sign-in":
               case "browser.password-sign-in":
-              case "browser.profile.import":
-              case "browser.profile.save":
                 throw new OpensteerError({
                   code: "conflict",
                   message:
@@ -2355,7 +2166,6 @@ export async function createHostServer(
           dependencies.store,
           {
             userId: session.user.id,
-            isAdministrator: session.user.instanceRole === "administrator",
           },
           command.runnerId,
         );
@@ -2365,7 +2175,7 @@ export async function createHostServer(
         // commit against a revision this write already replaced.
         const result = await dependencies.shellControl.withMachineAdmission(command.runnerId, () =>
           dependencies.store.updateMachineAccessPolicy({
-            allowDeployment: session.user.instanceRole === "administrator",
+            allowDeployment: true,
             expectedRevision: command.expectedRevision,
             idempotency: { key: command.idempotencyKey, requestedBy: userId },
             ownerId: userId,
@@ -2435,25 +2245,6 @@ export async function createHostServer(
           context.afterResponse,
         );
         return { type: command.type };
-      case "runner.enrollment.createManaged": {
-        requireInstanceAdministrator(session);
-        const enrollment = await dependencies.runnerAuthenticator.createEnrollment({
-          allowedModules: command.allowedModules,
-          createdBy: userId,
-          idempotencyKey: command.idempotencyKey,
-          lifetimeSeconds: 600,
-          name: command.name,
-          runnerKind: "managed",
-        });
-        // A pending computer is a row on the list, so minting one changes it.
-        notifyMachinesChanged(dependencies.realtime, "machine.command");
-        return {
-          enrollmentId: enrollment.enrollmentId,
-          expiresAt: enrollment.expiresAt,
-          token: enrollment.token,
-          type: command.type,
-        };
-      }
       case "runner.enrollment.createLocal": {
         const enrollment = await dependencies.runnerAuthenticator.createEnrollment({
           allowedModules: command.allowedModules,
@@ -2506,7 +2297,7 @@ export async function createHostServer(
       case "browser.session.start": {
         if (command.input.threadId) {
           const thread = await dependencies.store.getThreadForOwner(command.input.threadId, userId);
-          if (!thread || thread.workspaceId !== command.workspaceId) {
+          if (!thread) {
             throw new OpensteerError({
               code: "not_found",
               message: "Browser conversation not found.",
@@ -2522,7 +2313,6 @@ export async function createHostServer(
           ...(command.input.placement === undefined ? {} : { placement: command.input.placement }),
           reuseExisting: command.input.reuseExisting,
           ...(command.input.viewport === undefined ? {} : { viewport: command.input.viewport }),
-          workspaceId: command.workspaceId,
         };
         const result = await dependencies.browser.start(
           "profileId" in command.input
@@ -2544,24 +2334,14 @@ export async function createHostServer(
           }),
           type: command.type,
         };
-      case "browser.profile.grant":
-        return {
-          grant: await dependencies.browser.grantProfileToWorkspace({
-            access: "read-write",
-            createdBy: userId,
-            profileId: command.profileId,
-            workspaceId: command.workspaceId,
-          }),
-          type: command.type,
-        };
-      case "workspace.tabs.group": {
+      case "tabs.group": {
         const { type, ...input } = command;
         return {
           type,
           ...(await dependencies.browserTabs.group({ kind: "person", ownerId: userId }, input)),
         };
       }
-      case "workspace.tabs.ungroup":
+      case "tabs.ungroup":
         return {
           type: command.type,
           layout: await dependencies.browserTabs.ungroup(
@@ -2570,21 +2350,21 @@ export async function createHostServer(
             command.idempotencyKey,
           ),
         };
-      case "workspace.tabs.move": {
+      case "tabs.move": {
         const { type, ...input } = command;
         return {
           type,
           layout: await dependencies.browserTabs.move({ kind: "person", ownerId: userId }, input),
         };
       }
-      case "workspace.tabGroup.update": {
+      case "tabGroup.update": {
         const { type, ...input } = command;
         return {
           type,
           layout: await dependencies.browserTabs.update({ kind: "person", ownerId: userId }, input),
         };
       }
-      case "workspace.tabs.close":
+      case "tabs.close":
         return {
           type: command.type,
           ...(await dependencies.browserTabs.close(
@@ -2592,12 +2372,12 @@ export async function createHostServer(
             command.tabIds,
           )),
         };
-      case "workspace.tab.activate":
-        return dependencies.browser.activateWorkspaceTab(userId, command.tabId);
-      case "workspace.tab.reopen":
-        return dependencies.browser.reopenWorkspaceTab(userId, command.idempotencyKey);
-      case "workspace.tab.close":
-        return dependencies.browser.closeWorkspaceTab(userId, command.tabId);
+      case "tab.activate":
+        return dependencies.browser.activatePersonalTab(userId, command.tabId);
+      case "tab.reopen":
+        return dependencies.browser.reopenPersonalTab(userId, command.idempotencyKey);
+      case "tab.close":
+        return dependencies.browser.closePersonalTab(userId, command.tabId);
       case "app.tab.open":
       case "app.tab.close":
         return {
@@ -2616,30 +2396,20 @@ export async function createHostServer(
         await dependencies.browser.stop(userId, BrowserSessionIdSchema.parse(command.sessionId));
         return { type: command.type };
     }
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Command unavailable on a Personal Host",
+    });
   };
 
   const handleCoreCommand = async (command: CoreCommand, context: HostApiServerContext) =>
     hostApi["commands.dispatch"].success.parse(await executeCoreCommand(command, context));
 
-  const identityRpcHandlers = createIdentityRpcHandlers(dependencies.authenticator, {
-    workspaceSharingAvailable,
-  });
+  const identityRpcHandlers = createIdentityRpcHandlers(dependencies.authenticator);
 
   registerHostApi(app, dependencies.authenticator, {
     ...createHostApiHandlers(
-      {
-        ...identityRpcHandlers,
-        "auth.invitation.accept": async (input, context) => {
-          const result = await identityRpcHandlers["auth.invitation.accept"](input, context);
-          if (result.ok) {
-            dependencies.realtime.publishViewerTasksChanged(result.data.membership.userId);
-            dependencies.realtime.sendToUsers([result.data.membership.userId], {
-              type: "host.plugins-changed",
-            });
-          }
-          return result;
-        },
-      },
+      identityRpcHandlers,
       createTriggerRpcHandlers(dependencies.triggers.service),
       dependencies.triggers.service,
       createIntegrationRpcHandlers(integrationRpcOptions),
@@ -2656,7 +2426,6 @@ export async function createHostServer(
       handleCoreCommand,
       dependencies.computerViews,
       dependencies.phoneTabs,
-      dependencies.teamAdministration,
     ),
     ...(dependencies.connections
       ? createConnectionRpcHandlers(dependencies.connections)
@@ -2906,7 +2675,7 @@ export async function createHostServer(
       attachRealtimeSocket(
         socket,
         dependencies.realtime,
-        dependencies.workspaces,
+        dependencies.discovery.document.deploymentId,
         dependencies.browser,
         session,
         request.log,
@@ -3045,17 +2814,12 @@ export async function advertisedBootstrapMethods(
 export function advertisedCapabilities(
   dependencies: Pick<
     HostServerDependencies,
-    | "attachments"
-    | "authenticator"
-    | "personalRemoteAccess"
-    | "passkeys"
-    | "notificationPreviews"
-    | "knowledge"
+    "attachments" | "authenticator" | "personalRemoteAccess" | "passkeys" | "notificationPreviews"
   >,
 ): readonly HostCapability[] {
   return [
     "automatic-models-v1",
-    "chat-attachments",
+    "task-attachments",
     ...(dependencies.notificationPreviews ? ["notification-preview-v1" as const] : []),
     "voice-run-v1",
     "thread-titles-v1",
@@ -3067,7 +2831,6 @@ export function advertisedCapabilities(
     "tool-output-detail-v1",
     "place-events-v1",
     "person-show-v1",
-    "shared-task-done-v1",
     "quiet-tasks-v1",
     "harness-update-v1",
     "iphone-apps-v1",
@@ -3081,9 +2844,8 @@ export function advertisedCapabilities(
     "browser-raster-demand-v1",
     "browser-capture-region-v1",
     "browser-search-suggestions-v1",
-    "workspace-tab-reopen-v1",
+    "tab-reopen-v1",
     "browser-profile-manage-v1",
-    ...(dependencies.knowledge === true ? ["knowledge-sql-v1" as const] : []),
     ...(dependencies.authenticator.identity.nativeOpenIdConfiguration()
       ? (["native-oauth"] as const)
       : []),
@@ -3252,13 +3014,7 @@ function attachRunnerSocket(
     runners.disconnect(peer);
     closeProtocolSocket(socket, error);
   };
-  // Runner messages keep their order per Run, and per kind beyond that. A
-  // Request answer is delivered inside a transaction that holds its Workspace
-  // until the Runner's receipt arrives, while other work — another Run's
-  // event, another command's receipt — may be waiting on that Workspace to
-  // commit. A receipt queued behind any of it would never arrive, so each
-  // receipt is handled on its own: receipts are independent facts, and nothing
-  // orders one after another. Each Run and everything else keep a lane each.
+  // Receipts have their own lane because a Run transaction can await one.
   const lanes = new Map<string, Promise<void>>();
   let queued = 0;
   let drained: (() => void) | undefined;
@@ -3864,7 +3620,7 @@ export class RunnerChallengeAdmission {
 function attachRealtimeSocket(
   socket: WebSocket,
   realtime: RealtimeHub,
-  workspaces: WorkspaceService,
+  deploymentId: import("@opensteer/core").DeploymentId,
   browser: BrowserService,
   session: AuthenticatedSession,
   log: FastifyInstance["log"],
@@ -3875,17 +3631,7 @@ function attachRealtimeSocket(
   const sink = {
     ...peer,
     send: async (message: HostToClientMessage | BrowserClientStreamMessage) => {
-      const projected = HostToClientMessageSchema.safeParse(
-        message.type === "host.snapshot"
-          ? {
-              ...message,
-              snapshot: {
-                ...message.snapshot,
-                workspace: await decorateWorkspaceView(workspaces, message.snapshot.workspace),
-              },
-            }
-          : message,
-      );
+      const projected = HostToClientMessageSchema.safeParse(message);
       if (!projected.success) {
         // Publisher faults cannot be repaired by replaying the same cursor.
         // Keep validation errors (which can contain private values) off the wire.
@@ -3894,7 +3640,7 @@ function attachRealtimeSocket(
           "events",
           "data",
           "sequence",
-          "workspaceId",
+          "deploymentId",
           "threadId",
           "snapshot",
           "progress",
@@ -3944,18 +3690,22 @@ function attachRealtimeSocket(
       await peer.send(projected.data);
     },
   } satisfies RealtimeSink;
-  const inbox = new BoundedAsyncInbox<{ readonly frame: Buffer; readonly isBinary: boolean }>({
-    maxBytes: 4 * maxWebSocketFrameBytes,
-    maxItems: 64,
-  });
+  type ClientToHostMessage = z.infer<typeof ClientToHostMessageSchema>;
+  const limits = { maxBytes: 4 * maxWebSocketFrameBytes, maxItems: 64 };
+  const inbox = new BoundedAsyncInbox<{
+    readonly message: Exclude<ClientToHostMessage, { type: "client.browser.resync" }>;
+    readonly bytes: number;
+  }>(limits);
+  const browserInbox = new BoundedAsyncInbox<{
+    readonly message: Extract<ClientToHostMessage, { type: "client.browser.resync" }>;
+    readonly bytes: number;
+  }>(limits);
+  let queuedBytes = 0;
+  let queuedItems = 0;
   let unsubscribe: (() => void) | undefined;
   let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
   let realtimeClosed = false;
-  let workspaceId: WorkspaceId | null = null;
-  // Machine notifications are addressed to the connection, not to a Workspace:
-  // the people entitled to them are usually nowhere near the Workspace whose
-  // Run caused them, and this is registered before any subscription so it does
-  // not depend on one.
+  let subscribed = false;
   const unregister = realtime.registerConnection(session.user.id, session.id, sink);
   const expiresAt = Math.min(
     new Date(session.expiresAt).getTime(),
@@ -3964,26 +3714,72 @@ function attachRealtimeSocket(
   const cancelExpiration = scheduleWebSocketExpiration(expiresAt, () =>
     realtime.closeSession(session.id),
   );
-  socket.on("message", (frame, isBinary) => {
-    try {
-      const buffer = rawDataBuffer(frame);
-      if (buffer.byteLength > maxWebSocketFrameBytes) {
-        throw badMessage("Client message is too large");
-      }
-      inbox.push({ bytes: buffer.byteLength, value: { frame: buffer, isBinary } });
-    } catch (error) {
-      inbox.close(error);
-      if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
-    }
-  });
   const close = () => {
+    if (realtimeClosed) return;
     realtimeClosed = true;
     browserStream?.close();
     cancelExpiration();
     inbox.close();
+    browserInbox.close();
     unregister();
     unsubscribe?.();
   };
+  const failed = (error: unknown) => {
+    close();
+    closeProtocolSocket(socket, error);
+  };
+  socket.on("message", (frame, isBinary) => {
+    if (realtimeClosed) return;
+    let buffer: Buffer;
+    try {
+      buffer = rawDataBuffer(frame);
+      if (
+        buffer.byteLength > maxWebSocketFrameBytes ||
+        queuedBytes + buffer.byteLength > limits.maxBytes ||
+        queuedItems >= limits.maxItems
+      )
+        throw badMessage("Client input queue exceeded");
+    } catch {
+      close();
+      if (socket.readyState === socket.OPEN) socket.close(1009, "client input queue exceeded");
+      return;
+    }
+    try {
+      if (isBinary) throw badMessage("Client messages must be JSON text");
+      const message = ClientToHostMessageSchema.parse(parseFrame(buffer));
+      // Refuse another epoch before either stream can process its following frames.
+      if (
+        message.type === "client.subscribe" &&
+        (message.cursor.apiVersion !== hostApiVersion ||
+          message.cursor.deploymentId !== deploymentId)
+      ) {
+        close();
+        void sink
+          .send({
+            error: {
+              code: "bad_message",
+              message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
+              reason: unsupportedVersionReason,
+              retryable: false,
+            },
+            type: "host.error",
+          })
+          .then(() =>
+            sink.close(unsupportedVersionCloseCode, "Unsupported Opensteer protocol version"),
+          )
+          .catch(failed);
+        return;
+      }
+      const bytes = buffer.byteLength;
+      queuedBytes += bytes;
+      queuedItems++;
+      if (message.type === "client.browser.resync")
+        browserInbox.push({ bytes, value: { message, bytes } });
+      else inbox.push({ bytes, value: { message, bytes } });
+    } catch (error) {
+      failed(error);
+    }
+  });
   socket.once("close", (code, reason) => {
     close();
     try {
@@ -3996,7 +3792,7 @@ function attachRealtimeSocket(
         {
           connection: peer.id,
           sessionId: session.id,
-          workspaceId,
+          deploymentId,
           code,
           reason: boundedReason,
           lifetimeMs: Date.now() - openedAt,
@@ -4009,91 +3805,70 @@ function attachRealtimeSocket(
   });
   socket.once("error", close);
   void (async () => {
-    for await (const item of inbox) {
-      if (item.isBinary) throw badMessage("Client messages must be JSON text");
-      const message = ClientToHostMessageSchema.parse(parseFrame(item.frame));
+    for await (const { message, bytes } of browserInbox) {
+      queuedBytes -= bytes;
+      queuedItems--;
+      if (realtimeClosed) break;
+      if (browserStream) browserStream.resync(message.groupId);
+      else if (!message.groupId) {
+        const attached = await browser.clientStreams.attach(
+          session.user.id,
+          { send: (message) => sink.send(message), bufferedAmount: () => socket.bufferedAmount },
+          message.continuation,
+        );
+        if (realtimeClosed) attached.close();
+        else browserStream = attached;
+      }
+    }
+  })().catch(failed);
+  void (async () => {
+    for await (const { message, bytes } of inbox) {
+      queuedBytes -= bytes;
+      queuedItems--;
+      if (realtimeClosed) break;
       if (message.type === "client.ping") {
         await sink.send({ nonce: message.nonce, type: "host.pong" });
         continue;
       }
       if (message.type === "client.ack") continue;
-      if (message.type === "client.browser.resync") {
-        if (browserStream) browserStream.resync(message.groupId);
-        else if (!message.groupId) {
-          const attached = await browser.clientStreams.attach(
-            session.user.id,
-            {
-              send: (message) => sink.send(message),
-              bufferedAmount: () => socket.bufferedAmount,
-            },
-            message.continuation,
-          );
-          if (realtimeClosed) attached.close();
-          else browserStream = attached;
-        }
-        continue;
-      }
       if (message.type === "client.watch-node") {
-        if (!unsubscribe || workspaceId !== message.workspaceId)
-          throw badMessage("Subscribe before watching a subagent");
-        realtime.watchNode({
-          sinkId: sink.id,
-          workspaceId: message.workspaceId,
-          nodeId: message.nodeId,
-        });
+        if (!unsubscribe) throw badMessage("Subscribe before watching a subagent");
+        realtime.watchNode({ sinkId: sink.id, nodeId: message.nodeId });
         continue;
       }
-      if (unsubscribe) throw badMessage("Client is already subscribed");
-      // Nothing is streamed to a client on another epoch: the events it would
-      // receive are exactly what the epoch governs, so the refusal comes
-      // before the subscription rather than after the first frame it cannot
-      // read. The `host.error` says why and the close code says it is final.
-      if (message.apiVersion !== hostApiVersion) {
-        await sink.send({
-          error: {
-            code: "bad_message",
-            message: `This deployment speaks Opensteer protocol ${hostApiVersion}.`,
-            reason: unsupportedVersionReason,
-            retryable: false,
-          },
-          type: "host.error",
-        });
-        sink.close(unsupportedVersionCloseCode, "Unsupported Opensteer protocol version");
-        return;
-      }
+      if (subscribed) throw badMessage("Client is already subscribed");
       try {
-        unsubscribe = await realtime.subscribe({
-          afterSequence: message.afterSequence,
+        const subscription = await realtime.subscribe({
+          afterSequence: message.cursor.afterSequence,
           ...(message.placeEvents ? { placeEvents: message.placeEvents } : {}),
           ...(message.toolOutputs ? { toolOutputs: message.toolOutputs } : {}),
           ...(message.personShow ? { personShow: message.personShow } : {}),
           ...(message.snapshotMessages ? { snapshotMessages: message.snapshotMessages } : {}),
           sink,
           userId: session.user.id,
-          workspaceId: message.workspaceId,
+          deploymentId: message.cursor.deploymentId,
         });
-        workspaceId = message.workspaceId;
+        if (realtimeClosed) subscription();
+        else unsubscribe = subscription;
+        subscribed = true;
       } catch (error) {
         if (error instanceof OpensteerError && error.code === "forbidden") {
           await sink.send({
             error: {
               code: "forbidden",
-              message: "Workspace realtime subscription is not authorized.",
-              reason: "workspace-forbidden",
+              message: "Personal realtime subscription is not authorized.",
+              reason: "deployment-forbidden",
               retryable: false,
             },
             type: "host.error",
           });
-          sink.close(4_003, "Workspace subscription forbidden");
+          sink.close(4_003, "Deployment subscription forbidden");
           return;
         }
         throw error;
       }
     }
-  })().catch((error) => {
-    inbox.close(error);
-    closeProtocolSocket(socket, error);
-  });
+  })().catch(failed);
 }
 
 /**
@@ -4418,32 +4193,6 @@ async function assertLogoutAvailable(
       message: "This AI engine did not report an available remote authentication action",
     });
   }
-}
-
-function serializeInvitation(invitation: WorkspaceInvitationRecord) {
-  return {
-    acceptedAt: invitation.acceptedAt?.toISOString() ?? null,
-    acceptedBy: invitation.acceptedBy,
-    createdAt: invitation.createdAt.toISOString(),
-    createdBy: invitation.createdBy,
-    expiresAt: invitation.expiresAt.toISOString(),
-    id: invitation.id,
-    intendedEmail: invitation.intendedEmail,
-    revokedAt: invitation.revokedAt?.toISOString() ?? null,
-    role: invitation.role,
-    selector: invitation.selector,
-    type: invitation.type,
-    workspaceId: invitation.workspaceId,
-  };
-}
-
-function decorateWorkspaceView(
-  service: WorkspaceService,
-  view: WorkspaceView,
-): Promise<WorkspaceView> {
-  return typeof service.decorateWorkspaceView === "function"
-    ? service.decorateWorkspaceView(view)
-    : Promise.resolve(view);
 }
 
 function requireBearerToken(request: FastifyRequest, maximumTokenLength = 4_096): string {

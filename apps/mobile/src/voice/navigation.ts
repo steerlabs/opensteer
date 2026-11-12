@@ -1,7 +1,7 @@
 import type { VoiceTarget } from "@opensteer/client/voice";
 import { CommonActions, StackActions } from "@react-navigation/native";
 import { navigationRef } from "../navigation-ref.js";
-import { paramsDestination, sameDestination, workspaceRoute } from "../browser/surface-route.js";
+import { paramsDestination, sameDestination, tabsRoute } from "../browser/surface-route.js";
 
 /** The route naming the conversation here: the one on screen, or beneath the places over it. */
 export function conversationRoute() {
@@ -13,15 +13,6 @@ export function conversationRoute() {
 export function show(deploymentId: string | null, target: VoiceTarget): boolean {
   if (!deploymentId || !navigationRef.isReady()) return false;
   const route = navigationRef.getCurrentRoute();
-  if (target.kind === "chat") {
-    if (
-      route?.name === "Home" &&
-      (route.params as { deploymentId?: string } | undefined)?.deploymentId === deploymentId
-    )
-      return false;
-    navigationRef.dispatch(StackActions.popTo("Home", { deploymentId }));
-    return true;
-  }
   const current = route?.params as Record<string, unknown> | undefined;
   if (
     target.kind === "place" &&
@@ -29,7 +20,7 @@ export function show(deploymentId: string | null, target: VoiceTarget): boolean 
     current?.["deploymentId"] === deploymentId
   ) {
     if (sameDestination(paramsDestination(current), target.destination)) return false;
-    const { scope: _scope, ...destination } = workspaceRoute(deploymentId, target.destination);
+    const { scope: _scope, ...destination } = tabsRoute(deploymentId, target.destination);
     navigationRef.dispatch({
       ...CommonActions.setParams({
         appId: undefined,
@@ -55,7 +46,7 @@ export function show(deploymentId: string | null, target: VoiceTarget): boolean 
   const params =
     target.kind === "thread"
       ? { deploymentId, threadId: target.threadId }
-      : workspaceRoute(deploymentId, target.destination);
+      : tabsRoute(deploymentId, target.destination);
   if (
     route?.name === name &&
     current &&

@@ -373,7 +373,7 @@ describe("LocalRunnerService", () => {
   it("starts a browser with agents off and without any execution assets", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
-    const personal = targets.add("https://studio.connect.opensteer.test", "personal");
+    const personal = targets.add("https://studio.connect.opensteer.test", "personal", false);
     // A Mac that is only reachable never looks for the agent runtime.
     await rm(path.join(directory, "agent-skills"), { force: true, recursive: true });
     await rm(path.join(directory, "browser-harness"), { force: true });
@@ -450,7 +450,7 @@ describe("LocalRunnerService", () => {
   it("refuses to run agents on a computer whose Deployment never granted them", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
-    const personal = targets.add("https://studio.connect.opensteer.test", "personal");
+    const personal = targets.add("https://studio.connect.opensteer.test", "personal", false);
     const running = fixture(await configuration(directory), targets);
 
     await expect(
@@ -981,26 +981,6 @@ describe("LocalRunnerService", () => {
     expect(running.fork).toHaveBeenCalledTimes(1);
   });
 
-  it("runs agents with local-directory Workspace storage", async () => {
-    const directory = await temporaryDirectory();
-    const targets = mutableTargetAuthority();
-    const target = targets.add(
-      "https://local-workspaces.opensteer.test",
-      "server",
-      "local-directory",
-    );
-    const running = fixture(await configuration(directory), targets);
-
-    const start = running.service.start(startInput(target.deploymentId));
-    await eventually(() => running.children.length === 1);
-    const child = childAt(running.children, 0);
-    expect(child.environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING).toBe("local-directory");
-    expect(child.environment.OPENSTEER_RUNNER_WORKSPACE_BACKINGS).toBe("local-directory");
-    connect(child);
-
-    await expect(start).resolves.toMatchObject({ runner: { state: "running" } });
-  });
-
   it("does not restore enrolled intent when a removed start connects late", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -1330,8 +1310,8 @@ function fixture(
 function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   add(
     hostUrl: string,
-    kind?: "personal" | "server",
-    defaultWorkspaceBacking?: "local-directory",
+    kind?: "personal" | "team",
+    mayRunAgents?: boolean,
   ): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
@@ -1340,15 +1320,14 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   const targets = new Map<DeploymentId, DesktopLocalRunnerTarget>();
   const listeners = new Set<() => void>();
   return {
-    add: (hostUrl, kind = "server", defaultWorkspaceBacking = "local-directory") => {
+    add: (hostUrl, kind = "personal", mayRunAgents = true) => {
       const deploymentId = createId("deployment");
       const target: DesktopLocalRunnerTarget = {
         deploymentId,
-        deploymentShape: { defaultWorkspaceBacking, kind },
+        deploymentShape: { kind },
         hostUrl,
         key: `${deploymentId}:1`,
-        // Only server Deployments may run agents on a connecting computer.
-        mayRunAgents: kind === "server",
+        mayRunAgents,
       };
       targets.set(deploymentId, target);
       return target;
@@ -1527,7 +1506,6 @@ async function configuration(directory: string): Promise<DesktopConfiguration> {
     mode: "test",
     personal: {
       releaseDirectory: path.join(directory, "personal-runtime"),
-      workspaceRoot: path.join(directory, "workspaces"),
     },
     portalUrl: null,
     release: {

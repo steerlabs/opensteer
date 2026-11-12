@@ -38,7 +38,7 @@ pnpm test:integration -- apps/host/src/integrations/api-key-reconnect.integratio
 ```
 
 Run the affected contract (the last covers API-key repair). With a real provider, verify consent by
-the intended member and source, durable completion, refresh where granted, and disconnect and
+the personal owner and intended source, durable completion, refresh where granted, and disconnect and
 revocation notices, initiating remotely and locally through the same Account path. A wrong Account,
 browser or provider, callback replay, two concurrent devices, cancellation, and unlink or relink
 during exchange must create no credentials. Exercise changed-source and missing-permission refusals

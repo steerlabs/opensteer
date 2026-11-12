@@ -5,13 +5,14 @@ its app ID to the latest publication, even in old history, and the origin Thread
 HTML and the database belong in the same backup as Host attachments. App authors follow the shipped
 [apps reference](../apps/runner/agent-skills/skills/threads/references/apps.md).
 
-An app stays beside its conversation so the person can ask for changes. Open tabs are shared
-Workspace state. A client mounts one copy: moving or reloading an iframe loses its running state.
-Browser storage stays on one device and is unavailable on some routes, so cross-device data belongs
-in a server app.
+An app stays beside its conversation so the person can ask for changes. App tabs belong to the
+personal owner and synchronize across their devices; team membership never exposes an app, its
+data or its viewing credentials. A client mounts one copy: moving or reloading an iframe loses its
+running state. Browser storage stays on one device and is unavailable on some routes, so
+cross-device data belongs in a server app.
 
 An HTML app is a self-contained document the Host stores. A server app runs from a folder in the
-publishing Run's local-directory Workspace, on the computer that owns that directory, and its folder
+publishing Run's immutable task folder, on its owning computer, and its folder
 holds source and data. Publishing verifies the start command before committing a version but never
 copies or rolls back files, so editing the folder can affect a running server. App versions record
 their owning computer and never move to the viewer's.
@@ -68,26 +69,24 @@ It steals nothing, and Connect neighbors could already do it. Apps can move to t
 later by changing the origin the Host chooses and the router; logins and browser storage stay behind.
 
 Viewing tickets exchange for session-bound cookies without an extra round trip. Every request
-rechecks the session and Workspace membership; access loss must also stop open sockets. A service
-worker may still show cached pages, but gets no new data. Recovery that replaces a session must
-replace the app frame's viewing authority too.
+rechecks the session and personal owner authority; access loss must also stop open sockets. A
+service worker may still show cached pages, but gets no new data. Recovery that replaces a session
+must replace the app frame's viewing authority too.
 
 ## Capability path
 
-Routes with no per-app hostname (private networks), shared Deployments, Safari on the same computer
+Routes with no per-app hostname (private networks), Safari on the same computer
 (WebKit refuses `Secure` cookies on `*.localhost`) and previous releases use
-`/v1/apps/<id>/<theme>/<token>/`. A real origin holds one person's app logins and storage on a
-device, so a Deployment people can share, which includes the development stack, needs an origin per
-person before it can have real origins. Its document is on the Host's own origin, so the frame and every
+`/v1/apps/<id>/<theme>/<token>/`. A real origin holds the personal owner's app logins and storage on a device. The capability document is on the Host's own origin, so the frame and every
 response enforce an opaque-origin sandbox, and it must never get `allow-same-origin`. That keeps
 Opensteer cookies, storage and the parent document out of reach, and leaves the app without browser
 storage. The [proxy](../apps/host/src/apps/app-proxy.ts) strips credentials and cookies both ways.
 Desktop streams this path through a separate scheme in its main process. Links inside the prefix
 stay in the frame; other links open outside. A view capability lasts until Host restart, one per
-app and person, and every request checks current Workspace membership. Logout does not revoke a
+app and person, and every request checks current personal owner authority. Logout does not revoke a
 copied view URL, so clients keep it only in memory.
 
 Servers keep running for background work, restart lazily after a crash, and have no idle shutdown.
-They stop when republished as HTML, when their Workspace is deleted, or when the Runner loses its
-primary Host connection or stops; a Workspace awaiting deletion refuses new starts. Only agents get
+They stop when republished as HTML or when the Runner loses its primary Host connection or
+stops. App replacement and explicit lifetime controls govern teardown. Only agents get
 the startup-failure log tail; viewer error pages omit it.

@@ -1,9 +1,10 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
 import { isPlaceContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
-import { isConstraintViolation, withDatabaseTransaction } from "./connection.js";
-import { type WorkspaceEventRow, type RunRow, type DatabaseSchema } from "./schema.js";
+import { isConstraintViolation } from "./connection.js";
+import { type DeploymentEventRow, type RunRow, type DatabaseSchema } from "./schema.js";
 import { type PendingAgentEvent, PendingAgentEventSchema } from "@opensteer/protocol";
 import {
   type EnvironmentId,
@@ -27,7 +28,7 @@ import {
   eventFromRow,
   lockThreadRow,
 } from "./store-primitives.js";
-import { appendHostWorkspaceEvent, stampRunContext } from "./workspace-events.js";
+import { appendHostDeploymentEvent, stampRunContext } from "./deployment-events.js";
 import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
 import { markThreadStatePending, projectThreadState } from "./thread-status.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
@@ -56,9 +57,8 @@ import {
   recordAttemptUsage,
   type RunAttemptRow,
 } from "./run-attempts.js";
-
 function isExactRunnerEventReplay(
-  row: WorkspaceEventRow,
+  row: DeploymentEventRow,
   event: PendingAgentEvent,
   input: {
     readonly environmentId: EnvironmentId;
@@ -74,7 +74,6 @@ function isExactRunnerEventReplay(
     row.runnerBindingGeneration === event.bindingGeneration &&
     row.environmentId === input.environmentId &&
     row.threadId === event.threadId &&
-    row.workspaceId === event.workspaceId &&
     row.type === event.type &&
     row.createdAt.getTime() === Date.parse(event.emittedAt) &&
     isDeepStrictEqual(runnerReportedData(row), event.data)
@@ -86,7 +85,7 @@ function isExactRunnerEventReplay(
  * an integration call's subject, or which message was a turn's or a completed
  * Run's reply.
  */
-function runnerReportedData(row: WorkspaceEventRow): unknown {
+function runnerReportedData(row: DeploymentEventRow): unknown {
   const hostKey =
     row.type === "tool.started"
       ? "integration"
@@ -100,7 +99,6 @@ function runnerReportedData(row: WorkspaceEventRow): unknown {
     ),
   );
 }
-
 function assertRunnerEventTransition(
   run: Pick<RunRow, "harnessInstanceId" | "nextRunnerOrdinal" | "requestedBy" | "status">,
   event: PendingAgentEvent,
@@ -111,7 +109,6 @@ function assertRunnerEventTransition(
       message: `Runner event ordinal ${event.ordinal} is out of sequence; expected ${run.nextRunnerOrdinal}`,
     });
   }
-
   let valid = false;
   switch (event.type) {
     case "run.started":
@@ -156,7 +153,6 @@ function assertRunnerEventTransition(
     });
   }
 }
-
 interface EventProjection {
   readonly compensatingEvents: readonly AgentEvent[];
   /** A restart that took the person's waiting messages ended the attempt's tools. */
@@ -168,7 +164,6 @@ interface EventProjection {
    */
   readonly duplicateRunUsage: boolean;
 }
-
 async function applyEventProjection(
   transaction: Transaction<DatabaseSchema>,
   event: PendingAgentEvent,
@@ -186,9 +181,11 @@ async function applyEventProjection(
           "An assistant reply cannot attach place references. Forward selected places through delegation.",
       });
     }
-
     if (!event.runId) {
-      throw new OpensteerError({ code: "conflict", message: "Assistant message has no Run" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Assistant message has no Run",
+      });
     }
     // A Run's actor is its authority principal, not the assistant's identity.
     const assistantPrincipal = await transaction
@@ -200,14 +197,7 @@ async function applyEventProjection(
     const runContext = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
-      .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-      .select([
-        "runs.actorPrincipalId",
-        "threads.id as threadId",
-        "threads.nextMessageSequence",
-        "threads.workspaceId",
-        "workspaces.name as workspaceName",
-      ])
+      .select(["runs.actorPrincipalId", "threads.id as threadId", "threads.nextMessageSequence"])
       .where("runs.id", "=", event.runId)
       .forNoKeyUpdate("threads")
       .executeTakeFirstOrThrow();
@@ -221,8 +211,6 @@ async function applyEventProjection(
             kind: "agent",
             runId: event.runId,
             threadId: runContext.threadId,
-            workspaceId: runContext.workspaceId,
-            workspaceName: runContext.workspaceName,
           }),
         ),
         content: jsonValue(event.data.content),
@@ -236,22 +224,29 @@ async function applyEventProjection(
       .executeTakeFirstOrThrow();
     await transaction
       .updateTable("threads")
-      .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+      .set({
+        nextMessageSequence: sql`next_message_sequence + 1`,
+        updatedAt: new Date(),
+      })
       .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
-    canonicalMessageEvent = await appendHostWorkspaceEvent(transaction, {
-      data: { input: null, message: messageFromRow(messageRow) },
+    canonicalMessageEvent = await appendHostDeploymentEvent(transaction, {
+      data: {
+        input: null,
+        message: messageFromRow(messageRow),
+      },
       environmentId: event.environmentId,
       runId: event.runId,
       threadId: event.threadId,
       type: "message.created",
-      workspaceId: event.workspaceId,
     });
   }
-
   if (event.type === "voice.heard") {
     if (!event.runId)
-      throw new OpensteerError({ code: "conflict", message: "A voice call's words have no Run" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "A voice call's words have no Run",
+      });
     const call = await transaction
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
@@ -278,7 +273,12 @@ async function applyEventProjection(
             userId: call.requestedBy,
           }),
         ),
-        content: jsonValue([{ text: event.data.text, type: "text" }]),
+        content: jsonValue([
+          {
+            text: event.data.text,
+            type: "text",
+          },
+        ]),
         id: event.data.messageId,
         kind: "input",
         runId: event.runId,
@@ -289,19 +289,23 @@ async function applyEventProjection(
       .executeTakeFirstOrThrow();
     await transaction
       .updateTable("threads")
-      .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+      .set({
+        nextMessageSequence: sql`next_message_sequence + 1`,
+        updatedAt: new Date(),
+      })
       .where("id", "=", event.threadId)
       .executeTakeFirstOrThrow();
-    canonicalMessageEvent = await appendHostWorkspaceEvent(transaction, {
-      data: { input: null, message: messageFromRow(messageRow) },
+    canonicalMessageEvent = await appendHostDeploymentEvent(transaction, {
+      data: {
+        input: null,
+        message: messageFromRow(messageRow),
+      },
       environmentId: event.environmentId,
       runId: event.runId,
       threadId: event.threadId,
       type: "message.created",
-      workspaceId: event.workspaceId,
     });
   }
-
   const now = new Date(event.emittedAt);
   const compensatingEvents: AgentEvent[] = canonicalMessageEvent ? [canonicalMessageEvent] : [];
   switch (event.type) {
@@ -331,7 +335,9 @@ async function applyEventProjection(
         await transaction
           .updateTable("commands")
           .set({
-            lastError: jsonValue({ message: "The provider cancelled this Request" }),
+            lastError: jsonValue({
+              message: "The provider cancelled this Request",
+            }),
             status: "failed",
             updatedAt: now,
           })
@@ -369,7 +375,9 @@ async function applyEventProjection(
       if (event.runId) {
         await transaction
           .updateTable("runs")
-          .set({ status: resumedStatus })
+          .set({
+            status: resumedStatus,
+          })
           .where("id", "=", event.runId)
           .where("status", "in", ["running", "waiting"])
           .execute();
@@ -398,7 +406,11 @@ async function applyEventProjection(
         .execute();
       const injected = await transaction
         .updateTable("threadInputs")
-        .set({ deliveredAt: now, state: "delivered", updatedAt: now })
+        .set({
+          deliveredAt: now,
+          state: "delivered",
+          updatedAt: now,
+        })
         .where("messageId", "=", event.data.messageId)
         .where("runId", "=", event.runId)
         .where("state", "in", ["claimed", "unknown"])
@@ -407,20 +419,24 @@ async function applyEventProjection(
       if (injected?.steerCommandId) {
         await transaction
           .updateTable("commands")
-          .set({ status: "succeeded", updatedAt: now })
+          .set({
+            status: "succeeded",
+            updatedAt: now,
+          })
           .where("id", "=", injected.steerCommandId)
           .where("status", "in", ["pending", "dispatched", "unknown"])
           .execute();
       }
       if (injected) {
         compensatingEvents.push(
-          await appendHostWorkspaceEvent(transaction, {
-            data: { input: threadInputFromRow(injected) },
+          await appendHostDeploymentEvent(transaction, {
+            data: {
+              input: threadInputFromRow(injected),
+            },
             environmentId: event.environmentId,
             runId: event.runId,
             threadId: event.threadId,
             type: "thread-input.updated",
-            workspaceId: event.workspaceId,
           }),
         );
       }
@@ -428,7 +444,10 @@ async function applyEventProjection(
     case "run.started":
       await transaction
         .updateTable("providerSessions")
-        .set({ status: "running", updatedAt: now })
+        .set({
+          status: "running",
+          updatedAt: now,
+        })
         .where("id", "=", (builder) =>
           builder.selectFrom("runs").select("providerSessionId").where("id", "=", event.runId!),
         )
@@ -438,7 +457,10 @@ async function applyEventProjection(
       if (event.runId) {
         await transaction
           .updateTable("runs")
-          .set({ startedAt: sql`coalesce(started_at, ${now})`, status: "running" })
+          .set({
+            startedAt: sql`coalesce(started_at, ${now})`,
+            status: "running",
+          })
           .where("id", "=", event.runId)
           .execute();
         // The attempt's start delivers its fixed batch: a first attempt's
@@ -463,7 +485,11 @@ async function applyEventProjection(
             ? []
             : await transaction
                 .updateTable("threadInputs")
-                .set({ deliveredAt: now, state: "delivered", updatedAt: now })
+                .set({
+                  deliveredAt: now,
+                  state: "delivered",
+                  updatedAt: now,
+                })
                 .where(
                   "messageId",
                   "in",
@@ -477,13 +503,14 @@ async function applyEventProjection(
           const row = deliveredById.get(messageId);
           if (!row) continue;
           compensatingEvents.push(
-            await appendHostWorkspaceEvent(transaction, {
-              data: { input: threadInputFromRow(row) },
+            await appendHostDeploymentEvent(transaction, {
+              data: {
+                input: threadInputFromRow(row),
+              },
               environmentId: event.environmentId,
               runId: event.runId,
               threadId: event.threadId,
               type: "thread-input.updated",
-              workspaceId: event.workspaceId,
             }),
           );
         }
@@ -510,7 +537,9 @@ async function applyEventProjection(
       if (event.runId) {
         await transaction
           .updateTable("runs")
-          .set({ status: projectedStatus })
+          .set({
+            status: projectedStatus,
+          })
           .where("id", "=", event.runId)
           .execute();
       }
@@ -549,13 +578,14 @@ async function applyEventProjection(
       break;
     case "request.opened":
       if (
-        event.data.request.originatingWorkspaceId !== event.workspaceId ||
         event.data.request.originatingThreadId !== event.threadId ||
         event.data.request.originatingRunId !== event.runId ||
-        event.data.request.targetWorkspaceId !== event.workspaceId ||
         event.data.request.mode !== "live"
       ) {
-        throw new OpensteerError({ code: "conflict", message: "Harness Request scope is invalid" });
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Harness Request scope is invalid",
+        });
       }
       if (event.data.request.originatingNodeId) {
         await requireRunNode(transaction, event.runId, event.data.request.originatingNodeId);
@@ -583,7 +613,9 @@ async function applyEventProjection(
       if (event.runId) {
         await transaction
           .updateTable("runs")
-          .set({ status: "waiting" })
+          .set({
+            status: "waiting",
+          })
           .where("id", "=", event.runId)
           .execute();
         // The Request insert above is this transaction's unique key, so the
@@ -647,7 +679,11 @@ async function applyEventProjection(
     default:
       break;
   }
-  return { compensatingEvents, duplicateRunUsage, revokedGrants };
+  return {
+    compensatingEvents,
+    duplicateRunUsage,
+    revokedGrants,
+  };
 }
 
 /**
@@ -658,7 +694,12 @@ async function applyEventProjection(
  */
 async function projectRunPhase(
   transaction: Transaction<DatabaseSchema>,
-  event: Extract<PendingAgentEvent, { readonly type: "run.phase" }>,
+  event: Extract<
+    PendingAgentEvent,
+    {
+      readonly type: "run.phase";
+    }
+  >,
   links: ChannelLinks,
 ): Promise<readonly AgentEvent[]> {
   const background = event.data.phase === "background";
@@ -670,7 +711,10 @@ async function projectRunPhase(
   const replyTarget = run.replyTarget ? ReplyTargetSchema.parse(run.replyTarget) : null;
   const reply =
     background && replyTarget
-      ? await runReply(transaction, { id: event.runId, threadId: run.threadId })
+      ? await runReply(transaction, {
+          id: event.runId,
+          threadId: run.threadId,
+        })
       : null;
   const deliver = reply !== null && reply.id !== run.turnReplyMessageId;
   await transaction
@@ -678,9 +722,15 @@ async function projectRunPhase(
     .set({
       phase: event.data.phase,
       ...(background && run.backgroundDeadlineAt === null
-        ? { backgroundDeadlineAt: new Date(Date.now() + runBackgroundMaxMs) }
+        ? {
+            backgroundDeadlineAt: new Date(Date.now() + runBackgroundMaxMs),
+          }
         : {}),
-      ...(deliver ? { turnReplyMessageId: reply.id } : {}),
+      ...(deliver
+        ? {
+            turnReplyMessageId: reply.id,
+          }
+        : {}),
     })
     .where("id", "=", event.runId)
     .execute();
@@ -712,18 +762,16 @@ function storableJson<Value>(value: Value): Value {
     }),
   ) as Value;
 }
-
 export function storableText(text: string): string {
   return text.toWellFormed().replaceAll("\u0000", "\uFFFD");
 }
-
 async function latestRunEvent(
   transaction: Transaction<DatabaseSchema>,
   runId: RunRow["id"],
 ): Promise<AgentEvent> {
   return eventFromRow(
     await transaction
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", runId)
       .orderBy("sequence", "desc")
@@ -763,7 +811,9 @@ async function commitSupersededAttemptEvent(
   if (event.type !== "run.interrupted") {
     await transaction
       .updateTable("runs")
-      .set({ nextRunnerOrdinal: event.ordinal + 1 })
+      .set({
+        nextRunnerOrdinal: event.ordinal + 1,
+      })
       .where("id", "=", run.id)
       .executeTakeFirstOrThrow();
     const duplicateRunUsage =
@@ -788,15 +838,25 @@ async function commitSupersededAttemptEvent(
     .where("id", "=", attempt.supersededBy)
     .executeTakeFirstOrThrow();
   const now = new Date(event.emittedAt);
-  await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [run.threadId] });
+  await lockRunProjectionRows(transaction, {
+    runIds: [run.id],
+    threadIds: [run.threadId],
+  });
   await transaction
     .updateTable("runs")
-    .set({ bindingGeneration: null, nextRunnerOrdinal: event.ordinal + 1, status: "queued" })
+    .set({
+      bindingGeneration: null,
+      nextRunnerOrdinal: event.ordinal + 1,
+      status: "queued",
+    })
     .where("id", "=", run.id)
     .executeTakeFirstOrThrow();
   await transaction
     .updateTable("providerSessions")
-    .set({ status: "ready", updatedAt: now })
+    .set({
+      status: "ready",
+      updatedAt: now,
+    })
     .where("id", "=", run.providerSessionId)
     .where("bindingGeneration", "=", event.bindingGeneration)
     .execute();
@@ -829,27 +889,39 @@ async function commitSupersededAttemptEvent(
     .executeTakeFirstOrThrow();
   // The Run row was read under its lock after every earlier attempt's usage.
   const priorUsage = runUsageFromRow(run);
-  const restarted = await appendHostWorkspaceEvent(transaction, {
-    data: { attempt: successor.ordinal, ...(priorUsage ? { priorUsage } : {}), reason: "steer" },
+  const restarted = await appendHostDeploymentEvent(transaction, {
+    data: {
+      attempt: successor.ordinal,
+      ...(priorUsage
+        ? {
+            priorUsage,
+          }
+        : {}),
+      reason: "steer",
+    },
     environmentId: run.environmentId,
     runId: run.id,
     threadId: run.threadId,
     type: "run.restarted",
-    workspaceId: event.workspaceId,
   });
   const compensatingEvents: AgentEvent[] = [
-    await appendHostWorkspaceEvent(transaction, {
-      data: { status: "queued" },
+    await appendHostDeploymentEvent(transaction, {
+      data: {
+        status: "queued",
+      },
       environmentId: run.environmentId,
       runId: run.id,
       threadId: run.threadId,
       type: "run.status",
-      workspaceId: event.workspaceId,
     }),
     ...(await projectThreadState(transaction, run.threadId, now)),
     ...(await assignmentActivityEventsForRun(transaction, run.id)),
   ];
-  await endLiveExecutionNodes(transaction, { attemptId: attempt.id, endedAt: now, runId: run.id });
+  await endLiveExecutionNodes(transaction, {
+    attemptId: attempt.id,
+    endedAt: now,
+    runId: run.id,
+  });
   await endAttempt(transaction, attempt.id, "interrupted");
   return {
     compensatingEvents,
@@ -859,7 +931,6 @@ async function commitSupersededAttemptEvent(
     wasDuplicate: false,
   };
 }
-
 export async function commitRunnerEvent(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
@@ -893,21 +964,27 @@ export async function commitRunnerEvent(
   // commit, which the Runner would otherwise send again forever.
   const event = storableJson(PendingAgentEventSchema.parse(input.event));
   if (event.environmentId !== input.environmentId) {
-    throw new OpensteerError({ code: "forbidden", message: "Runner event environment mismatch" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Runner event environment mismatch",
+    });
   }
   if (input.integration && event.type !== "tool.started") {
     throw new Error("Only a tool.started event names an integration call's subject");
   }
   const data = storableJson(
     input.integration
-      ? { ...event.data, integration: IntegrationCallSubjectSchema.parse(input.integration) }
+      ? {
+          ...event.data,
+          integration: IntegrationCallSubjectSchema.parse(input.integration),
+        }
       : event.data,
   );
 
   // An event whose content the schema refuses fails the same way on every
   // replay, so it is refused — which ends its Run — rather than reported as a
   // store failure, which would have the Runner send it again forever.
-  const committed = await withDatabaseTransaction(database, async (transaction) => {
+  const committed = await withPersonalTransaction(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .selectAll()
@@ -952,7 +1029,7 @@ export async function commitRunnerEvent(
       }
     }
     const duplicate = await transaction
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", event.runId)
       .where("runnerOrdinal", "=", event.ordinal)
@@ -996,7 +1073,6 @@ export async function commitRunnerEvent(
       const formerBinding = await transaction
         .selectFrom("providerSessions")
         .innerJoin("threads", "threads.id", "providerSessions.threadId")
-        .select(["threads.workspaceId"])
         .where("providerSessions.id", "=", run.providerSessionId)
         .where("providerSessions.bindingGeneration", "=", event.bindingGeneration)
         .where("providerSessions.runnerId", "=", input.runnerId)
@@ -1004,13 +1080,12 @@ export async function commitRunnerEvent(
         .executeTakeFirst();
       const isExactLateEvent =
         formerBinding !== undefined &&
-        formerBinding.workspaceId === event.workspaceId &&
         run.environmentId === input.environmentId &&
         run.threadId === event.threadId &&
         run.nextRunnerOrdinal === event.ordinal;
       if (isExactLateEvent) {
         const durableTerminal = await transaction
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .selectAll()
           .where("runId", "=", run.id)
           .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
@@ -1018,7 +1093,9 @@ export async function commitRunnerEvent(
           .executeTakeFirstOrThrow();
         await transaction
           .updateTable("runs")
-          .set({ nextRunnerOrdinal: event.ordinal + 1 })
+          .set({
+            nextRunnerOrdinal: event.ordinal + 1,
+          })
           .where("id", "=", run.id)
           .where("nextRunnerOrdinal", "=", event.ordinal)
           .executeTakeFirstOrThrow();
@@ -1031,27 +1108,13 @@ export async function commitRunnerEvent(
         };
       }
     }
-    const workspace = await transaction
-      .selectFrom("workspaces")
-      .select("status")
-      .where("id", "=", event.workspaceId)
-      .forNoKeyUpdate()
-      .executeTakeFirst();
-    if (
-      !workspace ||
-      (workspace.status !== "ready" &&
-        !(event.type === "run.interrupted" && event.data.cause === "lease-lost"))
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Runner event Workspace is no longer available",
-      });
-    }
     await assertActiveExecutionBindingInStore(
       transaction,
       {
         ...(event.type === "run.interrupted" && event.data.cause === "lease-lost"
-          ? { lostExecution: true }
+          ? {
+              lostExecution: true,
+            }
           : {}),
         bindingGeneration: event.bindingGeneration,
         environmentId: input.environmentId,
@@ -1060,7 +1123,6 @@ export async function commitRunnerEvent(
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,
         threadId: event.threadId,
-        workspaceId: event.workspaceId,
       },
       executionNow,
     );
@@ -1104,7 +1166,11 @@ export async function commitRunnerEvent(
         event.type === "run.failed" ||
         (event.type === "run.interrupted" && (await runWasStopped(transaction, run.id)));
       if (!endsRun) {
-        return commitSupersededAttemptEvent(transaction, { attempt: superseded, event, run });
+        return commitSupersededAttemptEvent(transaction, {
+          attempt: superseded,
+          event,
+          run,
+        });
       }
     }
     if (
@@ -1112,7 +1178,10 @@ export async function commitRunnerEvent(
       event.type === "run.status" ||
       event.type === "request.cancelled"
     ) {
-      await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [event.threadId] });
+      await lockRunProjectionRows(transaction, {
+        runIds: [run.id],
+        threadIds: [event.threadId],
+      });
     }
     assertRunnerEventTransition(run, event);
     // A completed Run's reply, and the reply of a turn that ended with work
@@ -1127,13 +1196,14 @@ export async function commitRunnerEvent(
         : data;
     const eventId = createId("event");
     const sequenceRow = await transaction
-      .updateTable("workspaces")
-      .set({ eventSequence: sql<string>`event_sequence + 1` })
-      .where("id", "=", event.workspaceId)
-      .returning("eventSequence")
+      .updateTable("deploymentEventState")
+      .set({
+        sequence: sql<string>`sequence + 1`,
+      })
+      .returning(["sequence", "deploymentId"])
       .executeTakeFirstOrThrow();
     const inserted = await transaction
-      .insertInto("workspaceEvents")
+      .insertInto("deploymentEvents")
       .values({
         createdAt: new Date(event.emittedAt),
         nodeDetailId: nodeDetailEventNodeId(event) ?? null,
@@ -1145,10 +1215,10 @@ export async function commitRunnerEvent(
         runnerBootId: input.runnerBootId,
         runnerId: input.runnerId,
         runnerOrdinal: event.ordinal,
-        sequence: sequenceRow.eventSequence,
+        sequence: sequenceRow.sequence,
+        deploymentId: sequenceRow.deploymentId,
         threadId: event.threadId,
         type: event.type,
-        workspaceId: event.workspaceId,
       })
       .returningAll()
       .executeTakeFirstOrThrow();
@@ -1157,7 +1227,9 @@ export async function commitRunnerEvent(
       await markThreadStatePending(transaction, event.threadId);
     const advanced = await transaction
       .updateTable("runs")
-      .set({ nextRunnerOrdinal: event.ordinal + 1 })
+      .set({
+        nextRunnerOrdinal: event.ordinal + 1,
+      })
       .where("id", "=", event.runId)
       .where("nextRunnerOrdinal", "=", event.ordinal)
       .executeTakeFirst();

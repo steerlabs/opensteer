@@ -23,7 +23,7 @@ const platformContainment = "windows-nt-relative-noreparse"
 
 type nodeHandle = windows.Handle
 
-type workspaceRoot struct {
+type filesystemRoot struct {
 	containment string
 	handle      windows.Handle
 	volumeID    string
@@ -55,7 +55,7 @@ var directoryMutexes = struct {
 	values map[windows.Handle]windows.Handle
 }{values: make(map[windows.Handle]windows.Handle)}
 
-func openWorkspaceRoot(rootPath string, requireMountBoundary bool) (*workspaceRoot, error) {
+func openTaskFolderRoot(rootPath string, requireMountBoundary bool) (*filesystemRoot, error) {
 	cleaned, volumeRoot, err := validatedWindowsRootPath(rootPath)
 	if err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func openWorkspaceRoot(rootPath string, requireMountBoundary bool) (*workspaceRo
 		windows.CloseHandle(current)
 		return nil, err
 	}
-	root := &workspaceRoot{
+	root := &filesystemRoot{
 		containment: platformContainment,
 		handle:      current,
 		volumeID:    baseStat.identity.volumeID,
@@ -77,13 +77,13 @@ func openWorkspaceRoot(rootPath string, requireMountBoundary bool) (*workspaceRo
 	relative, err := filepath.Rel(volumeRoot, cleaned)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
 		root.close()
-		return nil, userError("invalid-root", "Native filesystem Workspace root is outside its volume")
+		return nil, userError("invalid-root", "Native filesystem task folder root is outside its volume")
 	}
 	if relative != "." {
 		for _, component := range strings.Split(relative, `\`) {
 			if !validWindowsComponent(component) {
 				root.close()
-				return nil, userError("invalid-root", "Native filesystem Workspace root contains an invalid component")
+				return nil, userError("invalid-root", "Native filesystem task folder root contains an invalid component")
 			}
 			next, openErr := root.openDirectoryAt(root.handle, component)
 			if openErr != nil {
@@ -96,77 +96,23 @@ func openWorkspaceRoot(rootPath string, requireMountBoundary bool) (*workspaceRo
 	}
 	if requireMountBoundary && !strings.EqualFold(cleaned, filepath.Clean(volumeRoot)) {
 		root.close()
-		return nil, userError("root-not-mount", "Native filesystem Workspace root is not an isolated volume boundary")
+		return nil, userError("root-not-mount", "Native filesystem task folder root is not an isolated volume boundary")
 	}
 	return root, nil
 }
 
-func ensureWorkspaceRoot(rootPath string) (ensureRootResult, error) {
-	cleaned, volumeRoot, err := validatedWindowsRootPath(rootPath)
-	if err != nil {
-		return ensureRootResult{}, err
-	}
-	current, err := openAbsoluteDirectory(volumeRoot)
-	if err != nil {
-		return ensureRootResult{}, err
-	}
-	baseStat, err := statForHandle(current, false)
-	if err != nil {
-		windows.CloseHandle(current)
-		return ensureRootResult{}, err
-	}
-	root := &workspaceRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
-	defer root.close()
-	relative, err := filepath.Rel(volumeRoot, cleaned)
-	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
-		return ensureRootResult{}, userError("invalid-root", "Native filesystem Workspace root is outside its volume")
-	}
-	created := false
-	if relative != "." {
-		components := strings.Split(relative, `\`)
-		for index, component := range components {
-			if !validWindowsComponent(component) {
-				return ensureRootResult{}, userError("invalid-root", "Native filesystem Workspace root contains an invalid component")
-			}
-			next, openErr := root.openDirectoryAt(root.handle, component)
-			if isWindowsNotFound(openErr) {
-				createdHandle, _, createErr := root.createDirectoryAt(root.handle, component)
-				if createErr == nil {
-					created = index == len(components)-1
-					next = createdHandle
-					openErr = nil
-				} else if isAlreadyExists(createErr) {
-					next, openErr = root.openDirectoryAt(root.handle, component)
-				} else {
-					openErr = createErr
-				}
-			}
-			if openErr != nil {
-				return ensureRootResult{}, openErr
-			}
-			windows.CloseHandle(root.handle)
-			root.handle = next
-		}
-	}
-	stat, err := statForHandle(root.handle, false)
-	if err != nil {
-		return ensureRootResult{}, err
-	}
-	return ensureRootResult{Created: created, Identity: directoryIdentityFromStat(stat)}, nil
-}
-
 func validatedWindowsRootPath(rootPath string) (string, string, error) {
 	if rootPath == "" || !filepath.IsAbs(rootPath) || strings.ContainsRune(rootPath, 0) || len(rootPath) > 16*1024 {
-		return "", "", userError("invalid-root", "Native filesystem Workspace root is invalid")
+		return "", "", userError("invalid-root", "Native filesystem task folder root is invalid")
 	}
 	namespacePath := strings.ReplaceAll(rootPath, "/", `\`)
 	if hasWindowsDeviceNamespace(namespacePath) {
-		return "", "", userError("invalid-root", "Native filesystem Workspace root uses an unsupported device namespace")
+		return "", "", userError("invalid-root", "Native filesystem task folder root uses an unsupported device namespace")
 	}
 	cleaned := filepath.Clean(rootPath)
 	volume := filepath.VolumeName(cleaned)
 	if !validWindowsVolumeName(volume) {
-		return "", "", userError("invalid-root", "Native filesystem Workspace root has no volume")
+		return "", "", userError("invalid-root", "Native filesystem task folder root has no volume")
 	}
 	return cleaned, volume + `\`, nil
 }
@@ -195,7 +141,7 @@ func openAbsoluteDirectory(path string) (windows.Handle, error) {
 	return handle, nil
 }
 
-func (root *workspaceRoot) close() { _ = windows.CloseHandle(root.handle) }
+func (root *filesystemRoot) close() { _ = windows.CloseHandle(root.handle) }
 
 func closeNode(handle nodeHandle) { _ = windows.CloseHandle(handle) }
 
@@ -224,8 +170,8 @@ func statOpenFile(file *os.File) (nodeStat, error) {
 	return statForHandle(windows.Handle(file.Fd()), false)
 }
 
-func (root *workspaceRoot) probe() error {
-	duplicate, err := duplicateNodeFile(root.handle, "workspace-root-probe")
+func (root *filesystemRoot) probe() error {
+	duplicate, err := duplicateNodeFile(root.handle, "task-folder-root-probe")
 	if err == nil {
 		err = duplicate.Close()
 	}
@@ -237,15 +183,15 @@ func relativeParts(value string, allowRoot bool) ([]string, string, error) {
 		return nil, ".", nil
 	}
 	if value == "" || strings.HasPrefix(value, "/") || strings.HasPrefix(value, `\`) || strings.ContainsRune(value, 0) || len(value) > 4096 {
-		return nil, "", userError("invalid-path", "Path must be relative to the workspace")
+		return nil, "", userError("invalid-path", "Path must be relative to the task folder")
 	}
 	parts := strings.Split(value, "/")
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, "", userError("outside-workspace", "Path escapes the workspace")
+			return nil, "", userError("outside-workspace", "Path escapes the task folder")
 		}
 		if !validWindowsComponent(part) {
-			return nil, "", userError("invalid-path", "Workspace path component is invalid on Windows")
+			return nil, "", userError("invalid-path", "Task folder path component is invalid on Windows")
 		}
 	}
 	return parts, strings.Join(parts, "/"), nil
@@ -318,7 +264,7 @@ func validUncAuthority(value string) bool {
 	return true
 }
 
-func (root *workspaceRoot) openNode(parts []string) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openNode(parts []string) (nodeHandle, nodeStat, error) {
 	if len(parts) == 0 {
 		var handle windows.Handle
 		process := windows.CurrentProcess()
@@ -344,7 +290,7 @@ func (root *workspaceRoot) openNode(parts []string) (nodeHandle, nodeStat, error
 	return root.openNodeAt(parent, name)
 }
 
-func (root *workspaceRoot) openNodeAt(parent nodeHandle, name string) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openNodeAt(parent nodeHandle, name string) (nodeHandle, nodeStat, error) {
 	handle, err := ntOpenAt(parent, name, windows.FILE_READ_DATA|windows.FILE_READ_ATTRIBUTES, windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
 	if err != nil {
 		return windows.InvalidHandle, nodeStat{}, err
@@ -361,7 +307,7 @@ func (root *workspaceRoot) openNodeAt(parent nodeHandle, name string) (nodeHandl
 	return handle, stat, nil
 }
 
-func (root *workspaceRoot) statNodeAt(parent nodeHandle, name string) (nodeStat, error) {
+func (root *filesystemRoot) statNodeAt(parent nodeHandle, name string) (nodeStat, error) {
 	handle, err := ntOpenAt(parent, name, windows.FILE_READ_ATTRIBUTES|windows.SYNCHRONIZE, windows.FILE_OPEN, windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
 	if err != nil {
 		return nodeStat{}, err
@@ -377,7 +323,7 @@ func (root *workspaceRoot) statNodeAt(parent nodeHandle, name string) (nodeStat,
 	return stat, nil
 }
 
-func (root *workspaceRoot) openDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) openDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	handle, err := ntOpenAt(parent, name, windows.FILE_LIST_DIRECTORY|windows.FILE_TRAVERSE|windows.FILE_READ_ATTRIBUTES, windows.FILE_OPEN, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -389,30 +335,13 @@ func (root *workspaceRoot) openDirectoryAt(parent nodeHandle, name string) (node
 	}
 	if stat.kind != "directory" {
 		closeNode(handle)
-		return windows.InvalidHandle, userError("unsafe-parent", "Workspace path contains a non-directory parent")
+		return windows.InvalidHandle, userError("unsafe-parent", "Task folder path contains a non-directory parent")
 	}
 	if err := root.assertSameDevice(stat); err != nil {
 		closeNode(handle)
 		return windows.InvalidHandle, err
 	}
 	return handle, nil
-}
-
-func (root *workspaceRoot) createDirectoryAt(parent nodeHandle, name string) (nodeHandle, nodeStat, error) {
-	handle, err := ntOpenAt(parent, name, windows.FILE_READ_ATTRIBUTES, windows.FILE_CREATE, windows.FILE_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT)
-	if err != nil {
-		return windows.InvalidHandle, nodeStat{}, err
-	}
-	stat, err := statForHandle(handle, false)
-	if err != nil {
-		closeNode(handle)
-		return windows.InvalidHandle, nodeStat{}, err
-	}
-	if err := root.assertSameDevice(stat); err != nil {
-		closeNode(handle)
-		return windows.InvalidHandle, nodeStat{}, err
-	}
-	return handle, stat, nil
 }
 
 func isAlreadyExists(err error) bool {
@@ -458,7 +387,7 @@ func statForHandle(handle windows.Handle, allowReparse bool) (nodeStat, error) {
 		return nodeStat{}, err
 	}
 	if information.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 && !allowReparse {
-		return nodeStat{}, userError("symlink-denied", "Workspace paths containing reparse points are not available to Native tools")
+		return nodeStat{}, userError("symlink-denied", "Task folder paths containing reparse points are not available to Native tools")
 	}
 	var identifier windowsFileIDInfo
 	if err := windows.GetFileInformationByHandleEx(
@@ -514,16 +443,16 @@ func windowsFileTimestampUnixNano(value int64) int64 {
 	return (value - 116_444_736_000_000_000) * 100
 }
 
-func (root *workspaceRoot) assertSameDevice(stat nodeStat) error {
+func (root *filesystemRoot) assertSameDevice(stat nodeStat) error {
 	if stat.identity.volumeID != root.volumeID {
 		return userError("cross-device", "Nested filesystem mounts are unavailable to Native tools")
 	}
 	return nil
 }
 
-func (root *workspaceRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
+func (root *filesystemRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
 	if len(parts) == 0 {
-		return windows.InvalidHandle, "", userError("invalid-path", "Path must name a file inside the Workspace")
+		return windows.InvalidHandle, "", userError("invalid-path", "Path must name a file inside the task folder")
 	}
 	var current windows.Handle
 	process := windows.CurrentProcess()
@@ -553,7 +482,7 @@ func (root *workspaceRoot) openParent(parts []string, create bool) (nodeHandle, 
 	return current, parts[len(parts)-1], nil
 }
 
-func (root *workspaceRoot) atomicWrite(parent nodeHandle, name string, content []byte, expected *fileIdentity) (string, error) {
+func (root *filesystemRoot) atomicWrite(parent nodeHandle, name string, content []byte, expected *fileIdentity) (string, error) {
 	if err := root.assertTargetIdentity(parent, name, expected); err != nil {
 		return "", err
 	}
@@ -603,14 +532,14 @@ func (root *workspaceRoot) atomicWrite(parent nodeHandle, name string, content [
 	return "synced", nil
 }
 
-func (root *workspaceRoot) assertTargetIdentity(parent nodeHandle, name string, expected *fileIdentity) error {
+func (root *filesystemRoot) assertTargetIdentity(parent nodeHandle, name string, expected *fileIdentity) error {
 	stat, err := root.statNodeAt(parent, name)
 	if err == nil {
 		if stat.kind != "file" {
-			return userError("not-regular", "Workspace write target must be a regular file or a new path")
+			return userError("not-regular", "Task folder write target must be a regular file or a new path")
 		}
 		if expected != nil && stat.identity != *expected {
-			return userError("concurrent-modification", "Workspace file changed while replace_text was running")
+			return userError("concurrent-modification", "Task folder file changed while replace_text was running")
 		}
 		return nil
 	}
@@ -618,7 +547,7 @@ func (root *workspaceRoot) assertTargetIdentity(parent nodeHandle, name string, 
 		return err
 	}
 	if expected != nil {
-		return userError("concurrent-modification", "Workspace file changed while replace_text was running")
+		return userError("concurrent-modification", "Task folder file changed while replace_text was running")
 	}
 	return nil
 }
@@ -717,21 +646,21 @@ func platformPublicError(err error) (string, string, bool) {
 	err = normalizeWindowsError(err)
 	switch {
 	case isWindowsNotFound(err):
-		return "not-found", "Workspace path does not exist", true
+		return "not-found", "Task folder path does not exist", true
 	case errors.Is(err, windows.ERROR_CANT_ACCESS_FILE):
-		return "symlink-denied", "Workspace paths containing reparse points are not available to Native tools", true
+		return "symlink-denied", "Task folder paths containing reparse points are not available to Native tools", true
 	case errors.Is(err, windows.ERROR_DIRECTORY):
-		return "unsafe-parent", "Workspace path contains a reparse point or non-directory parent; reparse points are unavailable", true
+		return "unsafe-parent", "Task folder path contains a reparse point or non-directory parent; reparse points are unavailable", true
 	case errors.Is(err, windows.ERROR_NOT_SAME_DEVICE):
 		return "cross-device", "Nested filesystem mounts are unavailable to Native tools", true
 	case errors.Is(err, windows.ERROR_ACCESS_DENIED), errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD):
-		return "permission-denied", "Workspace path is not accessible", true
+		return "permission-denied", "Task folder path is not accessible", true
 	case errors.Is(err, windows.ERROR_INVALID_FUNCTION), errors.Is(err, windows.ERROR_INVALID_PARAMETER), errors.Is(err, windows.ERROR_NOT_SUPPORTED):
 		return "helper-unavailable", "Native filesystem containment is unavailable on this system", true
 	default:
 		var errno syscall.Errno
 		if errors.As(err, &errno) && errno == windows.STATUS_REPARSE_POINT_ENCOUNTERED.Errno() {
-			return "symlink-denied", "Workspace paths containing reparse points are not available to Native tools", true
+			return "symlink-denied", "Task folder paths containing reparse points are not available to Native tools", true
 		}
 		return "", "", false
 	}

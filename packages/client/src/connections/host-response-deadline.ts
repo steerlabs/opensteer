@@ -59,7 +59,7 @@ export class HostResponseDeadline {
 }
 
 // Headers may legitimately wait while the Host waits on a Runner, up to 30
-// seconds for workspace files and harness nudges, so this sits above that.
+
 export const hostResponseHeadersTimeoutMs = 45_000;
 // Once a body flows, silence this long means a dead path, not a slow link.
 export const hostResponseStallTimeoutMs = 20_000;

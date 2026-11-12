@@ -1,4 +1,9 @@
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 /**
  * Failure journeys, written before the backend:
  * - Failed Runtime disposal can become false close success; dead memberships can exhaust limits.
@@ -10,14 +15,14 @@ import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.
  * - Retried organization can duplicate groups; repeated close can affect unlisted tabs or call the browser again.
  * - Restart/restore can lose membership, wake siblings, move a person's view or omit the Run hold.
  * - Tab reads can lose profile/Guest identity when a lineage sleeps or starts restoring, or wake it.
- * - Regroup, last-member close, restore and Workspace deletion can invert locks or resurrect tabs.
+ * - Regroup, last-member close and restore can invert locks or resurrect tabs.
  * Evidence includes source SHA, inputs, outputs and assertions outside the checkout.
  */
 import { execFileSync } from "node:child_process";
 import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -46,7 +51,7 @@ import {
 } from "../packages/core/src/index.js";
 import {
   BrowserTabGroupStore,
-  WorkspaceTabStore,
+  PersonalTabStore,
   createDatabase,
 } from "../packages/database/src/index.js";
 import { pauseAfterLock } from "../packages/database/src/lock-race.test-support.js";
@@ -232,7 +237,7 @@ integration("personal tab order", () => {
     const b = await open(stack);
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const recorder = new WorkspaceTabStore(db);
+    const recorder = new PersonalTabStore(db);
     const child = () => ({
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       title: "Link",
@@ -246,11 +251,11 @@ integration("personal tab order", () => {
     expect(await resolvedOrder(stack)).toEqual([a.tabId, c.id, d.id, b.tabId]);
     expect((await bootstrap(stack)).tabGroups?.order).toEqual([]);
     const group = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [a.tabId, b.tabId],
       idempotencyKey: randomUUID(),
     });
-    if (group.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (group.type !== "tabs.group") throw new Error("Wrong group result");
     const e = child();
     await recorder.recordChanges(a.sessionId, [e], []);
     expect(await resolvedOrder(stack)).toEqual([a.tabId, b.tabId, c.id, d.id, e.id]);
@@ -266,85 +271,6 @@ integration("personal tab order", () => {
         "loose child follows opener group",
         "lineage timestamps are ISO",
         "reads never write",
-      ],
-    });
-  }, 120_000);
-
-  it("drops hidden tabs on organization writes and resolves their surviving membership when visibility returns", async () => {
-    const stack = await deployment();
-    const a = await open(stack);
-    const b = await open(stack);
-    const db = stack.host.store.database;
-    const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const other = await stack.createWorkspace("Hidden later");
-    const session = await command(stack, {
-      type: "browser.session.start",
-      workspaceId: other.id,
-      input: { fresh: true, reuseExisting: false },
-      idempotencyKey: randomUUID(),
-    });
-    if (session.type !== "browser.session.start") throw new Error("Wrong session result");
-    const hidden = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: session.session.id,
-      idempotencyKey: randomUUID(),
-    });
-    if (hidden.type !== "browser.tab.open") throw new Error("Wrong tab result");
-    await stack.host.browser.flushPendingTabDescriptors();
-    const hiddenTabs = (await new WorkspaceTabStore(db).read(owner.id, session.session.id))!.tabs!;
-    expect(hiddenTabs).toHaveLength(2);
-    const group = await command(stack, {
-      type: "workspace.tabs.group",
-      tabIds: [a.tabId, ...hiddenTabs.map((tab) => tab.id)],
-      idempotencyKey: randomUUID(),
-    });
-    if (group.type !== "workspace.tabs.group") throw new Error("Wrong group result");
-    const membership = await db
-      .selectFrom("workspaceMemberships")
-      .selectAll()
-      .where("workspaceId", "=", other.id)
-      .where("userId", "=", owner.id)
-      .executeTakeFirstOrThrow();
-    const custodian = await stack.host.store.createUser("Workspace custodian");
-    await db
-      .insertInto("workspaceMemberships")
-      .values({ ...membership, id: createId("workspaceMembership"), userId: custodian })
-      .execute();
-    await db.deleteFrom("workspaceMemberships").where("id", "=", membership.id).execute();
-    const store = new BrowserTabGroupStore(db);
-    expect((await store.layout(owner.id)).order).not.toContain(hidden.tabId);
-    const moved = await command(stack, {
-      type: "workspace.tabs.move",
-      item: { tabIds: [b.tabId] },
-      to: { groupId: null, before: { groupId: group.groupId } },
-      idempotencyKey: randomUUID(),
-    });
-    expect(moved).toMatchObject({ layout: { order: [b.tabId, a.tabId] } });
-    await command(stack, {
-      type: "workspace.tabs.ungroup",
-      tabIds: [b.tabId],
-      idempotencyKey: randomUUID(),
-    });
-    expect(
-      await db
-        .selectFrom("browserTabGroupMembers")
-        .selectAll()
-        .where("tabId", "=", hidden.tabId)
-        .execute(),
-    ).toHaveLength(1);
-    await db.insertInto("workspaceMemberships").values(membership).execute();
-    expect((await store.layout(owner.id)).order).toEqual([b.tabId, a.tabId]);
-    expect(await resolvedOrder(stack)).toEqual([
-      b.tabId,
-      a.tabId,
-      ...hiddenTabs.map((tab) => tab.id),
-    ]);
-    evidence.push({
-      assertions: [
-        "visibility filters saved order",
-        "writes forget hidden positions",
-        "hidden membership survives",
-        "regained member joins group run",
       ],
     });
   }, 120_000);
@@ -369,18 +295,18 @@ integration("personal tab order", () => {
     const publish = vi.spyOn(RealtimeHub.prototype, "publishBrowserSessionsChanged");
     const outcomes = await Promise.all([
       command(stack, {
-        type: "workspace.tabs.move",
+        type: "tabs.move",
         item: { tabIds: [b.tabId] },
         to: { groupId: null, before: { tabId: a.tabId } },
         idempotencyKey: randomUUID(),
       }),
       secondClient["commands.dispatch"]({
-        type: "workspace.tabs.move",
+        type: "tabs.move",
         item: { tabIds: [d.tabId] },
         to: { groupId: null, before: { tabId: c.tabId } },
         idempotencyKey: randomUUID(),
       }),
-      agent(stack, stack.mainWorkspaceId, {
+      agent(stack, {
         calls: [
           {
             name: "browser_tab_write",
@@ -409,7 +335,7 @@ integration("personal tab order", () => {
     });
   }, 120_000);
 
-  it("revalidates discovered groups when a source or anchor closes before tab locks", async () => {
+  it("serializes group moves after a source or anchor closes", async () => {
     const stack = await deployment();
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
@@ -422,23 +348,30 @@ integration("personal tab order", () => {
       });
       const barrier = pauseAfterLock(
         db,
-        (node) =>
-          /"name":"browser_?tab_?group_?members"/iu.test(node) && !node.includes("ForUpdate"),
+        (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
       );
-      const moving = new BrowserTabGroupStore(barrier.database).move(owner.id, {
-        item: { groupId: grouped.groupId },
-        to: { groupId: null, before: { tabId: b.tabId } },
-        idempotencyKey: randomUUID(),
-      });
-      const outcome = moving.then(
-        (layout) => ({ layout }),
-        (error: unknown) => ({ error }),
+      const closing = new PersonalTabStore(barrier.database).close(
+        owner.id,
+        closed === "source" ? a.tabId : b.tabId,
       );
+      let outcome: Promise<unknown>;
       try {
-        await barrier.reached;
-        await new WorkspaceTabStore(db).close(owner.id, closed === "source" ? a.tabId : b.tabId);
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Tab close never reached its personal transaction fence"),
+        });
+        outcome = new BrowserTabGroupStore(db)
+          .move(owner.id, {
+            item: { groupId: grouped.groupId },
+            to: { groupId: null, before: { tabId: b.tabId } },
+            idempotencyKey: randomUUID(),
+          })
+          .then(
+            (layout) => ({ layout }),
+            (error: unknown) => ({ error }),
+          );
       } finally {
         barrier.release();
+        await closing;
       }
       expect(await outcome).toMatchObject({
         error: { code: closed === "source" ? "not_found" : "conflict" },
@@ -449,7 +382,7 @@ integration("personal tab order", () => {
         assertions: [
           "closed source never resurrects",
           "closed anchor never changes destination",
-          "scope revalidated after layout lock",
+          "move observes the committed close after the personal event fence",
         ],
       });
     }
@@ -472,7 +405,7 @@ integration("personal tab order", () => {
     });
     for (let start = 1; start <= 9999; start += 1000)
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           Array.from({ length: Math.min(1000, 10000 - start) }, (_, index) =>
             seed(`surface_cap_${start + index}`, start + index),
@@ -486,7 +419,7 @@ integration("personal tab order", () => {
       idempotencyKey: randomUUID(),
     });
     expect(first.order).toHaveLength(10000);
-    await db.insertInto("workspaceTabs").values(seed("surface_cap_extra", 10000)).execute();
+    await db.insertInto("personalTabs").values(seed("surface_cap_extra", 10000)).execute();
     await expect(
       groups.move(owner.id, {
         item: { tabIds: [a.tabId] },
@@ -500,7 +433,7 @@ integration("personal tab order", () => {
     });
     expect(await groups.layout(owner.id)).toEqual(first);
     await db
-      .updateTable("workspaceTabs")
+      .updateTable("personalTabs")
       .set({ closedAt: new Date() })
       .where("id", "=", "surface_cap_1")
       .execute();
@@ -539,16 +472,16 @@ integration("personal tab order", () => {
       groups: [],
     });
     const move = async (
-      item: Extract<CoreCommand, { type: "workspace.tabs.move" }>["item"],
-      to: Extract<CoreCommand, { type: "workspace.tabs.move" }>["to"],
+      item: Extract<CoreCommand, { type: "tabs.move" }>["item"],
+      to: Extract<CoreCommand, { type: "tabs.move" }>["to"],
     ) => {
       const result = await command(stack, {
-        type: "workspace.tabs.move",
+        type: "tabs.move",
         item,
         to,
         idempotencyKey: randomUUID(),
       });
-      if (result.type !== "workspace.tabs.move") throw new Error("Wrong move result");
+      if (result.type !== "tabs.move") throw new Error("Wrong move result");
       return result.layout;
     };
     const first = await move({ tabIds: [d.tabId] }, { groupId: null, before: { tabId: a.tabId } });
@@ -557,18 +490,18 @@ integration("personal tab order", () => {
       (await move({ tabIds: [d.tabId] }, { groupId: null, before: { tabId: a.tabId } })).revision,
     ).toBe(first.revision);
     const g = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [a.tabId, c.tabId],
       title: "Research",
       idempotencyKey: randomUUID(),
     });
-    if (g.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (g.type !== "tabs.group") throw new Error("Wrong group result");
     expect(g.layout.order).toEqual([d.tabId, a.tabId, c.tabId, b.tabId]);
     expect(
       (await move({ tabIds: [b.tabId] }, { groupId: null, before: { groupId: g.groupId } })).order,
     ).toEqual([d.tabId, b.tabId, a.tabId, c.tabId]);
     await command(stack, {
-      type: "workspace.tabGroup.update",
+      type: "tabGroup.update",
       groupId: g.groupId,
       collapsed: true,
       idempotencyKey: randomUUID(),
@@ -590,11 +523,11 @@ integration("personal tab order", () => {
       d.tabId,
     ]);
     const n = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [a.tabId, c.tabId],
       idempotencyKey: randomUUID(),
     });
-    if (n.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (n.type !== "tabs.group") throw new Error("Wrong group result");
     expect(
       (await move({ groupId: g.groupId }, { groupId: null, before: { groupId: n.groupId } })).order,
     ).toEqual([b.tabId, d.tabId, a.tabId, c.tabId]);
@@ -606,57 +539,57 @@ integration("personal tab order", () => {
       [a.tabId, c.tabId, b.tabId, d.tabId],
     );
     await command(stack, {
-      type: "workspace.tabs.ungroup",
+      type: "tabs.ungroup",
       tabIds: [a.tabId, c.tabId],
       idempotencyKey: randomUUID(),
     });
     const nonSibling = await stack.api["commands.dispatch"]({
-      type: "workspace.tabs.move",
+      type: "tabs.move",
       item: { tabIds: [a.tabId] },
       to: { groupId: null, before: { tabId: b.tabId } },
       idempotencyKey: randomUUID(),
     });
     expect(nonSibling).toMatchObject({ ok: false, error: { code: "conflict" } });
     const refused = await stack.api["commands.dispatch"]({
-      type: "workspace.tabs.move",
+      type: "tabs.move",
       item: { groupId: g.groupId },
       to: { groupId: g.groupId, before: null },
       idempotencyKey: randomUUID(),
     });
     expect(refused).toMatchObject({ ok: false, error: { code: "bad_request" } });
     const self = await stack.api["commands.dispatch"]({
-      type: "workspace.tabs.move",
+      type: "tabs.move",
       item: { tabIds: [a.tabId] },
       to: { groupId: null, before: { tabId: a.tabId } },
       idempotencyKey: randomUUID(),
     });
     expect(self).toMatchObject({ ok: false, error: { code: "bad_request" } });
     await command(stack, {
-      type: "workspace.tabs.ungroup",
+      type: "tabs.ungroup",
       tabIds: [b.tabId],
       idempotencyKey: randomUUID(),
     });
     expect(await resolvedOrder(stack)).toEqual([a.tabId, c.tabId, d.tabId, b.tabId]);
     await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [c.tabId],
       groupId: g.groupId,
       idempotencyKey: randomUUID(),
     });
     expect(await resolvedOrder(stack)).toEqual([a.tabId, d.tabId, c.tabId, b.tabId]);
     await command(stack, {
-      type: "workspace.tabs.ungroup",
+      type: "tabs.ungroup",
       tabIds: [d.tabId, c.tabId],
       idempotencyKey: randomUUID(),
     });
     expect(await resolvedOrder(stack)).toEqual([a.tabId, d.tabId, c.tabId, b.tabId]);
     await command(stack, {
-      type: "workspace.tabs.close",
+      type: "tabs.close",
       tabIds: [b.tabId],
       idempotencyKey: randomUUID(),
     });
     const stale = await stack.api["commands.dispatch"]({
-      type: "workspace.tabs.move",
+      type: "tabs.move",
       item: { tabIds: [a.tabId] },
       to: { groupId: null, before: { tabId: b.tabId } },
       idempotencyKey: randomUUID(),
@@ -725,18 +658,18 @@ integration("personal tab groups through a real deployment", () => {
     ).toBe("applied");
     const beforeCatalog = await browserRows(stack.host.browser, owner.id, first.sessionId);
     const grouped = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [first.tabId, third.tabId],
       title: "Research",
       idempotencyKey: randomUUID(),
     });
-    if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong grouping result");
+    if (grouped.type !== "tabs.group") throw new Error("Wrong grouping result");
     expect(
       (await browserRows(stack.host.browser, owner.id, first.sessionId)).tabs.map((t) => t.id),
     ).toEqual(beforeCatalog.tabs.map((t) => t.id));
     await expect(
       command(stack, {
-        type: "workspace.tabs.group",
+        type: "tabs.group",
         groupId: grouped.groupId,
         tabIds: [first.tabId],
         title: "Invalid join",
@@ -753,7 +686,7 @@ integration("personal tab groups through a real deployment", () => {
       },
     ]);
     const updated = await command(stack, {
-      type: "workspace.tabGroup.update",
+      type: "tabGroup.update",
       groupId: grouped.groupId,
       title: "Compare",
       color: "cyan",
@@ -772,7 +705,7 @@ integration("personal tab groups through a real deployment", () => {
       ]),
     });
     await command(stack, {
-      type: "workspace.tabs.ungroup",
+      type: "tabs.ungroup",
       tabIds: [third.tabId],
       idempotencyKey: randomUUID(),
     });
@@ -782,7 +715,7 @@ integration("personal tab groups through a real deployment", () => {
       ),
     ).toContainEqual(expect.objectContaining({ id: third.tabId, state: "live" }));
     const closed = await command(stack, {
-      type: "workspace.tabs.close",
+      type: "tabs.close",
       tabIds: [first.tabId],
       idempotencyKey: randomUUID(),
     });
@@ -809,13 +742,8 @@ integration("personal tab groups through a real deployment", () => {
   }, 120_000);
 });
 
-async function agent(
-  stack: VerticalStack,
-  workspaceId: VerticalStack["mainWorkspaceId"],
-  plan: Record<string, unknown>,
-) {
+async function agent(stack: VerticalStack, plan: Record<string, unknown>) {
   const threadId = await stack.createThread({
-    workspaceId,
     title: "Organize research",
     idempotencyKey: randomUUID(),
     modelSelection: ModelSelectionSchema.parse({
@@ -826,7 +754,7 @@ async function agent(
   });
   const turn = await stack.sendMessage({
     threadId,
-    workspaceId,
+
     text: `TAB_GROUP_JOURNEY:${JSON.stringify(plan)}`,
   });
   const report: unknown = JSON.parse(turn.assistantText);
@@ -859,7 +787,7 @@ integration("agent organization and durable ownership", () => {
     });
     if (saved.type !== "browser.tab.open") throw new Error("Wrong tab-open result");
     const inventory = () =>
-      stack.host.store.database.selectFrom("workspaceTabs").selectAll().orderBy("id").execute();
+      stack.host.store.database.selectFrom("personalTabs").selectAll().orderBy("id").execute();
     const sessions = () =>
       stack.host.store.database
         .selectFrom("browserSessions")
@@ -881,14 +809,14 @@ integration("agent organization and durable ownership", () => {
           .toBe(true);
       } else if (state === "opening") {
         // Hold both durable rows at the restore boundary without starting a browser.
-        const tabs = new WorkspaceTabStore(stack.host.store.database);
+        const tabs = new PersonalTabStore(stack.host.store.database);
         await tabs.bind(guest.sessionId, guest.sessionId, guest.tabId);
         await tabs.bind(saved.sessionId, saved.sessionId, saved.tabId);
       }
       await stack.host.browser.flushPendingTabDescriptors();
       const beforeTabs = await inventory();
       const beforeSessions = await sessions();
-      const read = await agent(stack, stack.mainWorkspaceId, {
+      const read = await agent(stack, {
         calls: [{ name: "browser_tab_read", input: {} }],
       });
       expect(read.report.calls).toHaveLength(1);
@@ -944,7 +872,7 @@ integration("agent organization and durable ownership", () => {
     }
   }, 150_000);
 
-  it("reads beyond the bootstrap window, keeps whole groups private, groups a new surface immediately and replays safely", async () => {
+  it("reads beyond the bootstrap window, groups a new surface immediately and replays safely", async () => {
     const stack = await deployment();
     const opened = await open(stack);
     const db = stack.host.store.database;
@@ -954,23 +882,9 @@ integration("agent organization and durable ownership", () => {
       .where("id", "=", opened.sessionId)
       .executeTakeFirstOrThrow();
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
-    const project = await stack.createWorkspace("Special research");
-    expect(
-      (
-        await stat(
-          path.join(
-            path.dirname(stack.mountedWorkspacePath),
-            "local-workspaces",
-            "main",
-            "Projects",
-            "special-research",
-          ),
-        )
-      ).isDirectory(),
-    ).toBe(true);
     const outside = await command(stack, {
       type: "browser.session.start",
-      workspaceId: project.id,
+
       input: { fresh: true, reuseExisting: false },
       idempotencyKey: randomUUID(),
     });
@@ -982,12 +896,12 @@ integration("agent organization and durable ownership", () => {
     });
     if (outsideTab.type !== "browser.tab.open") throw new Error("Wrong tab result");
     const mixed = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [opened.tabId, outsideTab.tabId],
       title: "Private mixed purpose",
       idempotencyKey: randomUUID(),
     });
-    if (mixed.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (mixed.type !== "tabs.group") throw new Error("Wrong group result");
     const { createBrowserSessionId, BrowserSurfaceIdSchema } =
       await import("../packages/protocol/src/browser.js");
     const seedIds: string[] = [];
@@ -996,15 +910,16 @@ integration("agent organization and durable ownership", () => {
       await stack.host.store.createBrowserSession({
         id,
         runnerId: session.runnerId,
-        workspaceId: index < 70 ? project.id : session.workspaceId,
+
         profileId: null,
-        origin: "workspace",
+        ownerId: owner.id,
+        origin: "agent",
         runtimeId: session.runtimeId,
         placementKey: `seed-${index}`,
       });
       const tabId = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
       seedIds.push(tabId);
-      await new WorkspaceTabStore(db).recordChanges(
+      await new PersonalTabStore(db).recordChanges(
         id,
         [
           {
@@ -1017,14 +932,14 @@ integration("agent organization and durable ownership", () => {
         ],
         [],
       );
-      await new WorkspaceTabStore(db).suspend(id);
+      await new PersonalTabStore(db).suspend(id);
       await db
         .updateTable("browserSessions")
         .set({ state: "closed" })
         .where("id", "=", id)
         .execute();
     }
-    const main = await agent(stack, stack.mainWorkspaceId, { paginate: true, immediate: true });
+    const main = await agent(stack, { paginate: true, immediate: true });
     const pages = main.report.pages.map((p) => BrowserTabReadResultSchema.parse(p));
     expect(pages.length).toBeGreaterThan(1);
     const allIds = pages.flatMap((p) => p.tabs.map((t) => t.tabId));
@@ -1049,63 +964,14 @@ integration("agent organization and durable ownership", () => {
     expect(
       new Set((await new BrowserTabGroupStore(db).layout(owner.id)).groups.map((g) => g.id)).size,
     ).toBe(2);
-    const scoped = await agent(stack, project.id, {
-      paginate: true,
-      calls: [
-        {
-          name: "browser_tab_write",
-          input: { action: "group", groupId: mixed.groupId, tabIds: [outsideTab.tabId] },
-        },
-        { name: "browser_tab_write", input: { action: "ungroup", tabIds: [opened.tabId] } },
-        { name: "browser_tab_write", input: { action: "restore", tabIds: [opened.tabId] } },
-        {
-          name: "browser_tab_write",
-          input: { action: "update_group", groupId: mixed.groupId, title: "Leak" },
-        },
-        {
-          name: "browser_tab_write",
-          input: { action: "close", tabIds: [outsideTab.tabId, opened.tabId] },
-        },
-        { name: "browser_tab_write", input: { action: "move", tabIds: [opened.tabId] } },
-        { name: "browser_tab_write", input: { action: "move", groupId: mixed.groupId } },
-        {
-          name: "browser_tab_write",
-          input: { action: "move", tabIds: [outsideTab.tabId], toGroupId: mixed.groupId },
-        },
-        {
-          name: "browser_tab_write",
-          input: { action: "move", tabIds: [outsideTab.tabId], before: mixed.groupId },
-        },
-      ],
-    });
-    const scopedPages = scoped.report.pages.map((p) => BrowserTabReadResultSchema.parse(p));
-    expect(scopedPages.flatMap((p) => p.groups)).not.toContainEqual(
-      expect.objectContaining({ id: mixed.groupId }),
-    );
-    expect(scopedPages.flatMap((p) => p.tabs)).toContainEqual(
-      expect.objectContaining({ tabId: outsideTab.tabId, groupId: null }),
-    );
-    expect(scoped.report.calls.every((c) => c.error)).toBe(true);
-    expect(scopedPages.length).toBeGreaterThan(1);
-    expect(scopedPages.at(-1)?.nextCursor).toBeNull();
-    expect(scopedPages.flatMap((page) => page.tabs.map((tab) => tab.tabId))).toEqual(
-      expect.arrayContaining(seedIds.slice(0, 70)),
-    );
-    expect(scopedPages.flatMap((page) => page.tabs.map((tab) => tab.tabId))).not.toEqual(
-      expect.arrayContaining(seedIds.slice(70)),
-    );
-    const scopedPositions = scopedPages.flatMap((page) => page.tabs.map((tab) => tab.position!));
-    expect([...scopedPositions].sort((a, b) => a - b)).toEqual(
-      Array.from({ length: scopedPositions.length }, (_, index) => index),
-    );
-    const otherTask = await agent(stack, stack.mainWorkspaceId, { paginate: true });
+    const otherTask = await agent(stack, { paginate: true });
     expect(
       otherTask.report.pages
         .map((p) => BrowserTabReadResultSchema.parse(p))
         .flatMap((p) => p.groups),
     ).toContainEqual(expect.objectContaining({ createdBy: "another-task", tabCount: 1 }));
-    expect(await new WorkspaceTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
-    const moves = await agent(stack, stack.mainWorkspaceId, {
+    expect(await new PersonalTabStore(db).get(owner.id, outsideTab.tabId)).not.toBeNull();
+    const moves = await agent(stack, {
       calls: [
         {
           name: "browser_tab_write",
@@ -1130,7 +996,7 @@ integration("agent organization and durable ownership", () => {
         (call) => !call.error && BrowserTabWriteResultSchema.parse(call.result).action === "move",
       ),
     ).toBe(true);
-    const scopedMove = await agent(stack, project.id, {
+    const scopedMove = await agent(stack, {
       calls: [
         {
           name: "browser_tab_write",
@@ -1147,15 +1013,13 @@ integration("agent organization and durable ownership", () => {
         "pagination beyond 100 lineages",
         "no duplicate tabs",
         "site only",
-        "whole group secrecy",
-        "all-before-any close authorization",
         "immediate newTab grouping",
         "idempotent tool replay",
       ],
     });
   }, 180_000);
 
-  it("keeps two owners independent and serializes regroup against close, pruning and deletion", async () => {
+  it("refuses a second person and serializes regroup against close, pruning and deletion", async () => {
     const stack = await deployment();
     const first = await open(stack);
     const second = await command(stack, {
@@ -1167,51 +1031,34 @@ integration("agent organization and durable ownership", () => {
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
     const person = await stack.host.store.createUser("Second reader");
-    const membership = await db
-      .selectFrom("workspaceMemberships")
-      .selectAll()
-      .where("workspaceId", "=", stack.mainWorkspaceId)
-      .where("userId", "=", owner.id)
-      .executeTakeFirstOrThrow();
-    await db
-      .insertInto("workspaceMemberships")
-      .values({
-        ...membership,
-        id: (await import("../packages/core/src/index.js")).createId("workspaceMembership"),
-        userId: person,
-      })
-      .execute();
     const groups = new BrowserTabGroupStore(db);
+    const groupService = new BrowserTabGroupService({
+      groups,
+      browser: stack.host.browser,
+      publish: () => undefined,
+    });
     const one = await groups.group(owner.id, {
       tabIds: [first.tabId],
       title: "My research",
       idempotencyKey: "personal",
     });
-    const two = await groups.group(person, {
-      tabIds: [first.tabId],
-      title: "My shopping",
-      idempotencyKey: "personal",
-    });
+    await expect(
+      groupService.group(
+        { kind: "person", ownerId: person },
+        {
+          tabIds: [first.tabId],
+          title: "Other person's layout",
+          idempotencyKey: "other",
+        },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
     const movedOne = await groups.move(owner.id, {
       item: { tabIds: [second.tabId] },
       to: { groupId: null, before: { groupId: one.groupId } },
       idempotencyKey: randomUUID(),
     });
-    await groups.move(person, {
-      item: { groupId: two.groupId },
-      to: { groupId: null, before: null },
-      idempotencyKey: randomUUID(),
-    });
-    // Give the second person the opposite arrangement of the same shared Guest tabs.
-    await groups.move(person, {
-      item: { tabIds: [second.tabId] },
-      to: { groupId: null, before: null },
-      idempotencyKey: randomUUID(),
-    });
     expect(movedOne.order).toEqual([second.tabId, first.tabId]);
-    expect((await groups.layout(person)).order).toEqual([first.tabId, second.tabId]);
-    evidence.push({ personalOrders: [movedOne.order, (await groups.layout(person)).order] });
-    expect(one.groupId).not.toBe(two.groupId);
+    expect(await groups.layout(person)).toEqual({ revision: 0, groups: [], order: [] });
     const named = await db
       .selectNoFrom((eb) => eb.fn<string>("current_database", []).as("name"))
       .executeTakeFirstOrThrow();
@@ -1225,12 +1072,20 @@ integration("agent organization and durable ownership", () => {
       browser: stack.host.browser,
       publish: () => undefined,
     });
+    const threadId = await stack.createThread({
+      title: "Organize saved tabs",
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "gpt-5.6-sol",
+        providerId: "openai",
+        options: {},
+      }),
+    });
     const actor = {
       kind: "agent" as const,
       ownerId: owner.id,
-      workspaceId: stack.mainWorkspaceId,
-      threadId: createId("thread"),
-      agentBindingId: "pool-journey",
+
+      threadId,
+      agentBindingId: `thread:${threadId}`,
     };
     await Promise.all(
       Array.from({ length: 4 }, () =>
@@ -1242,7 +1097,6 @@ integration("agent organization and durable ownership", () => {
       ),
     );
     expect((await groups.layout(owner.id)).groups.map((g) => g.title)).toEqual(["My research"]);
-    expect((await groups.layout(person)).groups.map((g) => g.title)).toEqual(["My shopping"]);
     const replay = await groups.group(owner.id, {
       tabIds: [first.tabId],
       title: "My research",
@@ -1264,11 +1118,11 @@ integration("agent organization and durable ownership", () => {
       },
     );
     await regroupLocked.promise;
-    const closing = stack.host.browser.closeWorkspaceTab(owner.id, first.tabId);
+    const closing = stack.host.browser.closePersonalTab(owner.id, first.tabId);
     releaseRegroup.resolve();
     await Promise.all([regroup, closing]);
     expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
-    expect((await new WorkspaceTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
+    expect((await new PersonalTabStore(db).get(owner.id, second.tabId))?.closedAt).toBeNull();
 
     const third = await command(stack, {
       type: "browser.tab.open",
@@ -1283,22 +1137,27 @@ integration("agent organization and durable ownership", () => {
     });
     const barrier = pauseAfterLock(
       db,
-      (node) => /"name":"browser_?tab_?group_?members"/iu.test(node) && !node.includes("ForUpdate"),
+      (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
     );
-    const lateRegroup = new BrowserTabGroupStore(barrier.database).group(owner.id, {
-      tabIds: [second.tabId],
-      groupId: closingGroup.groupId,
-      idempotencyKey: randomUUID(),
-    });
-    const lateOutcome = lateRegroup.then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error }),
-    );
+    const closingThird = new PersonalTabStore(barrier.database).close(owner.id, third.tabId);
+    let lateOutcome: Promise<unknown>;
     try {
-      await barrier.reached;
-      await stack.host.browser.closeWorkspaceTab(owner.id, third.tabId);
+      await withTimeout(barrier.reached, 5_000, {
+        timeoutError: () => new Error("Group close never reached its personal transaction fence"),
+      });
+      lateOutcome = groups
+        .group(owner.id, {
+          tabIds: [second.tabId],
+          groupId: closingGroup.groupId,
+          idempotencyKey: randomUUID(),
+        })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error }),
+        );
     } finally {
       barrier.release();
+      await closingThird;
     }
     expect(await lateOutcome).toMatchObject({ error: { code: "not_found" } });
     expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
@@ -1318,9 +1177,9 @@ integration("agent organization and durable ownership", () => {
         .execute(),
     ).toEqual([]);
     evidence.push({
-      layouts: [one, two, replay],
+      layouts: [one, replay],
       assertions: [
-        "shared Guest independent owners",
+        "another person cannot read or write the owner layout",
         "replay does not bump revision",
         "regroup/close race preserves added tab",
         "empty group deletion",
@@ -1338,20 +1197,20 @@ integration("agent organization and durable ownership", () => {
     });
     if (second.type !== "browser.tab.open") throw new Error("Wrong tab result");
     const grouped = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [first.tabId, second.tabId],
       title: "Return later",
       idempotencyKey: randomUUID(),
     });
-    if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (grouped.type !== "tabs.group") throw new Error("Wrong group result");
     await command(stack, {
-      type: "workspace.tabGroup.update",
+      type: "tabGroup.update",
       groupId: grouped.groupId,
       collapsed: true,
       idempotencyKey: randomUUID(),
     });
     await command(stack, {
-      type: "workspace.tabs.move",
+      type: "tabs.move",
       item: { tabIds: [second.tabId] },
       to: { groupId: grouped.groupId, before: { tabId: first.tabId } },
       idempotencyKey: randomUUID(),
@@ -1380,7 +1239,11 @@ integration("agent organization and durable ownership", () => {
     const view = new WebSocket(
       new URL(`/v1/browser-sessions/${personBrowser.sessionId}/connect`, stack.hostOrigin),
       {
-        headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+        headers: {
+          cookie: stack.sessionCookie,
+          origin: stack.hostOrigin.origin,
+          [hostApiVersionHeader]: String(hostApiVersion),
+        },
       },
     );
     cleanup.push(async () => {
@@ -1416,7 +1279,7 @@ integration("agent organization and durable ownership", () => {
         }
       });
     });
-    const restored = await agent(stack, stack.mainWorkspaceId, {
+    const restored = await agent(stack, {
       calls: [{ name: "browser_tab_write", input: { action: "restore", tabIds: [first.tabId] } }],
       paginate: true,
     });
@@ -1459,97 +1322,6 @@ integration("agent organization and durable ownership", () => {
 });
 
 integration("tab group deletion and response bounds", () => {
-  it("races regroup, last-member close, restore and Workspace deletion without resurrecting a tab", async () => {
-    const stack = await deployment();
-    const workspace = await stack.createWorkspace("Disposable research");
-    const started = await command(stack, {
-      type: "browser.session.start",
-      workspaceId: workspace.id,
-      input: { fresh: true, reuseExisting: false },
-      idempotencyKey: randomUUID(),
-    });
-    if (started.type !== "browser.session.start") throw new Error("Wrong session result");
-    const first = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: started.session.id,
-      idempotencyKey: randomUUID(),
-    });
-    const second = await command(stack, {
-      type: "browser.tab.open",
-      sessionId: started.session.id,
-      idempotencyKey: randomUUID(),
-    });
-    if (first.type !== "browser.tab.open" || second.type !== "browser.tab.open")
-      throw new Error("Wrong tab result");
-    const grouped = await command(stack, {
-      type: "workspace.tabs.group",
-      tabIds: [first.tabId],
-      title: "Delete later",
-      idempotencyKey: randomUUID(),
-    });
-    if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong group result");
-    const owner = await stack.host.store.database
-      .selectFrom("users")
-      .select("id")
-      .executeTakeFirstOrThrow();
-    const groups = new BrowserTabGroupStore(stack.host.store.database);
-    const outcomes = await Promise.allSettled([
-      groups.group(owner.id, {
-        tabIds: [second.tabId],
-        groupId: grouped.groupId,
-        idempotencyKey: randomUUID(),
-      }),
-      stack.host.browser.closeWorkspaceTab(owner.id, first.tabId),
-      stack.host.browser.activateWorkspaceTab(owner.id, second.tabId),
-      command(stack, {
-        type: "workspace.delete",
-        workspaceId: workspace.id,
-        idempotencyKey: randomUUID(),
-      }),
-    ]);
-    evidence.push({
-      race: outcomes.map((o) =>
-        o.status === "fulfilled"
-          ? { status: o.status }
-          : { status: o.status, error: String(o.reason) },
-      ),
-    });
-    expect(outcomes[3]?.status).toBe("fulfilled");
-    await stack.host.store.markWorkspaceDeleted({ workspaceId: workspace.id });
-    await groups.prune();
-    expect((await groups.layout(owner.id)).groups).toEqual([]);
-    expect(
-      await stack.host.store.database
-        .selectFrom("browserTabGroupMembers")
-        .selectAll()
-        .where("groupId", "=", grouped.groupId)
-        .execute(),
-    ).toEqual([]);
-    expect(
-      await stack.host.store.database
-        .selectFrom("browserTabGroups")
-        .selectAll()
-        .where("id", "=", grouped.groupId)
-        .execute(),
-    ).toEqual([]);
-    expect(
-      await stack.host.store.database
-        .selectFrom("workspaceTabs")
-        .selectAll()
-        .where("id", "in", [first.tabId, second.tabId])
-        .execute(),
-    ).toEqual([]);
-    await expect(stack.host.browser.activateWorkspaceTab(owner.id, second.tabId)).rejects.toThrow();
-    evidence.push({
-      assertions: [
-        "lock checker sees regroup/close/restore/delete race",
-        "Workspace deletion cascades memberships",
-        "prune removes empty group",
-        "deleted tab cannot restore",
-      ],
-    });
-  }, 120_000);
-
   it("retries failed Runtime disposal after the durable close marker committed", async () => {
     const stack = await deployment();
     const first = await open(stack);
@@ -1567,7 +1339,7 @@ integration("tab group deletion and response bounds", () => {
       .spyOn(SurfaceLedger.prototype, "closeSurface")
       .mockRejectedValueOnce(new Error("Too many pending CDP requests"));
     const input = {
-      type: "workspace.tabs.close" as const,
+      type: "tabs.close" as const,
       tabIds: [first.tabId],
       idempotencyKey: randomUUID(),
     };
@@ -1576,7 +1348,7 @@ integration("tab group deletion and response bounds", () => {
     expect(
       (
         await stack.host.store.database
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select("closedAt")
           .where("id", "=", first.tabId)
           .executeTakeFirstOrThrow()
@@ -1615,12 +1387,12 @@ integration("tab group deletion and response bounds", () => {
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
     const initial = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [first.tabId],
       title: "Live",
       idempotencyKey: randomUUID(),
     });
-    if (initial.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (initial.type !== "tabs.group") throw new Error("Wrong group result");
     const { BrowserSurfaceIdSchema } = await import("../packages/protocol/src/browser.js");
     const closed = Array.from({ length: 698 }, (_, order) => ({
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
@@ -1633,7 +1405,7 @@ integration("tab group deletion and response bounds", () => {
       openerId: null,
       closedAt: new Date(),
     }));
-    await db.insertInto("workspaceTabs").values(closed).execute();
+    await db.insertInto("personalTabs").values(closed).execute();
     const deadGroups = Array.from({ length: 199 }, () => ({
       id: createId("browserTabGroup"),
       ownerId: owner.id,
@@ -1652,7 +1424,7 @@ integration("tab group deletion and response bounds", () => {
       )
       .execute();
     const joined = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       groupId: initial.groupId,
       tabIds: [second.tabId],
       idempotencyKey: randomUUID(),
@@ -1665,12 +1437,12 @@ integration("tab group deletion and response bounds", () => {
       },
     });
     const created = await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [second.tabId],
       title: "Room again",
       idempotencyKey: randomUUID(),
     });
-    if (created.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (created.type !== "tabs.group") throw new Error("Wrong group result");
     expect(created.layout.groups).toHaveLength(2);
     expect(
       await db
@@ -1684,7 +1456,7 @@ integration("tab group deletion and response bounds", () => {
         .execute(),
     ).toEqual([]);
     await command(stack, {
-      type: "workspace.tabs.close",
+      type: "tabs.close",
       tabIds: [first.tabId],
       idempotencyKey: randomUUID(),
     });
@@ -1732,7 +1504,7 @@ integration("tab group deletion and response bounds", () => {
         })
         .execute();
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values({
           id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
           groupId: id,
@@ -1747,7 +1519,7 @@ integration("tab group deletion and response bounds", () => {
     }
     expect((await bootstrap(stack)).browserTabs!.groups().ids.includes(first.sessionId)).toBe(true);
     await command(stack, {
-      type: "workspace.tabs.group",
+      type: "tabs.group",
       tabIds: [first.tabId],
       title: "Older work",
       idempotencyKey: randomUUID(),
@@ -1805,7 +1577,7 @@ integration("tab group deletion and response bounds", () => {
         BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
       );
       await db
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values(
           tabIds.map((id, order) => ({
             id,
@@ -1824,14 +1596,14 @@ integration("tab group deletion and response bounds", () => {
         .values(tabIds.map((tabId) => ({ ownerId: owner.id, groupId, tabId })))
         .execute();
     }
-    const read = await agent(stack, stack.mainWorkspaceId, {
+    const read = await agent(stack, {
       calls: [{ name: "browser_tab_read", input: {} }],
     });
     const result = BrowserTabReadResultSchema.parse(read.report.calls[0]?.result);
     expect(result.groups).toHaveLength(200);
     await expect(
       command(stack, {
-        type: "workspace.tabs.group",
+        type: "tabs.group",
         tabIds: [opened.tabId],
         title: "Over the limit",
         idempotencyKey: randomUUID(),
@@ -1870,17 +1642,17 @@ integration("naturally idempotent tab operations", () => {
     });
     if (third.type !== "browser.tab.open") throw new Error("Wrong tab result");
     const groupInput = {
-      type: "workspace.tabs.group" as const,
+      type: "tabs.group" as const,
       tabIds: [first.tabId],
       title: "Temporary",
       idempotencyKey: randomUUID(),
     };
     const grouped = await command(stack, groupInput);
-    if (grouped.type !== "workspace.tabs.group") throw new Error("Wrong group result");
+    if (grouped.type !== "tabs.group") throw new Error("Wrong group result");
     expect(await command(stack, groupInput)).toEqual(grouped);
     expect(
       await command(stack, {
-        type: "workspace.tabs.group",
+        type: "tabs.group",
         tabIds: [first.tabId],
         groupId: grouped.groupId,
         idempotencyKey: randomUUID(),
@@ -1888,7 +1660,7 @@ integration("naturally idempotent tab operations", () => {
     ).toEqual(grouped);
     expect(grouped.layout.groups).toHaveLength(1);
     const updateInput = {
-      type: "workspace.tabGroup.update" as const,
+      type: "tabGroup.update" as const,
       groupId: grouped.groupId,
       title: "Renamed",
       color: "purple" as const,
@@ -1899,7 +1671,7 @@ integration("naturally idempotent tab operations", () => {
     expect(await command(stack, updateInput)).toEqual(updated);
     expect(await command(stack, { ...updateInput, idempotencyKey: randomUUID() })).toEqual(updated);
     const ungroupInput = {
-      type: "workspace.tabs.ungroup" as const,
+      type: "tabs.ungroup" as const,
       tabIds: [first.tabId],
       idempotencyKey: groupInput.idempotencyKey,
     };
@@ -1913,11 +1685,11 @@ integration("naturally idempotent tab operations", () => {
       layout: { groups: [expect.objectContaining({ id: grouped.groupId, tabIds: [first.tabId] })] },
     });
     const closeInput = {
-      type: "workspace.tabs.close" as const,
+      type: "tabs.close" as const,
       tabIds: [first.tabId, second.tabId],
       idempotencyKey: randomUUID(),
     };
-    const closeTab = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
+    const closeTab = vi.spyOn(stack.host.browser, "closePersonalTab");
     const closed = await command(stack, closeInput);
     expect(closed).toMatchObject({ closed: [first.tabId, second.tabId], failed: [] });
     expect(closeTab).toHaveBeenCalledTimes(2);
@@ -1932,17 +1704,17 @@ integration("naturally idempotent tab operations", () => {
       .selectFrom("users")
       .select("id")
       .executeTakeFirstOrThrow();
-    const tabs = new WorkspaceTabStore(stack.host.store.database);
+    const tabs = new PersonalTabStore(stack.host.store.database);
     expect((await tabs.get(owner.id, third.tabId))?.closedAt).toBeNull();
     expect(
       (await new BrowserTabGroupStore(stack.host.store.database).layout(owner.id)).groups,
     ).toEqual([]);
     await stack.restartHost();
-    const restartedClose = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
+    const restartedClose = vi.spyOn(stack.host.browser, "closePersonalTab");
     expect(await command(stack, closeInput)).toEqual(closed);
     expect(restartedClose).toHaveBeenCalledTimes(2);
     expect(
-      (await new WorkspaceTabStore(stack.host.store.database).get(owner.id, third.tabId))?.closedAt,
+      (await new PersonalTabStore(stack.host.store.database).get(owner.id, third.tabId))?.closedAt,
     ).toBeNull();
     restartedClose.mockRestore();
     await stack.restartRunner();
@@ -1963,8 +1735,8 @@ integration("naturally idempotent tab operations", () => {
         input: { action: "close", tabIds: [third.tabId] },
       },
     ];
-    const agentClose = vi.spyOn(stack.host.browser, "closeWorkspaceTab");
-    const throughTools = await agent(stack, stack.mainWorkspaceId, {
+    const agentClose = vi.spyOn(stack.host.browser, "closePersonalTab");
+    const throughTools = await agent(stack, {
       calls: inputs.flatMap((input) => [input, input]),
     });
     expect(throughTools.report.calls).toHaveLength(6);

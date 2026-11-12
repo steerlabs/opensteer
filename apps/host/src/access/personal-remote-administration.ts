@@ -1,7 +1,11 @@
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import { OpensteerError, type AuthenticatedSession } from "@opensteer/core";
-import { requestSettlementActor, type DatabaseSchema } from "@opensteer/database";
+import {
+  requestSettlementActor,
+  requirePersonalOwner,
+  type DatabaseSchema,
+} from "@opensteer/database";
 import {
   PersonalRemoteAdministrationIntentSchema,
   PersonalRemoteAdministrationOperationSchema,
@@ -58,7 +62,7 @@ export class PersonalRemoteAdministration {
   }
 
   async status(session: AuthenticatedSession): Promise<PersonalRemoteAdministrationStatus> {
-    requirePersonalAdministrator(session);
+    await requirePersonalAdministrator(this.#database, session);
     const revision = this.#revision;
     const [access, row] = await Promise.all([this.#readAccess(), this.#latest()]);
     const operation = row ? PersonalRemoteAdministrationOperationSchema.parse(row) : null;
@@ -85,7 +89,7 @@ export class PersonalRemoteAdministration {
     intentInput: PersonalRemoteAdministrationIntent,
     idempotencyKey: string,
   ): Promise<PersonalRemoteAdministrationOperation> {
-    requirePersonalAdministrator(session);
+    await requirePersonalAdministrator(this.#database, session);
     const intent = PersonalRemoteAdministrationIntentSchema.parse(intentInput);
     if (
       (intent.action === "rotate" ||
@@ -257,7 +261,9 @@ export class PersonalRemoteAdministration {
   }
 }
 
-export function requirePersonalAdministrator(session: AuthenticatedSession): void {
-  if (session.user.instanceRole !== "administrator")
-    throw new OpensteerError({ code: "forbidden", message: "Personal owner access required" });
+export async function requirePersonalAdministrator(
+  database: Kysely<DatabaseSchema>,
+  session: AuthenticatedSession,
+): Promise<void> {
+  await requirePersonalOwner(database, session.user.id);
 }

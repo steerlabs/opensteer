@@ -1,6 +1,6 @@
 interface:
   display_name: "Opensteer Memory"
-  short_description: "Keep what matters about the person in Main"
+  short_description: "Keep what matters about the person in agent home"
   default_prompt: "Use $opensteer:memory to remember, correct or forget something about the person, or to run a background memory pass."
 dependencies:
   tools:

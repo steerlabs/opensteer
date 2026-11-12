@@ -27,7 +27,7 @@ it("settles card consent without reporting a login or payment and keeps choices 
           loginId: card.id,
           revision: card.revision,
           remember: true,
-          permissionVersion: 5,
+          permissionVersion: 6,
         },
       }),
     ).rejects.toThrow();

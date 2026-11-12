@@ -2,6 +2,7 @@ import {
   DeploymentConnectionInputSchema,
   type DeploymentConnectionInput,
 } from "@opensteer/client/connections";
+import { busyTeamIds } from "@opensteer/client/team";
 import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
 
 /**
@@ -21,6 +22,12 @@ export const mockDeploymentId = DeploymentIdSchema.parse(
   "dep_00000000-0000-4000-8000-000000000001",
 );
 const mockSignedOutOrigin = "https://signed-out.opensteer.example";
+
+/** Mock mode's team, which the mock computer is in. */
+export const mockTeamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000a1");
+export const mockTeamOrigin = "https://acme.opensteer.example";
+export const mockFamilyTeamId = busyTeamIds[1];
+export const mockFamilyTeamOrigin = "https://family.opensteer.example";
 
 /** The Deployment mock mode holds no credential for, so its row needs one. */
 export const mockSignedOutDeploymentId = DeploymentIdSchema.parse(
@@ -47,8 +54,22 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
     mockConnection({
       deploymentId: mockSignedOutDeploymentId,
       hostInstanceId: "hst_0192f4a1-0000-4000-8000-000000000004",
-      name: "Mock signed-out server",
+      name: "Mock signed-out computer",
       origin: mockSignedOutOrigin,
+    }),
+    mockConnection({
+      deploymentId: mockTeamId,
+      hostInstanceId: "hst_00000000-0000-4000-8000-0000000000a2",
+      kind: "team",
+      name: "Acme",
+      origin: mockTeamOrigin,
+    }),
+    mockConnection({
+      deploymentId: mockFamilyTeamId,
+      hostInstanceId: "hst_00000000-0000-4000-8000-0000000000a3",
+      kind: "team",
+      name: "Family",
+      origin: mockFamilyTeamOrigin,
     }),
   ];
 }
@@ -56,6 +77,7 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
 function mockConnection(input: {
   readonly deploymentId: string;
   readonly hostInstanceId: string;
+  readonly kind?: "personal" | "team";
   readonly name: string;
   readonly origin: string;
 }): DeploymentConnectionInput {
@@ -65,16 +87,16 @@ function mockConnection(input: {
       document: {
         canonicalOrigin: input.origin,
         deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: input.kind ?? "personal" },
         hostInstanceId: HostInstanceIdSchema.parse(input.hostInstanceId),
         hostKey: { algorithm: "Ed25519" },
       },
       publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
       signature: "A".repeat(86),
     },
-    bootstrapMethods: ["password"],
+    bootstrapMethods: [input.kind === "team" ? "oidc" : "pairing-code"],
     endpoints: [{ kind: "canonical", origin: input.origin, verifiedAt: new Date(0).toISOString() }],
-    kind: "self-hosted",
+    kind: input.kind ?? "personal",
     name: input.name,
     reachability: "canonical",
     source: { kind: "manual" },

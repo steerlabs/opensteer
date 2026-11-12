@@ -140,12 +140,7 @@ export const MachineSummarySchema = z.object({
    * bundles to offer an update over USB.
    */
   runtimeVersion: z.string().min(1).max(120).nullable().default(null),
-  /**
-   * Workspaces whose files live on this computer's own disk. Removing the
-   * computer leaves them without a storage authority, so the number is shown
-   * before anyone confirms.
-   */
-  localWorkspaces: z.number().int().nonnegative().max(10_000),
+
   /**
    * The grant: every module this computer may ever advertise, fixed when it
    * was added. `modules` says what it is advertising now, which may be less.
@@ -159,18 +154,10 @@ export const MachineSummarySchema = z.object({
     shell: MachineModuleSummarySchema.optional(),
   }),
   name: z.string(),
-  ownership: z.enum(["mine", "deployment", "other"]),
-  /** Who owns a computer that is somebody else's; null for every other row. */
-  ownerName: z.string().nullable().default(null),
+  ownership: z.enum(["mine", "deployment"]),
   /** Threads placed here, which lose the computer they run on with it. */
   pinnedThreads: z.number().int().nonnegative().max(1_000_000),
   revocable: z.boolean(),
   status: z.enum(["online", "offline", "pending", "needs-update", "updating", "update-pending"]),
-  /**
-   * Folders this computer reported holding that no Workspace on this
-   * Deployment claims. They are surfaced for a person to resolve and are never
-   * removed on the machine's word.
-   */
-  unlinkedLocalFolders: z.number().int().nonnegative().max(10_000),
 });
 export type MachineSummary = z.infer<typeof MachineSummarySchema>;

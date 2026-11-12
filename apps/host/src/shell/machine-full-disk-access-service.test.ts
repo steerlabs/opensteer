@@ -12,13 +12,11 @@ const claims: RunToolScope = {
   iat: 1900000000,
   iss: "opensteer-host",
   jti: "test",
-  membershipGeneration: 1,
   requestedBy: createId("user"),
   runId: createId("run"),
   runnerBootId: "boot-1",
   runnerId: createId("runner"),
   threadId: createId("thread"),
-  workspaceId: createId("workspace"),
 };
 function machine(overrides: Partial<ReachableMachineRecord> = {}): ReachableMachineRecord {
   return {
@@ -66,7 +64,7 @@ function fixture(machines: ReachableMachineRecord[]) {
         fulfillMachineFullDiskAccessRequests: vi.fn(),
       },
     },
-    onWorkspaceEvent: vi.fn(),
+    onDeploymentEvent: vi.fn(),
     continuations: { notify: vi.fn() },
   });
   return { service, create, listReachableMachines };

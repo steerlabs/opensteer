@@ -11,7 +11,7 @@ import { runBounded } from "../scripts/command-runner.js";
 it("preserves phase cancellation through loader resolution", async () => {
   const reason = new Error("MIGRATION_PHASE_CANCELLED");
   await expect(
-    runMigrationPhase("/unused", "migrate", "host", "postgres://unused/fixture", {
+    runMigrationPhase("/unused", "migrate", "controlPlane", "postgres://unused/fixture", {
       signal: AbortSignal.abort(reason),
     }),
   ).rejects.toBe(reason);

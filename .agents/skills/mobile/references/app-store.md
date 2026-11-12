@@ -24,7 +24,7 @@ version's build numbers must only rise, so take the next one from App Store Conn
 mkdir -p "$MOBILE_EVIDENCE_DIR"
 pnpm install --frozen-lockfile
 MOBILE_VERSION=$(node -p 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.argv[1])' "$(git rev-parse HEAD)")
-unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_MOCK_HOME EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE
+unset EXPO_PUBLIC_OPENSTEER_MOCK EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE
 export EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN="https://accounts.opensteer.com"
 export EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN="https://app.opensteer.com"
 export OPENSTEER_MOBILE_BUILD_NUMBER="<next build number>"
@@ -52,20 +52,14 @@ build number, and that its bundle holds the Account origin. Upload warnings abou
 or export compliance are answers Tim gives in App Store Connect; never declare them on his behalf.
 Send a build to external TestFlight before submitting for review.
 
-## Review demo server
+## Review demonstration
 
-Reviewers have no computer, and the mock Host is dev-only, so they get a real server Deployment from
-[deploy/self-host](../../../../deploy/self-host/README.md) reached through "Enter address", then "Add a
-server instead". It bypasses the Opensteer Account, and needs a public HTTPS address with a
-certificate iOS trusts.
+Reviewers need a dedicated personal Opensteer on a disposable computer for agent tasks; a team
+server runs no agents and cannot replace it. Use a funded test engine account and sample data,
+never a person's real credentials or files. Pair the reviewer through the supported personal
+remote-access flow, and snapshot the disposable stack for restoration after review.
 
-- Use an isolated Linux machine that holds nothing else: no cloud instance role, no production
-  credentials, no SSH agent. Expose only TCP 80 and 443.
-- Set `OPENSTEER_DEPLOYMENT_KIND=server`, `OPENSTEER_LOCAL_PASSWORD_ENABLED=true`,
-  `OPENSTEER_NATIVE_OAUTH_ENABLED=true` and `OPENSTEER_SIGNUP_POLICY=invite-only`.
-- Chat needs a Runner and a funded engine: a fresh Deployment has no Workspace or engine. Enroll the
-  Runner with `allowedModules: ["agents"]` and connect a dedicated low-budget API key. Set remembered
-  access to `approval-required`.
-- Create sample conversations by using the product. Leave out anything the listing does not show.
-- The reviewer signs in as the owner and can damage this Deployment, so snapshot the database, Host
-  data, Runner state and configuration together, and restore all of them after each review.
+Demonstrate shared chat separately with the [team-server skill](../../team-server/SKILL.md).
+First-owner setup needs public HTTPS and Account adoption; invite the reviewer as a test member.
+Keep the personal computer available for agent demonstrations and show offline team chat
+separately. Do not use removed server-kind/local-password configuration.

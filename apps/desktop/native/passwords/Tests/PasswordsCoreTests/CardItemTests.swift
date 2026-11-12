@@ -57,8 +57,8 @@ final class CardItemTests: XCTestCase {
       XCTAssertEqual(try vault.card(id: id).revision, 2)
     }
     try fixture.withUnlocked { vault in
-      let change = GrantChange(key: GrantKey(deploymentId: "d", workspaceId: "w", site: "https://example.com"),
-        login: .saved(id: id), deploymentName: "D", workspaceName: "W")
+      let change = GrantChange(key: GrantKey(deploymentId: "d", site: "https://example.com"),
+        login: .saved(id: id), deploymentName: "D", )
       XCTAssertThrowsError(try vault.commit(VaultChanges(grant: [change])))
       XCTAssertTrue(vault.grants.isEmpty)
     }

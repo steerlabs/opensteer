@@ -17,7 +17,6 @@ export function testHostApiApp(
 export function testHostApiContext(
   userId: UserId,
   options: {
-    readonly instanceRole?: "administrator" | "user";
     readonly surface?: "canonical" | "personal-remote";
   } = {},
 ): HostApiServerContext {
@@ -34,7 +33,6 @@ export function testHostApiContext(
       emailVerified: true,
       id: userId,
       image: null,
-      instanceRole: options.instanceRole ?? "user",
     },
   } satisfies AuthenticatedSession;
   return {

@@ -399,9 +399,7 @@ export function ComputerUseBlock({
                       <span className="computer-use__app-meta">
                         <span>
                           Asked in{" "}
-                          <Link to={`/threads/${threadId}`}>
-                            {threadTitle ?? "Untitled thread"}
-                          </Link>
+                          <Link to={`/tasks/${threadId}`}>{threadTitle ?? "Untitled thread"}</Link>
                         </span>
                       </span>
                     ) : null}
@@ -834,7 +832,7 @@ function ComputerUseSessionRow({
       <span className="computer-use__session-text">
         <strong>{computerUseSessionTitle(session)}</strong>
         <span aria-hidden> · </span>
-        <Link to={`/threads/${session.threadId}`}>{session.threadTitle ?? "Untitled thread"}</Link>
+        <Link to={`/tasks/${session.threadId}`}>{session.threadTitle ?? "Untitled thread"}</Link>
         {stop?.phase === "failed" ? (
           <span className="form-actions__error" role="alert">
             {stop.message}

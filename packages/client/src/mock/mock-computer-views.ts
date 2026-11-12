@@ -85,11 +85,7 @@ export class MockComputerViews {
         computer.blockedAt ||
         !machine ||
         (machine.ownership !== "mine" &&
-          !(
-            snapshot.deploymentPolicy?.deploymentComputerAccess === true &&
-            machine.ownership === "deployment" &&
-            machine.access?.ownerReachAvailable === true
-          ))
+          !(machine.ownership === "deployment" && machine.access?.ownerReachAvailable === true))
       )
         return [];
       if (connection.definitionId !== "macos-app" && connection.definitionId !== "android-phone")
@@ -131,11 +127,7 @@ export class MockComputerViews {
     if (
       !machine ||
       (machine.ownership !== "mine" &&
-        !(
-          snapshot.deploymentPolicy?.deploymentComputerAccess === true &&
-          machine.ownership === "deployment" &&
-          machine.access?.ownerReachAvailable === true
-        ))
+        !(machine.ownership === "deployment" && machine.access?.ownerReachAvailable === true))
     )
       throw new HostClientRequestError({
         code: "forbidden",

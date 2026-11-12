@@ -11,6 +11,7 @@ import {
   type HostClient,
   type WebSocketClient,
 } from "@opensteer/client/host";
+import { previewDeploymentSnapshot } from "../../desktop/preview-bootstrap.js";
 import { AutomationDetailPage } from "./automation-detail.js";
 import { AutomationEditorPage } from "./automation-editor.js";
 
@@ -69,15 +70,17 @@ function button(node: HTMLElement, name: string) {
 }
 it("inspects managed passes, links the worker, and retains Pause/Resume without destructive controls", async () => {
   const { node, trigger } = await mount("waiting-for-model");
-  expect(node.textContent).toContain("Waiting for an AI account it can use");
-  expect(node.textContent).toContain("findings reach you through Chat");
-  expect(node.querySelector(`a[href="/threads/${trigger.anchorThreadId}"]`)).not.toBeNull();
+  expect(node.textContent).toContain("Waiting for an eligible AI account on the hosting computer.");
+  expect(node.textContent).toContain("findings go into your agent’s memory");
+  expect(node.querySelector(`a[href="/tasks/${trigger.anchorThreadId}"]`)).not.toBeNull();
   for (const label of ["Delete", "Run now", "Edit code"])
     expect(node.textContent).not.toContain(label);
   await act(async () => button(node, "Pause").click());
   await vi.waitFor(() => expect(button(node, "Resume")).toBeDefined(), { timeout: 2000 });
   // Paused by the person, it no longer says it is waiting.
-  expect(node.textContent).not.toContain("Waiting for an AI account it can use");
+  expect(node.textContent).not.toContain(
+    "Waiting for an eligible AI account on the hosting computer.",
+  );
   await act(async () => button(node, "Resume").click());
   await vi.waitFor(() => expect(button(node, "Pause")).toBeDefined(), { timeout: 2000 });
 });
@@ -89,15 +92,13 @@ it("keeps ordinary automation controls", async () => {
   const { node } = await mount();
   for (const label of ["Delete", "Run now", "Edit code"]) expect(node.textContent).toContain(label);
 });
-it("reads current worker recovery state after other-device lifecycle changes", async () => {
+it("keeps managed background workers out of task Done controls", async () => {
   const { node, trigger } = await mount("active");
-  await act(async () => {
-    await client.setTaskDone(trigger.anchorThreadId, true);
-  });
-  await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeDefined(), { timeout: 2000 });
-  await act(async () => button(node, "Reopen worker").click());
-  await vi.waitFor(() => expect(button(node, "Reopen worker")).toBeUndefined(), { timeout: 2000 });
-  expect(button(node, "Resume")).toBeDefined();
+  await expect(client.setTaskDone(trigger.anchorThreadId, true)).rejects.toThrow(
+    "Only tasks can be Done.",
+  );
+  expect(button(node, "Reopen worker")).toBeUndefined();
+  expect(button(node, "Pause")).toBeDefined();
 });
 
 it("offers Resume worker for a stopped managed worker", async () => {
@@ -177,30 +178,13 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
     },
   });
   await http.load();
-  const workspace = unwrapRpcResult(await client.rpc["bootstrap.get"]({})).workspaces.find(
-    (w) => w.id === trigger.workspaceId,
-  )!;
-  const window = { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
   const connect = (socket: TestSocket) => {
     socket.emit("open", {});
     socket.receive({
       type: "host.snapshot",
-      snapshot: {
-        workspace,
-        sequence: "0",
-        serializedBytes: 256,
-        notificationPreferences: [],
-        readStates: [],
-        messages: [],
-        messageWindows: [],
-        pendingRequests: [],
-        pendingRequestWindow: window,
-        runQueue: [],
-        threads: [],
-        threadWindow: window,
-      },
+      snapshot: previewDeploymentSnapshot(client.getSnapshot().deploymentId!),
     });
-    socket.receive({ type: "host.synchronized", workspaceId: workspace.id, sequence: "0" });
+    socket.receive({ type: "host.synchronized", sequence: "0" });
   };
   connect(sockets[0]!);
   harness.client = http;
@@ -222,12 +206,12 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
   const event = (type: string, data: object, threadId: string = worker.id) =>
     sockets[0]!.receive({
       type: "host.events",
+      throughSequence: String(sequence + 1),
       events: [
         {
           type,
           data,
           threadId,
-          workspaceId: workspace.id,
           runId: null,
           environmentId: worker.environmentId,
           createdAt: worker.createdAt,
@@ -266,7 +250,7 @@ it("uses authorized hidden-worker events on the real page and HTTP client, ignor
     event(
       "thread.state-changed",
       { status: "running", doneAt: null, inputQueuePaused: false, pendingRequests: 0 },
-      client.getSnapshot().homeThreadId!,
+      createId("thread"),
     ),
   );
   expect(read).toHaveBeenCalledTimes(4);

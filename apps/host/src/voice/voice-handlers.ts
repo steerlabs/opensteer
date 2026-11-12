@@ -47,19 +47,23 @@ export function createVoiceHandlers(dependencies: {
   >;
   readonly runners: Pick<RunnerRegistry, "voice">;
   readonly threads: Pick<ThreadService, "configure">;
-  readonly publishWorkspaceEvent?: (event: AgentEvent) => void;
+  readonly publishDeploymentEvent?: (event: AgentEvent) => void;
 }): Pick<
   HostApiHandlers,
   "voice.open" | "voice.start" | "voice.renew" | "voice.say" | "voice.context" | "voice.stop"
 > {
   const owner = (context: HostApiServerContext) => {
     const id = context.session?.user.id;
-    if (!id) throw new OpensteerError({ code: "unauthorized", message: "Sign in to use voice." });
+    if (!id)
+      throw new OpensteerError({
+        code: "unauthorized",
+        message: "Sign in to use voice.",
+      });
     return id;
   };
   const stop = async (sessionId: string, context: HostApiServerContext) => {
     const result = await dependencies.store.stopVoiceCall(owner(context), sessionId);
-    for (const event of result?.events ?? []) dependencies.publishWorkspaceEvent?.(event);
+    for (const event of result?.events ?? []) dependencies.publishDeploymentEvent?.(event);
   };
   const callFor = async (sessionId: string, context: HostApiServerContext) => {
     const call = await dependencies.store.resolveVoiceCall(owner(context), sessionId);
@@ -75,15 +79,39 @@ export function createVoiceHandlers(dependencies: {
     sessionId: string,
     context: HostApiServerContext,
     command:
-      | Omit<Extract<RunnerVoiceCommand, { action: "renew" }>, "runId" | "sessionId">
-      | { action: "say"; id: string; text: string }
-      | { action: "context"; view: Extract<RunnerVoiceCommand, { action: "context" }>["view"] },
+      | Omit<
+          Extract<
+            RunnerVoiceCommand,
+            {
+              action: "renew";
+            }
+          >,
+          "runId" | "sessionId"
+        >
+      | {
+          action: "say";
+          id: string;
+          text: string;
+        }
+      | {
+          action: "context";
+          view: Extract<
+            RunnerVoiceCommand,
+            {
+              action: "context";
+            }
+          >["view"];
+        },
   ) => {
     const call = await callFor(sessionId, context);
     const result = await dependencies.runners.voice(
       call.environmentId,
       owner(context),
-      { ...command, sessionId, runId: call.runId },
+      {
+        ...command,
+        sessionId,
+        runId: call.runId,
+      },
       context.signal,
     );
     if (!result.ok)
@@ -96,7 +124,10 @@ export function createVoiceHandlers(dependencies: {
   };
   const usableCatalog = async (
     ownerId: UserId,
-    input: { environmentId: EnvironmentId; harnessInstanceId: HarnessInstanceId },
+    input: {
+      environmentId: EnvironmentId;
+      harnessInstanceId: HarnessInstanceId;
+    },
   ) => {
     if (!(await dependencies.store.environmentIsAvailableToUser(input.environmentId, ownerId)))
       return null;
@@ -125,7 +156,10 @@ export function createVoiceHandlers(dependencies: {
   };
   const requireAccount = async (
     ownerId: UserId,
-    input: { environmentId: EnvironmentId; harnessInstanceId: HarnessInstanceId },
+    input: {
+      environmentId: EnvironmentId;
+      harnessInstanceId: HarnessInstanceId;
+    },
   ) => {
     const catalog = await usableCatalog(ownerId, input);
     if (!catalog) throw unavailable();
@@ -149,7 +183,7 @@ export function createVoiceHandlers(dependencies: {
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,
       });
-      for (const event of call.events) dependencies.publishWorkspaceEvent?.(event);
+      for (const event of call.events) dependencies.publishDeploymentEvent?.(event);
       if (!call.busy) return call;
       if (Date.now() >= deadline)
         throw new OpensteerError({
@@ -157,7 +191,9 @@ export function createVoiceHandlers(dependencies: {
           reason: "voice-refused",
           message: "The Voice Thread is still finishing something else.",
         });
-      await delay(voiceThreadRetryMs, undefined, { signal: context.signal });
+      await delay(voiceThreadRetryMs, undefined, {
+        signal: context.signal,
+      });
     }
   };
   return {
@@ -168,9 +204,13 @@ export function createVoiceHandlers(dependencies: {
         ownerId,
         environmentId: input.environmentId,
         harnessInstanceId: input.harnessInstanceId,
-        ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+        ...(input.accessMode
+          ? {
+              accessMode: input.accessMode,
+            }
+          : {}),
       });
-      for (const event of events) dependencies.publishWorkspaceEvent?.(event);
+      for (const event of events) dependencies.publishDeploymentEvent?.(event);
       if (
         opened.harnessInstanceId === input.harnessInstanceId ||
         opened.environmentId !== input.environmentId ||
@@ -182,9 +222,14 @@ export function createVoiceHandlers(dependencies: {
       const modelSelection = voiceModelSelection(catalog);
       if (!thread || !modelSelection) throw unavailable();
       await dependencies.threads.configure(
-        { kind: "person", userId: ownerId },
         {
-          continuation: { expectedProviderSessionId: thread.providerSessionId },
+          kind: "person",
+          userId: ownerId,
+        },
+        {
+          continuation: {
+            expectedProviderSessionId: thread.providerSessionId,
+          },
           harnessInstanceId: input.harnessInstanceId,
           idempotencyKey: `voice-move:${thread.providerSessionId ?? thread.id}:${input.harnessInstanceId}`,
           modelSelection,
@@ -192,7 +237,10 @@ export function createVoiceHandlers(dependencies: {
           type: "thread.execution.update",
         },
       );
-      return rpcSuccess({ ...opened, harnessInstanceId: input.harnessInstanceId });
+      return rpcSuccess({
+        ...opened,
+        harnessInstanceId: input.harnessInstanceId,
+      });
     },
     "voice.start": async (input, context) => {
       const ownerId = owner(context);
@@ -207,7 +255,12 @@ export function createVoiceHandlers(dependencies: {
         const result = await dependencies.runners.voice(
           call.environmentId,
           ownerId,
-          { action: "start", sessionId: input.sessionId, runId: call.runId, offer: input.offer },
+          {
+            action: "start",
+            sessionId: input.sessionId,
+            runId: call.runId,
+            offer: input.offer,
+          },
           context.signal,
         );
         if (!result.ok)
@@ -226,7 +279,6 @@ export function createVoiceHandlers(dependencies: {
           answer: result.answer,
           threadId: call.threadId,
           runId: call.runId,
-          workspaceId: call.workspaceId,
         });
       } catch (error) {
         const reason = VoiceRefusalReasonSchema.safeParse(
@@ -240,11 +292,21 @@ export function createVoiceHandlers(dependencies: {
         });
       }
     },
-    "voice.renew": (input, context) => relay(input.sessionId, context, { action: "renew" }),
+    "voice.renew": (input, context) =>
+      relay(input.sessionId, context, {
+        action: "renew",
+      }),
     "voice.say": (input, context) =>
-      relay(input.sessionId, context, { action: "say", id: input.id, text: input.text }),
+      relay(input.sessionId, context, {
+        action: "say",
+        id: input.id,
+        text: input.text,
+      }),
     "voice.context": (input, context) =>
-      relay(input.sessionId, context, { action: "context", view: input.view }),
+      relay(input.sessionId, context, {
+        action: "context",
+        view: input.view,
+      }),
     "voice.stop": async (input, context) => {
       await stop(input.sessionId, context);
       return rpcSuccess({});

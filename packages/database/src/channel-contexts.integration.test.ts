@@ -1,136 +1,39 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   createChannelId,
-  ChannelConversationIdSchema,
   slackChannelProviderManifest,
   type ChannelAccessPolicy,
-  type ChannelAccountId,
 } from "@opensteer/channel-core";
+import { createId, HarnessIdSchema, type UserId } from "@opensteer/core";
+import { expect } from "vitest";
+import { sql } from "kysely";
+import { ChannelStore } from "./channel-store.js";
+import { runAllowsPersonalContext, threadAllowsPersonalContext } from "./run-personal-context.js";
+import { startPersonalQueuedRunFixture } from "./personal-run-fixture.test-support.js";
 import {
-  HarnessIdSchema,
-  ThreadAccessModeSchema,
-  createId,
-  type EnvironmentId,
-  type HarnessInstanceId,
-  type RunnerId,
-  type UserId,
-  type WorkspaceId,
-} from "@opensteer/core";
-import { HarnessInstanceCatalogSchema, type RunnerDescriptor } from "@opensteer/protocol";
-import type { Kysely } from "kysely";
-import { Pool } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ChannelStore, createDatabase, migrateToLatest, OpensteerStore } from "./index.js";
-import { ChannelIngressDeferredError } from "./channel-store.js";
-import type { DatabaseSchema } from "./schema.js";
+  describeStore,
+  pendingEvent,
+  testModelSelection,
+  type StoreFixture,
+} from "./store.integration.test-support.js";
 
-const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
-const integration = databaseUrl ? describe : describe.skip;
-
+function accessPolicy(mode: "anyone" | "owner"): ChannelAccessPolicy {
+  const sender = { allowedExternalUserIds: [], mode };
+  return { directMessages: sender, channels: { conversationIds: [], scope: "all", sender } };
+}
 const notices = {
   approvalPending: "Your access request is waiting for approval.",
   linkByDirectMessage: "Send me a direct message to link your account.",
   linkCode: (code: string) => `Enter the code **${code}** to link your account.`,
-  noRoute: "This conversation is not routed to an Opensteer Workspace.",
-  notAMember: "You don't have access to the Workspace this conversation is routed to.",
-} as const;
+  noRoute: "This conversation has no Messaging route.",
+};
 
-function accessPolicy(mode: "anyone" | "linked-members"): ChannelAccessPolicy {
-  const sender: ChannelAccessPolicy["directMessages"] = { allowedExternalUserIds: [], mode };
-  return {
-    channels: { conversationIds: [], scope: "all", sender },
-    directMessages: sender,
-  };
-}
-
-integration("channel conversation authority contexts", () => {
-  const databaseName = `opensteer_channel_contexts_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
-  let database: Kysely<DatabaseSchema>;
-  let maintenance: Pool;
-  let store: OpensteerStore;
-  let channels: ChannelStore;
-  let environmentId: EnvironmentId;
-  let harnessInstanceId: HarnessInstanceId;
-  let runnerId: RunnerId;
-
-  function urlForDatabase(name: string): string {
-    const url = new URL(databaseUrl ?? "postgres://unconfigured");
-    url.pathname = `/${name}`;
-    return url.toString();
-  }
-
-  beforeAll(async () => {
-    maintenance = new Pool({ connectionString: urlForDatabase("postgres") });
-    await maintenance.query(`drop database if exists ${databaseName}`);
-    await maintenance.query(`create database ${databaseName}`);
-    database = createDatabase({
-      applicationName: "opensteer-channel-contexts-test",
-      connectionString: urlForDatabase(databaseName),
-      maxConnections: 4,
-    });
-    await migrateToLatest(database);
-    store = new OpensteerStore(database);
-    channels = new ChannelStore(database);
-
-    await store.ensureDeployment({
-      canonicalOrigin: "https://channel-contexts.test.invalid",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-    });
-
-    runnerId = createId("runner");
-    environmentId = createId("environment");
-    const enrollmentTokenHash = `sha256:${createHash("sha256")
-      .update(`channel-contexts-${runnerId}`)
-      .digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents", "messaging"],
-      createdBy: null,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: "channel-contexts-runner",
-      mainEnrollmentPurpose: "initial",
-      name: "Channel contexts runner",
-      requestFingerprint: "sha256:channel-contexts-runner",
-      runnerKind: "main",
-      tokenHash: enrollmentTokenHash,
-    });
-    const keys = generateKeyPairSync("ed25519");
-    const publicKeyPem = keys.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const publicKeyDer = keys.publicKey.export({ format: "der", type: "spki" });
-    const descriptor: RunnerDescriptor = {
-      bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-      capabilities: ["filesystem"],
-      modules: {
-        agents: {
-          environmentIds: [environmentId],
-          harnessDrivers: [
-            {
-              accessModes: ThreadAccessModeSchema.options,
-              driverKind: HarnessIdSchema.parse("native"),
-              readiness: "configured",
-              sources: [
-                {
-                  fields: [],
-                  kind: "first-party",
-                  label: "Native",
-                  quota: "none",
-                  sourceId: "native",
-                  stateKinds: ["isolated"],
-                },
-              ],
-            },
-          ],
-          localStorage: null,
-          maxConcurrentRuns: 4,
-          providerStateModes: ["isolated"],
-          workspaceBackings: ["local-directory"],
-        },
+async function setup(f: StoreFixture, suffix: string) {
+  const personal = await f.createRunFixture(suffix);
+  await f.database
+    .updateTable("runners")
+    .set({
+      allowedModules: sql`'["agents","messaging"]'::jsonb`,
+      moduleDescriptors: {
         messaging: {
           capabilities: [
             {
@@ -141,249 +44,106 @@ integration("channel conversation authority contexts", () => {
           ],
         },
       },
-      name: "Channel contexts runner",
-      runnerId,
-      runnerKind: "main",
-      runtimeVersion: "test",
-    };
-    await store.enrollRunnerConnection({
-      descriptor,
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256")
-        .update(publicKeyDer)
-        .digest("base64url")}`,
-      publicKeyPem,
-    });
-    const harness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    harnessInstanceId = harness.id;
-    // A channel Thread takes its model from what the Runner reported for the
-    // account, so the fixture has to have reported something.
-    await recordReadyCatalog(harness);
+    })
+    .where("id", "=", personal.runnerId)
+    .execute();
+  const channels = new ChannelStore(f.database);
+  const configured = await channels.createConnection({
+    folder: personal.agentHome,
+    accessPolicy: accessPolicy("anyone"),
+    account: { displayName: suffix, externalAccountId: suffix, routingMode: "dedicated" },
+    connection: {
+      connectionMethod: "bring-your-own",
+      displayName: suffix,
+      externalIdentityId: `bot-${suffix}`,
+      externalTenantId: suffix,
+      provider: "slack",
+      runnerId: personal.runnerId,
+      transportKind: "socket",
+    },
+    createdBy: personal.userId,
+    credential: {
+      encryptedPayload: Buffer.from("encrypted-fixture"),
+      encryptionKeyVersion: 1,
+      id: createId("credential"),
+      name: suffix,
+      ownerId: personal.userId,
+      provider: "channel:slack",
+    },
+    executionPolicy: { harness: "specific", harnessInstanceId: personal.harnessInstance.id },
+    selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
   });
-
-  async function recordReadyCatalog(harness: {
-    readonly id: HarnessInstanceId;
-    readonly runtimeRevision: number;
-  }) {
-    await store.recordHarnessCatalogs({
-      catalogs: [
-        HarnessInstanceCatalogSchema.parse({
-          continuationIdentity: {
-            continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-            driverKind: "native",
-          },
-          driverKind: "native",
-          harnessInstanceId: harness.id,
-          models: [
-            {
-              displayName: "GPT-5.6 Sol",
-              isDefault: true,
-              modelId: "gpt-5.6-sol",
-              options: [],
-              providerId: "openai",
-            },
-          ],
-          status: "ready",
-        }),
-      ],
-      environmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    });
-  }
-
-  afterAll(async () => {
-    await database?.destroy();
-    if (maintenance) {
-      await maintenance.query(`drop database if exists ${databaseName}`);
-      await maintenance.end();
-    }
+  await channels.setRuntimeConnectionHealth({
+    connectionId: configured.connection.id,
+    detail: null,
+    reason: null,
+    runnerId: personal.runnerId,
+    status: "connected",
   });
-
-  async function createFixture(
-    suffix: string,
-    policy: ChannelAccessPolicy,
-    executionPolicy: {
-      readonly harness: "default" | "specific";
-      readonly harnessInstanceId: HarnessInstanceId | null;
-    } = { harness: "default", harnessInstanceId: null },
-  ) {
-    const ownerId = await store.createUser(`${suffix} owner`);
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: `workspace-channel-context-${suffix}`,
-      name: `Channel context ${suffix}`,
-      status: "ready",
-    });
-    const configured = await channels.createConnection({
-      accessPolicy: policy,
-      account: {
-        displayName: `Context ${suffix}`,
-        externalAccountId: `T-CONTEXT-${suffix}`,
-        routingMode: "dedicated",
-      },
-      connection: {
-        connectionMethod: "bring-your-own",
-        displayName: `Context ${suffix}`,
-        externalIdentityId: `U-BOT-CONTEXT-${suffix}`,
-        externalTenantId: `T-CONTEXT-${suffix}`,
-        provider: "slack",
-        runnerId,
-        transportKind: "socket",
-      },
-      createdBy: ownerId,
-      credential: {
-        encryptedPayload: Buffer.from(`channel-context-${suffix}`),
-        encryptionKeyVersion: 1,
-        id: createId("credential"),
-        name: `Context ${suffix}`,
-        ownerId,
-        provider: "channel:slack",
-      },
-      executionPolicy,
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      workspaceId: workspace.id,
-    });
-    await channels.setRuntimeConnectionHealth({
-      connectionId: configured.connection.id,
-      detail: null,
-      reason: null,
-      runnerId,
-      status: "connected",
-    });
-    return { ...configured, ownerId, suffix, workspace };
-  }
-
-  async function addCollaborator(workspaceId: WorkspaceId, ownerId: UserId, userId: UserId) {
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: ownerId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "collaborator",
-        state: "active",
-        updatedAt: new Date(),
-        userId,
-        workspaceId,
-      })
-      .executeTakeFirstOrThrow();
-  }
-
-  async function addLinkedIdentity(
-    accountId: ChannelAccountId,
-    externalUserId: string,
-    displayName: string,
-    userId: UserId,
-  ) {
-    const now = new Date();
+  async function link(externalUserId: string, userId: UserId) {
     const principalId = createChannelId("principal");
-    await database
+    await f.database
       .insertInto("principals")
-      .values({
-        displayName,
-        id: principalId,
-        kind: "channel-identity",
-        updatedAt: now,
-        userId: null,
-      })
-      .executeTakeFirstOrThrow();
-    await database
+      .values({ id: principalId, kind: "channel-identity", displayName: externalUserId })
+      .execute();
+    await f.database
       .insertInto("channelIdentities")
       .values({
-        accountId,
-        displayName,
-        externalUserId,
+        accountId: configured.account.id,
         id: createChannelId("identity"),
-        linkedUserId: userId,
         principalId,
+        externalUserId,
+        linkedUserId: userId,
+        displayName: externalUserId,
         status: "linked",
-        updatedAt: now,
       })
-      .executeTakeFirstOrThrow();
+      .execute();
   }
-
-  function channelEvent(input: {
-    readonly actorName: string;
-    readonly eventId: string;
-    readonly externalUserId: string;
-    readonly suffix: string;
-  }) {
-    return {
-      accountExternalId: `T-CONTEXT-${input.suffix}`,
-      actor: { displayName: input.actorName, externalUserId: input.externalUserId },
-      content: [{ text: `Message ${input.eventId}`, type: "text" as const }],
+  async function adopt(
+    eventId: string,
+    externalUserId: string,
+    type: "dm" | "group" | "channel" = "channel",
+  ) {
+    const event = {
+      accountExternalId: suffix,
+      actor: { displayName: externalUserId, externalUserId },
+      content: [{ text: eventId, type: "text" as const }],
       conversation: {
-        displayName: "shared-context",
-        externalConversationId: `C-CONTEXT-${input.suffix}`,
-        externalScopeId: `T-CONTEXT-${input.suffix}`,
+        displayName: suffix,
+        externalConversationId: `${suffix}-${type}`,
+        externalScopeId: suffix,
         externalThreadId: "1786320000.000100",
-        type: "channel" as const,
+        type,
       },
-      eventId: input.eventId,
+      eventId,
       occurredAt: new Date().toISOString(),
       provider: "slack" as const,
-      providerMessageId: input.eventId,
+      providerMessageId: eventId,
       trigger: "mention" as const,
     };
-  }
-
-  async function adoptEvent(
-    fixture: Awaited<ReturnType<typeof createFixture>>,
-    actor: { readonly displayName: string; readonly externalUserId: string },
-    eventId: string,
-  ) {
-    const committed = await channels.commitIngress(
-      fixture.connection.id,
-      channelEvent({
-        actorName: actor.displayName,
-        eventId,
-        externalUserId: actor.externalUserId,
-        suffix: fixture.suffix,
-      }),
-    );
-    const claimed = await channels.claimIngress(`context-worker-${eventId}`);
-    expect(claimed?.id).toBe(committed.ingressId);
-    if (!claimed) throw new Error("Expected committed channel ingress to be claimable");
-    const adopted = await channels
-      .adoptIngress({
-        claimToken: claimed.claimToken,
-        ingressId: claimed.id,
-        notices,
-        availableEngines: [{ environmentId, driverKinds: [HarnessIdSchema.parse("native")] }],
-      })
-      .catch(async (error: unknown) => {
-        // Put a refused claim back so its lane keeps moving, as the worker does.
-        await channels.releaseIngress(claimed.id, claimed.claimToken, String(error), {
-          deferred: error instanceof ChannelIngressDeferredError,
-        });
-        throw error;
-      });
-    expect(adopted.kind).toBe("adopted");
-    if (adopted.kind !== "adopted") throw new Error("Expected adopted channel ingress");
-    const input = await database
+    const committed = await channels.commitIngress(configured.connection.id, event);
+    expect(await channels.commitIngress(configured.connection.id, event)).toEqual({
+      ...committed,
+      duplicate: true,
+    });
+    const claimed = await channels.claimIngress(`worker-${eventId}`);
+    if (!claimed) throw new Error("Committed Messaging ingress was not claimable");
+    expect(claimed.id).toBe(committed.ingressId);
+    const result = await channels.adoptIngress({
+      claimToken: claimed.claimToken,
+      ingressId: claimed.id,
+      notices,
+      availableEngines: [
+        { environmentId: personal.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
+      ],
+    });
+    if (result.kind !== "adopted") throw new Error(`Messaging ingress was ${result.kind}`);
+    const input = await f.database
       .selectFrom("channelIngressEvents")
       .innerJoin("threadInputs", "threadInputs.messageId", "channelIngressEvents.messageId")
       .select([
         "threadInputs.threadId",
+        "threadInputs.messageId",
         "threadInputs.requestedBy",
         "threadInputs.replyTarget",
         "threadInputs.policy",
@@ -391,335 +151,295 @@ integration("channel conversation authority contexts", () => {
       ])
       .where("channelIngressEvents.id", "=", claimed.id)
       .executeTakeFirstOrThrow();
-    expect(input).toMatchObject({ policy: "queue", state: "pending" });
-    return { ...adopted, input };
+    expect(input.policy).toBe("queue");
+    expect(input.requestedBy).toBe(personal.userId);
+    return { ...result, input };
   }
+  return { ...personal, ...configured, channels, link, adopt };
+}
 
-  it("keeps two linked users in distinct roots and returns each user to their own context", async () => {
-    const fixture = await createFixture("linked", accessPolicy("linked-members"));
-    const collaboratorId = await store.createUser("Linked collaborator");
-    await addCollaborator(fixture.workspace.id, fixture.ownerId, collaboratorId);
-    await addLinkedIdentity(fixture.account.id, "U-LINKED-OWNER", "Linked owner", fixture.ownerId);
-    await addLinkedIdentity(
-      fixture.account.id,
-      "U-LINKED-COLLABORATOR",
-      "Linked collaborator",
-      collaboratorId,
-    );
-
-    const ownerFirst = await adoptEvent(
-      fixture,
-      { displayName: "Linked owner", externalUserId: "U-LINKED-OWNER" },
-      "Ev-LINKED-OWNER-1",
-    );
-    const collaborator = await adoptEvent(
-      fixture,
-      { displayName: "Linked collaborator", externalUserId: "U-LINKED-COLLABORATOR" },
-      "Ev-LINKED-COLLABORATOR-1",
-    );
-    const ownerReturn = await adoptEvent(
-      fixture,
-      { displayName: "Linked owner", externalUserId: "U-LINKED-OWNER" },
-      "Ev-LINKED-OWNER-2",
-    );
-
-    expect(ownerFirst.input.threadId).not.toBe(collaborator.input.threadId);
-    expect(ownerReturn.run).toBeNull(); // Waiting work does not borrow the first message's Run.
-    expect(ownerReturn.input.threadId).toBe(ownerFirst.input.threadId);
-    const contexts = await database
-      .selectFrom("channelConversationContexts")
-      .innerJoin("threads", "threads.id", "channelConversationContexts.activeThreadId")
-      .select([
-        "channelConversationContexts.authorityUserId",
-        "channelConversationContexts.activeThreadId",
-        "threads.parentThreadId",
-        "threads.icon",
-        "threads.iconSource",
-        "threads.color",
-      ])
-      .where(
-        "channelConversationContexts.conversationId",
-        "=",
-        ChannelConversationIdSchema.parse(ownerFirst.input.replyTarget?.conversationId),
-      )
-      .orderBy("channelConversationContexts.authorityUserId")
-      .execute();
-    expect(contexts).toHaveLength(2);
-    expect(contexts.map(({ authorityUserId }) => authorityUserId).sort()).toEqual(
-      [fixture.ownerId, collaboratorId].sort(),
-    );
-    expect(contexts.every(({ parentThreadId }) => parentThreadId === null)).toBe(true);
-    expect(
-      contexts.every(
-        ({ icon, iconSource, color }) =>
-          icon === null && iconSource === "provisional" && color === "blue",
-      ),
-    ).toBe(true);
-  });
-
-  it("shares an anyone context between linked and unlinked senders under fixed owner authority", async () => {
-    const fixture = await createFixture("anyone", accessPolicy("anyone"));
-    await addLinkedIdentity(fixture.account.id, "U-ANYONE-OWNER", "Anyone owner", fixture.ownerId);
-
-    const owner = await adoptEvent(
-      fixture,
-      { displayName: "Anyone owner", externalUserId: "U-ANYONE-OWNER" },
-      "Ev-ANYONE-OWNER",
-    );
-    const guest = await adoptEvent(
-      fixture,
-      { displayName: "Unlinked guest", externalUserId: "U-ANYONE-GUEST" },
-      "Ev-ANYONE-GUEST",
-    );
-
+describeStore("personal Messaging conversation contexts", (it) => {
+  it("shares one owner-authorized root across linked and unlinked senders", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "shared");
+    await p.link("owner", p.userId);
+    const first = await p.adopt("owner-message", "owner");
+    const guest = await p.adopt("guest-message", "guest");
     expect(guest.run).toBeNull();
-    expect(guest.input.requestedBy).toBe(fixture.ownerId);
-    expect(guest.input.threadId).toBe(owner.input.threadId);
-    await expect(
-      database
-        .selectFrom("threads")
-        .select(["inheritsMain", "createdBy", "parentThreadId"])
-        .where("id", "=", owner.input.threadId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      inheritsMain: false,
-      createdBy: fixture.ownerId,
+    expect(guest.input.threadId).toBe(first.input.threadId);
+    expect(await f.store.getThreadForOwner(first.input.threadId, p.userId)).toMatchObject({
+      createdBy: p.userId,
       parentThreadId: null,
+      folder: p.agentHome,
     });
-    await expect(
-      database
-        .selectFrom("channelConversationContexts")
-        .select(["activeThreadId", "authorityUserId"])
-        .where(
-          "conversationId",
-          "=",
-          ChannelConversationIdSchema.parse(owner.input.replyTarget?.conversationId),
-        )
+    expect(
+      await f.database
+        .selectFrom("channelConversations")
+        .select("activeThreadId")
+        .where("accountId", "=", p.account.id)
         .execute(),
-    ).resolves.toEqual([
-      { activeThreadId: owner.input.threadId, authorityUserId: fixture.ownerId },
-    ]);
+    ).toEqual([{ activeThreadId: first.input.threadId }]);
   });
 
-  it("requires the pausing person or a Workspace owner to resume shared work", async () => {
-    const fixture = await createFixture("resume-authority", accessPolicy("anyone"));
-    const collaboratorId = await store.createUser("Queue collaborator");
-    await addCollaborator(fixture.workspace.id, fixture.ownerId, collaboratorId);
-    const first = await adoptEvent(
-      fixture,
-      { displayName: "Guest", externalUserId: "U-RESUME-GUEST" },
-      "Ev-RESUME-GUEST",
-    );
-    if (!first.run) throw new Error("Expected first channel work to reserve a Run");
-    await store.enqueueRunnerControl({
-      idempotencyKey: "resume-authority-stop",
-      requestedBy: fixture.ownerId,
+  it("requires the personal owner to resume a paused queue", async ({ storeFixture: f }) => {
+    const p = await setup(f, "resume");
+    const first = await p.adopt("initial", "guest");
+    if (!first.run) throw new Error("Initial message did not reserve a Run");
+    await f.store.enqueueRunnerControl({
+      idempotencyKey: "pause",
+      requestedBy: p.userId,
       runId: first.run.id,
       threadId: first.run.threadId,
       type: "run.interrupt",
     });
-    const waiting = await store.enqueueThreadInput({
-      content: [{ type: "text", text: "Work queued while stopped" }],
-      idempotencyKey: "resume-authority-waiting",
+    const waiting = await f.store.enqueueThreadInput({
+      content: [{ type: "text", text: "Queued while paused" }],
+      idempotencyKey: "waiting",
       policy: "queue",
-      requestedBy: collaboratorId,
+      requestedBy: p.userId,
       source: { kind: "human" },
       threadId: first.run.threadId,
     });
     expect(waiting.run).toBeNull();
+    const other = await f.store.createUser("Other person");
     await expect(
-      store.resumeThreadInputQueue({
-        idempotencyKey: "resume-authority-denied",
-        requestedBy: collaboratorId,
+      f.store.resumeThreadInputQueue({
+        idempotencyKey: "denied",
+        requestedBy: other,
         threadId: first.run.threadId,
       }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: expect.stringContaining("person who paused"),
-    });
-    const resumed = await store.resumeThreadInputQueue({
-      idempotencyKey: "resume-authority-owner",
-      requestedBy: fixture.ownerId,
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const resumed = await f.store.resumeThreadInputQueue({
+      idempotencyKey: "resume",
+      requestedBy: p.userId,
       threadId: first.run.threadId,
     });
     expect(resumed.thread.inputQueuePaused).toBe(false);
-    const run = await database
-      .selectFrom("runs")
-      .selectAll()
-      .where("seedInputId", "=", waiting.message.id)
-      .executeTakeFirstOrThrow();
-    expect(run.requestedBy).toBe(collaboratorId);
-    await store.enqueueRunnerControl({
-      idempotencyKey: "resume-authority-collaborator-stop",
-      requestedBy: collaboratorId,
-      runId: run.id,
-      threadId: run.threadId,
-      type: "run.interrupt",
-    });
-    const selfResumed = await store.resumeThreadInputQueue({
-      idempotencyKey: "resume-authority-self",
-      requestedBy: collaboratorId,
-      threadId: run.threadId,
-    });
-    expect(selfResumed.thread.inputQueuePaused).toBe(false);
+    expect(
+      await f.database
+        .selectFrom("runs")
+        .select("requestedBy")
+        .where("seedInputId", "=", waiting.message.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ requestedBy: p.userId });
   });
 
-  it("refuses Done for an active channel Thread but permits a rotated historical task", async () => {
-    const fixture = await createFixture("done-scope", accessPolicy("anyone"));
-    await addLinkedIdentity(fixture.account.id, "U-DONE-OWNER", "Done owner", fixture.ownerId);
-    const first = await adoptEvent(
-      fixture,
-      { displayName: "Done owner", externalUserId: "U-DONE-OWNER" },
-      "Ev-DONE-1",
-    );
+  it("rotates changed bindings to an independent root and allows Done only on the historical task", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "rotation");
+    await p.link("owner", p.userId);
+    const first = await p.adopt("first", "owner");
     await expect(
-      store.setThreadDone({
+      f.store.setThreadDone({
         done: true,
         threadId: first.input.threadId,
-        requestedBy: fixture.ownerId,
-        idempotencyKey: "active-channel-done",
+        requestedBy: p.userId,
+        idempotencyKey: "active-done",
       }),
     ).rejects.toMatchObject({ code: "bad_request" });
-    await channels.updateBinding({
-      accessPolicy: accessPolicy("linked-members"),
-      bindingId: fixture.binding.id,
-      expectedRevision: fixture.binding.revision,
-      ownerUserId: fixture.ownerId,
+    const updated = await p.channels.updateBinding({
+      accessPolicy: accessPolicy("owner"),
+      bindingId: p.binding.id,
+      expectedRevision: p.binding.revision,
+      ownerUserId: p.userId,
     });
-    const second = await adoptEvent(
-      fixture,
-      { displayName: "Done owner", externalUserId: "U-DONE-OWNER" },
-      "Ev-DONE-2",
-    );
+    const second = await p.adopt("second", "owner");
     expect(second.input.threadId).not.toBe(first.input.threadId);
+    expect(await f.store.getThreadForOwner(second.input.threadId, p.userId)).toMatchObject({
+      lineageRootThreadId: second.input.threadId,
+      parentThreadId: null,
+      folder: p.agentHome,
+    });
+    expect(
+      await f.database
+        .selectFrom("channelConversations")
+        .select(["activeThreadId", "bindingRevision"])
+        .where("accountId", "=", p.account.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ activeThreadId: second.input.threadId, bindingRevision: updated.revision });
     expect(
       (
-        await store.setThreadDone({
+        await f.store.setThreadDone({
           done: true,
           threadId: first.input.threadId,
-          requestedBy: fixture.ownerId,
-          idempotencyKey: "historical-channel-done",
+          requestedBy: p.userId,
+          idempotencyKey: "historical-done",
         })
       ).thread.doneAt,
     ).not.toBeNull();
   });
 
-  it("rotates a policy revision to a fresh root instead of parenting it to the old context", async () => {
-    const fixture = await createFixture("rotation", accessPolicy("anyone"));
-    await addLinkedIdentity(
-      fixture.account.id,
-      "U-ROTATION-OWNER",
-      "Rotation owner",
-      fixture.ownerId,
-    );
-    const first = await adoptEvent(
-      fixture,
-      { displayName: "Rotation owner", externalUserId: "U-ROTATION-OWNER" },
-      "Ev-ROTATION-1",
-    );
-    const updated = await channels.updateBinding({
-      accessPolicy: accessPolicy("linked-members"),
-      bindingId: fixture.binding.id,
-      expectedRevision: fixture.binding.revision,
-      ownerUserId: fixture.ownerId,
+  it("rechecks every represented sender after an audience or identity change", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "privacy");
+    await p.link("owner", p.userId);
+    const first = await p.adopt("private-owner", "owner", "dm");
+    if (!first.run) throw new Error("Owner DM did not reserve a Run");
+    expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(true);
+    const running = await startPersonalQueuedRunFixture(f.store, first.run.id);
+    await f.store.commitRunnerEvent({
+      environmentId: p.environmentId,
+      runnerId: p.runnerId,
+      runnerBootId: running.runnerBootId,
+      event: pendingEvent({
+        type: "run.completed",
+        environmentId: p.environmentId,
+        threadId: first.run.threadId,
+        runId: first.run.id,
+        bindingGeneration: running.bindingGeneration,
+        ordinal: 1,
+        data: { status: "completed" },
+      }),
     });
-    const second = await adoptEvent(
-      fixture,
-      { displayName: "Rotation owner", externalUserId: "U-ROTATION-OWNER" },
-      "Ev-ROTATION-2",
-    );
-
-    expect(second.input.threadId).not.toBe(first.input.threadId);
-    await expect(
-      database
-        .selectFrom("threads")
-        .select(["inheritsMain", "lineageRootThreadId", "parentThreadId"])
-        .where("id", "=", second.input.threadId)
+    const guest = await p.adopt("unlinked-guest", "guest", "dm");
+    if (!guest.run) throw new Error("Guest message did not reserve a Run");
+    expect(guest.input.threadId).toBe(first.input.threadId);
+    expect(guest.run.providerSessionId).not.toBe(first.run.providerSessionId);
+    expect(
+      await f.database
+        .selectFrom("providerSessions")
+        .select(["personalContext", "providerSessionReference"])
+        .where("id", "=", guest.run.providerSessionId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      inheritsMain: false,
-      lineageRootThreadId: second.input.threadId,
-      parentThreadId: null,
-    });
-    await expect(
-      database
-        .selectFrom("channelConversationContexts")
-        .select(["activeThreadId", "bindingRevision"])
-        .where(
-          "conversationId",
-          "=",
-          ChannelConversationIdSchema.parse(second.input.replyTarget?.conversationId),
-        )
-        .where("authorityUserId", "=", fixture.ownerId)
-        .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      activeThreadId: second.input.threadId,
-      bindingRevision: updated.revision,
-    });
+    ).toEqual({ personalContext: false, providerSessionReference: null });
+    expect(await runAllowsPersonalContext(f.database, guest.run.id)).toBe(false);
+    const group = await p.adopt("owner-in-group", "owner", "group");
+    if (!group.run) throw new Error("Group message did not reserve a Run");
+    expect(await runAllowsPersonalContext(f.database, group.run.id)).toBe(false);
+    await f.database
+      .updateTable("channelIdentities")
+      .set({ status: "unlinked", linkedUserId: null })
+      .where("accountId", "=", p.account.id)
+      .where("externalUserId", "=", "owner")
+      .execute();
+    expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(false);
   });
-
-  // Kept last: it adds a second account to the shared work location.
-  it("places each linked person on their own eligible account when their message is adopted", async () => {
-    const second = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Second native",
-      stateKind: "isolated",
-    });
-    await recordReadyCatalog(second);
-    const harnessOf = async (adopted: Awaited<ReturnType<typeof adoptEvent>>) =>
-      (
-        await database
-          .selectFrom("threads")
-          .select("harnessInstanceId")
-          .where("id", "=", adopted.input.threadId)
-          .executeTakeFirstOrThrow()
-      ).harnessInstanceId;
-    const exclude = (userId: UserId, ...excludedAccounts: HarnessInstanceId[]) =>
-      store.setAutomaticModelConfig(userId, { roles: {}, excludedAccounts });
-    const linkedPair = async (route: Awaited<ReturnType<typeof createFixture>>, name: string) => {
-      const collaboratorId = await store.createUser(`${name} collaborator`);
-      await addCollaborator(route.workspace.id, route.ownerId, collaboratorId);
-      await addLinkedIdentity(route.account.id, `U-${name}-OWNER`, `${name} owner`, route.ownerId);
-      await addLinkedIdentity(
-        route.account.id,
-        `U-${name}-COLLABORATOR`,
-        `${name} collaborator`,
-        collaboratorId,
+  for (const conversation of ["channel", "group", "dm", "owner-dm"] as const) {
+    it(`keeps ${conversation} personal context through delegation and later worker turns`, async ({
+      storeFixture: f,
+    }) => {
+      const p = await setup(f, `delegated-${conversation}`);
+      await p.link("owner", p.userId);
+      const ownerDm = conversation === "owner-dm";
+      const root = await p.adopt(
+        "delegate-root",
+        ownerDm ? "owner" : "guest",
+        ownerDm ? "dm" : conversation,
       );
-      const send = (who: "OWNER" | "COLLABORATOR", n: number) =>
-        adoptEvent(
-          route,
-          { displayName: `${name} ${who}`, externalUserId: `U-${name}-${who}` },
-          `Ev-${name}-${who}-${n}`,
-        );
-      return { collaboratorId, send };
-    };
+      if (!root.run) throw new Error("Messaging message did not reserve a Run");
+      await startPersonalQueuedRunFixture(f.store, root.run.id);
+      const delegate = (
+        run: Pick<NonNullable<typeof root.run>, "id" | "threadId">,
+        key: string,
+        threadId?: typeof root.input.threadId,
+      ) =>
+        f.store.delegateThread({
+          accessMode: "auto",
+          createdBy: p.userId,
+          environmentId: p.environmentId,
+          harnessInstanceId: p.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          origin: { kind: "run", parentRunId: run.id, parentThreadId: run.threadId },
+          task: [{ type: "text", text: "Work for this conversation" }],
+          title: key,
+          ...(threadId ? { threadId } : {}),
+        });
+      const complete = async (
+        run: NonNullable<typeof root.run>,
+        started: Awaited<ReturnType<typeof startPersonalQueuedRunFixture>>,
+      ) => {
+        await f.store.commitRunnerEvent({
+          environmentId: p.environmentId,
+          runnerId: p.runnerId,
+          runnerBootId: started.runnerBootId,
+          event: pendingEvent({
+            type: "assistant.message",
+            environmentId: p.environmentId,
+            threadId: run.threadId,
+            runId: run.id,
+            bindingGeneration: started.bindingGeneration,
+            ordinal: 1,
+            data: { messageId: createId("message"), content: [{ type: "text", text: "Done" }] },
+          }),
+        });
+        await f.store.commitRunnerEvent({
+          environmentId: p.environmentId,
+          runnerId: p.runnerId,
+          runnerBootId: started.runnerBootId,
+          event: pendingEvent({
+            type: "run.completed",
+            environmentId: p.environmentId,
+            threadId: run.threadId,
+            runId: run.id,
+            bindingGeneration: started.bindingGeneration,
+            ordinal: 2,
+            data: { status: "completed" },
+          }),
+        });
+      };
+      let reusedPersonal: Awaited<ReturnType<typeof delegate>> | undefined;
+      if (conversation === "channel") {
+        const ordinary = await f.store.enqueueThreadInput({
+          requestedBy: p.userId,
+          threadId: p.thread.id,
+          content: [{ type: "text", text: "Private work" }],
+          source: { kind: "human" },
+          policy: "queue",
+          idempotencyKey: "ordinary-personal",
+        });
+        if (!ordinary.run) throw new Error("Personal message did not reserve a Run");
+        await startPersonalQueuedRunFixture(f.store, ordinary.run.id);
+        reusedPersonal = await delegate(ordinary.run, "personal-worker");
+        expect(await runAllowsPersonalContext(f.database, reusedPersonal.run.id)).toBe(true);
+        const personalRunning = await startPersonalQueuedRunFixture(f.store, reusedPersonal.run.id);
+        await complete(reusedPersonal.run, personalRunning);
+      }
+      const child = await delegate(root.run, "worker", reusedPersonal?.thread.id);
+      if (reusedPersonal)
+        expect(child.run.providerSessionId).not.toBe(reusedPersonal.run.providerSessionId);
+      expect(await runAllowsPersonalContext(f.database, child.run.id)).toBe(ownerDm);
+      expect(
+        await f.database
+          .selectFrom("providerSessions")
+          .select("personalContext")
+          .where("id", "=", child.run.providerSessionId!)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ personalContext: ownerDm });
+      const running = await startPersonalQueuedRunFixture(f.store, child.run.id);
 
-    const route = await createFixture("accounts", accessPolicy("linked-members"));
-    const people = await linkedPair(route, "ACCOUNTS");
-    await exclude(people.collaboratorId, harnessInstanceId);
-    const ownerFirst = await people.send("OWNER", 1);
-    expect(await harnessOf(ownerFirst)).toBe(harnessInstanceId);
-    expect(await harnessOf(await people.send("COLLABORATOR", 1))).toBe(second.id);
-
-    // An explicitly bound account stays exact, whatever automatic work may use.
-    const bound = await createFixture("bound", accessPolicy("linked-members"), {
-      harness: "specific",
-      harnessInstanceId,
+      await complete(child.run, running);
+      const reused = await delegate(root.run, "worker-reused", child.thread.id);
+      expect(await runAllowsPersonalContext(f.database, reused.run.id)).toBe(ownerDm);
+      const later = await f.store.enqueueThreadInput({
+        content: [{ type: "text", text: "Continue later" }],
+        idempotencyKey: "later-worker-turn",
+        policy: "queue",
+        requestedBy: p.userId,
+        source: { kind: "human" },
+        threadId: child.thread.id,
+      });
+      expect(later.run).toBeNull();
+      const resumed = await startPersonalQueuedRunFixture(f.store, reused.run.id);
+      await complete(reused.run, resumed);
+      const next = await f.database
+        .selectFrom("runs")
+        .selectAll()
+        .where("seedInputId", "=", later.message.id)
+        .executeTakeFirstOrThrow();
+      expect(await runAllowsPersonalContext(f.database, next.id)).toBe(ownerDm);
+      expect(next.teamRequestId).toBeNull();
+      await startPersonalQueuedRunFixture(f.store, next.id);
+      const grandchild = await delegate(next, "grandchild");
+      expect(await runAllowsPersonalContext(f.database, grandchild.run.id)).toBe(ownerDm);
+      await startPersonalQueuedRunFixture(f.store, grandchild.run.id);
+      expect((await f.store.loadRunDispatchContext(grandchild.command.id)).personalContext).toBe(
+        ownerDm,
+      );
+      expect(await threadAllowsPersonalContext(f.database, p.thread.id, p.userId)).toBe(true);
     });
-    const boundPeople = await linkedPair(bound, "BOUND");
-    await exclude(boundPeople.collaboratorId, harnessInstanceId);
-    expect(await harnessOf(await boundPeople.send("COLLABORATOR", 1))).toBe(harnessInstanceId);
-
-    // The same runtime facts, with the owner's exclusions changed since: each
-    // adoption reads the person's eligibility in its own transaction.
-    await exclude(route.ownerId, harnessInstanceId);
-    const ownerMoved = await people.send("OWNER", 2);
-    expect(await harnessOf(ownerMoved)).toBe(second.id);
-    expect(ownerMoved.input.threadId).not.toBe(ownerFirst.input.threadId);
-    await exclude(route.ownerId, harnessInstanceId, second.id);
-    await expect(people.send("OWNER", 3)).rejects.toBeInstanceOf(ChannelIngressDeferredError);
-  });
+  }
 });

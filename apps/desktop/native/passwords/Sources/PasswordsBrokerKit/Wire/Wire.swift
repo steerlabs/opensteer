@@ -1,16 +1,11 @@
 import Foundation
 import PasswordsCore
 
-/// The broker IPC, v4 through v9: exactly the shapes `packages/protocol/src/passwords-broker.ts`
-/// declares. Frames are parsed with the strict JSON parser (no duplicate keys,
-/// integers only) and every object is closed, as `z.strictObject` is. Answers
-/// are encoded canonically. `Tests/Fixtures/passwords-wire.json` is written
-/// from these types and parsed by the protocol's schemas.
+/// Strict protocol 10 IPC; the fixture pins the TypeScript and Swift shapes.
 public enum Wire {
-  /// Login requests retain the v6 shape on v7–9 connections.
-  public static let protocolVersion: Int64 = 6
-  public static let latestProtocolVersion: Int64 = 9
-  public static let supportedProtocolVersions: [Int64] = [9, 8, 7, 6, 5, 4]
+  public static let protocolVersion: Int64 = 10
+  public static let latestProtocolVersion: Int64 = 10
+  public static let supportedProtocolVersions: [Int64] = [10]
   public static let maxAccounts = 100
 
   public enum Method: String, CaseIterable, Sendable {
@@ -94,7 +89,7 @@ public enum Wire {
       ]))
   }
 
-  public static func statusChanged(_ status: Status, protocolVersion: Int64 = 7) -> Data {
+  public static func statusChanged(_ status: Status, protocolVersion: Int64 = Wire.protocolVersion) -> Data {
     encode(.object(["event": .string("status.changed"), "params": status.json(protocolVersion: protocolVersion)]))
   }
 
@@ -139,7 +134,7 @@ public enum Wire {
   }
 
   /// `signin.probe`: the site only. The answer is whether a saved login
-  /// covers it, which no Deployment or Workspace changes.
+  /// covers it, independent of Deployment consent.
   public struct ProbeParams: Equatable, Sendable {
     public let site: String
 
@@ -157,135 +152,66 @@ public enum Wire {
     public var json: JSONValue { .object(["site": .string(site)]) }
   }
 
-  /// One sign-in, named by the Host: the Deployment, Workspace and site pick
-  /// a grant; the names and reason are display text.
+  /// Consent is personal to this Deployment and site, independent of task or folder.
   public struct SignInRequestParams: Equatable, Sendable {
     public let deploymentId: String
     public let deploymentName: String
-    /// As sent; `expiresAt` is the parsed instant.
     public let expiresAtText: String
     public let expiresAt: Date
     public let reason: String
-    public enum Scope: Equatable, Sendable {
-      case browser(runtimeId: String, sessionId: String)
-      case workspace
-    }
-    public let scope: Scope
     public let protocolVersion: Int64
     public let permissionVersion: Int64
     public let site: String
-    /// The site's registrable domain, e.g. `github.com`.
     public let siteHost: String
     public let threadTitle: String
     public let transactionId: String
-    public let workspaceId: String
-    public let workspaceName: String
 
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
-      let version: Int64
-      if let negotiated {
-        version = (7...9).contains(negotiated) ? 6 : negotiated
-      } else if case .object(let fields) = json,
-        case .integer(let offered)? = fields["protocolVersion"]
-      {
-        version = offered
-      } else {
-        version = 4
+      guard negotiated == nil || negotiated == Wire.protocolVersion else {
+        throw Failure.invalid("Update Opensteer to request this sign-in.")
       }
-      var keys: Set<String> = [
+      let object = try strict(json, [
         "deploymentId", "deploymentName", "expiresAt", "reason", "site", "threadTitle",
-        "transactionId", "workspaceId", "workspaceName",
-      ]
-      switch version {
-      case 4: keys.formUnion(["runtimeId", "sessionId"])
-      case 5, 6: keys.formUnion(["protocolVersion", "permissionVersion"])
-      default: throw Failure.invalid("signin.request needs a supported protocol.")
+        "transactionId", "protocolVersion", "permissionVersion",
+      ])
+      protocolVersion = try integer(object, "protocolVersion")
+      permissionVersion = try integer(object, "permissionVersion")
+      guard protocolVersion == 10, permissionVersion == 6 else {
+        throw Failure.invalid("Update Opensteer to request this sign-in.")
       }
-      let object = try strict(json, keys)
       deploymentId = try string(object, "deploymentId")
       deploymentName = try string(object, "deploymentName")
       expiresAtText = try string(object, "expiresAt")
       reason = try string(object, "reason")
-      if version == 4 {
-        let runtimeId = try string(object, "runtimeId")
-        let sessionId = try string(object, "sessionId")
-        guard WireRules.length(runtimeId, within: 1...255),
-          WireRules.length(sessionId, within: 1...128)
-        else { throw Failure.invalid("signin.request needs a runtime and session.") }
-        scope = .browser(runtimeId: runtimeId, sessionId: sessionId)
-      } else {
-        guard try integer(object, "protocolVersion") == version,
-          try integer(object, "permissionVersion") == 5
-        else { throw Failure.invalid("signin.request needs protocol and permission version 5.") }
-        scope = .workspace
-      }
-      protocolVersion = version
-      permissionVersion = version == 4 ? 4 : 5
       site = try string(object, "site")
       threadTitle = try string(object, "threadTitle")
       transactionId = try string(object, "transactionId")
-      workspaceId = try string(object, "workspaceId")
-      workspaceName = try string(object, "workspaceName")
-      guard WireRules.length(deploymentId, within: 1...128),
+      guard WireRules.deploymentId(deploymentId),
         WireRules.trimmedText(deploymentName, max: 120),
-        WireRules.trimmedText(reason, max: 500), WireRules.trimmedText(threadTitle, max: 200),
-        WireRules.trimmedText(workspaceName, max: 120)
-      else {
-        throw Failure.invalid("signin.request has a field that is empty, untrimmed or too long.")
-      }
+        WireRules.trimmedText(reason, max: 500), WireRules.trimmedText(threadTitle, max: 200)
+      else { throw Failure.invalid("signin.request has an invalid field.") }
       guard WireRules.isUUID(transactionId) else {
         throw Failure.invalid("signin.request needs a UUID transactionId.")
-      }
-      guard WireRules.workspaceId(workspaceId) else {
-        throw Failure.invalid("signin.request needs a Workspace ID.")
       }
       guard let expiresAt = WireRules.isoDate(expiresAtText) else {
         throw Failure.invalid("signin.request needs expiresAt as an ISO date with an offset.")
       }
       self.expiresAt = expiresAt
-      guard let siteHost = WireRules.site(site) else {
-        throw Failure.invalid("signin.request needs a site such as https://github.com.")
+      guard let host = WireRules.site(site) else {
+        throw Failure.invalid("signin.request needs an HTTPS site.")
       }
-      self.siteHost = siteHost
-
+      siteHost = host
     }
 
-    /// The grant this sign-in would use.
-    public var grantKey: GrantKey {
-      GrantKey(deploymentId: deploymentId, workspaceId: workspaceId, site: site)
-    }
-
-    /// Legacy uniqueness stays session-scoped; modern authority belongs to a Workspace.
-    var transactionKey: [String] {
-      switch scope {
-      case .browser(let runtimeId, let sessionId):
-        return ["4", deploymentId, runtimeId, sessionId, site]
-      case .workspace:
-        return ["5", deploymentId, workspaceId, site]
-      }
-    }
-
+    public var grantKey: GrantKey { GrantKey(deploymentId: deploymentId, site: site) }
+    var transactionKey: [String] { [deploymentId, site] }
     public var json: JSONValue {
-      var fields: [String: JSONValue] = [
-        "deploymentId": .string(deploymentId),
-        "deploymentName": .string(deploymentName),
-        "expiresAt": .string(expiresAtText),
-        "reason": .string(reason),
-        "site": .string(site),
-        "threadTitle": .string(threadTitle),
-        "transactionId": .string(transactionId),
-        "workspaceId": .string(workspaceId),
-        "workspaceName": .string(workspaceName),
-      ]
-      switch scope {
-      case .browser(let runtimeId, let sessionId):
-        fields["runtimeId"] = .string(runtimeId)
-        fields["sessionId"] = .string(sessionId)
-      case .workspace:
-        fields["protocolVersion"] = .integer(protocolVersion)
-        fields["permissionVersion"] = .integer(permissionVersion)
-      }
-      return .object(fields)
+      .object([
+        "deploymentId": .string(deploymentId), "deploymentName": .string(deploymentName),
+        "expiresAt": .string(expiresAtText), "reason": .string(reason), "site": .string(site),
+        "threadTitle": .string(threadTitle), "transactionId": .string(transactionId),
+        "protocolVersion": .integer(protocolVersion), "permissionVersion": .integer(permissionVersion),
+      ])
     }
   }
 
@@ -299,7 +225,7 @@ public enum Wire {
     public let permissionVersion: Int64
 
     public init(loginId: String, remember: Bool, revision: Int64, transactionId: String) {
-      self.permissionVersion = 5
+      self.permissionVersion = 6
       self.loginId = loginId
       self.remember = remember
       self.revision = revision
@@ -310,7 +236,7 @@ public enum Wire {
       let object = try strict(
         json, ["loginId", "remember", "revision", "transactionId", "permissionVersion"])
       permissionVersion = try integer(object, "permissionVersion")
-      guard permissionVersion == 5 else {
+      guard permissionVersion == 6 else {
         throw Failure.invalid("Update Opensteer to approve this sign-in.")
       }
       loginId = try string(object, "loginId")
@@ -365,40 +291,27 @@ public enum Wire {
       self.transactionId = transactionId
       self.field = field
       self.destination = .browser(origin: origin)
-      self.protocolVersion = 4
+      self.protocolVersion = Wire.protocolVersion
     }
 
     public init(json: JSONValue, protocolVersion negotiated: Int64? = nil) throws {
-      let version: Int64
-      if let negotiated {
-        version = (7...9).contains(negotiated) ? 6 : negotiated
-      } else if case .object(let fields) = json, fields["kind"] != nil {
-        version = 5
-      } else {
-        version = 4
+      guard negotiated == nil || negotiated == Wire.protocolVersion else {
+        throw Failure.invalid("Update Opensteer to release this sign-in.")
+      }
+      guard case .object(let fields) = json, case .string(let kind)? = fields["kind"] else {
+        throw Failure.invalid("signin.release needs an explicit destination kind.")
       }
       let object: StrictObject
-      switch version {
-      case 4:
-        object = try strict(json, ["transactionId", "field", "origin"])
+      switch kind {
+      case "app":
+        object = try strict(json, ["transactionId", "field", "kind"])
+        destination = .app
+      case "browser":
+        object = try strict(json, ["transactionId", "field", "kind", "origin"])
         destination = .browser(origin: try string(object, "origin"))
-      case 5, 6:
-        // The discriminant is mandatory; an absent origin never grants app scope.
-        guard case .object(let fields) = json, case .string(let kind)? = fields["kind"] else {
-          throw Failure.invalid("signin.release needs an explicit destination kind.")
-        }
-        switch kind {
-        case "app":
-          object = try strict(json, ["transactionId", "field", "kind"])
-          destination = .app
-        case "browser":
-          object = try strict(json, ["transactionId", "field", "kind", "origin"])
-          destination = .browser(origin: try string(object, "origin"))
-        default: throw Failure.invalid("signin.release needs a supported destination kind.")
-        }
-      default: throw Failure.invalid("signin.release needs a supported protocol.")
+      default: throw Failure.invalid("signin.release needs a supported destination kind.")
       }
-      protocolVersion = version
+      protocolVersion = Wire.protocolVersion
       transactionId = try transaction(object)
       guard let parsed = ReleaseField(rawValue: try string(object, "field")) else {
         throw Failure.invalid("signin.release needs a supported field.")
@@ -417,7 +330,7 @@ public enum Wire {
       case .app: fields["kind"] = .string("app")
       case .browser(let origin):
         fields["origin"] = .string(origin)
-        if protocolVersion >= 5 { fields["kind"] = .string("browser") }
+        fields["kind"] = .string("browser")
       }
       return .object(fields)
     }
@@ -578,14 +491,14 @@ public enum Wire {
       self.personSave = personSave
     }
 
-    public var json: JSONValue { json(protocolVersion: 7) }
+    public var json: JSONValue { json(protocolVersion: Wire.protocolVersion) }
 
     public func json(protocolVersion: Int64) -> JSONValue {
       var fields: [String: JSONValue] = [
         "agentSignIns": .string(agentSignIns ? "on" : "off"), "vault": .string(vault.rawValue),
       ]
-      if protocolVersion >= 8 { fields["personFill"] = .string(personFill ? "on" : "off") }
-      if protocolVersion >= 9 { fields["personSave"] = .string(personSave ? "on" : "off") }
+      fields["personFill"] = .string(personFill ? "on" : "off")
+      fields["personSave"] = .string(personSave ? "on" : "off")
       return .object(fields)
     }
   }
@@ -713,16 +626,16 @@ public enum Wire {
   public struct CardRequestParams: Sendable {
     public let request: SignInRequestParams
     public init(json: JSONValue) throws {
-      guard case .object(var fields) = json, fields["protocolVersion"] == .integer(7),
-        fields["permissionVersion"] == .integer(7) else { throw Failure.invalid("Card use needs version 7.") }
-      fields["permissionVersion"] = .integer(5)
-      fields["protocolVersion"] = .integer(6)
-      request = try SignInRequestParams(json: .object(fields), protocolVersion: 6)
+      guard case .object(var fields) = json, fields["protocolVersion"] == .integer(10),
+        fields["permissionVersion"] == .integer(7) else { throw Failure.invalid("Card use needs protocol 10 and permission 7.") }
+      fields["permissionVersion"] = .integer(6)
+      fields["protocolVersion"] = .integer(10)
+      request = try SignInRequestParams(json: .object(fields), protocolVersion: 10)
     }
     public var json: JSONValue {
       guard case .object(var fields) = request.json else { preconditionFailure() }
       fields["permissionVersion"] = .integer(7)
-      fields["protocolVersion"] = .integer(7)
+      fields["protocolVersion"] = .integer(10)
       return .object(fields)
     }
   }

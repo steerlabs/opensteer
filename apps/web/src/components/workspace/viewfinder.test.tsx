@@ -45,7 +45,6 @@ const entry = (sequence = "1", session = sessionId, surface = surfaceId) =>
     sequence,
     runId,
     threadId,
-    workspaceId: createId("workspace"),
     createdAt: "2026-11-02T13:00:00.000Z",
     data: {
       place: { kind: "browser", sessionId: session, surfaceId: surface },

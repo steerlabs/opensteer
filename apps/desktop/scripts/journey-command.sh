@@ -3,7 +3,6 @@ set -euo pipefail
 out="${OPENSTEER_JOURNEY_OUT:-}"
 journey() {
   case "$1" in
-    desktop-projects) pnpm exec tsx scripts/desktop-projects-journey.ts ;;
     mac-owner) bash native/computer-use/Tests/Fixtures/MacOwnerInputJourney/run-vm.sh ;;
     saved-password) OPENSTEER_PASSWORDS_ANYWHERE_EVIDENCE_DIR="$out" pnpm test:electron-computer-use:run ;;
     chrome-background)

@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     ...integration.test,
     globalSetup: ["./tests/migration-compat-global-setup.test-support.ts"],
-    include: ["tests/migration-compat-journey.test-support.ts"],
+    include: ["tests/control-plane-migration-journey.test-support.ts"],
     maxWorkers: 1,
   },
 });

@@ -1,6 +1,6 @@
 import { OpensteerError } from "@opensteer/core";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
-import type { OpensteerStore } from "@opensteer/database";
+import { personalDeploymentOwner, type OpensteerStore } from "@opensteer/database";
 import { LocalBootstrapSchema, type LocalBootstrap } from "@opensteer/protocol";
 import type { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 
@@ -56,11 +56,8 @@ export class LocalBootstrapService {
    */
   async describe(authorization?: string): Promise<LocalBootstrap> {
     if (this.#requireSetupCredential) this.#requireCredential(authorization);
-    if (this.#requireSetupCredential) {
-      await this.#store.upgradeLegacyPersonalMainRunnerBrowserGrant();
-    }
     const [administrator, mainRunner] = await Promise.all([
-      this.#store.hasInstanceAdministrator(),
+      personalDeploymentOwner(this.#store.database),
       this.#store.deploymentMainRunnerState(),
     ]);
     return LocalBootstrapSchema.parse({

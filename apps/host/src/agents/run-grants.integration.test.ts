@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { fileURLToPath } from "node:url";
-import { ModelSelectionSchema, type RunId, type WorkspaceId } from "@opensteer/core";
+import { ModelSelectionSchema, type RunId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
@@ -35,10 +35,11 @@ const fakeCodexAppServer = fileURLToPath(
 );
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 interface Revocation {
   readonly capabilityTime?: {
     readonly before: number;
@@ -50,32 +51,34 @@ interface Revocation {
   readonly before: number | "proxy-closed";
   readonly after: number | "proxy-closed";
   readonly latencyMs: number;
-  readonly grant: { readonly status: string; readonly revokedReason: string | null };
+  readonly grant: {
+    readonly status: string;
+    readonly revokedReason: string | null;
+  };
   readonly runEnded: string;
   readonly detachedChildEnded?: boolean;
   readonly heldSessionAfterRefresh?: number;
 }
-
 import { heldRunCapture } from "./run-grants.test-support.js";
-
 integration("Run tool authority", () => {
   let stack: VerticalStack | undefined;
   const temporary: string[] = [];
   const matrix: Revocation[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
-    for (const path of temporary.splice(0)) await rm(path, { force: true, recursive: true });
+    for (const path of temporary.splice(0))
+      await rm(path, {
+        force: true,
+        recursive: true,
+      });
   });
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-run-grants-"));
     const artifact = join(directory, "revocation-matrix.json");
     await writeFile(artifact, JSON.stringify(matrix, null, 2) + "\n");
     console.info(`Run grant revocation matrix: ${artifact}`);
   });
-
   async function start(
     options: {
       readonly engineArguments?: readonly string[];
@@ -135,7 +138,9 @@ integration("Run tool authority", () => {
       },
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       ...(options.runCapabilityLifetimeSeconds
-        ? { runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds }
+        ? {
+            runCapabilityLifetimeSeconds: options.runCapabilityLifetimeSeconds,
+          }
         : {}),
       runTimeoutMs: 60_000,
     });
@@ -149,10 +154,18 @@ integration("Run tool authority", () => {
         const schedules = refreshSchedules;
         const step = Math.min(interval, remaining);
         clock.advanceBy(step);
-        await expect.poll(() => refreshSchedules, { timeout: 30_000 }).toBeGreaterThan(schedules);
+        await expect
+          .poll(() => refreshSchedules, {
+            timeout: 30_000,
+          })
+          .toBeGreaterThan(schedules);
         remaining -= step;
       }
-      return { before, after: clock.now(), replacements: refreshSchedules - initialSchedules };
+      return {
+        before,
+        after: clock.now(),
+        replacements: refreshSchedules - initialSchedules,
+      };
     };
     return {
       active: stack,
@@ -163,16 +176,28 @@ integration("Run tool authority", () => {
   }
 
   /** A Run held mid-turn, and the agent-tools URL and secret its engine was given. */
-  async function heldRun(active: VerticalStack, workspaceId: WorkspaceId, captureFile: string) {
+  async function heldRun(
+    active: VerticalStack,
+    folder: import("@opensteer/core").TaskFolder,
+    captureFile: string,
+  ) {
     const threadId = await active.createThread({
+      folder,
       modelSelection,
       title: "Held",
-      workspaceId,
     });
     const marker = `held-run-${randomUUID()}`;
-    const queued = await active.queueMessage({ text: `Keep working ${marker}`, threadId });
+    const queued = await active.queueMessage({
+      text: `Keep working ${marker}`,
+      threadId,
+    });
     if (!queued.runId) throw new Error("Expected the message to start a Run");
-    let engine: { readonly token: string; readonly url: string } | undefined;
+    let engine:
+      | {
+          readonly token: string;
+          readonly url: string;
+        }
+      | undefined;
     await expect
       .poll(
         async () => {
@@ -182,10 +207,16 @@ integration("Run tool authority", () => {
           );
           return engine;
         },
-        { timeout: 30_000 },
+        {
+          timeout: 30_000,
+        },
       )
       .toBeTruthy();
-    return { runId: queued.runId, threadId, ...engine! };
+    return {
+      runId: queued.runId,
+      threadId,
+      ...engine!,
+    };
   }
 
   /**
@@ -203,7 +234,10 @@ integration("Run tool authority", () => {
         method: "initialize",
         params: {
           capabilities: {},
-          clientInfo: { name: "run-grants-journey", version: "1" },
+          clientInfo: {
+            name: "run-grants-journey",
+            version: "1",
+          },
           protocolVersion: "2025-06-18",
         },
       }),
@@ -221,25 +255,40 @@ integration("Run tool authority", () => {
 
   /** One MCP message through the proxy, on the session `sessionId` names if any. */
   async function mcpMessage(
-    held: { readonly token: string; readonly url: string },
+    held: {
+      readonly token: string;
+      readonly url: string;
+    },
     message: Record<string, unknown>,
     sessionId?: string,
-  ): Promise<{ readonly sessionId: string | null; readonly status: number }> {
+  ): Promise<{
+    readonly sessionId: string | null;
+    readonly status: number;
+  }> {
     const response = await fetch(held.url, {
-      body: JSON.stringify({ jsonrpc: "2.0", ...message }),
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        ...message,
+      }),
       headers: {
         accept: "application/json, text/event-stream",
         authorization: `Bearer ${held.token}`,
         "content-type": "application/json",
-        ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+        ...(sessionId
+          ? {
+              "mcp-session-id": sessionId,
+            }
+          : {}),
         "mcp-protocol-version": "2025-06-18",
       },
       method: "POST",
     });
     await response.arrayBuffer();
-    return { sessionId: response.headers.get("mcp-session-id"), status: response.status };
+    return {
+      sessionId: response.headers.get("mcp-session-id"),
+      status: response.status,
+    };
   }
-
   async function toolsStatus(active: VerticalStack, token: string): Promise<number> {
     const response = await fetch(new URL("/internal/v1/mcp", active.hostOrigin), {
       body: JSON.stringify({
@@ -249,7 +298,10 @@ integration("Run tool authority", () => {
         params: {
           protocolVersion: "2025-06-18",
           capabilities: {},
-          clientInfo: { name: "grant-test", version: "1" },
+          clientInfo: {
+            name: "grant-test",
+            version: "1",
+          },
         },
       }),
       headers: {
@@ -262,7 +314,6 @@ integration("Run tool authority", () => {
     await response.arrayBuffer();
     return response.status;
   }
-
   async function grantOf(active: VerticalStack, runId: RunId) {
     return active.host.store.database
       .selectFrom("grants")
@@ -271,7 +322,6 @@ integration("Run tool authority", () => {
       .orderBy("createdAt", "desc")
       .executeTakeFirstOrThrow();
   }
-
   async function runEnds(active: VerticalStack, runId: RunId): Promise<string> {
     let status = "";
     await expect
@@ -286,29 +336,31 @@ integration("Run tool authority", () => {
           ).status;
           return ["completed", "failed", "interrupted"].includes(status);
         },
-        { timeout: 60_000 },
+        {
+          timeout: 60_000,
+        },
       )
       .toBe(true);
     return status;
   }
-
   it("stops an engine's tools at Stop while its Runner records how the Run ended", async () => {
     const { active, captureFile, release } = await start();
-    const workspace = await active.createWorkspace("Stopped work");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Stopped work");
+    const held = await heldRun(active, workspace, captureFile);
     const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
     expect(hostRefusesEngineToken).toBe(true);
     const before = await engineToolCall(held);
     expect(before).toBe(200);
-
     const stoppedAt = Date.now();
     await active.interruptRun(held.threadId, held.runId);
     const after = await engineToolCall(held);
     const latencyMs = Date.now() - stoppedAt;
     expect([401, 403]).toContain(after);
     const grant = await grantOf(active, held.runId);
-    expect(grant).toEqual({ revokedReason: "stopped", status: "revoked" });
-
+    expect(grant).toEqual({
+      revokedReason: "stopped",
+      status: "revoked",
+    });
     await release();
     // This fake engine finishes its held turn rather than honoring the
     // interrupt; either way the Runner's report of the end must be accepted.
@@ -324,7 +376,6 @@ integration("Run tool authority", () => {
       runEnded,
     });
   }, 180_000);
-
   it("keeps an engine's tools working past its first tokens' lifetime", async () => {
     const clock = new ManualClock();
     const lifetimeSeconds = 4;
@@ -332,8 +383,8 @@ integration("Run tool authority", () => {
       capabilityClock: clock,
       runCapabilityLifetimeSeconds: lifetimeSeconds,
     });
-    const workspace = await active.createWorkspace("Long work");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Long work");
+    const held = await heldRun(active, workspace, captureFile);
     const before = await engineToolCall(held);
     expect(before).toBe(200);
     // Well past the expiry of every token the dispatch issued.
@@ -342,7 +393,11 @@ integration("Run tool authority", () => {
     expect(afterExpiry).toBe(200);
     const stoppedAt = Date.now();
     await active.interruptRun(held.threadId, held.runId);
-    await expect.poll(() => engineToolCall(held), { timeout: 10_000 }).not.toBe(200);
+    await expect
+      .poll(() => engineToolCall(held), {
+        timeout: 10_000,
+      })
+      .not.toBe(200);
     const latencyMs = Date.now() - stoppedAt;
     const after = await engineToolCall(held);
     await release();
@@ -358,7 +413,6 @@ integration("Run tool authority", () => {
       runEnded,
     });
   }, 180_000);
-
   it("keeps an engine's MCP session working across a token refresh", async () => {
     const clock = new ManualClock();
     const lifetimeSeconds = 4;
@@ -366,14 +420,17 @@ integration("Run tool authority", () => {
       capabilityClock: clock,
       runCapabilityLifetimeSeconds: lifetimeSeconds,
     });
-    const workspace = await active.createWorkspace("Held session");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Held session");
+    const held = await heldRun(active, workspace, captureFile);
     const opened = await mcpMessage(held, {
       id: 1,
       method: "initialize",
       params: {
         capabilities: {},
-        clientInfo: { name: "run-grants-journey", version: "1" },
+        clientInfo: {
+          name: "run-grants-journey",
+          version: "1",
+        },
         protocolVersion: "2025-06-18",
       },
     });
@@ -381,17 +438,38 @@ integration("Run tool authority", () => {
     const sessionId = opened.sessionId;
     if (!sessionId) throw new Error("The Host opened no MCP session");
     expect(
-      (await mcpMessage(held, { method: "notifications/initialized" }, sessionId)).status,
+      (
+        await mcpMessage(
+          held,
+          {
+            method: "notifications/initialized",
+          },
+          sessionId,
+        )
+      ).status,
     ).toBe(202);
     // Past the first tokens' expiry: the proxy now presents refreshed ones on
     // the session the first ones opened.
     const capabilityTime = await advanceCapabilityTime((lifetimeSeconds + 2) * 1_000);
-    const listed = await mcpMessage(held, { id: 2, method: "tools/list" }, sessionId);
+    const listed = await mcpMessage(
+      held,
+      {
+        id: 2,
+        method: "tools/list",
+      },
+      sessionId,
+    );
     expect(listed.status).toBe(200);
-
     await active.interruptRun(held.threadId, held.runId);
     const after = (
-      await mcpMessage(held, { id: 3, method: "tools/list" }, sessionId).catch(() => ({
+      await mcpMessage(
+        held,
+        {
+          id: 3,
+          method: "tools/list",
+        },
+        sessionId,
+      ).catch(() => ({
         status: 0,
       }))
     ).status;
@@ -408,9 +486,11 @@ integration("Run tool authority", () => {
       runEnded: await runEnds(active, held.runId),
     });
   }, 180_000);
-
   it.each([
-    { child: "a detached child", engineArguments: ["--spawn-detached"] },
+    {
+      child: "a detached child",
+      engineArguments: ["--spawn-detached"],
+    },
     // A child that dropped the marker naming its execution is still below it.
     {
       child: "a detached child without its execution's marker",
@@ -422,8 +502,8 @@ integration("Run tool authority", () => {
       const { active, captureFile } = await start({
         engineArguments: [...engineArguments, "--ignore-interrupt"],
       });
-      const workspace = await active.createWorkspace("Runaway work");
-      const held = await heldRun(active, workspace.id, captureFile);
+      const workspace = await active.createFolder("Runaway work");
+      const held = await heldRun(active, workspace, captureFile);
       let detachedChild: number | undefined;
       await expect
         .poll(
@@ -434,11 +514,18 @@ integration("Run tool authority", () => {
             detachedChild = captured
               .split("\n")
               .filter(Boolean)
-              .map((line) => JSON.parse(line) as { fakeDetachedChild?: number })
+              .map(
+                (line) =>
+                  JSON.parse(line) as {
+                    fakeDetachedChild?: number;
+                  },
+              )
               .findLast((line) => line.fakeDetachedChild)?.fakeDetachedChild;
             return detachedChild;
           },
-          { timeout: 30_000 },
+          {
+            timeout: 30_000,
+          },
         )
         .toBeTruthy();
       const alive = () => {
@@ -450,7 +537,6 @@ integration("Run tool authority", () => {
         }
       };
       expect(alive()).toBe(true);
-
       const stoppedAt = Date.now();
       await active.interruptRun(held.threadId, held.runId);
       const runEnded = await runEnds(active, held.runId);
@@ -470,38 +556,4 @@ integration("Run tool authority", () => {
     },
     180_000,
   );
-
-  it("stops an engine's tools once its Workspace is being deleted", async () => {
-    const { active, captureFile, release } = await start();
-    const workspace = await active.createWorkspace("Deleted work");
-    const held = await heldRun(active, workspace.id, captureFile);
-    const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
-    expect(hostRefusesEngineToken).toBe(true);
-    const before = await engineToolCall(held);
-    expect(before).toBe(200);
-
-    const deletedAt = Date.now();
-    const deleted = await active.api["commands.dispatch"]({
-      idempotencyKey: `delete-${workspace.id}`,
-      type: "workspace.delete",
-      workspaceId: workspace.id,
-    });
-    if (!deleted.ok) throw new Error(deleted.error.message);
-    const after = await engineToolCall(held);
-    const latencyMs = Date.now() - deletedAt;
-    expect([401, 403, "proxy-closed"]).toContain(after);
-
-    await release();
-    const runEnded = await runEnds(active, held.runId);
-    const grant = await grantOf(active, held.runId);
-    matrix.push({
-      after,
-      before,
-      event: "workspace-deletion",
-      grant,
-      hostRefusesEngineToken,
-      latencyMs,
-      runEnded,
-    });
-  }, 180_000);
 });

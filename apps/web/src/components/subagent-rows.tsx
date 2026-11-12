@@ -269,7 +269,7 @@ export const AgentRow = memo(function AgentRow({
   const taskPath =
     card.opens?.kind === "thread"
       ? (workspace?.nav.threadPath(card.opens.threadId) ??
-        `/threads/${encodeURIComponent(card.opens.threadId)}`)
+        `/tasks/${encodeURIComponent(card.opens.threadId)}`)
       : null;
   return (
     <div
@@ -646,10 +646,7 @@ export function TaskRows({ entries }: { entries: readonly AssignmentEntry[] }) {
   const byId = useMemo(
     () =>
       new Map(
-        tasks.map((assignment) => [
-          assignment.id,
-          { assignment, owner: taskOwner(assignment, snapshot) },
-        ]),
+        tasks.map((assignment) => [assignment.id, { assignment, owner: taskOwner(assignment) }]),
       ),
     [tasks, snapshot],
   );

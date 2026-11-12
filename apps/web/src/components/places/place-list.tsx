@@ -73,7 +73,30 @@ export function PlaceList({
                 <span className="place-row__text">
                   <span className="place-row__name">{row.name}</span>
                   <span className="place-row__detail">{row.detail}</span>
+                  {row.facts?.teams.map((team) => (
+                    <span className="place-row__team" key={team.id}>
+                      {team.name}
+                      {team.mentions ? (
+                        <span
+                          className="mention-count"
+                          aria-label={`${team.mentions} mentions in ${team.name}`}
+                        >
+                          {team.mentions}
+                        </span>
+                      ) : null}
+                    </span>
+                  ))}
                 </span>
+                {row.facts?.needsYou ? (
+                  <span
+                    className="side-needs"
+                    aria-label={`${row.facts.needsYou} requests need you`}
+                  >
+                    {row.facts.needsYou}
+                  </span>
+                ) : row.facts?.unread ? (
+                  <span className="task-row__unread" aria-label="Unread task results" />
+                ) : null}
                 <PlaceStatus status={row.status} />
               </button>
               {more ? (

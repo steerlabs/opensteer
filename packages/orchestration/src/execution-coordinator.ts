@@ -1,29 +1,23 @@
+import { isResendableControlCommand } from "@opensteer/database/command-delivery";
 import type { AgentEvent, CommandId, EnvironmentId, RunId, ThreadId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
-import {
-  isResendableControlCommand,
-  type CommandRow,
-  type OpensteerStore,
-  type PendingCommandRow,
-} from "@opensteer/database";
+import type { CommandRow, OpensteerStore, PendingCommandRow } from "@opensteer/database";
 import { CoalescedWake } from "@opensteer/shared/coalescedWake";
-
 export type DispatchDisposition = "retry" | "uncertain" | "failed";
-
 export class CommandDispatchError extends Error {
   readonly disposition: DispatchDisposition;
-
   constructor(
     message: string,
     disposition: DispatchDisposition,
-    options?: { readonly cause?: unknown },
+    options?: {
+      readonly cause?: unknown;
+    },
   ) {
     super(message, options);
     this.name = "CommandDispatchError";
     this.disposition = disposition;
   }
 }
-
 export interface DurableCommandDispatcher {
   /**
    * Whether the command can be dispatched now. `dispatchingRuns` counts the
@@ -33,12 +27,10 @@ export interface DurableCommandDispatcher {
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean;
   dispatch(command: CommandRow, signal: AbortSignal): Promise<void>;
 }
-
 export type ExecutionCoordinatorStore = Pick<
   OpensteerStore,
   "claimCommand" | "failCommand" | "listPendingCommands" | "markSteerUnknown" | "retryCommand"
 >;
-
 interface ExecutionCoordinatorOptions {
   readonly dispatcher: DurableCommandDispatcher;
   readonly dispatcherId: string;
@@ -49,27 +41,23 @@ interface ExecutionCoordinatorOptions {
   readonly maxQueuedBytes: number;
   readonly maxQueuedCommands: number;
   readonly now?: () => number;
-  readonly onWorkspaceEvent?: (event: AgentEvent) => void;
+  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onDispatchError?: (error: unknown, command: CommandRow) => void;
   readonly pollIntervalMs?: number;
   readonly store: ExecutionCoordinatorStore;
 }
-
 interface QueueEntry {
   readonly bytes: number;
   readonly command: PendingCommandRow;
 }
-
 interface DispatchBackoff {
   attempts: number;
   nextEligibleAt: number;
   /** When it was last recorded, on the coordinator's own count of rejections. */
   recorded: number;
 }
-
 const dispatchBackoffBaseMs = 1_000;
 const dispatchBackoffMaxMs = 30_000;
-
 export class ExecutionCoordinator {
   readonly #dispatcher: DurableCommandDispatcher;
   readonly #dispatcherId: string;
@@ -79,7 +67,7 @@ export class ExecutionCoordinator {
   readonly #maxQueuedBytes: number;
   readonly #maxQueuedCommands: number;
   readonly #now: () => number;
-  readonly #onWorkspaceEvent: ((event: AgentEvent) => void) | undefined;
+  readonly #onDeploymentEvent: ((event: AgentEvent) => void) | undefined;
   readonly #onDispatchError: ExecutionCoordinatorOptions["onDispatchError"];
   readonly #pollIntervalMs: number;
   readonly #store: ExecutionCoordinatorStore;
@@ -102,7 +90,6 @@ export class ExecutionCoordinator {
     onSettled: () => this.#schedulePoll(),
   });
   #stopping: Promise<void> | undefined;
-
   constructor(options: ExecutionCoordinatorOptions) {
     this.#dispatcher = options.dispatcher;
     this.#dispatcherId = options.dispatcherId;
@@ -118,30 +105,29 @@ export class ExecutionCoordinator {
     this.#maxQueuedBytes = positiveInteger(options.maxQueuedBytes, "maxQueuedBytes");
     this.#maxQueuedCommands = positiveInteger(options.maxQueuedCommands, "maxQueuedCommands");
     this.#now = options.now ?? Date.now;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onDispatchError = options.onDispatchError;
     this.#pollIntervalMs = positiveInteger(options.pollIntervalMs ?? 500, "pollIntervalMs");
     this.#store = options.store;
   }
-
   start(): void {
     if (this.#controller)
-      throw new OpensteerError({ code: "conflict", message: "Coordinator already started" });
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Coordinator already started",
+      });
     this.#controller = new AbortController();
     this.wake();
   }
-
   wake(): void {
     if (!this.#controller || this.#controller.signal.aborted) return;
     this.#reads.wake();
   }
-
   async stop(): Promise<void> {
     if (this.#stopping) return this.#stopping;
     this.#stopping = this.#stop();
     return this.#stopping;
   }
-
   async #stop(): Promise<void> {
     this.#controller?.abort(new Error("Coordinator stopped"));
     if (this.#pollTimer) clearTimeout(this.#pollTimer);
@@ -157,7 +143,6 @@ export class ExecutionCoordinator {
     this.#controller = undefined;
     this.#stopping = undefined;
   }
-
   async #poll(): Promise<void> {
     const recordedBefore = this.#backoffRecords;
     const commands = await this.#store.listPendingCommands(this.#maxQueuedCommands);
@@ -181,13 +166,15 @@ export class ExecutionCoordinator {
       ) {
         break;
       }
-      this.#queue.push({ bytes, command });
+      this.#queue.push({
+        bytes,
+        command,
+      });
       this.#queuedIds.add(command.id);
       this.#queuedBytes += bytes;
     }
     this.#pump();
   }
-
   #pump(): void {
     const signal = this.#controller?.signal;
     if (!signal || signal.aborted) return;
@@ -276,7 +263,6 @@ export class ExecutionCoordinator {
   dispatchingRunIds(): readonly RunId[] {
     return [...this.#dispatchingRunIds];
   }
-
   #poolHasRoom(command: CommandRow): boolean {
     if (command.type === "trigger.execute") {
       return this.#activeTriggerPrograms < this.#maxConcurrentTriggerPrograms;
@@ -284,7 +270,6 @@ export class ExecutionCoordinator {
     if (command.type === "run.execute") return this.#activeRuns < this.#maxConcurrentRuns;
     return this.#activeControls < this.#maxConcurrentControls;
   }
-
   async #execute(command: CommandRow, signal: AbortSignal): Promise<boolean> {
     let claimed: Awaited<ReturnType<ExecutionCoordinatorStore["claimCommand"]>>;
     try {
@@ -295,14 +280,14 @@ export class ExecutionCoordinator {
       return false;
     }
     if (!claimed) return true;
-    for (const event of claimed.events) this.#onWorkspaceEvent?.(event);
+    for (const event of claimed.events) this.#onDeploymentEvent?.(event);
     if (claimed.terminalFailure) {
       for (const event of await this.#store.failCommand(
         command.id,
         claimed.terminalFailure,
         claimed.terminalFailureInput ?? "authority-cohort",
       )) {
-        this.#onWorkspaceEvent?.(event);
+        this.#onDeploymentEvent?.(event);
       }
       return true;
     }
@@ -321,14 +306,14 @@ export class ExecutionCoordinator {
         // Recorded once the retry has committed: a listing read before then
         // misses the command, and must not take it for one that left.
         this.#backOff(command.id);
-        for (const event of events) this.#onWorkspaceEvent?.(event);
+        for (const event of events) this.#onDeploymentEvent?.(event);
       } else if (dispatchError.disposition === "failed") {
         for (const event of await this.#store.failCommand(command.id, dispatchError.message)) {
-          this.#onWorkspaceEvent?.(event);
+          this.#onDeploymentEvent?.(event);
         }
       } else if (command.type === "run.steer") {
         for (const event of await this.#store.markSteerUnknown(command.id, dispatchError.message)) {
-          this.#onWorkspaceEvent?.(event);
+          this.#onDeploymentEvent?.(event);
         }
       }
     }
@@ -352,7 +337,6 @@ export class ExecutionCoordinator {
     entry.recorded = ++this.#backoffRecords;
     this.#dispatchBackoff.set(commandId, entry);
   }
-
   #schedulePoll(): void {
     const signal = this.#controller?.signal;
     if (!signal || signal.aborted || this.#pollTimer) return;
@@ -363,7 +347,6 @@ export class ExecutionCoordinator {
     this.#pollTimer.unref();
   }
 }
-
 function normalizeDispatchError(error: unknown): CommandDispatchError {
   if (error instanceof CommandDispatchError) return error;
   if (error instanceof OpensteerError && error.code !== "internal") {
@@ -375,7 +358,6 @@ function normalizeDispatchError(error: unknown): CommandDispatchError {
     cause: error,
   });
 }
-
 function positiveInteger(value: number, name: string): number {
   if (!Number.isInteger(value) || value < 1)
     throw new TypeError(`${name} must be a positive integer`);

@@ -1,1 +1,1 @@
-export * from "@opensteer/workspace-local";
+export * from "@opensteer/shared/files/native-fs-helper";

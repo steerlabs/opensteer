@@ -1,14 +1,14 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+  personalFixtureOwner,
+  createPersonalRunFixturePort,
+} from "./personal-run-fixture.test-support.js";
+
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -16,20 +16,13 @@ import {
   integrationProposalSummary,
 } from "@opensteer/integration-core";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
-import {
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
-  createId,
-} from "@opensteer/core";
-import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
+import { createId } from "@opensteer/core";
+
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { createDatabase, IntegrationPlatformStore, OpensteerStore } from "./index.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-
 integration.sequential("unified integration access Requests", () => {
   async function createTestFixture() {
     const clone = await cloneTestDatabase("host");
@@ -40,15 +33,24 @@ integration.sequential("unified integration access Requests", () => {
         connectionString: databaseUrl,
         maxConnections: 3,
       });
-      return { database, close: () => database.destroy() };
+      return {
+        database,
+        close: () => database.destroy(),
+      };
     });
     const platform = new IntegrationPlatformStore(database);
     const store = new OpensteerStore(database);
-
-    return Object.freeze({ database, platform, store, databaseUrl });
+    return Object.freeze({
+      database,
+      platform,
+      store,
+      databaseUrl,
+    });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
+  const it = baseIt.extend<{
+    storeFixture: StoreFixture;
+  }>({
     storeFixture: async ({ task }, use) => {
       const started = performance.now();
       const fixture = await createTestFixture();
@@ -56,17 +58,16 @@ integration.sequential("unified integration access Requests", () => {
       await use(fixture);
     },
   });
-
   it("binds an exact installation while the access Request stays pending, then continues only after fulfillment", async ({
     storeFixture,
   }) => {
-    const { store, database, platform } = storeFixture;
-    const fixture = await runningRunFixture(store, "preinstall-bind");
-    await database
-      .updateTable("users")
-      .set({ instanceRole: "administrator", updatedAt: new Date() })
-      .where("id", "=", fixture.userId)
-      .executeTakeFirstOrThrow();
+    const {
+      store,
+
+      platform,
+    } = storeFixture;
+    const fixture = await runningRunFixture(store, "preinstall-bind", storeFixture.databaseUrl);
+
     const contract = integrationContract("preinstall-calendar");
     const prepared = preparedFulfillment(contract);
     const opened = await platform.requests.createIntegrationAccessRequest({
@@ -79,9 +80,11 @@ integration.sequential("unified integration access Requests", () => {
       requestedConnectionId: null,
       requestedServerId: null,
     });
-
     expect(opened.request).toMatchObject({
-      payload: { installationId: null, manifest: expect.any(Object) },
+      payload: {
+        installationId: null,
+        manifest: expect.any(Object),
+      },
       status: "pending",
     });
     await expect(
@@ -90,14 +93,15 @@ integration.sequential("unified integration access Requests", () => {
         resolvedBy: fixture.userId,
       }),
     ).resolves.toEqual(prepared.approvalManifest);
-
     const installed = await platform.requests.installForIntegrationAccessRequest({
       preparedFulfillment: prepared,
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
     });
     expect(installed).toMatchObject({
-      installation: { id: prepared.material.installation.id },
+      installation: {
+        id: prepared.material.installation.id,
+      },
       request: {
         payload: {
           installationId: prepared.material.installation.id,
@@ -106,28 +110,43 @@ integration.sequential("unified integration access Requests", () => {
         },
         status: "pending",
       },
-      requestEvents: expect.arrayContaining([expect.objectContaining({ type: "request.updated" })]),
+      requestEvents: expect.arrayContaining([
+        expect.objectContaining({
+          type: "request.updated",
+        }),
+      ]),
     });
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
-
     const resolved = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: opened.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { connectionId: null, decision: "fulfilled" } },
+      response: {
+        kind: "external",
+        value: {
+          connectionId: null,
+          decision: "fulfilled",
+          access: "read-write",
+          alias: "Calendar",
+          isDefault: false,
+        },
+      },
     });
     expect(resolved.request.status).toBe("fulfilled");
     await fixture.complete();
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([
-      expect.objectContaining({ request: expect.objectContaining({ id: opened.request.id }) }),
+      expect.objectContaining({
+        request: expect.objectContaining({
+          id: opened.request.id,
+        }),
+      }),
     ]);
   });
-
   it("refuses prepared material whose digest differs from the reviewed manifest", async ({
     storeFixture,
   }) => {
     const { store, platform } = storeFixture;
-    const fixture = await runningRunFixture(store, "digest-conflict");
+    const fixture = await runningRunFixture(store, "digest-conflict", storeFixture.databaseUrl);
     const reviewed = preparedFulfillment(integrationContract("reviewed-calendar"));
     const changed = preparedFulfillment(integrationContract("changed-calendar"));
     const opened = await platform.requests.createIntegrationAccessRequest({
@@ -139,25 +158,27 @@ integration.sequential("unified integration access Requests", () => {
       reason: "Read the reviewed calendar",
       requestedServerId: null,
     });
-
     await expect(
       platform.requests.installForIntegrationAccessRequest({
         preparedFulfillment: changed,
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
-      payload: { installationId: null },
+      payload: {
+        installationId: null,
+      },
       status: "pending",
     });
   });
-
   it("declines a preinstall access Request without installing its manifest", async ({
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const fixture = await runningRunFixture(store, "preinstall-decline");
+    const fixture = await runningRunFixture(store, "preinstall-decline", storeFixture.databaseUrl);
     const prepared = preparedFulfillment(integrationContract("declined-calendar"));
     const opened = await platform.requests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
@@ -168,38 +189,41 @@ integration.sequential("unified integration access Requests", () => {
       reason: "Read the calendar",
       requestedServerId: null,
     });
-
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       }),
-    ).resolves.toMatchObject({ request: { status: "declined" } });
+    ).resolves.toMatchObject({
+      request: {
+        status: "declined",
+      },
+    });
     const count = await database
       .selectFrom("integrationInstallations")
       .select(sql<number>`count(*)::integer`.as("count"))
       .executeTakeFirstOrThrow();
     expect(count.count).toBe(0);
   });
-
-  it("allows a requester to bind the exact installation already installed by an administrator", async ({
+  it("allows a requester to bind the exact installation already installed by the personal owner", async ({
     storeFixture,
   }) => {
-    const { store, database, platform } = storeFixture;
-    const fixture = await runningRunFixture(store, "existing-exact");
-    await database
-      .updateTable("users")
-      .set({ instanceRole: "user", updatedAt: new Date() })
-      .where("id", "=", fixture.userId)
-      .executeTakeFirstOrThrow();
-    const administratorId = await store.createUser("Installation administrator");
-    await database
-      .updateTable("users")
-      .set({ instanceRole: "administrator", updatedAt: new Date() })
-      .where("id", "=", administratorId)
-      .executeTakeFirstOrThrow();
+    const {
+      store,
+
+      platform,
+    } = storeFixture;
+    const fixture = await runningRunFixture(store, "existing-exact", storeFixture.databaseUrl);
+
+    const administratorId = fixture.userId;
+
     const prepared = proposedFulfillment("shared-calendar");
     const opened = await platform.requests.createIntegrationAccessRequest({
       ...requestOrigin(fixture),
@@ -215,29 +239,37 @@ integration.sequential("unified integration access Requests", () => {
       actorUserId: administratorId,
       requestId: "administrator-installed-shared-calendar",
     });
-
     await expect(
       platform.requests.loadIntegrationAccessInstallManifest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).resolves.toEqual(prepared.approvalManifest);
     await expect(
       platform.requests.tryBindExistingIntegrationAccessInstallation({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
       }),
     ).resolves.toMatchObject({
-      installation: { id: prepared.material.installation.id },
-      request: { status: "pending" },
+      installation: {
+        id: prepared.material.installation.id,
+      },
+      request: {
+        status: "pending",
+      },
     });
+    await expect(
+      platform.requests.loadIntegrationAccessInstallManifest({
+        requestId: opened.request.id,
+        resolvedBy: fixture.userId,
+      }),
+    ).rejects.toMatchObject({ code: "conflict" });
   });
-
   it("rejects fulfillment through a different account than the one requested", async ({
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const fixture = await runningRunFixture(store, "exact-account");
+    const fixture = await runningRunFixture(store, "exact-account", storeFixture.databaseUrl);
     const prepared = preparedFulfillment(integrationContract("account-calendar"));
     const material = {
       ...prepared.material,
@@ -281,7 +313,6 @@ integration.sequential("unified integration access Requests", () => {
       requestedConnectionId,
       requestedServerId: material.servers[0]!.id,
     });
-
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
@@ -289,7 +320,13 @@ integration.sequential("unified integration access Requests", () => {
         resolvedBy: fixture.userId,
         response: {
           kind: "external",
-          value: { connectionId: otherConnectionId, decision: "fulfilled" },
+          value: {
+            connectionId: otherConnectionId,
+            decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
+          },
         },
       }),
     ).rejects.toMatchObject({
@@ -297,12 +334,11 @@ integration.sequential("unified integration access Requests", () => {
       message: "Integration access requires the requested account",
     });
   });
-
   it("allows decline after a pinned account and server become unavailable", async ({
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const fixture = await runningRunFixture(store, "unavailable-decline");
+    const fixture = await runningRunFixture(store, "unavailable-decline", storeFixture.databaseUrl);
     const prepared = preparedFulfillment(integrationContract("unavailable-calendar"));
     const server = {
       ...prepared.material.servers[0]!,
@@ -337,28 +373,45 @@ integration.sequential("unified integration access Requests", () => {
     });
     await database
       .updateTable("integrationConnections")
-      .set({ status: "revoked", updatedAt: new Date() })
+      .set({
+        status: "revoked",
+        updatedAt: new Date(),
+      })
       .where("id", "=", connectionId)
       .executeTakeFirstOrThrow();
     await database
       .updateTable("integrationServers")
-      .set({ status: "disabled", updatedAt: new Date() })
+      .set({
+        status: "disabled",
+        updatedAt: new Date(),
+      })
       .where("id", "=", server.id)
       .executeTakeFirstOrThrow();
-
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       }),
-    ).resolves.toMatchObject({ request: { status: "declined" } });
+    ).resolves.toMatchObject({
+      request: {
+        status: "declined",
+      },
+    });
   });
-
   it("settles one concurrent fulfillment and rejects the other", async ({ storeFixture }) => {
     const { store, platform } = storeFixture;
-    const fixture = await runningRunFixture(store, "concurrent-fulfillment");
+    const fixture = await runningRunFixture(
+      store,
+      "concurrent-fulfillment",
+      storeFixture.databaseUrl,
+    );
     const prepared = preparedFulfillment(integrationContract("concurrent-calendar"));
     await platform.install({
       ...prepared.material,
@@ -380,10 +433,15 @@ integration.sequential("unified integration access Requests", () => {
         resolvedBy: fixture.userId,
         response: {
           kind: "external" as const,
-          value: { connectionId: null, decision: "fulfilled" },
+          value: {
+            connectionId: null,
+            decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
+          },
         },
       });
-
     const results = await Promise.allSettled([resolve(), resolve()]);
     expect(results.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
     expect(results.filter(({ status }) => status === "rejected")).toHaveLength(1);
@@ -391,12 +449,11 @@ integration.sequential("unified integration access Requests", () => {
       status: "fulfilled",
     });
   });
-
   it("does not let broad read-write fulfillment cover read Requests for another server or account", async ({
     storeFixture,
   }) => {
     const { store, platform, database } = storeFixture;
-    const fixture = await runningRunFixture(store, "selector-coverage");
+    const fixture = await runningRunFixture(store, "selector-coverage", storeFixture.databaseUrl);
     const prepared = preparedFulfillment(integrationContract("selector-calendar"));
     const otherServer = {
       ...prepared.material.servers[0]!,
@@ -449,19 +506,26 @@ integration.sequential("unified integration access Requests", () => {
       callId: "selector-broad-write",
       requestedServerId: null,
     });
-
     await expect(
       platform.requests.resolveIntegrationAccessRequest({
         providerAuthorizations: {},
         requestId: broad.request.id,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { connectionId: null, decision: "fulfilled" } },
+        response: {
+          kind: "external",
+          value: {
+            connectionId: null,
+            decision: "fulfilled",
+            access: "read-write",
+            alias: "Calendar",
+            isDefault: false,
+          },
+        },
       }),
     ).rejects.toMatchObject({
       code: "conflict",
       message: "Choose the integration server before granting access",
     });
-
     const otherUserId = await store.createUser("Other selector");
     await expect(
       platform.requests.selectIntegrationAccessServer({
@@ -469,16 +533,24 @@ integration.sequential("unified integration access Requests", () => {
         requestedServerId: material.servers[0]!.id,
         resolvedBy: otherUserId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     const selected = await platform.requests.selectIntegrationAccessServer({
       requestId: broad.request.id,
       requestedServerId: material.servers[0]!.id,
       resolvedBy: fixture.userId,
     });
     expect(selected).toMatchObject({
-      events: [expect.objectContaining({ type: "request.updated" })],
+      events: [
+        expect.objectContaining({
+          type: "request.updated",
+        }),
+      ],
       request: {
-        payload: { requestedServerId: material.servers[0]!.id },
+        payload: {
+          requestedServerId: material.servers[0]!.id,
+        },
         status: "pending",
       },
     });
@@ -489,40 +561,64 @@ integration.sequential("unified integration access Requests", () => {
         requestedServerId: otherServer.id,
         resolvedBy: fixture.userId,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
       requestId: broad.request.id,
       resolvedBy: fixture.userId,
-      response: { kind: "external", value: { connectionId: null, decision: "fulfilled" } },
+      response: {
+        kind: "external",
+        value: {
+          connectionId: null,
+          decision: "fulfilled",
+          access: "read-write",
+          alias: "Calendar",
+          isDefault: false,
+        },
+      },
     });
-
     await expect(
       Promise.all([
         platform.requests.get(serverSpecific.request.id),
         platform.requests.get(accountSpecific.request.id),
       ]),
     ).resolves.toEqual([
-      expect.objectContaining({ status: "pending" }),
-      expect.objectContaining({ status: "pending" }),
+      expect.objectContaining({
+        status: "pending",
+      }),
+      expect.objectContaining({
+        status: "pending",
+      }),
     ]);
   });
 });
-
 function integrationContract(id: string) {
   const definition = IntegrationDefinitionSchema.parse({
     adapter: "graphql",
-    authMethods: [{ id: "none", kind: "none", label: "No authentication" }],
-    config: { endpoint: `https://${id}.example.test/graphql` },
+    authMethods: [
+      {
+        id: "none",
+        kind: "none",
+        label: "No authentication",
+      },
+    ],
+    config: {
+      endpoint: `https://${id}.example.test/graphql`,
+    },
     description: "Calendar records",
     id,
     name: id,
     provider: id,
   });
-  return { definition, manifest: { definition: integrationDefinitionSummary(definition) } };
+  return {
+    definition,
+    manifest: {
+      definition: integrationDefinitionSummary(definition),
+    },
+  };
 }
-
 function preparedFulfillment(contract: ReturnType<typeof integrationContract>) {
   const digest = integrationDefinitionDigest(contract.definition);
   return {
@@ -555,12 +651,17 @@ function preparedFulfillment(contract: ReturnType<typeof integrationContract>) {
       },
       servers: [
         {
-          connectionRequirement: { kind: "none" as const },
+          connectionRequirement: {
+            kind: "none" as const,
+          },
           id: createIntegrationId("server"),
           name: "default",
           status: "active" as const,
           statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
+          catalog: {
+            definitions: {},
+            tools: [],
+          },
           transport: {
             adapter: "graphql" as const,
             definitionId: contract.definition.id,
@@ -571,7 +672,6 @@ function preparedFulfillment(contract: ReturnType<typeof integrationContract>) {
     },
   };
 }
-
 function proposedFulfillment(id: string) {
   const contract = integrationContract(id);
   const digest = createHash("sha256").update(id).digest("base64url");
@@ -579,7 +679,9 @@ function proposedFulfillment(id: string) {
     authMethods: ["none" as const],
     digest,
     kind: "mcp" as const,
-    preview: { title: id },
+    preview: {
+      title: id,
+    },
     source: {
       origin: `https://${id}.example.test`,
       type: "url" as const,
@@ -587,7 +689,10 @@ function proposedFulfillment(id: string) {
     },
   };
   return {
-    approvalManifest: { kind: "proposal" as const, proposal },
+    approvalManifest: {
+      kind: "proposal" as const,
+      proposal,
+    },
     material: {
       adapterSnapshot: null,
       installation: {
@@ -611,12 +716,17 @@ function proposedFulfillment(id: string) {
       },
       servers: [
         {
-          connectionRequirement: { kind: "none" as const },
+          connectionRequirement: {
+            kind: "none" as const,
+          },
           id: createIntegrationId("server"),
           name: "default",
           status: "active" as const,
           statusDetail: null,
-          catalog: { definitions: {}, tools: [] },
+          catalog: {
+            definitions: {},
+            tools: [],
+          },
           transport: {
             headers: {},
             type: "streamable-http" as const,
@@ -627,17 +737,13 @@ function proposedFulfillment(id: string) {
     },
   };
 }
-
 function requestOrigin(fixture: Awaited<ReturnType<typeof runningRunFixture>>) {
   return {
     originatingRunId: fixture.runId,
     originatingThreadId: fixture.threadId,
-    originatingWorkspaceId: fixture.workspaceId,
     requestedBy: fixture.userId,
-    targetWorkspaceId: fixture.workspaceId,
   };
 }
-
 async function insertConnection(
   database: ReturnType<typeof createDatabase>,
   ownerUserId: ReturnType<typeof createId<"user">>,
@@ -676,158 +782,40 @@ async function insertConnection(
     .executeTakeFirstOrThrow();
   return id;
 }
-
-async function runningRunFixture(store: OpensteerStore, suffix: string) {
-  const userId = await store.createUser(`Owner ${suffix}`);
-  await store.ensureDeployment({
-    canonicalOrigin: "https://test-host.invalid",
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-    hostInstanceId: createId("hostInstance"),
+async function runningRunFixture(store: OpensteerStore, suffix: string, databaseUrl: string) {
+  const owner = await personalFixtureOwner(store.database, databaseUrl);
+  const personalRuns = createPersonalRunFixturePort(store);
+  const task = await personalRuns.createTask({
+    ownerId: owner.userId,
+    folder: owner.agentHome,
+    suffix,
   });
-  const runnerId = createId("runner");
-  const environmentId = createId("environment");
-  const pair = generateKeyPairSync("ed25519");
-  const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-  const enrollmentTokenHash = `sha256:${createHash("sha256")
-    .update(`test-enrollment-${suffix}`, "utf8")
-    .digest("base64url")}`;
-  await store.createRunnerEnrollment({
-    allowedModules: ["agents"],
-    createdBy: userId,
-    expiresAt: new Date(Date.now() + 60_000),
-    id: `ren_${randomUUID()}`,
-    idempotencyKey: `test-runner-${suffix}`,
-    mainEnrollmentPurpose: "initial",
-    name: `Test runner ${suffix}`,
-    requestFingerprint: `sha256:test-runner-${suffix}`,
-    runnerKind: "main",
-    tokenHash: enrollmentTokenHash,
-  });
-  const descriptor: RunnerDescriptor = {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: {
-      agents: {
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        localStorage: null,
-        maxConcurrentRuns: 1,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
-      },
-    },
-    name: `Runner ${suffix}`,
-    runnerId,
-    runnerKind: "main",
-    runtimeVersion: "test",
-  };
-  await store.enrollRunnerConnection({
-    descriptor,
-    enrollmentTokenHash,
-    publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-    publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-  });
-  const workspace = await createTestWorkspace(store, {
-    backing: {
-      generation: 1,
-      kind: "local-directory",
-      bindingId: createStorageFixtureId("workspaceBinding"),
-      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-        "env_00000000-0000-4000-8000-000000000001",
-      ),
-      storageAuthorityId: createStorageFixtureId("storageAuthority"),
-    },
-
-    createdBy: userId,
-    idempotencyKey: `workspace-${suffix}`,
-    name: `Workspace ${suffix}`,
-    status: "ready",
-  });
-  const harness = await store.createHarnessInstance({
-    config: { model: "test" },
-    driverKind: HarnessIdSchema.parse("native"),
-    environmentId,
-    name: "Native",
-    sourceId: "native",
-    stateKind: "isolated",
-  });
-  const { thread } = await store.createThread({
-    createdBy: userId,
-    environmentId,
-    harnessInstanceId: harness.id,
-    idempotencyKey: `thread-${suffix}`,
-    modelSelection: ModelSelectionSchema.parse({
-      modelId: "gpt-5.6-sol",
-      options: { effort: "low" },
-      providerId: "openai",
-    }),
-    title: `Thread ${suffix}`,
-    workspaceId: workspace.id,
-  });
-  const admitted = await store.enqueueThreadInput({
-    content: [{ text: "Start", type: "text" }],
-    idempotencyKey: `${suffix}-initial-turn`,
-    policy: "queue",
-    requestedBy: userId,
-    source: { kind: "human" },
-    threadId: thread.id,
-  });
-  if (!admitted.command || !admitted.run) throw new Error("Expected queued Run");
-  await store.claimCommand(admitted.command.id, `${suffix}-dispatcher`);
-  const runnerBootId = `boot-${suffix}`;
-  const binding = await store.acquireExecutionBinding({
-    bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-    continuationIdentity: {
-      continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-      driverKind: HarnessIdSchema.parse("native"),
-    },
-    harnessInstanceId: harness.id,
-    leaseTokenHash: `${suffix}-lease`,
-    membershipGeneration: 1,
-    runnerBootId,
-    runnerId,
-    runId: admitted.run.id,
-    threadId: thread.id,
-  });
-  const started: PendingAgentEvent = {
-    bindingGeneration: binding.bindingGeneration,
-    data: { status: "running" },
-    emittedAt: new Date().toISOString(),
-    environmentId,
-    ordinal: 0,
-    runId: admitted.run.id,
-    threadId: thread.id,
-    type: "run.started",
-    workspaceId: workspace.id,
-  };
-  await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
+  const started = await personalRuns.startTask(task.threadId, "Start");
   return {
-    runId: admitted.run.id,
-    threadId: thread.id,
-    userId,
-    workspaceId: workspace.id,
-    complete: () =>
-      store.commitRunnerEvent({
-        environmentId,
-        runnerBootId,
-        runnerId,
-        event: { ...started, ordinal: 1, type: "run.completed", data: { status: "completed" } },
-      }),
+    runId: started.runId,
+    threadId: task.threadId,
+    userId: owner.userId,
+    complete: async () => {
+      const row = await store.database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", started.runId)
+        .executeTakeFirstOrThrow();
+      return store.commitRunnerEvent({
+        environmentId: owner.environmentId,
+        runnerBootId: started.runnerBootId,
+        runnerId: owner.runnerId,
+        event: {
+          type: "run.completed",
+          environmentId: owner.environmentId,
+          runId: started.runId,
+          threadId: task.threadId,
+          bindingGeneration: started.bindingGeneration,
+          ordinal: row.nextRunnerOrdinal,
+          emittedAt: new Date().toISOString(),
+          data: { status: "completed" },
+        },
+      });
+    },
   };
 }

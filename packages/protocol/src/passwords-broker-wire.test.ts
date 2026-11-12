@@ -5,15 +5,12 @@ import {
   PasswordsBrokerAccountSchema,
   PasswordsBrokerAccountsSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV6ParamsSchema,
   PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV6ParamsSchema,
   passwordsBrokerMaxFrameBytes,
   PasswordsBrokerMethodSchema,
   PasswordsBrokerReplySchema,
   PasswordsBrokerStatusChangedEventSchema,
   passwordsBrokerProtocolVersion,
-  passwordsBrokerSupportedProtocolVersions,
   passwordsBrokerRequests,
   passwordsBrokerResults,
 } from "./passwords-broker.js";
@@ -32,8 +29,6 @@ const fixturePath = path.resolve(
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as {
   readonly error: unknown;
   readonly event: unknown;
-  readonly eventV8: unknown;
-  readonly eventV9: unknown;
   readonly rejected: readonly { readonly method: string; readonly params: unknown }[];
   readonly requests: Readonly<Record<string, readonly unknown[]>>;
   readonly results: Readonly<Record<string, readonly unknown[]>>;
@@ -77,7 +72,10 @@ describe("Passwords broker wire fixture", () => {
         pageOrigin: "https://github.com",
       }).success,
     ).toBe(false);
-    const [release] = fixture.requests["signin.release"] ?? [];
+    const release = (fixture.requests["signin.release"] ?? []).find(
+      (value) => Object(value).kind === "browser",
+    );
+    expect(release).toBeDefined();
     for (const origin of ["https://github.com", "https://gist.github.com:8443"]) {
       expect(
         PasswordsBrokerSignInReleaseParamsSchema.safeParse({ ...Object(release), origin }).success,
@@ -119,20 +117,20 @@ describe("Passwords broker wire fixture", () => {
     const answered = (fixture.results.hello ?? []).map(
       (hello) => passwordsBrokerResults.hello.parse(hello).protocolVersion,
     );
-    expect(new Set(asked)).toEqual(new Set(passwordsBrokerSupportedProtocolVersions));
-    expect(new Set(answered)).toEqual(new Set(passwordsBrokerSupportedProtocolVersions));
+    expect(new Set(asked)).toEqual(new Set([passwordsBrokerProtocolVersion]));
+    expect(new Set(answered)).toEqual(new Set([passwordsBrokerProtocolVersion]));
   });
 
-  it("asks protocol-5 consent for a Workspace, never for a page or at version 4", () => {
+  it("asks for personal consent without a page binding or an older permission version", () => {
     const modern = (fixture.requests["signin.request"] ?? []).filter(
-      (params) => PasswordsBrokerSignInRequestV6ParamsSchema.safeParse(params).success,
+      (params) => PasswordsBrokerSignInRequestParamsSchema.safeParse(params).success,
     );
     expect(modern.length).toBeGreaterThan(0);
     for (const params of modern) {
       expect(params).not.toHaveProperty("sessionId");
       expect(params).not.toHaveProperty("runtimeId");
       expect(
-        PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({
+        PasswordsBrokerSignInRequestParamsSchema.safeParse({
           ...Object(params),
           permissionVersion: 4,
         }).success,
@@ -142,7 +140,7 @@ describe("Passwords broker wire fixture", () => {
 
   it("releases to an app only when asked by kind, and to a browser only with its origin", () => {
     const releases = (fixture.requests["signin.release"] ?? []).flatMap((params) => {
-      const parsed = PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse(params);
+      const parsed = PasswordsBrokerSignInReleaseParamsSchema.safeParse(params);
       return parsed.success ? [parsed.data] : [];
     });
     const app = releases.find((release) => release.kind === "app");
@@ -150,11 +148,11 @@ describe("Passwords broker wire fixture", () => {
     expect(app).toBeDefined();
     expect(browser).toBeDefined();
     expect(
-      PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...app, origin: "https://github.com" })
+      PasswordsBrokerSignInReleaseParamsSchema.safeParse({ ...app, origin: "https://github.com" })
         .success,
     ).toBe(false);
     const { origin: _origin, ...browserWithoutOrigin } = browser ?? {};
-    expect(PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse(browserWithoutOrigin).success).toBe(
+    expect(PasswordsBrokerSignInReleaseParamsSchema.safeParse(browserWithoutOrigin).success).toBe(
       false,
     );
   });
@@ -170,16 +168,10 @@ describe("Passwords broker wire fixture", () => {
     expect(PasswordsBrokerReplySchema.safeParse(fixture.error).success).toBe(true);
     expect(PasswordsBrokerStatusChangedEventSchema.safeParse(fixture.event).success).toBe(true);
     expect(PasswordsBrokerReplySchema.safeParse(fixture.event).success).toBe(true);
-    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.eventV8).params.personFill).toBe(
+    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.event).params.personFill).toBe(
       "on",
     );
-    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.event).params).not.toHaveProperty(
-      "personFill",
-    );
-    expect(
-      PasswordsBrokerStatusChangedEventSchema.parse(fixture.eventV8).params,
-    ).not.toHaveProperty("personSave");
-    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.eventV9).params.personSave).toBe(
+    expect(PasswordsBrokerStatusChangedEventSchema.parse(fixture.event).params.personSave).toBe(
       "on",
     );
   });

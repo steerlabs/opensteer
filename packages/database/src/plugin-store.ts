@@ -1,3 +1,5 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -10,91 +12,58 @@ import {
   OpensteerError,
   type UserId,
   type RunnerId,
-  type WorkspaceId,
   type ThreadId,
 } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-
-export function canRemovePlugin(
-  plugin: { scope: string; installedBy: UserId | null },
-  actor: { userId: UserId; isAdministrator: boolean },
-  isActiveWorkspaceMember: boolean,
-): boolean {
-  return (
-    actor.isAdministrator ||
-    (plugin.scope === "workspace" && plugin.installedBy === actor.userId && isActiveWorkspaceMember)
-  );
-}
 
 export class PluginStore {
   private readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
   }
-
-  async assertCanRemove(pluginId: string, actor: { userId: UserId; isAdministrator: boolean }) {
+  async assertCanRemove(pluginId: string, actor: { readonly userId: UserId }) {
+    await requirePersonalOwner(this.database, actor.userId);
     const plugin = await this.database
       .selectFrom("plugins")
-      .select(["scope", "installedBy"])
-      .select((eb) =>
-        eb
-          .exists(
-            eb
-              .selectFrom("workspaceMemberships")
-              .select("id")
-              .whereRef("workspaceMemberships.workspaceId", "=", "plugins.workspaceId")
-              .where("userId", "=", actor.userId)
-              .where("state", "=", "active"),
-          )
-          .as("isActiveWorkspaceMember"),
-      )
+      .select("id")
       .where("id", "=", pluginId)
       .executeTakeFirst();
-    if (!plugin || !canRemovePlugin(plugin, actor, Boolean(plugin.isActiveWorkspaceMember)))
-      throw new OpensteerError({ code: "forbidden", message: "Plugin removal is unavailable" });
+    if (!plugin) throw new OpensteerError({ code: "not_found", message: "Plugin not found" });
   }
 
   async setupThread(threadId: ThreadId): Promise<ThreadId | null> {
-    const result = await sql<{ threadId: ThreadId }>`
+    const result = await sql<{
+      threadId: ThreadId;
+    }>`
       with recursive lineage as (
-        select t.id, t.parent_thread_id, t.workspace_id, t.listed, 0 as depth, array[t.id::text] as path
+        select t.id, t.parent_thread_id, t.listed, 0 as depth, array[t.id::text] as path
         from threads t where t.id = ${threadId}
         union all
-        select t.id, t.parent_thread_id, t.workspace_id, t.listed, l.depth + 1, l.path || t.id::text
+        select t.id, t.parent_thread_id, t.listed, l.depth + 1, l.path || t.id::text
         from lineage l join threads t on t.id = l.parent_thread_id
         where l.depth < 64 and not t.id::text = any(l.path)
       )
-      select l.id as thread_id from lineage l join workspaces w on w.id = l.workspace_id
-      where l.listed or w.home_thread_id = l.id order by l.depth limit 1
+      select l.id as thread_id from lineage l
+      where l.listed or l.parent_thread_id is null order by l.depth limit 1
     `.execute(this.database);
     return result.rows[0]?.threadId ?? null;
   }
-
   async recordSetupThread(pluginId: string, setupThreadId: ThreadId | null) {
     await this.database
       .updateTable("plugins")
-      .set({ setupThreadId })
+      .set({
+        setupThreadId,
+      })
       .where("id", "=", pluginId)
       .execute();
   }
-
-  async list(workspaceId?: WorkspaceId) {
-    let query = this.database.selectFrom("plugins").selectAll();
-    if (workspaceId)
-      query = query.where((eb) =>
-        eb.or([eb("scope", "=", "deployment"), eb("workspaceId", "=", workspaceId)]),
-      );
-    const plugins = await query.execute();
-    if (plugins.length === 0) return [];
-    const ids = plugins.map(({ id }) => id);
-    const [versions, activations, servers] = await Promise.all([
+  async list() {
+    const plugins = await this.database.selectFrom("plugins").selectAll().execute();
+    if (!plugins.length) return [];
+    const ids = plugins.map((row) => row.id);
+    const [versions, servers] = await Promise.all([
       this.database.selectFrom("pluginVersions").selectAll().where("pluginId", "in", ids).execute(),
-      this.database
-        .selectFrom("pluginActivations")
-        .selectAll()
-        .where("pluginId", "in", ids)
-        .execute(),
       this.database
         .selectFrom("integrationServers")
         .innerJoin(
@@ -107,101 +76,37 @@ export class PluginStore {
         .where("integrationInstallations.pluginId", "in", ids)
         .execute(),
     ]);
-    const byPlugin = <T extends { pluginId: string | null }>(rows: T[]) => {
-      const groups = new Map<string, T[]>();
-      for (const row of rows) {
-        if (row.pluginId === null) continue;
-        const group = groups.get(row.pluginId) ?? [];
-        group.push(row);
-        groups.set(row.pluginId, group);
-      }
-      return groups;
-    };
-    const versionGroups = byPlugin(versions);
-    const activationGroups = byPlugin(activations);
-    const serverGroups = byPlugin(servers);
     return plugins.map((plugin) => ({
       ...plugin,
-      versions: versionGroups.get(plugin.id) ?? [],
-      activations: activationGroups.get(plugin.id) ?? [],
-      servers: (serverGroups.get(plugin.id) ?? []).map(
-        ({ pluginId: _pluginId, ...server }) => server,
-      ),
+      versions: versions.filter((row) => row.pluginId === plugin.id),
+      servers: servers
+        .filter((row) => row.pluginId === plugin.id)
+        .map(({ pluginId: _pluginId, ...server }) => server),
     }));
   }
 
-  async listForUser(actorUserId: UserId, workspaceId?: WorkspaceId) {
-    const actor = await this.database
-      .selectFrom("users")
-      .select("instanceRole")
-      .where("id", "=", actorUserId)
-      .executeTakeFirst();
-    if (actor?.instanceRole === "administrator") return this.list(workspaceId);
-    const member = workspaceId
-      ? await this.database
-          .selectFrom("workspaceMemberships")
-          .select("state")
-          .where("workspaceId", "=", workspaceId)
-          .where("userId", "=", actorUserId)
-          .executeTakeFirst()
-      : null;
-    if (member?.state !== "active")
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Active Workspace membership is required",
-      });
-    return (await this.list(workspaceId)).map((plugin) => ({
-      id: plugin.id,
-      name: plugin.name,
-      scope: plugin.scope,
-      workspaceId: plugin.workspaceId,
-      currentVersionId: plugin.currentVersionId,
-      updatedAt: plugin.updatedAt,
-      versions: plugin.versions.map((version) => ({
-        id: version.id,
-        digest: version.digest,
-        manifest: {
-          description: version.manifest.description,
-          version: version.manifest.version,
-          skills: Array.isArray(version.manifest.skills)
-            ? version.manifest.skills.map(() => ({}))
-            : [],
-        },
-        specialistManifest: version.specialistManifest ? {} : null,
-      })),
-      activations: plugin.activations
-        .filter((a) => a.workspaceId === workspaceId)
-        .map((a) => ({ workspaceId: a.workspaceId })),
-      servers: plugin.servers.map((server) => ({ id: server.id })),
-    }));
+  async listForUser(actorUserId: UserId) {
+    await requirePersonalOwner(this.database, actorUserId);
+    return this.list();
   }
 
-  async current(workspaceId: WorkspaceId, ownerUserId?: UserId) {
-    const rows = await this.database
-      .selectFrom("pluginActivations")
-      .innerJoin("plugins", "plugins.id", "pluginActivations.pluginId")
-      .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
-      .select(["plugins.id", "plugins.name", "pluginVersions.digest", "pluginVersions.manifest"])
-      .where("pluginActivations.workspaceId", "=", workspaceId)
-      .execute();
-    if (!ownerUserId) return rows;
-    const [settings, workspace] = await Promise.all([
+  async current(ownerUserId: UserId) {
+    await requirePersonalOwner(this.database, ownerUserId);
+    const [rows, settings] = await Promise.all([
+      this.database
+        .selectFrom("plugins")
+        .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+        .select(["plugins.id", "plugins.name", "pluginVersions.digest", "pluginVersions.manifest"])
+        .execute(),
       this.database
         .selectFrom("pluginOwnerSettings")
         .selectAll()
         .where("ownerUserId", "=", ownerUserId)
         .execute(),
-      this.database
-        .selectFrom("workspaces")
-        .select("kind")
-        .where("id", "=", workspaceId)
-        .executeTakeFirstOrThrow(),
     ]);
     const denied = new Set(
-      settings.flatMap((s) =>
-        s.target.kind === "plugin" && (!s.enabled || (workspace.kind === "main" && !s.mainIncluded))
-          ? [s.target.pluginId]
-          : [],
+      settings.flatMap((setting) =>
+        setting.target.kind === "plugin" && !setting.enabled ? [setting.target.pluginId] : [],
       ),
     );
     return rows.filter((row) => !denied.has(row.id));
@@ -211,7 +116,6 @@ export class PluginStore {
     input: {
       id: string;
       name: string;
-      workspaceId?: WorkspaceId;
       source: Readonly<Record<string, unknown>>;
       actorUserId: UserId;
       specialistManifest?: SpecialistManifest | null;
@@ -229,13 +133,13 @@ export class PluginStore {
     const versionId = randomUUID();
     const now = new Date();
     const persist = async (tx: Transaction<DatabaseSchema>) => {
+      await requirePersonalOwner(tx, input.actorUserId);
       await tx
         .insertInto("plugins")
         .values({
           id: input.id,
           name: input.name,
-          scope: input.workspaceId ? "workspace" : "deployment",
-          workspaceId: input.workspaceId ?? null,
+          scope: "deployment",
           source: jsonValue(input.source),
           installedBy: input.actorUserId,
           setupThreadId: input.setupThreadId ?? null,
@@ -259,19 +163,17 @@ export class PluginStore {
         .execute();
       await tx
         .updateTable("plugins")
-        .set({ currentVersionId: versionId })
+        .set({
+          currentVersionId: versionId,
+        })
         .where("id", "=", input.id)
         .execute();
-      if (input.workspaceId)
-        await this.activateIn(tx, input.id, input.workspaceId, input.actorUserId);
     };
-    return transaction ? persist(transaction) : this.database.transaction().execute(persist);
+    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
   }
-
   async update(
     input: {
       pluginId: string;
-      workspaceId?: WorkspaceId;
       source?: Readonly<Record<string, unknown>>;
       specialistManifest?: SpecialistManifest | null;
       digest: string;
@@ -287,14 +189,6 @@ export class PluginStore {
         .where("id", "=", input.pluginId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
-      if (
-        (plugin.scope === "workspace" && plugin.workspaceId !== input.workspaceId) ||
-        (input.workspaceId && plugin.scope !== "workspace")
-      )
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only this Workspace's agent-made plugins can be replaced here",
-        });
       if (input.manifest.name !== plugin.name)
         throw new OpensteerError({
           code: "bad_request",
@@ -318,14 +212,22 @@ export class PluginStore {
         .updateTable("plugins")
         .set({
           currentVersionId: id,
-          ...(input.setupThreadId !== undefined ? { setupThreadId: input.setupThreadId } : {}),
+          ...(input.setupThreadId !== undefined
+            ? {
+                setupThreadId: input.setupThreadId,
+              }
+            : {}),
           updatedAt: new Date(),
-          ...(input.source ? { source: jsonValue(input.source) } : {}),
+          ...(input.source
+            ? {
+                source: jsonValue(input.source),
+              }
+            : {}),
         })
         .where("id", "=", plugin.id)
         .execute();
     };
-    return transaction ? persist(transaction) : this.database.transaction().execute(persist);
+    return transaction ? persist(transaction) : withPersonalTransaction(this.database, persist);
   }
 
   /** Moves the plugin's specialist registrations to its current version; installs call it. */
@@ -356,100 +258,12 @@ export class PluginStore {
     for (const row of registrations)
       await tx
         .updateTable("specialists")
-        .set({ pluginVersionId: current.id, updatedAt: new Date() })
+        .set({
+          pluginVersionId: current.id,
+          updatedAt: new Date(),
+        })
         .where("id", "=", row.id)
         .execute();
-  }
-
-  async activateIn(
-    tx: Kysely<DatabaseSchema>,
-    pluginId: string,
-    workspaceId: WorkspaceId,
-    actorUserId: UserId,
-  ) {
-    // Serializing on the Workspace also covers two different plugins with the same name.
-    await tx
-      .selectFrom("workspaces")
-      .select("id")
-      .where("id", "=", workspaceId)
-      .forNoKeyUpdate()
-      .executeTakeFirstOrThrow();
-    const plugin = await tx
-      .selectFrom("plugins")
-      .selectAll()
-      .where("id", "=", pluginId)
-      .executeTakeFirstOrThrow();
-    if (plugin.scope === "workspace" && plugin.workspaceId !== workspaceId)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "This plugin belongs to another Workspace",
-      });
-    const clash = await tx
-      .selectFrom("pluginActivations")
-      .innerJoin("plugins", "plugins.id", "pluginActivations.pluginId")
-      .select("plugins.id")
-      .where("pluginActivations.workspaceId", "=", workspaceId)
-      .where("plugins.name", "=", plugin.name)
-      .where("plugins.id", "!=", pluginId)
-      .executeTakeFirst();
-    if (clash)
-      throw new OpensteerError({
-        code: "conflict",
-        message: "A plugin with that name is already active here",
-      });
-    await tx
-      .insertInto("pluginActivations")
-      .values({ workspaceId, pluginId, createdBy: actorUserId, createdAt: new Date() })
-      .onConflict((c) => c.columns(["workspaceId", "pluginId"]).doNothing())
-      .execute();
-  }
-
-  async setActivation(input: {
-    administration?: AdministrationCommandIdentity | undefined;
-    pluginId: string;
-    workspaceId: WorkspaceId;
-    actorUserId: UserId;
-    active: boolean;
-  }) {
-    await this.database.transaction().execute(async (tx) =>
-      administrationCommand(tx, input.administration, async () => {
-        const workspace = await tx
-          .selectFrom("workspaces")
-          .selectAll()
-          .where("id", "=", input.workspaceId)
-          .executeTakeFirstOrThrow();
-        const member = await tx
-          .selectFrom("workspaceMemberships")
-          .select(["role", "state"])
-          .where("workspaceId", "=", input.workspaceId)
-          .where("userId", "=", input.actorUserId)
-          .executeTakeFirst();
-        const actor = await tx
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.actorUserId)
-          .executeTakeFirst();
-        if (
-          workspace.createdBy !== input.actorUserId &&
-          (workspace.kind === "main" ||
-            !member ||
-            member.state !== "active" ||
-            (member.role !== "owner" && actor?.instanceRole !== "administrator"))
-        )
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only the Workspace owner or administrator can change plugins",
-          });
-        if (input.active)
-          await this.activateIn(tx, input.pluginId, input.workspaceId, input.actorUserId);
-        else
-          await tx
-            .deleteFrom("pluginActivations")
-            .where("workspaceId", "=", input.workspaceId)
-            .where("pluginId", "=", input.pluginId)
-            .execute();
-      }),
-    );
   }
 
   async pendingDataRemovals(runnerId?: RunnerId) {
@@ -462,7 +276,6 @@ export class PluginStore {
     if (runnerId) query = query.where("runnerPluginDataRemovals.runnerId", "=", runnerId);
     return query.execute();
   }
-
   async confirmDataRemoval(runnerId: RunnerId, pluginId: string) {
     await this.database
       .deleteFrom("runnerPluginDataRemovals")
@@ -470,9 +283,8 @@ export class PluginStore {
       .where("pluginId", "=", pluginId)
       .execute();
   }
-
   async remove(pluginId: string, administration?: AdministrationCommandIdentity | undefined) {
-    await this.database.transaction().execute(async (tx) =>
+    await withPersonalTransaction(this.database, async (tx) =>
       administrationCommand(tx, administration, async () => {
         const registration = await tx
           .selectFrom("specialists")
@@ -486,7 +298,9 @@ export class PluginStore {
           });
         await tx
           .updateTable("plugins")
-          .set({ currentVersionId: null })
+          .set({
+            currentVersionId: null,
+          })
           .where("id", "=", pluginId)
           .execute();
         await tx.deleteFrom("plugins").where("id", "=", pluginId).execute();

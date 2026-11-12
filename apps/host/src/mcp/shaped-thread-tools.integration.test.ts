@@ -1,3 +1,5 @@
+import { personalBrowserRepository } from "@opensteer/database/test-support/store";
+import { personalTestFolders } from "./personal-folder.test-support.js";
 import { randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { expect, vi } from "vitest";
@@ -30,11 +32,12 @@ import {
 } from "@opensteer/agent-tools/tools";
 import { ThreadReadOutputSchema } from "@opensteer/agent-tools/outputs";
 import {
-  appendHostWorkspaceEvent,
+  appendHostDeploymentEvent,
+  needsYouPage,
   dispatchNodeStop,
   withDatabaseTransaction,
   BrowserTabGroupStore,
-  WorkspaceTabStore,
+  PersonalTabStore,
   assignmentSummaryInTransaction,
   withDatabaseOperationSignal,
   AgentConnectionStore,
@@ -48,7 +51,6 @@ import {
   testModelSelection,
   pendingEvent,
   liveRequest,
-  enrollTestRunner,
   testContinuationIdentity,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
@@ -92,14 +94,15 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       maxQueuedCommands: 100,
     }),
     onExecutionQueued: () => {},
-    onWorkspaceEvent: (event) => realtime.publish(event),
+    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const browser = new BrowserService({
-    repository: store,
+    deploymentId: f.deploymentId,
+    repository: personalBrowserRepository(store),
     signer: {} as never,
     hostOrigin: new URL("https://host.test"),
     onSessionsChanged: () => {},
-    onWorkspaceEvent: (event) => realtime.publish(event),
+    onDeploymentEvent: (event) => realtime.publish(event),
   });
   const computerUse = {
     sessionsForRunner: vi.fn<
@@ -114,6 +117,7 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
   });
   const threads = new ThreadService({
     store,
+    folders: personalTestFolders(store, f),
     commands,
     browser,
     runners: {
@@ -126,6 +130,8 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     placeContext: {} as never,
   });
   const product = new ProductToolHandlers({
+    folders: personalTestFolders(store, f),
+    deploymentId: createId("deployment"),
     store,
     commands,
     browser,
@@ -142,20 +148,15 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
     isEnvironmentConnected: () => true,
     canRunHarness: () => true,
     harnessAccessModes: () => ThreadAccessModeSchema.options,
-    environmentWorkspaceBackings: () => ["local-directory"],
-    defaultWorkspaceBacking: "local-directory",
-    onWorkspaceEvent: () => {},
+    onEvent: () => {},
     browserSources: {} as never,
     machineFullDiskAccess: {} as never,
-    workspaceMounts: {} as never,
-    workspaces: {} as never,
   });
   const caller: RunCaller = {
     kind: "run",
     key: `run:${f.run.id}`,
     userId: f.userId,
     accessMode: f.thread.accessMode,
-    reach: { kind: "user" },
     thread: f.thread,
     claims: {
       aud: "opensteer-run-tools",
@@ -165,11 +166,9 @@ function setup(storeFixture: StoreFixture, f: Fixture) {
       jti: randomUUID(),
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
       environmentId: f.environmentId,
       requestedBy: f.userId,
       bindingGeneration: f.bindingGeneration,
-      membershipGeneration: 1,
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
     },
@@ -217,10 +216,9 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
         .selectAll()
         .where("id", "=", assignmentId)
         .executeTakeFirstOrThrow();
-      return appendHostWorkspaceEvent(tx, {
+      return appendHostDeploymentEvent(tx, {
         type: "assignment.updated",
         threadId: task.threadId,
-        workspaceId: task.workspaceId,
         environmentId: task.environmentId,
         runId: null,
         data: { assignment: await assignmentSummaryInTransaction(tx, row) },
@@ -253,7 +251,6 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: f.harnessInstance.id,
       leaseTokenHash: `${suffix}-child`,
-      membershipGeneration: 1,
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
       runId: task.runId!,
@@ -271,7 +268,6 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
         runId: task.runId!,
         threadId: task.threadId,
         type: "run.started",
-        workspaceId: f.workspace.id,
       }),
     });
     return binding;
@@ -309,23 +305,6 @@ async function waitingTask(storeFixture: StoreFixture, suffix: string) {
     checkLive,
   };
 }
-async function share(storeFixture: StoreFixture, f: Fixture) {
-  const reader = await storeFixture.store.createUser("Reader");
-  await storeFixture.database
-    .insertInto("workspaceMemberships")
-    .values({
-      workspaceId: f.workspace.id,
-      userId: reader,
-      id: createId("workspaceMembership"),
-      role: "collaborator",
-      state: "active",
-      generation: 1,
-      joinedAt: new Date(),
-      invitedBy: f.userId,
-    })
-    .execute();
-  return reader;
-}
 
 async function questionTask(
   storeFixture: StoreFixture,
@@ -341,7 +320,6 @@ async function questionTask(
     requestedBy: s.f.userId,
     runId: s.task.runId!,
     threadId: s.task.threadId,
-    workspaceId: s.task.workspaceId,
     presentation: {
       kind: "form",
       title: "Which format?",
@@ -356,7 +334,6 @@ async function questionTask(
     runnerId: s.f.runnerId,
     event: pendingEvent({
       environmentId: s.f.environmentId,
-      workspaceId: s.task.workspaceId,
       runId: s.task.runId!,
       threadId: s.task.threadId,
       bindingGeneration: binding.bindingGeneration,
@@ -434,7 +411,7 @@ describeStore("agents answering task questions", (it) => {
       idempotencyKey: randomUUID(),
       modelSelection: testModelSelection,
       title: "Independent reviewer",
-      workspaceId: s.f.workspace.id,
+      folder: s.f.folder,
     });
     const turn = await storeFixture.enqueueHumanTrigger({
       content: [{ type: "text", text: "Review the export" }],
@@ -448,7 +425,6 @@ describeStore("agents answering task questions", (it) => {
       continuationIdentity: testContinuationIdentity,
       harnessInstanceId: s.f.harnessInstance.id,
       leaseTokenHash: randomUUID(),
-      membershipGeneration: 1,
       runnerBootId: s.f.runnerBootId,
       runnerId: s.f.runnerId,
       runId: turn.run.id,
@@ -460,7 +436,6 @@ describeStore("agents answering task questions", (it) => {
       runnerId: s.f.runnerId,
       event: pendingEvent({
         environmentId: s.f.environmentId,
-        workspaceId: s.f.workspace.id,
         threadId: thread.id,
         runId: turn.run.id,
         bindingGeneration: binding.bindingGeneration,
@@ -512,9 +487,7 @@ describeStore("agents answering task questions", (it) => {
         title: s.f.thread.title,
       },
     });
-    expect((await storeFixture.store.workspaceSnapshot(s.f.workspace.id)).pendingRequests).toEqual(
-      [],
-    );
+    expect((await needsYouPage(storeFixture.database, { userId: s.f.userId })).entries).toEqual([]);
     expect(
       await storeFixture.database
         .selectFrom("runs")
@@ -531,14 +504,6 @@ describeStore("agents answering task questions", (it) => {
       "harness.input": { kind: "harness.input" },
       "harness.approval": { kind: "harness.approval" },
       "browser.access": { kind: "browser.access", reason, suggestion: { kind: "user_choice" } },
-      "browser.profile.save": { kind: "browser.profile.save", reason, sessionId: "session" },
-      "browser.profile.import": {
-        kind: "browser.profile.import",
-        reason,
-        sourceId: createId("browserSource"),
-        sourceName: "Chrome",
-        site: "https://example.com",
-      },
       "browser.sign-in": {
         kind: "browser.sign-in",
         reason,
@@ -552,7 +517,8 @@ describeStore("agents answering task questions", (it) => {
         expiresAt: new Date(Date.now() + 60000).toISOString(),
         operationId: randomUUID(),
         runnerId: s.f.runnerId,
-        sessionId: "session",
+        scope: "personal",
+        permissionVersion: 6,
         site: "https://example.com",
       },
       "integration.access": {
@@ -579,7 +545,6 @@ describeStore("agents answering task questions", (it) => {
         definitionId: "android-phone",
         runnerId: s.f.runnerId,
         setupRequestId: randomUUID(),
-        workspaceId: s.f.workspace.id,
       },
       "integration.input": {
         kind: "integration.input",
@@ -634,24 +599,6 @@ describeStore("agents answering task questions", (it) => {
     expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
   });
 
-  it("refuses out-of-reach callers without revealing the Request", async ({ storeFixture }) => {
-    const s = await questionTask(storeFixture, "question-reach");
-    const caller: RunCaller = {
-      ...s.caller,
-      reach: { kind: "lineage", lineageRootThreadId: createId("thread") },
-    };
-    for (const id of [s.request.id, createId("request")]) {
-      await expect(s.readRequest(caller, id)).rejects.toMatchObject({
-        code: "forbidden",
-        message: "Request is unavailable",
-      });
-      await expect(s.respond(caller, requestRevision(s.request), id)).rejects.toMatchObject({
-        code: "forbidden",
-        message: "Request is unavailable",
-      });
-    }
-  });
-
   it("delivers an accepted answer after the answering Run has ended", async ({ storeFixture }) => {
     const s = await questionTask(storeFixture, "question-answerer-ended");
     await s.respond();
@@ -661,7 +608,6 @@ describeStore("agents answering task questions", (it) => {
       runnerId: s.f.runnerId,
       event: pendingEvent({
         environmentId: s.f.environmentId,
-        workspaceId: s.f.workspace.id,
         runId: s.f.run.id,
         threadId: s.f.thread.id,
         bindingGeneration: s.f.bindingGeneration,
@@ -676,29 +622,6 @@ describeStore("agents answering task questions", (it) => {
       status: "fulfilled",
       settlementProvenance: { kind: "agent", runId: s.f.run.id },
     });
-  });
-
-  it("rechecks a removed member at admission and again before engine delivery", async ({
-    storeFixture,
-  }) => {
-    const s = await questionTask(storeFixture, "question-revoked");
-    await s.respond();
-    const replacement = await share(storeFixture, s.f);
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ role: "owner" })
-      .where("workspaceId", "=", s.f.workspace.id)
-      .where("userId", "=", replacement)
-      .execute();
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ state: "revoked", revokedAt: new Date(), revokedBy: s.f.userId })
-      .where("workspaceId", "=", s.f.workspace.id)
-      .where("userId", "=", s.f.userId)
-      .execute();
-    await expect(s.respond()).rejects.toMatchObject({ code: "forbidden" });
-    await expect(s.dispatch()).rejects.toMatchObject({ code: "forbidden" });
-    expect((await storeFixture.store.requests.get(s.request.id))?.status).toBe("pending");
   });
 
   it("lets exactly one answer win when a person and an agent race", async ({ storeFixture }) => {
@@ -825,7 +748,6 @@ describeStore("agents answering task questions", (it) => {
     const nodeId = createId("executionNode");
     const base = {
       environmentId: s.f.environmentId,
-      workspaceId: s.task.workspaceId,
       runId: s.task.runId!,
       threadId: s.task.threadId,
       bindingGeneration: s.binding.bindingGeneration,
@@ -881,7 +803,6 @@ describeStore("agents answering task questions", (it) => {
       runnerId: s.f.runnerId,
       event: pendingEvent({
         environmentId: s.f.environmentId,
-        workspaceId: s.f.workspace.id,
         runId: s.f.run.id,
         threadId: s.f.thread.id,
         bindingGeneration: s.f.bindingGeneration,
@@ -927,9 +848,8 @@ async function place(
   title = "Place",
 ) {
   return withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostWorkspaceEvent(tx, {
+    appendHostDeploymentEvent(tx, {
       type: "place.entered",
-      workspaceId: f.workspace.id,
       threadId: f.thread.id,
       runId: f.run.id,
       environmentId: f.environmentId,
@@ -945,13 +865,12 @@ async function tool(
 ) {
   const callId = randomUUID();
   const base = {
-    workspaceId: f.workspace.id,
     threadId: f.thread.id,
     runId: f.run.id,
     environmentId: f.environmentId,
   };
   const started = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostWorkspaceEvent(tx, {
+    appendHostDeploymentEvent(tx, {
       ...base,
       type: "tool.started",
       data: {
@@ -963,7 +882,7 @@ async function tool(
     }),
   );
   const completed = await withDatabaseTransaction(storeFixture.database, (tx) =>
-    appendHostWorkspaceEvent(tx, {
+    appendHostDeploymentEvent(tx, {
       ...base,
       type: "tool.completed",
       data: { callId, isError: false, output: { text: "output-secret ".repeat(100) } },
@@ -991,7 +910,6 @@ describeStore("shaped agent Thread tools", (it) => {
           environmentId: f.environmentId,
           runId: f.run.id,
           threadId: f.thread.id,
-          workspaceId: f.workspace.id,
           ordinal: ordinal++,
         }),
       });
@@ -1080,13 +998,16 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(oldest.hasMore).toBe(false);
     const outside: AgentCaller = {
       ...s.caller,
-      reach: { kind: "workspace", workspaceId: createId("workspace") },
+      userId: createId("user"),
     };
     const refusal = await read({}, outside).catch((error: unknown) => error);
     const missing = await read({ subagentId: createId("executionNode") }).catch(
       (error: unknown) => error,
     );
-    expect(refusal).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
+    expect(refusal).toMatchObject({
+      code: "forbidden",
+      message: "The personal owner is required.",
+    });
     expect(missing).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
     await expect(
       s.product.task_cancel({
@@ -1185,7 +1106,7 @@ describeStore("shaped agent Thread tools", (it) => {
     ).toBe("running");
   });
 
-  it("keeps a Workspace owner's subagent stop through a Host restart and a retry", async ({
+  it("keeps the personal owner's subagent stop through a Host restart and a retry", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("node-stop-kept");
@@ -1202,7 +1123,6 @@ describeStore("shaped agent Thread tools", (it) => {
           environmentId: f.environmentId,
           runId: f.run.id,
           threadId: f.thread.id,
-          workspaceId: f.workspace.id,
           ordinal: ordinal++,
         }),
       });
@@ -1221,13 +1141,7 @@ describeStore("shaped agent Thread tools", (it) => {
         prompt: null,
       },
     });
-    const owner = await share(storeFixture, f);
-    await storeFixture.database
-      .updateTable("workspaceMemberships")
-      .set({ role: "owner" })
-      .where("workspaceId", "=", f.workspace.id)
-      .where("userId", "=", owner)
-      .execute();
+    const owner = f.userId;
     const stop = () =>
       storeFixture.store.stopNode({
         nodeId,
@@ -1402,7 +1316,6 @@ describeStore("shaped agent Thread tools", (it) => {
       clientName: "Reader",
       resource: "https://host.test/mcp",
       accessMode: "full-access",
-      reach: { kind: "user" },
       expiresAt: new Date(Date.now() + 60_000),
     });
     await connections.activate(connection.id, "1".repeat(64));
@@ -1415,7 +1328,6 @@ describeStore("shaped agent Thread tools", (it) => {
           connectionId: connection.id,
           userId: s.f.userId,
           accessMode: "full-access",
-          reach: { kind: "user" },
         })
       ).result,
     ).toBe("42");
@@ -1517,8 +1429,6 @@ describeStore("shaped agent Thread tools", (it) => {
       mode: "durable",
       originatingRunId: s.task.runId!,
       originatingThreadId: s.task.threadId,
-      originatingWorkspaceId: s.f.workspace.id,
-      targetWorkspaceId: s.f.workspace.id,
       requestedBy: s.f.userId,
       requiredActor: "requester",
       payload: {
@@ -1529,7 +1439,7 @@ describeStore("shaped agent Thread tools", (it) => {
       presentation: {
         kind: "external",
         title: "Browser access",
-        subject: { kind: "workspace", id: s.f.workspace.id },
+        subject: { kind: "thread", id: s.f.thread.id },
       },
     });
     for (const event of created.events) s.realtime.publish(event);
@@ -1590,30 +1500,20 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(computers.environments).toHaveLength(1);
     expect(computers).not.toHaveProperty("harnesses");
   });
-  it("filters recent places and activity for each reader in a shared Workspace", async ({
-    storeFixture,
-  }) => {
+  it("lists personal recent places and refuses another person", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("shaped-places");
-    const nativeRunner = createId("runner");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: f.userId,
-      runnerKind: "local",
-      runnerId: nativeRunner,
-      environmentId: createId("environment"),
-      name: "Owned machine",
-      tokenSuffix: randomUUID(),
-    });
-    const reader = await share(storeFixture, f);
+    const nativeRunner = f.runnerId;
+    const reader = await storeFixture.store.createUser("Other person");
     const s = setup(storeFixture, f);
     const sessionId = createBrowserSessionId();
     await storeFixture.store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "shared",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.workspace.id,
     });
     const values: PlaceIdentity[] = [
       { kind: "app", machineId: nativeRunner, appKey: "com.apple.finder" },
@@ -1629,22 +1529,10 @@ describeStore("shaped agent Thread tools", (it) => {
     const owner = await s.read({ view: "activity" });
     expect(owner.recentPlaces.map((p) => p.place)).toEqual(values.slice(0, 3).reverse());
     const actor = { ...s.caller, userId: reader };
-    const visible = await s.read({ view: "activity" }, actor);
-    expect(visible.recentPlaces.map((p) => p.place)).toEqual([values[2]]);
-    expect(visible.items.filter((i) => i.type === "place.entered")).toHaveLength(1);
-    await expect(
-      s.read(
-        { view: "activity", itemId: (await place(storeFixture, f, values[0]!)).sequence },
-        actor,
-      ),
-    ).rejects.toMatchObject({ code: "forbidden", message: "Item is unavailable in this Thread" });
-    const outsider = await storeFixture.store.createUser("Outsider");
-    await expect(s.read({}, { ...actor, userId: outsider })).rejects.toMatchObject({
-      code: "forbidden",
-    });
+    await expect(s.read({ view: "activity" }, actor)).rejects.toMatchObject({ code: "forbidden" });
     const part = {
       type: "computer-app",
-      machineId: nativeRunner,
+      machineId: createId("runner"),
       app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
       name: "Private Notes",
     };
@@ -1653,7 +1541,7 @@ describeStore("shaped agent Thread tools", (it) => {
       .set({ content: sql`${JSON.stringify([{ type: "text", text: "Look" }, part])}::jsonb` })
       .where("threadId", "=", f.thread.id)
       .execute();
-    const [seen] = (await s.read({}, actor)).items;
+    const [seen] = (await s.read({})).items;
     expect(seen).toMatchObject({ text: "Look\n[Place unavailable]" });
     expect(seen!.places).toBeUndefined();
   });
@@ -1667,11 +1555,11 @@ describeStore("shaped agent Thread tools", (it) => {
     await storeFixture.store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "bounds",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.workspace.id,
     });
     const row = await storeFixture.database
       .selectFrom("runs")
@@ -1756,50 +1644,8 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(
       (await s.read({ view: "activity", itemId: safe.started.sequence })).items[0]!.text,
     ).toContain("typed-value");
-    const nativeRunner = createId("runner");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: f.userId,
-      runnerKind: "local",
-      runnerId: nativeRunner,
-      environmentId: createId("environment"),
-      name: "Owned machine",
-      tokenSuffix: randomUUID(),
-    });
-    const subject = {
-      account: "Mac",
-      computerApp: {
-        runnerId: nativeRunner,
-        bundleId: "com.apple.finder",
-        app: "Finder",
-        computer: "Mac",
-      },
-      effect: "read" as const,
-      integration: "Computer",
-      operation: { name: "observe", title: "Observe" },
-    };
-    const reader = await share(storeFixture, f);
-    const member = { ...s.caller, userId: reader };
-    for (const event of [safe.started, safe.completed])
-      expect(
-        (await s.read({ view: "activity", itemId: event.sequence }, member)).items[0],
-      ).toMatchObject({ title: "shell", text: null });
-    expect((await s.read({ view: "activity", limit: 1 }, member)).items[0]!.text).toBeNull();
-    expect((await s.read({ itemId: safe.completed.sequence })).items[0]!.text).not.toBeNull();
-    for (const native of [
-      subject,
-      { ...subject, computerApp: null, phone: { runnerId: nativeRunner, computer: "Phone" } },
-    ]) {
-      const t = await tool(storeFixture, f, "integration_call", native);
-      for (const e of [t.started, t.completed])
-        await expect(
-          s.read({ view: "activity", itemId: e.sequence }, { ...s.caller, userId: reader }),
-        ).rejects.toMatchObject({
-          code: "forbidden",
-          message: "Item is unavailable in this Thread",
-        });
-    }
     await storeFixture.database
-      .deleteFrom("workspaceEvents")
+      .deleteFrom("deploymentEvents")
       .where("sequence", "=", safe.started.sequence)
       .execute();
     expect(
@@ -1818,7 +1664,6 @@ describeStore("shaped agent Thread tools", (it) => {
       environmentId: f.environmentId,
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
     };
     const commit = (event: PendingAgentEvent) =>
       storeFixture.store.commitRunnerEvent({
@@ -1998,13 +1843,12 @@ describeStore("shaped agent Thread tools", (it) => {
       }),
       operationKey: randomUUID(),
     });
-    expect(here.workspaceId).toBe(f.thread.workspaceId);
+    expect(here.folder).toEqual(f.thread.folder);
     const connection: AgentCaller = {
       kind: "connection",
       key: "connection:test",
       connectionId: "test",
       userId: f.userId,
-      reach: { kind: "user" },
       accessMode: "full-access",
     };
     await expect(
@@ -2031,27 +1875,12 @@ describeStore("shaped agent Thread tools", (it) => {
     ).rejects.toThrow("must name parentThreadId");
   });
 
-  it("returns one task shape on delegation and replay, full results, and open/latest assignments across Workspaces", async ({
+  it("returns one task shape on delegation and replay, full results, and open/latest assignments across personal tasks", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("shaped-tasks");
     const s = setup(storeFixture, f);
-    const { createTestWorkspace } = await import("@opensteer/database/test-support/workspace");
-    const workspace = await createTestWorkspace(storeFixture.store, {
-      createdBy: f.userId,
-      kind: "project",
-      name: "Workers",
-      idempotencyKey: "worker-workspace",
-      status: "ready",
-      backing: {
-        ...f.workspace.backing,
-        bindingId: createId("workspaceBinding"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
     const input = delegate_task.input.parse({
-      workspaceId: workspace.id,
-
       harnessInstanceId: f.harnessInstance.id,
       model: { ...testModelSelection, options: {} },
       title: "Worker",
@@ -2079,7 +1908,6 @@ describeStore("shaped agent Thread tools", (it) => {
         id: delegated.threadId,
         assignmentId: delegated.assignmentId,
         taskStatus: "open",
-        workspaceId: workspace.id,
       }),
     );
     await storeFixture.store.cancelAssignment({
@@ -2094,12 +1922,12 @@ describeStore("shaped agent Thread tools", (it) => {
       id: sessionId,
       runnerId: f.runnerId,
       origin: "agent",
+      ownerId: f.userId,
       placementKey: "cross-guest",
       profileId: null,
       runtimeId: "test",
-      workspaceId: workspace.id,
     });
-    await new WorkspaceTabStore(storeFixture.database).recordChanges(
+    await new PersonalTabStore(storeFixture.database).recordChanges(
       sessionId,
       [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
       [],
@@ -2145,7 +1973,6 @@ describeStore("shaped agent Thread tools", (it) => {
       clientName: "Reader",
       resource: "https://host.test/mcp",
       accessMode: "approval-required",
-      reach: { kind: "user" },
       expiresAt: new Date(Date.now() + 60_000),
     });
     await connections.activate(record.id, "2".repeat(64));
@@ -2154,7 +1981,6 @@ describeStore("shaped agent Thread tools", (it) => {
       key: `connection:${record.id}`,
       connectionId: record.id,
       userId: f.userId,
-      reach: { kind: "user" },
       accessMode: "approval-required",
     };
     const status = await s.product.task_status({
@@ -2163,40 +1989,9 @@ describeStore("shaped agent Thread tools", (it) => {
       operationKey: randomUUID(),
     });
     expect(status.result).toBe(result);
-    await expect(
-      s.product.task_status({
-        caller: { ...connection, reach: { kind: "workspace", workspaceId: f.workspace.id } },
-        input: { assignmentId: next.assignmentId! },
-        operationKey: randomUUID(),
-      }),
-    ).rejects.toThrow("reach");
     expect((await list()).threads.find((t) => t.id === delegated.threadId)).toMatchObject({
       assignmentId: next.assignmentId,
       taskStatus: "completed",
-    });
-    const reader = await storeFixture.store.createUser("Worker reader");
-    await storeFixture.database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: workspace.id,
-        userId: reader,
-        role: "collaborator",
-        state: "active",
-        generation: 1,
-        joinedAt: new Date(),
-        invitedBy: f.userId,
-      })
-      .execute();
-    const hidden = await s.product.thread_list({
-      caller: { ...connection, userId: reader },
-      input: thread_list.input.parse({}),
-      operationKey: randomUUID(),
-    });
-    expect(hidden.threads.find((t) => t.id === delegated.threadId)).toMatchObject({
-      assignmentId: null,
-      taskStatus: null,
-      parentThreadId: null,
     });
     await storeFixture.database
       .updateTable("runs")
@@ -2217,21 +2012,12 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-show");
     const s = setup(storeFixture, f);
-    const nativeRunner = createId("runner");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: f.userId,
-      runnerKind: "local",
-      runnerId: nativeRunner,
-      environmentId: createId("environment"),
-      name: "Owned machine",
-      tokenSuffix: randomUUID(),
-    });
+    const nativeRunner = f.runnerId;
     const delegated = await storeFixture.store.delegateThread({
       createdBy: f.userId,
       environmentId: f.environmentId,
       harnessInstanceId: f.harnessInstance.id,
       modelSelection: testModelSelection,
-      workspaceId: f.workspace.id,
       origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
       task: [{ type: "text", text: "Task" }],
       title: "Task",
@@ -2248,12 +2034,12 @@ describeStore("shaped agent Thread tools", (it) => {
       id: sessionId,
       runnerId: f.runnerId,
       origin: "agent",
+      ownerId: f.userId,
       placementKey: "guest",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.workspace.id,
     });
-    await new WorkspaceTabStore(storeFixture.database).recordChanges(
+    await new PersonalTabStore(storeFixture.database).recordChanges(
       sessionId,
       [{ id: tabId, title: "Guest", url: "https://example.com", order: 0, openerId: null }],
       [],
@@ -2264,12 +2050,6 @@ describeStore("shaped agent Thread tools", (it) => {
       runId: f.run.id,
       target: { runId: delegated.run.id, place: { kind: "browser", surfaceId: tabId } },
     });
-    await expect(
-      s.show(
-        { runId: delegated.run.id },
-        { ...s.caller, reach: { kind: "lineage", lineageRootThreadId: createId("thread") } },
-      ),
-    ).rejects.toThrow("reach");
     await expect(
       s.show(
         { current: true },
@@ -2306,12 +2086,12 @@ describeStore("shaped agent Thread tools", (it) => {
       .where("id", "=", delegated.run.id)
       .execute();
     await s.show({ runId: delegated.run.id });
-    const reader = await share(storeFixture, f);
+    const reader = await storeFixture.store.createUser("Other person");
     await expect(
       s.show(
         { runId: delegated.run.id },
         { ...s.caller, userId: reader, claims: { ...s.caller.claims, requestedBy: reader } },
       ),
-    ).rejects.toThrow("unavailable");
+    ).rejects.toMatchObject({ code: "forbidden", message: "The personal owner is required." });
   });
 });

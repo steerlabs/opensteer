@@ -5,14 +5,7 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useNavigate } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { MockHostClient } from "@opensteer/client/mock";
-import {
-  HttpHostClient,
-  placeList,
-  type HostSnapshot,
-  type PlaceItem,
-} from "@opensteer/client/host";
-
-import { hostApi } from "@opensteer/protocol";
+import { placeList, type HostSnapshot, type PlaceItem } from "@opensteer/client/host";
 
 import { type WorkspaceNavigation } from "./navigation.js";
 import { WorkspaceLayout } from "./workspace-layout.js";
@@ -21,7 +14,6 @@ import { WorkspaceProvider, useWorkspace, type WorkspaceState } from "./workspac
 import {
   root,
   client,
-  sessionClient,
   history,
   goTo,
   resize,
@@ -55,7 +47,7 @@ describe("a conversation chosen before the list redraws", () => {
       ).click();
     });
     await settle();
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
     // A modified click still belongs to the link.
     const other = document.querySelectorAll<HTMLAnchorElement>(".side-task .side-task__main")[1]!;
@@ -63,7 +55,7 @@ describe("a conversation chosen before the list redraws", () => {
     await act(async () => {
       other.dispatchEvent(event);
     });
-    expect(history.at(-1)!.path).toBe(`/threads/${threadId}`);
+    expect(history.at(-1)!.path).toBe(`/tasks/${threadId}`);
   });
 });
 
@@ -216,9 +208,11 @@ describe("a reply's live picture belongs to its working Run", () => {
       { timeout: 3000 },
     );
   }
-  /** Chat's working Run acts in one of its pages, and its reply's picture shows it. */
-  async function chatWorkingIn(title: string) {
-    const home = client.getSnapshot().homeThreadId!;
+  /** A working task in the mock world. */
+  const task = "thr_00000000-0000-4000-8000-000000000006";
+  /** The task's working Run acts in one of its pages, and its reply's picture shows it. */
+  async function workingIn(title: string) {
+    const home = task;
     const place = browserPlaces().find((item) => item.title === title)!;
     await act(async () => client.actInPlace(home, place.key));
     await pictureShows(place.key);
@@ -234,10 +228,10 @@ describe("a reply's live picture belongs to its working Run", () => {
   }
 
   it("keeps another working Run's page out of this conversation's live spot", async () => {
-    await mount("/");
-    const { home, place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { place } = await workingIn("Coffee shortlist");
     const waiting = "thr_00000000-0000-4000-8000-000000000902";
-    await act(async () => goTo!(`/threads/${waiting}`));
+    await act(async () => goTo!(`/tasks/${waiting}`));
     await vi.waitFor(
       () => expect(picture(), "The previous thread kept its live picture").toBeNull(),
       { timeout: 1500 },
@@ -246,14 +240,13 @@ describe("a reply's live picture belongs to its working Run", () => {
       client.actInPlace(waiting, browserPlaces().find((item) => item.key !== place.key)!.key),
     );
     expect(picture()?.dataset.placeKey).not.toBe(place.key);
-    await act(async () => goTo!("/"));
+    await act(async () => goTo!(`/tasks/${task}`));
     await pictureShows(place.key);
-    expect(client.getSnapshot().homeThreadId).toBe(home);
   });
 
   it("a page whose browser ended keeps the Run card until the Run ends", async () => {
-    await mount("/");
-    const { place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { place } = await workingIn("Coffee shortlist");
     const { session } = tabOf(place);
     await act(async () => {
       await client
@@ -269,8 +262,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("a finished reply's page never follows the conversation afterwards", async () => {
-    await mount("/");
-    const { home, place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { home, place } = await workingIn("Coffee shortlist");
     await act(async () => client.stopRun(home));
     await vi.waitFor(
       () =>
@@ -288,8 +281,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("shows one live picture in the header, hides it for the same stage and restores it", async () => {
-    await mount("/");
-    const { place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { place } = await workingIn("Coffee shortlist");
     expect(pictures()).toHaveLength(1);
     expect(picture()!.closest(".turn")).toBeNull();
     expect(document.querySelector(".composer-dock .viewfinder")).toBeNull();
@@ -297,13 +290,13 @@ describe("a reply's live picture belongs to its working Run", () => {
     await click(picture()!);
     expect(element(".place").getAttribute("data-place-key")).toBe(place.key);
     expect(picture()).toBeNull();
-    await act(async () => goTo!("/"));
+    await act(async () => goTo!(`/tasks/${task}`));
     await pictureShows(place.key);
   });
 
   it("switches immediately on each new place entry while retaining the card", async () => {
-    await mount("/");
-    const { home, place: first } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { home, place: first } = await workingIn("Coffee shortlist");
     const card = picture();
     const second = browserPlaces().find((item) => item.title === "Your reading list")!;
     for (const place of [second, first, second]) {
@@ -314,8 +307,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("keeps overflow pages reachable once the reply settles", async () => {
-    await mount("/");
-    const { home, place: first } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { home, place: first } = await workingIn("Coffee shortlist");
     const others = browserPlaces()
       .filter((item) => item.key !== first.key)
       .slice(0, 4);
@@ -337,8 +330,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("closing its page keeps the card, then Run end hands off to its muted chip", async () => {
-    await mount("/");
-    const { home, place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { home, place } = await workingIn("Coffee shortlist");
     const { session, tabId } = tabOf(place);
     await act(async () =>
       client.closeBrowserTab(session.id, tabId, session.browserTabs!.inventory(session?.id)!),
@@ -362,8 +355,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("a stopped reply keeps its pages under how it ended", async () => {
-    await mount("/");
-    const { home, place } = await chatWorkingIn("Weekend ideas");
+    await mount(`/tasks/${task}`);
+    const { home, place } = await workingIn("Coffee shortlist");
     await act(async () => client.stopRun(home));
     await vi.waitFor(
       () =>
@@ -374,7 +367,7 @@ describe("a reply's live picture belongs to its working Run", () => {
       { timeout: 1500 },
     );
     const stopped = [...document.querySelectorAll(".transcript .run-note")].find((note) =>
-      note.textContent?.includes("Stopped."),
+      /stopped/iu.test(note.textContent ?? ""),
     )!;
     const row = stopped.nextElementSibling!;
     expect(row.classList.contains("surface-chips")).toBe(true);
@@ -382,8 +375,8 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("a tab closed in a browser that stays open keeps its card and later mutes its chip", async () => {
-    await mount("/");
-    const { home, place } = await chatWorkingIn("Your reading list");
+    await mount(`/tasks/${task}`);
+    const { home, place } = await workingIn("Your reading list");
     const { session, tabId } = tabOf(place);
     expect((session.browserTabs?.sessionTabs(session?.id) ?? []).length).toBeGreaterThan(1);
     await act(async () =>
@@ -411,9 +404,9 @@ describe("a reply's live picture belongs to its working Run", () => {
   });
 
   it("closing a previous page leaves the current card alone", async () => {
-    await mount("/");
-    const { home, place: held } = await chatWorkingIn("Your reading list");
-    const next = browserPlaces().find((item) => item.title === "Weekend ideas")!;
+    await mount(`/tasks/${task}`);
+    const { home, place: held } = await workingIn("Your reading list");
+    const next = browserPlaces().find((item) => item.title === "Coffee shortlist")!;
     await act(async () => client.actInPlace(home, next.key));
     expect(picture()!.dataset.placeKey).toBe(next.key);
     const { session, tabId } = tabOf(held);
@@ -426,7 +419,7 @@ describe("a reply's live picture belongs to its working Run", () => {
 
   it("a reply waiting on the person keeps its picture", async () => {
     const waiting = "thr_00000000-0000-4000-8000-000000000902";
-    await mount(`/threads/${waiting}`);
+    await mount(`/tasks/${waiting}`);
     expect(picture()).toBeNull();
     const place = browserPlaces()[0]!;
     await act(async () => client.actInPlace(waiting, place.key));
@@ -434,6 +427,13 @@ describe("a reply's live picture belongs to its working Run", () => {
     expect(picture()!.closest(".conv-header")).not.toBeNull();
   });
 });
+
+/** The task that handed work to another: the mock's task line and its worker belong to it. */
+function delegating(source: { getSnapshot(): HostSnapshot }): string {
+  const assignment = Object.values(source.getSnapshot().assignments)[0];
+  if (!assignment) throw new Error("The mock hands out no work");
+  return assignment.parentThreadId;
+}
 
 describe("task titles", () => {
   async function headerRename() {
@@ -449,130 +449,12 @@ describe("task titles", () => {
     await settle();
   }
 
-  it.each([false, true])(
-    "renames an unopened sidebar task in another Workspace (refused: %s)",
-    async (refused) => {
-      const answer = Promise.withResolvers<void>();
-      let target = "";
-      let original = "";
-      let scopedWorkspace = "";
-      const commands: unknown[] = [];
-      try {
-        await mount(
-          (source) => {
-            const snapshot = source.getSnapshot();
-            const thread = snapshot.threads.find(
-              (thread) =>
-                thread.listed &&
-                thread.role === "work" &&
-                thread.workspaceId !== snapshot.homeWorkspaceId,
-            )!;
-            target = thread.id;
-            original = thread.title;
-            scopedWorkspace = thread.workspaceId;
-            return "/";
-          },
-          {
-            hostClient: (source) =>
-              new HttpHostClient({
-                baseUrl: "http://mock-host",
-                capabilities: ["thread-titles-v1"],
-                refreshIntervalMs: 0,
-                webSocketFactory: () => ({
-                  binaryType: "arraybuffer",
-                  readyState: 0,
-                  addEventListener() {},
-                  close() {},
-                  send() {},
-                }),
-                fetch: async (input, init) => {
-                  const url = new URL(input instanceof Request ? input.url : String(input));
-                  const name = url.pathname.slice("/v1/rpc/".length) as keyof typeof hostApi;
-                  const raw = url.searchParams.get("input") ?? init?.body;
-                  const payload: unknown = typeof raw === "string" ? JSON.parse(raw) : {};
-                  if (name === "commands.dispatch") {
-                    const command = hostApi[name].payload.parse(payload);
-                    if (command.type === "thread.rename") {
-                      commands.push(command);
-                      await answer.promise;
-                      if (refused)
-                        return Response.json(
-                          {
-                            ok: false,
-                            error: {
-                              code: "bad_request",
-                              message: "Rename refused",
-                              retryable: false,
-                            },
-                          },
-                          { status: 400 },
-                        );
-                    }
-                  }
-                  const parsed = hostApi[name].payload.parse(payload);
-                  return Response.json(await source.rpc[name](parsed as never));
-                },
-              }),
-          },
-        );
-        await settle(100);
-        const displayed = sessionClient!;
-        expect(displayed.getSnapshot().threads.some(({ id }) => id === target)).toBe(false);
-        expect(
-          displayed
-            .getSnapshot()
-            .threads.some(({ workspaceId }) => workspaceId === scopedWorkspace),
-        ).toBe(false);
-        await act(async () => displayed.loadWorkspaceTasks(scopedWorkspace));
-        const row = () => element(`[data-thread-id="${target}"]`);
-        expect(row().textContent).toContain(original);
-        await act(async () =>
-          row().dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })),
-        );
-        await click(element('[role="menuitem"][data-action="rename"]'));
-        await typeInto(element('input[aria-label="Task title"]'), "Cross-workspace name");
-        await pressEnter(element('input[aria-label="Task title"]'));
-        expect(commands).toEqual([
-          expect.objectContaining({ type: "thread.rename", threadId: target }),
-        ]);
-        expect(
-          displayed.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === target)?.thread
-            .title,
-        ).toBe("Cross-workspace name");
-        expect(
-          displayed
-            .getSnapshot()
-            .workspaceTasks[scopedWorkspace]?.entries.find(({ thread }) => thread.id === target)
-            ?.thread.title,
-        ).toBe("Cross-workspace name");
-        await act(async () => answer.resolve());
-        await settle(100);
-        if (refused) {
-          expect(document.body.textContent).toContain("Rename refused");
-          expect(
-            displayed.getSnapshot().tasks?.entries.find(({ thread }) => thread.id === target)
-              ?.thread.title,
-          ).toBe(original);
-          await key(element('input[aria-label="Task title"]'), "Escape");
-        }
-        expect(row().textContent).toContain(refused ? original : "Cross-workspace name");
-        await click(element(".side-task__main", row()));
-        await settle(100);
-        expect(element(".conv-header__name").textContent).toBe(
-          refused ? original : "Cross-workspace name",
-        );
-      } finally {
-        answer.resolve();
-      }
-    },
-  );
-
   it.each(["header", "sidebar"])(
     "renames inline from the %s and updates the task row",
     async (entry) => {
       await mount(
         (client) =>
-          `/threads/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
+          `/tasks/${client.getSnapshot().threads.find((thread) => thread.purpose === "task" && thread.listed)!.id}`,
       );
       const id = history.at(-1)!.path.split("/").at(-1)!;
       const original = client.getSnapshot().threads.find((thread) => thread.id === id)!.title;
@@ -601,7 +483,7 @@ describe("task titles", () => {
   it.each([false, true])(
     "updates a new task's seed live and keeps an early rename (%s)",
     async (renameEarly) => {
-      await mount("/new", { latencyMs: 500 });
+      await mount("/", { latencyMs: 500 });
       // Gate only the mock title generator, leaving transport and UI timers real.
       let finishNaming: (() => void) | undefined;
       const timeout = globalThis.setTimeout;
@@ -617,7 +499,7 @@ describe("task titles", () => {
       const message = "Prepare a launch plan for the new mobile application with milestones";
       await write(element<HTMLTextAreaElement>("[data-composer-input]"), message);
       await click(element(".composer__send"));
-      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/threads/"); tries += 1)
+      for (let tries = 0; tries < 40 && !history.at(-1)!.path.startsWith("/tasks/"); tries += 1)
         await settle(25);
       const id = history.at(-1)!.path.split("/").at(-1)!;
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(message);
@@ -632,14 +514,13 @@ describe("task titles", () => {
       expect(client.getSnapshot().threads.find((thread) => thread.id === id)?.title).toBe(title);
       expect(element(".conv-header__name").textContent).toBe(title);
       expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe("rocket");
-      expect(element(`[data-thread-id="${id}"]`).textContent).toContain(title);
     },
   );
 
   it("updates a delegated task line when its worker is renamed", async () => {
-    await mount("/");
+    await mount((source) => `/tasks/${delegating(source)}`);
     const card = element<HTMLAnchorElement>("a.agent-step__head");
-    const worker = card.getAttribute("href")!.match(/threads\/([^?]+)/u)![1]!;
+    const worker = card.getAttribute("href")!.match(/tasks\/([^?]+)/u)![1]!;
     await act(async () => {
       await client.renameThread(worker, "Renamed delegated task");
     });
@@ -650,27 +531,8 @@ describe("task titles", () => {
   });
 
   it("refreshes a completed task line from a higher assignment revision without holding its worker", async () => {
-    await mount("/");
-    const home = client.getSnapshot().homeThreadId!;
-    await act(async () => {
-      await client.stopRun(home);
-      await client.resumeThreadInputQueue(home);
-      await client.dispatch({
-        type: "thread.sendMessage",
-        threadId: home,
-        content: [{ type: "text", text: "Find a mattress for my guest room" }],
-        idempotencyKey: "completed-card-title",
-      });
-    });
-    await act(async () => {
-      await vi.waitFor(() =>
-        expect(
-          Object.values(client.getSnapshot().assignments).some(
-            (assignment) => assignment.status === "completed" && assignment.parentThreadId === home,
-          ),
-        ).toBe(true),
-      );
-    });
+    await mount((source) => `/tasks/${delegating(source)}`);
+    const home = delegating(client);
     const assignment = Object.values(client.getSnapshot().assignments).find(
       (assignment) => assignment.status === "completed" && assignment.parentThreadId === home,
     )!;
@@ -688,7 +550,7 @@ describe("task titles", () => {
       return held;
     });
     await act(async () => {
-      await goTo!("/?unheld=1");
+      await goTo!(`/tasks/${home}?unheld=1`);
     });
     expect(client.getSnapshot().threads.some(({ id }) => id === worker)).toBe(false);
     const cardTitle = () =>
@@ -721,7 +583,7 @@ describe("task titles", () => {
   it("cancels blank, unchanged and Escape edits, and displays a refused rename", async () => {
     await mount(
       (client) =>
-        `/threads/${client.getSnapshot().threads.find((thread) => thread.role === "work" && thread.listed)!.id}`,
+        `/tasks/${client.getSnapshot().threads.find((thread) => thread.purpose === "task" && thread.listed)!.id}`,
     );
     const rename = vi.spyOn(client, "renameThread");
     for (const value of ["", "unchanged", "cancelled"]) {
@@ -738,14 +600,7 @@ describe("task titles", () => {
     expect(document.body.textContent).toContain("Rename refused");
   });
 
-  it("hides rename for Chat and an older Host", async () => {
-    await mount("/");
-    // Chat has nothing of its own to rename, mark or finish: undocked it has no menu.
-    expect(document.querySelector(".conv-header__menu")).toBeNull();
-    act(() => root?.unmount());
-    setRoot(null);
-    client.dispose();
-    document.body.replaceChildren();
+  it("hides rename on a Host without task titles", async () => {
     await mount((source) => {
       const read = source.getSnapshot;
       const cache = new WeakMap<HostSnapshot, HostSnapshot>();
@@ -758,7 +613,7 @@ describe("task titles", () => {
         }
         return held;
       });
-      return `/threads/${source.getSnapshot().threads.find((thread) => thread.role === "work")!.id}`;
+      return `/tasks/${source.getSnapshot().threads.find((thread) => thread.purpose === "task")!.id}`;
     });
     await click(element(".conv-header__menu"));
     expect(document.querySelector('[aria-label="Rename task"]')).toBeNull();
@@ -771,9 +626,9 @@ describe("task titles", () => {
   });
 });
 
-it("opens Chat with a whole-turn page in one read", async () => {
+it("opens a task with a whole-turn page in one read", async () => {
   let fixture!: ReturnType<typeof conversationHistoryHost>;
-  await mount("/", {
+  await mount((source) => `/tasks/${source.getSnapshot().threads[0]!.id}`, {
     hostClient: (source) => {
       fixture = conversationHistoryHost(source);
       return fixture.client;
@@ -782,7 +637,7 @@ it("opens Chat with a whole-turn page in one read", async () => {
   await vi.waitFor(
     () => {
       for (let index = 0; index < 10; index += 1)
-        expect(document.body.textContent, "Chat did not draw its history page").toContain(
+        expect(document.body.textContent, "The task did not draw its history page").toContain(
           `Visible conversation question ${index}`,
         );
     },
@@ -812,7 +667,7 @@ describe("a conversation's page above it at phone width", () => {
       });
   }
   async function opened() {
-    await mount(`/threads/${waiting}`, { width: 390 });
+    await mount(`/tasks/${waiting}`, { width: 390 });
     phoneGeometry();
     expect(page() ?? folded(), "The Run was already in a place").toBeNull();
   }
@@ -821,7 +676,7 @@ describe("a conversation's page above it at phone width", () => {
       (item) => item.kind === "browser" && item.availability === "ready" && item.title === title,
     )!;
   }
-  async function acts(title = "Weekend ideas") {
+  async function acts(title = "Coffee shortlist") {
     const place = browserPlace(title);
     await act(async () => client.actInPlace(waiting, place.key));
     await vi.waitFor(
@@ -844,7 +699,7 @@ describe("a conversation's page above it at phone width", () => {
     await click(folded()!);
     expect(page()).not.toBeNull();
     // Folding and unfolding never navigate.
-    expect(history.at(-1)).toMatchObject({ path: `/threads/${waiting}`, search: "" });
+    expect(history.at(-1)).toMatchObject({ path: `/tasks/${waiting}`, search: "" });
 
     // The Run moving to another page keeps it open, on that page.
     const next = browserPlace("Your reading list");
@@ -854,7 +709,7 @@ describe("a conversation's page above it at phone width", () => {
 
     await click(element(".run-page__view"));
     expect(placeParams(history.at(-1)!.search)).toBe(placeParams(tabSearch(place)));
-    await act(async () => goTo!(`/threads/${waiting}`));
+    await act(async () => goTo!(`/tasks/${waiting}`));
     expect(page(), "Coming back, the page was no longer open").not.toBeNull();
 
     await act(async () => client.stopRun(waiting));

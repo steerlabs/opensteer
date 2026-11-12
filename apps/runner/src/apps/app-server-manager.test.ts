@@ -1,4 +1,5 @@
-import { mkdtemp, writeFile, symlink, rm, readdir } from "node:fs/promises";
+import { createId } from "@opensteer/core";
+import { mkdtemp, writeFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -23,9 +24,8 @@ it("shares starts, refuses stale generations, lazily restarts crashes and stops 
   const spec = {
     appId: "app_test",
     version: 1,
-    folder: ".",
+    folder: { computerId: createId("runner"), path: root },
     command: `${process.execPath} server.cjs`,
-    binding: {},
   } as Parameters<typeof manager.start>[0];
   await writeFile(
     join(root, "server.cjs"),
@@ -60,7 +60,7 @@ it("shares starts, refuses stale generations, lazily restarts crashes and stops 
   }
 });
 
-it("returns bounded log tails on exit and readiness timeout and rejects escaping folders", async () => {
+it("returns bounded log tails on exit and readiness timeout", async () => {
   const root = await mkdtemp(join(tmpdir(), "opensteer-app-server-"));
   const manager = new AppServerManager({
     resolveRoot: async () => root,
@@ -74,9 +74,8 @@ it("returns bounded log tails on exit and readiness timeout and rejects escaping
   const spec = {
     appId: "app_test",
     version: 1,
-    folder: ".",
+    folder: { computerId: createId("runner"), path: root },
     command: "",
-    binding: {},
   } as Parameters<typeof manager.start>[0];
   try {
     await writeFile(
@@ -97,9 +96,6 @@ it("returns bounded log tails on exit and readiness timeout and rejects escaping
     await expect(
       manager.start({ ...spec, command: `${process.execPath} hang.cjs` }),
     ).rejects.toMatchObject({ logTail: expect.stringContaining("never ready") });
-    await symlink(tmpdir(), join(root, "escape"));
-    for (const folder of ["../escape", "/tmp", "escape", "a/../b", "a\\b"])
-      await expect(manager.start({ ...spec, folder })).rejects.toThrow(/relative|outside|escape/i);
   } finally {
     await manager.stopAll();
     await rm(root, { recursive: true, force: true });
@@ -129,9 +125,8 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
   const spec = {
     appId: "unused",
     version: 1,
-    folder: ".",
+    folder: { computerId: createId("runner"), path: root },
     command: "exit 1",
-    binding: {},
   } as Parameters<typeof manager.start>[0];
   const starts = Array.from({ length: 32 }, () =>
     manager.start({ ...spec, appId: `app_${crypto.randomUUID()}` }),
@@ -172,9 +167,8 @@ it("inventories detached descendants without the execution marker before stoppin
   const spec = {
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
-    folder: ".",
+    folder: { computerId: createId("runner"), path: root },
     command: `${process.execPath} parent.cjs`,
-    binding: {},
   } as Parameters<typeof manager.start>[0];
   try {
     await writeFile(
@@ -240,9 +234,8 @@ it("cleans a crashed server and descendants before releasing its capacity and la
   const spec = {
     appId: "app_crash",
     version: 1,
-    folder: ".",
+    folder: { computerId: createId("runner"), path: root },
     command: `exec ${process.execPath} server.cjs`,
-    binding: {},
   } as Parameters<typeof manager.start>[0];
   const starts: Promise<number>[] = [];
   let settled: Promise<PromiseSettledResult<number>[]> | undefined;
@@ -333,9 +326,8 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
     const spec = {
       appId: "app_uncertain",
       version: 1,
-      folder: ".",
+      folder: { computerId: createId("runner"), path: root },
       command: `exec ${process.execPath} server.cjs`,
-      binding: {},
     } as Parameters<typeof manager.start>[0];
     const starts: Promise<number>[] = [];
     let settled: Promise<PromiseSettledResult<number>[]> | undefined;

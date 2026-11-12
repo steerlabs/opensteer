@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { parseCaptureJsonl } from "@opensteer/shared/test-support/captureJsonl";
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  createId,
   ModelSelectionSchema,
   NotificationViewSchema,
   TriggerIdSchema,
@@ -53,10 +53,11 @@ const fakeCodexAppServer = fileURLToPath(
 );
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 interface Journey {
   readonly producerEventId?: string;
   readonly producerOccurrenceId?: string;
@@ -64,20 +65,23 @@ interface Journey {
   readonly notifications: readonly NotificationView[];
   readonly publications: readonly HostNotificationPublication[];
 }
-
 integration("Notifications", () => {
   let stack: VerticalStack;
   let capturePath: string;
   let socket: WebSocket;
-  let chat: ThreadId;
+  let rootTask: ThreadId;
   const received: NotificationView[] = [];
   const journeys: Journey[] = [];
   const publications: HostNotificationPublication[] = [];
   const clock = new ManualClock();
   let graceFinished = Promise.withResolvers<void>();
-  let authorityAvailable = true;
+  let heldPublication:
+    | {
+        entered: ReturnType<typeof Promise.withResolvers<void>>;
+        aborted: ReturnType<typeof Promise.withResolvers<void>>;
+      }
+    | undefined;
   let interruptAcknowledgementFor: RunId | undefined;
-
   beforeAll(async () => {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-notifications-"));
     capturePath = join(scratch, "codex.jsonl");
@@ -89,20 +93,31 @@ integration("Notifications", () => {
           if (milliseconds === 5_000) graceFinished.resolve();
         },
       },
-      account: {
-        controlApiOrigin: new URL("https://accounts.notifications.invalid"),
-        hostCredential: `osc_${"a".repeat(43)}`,
-        issuer: new URL("https://accounts.notifications.invalid"),
-        oidcClientId: "notifications",
-        oidcClientSecret: `ocs_${"b".repeat(43)}`,
-        provisioningMode: "adoption",
-        reachability: "canonical",
-      },
+      personalAccountIssuer: new URL("https://accounts.notifications.invalid"),
       accountDirectoryFetch: async (url, init) => {
         const path = new URL(url.toString()).pathname;
         const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
         if (path === "/v1/host/notifications") {
           const publication = HostNotificationPublicationSchema.parse(body);
+          if (heldPublication) {
+            const held = heldPublication;
+            held.entered.resolve();
+            return new Response(
+              new ReadableStream({
+                start(controller) {
+                  init!.signal!.addEventListener(
+                    "abort",
+                    () => {
+                      held.aborted.resolve();
+                      controller.error(init!.signal!.reason);
+                    },
+                    { once: true },
+                  );
+                },
+              }),
+              { status: 202 },
+            );
+          }
           publications.push(publication);
           if (publication.runId === interruptAcknowledgementFor) {
             interruptAcknowledgementFor = undefined;
@@ -114,20 +129,32 @@ integration("Notifications", () => {
                   );
                 },
               }),
-              { status: 202 },
+              {
+                status: 202,
+              },
             );
           }
           return Response.json(
-            { accepted: true, deliveries: 1, notificationId: publication.notificationId },
-            { status: 202 },
+            {
+              accepted: true,
+              deliveries: 1,
+              notificationId: publication.notificationId,
+            },
+            {
+              status: 202,
+            },
           );
         }
         if (path === "/v1/host/authority") {
-          if (!authorityAvailable) return new Response("", { status: 503 });
           const envelope = body.authorityEnvelope as {
-            readonly document: { readonly deploymentId: string };
+            readonly document: {
+              readonly deploymentId: string;
+            };
           };
-          return Response.json({ published: true, deploymentId: envelope.document.deploymentId });
+          return Response.json({
+            published: true,
+            deploymentId: envelope.document.deploymentId,
+          });
         }
         if (path.startsWith("/v1/host/directory/"))
           return Response.json({
@@ -165,32 +192,19 @@ integration("Notifications", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 60_000,
     });
-    const ownerId = (
-      await stack.host.store.database
-        .selectFrom("workspaceMemberships")
-        .select("userId")
-        .where("workspaceId", "=", stack.mainWorkspaceId)
-        .executeTakeFirstOrThrow()
-    ).userId;
-    const provider = await stack.host.store.database
-      .selectFrom("accountDirectoryProvider")
-      .select("providerId")
-      .executeTakeFirstOrThrow();
     await stack.host.store.database
-      .insertInto("authAccounts")
+      .insertInto("personalRemoteAccountLink")
       .values({
-        id: createId("authAccount"),
-        userId: ownerId,
-        accountId: `acct_${randomUUID()}`,
-        providerId: provider.providerId,
-        password: null,
-        accessToken: null,
-        refreshToken: null,
-        idToken: null,
-        accessTokenExpiresAt: null,
-        refreshTokenExpiresAt: null,
-        scope: null,
-        createdAt: new Date(),
+        singletonKey: "opensteer-account",
+        accountOperation: null,
+        challengeId: `phc_${randomUUID()}`,
+        grantId: `phg_${randomUUID()}`,
+        issuer: "https://accounts.notifications.invalid",
+        hostCredential: `osc_${"a".repeat(43)}`,
+        linkGeneration: "n".repeat(43),
+        state: "active",
+        subject: `acct_${randomUUID()}`,
+        linkedAt: new Date(),
         updatedAt: new Date(),
       })
       .execute();
@@ -201,11 +215,9 @@ integration("Notifications", () => {
         received.push(NotificationViewSchema.parse(message.notification));
       }
     });
-    chat = await stack.createThread({
-      home: true,
+    rootTask = await stack.createThread({
       modelSelection,
-      title: "Chat",
-      workspaceId: stack.mainWorkspaceId,
+      title: "The task",
     });
     const synchronized = waitForRealtimeMessage(
       socket,
@@ -214,15 +226,17 @@ integration("Notifications", () => {
     socket.send(
       JSON.stringify({
         type: "client.subscribe",
-        workspaceId: stack.mainWorkspaceId,
-        threadId: chat,
+        threadId: rootTask,
         apiVersion: hostApiVersion,
-        afterSequence: zeroSequence,
+        cursor: {
+          deploymentId: stack.host.deployment.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
       }),
     );
     await synchronized;
   }, 120_000);
-
   afterAll(async () => {
     socket?.terminate();
     await stack?.close();
@@ -231,7 +245,6 @@ integration("Notifications", () => {
     await writeFile(artifact, JSON.stringify(journeys, null, 2) + "\n");
     console.info(`Notifications artifact: ${artifact}`);
   }, 60_000);
-
   async function settle(): Promise<void> {
     clock.advanceBy(2_500);
     await clock.runUntilSettled(stack.host.notifications.drain());
@@ -242,7 +255,6 @@ integration("Notifications", () => {
       });
     });
   }
-
   async function record(
     name: string,
     since: number,
@@ -254,32 +266,37 @@ integration("Notifications", () => {
       name,
       notifications: received.slice(since),
       publications: [...publications],
-      ...(producerEventId ? { producerEventId } : {}),
-      ...(producerOccurrenceId ? { producerOccurrenceId } : {}),
+      ...(producerEventId
+        ? {
+            producerEventId,
+          }
+        : {}),
+      ...(producerOccurrenceId
+        ? {
+            producerOccurrenceId,
+          }
+        : {}),
     });
   }
-
-  it("H1/H10 committed Chat reply reaches live clients and the Account once", async () => {
+  it("H1/H10 committed The task reply reaches live clients and the Account once", async () => {
     const since = received.length;
     const turn = await stack.sendMessage({
       text: "How did it go? [[reply **Done** — see [the report](https://example.com/report) and `notes.md`.]]",
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     const reply = await replyOf(stack, turn.runId);
     const alert = await waitForNotification(
       received,
       since,
       (n) => n.messageId === reply,
-      "Chat reply",
+      "The task reply",
     );
     expect(alert).toMatchObject({
       body: "Done — see the report and notes.md.",
       kind: "reply-published",
       runId: turn.runId,
-      threadId: chat,
-      title: "Opensteer",
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
+      title: "The task",
     });
     await settle();
     // One alert, for the reply — never for the person's own message.
@@ -295,23 +312,28 @@ integration("Notifications", () => {
     expect(Date.parse(publication.expiresAt) - Date.parse(publication.occurredAt)).toBe(
       15 * 60_000,
     );
-    expect(publication).toMatchObject({ schemaVersion: 1, messageId: reply, threadId: chat });
+    expect(publication).toMatchObject({
+      schemaVersion: 1,
+      messageId: reply,
+      threadId: rootTask,
+    });
     const committed = await stack.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("eventId")
       .where("eventId", "=", publication.eventId)
       .executeTakeFirstOrThrow();
     expect(committed.eventId).toBe(publication.eventId);
-    await record("chat reply", since);
+    await record("rootTask reply", since);
   }, 120_000);
-
   it("never alerts for a note; the reply that later reads it does", async () => {
     const since = received.length;
     const trigger = await createTrigger(stack, {
-      anchorThreadId: chat,
+      anchorThreadId: rootTask,
       name: "Inbox note",
-      program: programSending("report", "home", "Three new emails, none urgent."),
-      source: { kind: "webhook" },
+      program: programSending("report", rootTask, "Three new emails, none urgent."),
+      source: {
+        kind: "webhook",
+      },
     });
     const published = waitForRealtimeMessage(
       socket,
@@ -320,14 +342,14 @@ integration("Notifications", () => {
         message.events.some(
           (event) =>
             (event.type === "message.created" || event.type === "message.placed") &&
-            event.threadId === chat &&
+            event.threadId === rootTask &&
             event.data.message.content.some(
               (part) => part.type === "text" && part.text === "Three new emails, none urgent.",
             ),
         ),
     );
     const [, observed] = await Promise.all([runTrigger(stack, trigger), published]);
-    const note = await waitForMessage(stack, chat, "Three new emails, none urgent.");
+    const note = await waitForMessage(stack, rootTask, "Three new emails, none urgent.");
     const producer =
       observed.type === "host.events"
         ? observed.events.find(
@@ -358,15 +380,13 @@ integration("Notifications", () => {
     expect(publications.filter((entry) => entry.messageId === note)).toEqual([]);
     const turn = await stack.sendMessage({
       text: "Anything new? [[reply Nothing urgent.]]",
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     const reply = await replyOf(stack, turn.runId);
     await waitForNotification(received, since, (n) => n.messageId === reply, "reply after a note");
     await record("note then reply", since, producer!.eventId, completed.id);
   }, 120_000);
-
-  it("delivers a reminder: Chat schedules it, it fires, and Chat's reply alerts", async () => {
+  it("delivers a reminder: The task schedules it, it fires, and the task's reply alerts", async () => {
     const since = received.length;
     const at = new Date(Date.now() + 4_000).toISOString();
     const turn = await stack.sendMessage({
@@ -374,25 +394,29 @@ integration("Notifications", () => {
         "Remind me in a moment to buy groceries.",
         toolCall("trigger_write", {
           action: "create",
-          anchorThreadId: "home",
+          anchorThreadId: rootTask,
           name: "Reminder: buy groceries",
           program: {
             language: "javascript",
             source: programSending(
               "queue",
-              "home",
+              rootTask,
               "Reminder: buy groceries " +
-                toolCall("person_message", { message: "Groceries milestone ready." }) +
+                toolCall("person_message", {
+                  message: "Groceries milestone ready.",
+                }) +
                 " [[reply Reminder: buy groceries]]",
             ),
-            toolContractVersion: 2,
+            toolContractVersion: 3,
           },
-          source: { at, kind: "schedule" },
+          source: {
+            at,
+            kind: "schedule",
+          },
         }),
         "[[reply I'll remind you.]]",
       ].join("\n"),
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     expect(await replyText(stack, turn.runId)).toBe("I'll remind you.");
     const reminder = await waitForNotification(
@@ -402,14 +426,18 @@ integration("Notifications", () => {
       "reminder",
       30_000,
     );
-    expect(reminder).toMatchObject({ kind: "reply-published", threadId: chat, title: "Opensteer" });
+    expect(reminder).toMatchObject({
+      kind: "reply-published",
+      threadId: rootTask,
+      title: "The task",
+    });
     const run = await stack.host.store.database
       .selectFrom("runs")
       .innerJoin("messages", "messages.id", "runs.seedInputId")
       .select(["runs.assignmentId", "runs.requestedBy", "messages.author"])
       .where("runs.id", "=", reminder.runId!)
       .executeTakeFirstOrThrow();
-    // The Trigger woke Chat; Chat's own reply is what reached the person.
+    // The Trigger woke The task; the task's own reply is what reached the person.
     expect(run.assignmentId).toBeNull();
     const milestone = await waitForNotification(
       received,
@@ -423,11 +451,17 @@ integration("Notifications", () => {
       .where("id", "=", milestone.messageId!)
       .executeTakeFirstOrThrow();
     expect(milestoneMessage.addressedToUserId).toBe(run.requestedBy);
-
-    expect(run.author).toMatchObject({ displayName: "Reminder: buy groceries", kind: "trigger" });
+    expect(run.author).toMatchObject({
+      displayName: "Reminder: buy groceries",
+      kind: "trigger",
+    });
     // Having gone off, the reminder is finished: it leaves the Automations
     // list, and its page says it ran.
-    const triggerId = (run.author as { readonly triggerId: string }).triggerId;
+    const triggerId = (
+      run.author as {
+        readonly triggerId: string;
+      }
+    ).triggerId;
     await waitFor(
       async () => {
         const listed = await stack.api["triggers.list"]({});
@@ -445,23 +479,36 @@ integration("Notifications", () => {
     expect(finished.data.occurrences.map(({ status }) => status)).toEqual(["succeeded"]);
     await record("reminder", since);
   }, 120_000);
-
   it("tells the person, through its Thread, when an automation fails on its only run", async () => {
     const since = received.length;
     await createTrigger(stack, {
-      anchorThreadId: chat,
+      anchorThreadId: rootTask,
       name: "Calendar check",
       program: 'export default async function () { throw new Error("Calendar unavailable"); }',
-      source: { kind: "schedule", schedule: { at: inSeconds(2), kind: "at" } },
+      source: {
+        kind: "schedule",
+        schedule: {
+          at: inSeconds(2),
+          kind: "at",
+        },
+      },
     });
-    const notice = await waitForMessage(stack, chat, "failed on its only scheduled run", 30_000);
+    const notice = await waitForMessage(
+      stack,
+      rootTask,
+      "failed on its only scheduled run",
+      30_000,
+    );
     const message = await stack.host.store.database
       .selectFrom("messages")
       .select(["author", "content"])
       .where("id", "=", notice)
       .executeTakeFirstOrThrow();
     // The Host says what happened, so the notice is the platform's, not the program's.
-    expect(message.author).toMatchObject({ cause: "automation-stopped", kind: "platform" });
+    expect(message.author).toMatchObject({
+      cause: "automation-stopped",
+      kind: "platform",
+    });
     expect(JSON.stringify(message.content)).toContain("Calendar unavailable");
     const answered = await waitFor(
       async () =>
@@ -473,7 +520,7 @@ integration("Notifications", () => {
             .where("status", "=", "completed")
             .executeTakeFirst()
         )?.id,
-      "Chat's answer to the notice",
+      "the task's answer to the notice",
       30_000,
     );
     const alert = await waitForNotification(
@@ -483,23 +530,33 @@ integration("Notifications", () => {
       "automation failure reply",
       30_000,
     );
-    expect(alert).toMatchObject({ kind: "reply-published", threadId: chat, title: "Opensteer" });
+    expect(alert).toMatchObject({
+      kind: "reply-published",
+      threadId: rootTask,
+      title: "The task",
+    });
     await record("automation failure", since);
   }, 120_000);
-
-  it("refuses delegated person messages and alerts only through Chat's relay", async () => {
+  it("refuses delegated person messages and alerts only through the task's relay", async () => {
     const since = received.length;
     const trigger = await createTrigger(stack, {
-      anchorThreadId: chat,
+      anchorThreadId: rootTask,
       name: "Morning summary",
       program: `export default async function ({ opensteer }) {
         await opensteer.callTool("delegate_task", {
-          task: ${JSON.stringify("Summarize the inbox. " + toolCall("person_message", { message: "Inbox milestone ready." }) + " [[reply Inbox summary ready.]]")},
+          task: ${JSON.stringify(
+            "Summarize the inbox. " +
+              toolCall("person_message", {
+                message: "Inbox milestone ready.",
+              }) +
+              " [[reply Inbox summary ready.]]",
+          )},
           title: "Inbox summary",
-          workspaceId: ${JSON.stringify(stack.mainWorkspaceId)},
         });
       }`,
-      source: { kind: "webhook" },
+      source: {
+        kind: "webhook",
+      },
     });
     await runTrigger(stack, trigger);
     const taskReply = await waitForReplyIn(stack, "Inbox summary", "Tool person_message failed:");
@@ -518,9 +575,9 @@ integration("Notifications", () => {
     ).toEqual([]);
     expect(received.slice(since).filter((n) => n.body === "Inbox milestone ready.")).toEqual([]);
 
-    // The task's result arrives in Chat as a continuation; Chat's reply to it
+    // The task's result arrives in The task as a continuation; the task's reply to it
     // is the one alert, and the task's own reply alerts nobody.
-    const result = await waitForMessage(stack, chat, "Tool person_message failed:", 30_000);
+    const result = await waitForMessage(stack, rootTask, "Tool person_message failed:", 30_000);
     const relayRun = await waitFor(
       async () =>
         (
@@ -531,25 +588,32 @@ integration("Notifications", () => {
             .where("status", "=", "completed")
             .executeTakeFirst()
         )?.id,
-      "Chat's relay of the task result",
+      "the task's relay of the task result",
       30_000,
     );
-    await waitForNotification(received, since, (n) => n.runId === relayRun, "Chat relay", 30_000);
+    await waitForNotification(
+      received,
+      since,
+      (n) => n.runId === relayRun,
+      "The task relay",
+      30_000,
+    );
     await settle();
     expect(received.slice(since).filter((n) => n.runId === relayRun)).toHaveLength(1);
     expect(publications.filter((entry) => entry.messageId === taskReply)).toEqual([]);
     expect(received.slice(since).filter((entry) => entry.messageId === taskReply)).toEqual([]);
     await record("delegation", since);
   }, 120_000);
-
   it("alerts when Opensteer needs approval or fails, but not when the person stops it", async () => {
     const since = received.length;
     const thread = await stack.createThread({
       modelSelection,
       title: "Release checks",
-      workspaceId: stack.mainWorkspaceId,
     });
-    const asking = await stack.queueMessage({ text: "Run the tests. [[ask]]", threadId: thread });
+    const asking = await stack.queueMessage({
+      text: "Run the tests. [[ask]]",
+      threadId: thread,
+    });
     const request = await waitForNotification(
       received,
       since,
@@ -567,7 +631,10 @@ integration("Notifications", () => {
     await waitForRunStatus(stack, asking.runId!, "interrupted");
     // A stop pauses the Thread's queue so nothing starts unasked.
     await stack.resumeThreadInputQueue(thread);
-    const failing = await stack.queueMessage({ text: "Try again. [[fail]]", threadId: thread });
+    const failing = await stack.queueMessage({
+      text: "Try again. [[fail]]",
+      threadId: thread,
+    });
     const failure = await waitForNotification(
       received,
       since,
@@ -585,37 +652,6 @@ integration("Notifications", () => {
     await record("approval, stop and failure", since);
   }, 120_000);
 
-  it("keeps a muted Workspace's replies quiet while approvals still alert", async () => {
-    const since = received.length;
-    await setMuted(stack, true);
-    try {
-      const thread = await stack.createThread({
-        modelSelection,
-        title: "Muted work",
-        workspaceId: stack.mainWorkspaceId,
-      });
-      const turn = await stack.sendMessage({
-        text: "Quiet please.",
-        threadId: thread,
-        workspaceId: stack.mainWorkspaceId,
-      });
-      expect(await replyText(stack, turn.runId)).toBe("Completed by Codex.");
-      const asking = await stack.queueMessage({ text: "Run the tests. [[ask]]", threadId: thread });
-      await waitForNotification(
-        received,
-        since,
-        (n) => n.kind === "request-opened" && n.threadId === thread,
-        "approval while muted",
-      );
-      await settle();
-      expect(received.slice(since).map((n) => n.kind)).toEqual(["request-opened"]);
-      await stack.interruptRun(thread, asking.runId!);
-    } finally {
-      await setMuted(stack, false);
-    }
-    await record("muted workspace", since);
-  }, 120_000);
-
   it("gives the agent the person's time zone and local time", async () => {
     const updated = await stack.api["commands.dispatch"]({
       idempotencyKey: randomUUID(),
@@ -626,8 +662,7 @@ integration("Notifications", () => {
     const since = received.length;
     const turn = await stack.sendMessage({
       text: "What time is it for me?",
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     await waitForNotification(received, since, (n) => n.runId === turn.runId, "time zone reply");
     const turns = await capturedTurns(capturePath);
@@ -641,8 +676,7 @@ integration("Notifications", () => {
         interruptAcknowledgementFor = runId;
       },
       text: "Retry the interrupted response [[reply Acknowledgement retry]]",
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     const alert = await waitForNotification(
       received,
@@ -661,68 +695,83 @@ integration("Notifications", () => {
       ),
     );
     expect(publications.filter((entry) => entry.notificationId === alert.id)).toEqual([
-      expect.objectContaining({ notificationId: alert.id }),
-      expect.objectContaining({ notificationId: alert.id }),
+      expect.objectContaining({
+        notificationId: alert.id,
+      }),
+      expect.objectContaining({
+        notificationId: alert.id,
+      }),
     ]);
     await record("interrupted acknowledgement retry", since);
   }, 120_000);
-
-  it("H12 closes the real Host promptly while authority readiness never resolves", async () => {
+  it("H12 closes the real Host promptly while the Account acknowledgement never arrives", async () => {
     graceFinished = Promise.withResolvers<void>();
-    authorityAvailable = false;
-    await stack.restartHost();
-    const since = stack.notifications.length;
+    heldPublication = {
+      entered: Promise.withResolvers<void>(),
+      aborted: Promise.withResolvers<void>(),
+    };
+    const since = received.length;
     const turn = await stack.sendMessage({
       text: "Waiting for authority [[reply Held for authority]]",
-      threadId: chat,
-      workspaceId: stack.mainWorkspaceId,
+      threadId: rootTask,
     });
     await waitForNotification(
-      stack.notifications,
+      received,
       since,
       (entry) => entry.runId === turn.runId,
       "live while authority unavailable",
     );
     await clock.runUntilSettled(graceFinished.promise);
     clock.advanceBy(100);
+    await withTimeout(heldPublication.entered.promise, 5_000, {
+      timeoutError: () => new Error("Notification publication never reached the Account"),
+    });
     expect(publications.filter((entry) => entry.runId === turn.runId)).toEqual([]);
     const started = Date.now();
     await stack.host.close();
     expect(Date.now() - started).toBeLessThan(5_000);
+    await withTimeout(heldPublication.aborted.promise, 1_000, {
+      timeoutError: () =>
+        new Error("Host shutdown did not abort the pending Account acknowledgement"),
+    });
+    heldPublication = undefined;
     journeys.push({
       name: "close before authority ready",
-      notifications: stack.notifications.slice(since),
+      notifications: received.slice(since),
       publications: [...publications],
     });
   }, 120_000);
 });
-
 function openSocket(stack: VerticalStack): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const url = new URL("/v1/realtime", stack.hostOrigin);
     url.protocol = "ws:";
+    url.searchParams.set("opensteer_api_version", String(hostApiVersion));
     const socket = new WebSocket(url, {
-      headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+      headers: {
+        cookie: stack.sessionCookie,
+        origin: stack.hostOrigin.origin,
+      },
     });
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });
 }
-
 function toolCall(name: string, input: unknown): string {
   return `[[call ${name} ${Buffer.from(JSON.stringify(input), "utf8").toString("base64url")}]]`;
 }
-
 function programSending(delivery: "queue" | "report", threadId: string, message: string): string {
   return `export default async function ({ opensteer }) {
-    await opensteer.callTool("thread_send", ${JSON.stringify({ delivery, message, threadId })});
+    await opensteer.callTool("thread_send", ${JSON.stringify({
+      delivery,
+      message,
+      threadId,
+    })});
   }`;
 }
-
 function inSeconds(seconds: number): string {
   return new Date(Date.now() + seconds * 1_000).toISOString();
 }
-
 async function createTrigger(
   stack: VerticalStack,
   input: {
@@ -730,10 +779,15 @@ async function createTrigger(
     readonly name: string;
     readonly program: string;
     readonly source:
-      | { readonly kind: "webhook" }
+      | {
+          readonly kind: "webhook";
+        }
       | {
           readonly kind: "schedule";
-          readonly schedule: { readonly at: string; readonly kind: "at" };
+          readonly schedule: {
+            readonly at: string;
+            readonly kind: "at";
+          };
         };
   },
 ): Promise<string> {
@@ -742,7 +796,11 @@ async function createTrigger(
     input: {
       anchorThreadId: input.anchorThreadId,
       name: input.name,
-      program: { language: "javascript", source: input.program, toolContractVersion: 2 },
+      program: {
+        language: "javascript",
+        source: input.program,
+        toolContractVersion: 3,
+      },
       source: input.source,
     },
     type: "trigger.create",
@@ -752,7 +810,6 @@ async function createTrigger(
   }
   return created.data.trigger.id;
 }
-
 async function runTrigger(stack: VerticalStack, triggerId: string): Promise<void> {
   const run = await stack.api["commands.dispatch"]({
     idempotencyKey: randomUUID(),
@@ -763,30 +820,21 @@ async function runTrigger(stack: VerticalStack, triggerId: string): Promise<void
     throw new Error(`Trigger run failed: ${JSON.stringify(run)}`);
   }
 }
-
-async function setMuted(stack: VerticalStack, muted: boolean): Promise<void> {
-  const result = await stack.api["commands.dispatch"]({
-    idempotencyKey: randomUUID(),
-    muted,
-    type: "workspace.notifications.update",
-    workspaceId: stack.mainWorkspaceId,
-  });
-  if (!result.ok) throw new Error(`Mute update failed: ${result.error.code}`);
-}
-
 async function replyOf(stack: VerticalStack, runId: RunId): Promise<MessageId> {
   const event = await stack.host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select("data")
     .where("runId", "=", runId)
     .where("type", "=", "run.completed")
     .executeTakeFirstOrThrow();
-  const replyMessageId = (event.data as { readonly replyMessageId?: MessageId | null })
-    .replyMessageId;
+  const replyMessageId = (
+    event.data as {
+      readonly replyMessageId?: MessageId | null;
+    }
+  ).replyMessageId;
   if (!replyMessageId) throw new Error(`Run ${runId} completed without a reply`);
   return replyMessageId;
 }
-
 async function replyText(stack: VerticalStack, runId: RunId): Promise<string> {
   const reply = await replyOf(stack, runId);
   const message = await stack.host.store.database
@@ -794,11 +842,14 @@ async function replyText(stack: VerticalStack, runId: RunId): Promise<string> {
     .select("content")
     .where("id", "=", reply)
     .executeTakeFirstOrThrow();
-  return (message.content as readonly { readonly text?: string }[])
+  return (
+    message.content as readonly {
+      readonly text?: string;
+    }[]
+  )
     .map((part) => part.text ?? "")
     .join("");
 }
-
 async function waitForMessage(
   stack: VerticalStack,
   threadId: ThreadId,
@@ -826,7 +877,6 @@ async function waitForMessage(
     timeoutMs,
   );
 }
-
 async function waitForReplyIn(
   stack: VerticalStack,
   threadTitle: string,
@@ -850,7 +900,6 @@ async function waitForReplyIn(
     30_000,
   );
 }
-
 async function waitForRunStatus(stack: VerticalStack, runId: RunId, status: string): Promise<void> {
   let observed: string | undefined;
   try {
@@ -889,15 +938,15 @@ async function waitForNotification(
     timeoutMs,
   );
 }
-
 async function capturedTurns(path: string): Promise<readonly string[]> {
-  return parseCaptureJsonl<{ readonly notificationsTurn?: { readonly text: string } }>(
-    await readFile(path, "utf8"),
-  ).flatMap((entry) => {
+  return parseCaptureJsonl<{
+    readonly notificationsTurn?: {
+      readonly text: string;
+    };
+  }>(await readFile(path, "utf8")).flatMap((entry) => {
     return entry.notificationsTurn ? [entry.notificationsTurn.text] : [];
   });
 }
-
 async function waitFor<Value>(
   read: () => Promise<Value | undefined>,
   label: string,

@@ -5,14 +5,13 @@ import {
   BrowserProfileIdSchema,
   BrowserSessionIdSchema,
   IsoDateTimeSchema,
-  WorkspaceIdSchema,
   RunnerIdSchema,
   RunIdSchema,
   ThreadIdSchema,
 } from "@opensteer/core";
 import { PlaceOccupantSchema } from "./places.js";
 import { keyedStreamSchema, keyedStreamViewSchema } from "./keyed-stream.js";
-export const browserWorkspaceTabUrlMaxLength = 16_384;
+export const browserPersonalTabUrlMaxLength = 16_384;
 
 export const browserFaviconMaxBytes = 16 * 1_024;
 
@@ -60,7 +59,7 @@ export const BrowserTabRecordSchema = z.strictObject({
   id: BrowserSurfaceIdSchema,
   state: z.enum(["live", "suspended"]),
   title: z.string().max(256),
-  url: z.string().max(browserWorkspaceTabUrlMaxLength),
+  url: z.string().max(browserPersonalTabUrlMaxLength),
   icon: BrowserIconKeySchema.nullable(),
   order: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   openerId: BrowserSurfaceIdSchema.nullable(),
@@ -93,9 +92,9 @@ export const BrowserGroupRowSchema = z.strictObject({
   tabCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   inventoryRevision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   sessionId: BrowserSessionIdSchema,
-  workspaceId: WorkspaceIdSchema,
+
   state: HostedBrowserSessionStateSchema,
-  origin: z.enum(["agent", "trigger", "workspace"]),
+  origin: z.enum(["agent", "trigger", "person"]),
   access: BrowserProfileAccessSchema,
   placement: BrowserPlacementSelectorViewSchema,
   profileId: BrowserProfileIdSchema.nullable(),

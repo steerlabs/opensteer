@@ -15,7 +15,7 @@ import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
 import { createServer, type Server } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentCaller, RunCaller } from "./agent-caller.js";
-import type { AgentToolHandlers } from "./handlers/index.js";
+import type { AgentToolHandlers } from "./handlers/types.js";
 import { RequestHold } from "./request-hold.js";
 import { requestPendingGuidance } from "@opensteer/shared/requestGuidance";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
@@ -37,7 +37,9 @@ afterEach(async () => {
 function fixture() {
   const thread = {
     id: createId("thread"),
-    workspaceId: createId("workspace"),
+    folder: { computerId: createId("runner"), path: "/task" },
+    purpose: "task",
+    teamOrigin: null,
     lineageRootThreadId: createId("thread"),
     accessMode: "auto",
     environmentId: createId("environment"),
@@ -48,13 +50,13 @@ function fixture() {
     key: `run:${createId("run")}`,
     userId,
     accessMode: thread.accessMode,
-    reach: { kind: "workspace", workspaceId: thread.workspaceId },
+
     thread,
     claims: {
       runId: createId("run"),
       threadId: thread.id,
       requestedBy: userId,
-      workspaceId: thread.workspaceId,
+
       environmentId: thread.environmentId,
     } as RunCaller["claims"],
   };
@@ -67,7 +69,7 @@ function fixture() {
         key: "trigger:occurrence",
         userId,
         accessMode: thread.accessMode,
-        reach: run.reach,
+
         anchor: thread,
         program: { kind: "trigger" } as never,
       },
@@ -80,7 +82,6 @@ function fixture() {
         connectionId: "mcn_test",
         userId,
         accessMode: thread.accessMode,
-        reach: run.reach,
       },
     ],
   ]);
@@ -94,10 +95,6 @@ function fixture() {
   );
   const handlers = {
     person_message: personMessage,
-    project_list: vi.fn(async () => ({
-      projects: [],
-      window: { byteCount: 0, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 },
-    })),
     thread_send: vi.fn(async () => {
       throw new Error("Unexpected effect");
     }),
@@ -145,7 +142,7 @@ function fixture() {
         personSteerCount: vi.fn(async () => 0),
       },
       getThreadForOwner: async (id: Thread["id"]) => targets.get(id) ?? null,
-      findMainWorkspaceForOwner: async () => undefined,
+
       getAssignmentForOwner: async () => null,
     },
     publicUrl: new URL("http://127.0.0.1"),
@@ -786,7 +783,7 @@ describe("Opensteer MCP spine", () => {
         status: "pending",
         createdAt: new Date().toISOString(),
         originatingThreadId: f.thread.id,
-        targetWorkspaceId: f.thread.workspaceId,
+
         presentation: { kind: "confirm", title: "Sign in to Example" },
         payload: {
           kind: "browser.password-sign-in",
@@ -815,6 +812,7 @@ describe("Opensteer MCP spine", () => {
         window,
       };
       const product = new ProductToolHandlers({
+        deploymentId: createId("deployment"),
         store: {
           requests: {
             visiblePage: async () => page,
@@ -893,13 +891,18 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("filters settings and user-wide tools from the advertised inventory", async () => {
+  it("advertises personal owner tools for a full-access connection", async () => {
     const f = await httpFixture();
+    f.options.callers.authenticate.mockImplementation(async (token) => {
+      const caller = f.callers.get(token);
+      if (!caller) throw new Error("Unknown caller");
+      return { ...caller, accessMode: "full-access" };
+    });
     const client = await connect(f.url, "connection");
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).not.toContain("settings_write");
-      expect(names).not.toContain("computer_list");
+      expect(names).toContain("settings_write");
+      expect(names).toContain("computer_list");
       expect(names).toContain("pending_request");
     } finally {
       await client.close();
@@ -1092,18 +1095,16 @@ describe("Opensteer MCP spine", () => {
     ).rejects.toThrow("expired");
     expect(f.personMessage).toHaveBeenCalledTimes(1);
   });
-  it("refuses a target outside reach before its handler", async () => {
+  it("refuses a task outside the owner-filtered store before its handler", async () => {
     const f = fixture();
-    const target = { ...f.thread, id: createId("thread"), workspaceId: createId("workspace") };
-    f.targets.set(target.id, target);
     await expect(
       f.service.callTool(
         "run",
         "thread_send",
-        { threadId: target.id, message: "hello", delivery: "queue" },
-        { operationKey: "reach" },
+        { threadId: createId("thread"), message: "hello", delivery: "queue" },
+        { operationKey: "owner" },
       ),
-    ).rejects.toThrow("outside the caller's reach");
+    ).rejects.toThrow("unavailable");
     expect(f.handlers.thread_send).not.toHaveBeenCalled();
   });
   it("refuses a stronger target Thread before its handler", async () => {

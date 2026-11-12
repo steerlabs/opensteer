@@ -5,20 +5,17 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   type EnvironmentId,
   type GrantId,
   type RunId,
   type RunnerId,
   type ThreadId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { z } from "zod";
 import { SignedTokenClaimsSchema, type SignedTokenService } from "../identity/host-keys.js";
 
 // Each use is authorized against the renewable live execution binding.
 export const runCapabilityLifetimeSeconds = 24 * 60 * 60;
-
 const RunCapabilityScopeSchema = z.strictObject({
   specialistId: z.string().optional(),
   pluginDigests: z
@@ -30,31 +27,25 @@ const RunCapabilityScopeSchema = z.strictObject({
   // Tokens issued before grants existed name none; their Run's grant is found
   // by binding generation, so a Run that survived the upgrade keeps its tools.
   grantId: GrantIdSchema.optional(),
-  membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   requestedBy: UserIdSchema,
   runId: RunIdSchema,
   runnerBootId: z.string().min(1).max(255),
   runnerId: RunnerIdSchema,
   threadId: ThreadIdSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export type RunCapabilityScope = z.infer<typeof RunCapabilityScopeSchema>;
-
 export interface RunCapabilityBindingAuthorizer {
   assertActiveGrant(input: {
     readonly bindingGeneration: number;
     readonly environmentId: EnvironmentId;
     readonly grantId?: GrantId | undefined;
-    readonly membershipGeneration: number;
     readonly requestedBy: RunCapabilityScope["requestedBy"];
     readonly runId: RunId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }): Promise<void>;
 }
-
 export type RunCapabilityClaims<Audience extends string> = RunCapabilityScope & {
   readonly aud: Audience;
   readonly exp: number;
@@ -70,7 +61,6 @@ export class RunCapabilityTokenService<Audience extends string> {
   readonly #lifetimeSeconds: number;
   readonly #schema: z.ZodType<RunCapabilityClaims<Audience>>;
   readonly #tokens: SignedTokenService;
-
   constructor(options: {
     readonly audience: Audience;
     readonly authorizer: RunCapabilityBindingAuthorizer;
@@ -86,16 +76,20 @@ export class RunCapabilityTokenService<Audience extends string> {
     }) as z.ZodType<RunCapabilityClaims<Audience>>;
     this.#tokens = options.tokens;
   }
-
   issue(input: RunCapabilityScope): string {
-    return this.#tokens.issue({ ...input, aud: this.#audience }, this.#lifetimeSeconds);
+    return this.#tokens.issue(
+      {
+        ...input,
+        aud: this.#audience,
+      },
+      this.#lifetimeSeconds,
+    );
   }
 
   /** How long an issued token lives; the Runner asks for fresh ones at half of it. */
   get lifetimeSeconds(): number {
     return this.#lifetimeSeconds;
   }
-
   async authenticate(token: string): Promise<RunCapabilityClaims<Audience>> {
     const claims = this.#tokens.verify(token, this.#schema);
     await this.#authorizer.assertActiveGrant(claims);

@@ -20,17 +20,14 @@ import {
   eventFromRow,
   jsonValue,
   lockThreadRow,
-  lockWorkspaceRow,
-  safeGeneration,
   systemPrincipalId,
   threadExecutionIsAvailableToUser,
   type ChannelLinks,
 } from "./store-primitives.js";
 import { messageFromRow, runUsageFromRow, threadInputFromRow } from "./thread-row-mappers.js";
 import { projectThreadState } from "./thread-status.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 
-/** The caller holds the Run and its Workspace, Thread and session fences. */
 export async function recoverLostRunTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -53,14 +50,12 @@ export async function recoverLostRunTransaction(
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
   if (!["starting", "running", "waiting"].includes(run.status)) {
-    return { status: "unchanged", events: [], revokedGrants: [] };
+    return {
+      status: "unchanged",
+      events: [],
+      revokedGrants: [],
+    };
   }
-  const { workspaceId } = await transaction
-    .selectFrom("threads")
-    .select("workspaceId")
-    .where("id", "=", run.threadId)
-    .executeTakeFirstOrThrow();
-  await lockWorkspaceRow(transaction, workspaceId);
   await lockThreadRow(transaction, run.threadId);
   // Read under the Thread lock: the recovery message takes its next sequence.
   const thread = await transaction
@@ -105,17 +100,10 @@ export async function recoverLostRunTransaction(
   ) {
     return fail("interrupted");
   }
-  if (
-    !(await threadExecutionIsAvailableToUser(
-      transaction,
-      run.threadId,
-      run.requestedBy,
-      safeGeneration(run.membershipGeneration),
-    ))
-  ) {
+  if (!(await threadExecutionIsAvailableToUser(transaction, run.threadId, run.requestedBy))) {
     return fail("failed", {
-      code: "workspace_access_revoked",
-      message: "Workspace access was revoked before the Run reached a terminal event",
+      code: "task_access_revoked",
+      message: "Task execution authority ended before the Run reached a terminal event",
       retryable: false,
       status: "failed",
     });
@@ -134,7 +122,10 @@ export async function recoverLostRunTransaction(
         "This Run was interrupted repeatedly: three recoveries in five minutes. Continue it explicitly when its computer is stable.",
     });
   }
-  await lockRunProjectionRows(transaction, { runIds: [run.id], threadIds: [thread.id] });
+  await lockRunProjectionRows(transaction, {
+    runIds: [run.id],
+    threadIds: [thread.id],
+  });
   // Capture durable facts before cleanup changes their receipts.
   const requests = await transaction
     .selectFrom("requests")
@@ -153,7 +144,7 @@ export async function recoverLostRunTransaction(
     .execute();
   const tools = (
     await transaction
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", run.id)
       .where("runnerBindingGeneration", "=", lost.bindingGeneration)
@@ -169,13 +160,20 @@ export async function recoverLostRunTransaction(
   );
   const priorUsage = runUsageFromRow(run);
   const ordinal = current.ordinal + 1;
-  const restarted = await appendHostWorkspaceEvent(transaction, {
-    data: { attempt: ordinal, ...(priorUsage ? { priorUsage } : {}), reason: "recovery" },
+  const restarted = await appendHostDeploymentEvent(transaction, {
+    data: {
+      attempt: ordinal,
+      ...(priorUsage
+        ? {
+            priorUsage,
+          }
+        : {}),
+      reason: "recovery",
+    },
     environmentId: run.environmentId,
     runId: run.id,
     threadId: thread.id,
     type: "run.restarted",
-    workspaceId: thread.workspaceId,
   });
   const cleanup = await cleanupRunAttemptTransaction(transaction, {
     completedAt: input.now,
@@ -256,7 +254,12 @@ export async function recoverLostRunTransaction(
     if (omittedFacts)
       summary +=
         "- Further interrupted activity details were omitted; read them with thread_read view activity. Live approvals and questions did not complete; ask again if needed.\n";
-    const content: ContentPart[] = [{ type: "text", text: summary }];
+    const content: ContentPart[] = [
+      {
+        type: "text",
+        text: summary,
+      },
+    ];
     if (!lost.firstEventAt) {
       content.push({
         type: "text",
@@ -266,7 +269,12 @@ export async function recoverLostRunTransaction(
       let quoted = 0;
       for (const message of claimed) {
         const parts = messageFromRow(message).content.map((part) =>
-          part.type === "text" ? { ...part, text: [...part.text].slice(0, 4_000).join("") } : part,
+          part.type === "text"
+            ? {
+                ...part,
+                text: [...part.text].slice(0, 4_000).join(""),
+              }
+            : part,
         );
         const header: ContentPart = {
           type: "text",
@@ -292,7 +300,11 @@ export async function recoverLostRunTransaction(
         });
     }
     const parsedContent = MessageContentSchema.parse(content);
-    const author = { kind: "platform", cause: "run-recovery", referenceId: lost.id } as const;
+    const author = {
+      kind: "platform",
+      cause: "run-recovery",
+      referenceId: lost.id,
+    } as const;
     const message = await transaction
       .insertInto("messages")
       .values({
@@ -312,12 +324,14 @@ export async function recoverLostRunTransaction(
       .values({
         actorPrincipalId: systemPrincipalId,
         assignmentId: run.assignmentId,
-        authoritySource: jsonValue({ ...author, userId: run.requestedBy }),
+        authoritySource: jsonValue({
+          ...author,
+          userId: run.requestedBy,
+        }),
         cancelReason: null,
         causalChainId: run.causalChainId,
         deliveredAt: null,
         idempotencyKey: `run-recovery:${lost.id}`,
-        membershipGeneration: safeGeneration(run.membershipGeneration),
         messageId,
         policy: "queue",
         queueRank: thread.nextMessageSequence,
@@ -336,23 +350,31 @@ export async function recoverLostRunTransaction(
       .executeTakeFirstOrThrow();
     await transaction
       .updateTable("threads")
-      .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: input.now })
+      .set({
+        nextMessageSequence: sql`next_message_sequence + 1`,
+        updatedAt: input.now,
+      })
       .where("id", "=", thread.id)
       .execute();
     events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input: threadInputFromRow(receipt), message: messageFromRow(message) },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          input: threadInputFromRow(receipt),
+          message: messageFromRow(message),
+        },
         environmentId: run.environmentId,
         runId: run.id,
         threadId: thread.id,
         type: "message.created",
-        workspaceId: thread.workspaceId,
       }),
     );
   }
   await transaction
     .updateTable("runs")
-    .set({ bindingGeneration: null, status: "queued" })
+    .set({
+      bindingGeneration: null,
+      status: "queued",
+    })
     .where("id", "=", run.id)
     .execute();
   const execute = await transaction
@@ -383,13 +405,14 @@ export async function recoverLostRunTransaction(
     })
     .execute();
   events.push(
-    await appendHostWorkspaceEvent(transaction, {
-      data: { status: "queued" },
+    await appendHostDeploymentEvent(transaction, {
+      data: {
+        status: "queued",
+      },
       environmentId: run.environmentId,
       runId: run.id,
       threadId: thread.id,
       type: "run.status",
-      workspaceId: thread.workspaceId,
     }),
     ...(await projectThreadState(transaction, thread.id, input.now)),
     ...(await assignmentActivityEventsForRun(transaction, run.id)),
@@ -407,18 +430,33 @@ export async function recoverLostRunTransaction(
     if (current.id !== lost.id) await endAttempt(transaction, current.id, "cancelled");
     await transaction
       .updateTable("runAttempts")
-      .set({ status: "superseded", supersededAt: input.now })
+      .set({
+        status: "superseded",
+        supersededAt: input.now,
+      })
       .where("id", "=", current.id)
       .execute();
     await transaction
       .insertInto("runAttempts")
-      .values({ id: successorId, ordinal, reason: "recovery", runId: run.id, status: "current" })
+      .values({
+        id: successorId,
+        ordinal,
+        reason: "recovery",
+        runId: run.id,
+        status: "current",
+      })
       .execute();
     await transaction
       .updateTable("runAttempts")
-      .set({ supersededBy: successorId })
+      .set({
+        supersededBy: successorId,
+      })
       .where("id", "=", current.id)
       .execute();
   });
-  return { status: "recovered", events, revokedGrants };
+  return {
+    status: "recovered",
+    events,
+    revokedGrants,
+  };
 }

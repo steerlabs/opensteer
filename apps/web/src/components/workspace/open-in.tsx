@@ -26,7 +26,6 @@ function sameProfiles(left: HostSnapshot, right: HostSnapshot): boolean {
     left.browserProfiles === right.browserProfiles &&
     left.browserPlacements === right.browserPlacements &&
     left.connection === right.connection &&
-    left.homeWorkspaceId === right.homeWorkspaceId &&
     left.machines === right.machines
   );
 }

@@ -1,4 +1,3 @@
-import { messageItem } from "../mcp/thread-items.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
 import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import {
@@ -9,58 +8,34 @@ import {
   type Run,
   type Thread,
   type ThreadInput,
-  type Workspace,
 } from "@opensteer/core";
 import type { OpensteerStore, TriggerControlAdmissionResult } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
 import type { TriggerControlInput } from "@opensteer/triggers";
 import { describe, expect, it, vi } from "vitest";
 import { type TriggerControlTokenService } from "./trigger-control-service.js";
-
 vi.mock("@opensteer/database", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@opensteer/database")>()),
-  readAgentThreadRecent: async () => ({ runs: [], places: [] }),
+  readAgentThreadRecent: async () => ({
+    runs: [],
+    places: [],
+  }),
 }));
 const now = "2026-08-12T12:00:00.000Z";
 const ownerId = createId("user");
 const runnerId = createId("runner");
 const environmentId = createId("environment");
-const workspaceId = createId("workspace");
+const folder = { computerId: runnerId, path: "/tmp/trigger-fixture" };
 const threadId = createId("thread");
 const harnessInstanceId = createId("harnessInstance");
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 describe("TriggerControlService", () => {
-  it("reads Projects without spending a per-action quota", async () => {
-    const { admitTriggerControlRequest, service } = makeService({});
-    const result = await service.handle("trigger-token", {
-      requestId: crypto.randomUUID(),
-      type: "project.list",
-    });
-    expect(result.type).toBe("project.list.result");
-    expect(admitTriggerControlRequest).not.toHaveBeenCalled();
-  });
-  it("returns a created Project's slug and absolute path", async () => {
-    const created = { ...workspace(createId("workspace"), "Analysis"), slug: "analysis" };
-    const { service } = makeService({ create: async () => created });
-    await expect(
-      service.handle("trigger-token", {
-        name: "Analysis",
-        requestId: crypto.randomUUID(),
-        type: "project.create",
-      }),
-    ).resolves.toMatchObject({
-      type: "project.create.result",
-      workspace: { id: created.id },
-      slug: "analysis",
-      path: "/Main/Projects/analysis",
-    });
-  });
-
   it("admits a queued Thread message against the Occurrence ledger", async () => {
     const anchor = thread();
     const queued = run(anchor);
@@ -72,18 +47,23 @@ describe("TriggerControlService", () => {
       run: queued,
     }));
     const { admitTriggerControlRequest, occurrenceId, service } = makeService({
-      commands: { enqueueThreadInput } as unknown as CommandService,
+      commands: {
+        enqueueThreadInput,
+      } as unknown as CommandService,
     });
     const requestId = crypto.randomUUID();
-
     await service.handle("trigger-token", {
-      content: [{ text: "Status?", type: "text" }],
+      content: [
+        {
+          text: "Status?",
+          type: "text",
+        },
+      ],
       delivery: "queue",
       requestId,
       threadId,
       type: "thread.message",
     });
-
     expect(admitTriggerControlRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "thread.message",
@@ -95,37 +75,30 @@ describe("TriggerControlService", () => {
         requestedBy: ownerId,
         runnerId,
         threadId,
-        workspaceId,
       }),
     );
     expect(enqueueThreadInput).toHaveBeenCalledWith(
       expect.objectContaining({
         idempotencyKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "thread_send")}:message`,
         policy: "queue",
-        source: { kind: "trigger", occurrenceId },
+        source: {
+          kind: "trigger",
+          occurrenceId,
+        },
       }),
     );
   });
-
-  it("places delegated work in an explicitly selected available environment", async () => {
-    const targetEnvironmentId = createId("environment");
+  it("places delegated work in its admitted folder with the selected harness", async () => {
+    const targetEnvironmentId = environmentId;
     const targetHarnessId = createId("harnessInstance");
     const selectedHarnessId = createId("harnessInstance");
-    const targetWorkspace = {
-      ...workspace(workspaceId, "Portable workspace"),
-      backing: {
-        kind: "local-directory" as const,
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: targetEnvironmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    };
     const delegateThread = vi.fn(async () => {
       throw new Error("Delegation reached the selected environment");
     });
     const { service } = makeService({
-      commands: { delegateThread } as unknown as CommandService,
+      commands: {
+        delegateThread,
+      } as unknown as CommandService,
       store: {
         environmentIsAvailableToUser: vi.fn(async () => true),
         getEnvironment: vi.fn(async () => environment(targetEnvironmentId)),
@@ -140,7 +113,12 @@ describe("TriggerControlService", () => {
                   id: "effort",
                   label: "Reasoning",
                   type: "select",
-                  values: [{ label: "Low", value: "low" }],
+                  values: [
+                    {
+                      label: "Low",
+                      value: "low",
+                    },
+                  ],
                 },
               ],
               providerId: "openai",
@@ -156,7 +134,6 @@ describe("TriggerControlService", () => {
           id: targetHarnessId,
           name: "Opensteer",
         })),
-        getWorkspaceForOwner: vi.fn(async () => targetWorkspace),
         listHarnessInstances: vi.fn(async () => [
           {
             config: {},
@@ -177,30 +154,34 @@ describe("TriggerControlService", () => {
         ]),
       },
     });
-
     await expect(
       service.handle("trigger-token", {
         harnessInstanceId: selectedHarnessId,
         requestId: crypto.randomUUID(),
         task: "Run this elsewhere",
         type: "thread.delegate",
-        workspaceId,
       }),
     ).rejects.toThrow("Delegation reached the selected environment");
     expect(delegateThread).toHaveBeenCalledWith(
       expect.objectContaining({
         environmentId: targetEnvironmentId,
         harnessInstanceId: selectedHarnessId,
-        task: [{ text: "Run this elsewhere", type: "text" }],
+        folder,
+        task: [
+          {
+            text: "Run this elsewhere",
+            type: "text",
+          },
+        ],
       }),
     );
   });
-
   it("derives the Trigger create idempotency key from the Occurrence and request", async () => {
     const manage = vi.fn(async () => ({}));
-    const { occurrenceId, service } = makeService({ manage });
+    const { occurrenceId, service } = makeService({
+      manage,
+    });
     const requestId = crypto.randomUUID();
-
     await service.handle("trigger-token", {
       input: {
         anchorThreadId: threadId,
@@ -208,17 +189,18 @@ describe("TriggerControlService", () => {
         name: "Nightly report",
         operation: "create",
         program: {
-          toolContractVersion: 2,
+          toolContractVersion: 3,
           language: "javascript",
           source: "export default () => {}",
         },
-        source: { kind: "webhook" },
+        source: {
+          kind: "webhook",
+        },
       },
       requestId,
       tool: "trigger.write",
       type: "trigger.control",
     });
-
     expect(manage).toHaveBeenCalledWith(
       ownerId,
       expect.objectContaining({
@@ -226,45 +208,50 @@ describe("TriggerControlService", () => {
       }),
       threadId,
       {
+        accessMode: "full-access",
         operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.write`,
       },
     );
   });
-
   it("finds managed memory passes by system role", async () => {
-    const manage = vi.fn(async () => ({ triggers: [] }));
-    const { service } = makeService({ manage });
+    const manage = vi.fn(async () => ({
+      triggers: [],
+    }));
+    const { service } = makeService({
+      manage,
+    });
     await service.handle("trigger-token", {
-      input: { limit: 1, operation: "list", systemRole: "memory-light" },
+      input: {
+        limit: 1,
+        operation: "list",
+        systemRole: "memory-light",
+      },
       requestId: crypto.randomUUID(),
       tool: "trigger.read",
       type: "trigger.control",
     });
     expect(manage).toHaveBeenCalledWith(
       ownerId,
-      { limit: 1, operation: "list", systemRole: "memory-light" },
+      {
+        limit: 1,
+        operation: "list",
+        systemRole: "memory-light",
+      },
       threadId,
       expect.anything(),
     );
   });
 });
-
 function makeService(options: {
   admitTriggerControlRequest?: () => Promise<TriggerControlAdmissionResult>;
   commands?: CommandService;
-  create?: (input: {
-    readonly createdBy: typeof ownerId;
-    readonly idempotencyKey: string;
-    readonly kind: "project";
-    readonly name: string;
-  }) => Promise<Workspace>;
   listEnvironmentsForUser?: (
     userId: typeof ownerId,
     limit: number,
   ) => Promise<readonly ReturnType<typeof environment>[]>;
   manage?: (owner: typeof ownerId, input: TriggerControlInput) => Promise<unknown>;
   store?: Readonly<Record<string, unknown>>;
-  toolContractVersion?: 1 | 2;
+  toolContractVersion?: 3;
 }) {
   const anchor = thread();
   const claims = {
@@ -280,15 +267,17 @@ function makeService(options: {
     runnerBootId: "boot-1",
     runnerId,
     threadId,
-    toolContractVersion: options.toolContractVersion ?? 2,
-    workspaceId,
+    toolContractVersion: options.toolContractVersion ?? 3,
   };
   const listEnvironmentsForUser = vi.fn(
     options.listEnvironmentsForUser ?? (async () => [environment(environmentId)]),
   );
   const admitTriggerControlRequest = vi.fn(
     options.admitTriggerControlRequest ??
-      (async () => ({ actionClass: "trigger.read", wasDuplicate: false })),
+      (async () => ({
+        actionClass: "trigger.read",
+        wasDuplicate: false,
+      })),
   );
   const store = {
     admitTriggerControlRequest,
@@ -303,7 +292,6 @@ function makeService(options: {
       name: "Opensteer",
     })),
     getThreadForOwner: vi.fn(async () => anchor),
-    getWorkspaceForOwner: vi.fn(async () => workspace(workspaceId, "Scheduled workspace")),
     listEnvironmentsForUser,
     listHarnessCatalogs: vi.fn(async () => []),
     listHarnessInstances: vi.fn(async () => [
@@ -313,15 +301,13 @@ function makeService(options: {
       threads: [anchor],
       window: windowFor([anchor]),
     })),
-    workspacePageForOwner: vi.fn(async () => ({
-      window: windowFor([]),
-      workspaces: [],
-    })),
     ...options.store,
   } as unknown as OpensteerStore;
   store.listAgentHarnessInstancesForUser = vi.fn(async (requestedBy, input = {}) => {
     const visible = await listEnvironmentsForUser(requestedBy, 65);
-    const rows = await store.listHarnessInstances({ environmentIds: visible.map(({ id }) => id) });
+    const rows = await store.listHarnessInstances({
+      environmentIds: visible.map(({ id }) => id),
+    });
     return rows
       .filter((row) => row.enabled && row.removedAt == null)
       .filter((row) => input.id === undefined || row.id === input.id)
@@ -370,14 +356,19 @@ function makeService(options: {
     admitTriggerControlRequest,
     occurrenceId: claims.occurrenceId,
     service: new TriggerToolsTestClient({
-      browser: { readablePlaces: async () => [] } as never,
-      defaultWorkspaceBacking: "local-directory",
+      browser: {
+        readablePlaces: async () => [],
+      } as never,
       canRunHarness: () => true,
       commands,
-      environmentWorkspaceBackings: () => ["local-directory"] as const,
       isEnvironmentConnected: () => true,
       store,
       tokens,
+      onEvent: () => {},
+      folders: {
+        resolve: async (_owner, chosen) => ({ folder: chosen ?? folder, environmentId }),
+        canExecute: (id) => id === environmentId,
+      },
       triggers: {
         manage:
           options.manage ??
@@ -385,18 +376,9 @@ function makeService(options: {
             throw new Error("Unexpected Trigger management");
           }),
       },
-      workspaces: {
-        projectPath: async (workspace) => `/Main/Projects/${workspace.slug}`,
-        create:
-          options.create ??
-          vi.fn(async () => {
-            throw new Error("Unexpected Workspace creation");
-          }),
-      },
     }),
   };
 }
-
 function environment(id: EnvironmentId) {
   return {
     capabilities: ["filesystem"] as const,
@@ -406,7 +388,6 @@ function environment(id: EnvironmentId) {
     runnerId,
   };
 }
-
 function harness(
   id: ReturnType<typeof createId<"harnessInstance">>,
   profileEnvironmentId: EnvironmentId,
@@ -425,16 +406,16 @@ function harness(
     stateKind: "ambient" as const,
   };
 }
-
 function thread(): Thread {
   return {
     accessMode: "full-access",
-    inheritsMain: true,
     continuationIdentity: null,
     doneAt: null,
     doneReason: null,
     icon: null,
-    role: "work",
+    purpose: "task",
+    folder,
+    teamOrigin: null,
     createdAt: now,
     createdBy: ownerId,
     environmentId,
@@ -450,16 +431,15 @@ function thread(): Thread {
     status: "idle",
     title: "Scheduled task",
     updatedAt: now,
-    workspaceId,
   };
 }
-
 function run(value: Thread): Run {
   const seedInputId = createId("message");
   return {
     accessMode: value.accessMode,
     activationInputId: seedInputId,
     assignmentId: null,
+    teamRequestId: null,
     causalChainId: createId("causalChain"),
     completedAt: null,
     createdAt: now,
@@ -478,7 +458,6 @@ function run(value: Thread): Run {
     seedInputId,
   };
 }
-
 function message(anchorThreadId: Thread["id"], runId: Run["id"]): Message {
   return {
     author: {
@@ -488,7 +467,12 @@ function message(anchorThreadId: Thread["id"], runId: Run["id"]): Message {
       source: "schedule",
       triggerId: createId("trigger"),
     },
-    content: [{ text: "Status?", type: "text" }],
+    content: [
+      {
+        text: "Status?",
+        type: "text",
+      },
+    ],
     createdAt: now,
     id: createId("message"),
     kind: "input",
@@ -497,14 +481,15 @@ function message(anchorThreadId: Thread["id"], runId: Run["id"]): Message {
     threadId: anchorThreadId,
   };
 }
-
 function inboxInput(value: Message, run: Run, policy: "report" | "queue" | "steer"): ThreadInput {
   return {
     assignmentId: null,
+    teamRequestId: null,
     cancelReason: null,
     causalChainId: run.causalChainId,
     createdAt: now,
     deliveredAt: now,
+    teamSource: null,
     messageId: value.id,
     policy,
     replyTarget: null,
@@ -514,31 +499,6 @@ function inboxInput(value: Message, run: Run, policy: "report" | "queue" | "stee
     updatedAt: now,
   };
 }
-
-function workspace(id: Workspace["id"], name: string): Workspace {
-  return {
-    backing: {
-      bindingId: createId("workspaceBinding"),
-      generation: 1,
-      kind: "local-directory",
-      ownerEnvironmentId: environmentId,
-      storageAuthorityId: createId("storageAuthority"),
-    },
-
-    createdAt: now,
-    createdBy: ownerId,
-    homeThreadId: null,
-    voiceThreadId: null,
-    icon: null,
-    id,
-    kind: "project",
-    name,
-    status: "ready",
-    storageIssue: null,
-    updatedAt: now,
-  };
-}
-
 function windowFor(values: readonly unknown[]) {
   return {
     byteCount: Buffer.byteLength(JSON.stringify(values), "utf8"),
@@ -548,72 +508,3 @@ function windowFor(values: readonly unknown[]) {
     totalItems: values.length,
   };
 }
-
-it("reads home history using the resolved Chat ID", async () => {
-  const chat = { ...thread(), id: createId("thread") };
-  const entry = message(chat.id, createId("run"));
-  const read = vi.fn(async () => ({
-    messages: [entry],
-    window: { ...windowFor([entry]), threadId: chat.id },
-  }));
-  const { service } = makeService({
-    store: {
-      findMainWorkspaceForOwner: vi.fn(async () => ({ homeThreadId: chat.id })),
-      getThreadForOwner: vi.fn(async (id: Thread["id"]) => (id === chat.id ? chat : thread())),
-      threadMessagePageForOwner: read,
-      listThreadAssignmentsForOwner: vi.fn(async () => ({
-        assignments: [],
-        window: windowFor([]),
-      })),
-      getThreadInputQueue: async () => ({ paused: false, items: [] }),
-    },
-  });
-  await expect(
-    service.handle("trigger-token", {
-      type: "thread.read",
-      requestId: crypto.randomUUID(),
-      threadId: "home",
-      limit: 1,
-    }),
-  ).resolves.toMatchObject({
-    thread: { id: chat.id, workspaceId },
-    items: [messageItem(entry, 20_000)],
-  });
-  expect(read).toHaveBeenCalledWith(expect.objectContaining({ threadId: chat.id }));
-});
-it("reports a missing Chat for trigger home reads", async () => {
-  const { service } = makeService({ store: { findMainWorkspaceForOwner: async () => null } });
-  await expect(
-    service.handle("trigger-token", {
-      type: "thread.read",
-      requestId: crypto.randomUUID(),
-      threadId: "home",
-    }),
-  ).rejects.toThrow("Chat has not been started yet");
-});
-
-it("keeps trigger home reads within the anchor's reach", async () => {
-  const anchor = { ...thread(), inheritsMain: false };
-  const chat = {
-    ...thread(),
-    id: createId("thread"),
-    lineageRootThreadId: createId("thread"),
-    workspaceId: createId("workspace"),
-  };
-  const read = vi.fn();
-  const { service } = makeService({
-    store: {
-      findMainWorkspaceForOwner: async () => ({ homeThreadId: chat.id }),
-      getThreadForOwner: async (id: Thread["id"]) => (id === chat.id ? chat : anchor),
-      threadMessagePageForOwner: read,
-    },
-  });
-  await expect(
-    service.handle("trigger-token", {
-      type: "thread.read",
-      requestId: crypto.randomUUID(),
-      threadId: "home",
-    }),
-  ).rejects.toThrow("outside the caller's reach");
-  expect(read).not.toHaveBeenCalled();
-});

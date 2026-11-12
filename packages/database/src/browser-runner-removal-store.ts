@@ -69,16 +69,7 @@ export async function archiveRunnerBrowserProfiles(
 export async function lockRunnerBrowserProfileRemoval(
   transaction: Transaction<DatabaseSchema>,
   runnerId: RunnerId,
-  profileIds: readonly BrowserProfileId[],
 ) {
-  if (profileIds.length)
-    await transaction
-      .selectFrom("browserProfileGrants")
-      .select("id")
-      .where("profileId", "in", profileIds)
-      .orderBy("id")
-      .forNoKeyUpdate()
-      .execute(databaseOperationOptions());
   await transaction
     .selectFrom("browserProfileDeletions")
     .select("deletionId")
@@ -94,16 +85,7 @@ export async function finishRunnerBrowserProfileRemoval(
   profiles: Awaited<ReturnType<typeof archiveRunnerBrowserProfiles>>,
   now: Date,
 ) {
-  const profileIds = profiles.map((profile) => profile.id);
-  await lockRunnerBrowserProfileRemoval(transaction, runnerId, profileIds);
-  if (profileIds.length) {
-    await transaction
-      .updateTable("browserProfileGrants")
-      .set({ revokedAt: now })
-      .where("profileId", "in", profileIds)
-      .where("revokedAt", "is", null)
-      .execute(databaseOperationOptions());
-  }
+  await lockRunnerBrowserProfileRemoval(transaction, runnerId);
   const values = profiles.flatMap((profile) => {
     const storage = profileStorage(profile);
     if (storage.kind === "unbound") return [];

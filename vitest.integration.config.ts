@@ -1,8 +1,11 @@
 import CiSequencer from "./scripts/ci-sequencer.js";
-import { integrationTestInclude } from "./.github/scripts/ci-test-files.mjs";
+import {
+  integrationTestInclude,
+  optInIntegrationBenchmarks,
+} from "./.github/scripts/ci-test-files.mjs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { DefaultReporter } from "vitest/reporters";
 import IntegrationFailureReporter from "./packages/database/src/integration-failure-reporter.test-support.js";
 import { RunRecordReporter } from "./packages/database/src/run-record.test-support.js";
@@ -22,6 +25,10 @@ export default defineConfig({
     maxConcurrency: 1,
     sequence: { concurrent: false, setupFiles: "list", sequencer: CiSequencer },
     include: integrationTestInclude,
+    exclude: [
+      ...configDefaults.exclude,
+      ...(process.env.OPENSTEER_TEAM_PERF === "1" ? [] : optInIntegrationBenchmarks),
+    ],
     pool: "forks",
     isolate: true,
     retry: 0,

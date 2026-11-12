@@ -38,7 +38,7 @@ import {
   type DesktopComputerAppSetup,
 } from "@opensteer/protocol/desktop";
 
-import { previewBootstrap, previewDate, previewWorkspace } from "./preview-bootstrap.js";
+import { previewBootstrap, previewDate, previewDeploymentSnapshot } from "./preview-bootstrap.js";
 
 const previewParameter = "desktop-preview";
 const previewPersonalOrigin = "http://127.0.0.1:4310";
@@ -96,7 +96,6 @@ export function desktopPreviewBridge(
   const previewEnvironmentId = createId("environment");
   const previewRunnerId = createId("runner");
   const previewUserId = createId("user");
-  const previewWorkspaceId = createId("workspace");
   const signedInDeployments = new Set<string>();
   const socketPaths = new Map<string, string>();
   let socketOrdinal = 0;
@@ -280,7 +279,7 @@ export function desktopPreviewBridge(
 
   const bridge = {
     downloads: desktopPreviewDownloads(),
-    onWorkspaceTabCommand: () => () => undefined,
+    onPersonalTabCommand: () => () => undefined,
     getLocalVisibility: async () => true,
     onLocalVisibilityChanged: () => () => undefined,
 
@@ -383,7 +382,6 @@ export function desktopPreviewBridge(
               environmentId: previewEnvironmentId,
               runnerId: previewRunnerId,
               userId: previewUserId,
-              workspaceId: previewWorkspaceId,
             }),
           ),
           ok: true,
@@ -532,35 +530,17 @@ export function desktopPreviewBridge(
       if (!isSubscribeFrame(frame)) return;
       const selected = selectedDeployment(selection);
       if (!selected) return;
-      const workspace = previewWorkspace(selected, previewWorkspaceId, previewEnvironmentId);
       emitSocket({
         connectionId: input.connectionId,
         data: JSON.stringify({
-          snapshot: {
-            notificationPreferences: [{ workspaceId: workspace.id, muted: false, revision: "0" }],
-            readStates: [],
-            messageWindows: [],
-            messages: [],
-            pendingRequestWindow: emptyWindow(),
-            pendingRequests: [],
-            runQueue: [],
-            sequence: "0",
-            serializedBytes: 2,
-            threadWindow: emptyWindow(),
-            threads: [],
-            workspace,
-          },
+          snapshot: previewDeploymentSnapshot(selected.id),
           type: "host.snapshot",
         }),
         type: "text",
       });
       emitSocket({
         connectionId: input.connectionId,
-        data: JSON.stringify({
-          sequence: "0",
-          type: "host.synchronized",
-          workspaceId: workspace.id,
-        }),
+        data: JSON.stringify({ sequence: "0", type: "host.synchronized" }),
         type: "text",
       });
     },
@@ -670,7 +650,7 @@ export function desktopPreviewBridge(
             ...personal.components,
             runner: { state: "ready", version: "preview" },
           },
-          step: "creating-main",
+          step: "preparing-agent-home",
         });
         emitPersonal();
       });
@@ -785,13 +765,13 @@ function previewPasswordsStatus(search: string): DesktopPasswordsStatus {
     case "needs-reset":
       return {
         availability: "available",
-        broker: { agentSignIns: "off", vault: variant },
+        broker: { agentSignIns: "off", personFill: "off", personSave: "off", vault: variant },
         development: false,
       };
     default:
       return {
         availability: "available",
-        broker: { agentSignIns: "on", personFill: "on", vault: "ready" },
+        broker: { agentSignIns: "on", personFill: "on", personSave: "on", vault: "ready" },
         development: variant === "development",
       };
   }
@@ -906,7 +886,7 @@ export function previewPasswordsSignInCard(search: string): PasswordSignInCard {
   const approval = (
     accounts: readonly PasswordSignInAccount[],
     _on = site,
-  ): PasswordSignInCard => ({ accounts: [...accounts], permissionVersion: 5, stage: "approval" });
+  ): PasswordSignInCard => ({ accounts: [...accounts], permissionVersion: 6, stage: "approval" });
   switch (new URLSearchParams(search).get("card")) {
     case "approval-one":
       return approval([previewSignInAccounts[0]]);
@@ -1025,10 +1005,6 @@ function previewAccountIdentity() {
     issuer: "https://accounts.opensteer.invalid",
     subject: "acct_00000000-0000-4000-8000-000000000001",
   };
-}
-
-function emptyWindow() {
-  return { byteCount: 2, hasMore: false, itemCount: 0, nextBefore: null, totalItems: 0 };
 }
 
 function jsonResponse(status: number, body: unknown) {

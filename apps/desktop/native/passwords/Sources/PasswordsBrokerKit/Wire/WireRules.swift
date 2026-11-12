@@ -115,11 +115,11 @@ enum WireRules {
     return String(text.dropFirst("https://".count))
   }
 
-  /// `WorkspaceIdSchema`: `wsp_` and an RFC 9562 UUID (versions 1–8, the RFC
+  /// `DeploymentIdSchema`: `dep_` and an RFC 9562 UUID (versions 1–8, the RFC
   /// variant), matched case-insensitively as its regular expression is.
-  static func workspaceId(_ text: String) -> Bool {
+  static func deploymentId(_ text: String) -> Bool {
     let bytes = Array(text.utf8)
-    guard bytes.count == 40, String(decoding: bytes[0..<4], as: UTF8.self).lowercased() == "wsp_" else { return false }
+    guard bytes.count == 40, String(decoding: bytes[0..<4], as: UTF8.self).lowercased() == "dep_" else { return false }
     let uuid = String(decoding: bytes[4...], as: UTF8.self).lowercased()
     guard isUUID(uuid), uuid != "00000000-0000-0000-0000-000000000000", uuid != "ffffffff-ffff-ffff-ffff-ffffffffffff"
     else { return false }

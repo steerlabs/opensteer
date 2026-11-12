@@ -33,7 +33,7 @@ describe("Desktop preview Host simulation", () => {
     expect(result.ok, result.ok ? "" : result.error.message).toBe(true);
     if (!result.ok) return;
     expect(HostBootstrapSchema.safeParse(result.data).success).toBe(true);
-    expect(result.data.workspaces).toHaveLength(1);
+    expect(result.data.environments).toHaveLength(1);
     vi.useRealTimers();
   });
 });

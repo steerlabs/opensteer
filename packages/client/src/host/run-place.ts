@@ -40,18 +40,10 @@ export class RunPlaceStore {
     for (const event of events) this.accept(event, false);
     if (notify) this.flush();
   }
-  reconcile(
-    workspaceId: string,
-    sequence: Sequence,
-    events: readonly PlaceEnteredEventView[],
-  ): void {
+  reconcile(sequence: Sequence, events: readonly PlaceEnteredEventView[]): void {
     const present = new Set(events.map((event) => event.runId));
     for (const event of this.#values.values())
-      if (
-        event.workspaceId === workspaceId &&
-        compareSequence(event.sequence, sequence) <= 0 &&
-        !present.has(event.runId)
-      )
+      if (compareSequence(event.sequence, sequence) <= 0 && !present.has(event.runId))
         this.end(event.runId, false);
     this.seed(events, false);
   }

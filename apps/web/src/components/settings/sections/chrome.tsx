@@ -5,7 +5,6 @@ import {
   formatRelativeTime,
   mutationIdempotencyKey,
   unwrapRpcResult,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import type {
   BrowserSiteGrant,
@@ -19,17 +18,16 @@ import { useShellChromeEnvironment } from "../../chrome/use-shell-chrome-environ
 import { Icon } from "../../icon.js";
 import { LoadingRows } from "../../loading-rows.js";
 import { useToast } from "../../toast.js";
-import { WorkspaceOrb } from "../../workspace-orb.js";
 import { SettingsError } from "../primitives.js";
 
 const refreshEveryMs = 10_000;
 
 /**
  * Settings → Chrome. Two things only: the Chrome profiles connected to this
- * Opensteer, and the sites each Workspace's agents may sign in to.
+ * Opensteer, and the sites your agent may sign in to.
  */
 export function ChromeSection() {
-  const { hostClient, snapshot } = useShell();
+  const { hostClient } = useShell();
   const environment = useShellChromeEnvironment();
   const [state, setState] = useState<BrowserSourcesState | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -127,11 +125,7 @@ export function ChromeSection() {
         </div>
         <SettingsError message={error} />
       </section>
-      <AllowedSites
-        onChanged={load}
-        sites={state?.sites ?? null}
-        workspaces={snapshot.workspaces}
-      />
+      <AllowedSites onChanged={load} sites={state?.sites ?? null} />
     </>
   );
 }
@@ -320,58 +314,35 @@ function ChromeProfileRow({
 
 /* ---- Allowed sites ---- */
 
-interface SiteGroup {
-  readonly grants: readonly BrowserSiteGrant[];
-  readonly lastSignedInAt: string | null;
-  readonly site: string;
-}
-
-function groupSites(sites: readonly BrowserSiteGrant[]): readonly SiteGroup[] {
-  const groups = new Map<string, BrowserSiteGrant[]>();
-  for (const grant of sites) groups.set(grant.site, [...(groups.get(grant.site) ?? []), grant]);
-  return [...groups.entries()]
-    .map(([site, grants]) => ({
-      grants,
-      lastSignedInAt:
-        grants
-          .map((grant) => grant.lastSignedInAt)
-          .filter((value): value is string => value !== null)
-          .sort()
-          .at(-1) ?? null,
-      site,
-    }))
-    .sort((left, right) => browserSiteLabel(left.site).localeCompare(browserSiteLabel(right.site)));
-}
-
 function AllowedSites({
   onChanged,
   sites,
-  workspaces,
 }: {
   readonly onChanged: () => Promise<void>;
   readonly sites: readonly BrowserSiteGrant[] | null;
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const { hostClient } = useShell();
   const toast = useToast();
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const groups = sites ? groupSites(sites) : [];
+  const sorted = sites
+    ? [...sites].sort((left, right) =>
+        browserSiteLabel(left.site).localeCompare(browserSiteLabel(right.site)),
+      )
+    : [];
 
-  const remove = (grant: BrowserSiteGrant, workspaceName: string) => {
-    const key = `${grant.workspaceId}\0${grant.site}`;
+  const remove = (grant: BrowserSiteGrant) => {
     if (pending) return;
-    setPending(key);
+    setPending(grant.site);
     setError(null);
     void hostClient
       .dispatch({
-        idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.workspaceId}`),
+        idempotencyKey: mutationIdempotencyKey(`browser-site-remove:${grant.site}`),
         site: grant.site,
         type: "browser.site.remove",
-        workspaceId: grant.workspaceId,
       })
       .then(() => {
-        toast.success(`${browserSiteLabel(grant.site)} removed from ${workspaceName}.`);
+        toast.success(`${browserSiteLabel(grant.site)} removed.`);
         return onChanged();
       })
       .catch((reason: unknown) => setError(actionErrorMessage(reason)))
@@ -386,17 +357,17 @@ function AllowedSites({
       <div className="card">
         {sites === null ? (
           <LoadingRows label="Loading sites" rows={2} />
-        ) : groups.length === 0 ? (
+        ) : sorted.length === 0 ? (
           <p className="card__empty chrome-settings__sites-empty">
-            No sites yet. The first time an agent needs a site you’re signed in to, it asks you in
-            the conversation. Allow it once, and agents in that Workspace can use the site.
+            No sites yet. The first time your agent needs a site you’re signed in to, it asks you in
+            the task. Allow it once, and your agent can use the site.
           </p>
         ) : (
           <ul className="chrome-sites">
-            {groups.map((group) => {
-              const domain = browserSiteLabel(group.site);
+            {sorted.map((grant) => {
+              const domain = browserSiteLabel(grant.site);
               return (
-                <li className="chrome-site" key={group.site}>
+                <li className="chrome-site" key={grant.site}>
                   <div className="chrome-site__head">
                     <span className="card__row-glyph">
                       <Icon name="globe" />
@@ -404,46 +375,21 @@ function AllowedSites({
                     <span className="card__row-body">
                       <span className="card__row-title">{domain}</span>
                       <span className="card__row-detail">
-                        {group.lastSignedInAt
-                          ? `Last signed in ${relative(group.lastSignedInAt)}`
+                        {grant.lastSignedInAt
+                          ? `Last signed in ${relative(grant.lastSignedInAt)}`
                           : "Not signed in yet"}
                       </span>
                     </span>
+                    <button
+                      aria-label={`Remove ${domain}`}
+                      className="btn btn--small btn--ghost"
+                      disabled={pending !== null}
+                      onClick={() => remove(grant)}
+                      type="button"
+                    >
+                      {pending === grant.site ? "Removing…" : "Remove"}
+                    </button>
                   </div>
-                  <ul
-                    aria-label={`Workspaces that can use ${domain}`}
-                    className="chrome-site__workspaces"
-                  >
-                    {group.grants.map((grant) => {
-                      const workspace = workspaces.find(({ id }) => id === grant.workspaceId);
-                      const name = workspace?.name ?? "Another Workspace";
-                      const key = `${grant.workspaceId}\0${grant.site}`;
-                      return (
-                        <li className="chrome-site__workspace" key={grant.workspaceId}>
-                          {workspace ? (
-                            <WorkspaceOrb
-                              icon={workspace.icon}
-                              name={workspace.name}
-                              size="tiny"
-                              color={workspace.color}
-                            />
-                          ) : (
-                            <Icon name="workspace" />
-                          )}
-                          <span className="chrome-site__workspace-name">{name}</span>
-                          <button
-                            aria-label={`Remove ${domain} from ${name}`}
-                            className="btn btn--small btn--ghost"
-                            disabled={pending !== null}
-                            onClick={() => remove(grant, name)}
-                            type="button"
-                          >
-                            {pending === key ? "Removing…" : "Remove"}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
                 </li>
               );
             })}

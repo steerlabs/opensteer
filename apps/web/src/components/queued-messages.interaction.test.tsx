@@ -123,7 +123,6 @@ describe("QueuedMessages", () => {
             onError={vi.fn()}
             queue={queue}
             viewerUserId="me"
-            workspaces={[]}
           />
         </TranscriptHostClientContext>,
       );
@@ -135,7 +134,6 @@ describe("QueuedMessages", () => {
               message={queuedMessages(queue)[0]!.entry}
               reveal={null}
               viewerUserId="me"
-              workspaces={[]}
             />
           </TranscriptHostClientContext>,
         ),
@@ -165,7 +163,6 @@ describe("QueuedMessages", () => {
         onEdit={vi.fn()}
         onError={vi.fn()}
         viewerUserId="me"
-        workspaces={[]}
         queue={queueOf({
           items: [
             item("mine", "Use the new direction", { canCancel: true, canSteer: true }),
@@ -214,7 +211,6 @@ describe("QueuedMessages", () => {
         onEdit={vi.fn()}
         onError={onError}
         viewerUserId="me"
-        workspaces={[]}
         queue={queueOf({
           items: [item("mine", "Course correct", { canCancel: false, canSteer: true })],
           paused: false,
@@ -271,7 +267,6 @@ describe("QueuedMessages", () => {
           threadId: "thread",
         })}
         viewerUserId="me"
-        workspaces={[]}
       />,
     );
     const shown = () =>

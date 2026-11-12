@@ -37,17 +37,30 @@ describe("command ordering across an Assignment", () => {
         subtree = [worker, grandchild];
         order.push("delegation committed");
         await committedDelegationHeld;
-        return { events: [], run: { environmentId }, wasDuplicate: false };
+        return {
+          events: [],
+          run: {
+            environmentId,
+          },
+          wasDuplicate: false,
+        };
       }),
       cancelAssignment: vi.fn(async () => {
         order.push("cancel");
-        return { events: [], interruptCommands: [] };
+        return {
+          events: [],
+          interruptCommands: [],
+        };
       }),
       enqueueThreadInput: vi.fn(async () => {
         order.push("message start");
         await messageHeld;
         order.push("message end");
-        return { command: null, events: [], wasDuplicate: false };
+        return {
+          command: null,
+          events: [],
+          wasDuplicate: false,
+        };
       }),
     } as unknown as OpensteerStore;
     const admission = new KeyedAdmissionQueue({
@@ -58,7 +71,7 @@ describe("command ordering across an Assignment", () => {
     const commands = new CommandService({
       admission,
       onExecutionQueued: vi.fn(),
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       store,
     });
     const delegation = commands.delegateThread({
@@ -72,10 +85,18 @@ describe("command ordering across an Assignment", () => {
         options: {},
         providerId: "openai",
       }),
-      origin: { kind: "run", parentRunId: createId("run"), parentThreadId: worker },
-      task: [{ type: "text", text: "Delegate" }],
+      origin: {
+        kind: "run",
+        parentRunId: createId("run"),
+        parentThreadId: worker,
+      },
+      task: [
+        {
+          type: "text",
+          text: "Delegate",
+        },
+      ],
       title: "Descendant",
-      workspaceId: createId("workspace"),
     });
     await vi.waitFor(() => expect(order).toEqual(["delegation start"]));
     const cancellation = commands.cancelAssignment({
@@ -88,11 +109,18 @@ describe("command ordering across an Assignment", () => {
     await vi.waitFor(() => expect(order).toContain("delegation committed"));
     // The descendant exists, but publishing the delegation still holds its parent's key.
     const message = commands.enqueueThreadInput({
-      content: [{ text: "One more thing", type: "text" }],
+      content: [
+        {
+          text: "One more thing",
+          type: "text",
+        },
+      ],
       idempotencyKey: "earlier-message",
       policy: "queue",
       requestedBy: createId("user"),
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: grandchild,
     });
     await vi.waitFor(() => expect(order).toContain("message start"));
@@ -112,7 +140,6 @@ describe("command ordering across an Assignment", () => {
     ]);
     expect(store.assignmentTreeThreadIds).toHaveBeenCalledTimes(3);
   });
-
   it("cancels an Assignment only after earlier commands for its Threads", async () => {
     const worker = createId("thread");
     const grandchild = createId("thread");
@@ -126,13 +153,20 @@ describe("command ordering across an Assignment", () => {
       assignmentTreeThreadIds: vi.fn(async () => [worker, grandchild]),
       cancelAssignment: vi.fn(async () => {
         order.push("cancel");
-        return { events: [], interruptCommands: [] };
+        return {
+          events: [],
+          interruptCommands: [],
+        };
       }),
       enqueueThreadInput: vi.fn(async () => {
         order.push("message start");
         await messageHeld;
         order.push("message end");
-        return { command: null, events: [], wasDuplicate: false };
+        return {
+          command: null,
+          events: [],
+          wasDuplicate: false,
+        };
       }),
     } as unknown as OpensteerStore;
     const commands = new CommandService({
@@ -142,16 +176,22 @@ describe("command ordering across an Assignment", () => {
         maxQueuedCommands: 10,
       }),
       onExecutionQueued: vi.fn(),
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       store,
     });
-
     const message = commands.enqueueThreadInput({
-      content: [{ text: "One more thing", type: "text" }],
+      content: [
+        {
+          text: "One more thing",
+          type: "text",
+        },
+      ],
       idempotencyKey: "earlier-message",
       policy: "queue",
       requestedBy: createId("user"),
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: grandchild,
     });
     await vi.waitFor(() => expect(order).toEqual(["message start"]));
@@ -162,7 +202,6 @@ describe("command ordering across an Assignment", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(order).toEqual(["message start"]);
-
     releaseMessage();
     await Promise.all([message, cancellation]);
     expect(order).toEqual(["message start", "message end", "cancel"]);

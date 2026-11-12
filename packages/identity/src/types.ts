@@ -47,10 +47,9 @@ export interface IssuedAccountAdoptionProof {
 
 export interface ConsumedAccountAdoptionProof {
   readonly account: AccountAdoptionAccount;
-  readonly authorizedBy: {
-    readonly sessionId: AuthSessionId;
-    readonly userId: UserId;
-  };
+  readonly authorizedBy:
+    | { readonly sessionId: AuthSessionId; readonly userId: UserId }
+    | { readonly admissionId: import("@opensteer/core").AuthAdmissionId };
   readonly consumedAt: Date;
   readonly deployment: AccountAdoptionAuthority;
   readonly proofId: string;
@@ -72,6 +71,7 @@ export interface AccountAdoptionGrantVerifier {
 }
 
 export interface IdentityServiceOptions {
+  readonly team?: import("./team-admission.js").TeamIdentityAdmission;
   readonly deployment: DeploymentPresentation;
   /** Actual fingerprint of the Host key loaded by the composition root. */
   readonly hostKeyFingerprint?: HostKeyFingerprint;

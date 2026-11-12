@@ -1,45 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
+import { mkdtemp, mkdir, realpath, rm, symlink } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { resolveSkillPlan } from "./skill-plan.js";
-const skill = (plugin: string | null, path: string) => ({
-  plugin,
-  localName: "research",
-  fullName: plugin ? `${plugin}:research` : "research",
-  path,
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
-describe("resolveSkillPlan", () => {
-  it("retains two plugins and a loose skill with the same local name", () => {
-    const skills = [skill("one", "/one"), skill("two", "/two"), skill(null, "/loose")];
-    expect(
-      resolveSkillPlan({
-        bundled: [skills[0]!],
-        integration: [skills[1]!],
-        workspace: [skills[2]!],
-      })?.skills,
-    ).toEqual(skills);
+it("loads bundled, plugin, home and folder skills, with folder-name precedence and canonical-source dedupe", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "skill-plan-")));
+  roots.push(root);
+  const paths = ["bundled", "plugin", "home", "folder", "alias"].map((p) => join(root, p));
+  await Promise.all(paths.slice(0, 4).map((p) => mkdir(p)));
+  await symlink(paths[0]!, paths[4]!);
+  const skill = (path: string, fullName: string, plugin: string | null = null) => ({
+    path,
+    fullName,
+    plugin,
+    localName: fullName.split(":").at(-1)!,
   });
-  it("rejects duplicate full names across layers with both paths", () => {
-    expect(() =>
-      resolveSkillPlan({
-        bundled: [skill("one", "/first")],
-        integration: [skill("one", "/second")],
-        workspace: [],
-      }),
-    ).toThrow("Duplicate Agent Skill full name one:research: /first and /second");
+  const plan = await resolveSkillPlan({
+    bundled: [skill(paths[0]!, "opensteer:memory", "opensteer")],
+    integration: [skill(paths[1]!, "plugin:research", "plugin")],
+    home: [skill(paths[2]!, "research"), skill(paths[4]!, "memory-copy")],
+    folder: [skill(paths[3]!, "research")],
   });
-  it("rejects duplicate loose names and colons in local names", () => {
-    expect(() =>
-      resolveSkillPlan({
-        bundled: [],
-        integration: [],
-        workspace: [skill(null, "/first"), skill(null, "/second")],
-      }),
-    ).toThrow("Duplicate");
-    expect(() =>
-      resolveSkillPlan({
-        bundled: [],
-        integration: [],
-        workspace: [{ ...skill(null, "/first"), localName: "one:research" }],
-      }),
-    ).toThrow("Invalid");
-  });
+  expect(plan?.skills.map((s) => s.path)).toEqual([paths[0], paths[1], paths[3]]);
+  expect(plan?.skills.map((s) => s.fullName)).toEqual([
+    "opensteer:memory",
+    "plugin:research",
+    "research",
+  ]);
 });

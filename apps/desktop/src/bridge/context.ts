@@ -157,6 +157,11 @@ export interface DesktopBridgeOptions {
     readonly closePanel: () => Promise<void>;
     readonly request: () => Promise<void>;
   };
+  readonly teamLinks?: import("../app/team-links.js").DesktopTeamLinks;
+  readonly personalDataReset?: {
+    oldData(): import("@opensteer/protocol/desktop").DesktopPersonalOldDataState | null;
+    startFresh(): Promise<void>;
+  };
   readonly hostTransport: Pick<
     DesktopHostTransport,
     | "closeSocketsForOwner"

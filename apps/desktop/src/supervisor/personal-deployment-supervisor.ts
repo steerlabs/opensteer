@@ -32,7 +32,6 @@ import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-import path from "node:path";
 import { logShutdownError, runShutdownStep, type ShutdownLog } from "../app/desktop-shutdown.js";
 import {
   PersonalRuntimeReleaseError,
@@ -89,6 +88,13 @@ import {
   type PersonalUserEnvironmentPort,
 } from "./personal-user-environment.js";
 
+import {
+  PersonalOldDatabaseError,
+  isOldDatabaseDiagnostic,
+  type PersonalDataReset,
+  type PersonalOldDataState,
+} from "./personal-data-reset.js";
+
 const defaultStartupTimeoutMs = 60_000;
 const defaultShutdownTimeoutMs = processStopTimeoutMs;
 const defaultRestartBackoffMs = 1_000;
@@ -96,13 +102,14 @@ const defaultMaximumRestartBackoffMs = 30_000;
 const defaultRestartResetAfterMs = 5 * 60_000;
 
 interface PersonalDeploymentSupervisorOptions {
+  readonly dataReset?: PersonalDataReset;
   readonly accountIssuer?: URL | string | null;
   readonly allocatePort?: () => Promise<number>;
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   /**
-   * The computer-use bridge for this Deployment's Main Runner, or null where
-   * computer use does not exist. The Main Runner is this Mac's own Runner, so
+   * The computer-use bridge for this Deployment's hosting Runner, or null where
+   * computer use does not exist. The hosting Runner is this Mac's own Runner, so
    * it reaches the helper the same way a lent slot's Runner does.
    */
   readonly computerUse?: {
@@ -121,7 +128,6 @@ interface PersonalDeploymentSupervisorOptions {
   readonly onStatus?: (status: DesktopPersonalDeploymentStatus) => void;
   readonly processes: PersonalProcessPort;
   readonly passkeys?: boolean;
-  readonly knowledge?: boolean;
   readonly portalOrigin?: URL | string | null;
   readonly release?: () => Promise<VerifiedPersonalRuntimeRelease>;
   readonly releaseDirectory: string;
@@ -130,7 +136,6 @@ interface PersonalDeploymentSupervisorOptions {
   readonly shutdownTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly userEnvironment?: PersonalUserEnvironmentPort;
-  readonly workspaceRoot: string;
 }
 
 export interface PersonalLoopbackPortPort {
@@ -204,7 +209,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #accountIssuer: string | null;
   readonly #allocatePort: () => Promise<number>;
   readonly #passkeys: boolean;
-  readonly #knowledge: boolean;
   readonly #baseEnvironment: Readonly<Record<string, string>>;
   readonly #catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   readonly #computerUse: PersonalDeploymentSupervisorOptions["computerUse"];
@@ -225,7 +229,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
-  readonly #workspaceRoot: string;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
   /** The Deployment whose computer-use bridge this stack holds, while it does. */
@@ -234,6 +237,9 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   #diagnosticLogs = new Map<PersonalRuntimeComponent, string>();
   #desiredRunning = false;
   #restartWait: AbortController | undefined;
+  readonly #dataReset: PersonalDataReset | undefined;
+  #oldData: PersonalOldDataState | null = null;
+  #resetRecovered = false;
   #configuredManifestLookup: Promise<PersonalDeploymentManifest | null> | undefined;
   #hostLaunch: PersonalHostLaunch | null = null;
   /**
@@ -253,12 +259,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   #ownerClaim: PersonalOwnerClaimCapability | null = null;
 
   constructor(options: PersonalDeploymentSupervisorOptions) {
+    this.#dataReset = options.dataReset;
     this.#accountIssuer = options.accountIssuer
       ? new URL(String(options.accountIssuer)).origin
       : null;
     this.#allocatePort = options.allocatePort ?? allocateLoopbackPort;
     this.#passkeys = options.passkeys === true;
-    this.#knowledge = options.knowledge === true;
     this.#baseEnvironment = options.baseEnvironment ?? filterUserEnvironment(process.env);
     this.#userEnvironment =
       options.userEnvironment ??
@@ -274,7 +280,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#processes = options.processes;
     this.#portalOrigin = options.portalOrigin ? new URL(String(options.portalOrigin)).origin : null;
     this.#release = options.release ?? (() => readPersonalRuntimeRelease(options.releaseDirectory));
-    this.#workspaceRoot = normalizedAbsolutePath(options.workspaceRoot, "Personal Workspace root");
     this.#now = options.now ?? (() => new Date());
     this.#log =
       options.log ?? ((event, fields) => console.info(JSON.stringify({ event, ...fields })));
@@ -303,6 +308,25 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#restartPolicy = new RestartPolicy(restartPolicyOptions);
     this.#messagingRestartPolicy = new RestartPolicy(restartPolicyOptions);
     this.#loopbackPorts = options.loopbackPorts ?? new NativePersonalLoopbackPorts();
+  }
+
+  get oldData(): PersonalOldDataState | null {
+    return this.#oldData;
+  }
+
+  async startFresh(
+    options: { readonly restart?: boolean } = {},
+  ): Promise<DesktopPersonalDeploymentStatus> {
+    if (!this.#oldData || !this.#dataReset)
+      throw new Error("No old Personal database is awaiting reset.");
+    const plan = this.#oldData;
+    await this.stop();
+    await this.#dataReset.execute(plan);
+    this.#oldData = null;
+    this.#configuredManifestLookup = undefined;
+    if (options.restart === false) return this.#status;
+    this.#shutdownRequested = false;
+    return this.start();
   }
 
   get status(): DesktopPersonalDeploymentStatus {
@@ -423,7 +447,8 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   /** Restart only a deployment the user already chose on an earlier launch. */
   async resumeIfConfigured(): Promise<DesktopPersonalDeploymentStatus> {
     const existing = await this.#lookupConfiguredManifest();
-    if (existing === null || this.#shutdownRequested) return this.#status;
+    if ((existing === null && !this.#resetRecovered) || this.#shutdownRequested)
+      return this.#status;
     return this.start();
   }
 
@@ -540,6 +565,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         return this.#status;
       }
       await this.#stopChildren().catch(() => undefined);
+      await this.#planOldData(error);
       const permanent = permanentStartFailure(error);
       if (permanent) this.#desiredRunning = false;
       // Crash recovery reports a failure that can pass with its next restart.
@@ -560,7 +586,15 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
    */
   #lookupConfiguredManifest(): Promise<PersonalDeploymentManifest | null> {
     if (this.#configuredManifestLookup) return this.#configuredManifestLookup;
-    const lookup = this.#files.load().then(
+    const lookup = (async () => {
+      const pending = await this.#dataReset?.pending();
+      if (pending) {
+        await this.#dataReset!.execute(pending);
+        this.#resetRecovered = true;
+      }
+      if (await this.#dataReset?.needsFreshStart()) this.#resetRecovered = true;
+      return this.#files.load();
+    })().then(
       (manifest) => {
         if (this.#shutdownRequested) return manifest;
         if (manifest) {
@@ -582,18 +616,33 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         }
         return manifest;
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         if (this.#configuredManifestLookup === lookup) this.#configuredManifestLookup = undefined;
         if (!this.#shutdownRequested) {
-          this.#setFailure(
-            issue("directory-invalid", "desktop", safeErrorDetail(error), "restore-permissions"),
-          );
+          if (error instanceof PersonalOldDatabaseError) {
+            this.#desiredRunning = false;
+            await this.#planOldData(error);
+            const failure = classifyFailure(error, this.#status.step);
+            this.#setFailure(failure.issue, failure.state);
+          } else {
+            this.#setFailure(
+              issue("directory-invalid", "desktop", safeErrorDetail(error), "restore-permissions"),
+            );
+          }
         }
         throw error;
       },
     );
     this.#configuredManifestLookup = lookup;
     return lookup;
+  }
+
+  async #planOldData(error: unknown): Promise<void> {
+    if (!(error instanceof PersonalOldDatabaseError) || !this.#dataReset) return;
+    const deploymentId = error.deploymentId ?? this.#status.deploymentId;
+    if (!deploymentId) return;
+    this.#oldData = await this.#dataReset.plan(deploymentId);
+    this.#setStatus({ deploymentId });
   }
 
   async #startStack(
@@ -648,7 +697,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       step: "starting-local-agents",
     });
     const userEnvironment = await this.#userEnvironment.resolve();
-    // Computer use reaches the Main Runner too: it is this Mac's own Runner,
+    // Computer use reaches the hosting Runner too: it is this Mac's own Runner,
     // and a Personal Deployment is the shape where that Mac and this app are
     // the same computer.
     const computerUse =
@@ -683,14 +732,14 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       signal,
       "Runner",
     );
-    this.#setStatus({ step: "creating-main" });
+    this.#setStatus({ step: "preparing-agent-home" });
     await withTimeout(
-      this.#host.ensureMain(origin, manifest.deploymentId, signal),
+      this.#host.ensureAgentHome(origin, manifest.deploymentId, signal),
       this.#startupTimeoutMs,
       {
         abortFallback: "Personal setup was cancelled.",
         signal,
-        timeoutError: () => new Error("Personal Main Workspace creation timed out."),
+        timeoutError: () => new Error("Personal agent home readiness timed out."),
       },
     );
     this.#assertCompleteStack();
@@ -780,7 +829,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         this.#accountIssuer,
         this.#portalOrigin,
         this.#passkeys,
-        this.#knowledge,
       ),
     );
     const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1231,6 +1279,12 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
             running.exit.then((exit) => {
               running.logs.flush();
               running.stderr.flush();
+              if (
+                running.component === "host" &&
+                isOldDatabaseDiagnostic(running.stderr.text || running.logs.text)
+              ) {
+                throw new PersonalOldDatabaseError();
+              }
               throw new PersonalChildExitedError(
                 running.component,
                 exit,
@@ -1240,7 +1294,16 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
           ),
       ]);
     } catch (error) {
-      if (signal.aborted || error instanceof PersonalChildExitedError) throw error;
+      if (
+        signal.aborted ||
+        error instanceof PersonalChildExitedError ||
+        error instanceof PersonalOldDatabaseError
+      )
+        throw error;
+      const hostDiagnostic = this.#children.get("host");
+      hostDiagnostic?.stderr.flush();
+      if (hostDiagnostic && isOldDatabaseDiagnostic(hostDiagnostic.stderr.text))
+        throw new PersonalOldDatabaseError();
       const diagnostic = [...this.#children.values()]
         .map((running) => {
           running.logs.flush();
@@ -1467,7 +1530,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       schemaVersion: 3,
       setupIntentId: globalThis.crypto.randomUUID(),
       updatedAt: now,
-      workspaceRoot: this.#workspaceRoot,
     });
   }
 
@@ -1495,11 +1557,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     manifest: PersonalDeploymentManifest,
     release: VerifiedPersonalRuntimeRelease,
   ): Promise<PersonalDeploymentManifest> {
-    if (manifest.workspaceRoot !== this.#workspaceRoot) {
-      throw new PersonalUpdateRequiredError(
-        "This Personal deployment belongs to a different managed Workspace root.",
-      );
-    }
     if (JSON.stringify(manifest.release) === JSON.stringify(release.identity)) return manifest;
     if (
       manifest.release.operatingSystem !== release.identity.operatingSystem ||
@@ -1681,7 +1738,6 @@ function hostSpec(
   accountIssuer: string | null,
   portalOrigin: string | null,
   passkeys: boolean,
-  knowledge: boolean,
 ): PersonalProcessSpec {
   const fingerprint = HostKeyFingerprintSchema.parse(manifest.hostKeyFingerprint);
   const origin = `http://127.0.0.1:${manifest.hostPort}`;
@@ -1696,7 +1752,6 @@ function hostSpec(
       OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
       OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
       OPENSTEER_DEPLOYMENT_NAME: manifest.name,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
       OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
@@ -1706,12 +1761,10 @@ function hostSpec(
       OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
       OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
-      OPENSTEER_KNOWLEDGE: knowledge ? "1" : "0",
-      // The Host names the machine new Workspaces go to; the co-located Runner
-      // owns the directories and the protected registry themselves.
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: manifest.environmentId,
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
       OPENSTEER_MODE: "production",
       OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
+      OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
       OPENSTEER_PORT: String(manifest.hostPort),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
@@ -1805,16 +1858,9 @@ function runnerSpec(
             release.harnesses[entry.kind],
           ]),
       ),
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_ENVIRONMENT_ID: manifest.environmentId,
       OPENSTEER_HOST_URL: `http://127.0.0.1:${manifest.hostPort}`,
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: paths.workspaceRegistryPath,
-      OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH: path.join(
-        paths.hostDataDirectory,
-        "workspace-bindings.v1.json",
-      ),
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: paths.workspaceRoot,
       OPENSTEER_MAX_CONCURRENT_RUNS: "4",
       OPENSTEER_MODE: "production",
       OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
@@ -1823,7 +1869,6 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
     },
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,
@@ -2023,7 +2068,7 @@ function classifyFailure(
   const component =
     step === "preparing-database"
       ? "postgresql"
-      : step === "starting-host" || step === "creating-main"
+      : step === "starting-host" || step === "preparing-agent-home"
         ? "host"
         : step === "starting-local-agents"
           ? "runner"
@@ -2120,11 +2165,6 @@ function boundedDuration(value: number, label: string): number {
   return value;
 }
 
-function normalizedAbsolutePath(value: string, label: string): string {
-  if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path.`);
-  return path.resolve(value);
-}
-
 async function allocateLoopbackPort(): Promise<number> {
   return new Promise<number>((resolvePromise, rejectPromise) => {
     const server = createServer();
@@ -2166,6 +2206,7 @@ async function bindAndReleaseLoopbackPort(port: number): Promise<void> {
  */
 function permanentStartFailure(error: unknown): boolean {
   return (
+    error instanceof PersonalOldDatabaseError ||
     error instanceof PersonalFilesystemError ||
     error instanceof PersonalUpdateRequiredError ||
     error instanceof PersonalRuntimeTransitionError ||

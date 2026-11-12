@@ -23,39 +23,24 @@ import { expect, vi } from "vitest";
 import { describeStore } from "@opensteer/database/test-support/store";
 import type { RunToolScope } from "../agents/run-tool-tokens.js";
 import {
-  startMachineAccessHost,
-  signUpUser,
+  startPrivateMachineHost,
+  connectCallerMachine,
+  dispatchCallerRun,
   openRealtime,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import { AppService } from "./app-service.js";
 
 const html = "<title>First</title><body><h1>First</h1>";
 describeStore("published app HTML", (it) => {
-  it("fences app cookies and live responses on session expiry, user state, Personal route rotation and Workspace membership", async ({
+  it("fences app cookies and live responses on session expiry, owner state and personal route rotation", async ({
     storeFixture,
   }) => {
-    const { database, store } = storeFixture;
+    const { database } = storeFixture;
     const f = await storeFixture.startRunFixture("app-origin-session");
-    const viewer = await store.createUser("App viewer");
+    const viewer = f.userId;
     const session = testHostApiContext(viewer).session!;
     const now = new Date();
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: f.workspace.id,
-        userId: viewer,
-        role: "collaborator",
-        state: "active",
-        generation: 1,
-        invitedBy: f.userId,
-        joinedAt: now,
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: now,
-      })
-      .execute();
     const insertSession = () =>
       database
         .insertInto("authSessions")
@@ -76,7 +61,6 @@ describeStore("published app HTML", (it) => {
     await insertSession();
     const apps = new AppStore(database);
     const published = await apps.publish({
-      workspaceId: f.workspace.id,
       threadId: f.thread.id,
       runId: f.run.id,
       environmentId: f.environmentId,
@@ -87,15 +71,15 @@ describeStore("published app HTML", (it) => {
       publishKey: "session-app",
     });
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "personal", name: null },
       localPasswordEnabled: true,
+      signupPolicy: "closed",
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:1234"),
       secret: "app-session-test-secret".padEnd(40, "x"),
       exposure: "networked",
-      signupPolicy: "closed",
     });
-    expect(await identity.isSessionCurrent(session.id, f.userId)).toBe(false);
+    expect(await identity.isSessionCurrent(session.id, createId("user"))).toBe(false);
     expect(await identity.isSessionCurrent(session.id, viewer)).toBe(true);
     for (const expired of [
       { createdAt: new Date(Date.now() - 120_000), expiresAt: new Date(Date.now() - 1) },
@@ -203,7 +187,7 @@ describeStore("published app HTML", (it) => {
     expect(first.statusCode).toBe(200);
     const cookie = String(first.headers["set-cookie"]).split(";")[0]!;
     try {
-      for (const reason of ["session", "membership"] as const) {
+      for (const reason of ["session", "owner"] as const) {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
         const req = request({
           host: "127.0.0.1",
@@ -223,10 +207,9 @@ describeStore("published app HTML", (it) => {
           await database.deleteFrom("authSessions").where("id", "=", session.id).execute();
         else
           await database
-            .updateTable("workspaceMemberships")
-            .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
-            .where("workspaceId", "=", f.workspace.id)
-            .where("userId", "=", viewer)
+            .updateTable("users")
+            .set({ disabledAt: new Date() })
+            .where("id", "=", viewer)
             .execute();
         await vi.advanceTimersByTimeAsync(30_000);
         vi.useRealTimers();
@@ -244,106 +227,68 @@ describeStore("published app HTML", (it) => {
     }
   });
 
-  it("joins tab commands, bootstrap, and membership-scoped realtime through the real Host", async ({
+  it("joins personal app tabs, bootstrap and realtime across owner devices", async ({
     storeFixture,
   }) => {
-    const host = await startMachineAccessHost(storeFixture.databaseUrl, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(storeFixture.databaseUrl);
     const sockets: Awaited<ReturnType<typeof openRealtime>>[] = [];
+    let caller: Awaited<ReturnType<typeof connectCallerMachine>> | undefined;
     try {
-      const f = await storeFixture.startRunFixture("tab-wire");
-      const member = await signUpUser(host, {
-        email: "tab-member@example.test",
-        password: "tab-member-password",
+      caller = await connectCallerMachine(host, {
+        name: "App publisher",
+        token: host.hostingRunnerEnrollmentToken,
       });
-      const stranger = await signUpUser(host, {
-        email: "tab-stranger@example.test",
-        password: "tab-stranger-password",
-      });
-      for (const userId of [host.ownerId, member.userId])
-        await storeFixture.database
-          .insertInto("workspaceMemberships")
-          .values({
-            id: createId("workspaceMembership"),
-            workspaceId: f.workspace.id,
-            userId,
-            role: "collaborator",
-            state: "active",
-            generation: 1,
-            invitedBy: f.userId,
-            joinedAt: new Date(),
-            revokedAt: null,
-            revokedBy: null,
-            updatedAt: new Date(),
-          })
-          .execute();
+      const run = await dispatchCallerRun(host, caller, { key: "tab-wire", title: "App tabs" });
       const apps = new AppStore(storeFixture.database);
       const published = await apps.publish({
-        workspaceId: f.workspace.id,
-        threadId: f.thread.id,
-        runId: f.run.id,
-        environmentId: f.environmentId,
-        userId: f.userId,
+        threadId: run.threadId,
+        runId: run.runId,
+        environmentId: caller.environmentId,
+        userId: host.ownerId,
         title: "Wire app",
         sha256: "a".repeat(64),
         sizeBytes: 1,
         publishKey: "wire",
       });
-      const active = await openRealtime(host, member.headers);
+      const active = await openRealtime(host, { ...host.ownerHeaders });
       sockets.push(active);
-      const outsider = await openRealtime(host, stranger.headers);
-      sockets.push(outsider);
-      const dispatch = (type: "app.tab.open" | "app.tab.close", headers = host.ownerHeaders) =>
+      const second = await openRealtime(host, { ...host.ownerHeaders });
+      sockets.push(second);
+      const dispatch = (type: "app.tab.open" | "app.tab.close") =>
         testRpcData(
           host.origin,
           "commands.dispatch",
           { type, appId: published.appId, idempotencyKey: crypto.randomUUID() },
-          { headers },
+          { headers: host.ownerHeaders },
         );
       expect(await dispatch("app.tab.open")).toMatchObject({
         type: "app.tab.open",
         appTabs: [{ appId: published.appId, latestVersion: 1 }],
       });
-      await vi.waitFor(() =>
-        expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(1),
-      );
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
-        {},
-        { headers: member.headers },
-      );
-      expect(bootstrap.appTabs).toMatchObject([
-        { appId: published.appId, title: "Wire app", latestVersion: 1 },
-      ]);
+      await vi.waitFor(() => {
+        expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(1);
+        expect(second.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(1);
+      });
       expect(
-        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: stranger.headers }))
+        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders }))
           .appTabs,
-      ).toEqual([]);
-      await expect(dispatch("app.tab.open", stranger.headers)).rejects.toThrow(/not_found/);
-      await expect(dispatch("app.tab.close", stranger.headers)).rejects.toThrow(/not_found/);
+      ).toMatchObject([{ appId: published.appId, title: "Wire app", latestVersion: 1 }]);
       expect(await dispatch("app.tab.close")).toMatchObject({ type: "app.tab.close", appTabs: [] });
       await vi.waitFor(() =>
         expect(active.messages.filter((m) => m.type === "host.app-tabs-changed")).toHaveLength(2),
       );
       expect(
-        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: member.headers })).appTabs,
+        (await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders }))
+          .appTabs,
       ).toEqual([]);
-      expect(outsider.messages.filter((m) => m.type === "host.app-tabs-changed")).toEqual([]);
-      await storeFixture.database
-        .updateTable("workspaceMemberships")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
-        .where("workspaceId", "=", f.workspace.id)
-        .where("userId", "=", member.userId)
-        .execute();
-      for (const type of ["app.tab.open", "app.tab.close"] as const)
-        await expect(dispatch(type, member.headers)).rejects.toThrow(/not_found/);
     } finally {
       for (const socket of sockets) await socket.close();
+      await caller?.close();
       await host.close();
     }
   });
 
-  it("keeps Workspace app tabs idempotent, bounded, and membership-authorized", async ({
+  it("keeps personal app tabs idempotent, bounded and owner-authorized", async ({
     storeFixture,
   }) => {
     const { database, startRunFixture } = storeFixture;
@@ -355,7 +300,7 @@ describeStore("published app HTML", (it) => {
       .values(
         ids.map((id) => ({
           id,
-          workspaceId: f.workspace.id,
+
           threadId: f.thread.id,
           runId: f.run.id,
           title: "App",
@@ -378,21 +323,8 @@ describeStore("published app HTML", (it) => {
       message: expect.stringContaining("50"),
     });
     expect(await apps.listTabs(f.userId)).toHaveLength(50);
-    await database
-      .updateTable("workspaces")
-      .set({
-        status: "deleting",
-        deletionRequestedAt: new Date(),
-        deletionRequestedBy: f.userId,
-        purgeAfter: new Date(),
-      })
-      .where("id", "=", f.workspace.id)
-      .execute();
-    await expect(apps.setTabOpen(ids[0]!, f.userId, true)).rejects.toMatchObject({
-      code: "workspace_unavailable",
-    });
-    expect(await apps.listTabs(f.userId)).toEqual([]);
     await apps.setTabOpen(ids[0]!, f.userId, false);
+    expect(await apps.listTabs(f.userId)).toHaveLength(49);
     expect(
       (
         await database
@@ -402,47 +334,12 @@ describeStore("published app HTML", (it) => {
           .executeTakeFirstOrThrow()
       ).tabOpenedAt,
     ).toBeNull();
-    await database
-      .updateTable("workspaces")
-      .set({
-        status: "ready",
-        deletionRequestedAt: null,
-        deletionRequestedBy: null,
-        purgeAfter: null,
-      })
-      .where("id", "=", f.workspace.id)
-      .execute();
-    const member = await storeFixture.store.createUser("Tab member");
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: f.workspace.id,
-        userId: member,
-        role: "collaborator",
-        state: "active",
-        generation: 1,
-        invitedBy: f.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(),
-      })
-      .execute();
-    expect(await apps.listTabs(member)).toHaveLength(49);
-    await database
-      .updateTable("workspaceMemberships")
-      .set({ state: "revoked", revokedAt: new Date(), revokedBy: f.userId })
-      .where("workspaceId", "=", f.workspace.id)
-      .where("userId", "=", member)
-      .execute();
-    expect(await apps.listTabs(member)).toEqual([]);
-    await expect(apps.setTabOpen(ids[1]!, member, true)).rejects.toMatchObject({
-      code: "not_found",
-    });
-    await expect(apps.setTabOpen(ids[1]!, member, false)).rejects.toMatchObject({
-      code: "not_found",
-    });
+    const foreign = createId("user");
+    await expect(apps.listTabs(foreign)).rejects.toMatchObject({ code: "forbidden" });
+    for (const open of [true, false])
+      await expect(apps.setTabOpen(ids[1]!, foreign, open)).rejects.toMatchObject({
+        code: "forbidden",
+      });
   });
 
   it("publishes, versions atomically, replays tool calls, serves latest through reusable capabilities, and cleans origin-owned bytes", async ({
@@ -453,10 +350,10 @@ describeStore("published app HTML", (it) => {
     const scope = {
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
+
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as RunToolScope;
+    } as unknown as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-apps-test-"));
     const events: AgentEvent[] = [];
     let bytes = Buffer.from(html);
@@ -483,7 +380,7 @@ describeStore("published app HTML", (it) => {
     const apps = new AppStore(database);
     const service = new AppService({
       dataDirectory: directory,
-      store,
+
       apps,
       files,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
@@ -504,7 +401,7 @@ describeStore("published app HTML", (it) => {
         message: expect.stringContaining("shown inline in this Thread"),
       });
       expect(files.download).toHaveBeenCalledWith(
-        expect.objectContaining({ workspace: expect.objectContaining({ id: f.workspace.id }) }),
+        f.folder,
         "opaque_html_key",
         expect.any(AbortSignal),
       );
@@ -578,13 +475,13 @@ describeStore("published app HTML", (it) => {
       }
       // Keep the shared causal chain's root outside the Thread being erased.
       const { thread: retained } = await store.createThread({
+        folder: f.folder,
         createdBy: f.userId,
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
         idempotencyKey: "retained-app-history",
         modelSelection: f.thread.modelSelection,
         title: "Retained",
-        workspaceId: f.workspace.id,
       });
       const retainedTurn = await storeFixture.enqueueHumanTrigger({
         content: [{ type: "text", text: "Retained" }],
@@ -607,14 +504,14 @@ describeStore("published app HTML", (it) => {
     }
   });
 
-  it("lets a publisher that reaches the origin Thread update its app", async ({ storeFixture }) => {
+  it("lets the personal owner update an app from another task", async ({ storeFixture }) => {
     const { store, database, startRunFixture } = storeFixture;
-    const f = await startRunFixture("app-reach", "project");
+    const f = await startRunFixture("app-reach");
     const apps = new AppStore(database);
     const publication = (threadId: ThreadId, runId: RunId, publishKey: string, appId?: string) =>
       apps.publish({
         ...(appId ? { appId } : {}),
-        workspaceId: f.workspace.id,
+
         threadId,
         runId,
         environmentId: f.environmentId,
@@ -627,6 +524,7 @@ describeStore("published app HTML", (it) => {
     const original = await publication(f.thread.id, f.run.id, "original");
     const thread = (idempotencyKey: string, parentThreadId?: ThreadId) =>
       store.createThread({
+        folder: f.folder,
         createdBy: f.userId,
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
@@ -634,7 +532,6 @@ describeStore("published app HTML", (it) => {
         modelSelection: f.thread.modelSelection,
         ...(parentThreadId ? { parentThreadId } : {}),
         title: idempotencyKey,
-        workspaceId: f.workspace.id,
       });
     const running = async (threadId: ThreadId, idempotencyKey: string) => {
       const turn = await storeFixture.enqueueHumanTrigger({
@@ -655,7 +552,7 @@ describeStore("published app HTML", (it) => {
     const { thread: unrelatedRoot } = await thread("unrelated-root");
     const { thread: delegated } = await thread("unrelated-task", unrelatedRoot.id);
     const { thread: child } = await thread("origin-task", f.thread.id);
-    expect([delegated.inheritsMain, child.inheritsMain]).toEqual([false, false]);
+
     const delegatedRun = await running(delegated.id, "unrelated-task-run");
     const childRun = await running(child.id, "origin-task-run");
 
@@ -670,58 +567,15 @@ describeStore("published app HTML", (it) => {
   it("refuses foreign and missing IDs, missing/non-HTML/oversized files, and offline Runner reads without a publication", async ({
     storeFixture,
   }) => {
-    const { store, database, startRunFixture } = storeFixture;
+    const { database, startRunFixture } = storeFixture;
     const f = await startRunFixture("app-refusals");
-    const otherWorkspace = await storeFixture.createProjectWorkspace(
-      f.userId,
-      "app-other-workspace",
-    );
-    const { thread: otherThread } = await store.createThread({
-      createdBy: f.userId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harnessInstance.id,
-      idempotencyKey: "other-app-thread",
-      modelSelection: f.thread.modelSelection,
-      title: "Other app",
-      workspaceId: otherWorkspace.id,
-    });
-    const otherTurn = await storeFixture.enqueueHumanTrigger({
-      content: [{ type: "text", text: "Publish" }],
-      idempotencyKey: "other-app-run",
-      requestedBy: f.userId,
-      threadId: otherThread.id,
-    });
-    await database
-      .updateTable("runs")
-      .set({ status: "running" })
-      .where("id", "=", otherTurn.run.id)
-      .execute();
-    const other = {
-      workspace: otherWorkspace,
-      thread: otherThread,
-      run: otherTurn.run,
-      userId: f.userId,
-      environmentId: f.environmentId,
-    };
-    const apps = new AppStore(database);
-    const foreign = await apps.publish({
-      workspaceId: other.workspace.id,
-      threadId: other.thread.id,
-      runId: other.run.id,
-      environmentId: other.environmentId,
-      userId: other.userId,
-      title: "Other",
-      sha256: "a".repeat(64),
-      sizeBytes: 1,
-      publishKey: "foreign",
-    });
     const scope = {
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
+
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as RunToolScope;
+    } as unknown as RunToolScope;
     const directory = await mkdtemp(join(tmpdir(), "opensteer-app-refusals-"));
     let bytes = Buffer.from(html);
     const entries = [
@@ -741,10 +595,11 @@ describeStore("published app HTML", (it) => {
       download: vi.fn(async () => new Response(bytes)),
     };
     const published = vi.fn();
+    const apps = new AppStore(database);
     const service = new AppService({
       dataDirectory: directory,
       apps,
-      store,
+
       files,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: published,
@@ -759,7 +614,12 @@ describeStore("published app HTML", (it) => {
       await expect(publish({ appId: `app_${crypto.randomUUID()}` })).rejects.toMatchObject({
         code: "not_found",
       });
-      await expect(publish({ appId: foreign.appId })).rejects.toMatchObject({ code: "not_found" });
+      await expect(
+        service.publish({ ...scope, requestedBy: createId("user") }, "foreign-owner", {
+          path: "index.html",
+          title: "Foreign",
+        }),
+      ).rejects.toMatchObject({ code: "forbidden" });
       await expect(publish({ appId: "wrong" })).rejects.toThrow();
       await expect(publish({ path: "../index.html" })).rejects.toMatchObject({
         code: "bad_request",
@@ -786,34 +646,30 @@ describeStore("published app HTML", (it) => {
         message: expect.stringContaining("5 MiB"),
       });
       files.list.mockRejectedValueOnce(
-        new OpensteerError({ code: "workspace_unavailable", message: "Runner offline" }),
+        new OpensteerError({ code: "folder_unavailable", message: "Runner offline" }),
       );
-      await expect(publish()).rejects.toMatchObject({ code: "workspace_unavailable" });
+      await expect(publish()).rejects.toMatchObject({ code: "folder_unavailable" });
       expect(published).not.toHaveBeenCalled();
       expect(
-        await database
-          .selectFrom("apps")
-          .selectAll()
-          .where("workspaceId", "=", f.workspace.id)
-          .execute(),
+        await database.selectFrom("apps").selectAll().where("threadId", "=", f.thread.id).execute(),
       ).toEqual([]);
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
   });
-  it("authorizes server publication, enforces reach and derives Workspace teardown and recovery from stored versions", async ({
+  it("authorizes full-access app servers and recovers stored versions after restart", async ({
     storeFixture,
   }) => {
-    const { store, database } = storeFixture;
-    const f = await storeFixture.startRunFixture("app-servers", "project");
+    const { database } = storeFixture;
+    const f = await storeFixture.startRunFixture("app-servers");
     const directory = await mkdtemp(join(tmpdir(), "opensteer-app-server-host-"));
     let scope = {
       runId: f.run.id,
       threadId: f.thread.id,
-      workspaceId: f.workspace.id,
+
       environmentId: f.environmentId,
       requestedBy: f.userId,
-    } as RunToolScope;
+    } as unknown as RunToolScope;
     const start = vi.fn(async () => undefined);
     const stop = vi.fn(async () => undefined);
     const connect =
@@ -841,7 +697,6 @@ describeStore("published app HTML", (it) => {
     };
     const options = {
       dataDirectory: directory,
-      store,
       apps,
       files,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
@@ -858,9 +713,9 @@ describeStore("published app HTML", (it) => {
       });
     try {
       await database
-        .updateTable("threads")
+        .updateTable("runs")
         .set({ accessMode: "approval-required" })
-        .where("id", "=", f.thread.id)
+        .where("id", "=", f.run.id)
         .execute();
       await expect(publish()).rejects.toMatchObject({
         code: "forbidden",
@@ -868,22 +723,9 @@ describeStore("published app HTML", (it) => {
       });
       expect(start).not.toHaveBeenCalled();
       await database
-        .updateTable("threads")
+        .updateTable("runs")
         .set({ accessMode: "full-access" })
-        .where("id", "=", f.thread.id)
-        .execute();
-      await database
-        .updateTable("workspaces")
-        .set({
-          backing: {
-            kind: "local-directory",
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            storageAuthorityId: createId("storageAuthority"),
-            ownerEnvironmentId: f.environmentId,
-          },
-        })
-        .where("id", "=", f.workspace.id)
+        .where("id", "=", f.run.id)
         .execute();
       for (const path of ["../bad", "/absolute", "a/../b"])
         await expect(publish({ path })).rejects.toMatchObject({ code: "bad_request" });
@@ -910,7 +752,10 @@ describeStore("published app HTML", (it) => {
       expect((await apps.latest(first.appId, f.userId)).version).toMatchObject({
         sha256: null,
         sizeBytes: null,
-        server: { folder: "app", command: "node server.js", environmentId: f.environmentId },
+        server: {
+          folder: { computerId: f.runnerId, path: join(f.folder.path, "app") },
+          command: "node server.js",
+        },
       });
       const v = await service.view(first.appId, f.userId, "dark");
       const token = v.path.split("/").at(-2)!;
@@ -922,7 +767,7 @@ describeStore("published app HTML", (it) => {
           expect.objectContaining({
             id: first.appId,
             kind: "server",
-            folder: "app",
+            folder: { computerId: f.runnerId, path: join(f.folder.path, "app") },
             start: "node server.js",
           }),
         ],
@@ -959,108 +804,35 @@ describeStore("published app HTML", (it) => {
       } finally {
         await (await import("@opensteer/shared/httpServer")).closeHttpServerNow(upstream);
       }
-      const startsBefore = start.mock.calls.length;
-      // A Project task reaches only its Project, so the Main app is out of reach.
-      const otherProject = await storeFixture.createProjectWorkspace(f.userId, "app-outside");
-      const { thread: unrelated } = await store.createThread({
-        createdBy: f.userId,
-        environmentId: f.environmentId,
-        harnessInstanceId: f.harnessInstance.id,
-        idempotencyKey: "unrelated-app-root",
-        modelSelection: f.thread.modelSelection,
-        title: "Other",
-        workspaceId: otherProject.id,
-      });
-      const { thread: child } = await store.createThread({
-        createdBy: f.userId,
-        environmentId: f.environmentId,
-        harnessInstanceId: f.harnessInstance.id,
-        idempotencyKey: "unrelated-app-child",
-        modelSelection: f.thread.modelSelection,
-        title: "Other task",
-        workspaceId: otherProject.id,
-        parentThreadId: unrelated.id,
-      });
-      expect(child.inheritsMain).toBe(false);
-      const turn = await storeFixture.enqueueHumanTrigger({
-        content: [{ type: "text", text: "Other task" }],
-        idempotencyKey: "unrelated-app-turn",
-        requestedBy: f.userId,
-        threadId: child.id,
-      });
       await database
-        .updateTable("runs")
-        .set({ status: "running" })
-        .where("id", "=", turn.run.id)
-        .execute();
-      await database
-        .updateTable("threads")
-        .set({ accessMode: "full-access" })
-        .where("id", "=", child.id)
-        .execute();
-      const originScope = scope;
-      scope = {
-        ...scope,
-        threadId: child.id,
-        runId: turn.run.id,
-        workspaceId: otherProject.id,
-      };
-      await expect(publish({ appId: first.appId })).rejects.toMatchObject({ code: "not_found" });
-      expect(start).toHaveBeenCalledTimes(startsBefore);
-      await expect(
-        service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
-      ).rejects.toMatchObject({ code: "not_found" });
-      expect(await service.list(scope)).toEqual({ apps: [] });
-      scope = originScope;
-      const retainedOwner = await store.createUser("Retained app Workspace owner");
-      await database
-        .insertInto("workspaceMemberships")
-        .values({
-          generation: 1,
-          id: createId("workspaceMembership"),
-          invitedBy: f.userId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          role: "owner",
-          state: "active",
-          updatedAt: new Date(),
-          userId: retainedOwner,
-          workspaceId: f.workspace.id,
-        })
-        .execute();
-
-      await database
-        .updateTable("workspaceMemberships")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: retainedOwner })
-        .where("workspaceId", "=", f.workspace.id)
-        .where("userId", "=", f.userId)
+        .updateTable("users")
+        .set({ disabledAt: new Date() })
+        .where("id", "=", f.userId)
         .execute();
       await expect(service.authorizeView(first.appId, token)).rejects.toMatchObject({
-        code: "not_found",
+        code: "forbidden",
       });
       await expect(
         service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
-      ).rejects.toMatchObject({ code: "not_found" });
+      ).rejects.toMatchObject({ code: "forbidden" });
       await database
-        .updateTable("workspaceMemberships")
-        .set({ state: "active", revokedAt: null, revokedBy: null })
-        .where("workspaceId", "=", f.workspace.id)
-        .where("userId", "=", f.userId)
+        .updateTable("users")
+        .set({ disabledAt: null })
+        .where("id", "=", f.userId)
         .execute();
       await database
-        .updateTable("threads")
+        .updateTable("runs")
         .set({ accessMode: "approval-required" })
-        .where("id", "=", f.thread.id)
+        .where("id", "=", f.run.id)
         .execute();
       await expect(
         service.fetch(scope, { appId: first.appId, method: "GET", path: "/" }),
       ).rejects.toMatchObject({ code: "forbidden" });
       await expect(service.list(scope)).rejects.toMatchObject({ code: "forbidden" });
       await database
-        .updateTable("threads")
+        .updateTable("runs")
         .set({ accessMode: "full-access" })
-        .where("id", "=", f.thread.id)
+        .where("id", "=", f.run.id)
         .execute();
 
       const stopsBefore = stop.mock.calls.length;
@@ -1091,60 +863,6 @@ describeStore("published app HTML", (it) => {
       // Lazy start can succeed on the Runner while tunnel establishment fails on the Host.
       connect.mockRejectedValue(new Error("Tunnel failed after lazy start"));
       (await restarted.response(viewerRequest)).body.destroy();
-      // Deletion can win after startup admission but before the publication commits.
-      const { app: origin } = await apps.latest(first.appId, f.userId);
-      await store.requestWorkspaceDeletion({
-        workspaceId: f.workspace.id,
-        requestedBy: f.userId,
-        purgeAfter: new Date(Date.now() + 60_000),
-      });
-      await expect(
-        apps.publish({
-          appId: origin.id,
-          title: "Late publication",
-          publishKey: "after-deletion",
-          ...scope,
-          userId: f.userId,
-          server: { environmentId: f.environmentId, folder: "app", command: "node server.js" },
-        }),
-      ).rejects.toMatchObject({ code: "workspace_unavailable" });
-      await store.recoverWorkspaceDeletion({ workspaceId: f.workspace.id, requestedBy: f.userId });
-      const failedStops = stop.mock.calls.length;
-      stop.mockRejectedValueOnce(new Error("Connected Runner stop failed"));
-      await store.requestWorkspaceDeletion({
-        workspaceId: f.workspace.id,
-        requestedBy: f.userId,
-        purgeAfter: new Date(Date.now() + 60_000),
-      });
-      await restarted.stopWorkspace(f.workspace.id);
-      expect(stop).toHaveBeenCalledTimes(failedStops + 1);
-      expect(stop).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          appId: first.appId,
-          version: 3,
-          binding: expect.objectContaining({
-            workspaceId: f.workspace.id,
-            ownerEnvironmentId: f.environmentId,
-          }),
-        }),
-      );
-      await restarted.stopWorkspace(f.workspace.id);
-      expect(stop).toHaveBeenCalledTimes(failedStops + 2);
-      const connectionsBeforeDeletion = connect.mock.calls.length;
-      const startsBeforeDeletion = start.mock.calls.length;
-      (await restarted.response(viewerRequest)).body.destroy();
-      await expect(publish({ appId: first.appId })).rejects.toMatchObject({
-        code: "workspace_unavailable",
-      });
-      expect(connect).toHaveBeenCalledTimes(connectionsBeforeDeletion);
-      expect(start).toHaveBeenCalledTimes(startsBeforeDeletion);
-      await store.recoverWorkspaceDeletion({ workspaceId: f.workspace.id, requestedBy: f.userId });
-      (await restarted.response(viewerRequest)).body.destroy();
-      expect(connect).toHaveBeenCalledTimes(connectionsBeforeDeletion + 1);
-      expect(connect).toHaveBeenLastCalledWith(
-        expect.objectContaining({ appId: first.appId, version: 3 }),
-        expect.any(AbortSignal),
-      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

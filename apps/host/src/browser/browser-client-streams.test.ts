@@ -9,7 +9,7 @@ import type {
   BrowserTabRow,
   BrowserTabRecord,
 } from "@opensteer/protocol/browser-tabs";
-import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
+import type { BrowserGroupFacts, PersonalTabStreamRow } from "@opensteer/database";
 import { keyedStreamBytes } from "@opensteer/protocol/keyed-stream";
 import type { UserId } from "@opensteer/core";
 
@@ -24,9 +24,9 @@ const group: BrowserGroupRow = {
   tabCount: 1,
   inventoryRevision: 1,
   sessionId: groupId,
-  workspaceId: "wsp_00000000-0000-4000-8000-000000000001" as BrowserGroupRow["workspaceId"],
+
   state: "ready",
-  origin: "workspace",
+  origin: "person",
   access: "read-write",
   placement: {
     kind: "runner",
@@ -64,7 +64,7 @@ const tab: BrowserTabRow = {
 };
 function fixture(count = 1) {
   const facts: BrowserGroupFacts = { ...group, tabCount: count };
-  const durable = new Map<string, WorkspaceTabStreamRow>(
+  const durable = new Map<string, PersonalTabStreamRow>(
     Array.from({ length: count }, (_, index) => {
       const id = index ? (`surface_${index + 1}` as BrowserTabRow["id"]) : tabId;
       return [id, { ...tab, id, order: index, kind: "browser", groupId }];
@@ -155,6 +155,57 @@ function fixture(count = 1) {
 }
 afterEach(() => vi.useRealTimers());
 describe("BrowserClientStreams", () => {
+  it.each([0, 1, 64])("bounds uncached bootstrap reads with %i tabs per group", async (count) => {
+    const f = fixture(count);
+    f.live = false;
+    const ids = Array.from(
+      { length: 150 },
+      (_, index) =>
+        `bsn_00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}` as typeof groupId,
+    );
+    vi.mocked(f.ports.groupIds).mockResolvedValue(ids);
+    vi.mocked(f.ports.readGroups).mockImplementation(async (_user, requested) =>
+      requested.map((id) => ({ ...f.facts, id, sessionId: id })).reverse(),
+    );
+    vi.mocked(f.ports.readTabs).mockImplementation(async (requested) =>
+      requested.flatMap((id) =>
+        [...f.durable.values()].map((row) => ({
+          ...row,
+          title: count === 64 ? "界".repeat(256) : id,
+          groupId: id,
+          sessionId: id,
+        })),
+      ),
+    );
+    try {
+      const prefix = await f.streams.source.bootstrap(alice);
+      expect(prefix.groups.complete).toBe(false);
+      expect(prefix.groups.rows.length).toBeGreaterThan(32);
+      expect(prefix.groups.rows.map((row) => row.id)).toEqual(
+        ids.slice(0, prefix.groups.rows.length),
+      );
+      expect(keyedStreamBytes(prefix)).toBeLessThan(128 * 1024);
+      const reads = vi.mocked(f.ports.readGroups).mock.calls;
+      expect(reads.length).toBeLessThanOrEqual(4);
+      expect(reads.flatMap(([, requested]) => requested).length).toBeLessThan(ids.length);
+      const tabReads = vi.mocked(f.ports.readTabs).mock.calls;
+      expect(tabReads.length).toBeLessThanOrEqual(4);
+      const requestedTabs = tabReads.flatMap(([requested]) => requested);
+      expect(requestedTabs).toEqual(
+        prefix.groups.rows.slice(0, requestedTabs.length).map(({ id }) => id),
+      );
+      expect(prefix.tabs.map(({ groupId }) => groupId)).toEqual(
+        requestedTabs.slice(0, prefix.tabs.length),
+      );
+      for (const entry of prefix.tabs)
+        for (const row of entry.rows)
+          expect(row.title).toBe(count === 64 ? "界".repeat(256) : entry.groupId);
+      if (count === 64) expect(requestedTabs).toHaveLength(1);
+    } finally {
+      f.streams.close();
+    }
+  });
+
   it("continues only a matching authorized bootstrap and falls back after changes or revocation", async () => {
     vi.useFakeTimers();
     const f = fixture(200);
@@ -273,7 +324,6 @@ describe("BrowserClientStreams", () => {
             {
               threadId:
                 "thr_00000000-0000-4000-8000-000000000001" as BrowserTabRow["occupants"][number]["threadId"],
-              home: false,
               holding: true,
               acting: true,
               lastActiveAt: group.createdAt,

@@ -1,3 +1,4 @@
+import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import { once } from "node:events";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -31,7 +32,6 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
       email: "fixture@example.test",
       emailVerified: true,
       image: null,
-      instanceRole: "administrator",
     },
   };
   const discovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
@@ -39,7 +39,7 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
     deploymentId: createId("deployment"),
     hostInstanceId: createId("hostInstance"),
     hostKey: { algorithm: "Ed25519" },
-    deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    deploymentShape: { kind: "personal" },
   });
   let received = 0;
   let closed: { code: number; reason: string } | undefined;
@@ -93,7 +93,7 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
     const address = server.server.address();
     if (!address || typeof address === "string") throw new Error("No Host port.");
     socket = new WebSocket(
-      `ws://127.0.0.1:${address.port}/v1/browser-sessions/${sessionId}/connect?editing=1`,
+      `ws://127.0.0.1:${address.port}/v1/browser-sessions/${sessionId}/connect?editing=1&${apiVersionQueryParameter}=${hostApiVersion}`,
     );
     const messages: ReturnType<typeof BrowserServerMessageSchema.parse>[] = [];
     socket.on("message", (raw) =>

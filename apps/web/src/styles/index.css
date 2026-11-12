@@ -22,7 +22,9 @@
 @import "./desktop.css";
 @import "./places.css";
 @import "./settings.css";
-@import "./projects.css";
+@import "./plugins.css";
 @import "./dictation.css";
 @import "./voice.css";
-@import "./team.css";
+@import "./tasks-home.css";
+@import "./team-chat.css";
+@import "./team-admin.css";

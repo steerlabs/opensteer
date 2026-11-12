@@ -22,7 +22,6 @@ const rawSnapshot = {
   browserProfiles: [],
   machines: [],
   activeTasks: [],
-  homeThreadId: "home",
   tasks: null,
   threads: [
     {
@@ -113,7 +112,10 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
 vi.mock("../browser/agent-marks.js", () => ({ AgentMarks: () => null }));
 vi.mock("../ui/task-mark.js", () => ({ TaskMark: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => null }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => null,
+}));
 vi.mock("../ui/motion.js", () => ({ enter: {}, exit: {} }));
 vi.mock("react-native-reanimated", () => ({
   default: { View: ({ children }: { children?: ReactNode }) => <div>{children}</div> },

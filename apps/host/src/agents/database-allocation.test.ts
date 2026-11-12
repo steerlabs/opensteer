@@ -9,7 +9,9 @@ import { startVerticalStack } from "./vertical-stack.test-support.js";
 // cleanup waits for startup which is waiting for that cleanup; the original
 // PostgreSQL error is replaced by a deadline/retirement error; an admin pool leaks.
 const fake = vi.hoisted(() => ({
-  error: Object.assign(new Error("injected CREATE DATABASE permission error"), { code: "42501" }),
+  error: Object.assign(new Error("injected CREATE DATABASE permission error"), {
+    code: "42501",
+  }),
   query: vi.fn(),
   end: vi.fn(),
   drop: vi.fn(),
@@ -18,7 +20,10 @@ vi.mock(
   "../../../../packages/database/src/test-database-admin.test-support.js",
   async (original) => ({
     ...(await original<Record<string, unknown>>()),
-    databaseAdministrator: () => ({ query: fake.query, end: fake.end }),
+    databaseAdministrator: () => ({
+      query: fake.query,
+      end: fake.end,
+    }),
     dropOwnedDatabase: fake.drop,
     recordOwnedDatabase: () => undefined,
   }),
@@ -28,7 +33,6 @@ vi.mock("../runtime/runtime.js", () => ({
     throw new Error("Service startup ran before allocation");
   }),
 }));
-
 describe("database allocation failure", () => {
   beforeEach(() => {
     fake.query.mockReset().mockRejectedValue(fake.error);
@@ -50,15 +54,17 @@ describe("database allocation failure", () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
   });
-
   it("never calls a service stopper when CREATE failed", async () => {
     const stopProducers = vi.fn(async () => undefined);
-    await expect(cloneTestDatabase("host", { stopProducers })).rejects.toBe(fake.error);
+    await expect(
+      cloneTestDatabase("host", {
+        stopProducers,
+      }),
+    ).rejects.toBe(fake.error);
     expect(stopProducers).not.toHaveBeenCalled();
     expect(fake.drop).toHaveBeenCalledOnce();
     expect(fake.end).toHaveBeenCalledOnce();
   });
-
   it("propagates the original error without waiting for service startup", async () => {
     await expect(
       startVerticalStack({

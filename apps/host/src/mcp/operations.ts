@@ -9,7 +9,7 @@ import type {
 } from "@opensteer/database";
 import { callerThread, type AgentCaller, type RunCaller } from "./agent-caller.js";
 import { mcpToolCallId } from "../integrations/mcp-call-id.js";
-import { assertCallerReach, write as assertThreadAccess } from "./tool-access.js";
+import { write as assertThreadAccess } from "./tool-access.js";
 
 export function fingerprint(input: unknown): string {
   const value =
@@ -31,16 +31,11 @@ export function callerContext(caller: AgentCaller) {
   return {
     requestedBy: caller.userId,
     threadId: thread.id,
-    workspaceId: thread.workspaceId,
     environmentId: thread.environmentId,
   };
 }
-export function callerListScope(caller: AgentCaller): AgentThreadListScope {
-  const scope = caller.reach;
-  return scope.kind === "lineage" ? { kind: "lineage", threadId: callerThread(caller).id } : scope;
-}
-export function assertTarget(caller: AgentCaller, target: Thread) {
-  assertCallerReach(caller, target);
+export function callerListScope(_caller: AgentCaller): AgentThreadListScope {
+  return { kind: "personal" };
 }
 const actions = {
   delegate_task: "thread.delegate",
@@ -62,12 +57,10 @@ export function runAdmission(
   return {
     bindingGeneration: claims.bindingGeneration,
     environmentId: claims.environmentId,
-    membershipGeneration: claims.membershipGeneration,
     requestedBy: claims.requestedBy,
     runId: claims.runId,
     runnerBootId: claims.runnerBootId,
     runnerId: claims.runnerId,
-    workspaceId: claims.workspaceId,
     action: actions[tool],
     sourceThreadId: claims.threadId,
     requestFingerprint: fingerprint(input),
@@ -170,7 +163,7 @@ export function toolOperationKey(caller: AgentCaller, input: object, fallback: s
 }
 
 export function threadCallerAuthority(caller: AgentCaller): ThreadCallerAuthority {
-  const base = { userId: caller.userId, accessMode: caller.accessMode, reach: caller.reach };
+  const base = { userId: caller.userId, accessMode: caller.accessMode };
   if (caller.kind === "connection")
     return { ...base, kind: "connection", connectionId: caller.connectionId };
   if (caller.kind === "run") return { ...base, kind: "run", scope: caller.claims };

@@ -237,30 +237,27 @@ final class BrokerHarness {
 // MARK: Requests
 
 enum Fixtures {
-  static let deployment = ("dep_personal", "Personal")
-  static let workspace = ("wsp_00000000-0000-4000-8000-000000000003", "Main")
-  static let otherWorkspace = ("wsp_00000000-0000-4000-8000-000000000009", "Side projects")
+  static let deployment = ("dep_00000000-0000-4000-8000-000000000003", "Personal")
+  static let otherDeployment = ("dep_00000000-0000-4000-8000-000000000009", "Other Opensteer")
   static let session = "bsn_00000000-0000-4000-8000-000000000007"
 
   static func request(
     _ transactionId: String = UUID().uuidString.lowercased(), site: String = "https://example.com",
     session: String = session, expiresIn: TimeInterval = 600,
-    expiresAt: String? = nil, deploymentId: String = deployment.0,
-    workspace: (String, String) = workspace,
+    expiresAt: String? = nil, deploymentId: String? = nil,
+    deployment: (String, String) = deployment,
     extra: [String: JSONValue] = [:]
   ) -> JSONValue {
     var fields: [String: JSONValue] = [
-      "deploymentId": .string(deploymentId),
+      "deploymentId": .string(deploymentId ?? deployment.0),
       "deploymentName": .string(deployment.1),
       "expiresAt": .string(expiresAt ?? iso(Date().addingTimeInterval(expiresIn))),
       "reason": .string("Check the invoice"),
-      "protocolVersion": .integer(6),
-      "permissionVersion": .integer(5),
+      "protocolVersion": .integer(10),
+      "permissionVersion": .integer(6),
       "site": .string(site),
       "threadTitle": .string("Invoices"),
       "transactionId": .string(transactionId),
-      "workspaceId": .string(workspace.0),
-      "workspaceName": .string(workspace.1),
     ]
     for (key, value) in extra { fields[key] = value }
     return .object(fields)
@@ -272,7 +269,7 @@ enum Fixtures {
 
   static func approve(_ transactionId: String, _ account: JSONValue?, remember: Bool) -> JSONValue {
     .object([
-      "permissionVersion": .integer(5),
+      "permissionVersion": .integer(6),
       "loginId": account?["id"] ?? .null, "remember": .bool(remember),
       "revision": account?["revision"] ?? .null,
       "transactionId": .string(transactionId),
@@ -289,10 +286,10 @@ enum Fixtures {
   }
 
   /// The grant key a default request uses.
-  static func grantKey(site: String = "https://example.com", workspace: String = workspace.0)
+  static func grantKey(site: String = "https://example.com", deployment: String = deployment.0)
     -> GrantKey
   {
-    GrantKey(deploymentId: deployment.0, workspaceId: workspace, site: site)
+    GrantKey(deploymentId: deployment, site: site)
   }
 
   static func iso(_ date: Date) -> String {

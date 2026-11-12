@@ -11,19 +11,11 @@ import type { DatabaseSchema } from "./schema.js";
  * Reads `thread`, its creator as `person` and their read marker as `marker`.
  */
 function quietTask(now: Date): RawBuilder<boolean> {
-  return sql<boolean>`thread.role = 'work' and thread.listed and thread.done_at is null
+  return sql<boolean>`thread.purpose = 'task' and thread.listed and thread.done_at is null
     and thread.status = 'idle' and not thread.input_queue_paused
-    and person.disabled_at is null and person.quiet_task_days > 0
+    and person.disabled_at is null and settings.quiet_task_days > 0
     and greatest(thread.updated_at, marker.updated_at)
-      <= ${now}::timestamptz - make_interval(days => person.quiet_task_days)
-    and exists (
-      select 1 from workspace_memberships membership
-      join workspaces workspace on workspace.id = membership.workspace_id
-      where membership.workspace_id = thread.workspace_id and membership.user_id = thread.created_by
-        and membership.state = 'active' and workspace.status <> 'deleted')
-    and not exists (select 1 from workspaces where home_thread_id = thread.id)
-    and not exists (
-      select 1 from channel_conversation_contexts where active_thread_id = thread.id)
+      <= ${now}::timestamptz - make_interval(days => settings.quiet_task_days)
     and not exists (
       select 1 from triggers where anchor_thread_id = thread.id and status in ('active', 'paused'))
     and not exists (
@@ -47,12 +39,11 @@ function quietTask(now: Date): RawBuilder<boolean> {
         and (message.author->>'kind' <> 'human'
           or coalesce(message.author->>'userId', inbox.requested_by) is distinct from thread.created_by))`;
 }
-
 const quietTaskSource = sql`threads thread
-  join users person on person.id = thread.created_by
+  join personal_settings settings on settings.owner_id = thread.created_by
+  join users person on person.id = settings.owner_id
   left join thread_read_markers marker
     on marker.thread_id = thread.id and marker.user_id = thread.created_by`;
-
 export interface QuietTaskCandidate {
   readonly threadId: ThreadId;
   readonly createdBy: UserId;
@@ -63,7 +54,11 @@ export interface QuietTaskCandidate {
 /** Quiet tasks after `after`, by id. Unlocked: `setThreadDone` checks again under its locks. */
 export async function listQuietTasks(
   database: Kysely<DatabaseSchema>,
-  input: { readonly now: Date; readonly after?: ThreadId; readonly limit: number },
+  input: {
+    readonly now: Date;
+    readonly after?: ThreadId;
+    readonly limit: number;
+  },
 ): Promise<readonly QuietTaskCandidate[]> {
   const rows = await sql<QuietTaskCandidate>`
     select thread.id as thread_id, thread.created_by, thread.updated_at
@@ -77,13 +72,14 @@ export async function listQuietTasks(
   `.execute(database);
   return rows.rows;
 }
-
 export async function threadIsQuiet(
   database: Kysely<DatabaseSchema>,
   threadId: ThreadId,
   now: Date,
 ): Promise<boolean> {
-  const row = await sql<{ quiet: boolean }>`
+  const row = await sql<{
+    quiet: boolean;
+  }>`
     select ${quietTask(now)} as quiet from ${quietTaskSource} where thread.id = ${threadId}
   `.execute(database);
   return row.rows[0]?.quiet === true;

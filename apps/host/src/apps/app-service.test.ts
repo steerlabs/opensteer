@@ -18,12 +18,12 @@ import { AppTunnelError } from "./app-tunnel-hub.js";
 function fixture(
   connectApp: NonNullable<ConstructorParameters<typeof AppService>[0]["tunnels"]>["connect"],
 ) {
-  const workspaceId = createId("workspace");
+  const computerId = createId("runner");
   const userId = createId("user");
   const environmentId = createId("environment");
   const app = {
     id: `app_${crypto.randomUUID()}`,
-    workspaceId,
+
     threadId: createId("thread"),
     runId: createId("run"),
     title: "App",
@@ -31,14 +31,20 @@ function fixture(
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
-  const server = { environmentId, folder: ".", command: "node server.js" };
+  const server = { folder: { computerId, path: "/fixture/task" }, command: "node server.js" };
+  const publisher = {
+    id: app.threadId,
+    accessMode: "full-access" as const,
+    status: "running" as const,
+    folderComputerId: computerId,
+    folderPath: "/fixture/task",
+  };
   const apps = {
-    authorize: vi.fn(async () => undefined),
+    authorize: vi.fn(async () => ({ app, publisher })),
     get: async () => app,
     latest: async () => ({ app, version: { version: 1, server } }),
   } as unknown as AppStore;
   const scope = {
-    workspaceId,
     requestedBy: userId,
     environmentId,
     threadId: app.threadId,
@@ -52,20 +58,7 @@ function fixture(
       authenticate: async () => scope,
       reauthorize: async () => scope,
     } as unknown as ConstructorParameters<typeof AppService>[0]["tokens"],
-    store: {
-      admitWorkspaceFiles: async () => ({
-        workspace: {
-          id: workspaceId,
-          backing: {
-            kind: "local-directory",
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            ownerEnvironmentId: environmentId,
-            storageAuthorityId: createId("storageAuthority"),
-          },
-        },
-      }),
-    } as unknown as ConstructorParameters<typeof AppService>[0]["store"],
+
     tunnels: {
       connect: connectApp,
       start: vi.fn(),
@@ -79,7 +72,7 @@ function fixture(
     app,
     userId,
     options,
-    scope: scope as RunToolScope,
+    scope: scope as unknown as RunToolScope,
   };
 }
 
@@ -214,25 +207,18 @@ it("returns server HTML unchanged to app_fetch while preparing viewer frames", a
   }
 });
 
-it("rechecks Workspace deletion after waiting for an app's publication lock", async () => {
+it("rechecks personal authority after waiting for an app's publication lock", async () => {
   vi.useFakeTimers();
   const { service, app, options, scope } = fixture(vi.fn());
   const started = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   let deleting = false;
-  const admission = options.store.admitWorkspaceFiles.bind(options.store);
-  vi.spyOn(options.store, "admitWorkspaceFiles").mockImplementation(async (...args) => {
+  const initial = await options.apps.authorize({ ...scope, userId: scope.requestedBy });
+  vi.spyOn(options.apps, "authorize").mockImplementation(async () => {
     if (deleting)
-      throw new OpensteerError({
-        code: "workspace_unavailable",
-        message: "Workspace is awaiting deletion",
-        reason: "workspace-deleting",
-      });
-    return admission(...args);
+      throw new OpensteerError({ code: "forbidden", message: "Personal owner revoked" });
+    return initial;
   });
-  vi.spyOn(options.apps, "authorize").mockResolvedValue({ app } as Awaited<
-    ReturnType<AppStore["authorize"]>
-  >);
   Object.assign(options.apps, {
     publication: async () => undefined,
     publish: async () => {
@@ -258,7 +244,7 @@ it("rechecks Workspace deletion after waiting for an app's publication lock", as
     await first;
     const refused = await queued;
     expect(options.tunnels.start).toHaveBeenCalledTimes(1);
-    expect(refused).toMatchObject({ code: "workspace_unavailable" });
+    expect(refused).toMatchObject({ code: "forbidden" });
   } finally {
     release.resolve();
     await first;
@@ -266,52 +252,42 @@ it("rechecks Workspace deletion after waiting for an app's publication lock", as
   }
 });
 
-it.each(["deleted", "deleting"])(
-  "explains an app's %s Workspace instead of suggesting reconnect",
-  async (state) => {
-    const connectApp = vi.fn();
-    const { service, app, userId, options } = fixture(connectApp);
-    const { path } = await service.view(app.id, userId, "dark");
-    vi.spyOn(options.store, "admitWorkspaceFiles").mockImplementation(async () => {
-      if (state === "deleting")
-        throw new OpensteerError({
-          code: "workspace_unavailable",
-          message: "Workspace is awaiting deletion",
-          reason: "workspace-deleting",
-        });
-      return null;
-    });
-    const response = await service.response({
-      appId: app.id,
-      token: path.split("/").at(-2)!,
-      theme: "dark",
-      method: "GET",
-      path: "/",
-      prefix: path.slice(0, -1),
-      headers: {},
-      signal: AbortSignal.timeout(2_000),
-    });
-    let body = "";
-    for await (const chunk of response.body) body += String(chunk);
-    expect(response.status).toBe(404);
-    expect(body).toContain("This app is no longer available");
-    expect(body).not.toContain("reconnect");
-    expect(connectApp).not.toHaveBeenCalled();
-  },
-);
-
+it("explains an app removed while its tunnel decision waited", async () => {
+  const connectApp = vi.fn();
+  const { service, app, userId, options } = fixture(connectApp);
+  const { path } = await service.view(app.id, userId, "dark");
+  const latest = await options.apps.latest(app.id, userId);
+  vi.spyOn(options.apps, "latest")
+    .mockResolvedValueOnce(latest)
+    .mockRejectedValueOnce(new OpensteerError({ code: "not_found", message: "App removed" }));
+  const response = await service.response({
+    appId: app.id,
+    token: path.split("/").at(-2)!,
+    theme: "dark",
+    method: "GET",
+    path: "/",
+    prefix: path.slice(0, -1),
+    headers: {},
+    signal: AbortSignal.timeout(2000),
+  });
+  let body = "";
+  for await (const chunk of response.body) body += String(chunk);
+  expect(response.status).toBe(404);
+  expect(body).toContain("This app is no longer available");
+  expect(body).not.toContain("reconnect");
+  expect(connectApp).not.toHaveBeenCalled();
+});
 it("reports a committed tab change when notifying other devices fails", async () => {
-  const workspaceId = createId("workspace");
   const appTabs = [{ appId: `app_${crypto.randomUUID()}` }];
   const service = new AppService({
     dataDirectory: tmpdir(),
-    apps: { setTabOpen: async () => ({ workspaceId, appTabs }) } as unknown as AppStore,
-    store: { admitWorkspaceFiles: vi.fn() },
+    apps: { setTabOpen: async () => ({ appTabs }) } as unknown as AppStore,
+
     files: { list: vi.fn(), download: vi.fn() },
     tokens: { authenticate: vi.fn(), reauthorize: vi.fn() },
     publishEvent: vi.fn(),
     tabsChanged: async () => {
-      throw new Error("membership read failed");
+      throw new Error("device notification failed");
     },
   });
   await expect(service.setTabOpen(appTabs[0]!.appId, createId("user"), true)).resolves.toEqual({

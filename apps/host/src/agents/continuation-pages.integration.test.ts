@@ -1,7 +1,6 @@
 import { expect } from "vitest";
 import { ContinuationService } from "./continuation-service.js";
 import { describeStore, pendingEvent } from "@opensteer/database/test-support/store";
-
 describeStore("Continuation paging", (it) => {
   it("keeps a Run's outcomes together at the page boundary, without expanding Trigger rows", async ({
     storeFixture,
@@ -16,33 +15,47 @@ describeStore("Continuation paging", (it) => {
         kind: "browser.access",
         mode: "durable",
         ...(callId.endsWith("trigger")
-          ? { originatingOccurrenceId: occurrence.id }
-          : { originatingRunId: fixture.run.id }),
+          ? {
+              originatingOccurrenceId: occurrence.id,
+            }
+          : {
+              originatingRunId: fixture.run.id,
+            }),
         originatingThreadId: fixture.thread.id,
-        originatingWorkspaceId: fixture.workspace.id,
-        targetWorkspaceId: fixture.workspace.id,
         requestedBy: fixture.userId,
         requiredActor: "requester",
         payload: {
           kind: "browser.access",
           reason: "Read email",
-          suggestion: { kind: "user_choice" },
+          suggestion: {
+            kind: "user_choice",
+          },
         },
         presentation: {
           kind: "external",
           title: "Choose a profile",
-          subject: { kind: "workspace", id: fixture.workspace.id },
+          subject: {
+            kind: "thread",
+            id: fixture.threadId,
+          },
         },
       });
       rows.push(opened.request.id);
       await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
-        response: { kind: "external", value: { decision: "declined" } },
+        response: {
+          kind: "external",
+          value: {
+            decision: "declined",
+          },
+        },
       });
       await database
         .updateTable("requestContinuations")
-        .set({ createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)) })
+        .set({
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, index)),
+        })
         .where("requestId", "=", opened.request.id)
         .execute();
     }
@@ -56,10 +69,11 @@ describeStore("Continuation paging", (it) => {
         environmentId: fixture.environmentId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
-        workspaceId: fixture.workspace.id,
         ordinal: 1,
         type: "run.completed",
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
       }),
     });
     expect(
@@ -71,7 +85,9 @@ describeStore("Continuation paging", (it) => {
         listPendingContinuations: () => store.requests.listPendingContinuations(2),
         recordContinuationAttempt: (input) => store.requests.recordContinuationAttempt(input),
       },
-      commands: { enqueueThreadInput: (input) => store.enqueueThreadInput(input) },
+      commands: {
+        enqueueThreadInput: (input) => store.enqueueThreadInput(input),
+      },
       integrations: {
         listDiscoveryInventory: async () => [],
         listCallableTools: async () => [],

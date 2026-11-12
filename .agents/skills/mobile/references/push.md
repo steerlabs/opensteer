@@ -22,3 +22,8 @@ cellular handover.
 
 Signed delivery, first unlock and reinstall follow
 [private preview signing](install-beta.md#private-preview-signing-and-acceptance).
+
+For teams, verify the team drawer entry and the one extra team attachment for the selected
+computer. Team chat must work with that computer offline. Switch computers and confirm the previous
+team connection closes; test a team push from the other computer without attaching it. Inspect
+only generic provider payloads and sealed previews, never plaintext team message bodies.

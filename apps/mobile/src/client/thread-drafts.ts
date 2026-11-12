@@ -2,10 +2,13 @@ import type { PrivateFilesystem } from "@opensteer/client/connections";
 import {
   ContentPartSchema,
   ModelSelectionSchema,
-  provisionalThreadTitle,
+  TaskFolderSchema,
   ThreadAccessModeSchema,
   type BrowserPageContentPart,
+  type TaskFolder,
 } from "@opensteer/core";
+import { homeDraftId } from "../home/home-draft.js";
+import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-scope.js";
 import { MutationQueue } from "@opensteer/shared/mutationQueue";
 import { z } from "zod";
 
@@ -79,8 +82,8 @@ const DraftSchema = LegacyDraftSchema.extend({
   page: BrowserPageSchema.optional(),
   quote: DraftQuoteSchema.optional(),
   userId: z.string().min(1).max(200),
-  /** Where a new task's draft would start. Absent on one saved under its Workspace's id. */
-  workspaceId: z.string().min(1).max(200).optional(),
+  /** The folder a new task's draft would start in. */
+  folder: TaskFolderSchema.optional(),
 });
 
 /**
@@ -118,7 +121,7 @@ const PendingThreadStartSchema = z.strictObject({
   modelSelection: ModelSelectionSchema,
   generateTitle: z.literal(true).optional(),
   title: z.string().min(1).max(200),
-  workspaceId: z.string().min(1).max(200),
+  folder: TaskFolderSchema,
 });
 const PendingCommandSchema = LegacyPendingCommandSchema.extend({
   browserPage: BrowserPageSchema.optional(),
@@ -182,68 +185,22 @@ export type PendingThreadStart = z.infer<typeof PendingThreadStartSchema>;
 
 const newTaskKeyPrefix = "new-task:";
 
-/**
- * The key of a new task's draft, under an id made on this phone. A release that
- * kept one per Workspace used the Workspace's id as the draft id: its key, files
- * and message in flight are never rewritten, and that id still says where it runs.
- */
+/** The key of a new task's draft, under an id made on this phone. */
 export function newTaskDraftKey(draftId: string): string {
   return `${newTaskKeyPrefix}${draftId}`;
 }
 
-export function newTaskDraftId(): string {
-  return globalThis.crypto.randomUUID();
-}
-
-/** One unfinished new task, as the sidebar lists it. */
-export interface NewTaskDraftSummary {
-  readonly draftId: string;
-  /** A message already handed over, unanswered: retried from the draft, never discarded. */
-  readonly held: boolean;
-  readonly title: string;
-  readonly workspaceId: string;
-}
-
-/** What the sidebar shows of one reader's drafts on one Deployment. */
+/** Threads with an unsent reply on one reader's Deployment. */
 export interface DraftSummary {
-  /** Newest first. */
-  readonly newTasks: readonly NewTaskDraftSummary[];
-  /** Threads with an unsent reply. */
   readonly threadIds: ReadonlySet<string>;
 }
 
-export const noDrafts: DraftSummary = { newTasks: [], threadIds: new Set() };
+export const noDrafts: DraftSummary = { threadIds: new Set() };
 
-/** A summary is rebuilt on every write; a list redraws only when one of these differs. */
 export function sameDraftSummary(left: DraftSummary, right: DraftSummary): boolean {
   return (
-    left.newTasks.length === right.newTasks.length &&
-    left.newTasks.every((draft, index) => {
-      const other = right.newTasks[index];
-      return (
-        draft.draftId === other?.draftId &&
-        draft.held === other.held &&
-        draft.title === other.title &&
-        draft.workspaceId === other.workspaceId
-      );
-    }) &&
     left.threadIds.size === right.threadIds.size &&
-    [...left.threadIds].every((threadId) => right.threadIds.has(threadId))
-  );
-}
-
-/** Whether New task can stay on this draft: nothing written, nothing in flight. */
-export function newTaskDraftBlank(
-  drafts: Pick<ThreadDraftStore, "readDraft" | "readPending">,
-  deploymentId: string,
-  userId: string,
-  draftId: string,
-): boolean {
-  const draftKey = newTaskDraftKey(draftId);
-  const draft = drafts.readDraft(deploymentId, userId, draftKey);
-  return (
-    drafts.readPending(deploymentId, userId, draftKey) === null &&
-    (draft === null || !draftHasContent(draft))
+    [...left.threadIds].every((id) => right.threadIds.has(id))
   );
 }
 
@@ -314,15 +271,14 @@ export interface ThreadDraftStore {
   /** Forgets a draft's content. A message in flight under the same key is left alone. */
   discardDraft(deploymentId: string, userId: string, threadId: string): Promise<void>;
   /**
-   * Says where a new-task draft starts, before anything is written to it: an
-   * empty draft is not saved, so this is held here until its first write.
+   * Remembers the chosen folder; an empty draft waits for its first content write.
    */
   placeNewTaskDraft(
     deploymentId: string,
     userId: string,
     draftId: string,
-    workspaceId: string,
-  ): void;
+    folder: TaskFolder,
+  ): Promise<void>;
   readDraft(deploymentId: string, userId: string, threadId: string): ThreadDraft | null;
   readDraftSummary(deploymentId: string, userId: string): DraftSummary;
   readPending(deploymentId: string, userId: string, threadId: string): PendingCommand | null;
@@ -355,6 +311,10 @@ export function createThreadDraftStore(options: {
   readonly filePath: string;
   readonly now: () => Date;
   readonly privateFiles: PrivateFilesystem;
+  readonly forgetDraftFiles?: (
+    scope: FirstMessageAttachmentDraftScope,
+    localUris: readonly (string | null)[],
+  ) => void | Promise<void>;
 }): ThreadDraftStore {
   let drafts = new Map<string, ThreadDraft>();
   let pending = new Map<string, PendingCommand>();
@@ -370,7 +330,7 @@ export function createThreadDraftStore(options: {
   const textEdits = new Map<string, { readonly text: string }>();
   const quoteEdits = new Map<string, { readonly quote: ThreadDraftQuote | null }>();
   const pageEdits = new Map<string, { readonly page: BrowserPageContentPart | null }>();
-  const newTaskWorkspaces = new Map<string, string>();
+  const newTaskFolders = new Map<string, TaskFolder>();
   const writes = new MutationQueue();
 
   const key = (deploymentId: string, userId: string, threadId: string): string =>
@@ -393,7 +353,7 @@ export function createThreadDraftStore(options: {
       page: pageEdit === undefined ? entry?.page : (pageEdit.page ?? undefined),
       quote: quoteEdit === undefined ? entry?.quote : (quoteEdit.quote ?? undefined),
       text: textEdit?.text ?? entry?.text ?? "",
-      workspaceId: entry?.workspaceId ?? newTaskWorkspaces.get(entryKey),
+      folder: entry?.folder ?? newTaskFolders.get(entryKey),
     };
     if (draftEmpty(fields)) return null;
     return DraftSchema.parse({
@@ -418,7 +378,7 @@ export function createThreadDraftStore(options: {
           ...fields,
           updatedAt: options.now().toISOString(),
           userId,
-          workspaceId: fields.workspaceId ?? newTaskWorkspaces.get(entryKey),
+          folder: newTaskFolders.get(entryKey) ?? fields.folder,
         }),
       );
   };
@@ -474,17 +434,47 @@ export function createThreadDraftStore(options: {
         if (parsed.success) {
           drafts = new Map(Object.entries(parsed.data.drafts));
           pending = new Map(Object.entries(parsed.data.pending));
-          publish();
-          return;
-        }
-        // The upgrade is the same on every load, so a phone closed before its
-        // next write comes back to the same messages under the same keys.
-        const steering = SteeringDraftFileSchema.safeParse(decoded);
-        if (steering.success) {
+        } else {
+          const steering = SteeringDraftFileSchema.safeParse(decoded);
+          if (!steering.success) return;
           ({ drafts, pending } = withoutSteeringDecisions(steering.data));
-          publish();
-          return;
         }
+        const obsolete = new Map<
+          string,
+          { scope: FirstMessageAttachmentDraftScope; localUris: (string | null)[] }
+        >();
+        for (const [entryKey, record] of [...drafts, ...pending]) {
+          const match = /^([^:]+):([^:]+):new-task:(.+)$/u.exec(entryKey);
+          if (!match || match[3] === homeDraftId) continue;
+          const existing = obsolete.get(entryKey) ?? {
+            scope: {
+              kind: "new-task" as const,
+              deploymentId: match[1]!,
+              userId: match[2]!,
+              draftId: match[3]!,
+            },
+            localUris: [],
+          };
+          if (record.userId === match[2])
+            existing.localUris.push(
+              ...("localUris" in record
+                ? (record.localUris ?? [])
+                : (record.attachments ?? []).map((item) =>
+                    "localUri" in item ? item.localUri : null,
+                  )),
+            );
+          obsolete.set(entryKey, existing);
+        }
+        if (obsolete.size) {
+          await mutate((nextDrafts, nextPending) => {
+            for (const entryKey of obsolete.keys()) {
+              nextDrafts.delete(entryKey);
+              nextPending.delete(entryKey);
+            }
+          });
+          for (const { scope, localUris } of obsolete.values())
+            await options.forgetDraftFiles?.(scope, localUris);
+        } else publish();
         // Older files did not record the authenticated user. They therefore
         // cannot safely be shown or replayed after an account change on a
         // shared phone. The production app uses a new filename for this
@@ -597,8 +587,19 @@ export function createThreadDraftStore(options: {
       publish();
     },
 
-    placeNewTaskDraft(deploymentId, userId, draftId, workspaceId): void {
-      newTaskWorkspaces.set(key(deploymentId, userId, newTaskDraftKey(draftId)), workspaceId);
+    async placeNewTaskDraft(deploymentId, userId, draftId, folder): Promise<void> {
+      const entryKey = key(deploymentId, userId, newTaskDraftKey(draftId));
+      newTaskFolders.set(entryKey, folder);
+      const current = drafts.get(entryKey);
+      if (
+        !current ||
+        (current.folder?.computerId === folder.computerId && current.folder.path === folder.path)
+      )
+        return;
+      await mutate((nextDrafts) => {
+        const latest = nextDrafts.get(entryKey);
+        if (latest) putDraft(nextDrafts, entryKey, userId, { ...draftFields(latest), folder });
+      });
     },
 
     readDraft(deploymentId, userId, threadId): ThreadDraft | null {
@@ -607,49 +608,14 @@ export function createThreadDraftStore(options: {
 
     readDraftSummary(deploymentId, userId): DraftSummary {
       const scope = key(deploymentId, userId, "");
-      const tasks = new Map<string, NewTaskDraftSummary & { readonly at: string }>();
       const threadIds = new Set<string>();
       for (const [entryKey, draft] of drafts) {
-        if (!entryKey.startsWith(scope) || draft.userId !== userId) continue;
-        if (!draftHasContent(draft)) continue;
-        const draftKey = entryKey.slice(scope.length);
-        if (!draftKey.startsWith(newTaskKeyPrefix)) {
-          threadIds.add(draftKey);
+        if (!entryKey.startsWith(scope) || draft.userId !== userId || !draftHasContent(draft))
           continue;
-        }
-        const draftId = draftKey.slice(newTaskKeyPrefix.length);
-        tasks.set(draftId, {
-          at: draft.updatedAt,
-          draftId,
-          held: false,
-          title: firstLine(draft.text, draft.attachments?.length ?? 0, draft.page),
-          workspaceId: draft.workspaceId ?? draftId,
-        });
-      }
-      // Once claimed, a message has left its draft and New task opens a blank
-      // one, so this list is the way back to it.
-      for (const [entryKey, command] of pending) {
-        if (!entryKey.startsWith(scope) || command.userId !== userId) continue;
         const draftKey = entryKey.slice(scope.length);
-        if (command.threadId !== draftKey || !draftKey.startsWith(newTaskKeyPrefix)) continue;
-        const draftId = draftKey.slice(newTaskKeyPrefix.length);
-        tasks.set(draftId, {
-          at: tasks.get(draftId)?.at ?? command.createdAt,
-          draftId,
-          held: true,
-          title: firstLine(command.text, command.attachments?.length ?? 0, command.browserPage),
-          workspaceId: command.start?.workspaceId ?? tasks.get(draftId)?.workspaceId ?? draftId,
-        });
+        if (!draftKey.startsWith(newTaskKeyPrefix)) threadIds.add(draftKey);
       }
-      return {
-        newTasks: [...tasks.values()]
-          .sort(
-            (left, right) =>
-              right.at.localeCompare(left.at) || left.draftId.localeCompare(right.draftId),
-          )
-          .map(({ at: _at, ...summary }) => summary),
-        threadIds,
-      };
+      return { threadIds };
     },
 
     readPending(deploymentId, userId, threadId): PendingCommand | null {
@@ -765,7 +731,7 @@ interface DraftFields {
   readonly page: ThreadDraft["page"] | undefined;
   readonly quote: ThreadDraft["quote"] | undefined;
   readonly text: string;
-  readonly workspaceId: ThreadDraft["workspaceId"] | undefined;
+  readonly folder: ThreadDraft["folder"] | undefined;
 }
 
 function draftFields(draft: ThreadDraft | undefined): DraftFields {
@@ -774,7 +740,7 @@ function draftFields(draft: ThreadDraft | undefined): DraftFields {
     page: draft?.page,
     quote: draft?.quote,
     text: draft?.text ?? "",
-    workspaceId: draft?.workspaceId,
+    folder: draft?.folder,
   };
 }
 
@@ -790,11 +756,4 @@ function draftEmpty(fields: DraftFields): boolean {
 /** Spaces alone are saved as typed, but they are nothing to come back to. */
 function draftHasContent(draft: ThreadDraft): boolean {
   return draft.text.trim() !== "" || !draftEmpty({ ...draftFields(draft), text: "" });
-}
-
-/** A new task's words as a list says them: its first line, else what it holds. */
-function firstLine(text: string, files: number, page: BrowserPageContentPart | undefined): string {
-  if (text.trim() !== "") return provisionalThreadTitle(text);
-  if (files > 0) return files === 1 ? "1 file" : `${files} files`;
-  return provisionalThreadTitle(page?.title || page?.url || "");
 }

@@ -21,7 +21,8 @@ import { registerPersonalRemoteExecutor } from "./personal-remote-administration
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { generateKeyPairSync } from "node:crypto";
 import { createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, migrateToLatest, type DatabaseSchema } from "@opensteer/database";
+import { createDatabase, type DatabaseSchema } from "@opensteer/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 
@@ -30,11 +31,8 @@ if (!databaseUrl)
   throw new Error(
     "Run this file through pnpm test:integration so it receives an isolated database.",
   );
-const database = createDatabase({
-  applicationName: "remote-administration-test",
-  connectionString: databaseUrl,
-  maxConnections: 4,
-});
+let database: ReturnType<typeof createDatabase>;
+let clone: Awaited<ReturnType<typeof cloneTestDatabase>> | undefined;
 const keys = generateKeyPairSync("ed25519");
 const userId = createId("user");
 const session: AuthenticatedSession = {
@@ -48,7 +46,6 @@ const session: AuthenticatedSession = {
     email: "remote-admin@example.test",
     emailVerified: true,
     image: null,
-    instanceRole: "administrator",
     disabledAt: null,
   },
 };
@@ -59,7 +56,6 @@ const authority = {
   hostKey: { algorithm: "Ed25519" as const },
   deploymentShape: {
     kind: "personal" as const,
-    defaultWorkspaceBacking: "local-directory" as const,
   },
 };
 function service(
@@ -77,7 +73,12 @@ function service(
 
 describe("Personal remote administration intents", () => {
   beforeAll(async () => {
-    await migrateToLatest(database);
+    clone = await cloneTestDatabase("host", { serverUrl: databaseUrl });
+    database = createDatabase({
+      applicationName: "remote-administration-test",
+      connectionString: clone.url,
+      maxConnections: 4,
+    });
     await database
       .insertInto("users")
       .values({
@@ -86,10 +87,24 @@ describe("Personal remote administration intents", () => {
         email: session.user.email,
         emailVerified: true,
         image: null,
-        instanceRole: "administrator",
         disabledAt: null,
       })
       .execute();
+    const deployment = await new (await import("@opensteer/database")).OpensteerStore(
+      database,
+    ).ensureDeployment({
+      canonicalOrigin: "http://127.0.0.1:4310",
+      deploymentId: createId("deployment"),
+      hostInstanceId: createId("hostInstance"),
+      deploymentShape: { kind: "personal" },
+    });
+    await (
+      await import("@opensteer/database/test-support/personal")
+    ).seedPersonalOwnerResources(database, {
+      deploymentId: deployment.id,
+      userId,
+      path: "/tmp/remote-administration-personal-home",
+    });
   });
   beforeEach(async () => {
     await database.deleteFrom("personalRemoteAdministration").execute();
@@ -119,7 +134,11 @@ describe("Personal remote administration intents", () => {
       .execute();
   });
   afterAll(async () => {
-    await database.destroy();
+    try {
+      await database?.destroy();
+    } finally {
+      await clone?.drop();
+    }
   });
 
   it("persists an owner's intent without an executor, gates execution until the reply, and resumes after restart", async () => {
@@ -1519,11 +1538,11 @@ describe("Personal remote administration intents", () => {
     expect(await database.selectFrom("personalAccountLinkKeys").selectAll().execute()).toEqual([]);
   });
 
-  it("refuses non-administrators without writing an intent", async () => {
+  it("refuses a non-owner without writing an intent", async () => {
+    const other = { ...session, user: { ...session.user, id: createId("user") } };
     const administration = service().administration;
-    const member = { ...session, user: { ...session.user, instanceRole: "user" as const } };
     await expect(
-      administration.request(member, { action: "unlink" }, "unauthorized"),
+      administration.request(other, { action: "unlink" }, "unauthorized"),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(await database.selectFrom("personalRemoteAdministration").selectAll().execute()).toEqual(
       [],

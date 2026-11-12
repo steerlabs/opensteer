@@ -1,5 +1,6 @@
+import { hydrateTeamTaskInput } from "@opensteer/database";
+import type { FolderAdmissionService } from "../threads/folder-admission-service.js";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
-import { knowledgeEligible } from "../knowledge/knowledge-eligibility.js";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
 import {
@@ -13,11 +14,9 @@ import {
   ExecutionNodeIdSchema,
   SequenceSchema,
   ThreadIdSchema,
-  threadReachScope,
   type AgentEvent,
   type EnvironmentId,
   type ThreadId,
-  type WorkspaceId,
   type UserId,
 } from "@opensteer/core";
 import type {
@@ -59,8 +58,6 @@ import type { EgressService } from "../server/egress-service.js";
 import { computeMachineAccess } from "../shell/machine-access-run-context.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import { triggerProgramCompatibilityReason } from "../triggers/trigger-program-compatibility.js";
-import type { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import type { WorkspaceService } from "../workspace/workspace-service.js";
 import type { RunToolTokenService } from "./run-tool-tokens.js";
 import {
   harnessInspectionDefinition,
@@ -73,7 +70,6 @@ import {
   runModelSelection,
 } from "./model-selection.js";
 import type { RunCapabilityTokenService } from "./run-capability.js";
-
 const ControlPayloadSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -86,7 +82,11 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
     })
     .passthrough(),
   z
-    .object({ runId: RunIdSchema, threadId: ThreadIdSchema, type: z.literal("run.interrupt") })
+    .object({
+      runId: RunIdSchema,
+      threadId: ThreadIdSchema,
+      type: z.literal("run.interrupt"),
+    })
     .passthrough(),
   z
     .object({
@@ -113,7 +113,6 @@ const ControlPayloadSchema = z.discriminatedUnion("type", [
     })
     .passthrough(),
 ]);
-
 const supportedCommandTypes = new Set([
   "request.respond",
   "node.stop",
@@ -123,30 +122,38 @@ const supportedCommandTypes = new Set([
   "run.steer",
   "trigger.execute",
 ]);
-
+export type TeamRequestContextLoader = (
+  input: {
+    readonly runId: import("@opensteer/core").RunId;
+    readonly requestId: import("@opensteer/core").TeamAgentRequestId;
+  },
+  signal: AbortSignal,
+) => Promise<{
+  readonly ownerDisplayName: string;
+  readonly instructionsMarkdown: string;
+  readonly source: import("@opensteer/core").TeamSource;
+  readonly content: readonly import("@opensteer/core").ContentPart[];
+}>;
 export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
   readonly #attachments: Pick<AttachmentStore, "listForRun">;
   readonly #runToolTokens: RunToolTokenService;
   readonly #requestResponseVault: RequestResponseVault;
   readonly #agentToolsUrl: string;
-  readonly #knowledge: { owner(): Promise<UserId | null> } | undefined;
   readonly #agentBrowserCdpUrl: string;
   readonly #pluginVersions: (
-    workspaceId: WorkspaceId,
     ownerUserId: UserId,
   ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
   readonly #pluginsTokens: PluginPackagesTokenService;
   readonly #pluginsUrl: string;
-  readonly #workspaceSkillPolicy: (
-    workspaceId: WorkspaceId,
+  readonly #skillPolicy: (
     ownerUserId: UserId,
-  ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
-  readonly #browser: Pick<BrowserService, "hasBrowserProfileAccess">;
+  ) => Promise<import("@opensteer/protocol").RunPluginsPlan["skillPolicy"]>;
+  readonly #browser: Pick<BrowserService, "hasBrowserProfiles">;
   readonly #browserCdpUrl: string;
   readonly #egress: EgressService;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
-  readonly #onTriggerChanged: (workspaceId: WorkspaceId) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
+  readonly #onTriggerChanged: () => void;
   readonly #runners: RunnerRegistry;
   readonly #runnerRegistrationPending: (environmentId: EnvironmentId) => boolean;
   readonly #onRunAdmitted: (threadId: ThreadId) => void;
@@ -156,27 +163,24 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #catalogs: HarnessCatalogRecorder;
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
-  readonly #workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-  readonly #workspaceAccess: WorkspaceExecutionAccessService;
-
+  readonly #teamRequestContext: TeamRequestContextLoader;
+  readonly #folders: Pick<FolderAdmissionService, "assertAvailable">;
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
     readonly requestResponseVault: RequestResponseVault;
     readonly runToolTokens: RunToolTokenService;
-    readonly browser: Pick<BrowserService, "hasBrowserProfileAccess">;
-    readonly onWorkspaceEvent: (event: AgentEvent) => void;
-    readonly onTriggerChanged?: (workspaceId: WorkspaceId) => void;
+    readonly browser: Pick<BrowserService, "hasBrowserProfiles">;
+    readonly onDeploymentEvent: (event: AgentEvent) => void;
+    readonly onTriggerChanged?: () => void;
     readonly pluginVersions: (
-      workspaceId: WorkspaceId,
       ownerUserId: UserId,
     ) => Promise<import("@opensteer/protocol").RunPluginsPlan["versions"]>;
-    /** Returns the current shared Workspace loose-skill overrides, including their revision.
+    /** Returns the current personal loose-skill overrides, including their revision.
      * The Settings domain owner supplies this adapter; undefined means no override exists. */
-    readonly workspaceSkillPolicy?: (
-      workspaceId: WorkspaceId,
+    readonly skillPolicy?: (
       ownerUserId: UserId,
-    ) => Promise<import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"]>;
+    ) => Promise<import("@opensteer/protocol").RunPluginsPlan["skillPolicy"]>;
     readonly pluginsTokens: PluginPackagesTokenService;
     readonly egress: EgressService;
     readonly executionLeaseMs: number;
@@ -189,12 +193,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly catalogs?: HarnessCatalogRecorder;
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
-    readonly workspaces: Pick<WorkspaceService, "ensureExecutionReady">;
-    readonly workspaceAccess: WorkspaceExecutionAccessService;
-    /** Present while the knowledge trial is on. */
-    readonly knowledge?: { owner(): Promise<UserId | null> } | undefined;
+    readonly teamRequestContext: TeamRequestContextLoader;
+    readonly folders: Pick<FolderAdmissionService, "assertAvailable">;
   }) {
-    this.#knowledge = options.knowledge;
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
     this.#requestResponseVault = options.requestResponseVault;
@@ -202,13 +203,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#agentToolsUrl = new URL("/internal/v1/mcp", options.publicUrl).toString();
     this.#agentBrowserCdpUrl = new URL("/internal/v1/browser-cdp", options.publicUrl).toString();
     this.#pluginVersions = options.pluginVersions;
-    this.#workspaceSkillPolicy = options.workspaceSkillPolicy ?? (async () => undefined);
+    this.#skillPolicy = options.skillPolicy ?? (async () => undefined);
     this.#pluginsTokens = options.pluginsTokens;
     this.#pluginsUrl = new URL("/internal/v1/plugin-cache", options.publicUrl).toString();
     this.#browser = options.browser;
     this.#browserCdpUrl = new URL("/internal/v1/trigger-cdp", options.publicUrl).toString();
     this.#egress = options.egress;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onTriggerChanged = options.onTriggerChanged ?? (() => undefined);
     this.#runners = options.runners;
     this.#runnerRegistrationPending = options.runnerRegistrationPending ?? (() => false);
@@ -219,10 +220,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#catalogs = options.catalogs ?? options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
-    this.#workspaces = options.workspaces;
-    this.#workspaceAccess = options.workspaceAccess;
+    this.#folders = options.folders;
+    this.#teamRequestContext = options.teamRequestContext;
   }
-
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean {
     if (!supportedCommandTypes.has(command.type) || command.environmentId === null) return false;
     // A Runner too old to attach never will; dispatching still tells new work
@@ -244,7 +244,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     return this.#runners.hasRunCapacity(command.environmentId, dispatchingRuns);
   }
-
   async dispatch(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {
       throw new CommandDispatchError("Unsupported durable Runner command", "failed");
@@ -258,13 +257,23 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       return;
     }
     if (!command.runId) throw new CommandDispatchError("Run command is missing its run", "failed");
-    const context = await this.#store.loadRunDispatchContext(command.id);
+    let context = await this.#store.loadRunDispatchContext(command.id);
+    let teamContext: Awaited<ReturnType<TeamRequestContextLoader>> | undefined;
+    if (context.run.teamRequestId) {
+      const input = { runId: context.run.id, requestId: context.run.teamRequestId };
+      teamContext = await this.#teamRequestContext(input, signal);
+      const hydrated = await hydrateTeamTaskInput(this.#store.database, {
+        ...input,
+        ...teamContext,
+      });
+      for (const event of hydrated.events) this.#onDeploymentEvent(event);
+      context = await this.#store.loadRunDispatchContext(command.id);
+    }
     this.#onRunAdmitted(context.thread.id);
     if (context.thread.specialistId) {
       try {
         await new SpecialistStore(this.#store.database).assertRunnable(
           context.thread.specialistId,
-          context.workspace.id,
           context.run.requestedBy,
         );
       } catch (error) {
@@ -280,10 +289,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (context.run.assignmentId && (!assignment || assignment.status !== "open")) {
       throw new CommandDispatchError("This task assignment is no longer open.", "failed");
     }
-    if (context.workspace.status !== "ready") {
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
-    }
-    await this.#workspaces.ensureExecutionReady(context.workspace);
+    await this.#folders.assertAvailable(context.location.folder);
     const harness = await this.#store.getHarnessInstance(context.run.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== command.environmentId) {
       throw new CommandDispatchError("The selected AI engine is no longer available.", "failed");
@@ -332,10 +338,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     // A conversation hands the person's messages to the reply under way, which
     // an older Runner's engine may accept and then leave unanswered.
-    if (
-      context.thread.role === "conversation" &&
-      !identity.capabilities.includes("steer-answer-v1")
-    ) {
+    if (context.thread.purpose === "voice" && !identity.capabilities.includes("steer-answer-v1")) {
       throw new CommandDispatchError(
         "Update this Runner so messages sent while Opensteer replies are answered.",
         "failed",
@@ -389,7 +392,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-
     let initialContext = context.initialContext;
     if (initialContext) {
       const budget = initialContinuationHistoryBudget({
@@ -427,7 +429,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         );
       }
     }
-
     const inputContent = [...context.inputs, ...context.reports.messages].flatMap(
       (message) => message.content,
     );
@@ -470,14 +471,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-
     const binding = await this.#store
       .acquireExecutionBinding({
+        personalContext: context.personalContext,
         bindingLeaseExpiresAt: new Date(this.#executionNow() + this.#executionLeaseMs),
         continuationIdentity: catalog.continuationIdentity,
         harnessInstanceId: context.run.harnessInstanceId,
         leaseTokenHash: createHash("sha256").update(randomBytes(32)).digest("base64url"),
-        membershipGeneration: context.membershipGeneration,
         runnerBootId: identity.bootId,
         runnerId: identity.runnerId,
         runId: context.run.id,
@@ -492,40 +492,25 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           "seed-input",
           "runner_restarted",
         ))
-          this.#onWorkspaceEvent(event);
+          this.#onDeploymentEvent(event);
         return undefined;
       });
     if (!binding) return;
-    if (binding.continuationEvent) this.#onWorkspaceEvent(binding.continuationEvent);
-    const workspaceAccess = await this.#workspaceAccess.plan({
-      environmentId: context.run.environmentId,
-      membershipGeneration: context.membershipGeneration,
-      requestedBy: context.run.requestedBy,
-      runnerIdentity: identity,
-      workspace: context.workspace,
-    });
-
-    const knowledge =
-      this.#knowledge !== undefined &&
-      knowledgeEligible({
-        callerKind: "run",
-        reach: threadReachScope(context.thread).kind,
-        userId: context.run.requestedBy,
-        owner: await this.#knowledge.owner(),
-        agents: identity.modules.agents,
-      });
+    if (binding.continuationEvent) this.#onDeploymentEvent(binding.continuationEvent);
     const toolsToken = this.#runToolTokens.issue({
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
-      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
+      ...(context.thread.specialistId
+        ? {
+            specialistId: context.thread.specialistId,
+          }
+        : {}),
       environmentId: context.run.environmentId,
-      membershipGeneration: context.membershipGeneration,
       requestedBy: command.requestedBy,
       runId: context.run.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
       threadId: context.thread.id,
-      workspaceId: context.workspace.id,
     });
     const specialist = context.thread.specialistId
       ? await this.#store.database
@@ -535,52 +520,49 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           .select(["plugins.id as pluginId", "plugins.name", "pluginVersions.digest"])
           .where("specialists.removedAt", "is", null)
           .where("specialists.id", "=", context.thread.specialistId)
-          .where("specialists.workspaceId", "=", context.workspace.id)
           .executeTakeFirst()
       : null;
     if (context.thread.specialistId && !specialist)
       throw new Error("Specialist registration was removed");
-    const workspaceSkillPolicy = await this.#workspaceSkillPolicy(
-      context.workspace.id,
-      command.requestedBy,
-    );
-    if (workspaceSkillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
-      throw new CommandDispatchError(
-        "Update this Runner to enforce Workspace skill settings.",
-        "failed",
-      );
+    const skillPolicy = await this.#skillPolicy(command.requestedBy);
+    if (skillPolicy && !identity.capabilities.includes("settings-plugin-policy-v1")) {
+      throw new CommandDispatchError("Update this Runner to enforce skill settings.", "failed");
     }
     const pinnedPlugins = specialist
       ? [specialist]
-      : await this.#pluginVersions(context.workspace.id, command.requestedBy);
+      : await this.#pluginVersions(command.requestedBy);
     const pluginsToken = this.#pluginsTokens.issue({
       pluginDigests: pinnedPlugins.map((plugin) => plugin.digest),
       bindingGeneration: binding.bindingGeneration,
       grantId: binding.grantId,
-      ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
+      ...(context.thread.specialistId
+        ? {
+            specialistId: context.thread.specialistId,
+          }
+        : {}),
       environmentId: context.run.environmentId,
-      membershipGeneration: context.membershipGeneration,
       requestedBy: command.requestedBy,
       runId: context.run.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
       threadId: context.thread.id,
-      workspaceId: context.workspace.id,
     });
     const attachmentPlan = supportsAttachments
       ? {
           token: this.#attachmentRunTokens.issue({
             bindingGeneration: binding.bindingGeneration,
             grantId: binding.grantId,
-            ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
+            ...(context.thread.specialistId
+              ? {
+                  specialistId: context.thread.specialistId,
+                }
+              : {}),
             environmentId: context.run.environmentId,
-            membershipGeneration: context.membershipGeneration,
             requestedBy: command.requestedBy,
             runId: context.run.id,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
             threadId: context.thread.id,
-            workspaceId: context.workspace.id,
           }),
         }
       : undefined;
@@ -594,9 +576,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     const runnerCommandFor = (machineAccess: MachineAccessRunContext): RunnerCommand => ({
       commandId: command.id,
       context: {
-        ...(context.voiceCall ? { voiceCall: context.voiceCall } : {}),
+        ...(context.voiceCall
+          ? {
+              voiceCall: context.voiceCall,
+            }
+          : {}),
         accessMode: context.run.accessMode,
-        threadRole: context.thread.role,
+        taskPurpose: context.thread.purpose,
+        personalContext: context.personalContext,
         threadState,
         assignment: assignment
           ? {
@@ -606,20 +593,35 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
               parentThreadId: assignment.parentThreadId,
             }
           : null,
-        ...(attachmentPlan ? { attachments: attachmentPlan } : {}),
+        ...(attachmentPlan
+          ? {
+              attachments: attachmentPlan,
+            }
+          : {}),
         agentTools: agentToolsPlanForRun({
           voiceCall: Boolean(context.voiceCall),
           token: toolsToken,
           url: this.#agentToolsUrl,
-          role: context.thread.role,
+          purpose: context.thread.purpose,
+          teamBound: context.thread.teamOrigin !== null,
+          personalContext: context.personalContext,
+          ...(teamContext ? { teamContext } : {}),
           accessMode: context.thread.accessMode,
-          reach: threadReachScope(context.thread).kind,
-          knowledge,
         }),
-        browserCdp: { url: this.#agentBrowserCdpUrl },
-        ...(context.thread.specialistId ? { specialistId: context.thread.specialistId } : {}),
+        browserCdp: {
+          url: this.#agentBrowserCdpUrl,
+        },
+        ...(context.thread.specialistId
+          ? {
+              specialistId: context.thread.specialistId,
+            }
+          : {}),
         plugins: {
-          ...(workspaceSkillPolicy ? { workspaceSkillPolicy } : {}),
+          ...(skillPolicy
+            ? {
+                skillPolicy,
+              }
+            : {}),
           versions: pinnedPlugins,
           token: pluginsToken,
           url: this.#pluginsUrl,
@@ -629,18 +631,15 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         credentialRefreshAfterMs: (this.#runToolTokens.lifetimeSeconds * 1_000) / 2,
         executionLeaseMs: this.#executionLeaseMs,
         firstOrdinal: context.firstOrdinal,
-        membershipGeneration: context.membershipGeneration,
         egress: this.#egress.issue({
           bindingGeneration: binding.bindingGeneration,
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
-          membershipGeneration: context.membershipGeneration,
           requestedBy: context.run.requestedBy,
           runId: context.run.id,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
           threadId: context.thread.id,
-          workspaceId: context.workspace.id,
         }),
         environmentId: context.run.environmentId,
         harness: {
@@ -658,7 +657,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         historyWindow:
           binding.providerSessionReference && !initialContext
             ? context.historyWindow
-            : { byteCount: 0, hasEarlier: false, itemCount: 0 },
+            : {
+                byteCount: 0,
+                hasEarlier: false,
+                itemCount: 0,
+              },
         initialContext: initialContext
           ? {
               messages: [...initialContext.messages],
@@ -677,11 +680,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         requesterTimeZone,
         runId: context.run.id,
         threadId: context.thread.id,
-        workspaceId: context.workspace.id,
-        workspaceKind: context.workspace.kind,
         machineAccess,
-        workspaceInstructionsPath: "AGENTS.md",
-        workspaceAccess,
       },
       correlationId: CorrelationIdSchema.parse(command.id),
       environmentId: context.run.environmentId,
@@ -692,7 +691,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           createdAt: message.createdAt,
           kind: message.kind,
           messageId: message.id,
-          ...(message.quote ? { quote: message.quote } : {}),
+          ...(message.quote
+            ? {
+                quote: message.quote,
+              }
+            : {}),
         }),
       ),
       reports: {
@@ -711,6 +714,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ? null
             : SequenceSchema.parse(context.reports.throughSequence),
       },
+      location: context.location,
       type: "run.execute",
     });
     // The reachable-computer list shares one size budget with the Thread
@@ -737,8 +741,14 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
     });
     if (signal.aborted)
-      throw signal.reason ?? new OpensteerError({ code: "internal", message: "Dispatch aborted" });
-    // The binding was established before capability and Workspace planning.
+      throw (
+        signal.reason ??
+        new OpensteerError({
+          code: "internal",
+          message: "Dispatch aborted",
+        })
+      );
+    // The binding was established before capability planning.
     // Recheck it at the send itself, so a revocation that committed meanwhile,
     // a Stop included, cannot launch new work.
     const dispatch = {
@@ -747,13 +757,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           bindingGeneration: binding.bindingGeneration,
           grantId: binding.grantId,
           environmentId: context.run.environmentId,
-          membershipGeneration: context.membershipGeneration,
           requestedBy: context.run.requestedBy,
           runId: context.run.id,
           runnerBootId: identity.bootId,
           runnerId: identity.runnerId,
           threadId: context.thread.id,
-          workspaceId: context.workspace.id,
         }),
       connectionGeneration: identity.connectionGeneration,
     };
@@ -761,16 +769,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       for (const event of await this.#store.dispatchChannelCommand(
         command.id,
         async (beforeAck) => {
-          await this.#runners.dispatch(runnerCommand, signal, { ...dispatch, beforeAck });
+          await this.#runners.dispatch(runnerCommand, signal, {
+            ...dispatch,
+            beforeAck,
+          });
         },
       )) {
-        this.#onWorkspaceEvent(event);
+        this.#onDeploymentEvent(event);
       }
     } else {
       await this.#runners.dispatch(runnerCommand, signal, dispatch);
     }
   }
-
   async #dispatchTrigger(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId) {
       throw new CommandDispatchError("Trigger command has no environment", "failed");
@@ -792,23 +802,13 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    if (initial.workspace.status !== "ready") {
-      throw new CommandDispatchError("Workspace filesystem is unavailable", "retry");
-    }
-    await this.#workspaces.ensureExecutionReady(initial.workspace);
+    await this.#folders.assertAvailable(initial.location.folder);
     const { context, executionGeneration } = await this.#triggers.startExecution({
       commandId: command.id,
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
     });
-    this.#onTriggerChanged(context.workspace.id);
-    const workspaceAccess = await this.#workspaceAccess.plan({
-      environmentId: context.anchorThread.environmentId,
-      membershipGeneration: context.membershipGeneration,
-      requestedBy: context.trigger.createdBy,
-      runnerIdentity: identity,
-      workspace: context.workspace,
-    });
+    this.#onTriggerChanged();
     const capabilityToken = this.#triggerControlTokens.issue({
       environmentId: context.anchorThread.environmentId,
       executionGeneration,
@@ -818,33 +818,35 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerId: identity.runnerId,
       threadId: context.anchorThread.id,
       toolContractVersion: context.revision.program.toolContractVersion,
-      workspaceId: context.workspace.id,
     });
-    const hasBrowser = await this.#browser.hasBrowserProfileAccess(
-      context.trigger.createdBy,
-      context.workspace.id,
-      `thread:${context.anchorThread.id}`,
-    );
+    const hasBrowser = await this.#browser.hasBrowserProfiles(context.trigger.createdBy);
     const runnerCommand: RunnerCommand = {
       commandId: command.id,
       context: {
         anchorThreadId: context.anchorThread.id,
-        browserCdp: hasBrowser ? { token: capabilityToken, url: this.#browserCdpUrl } : null,
+        browserCdp: hasBrowser
+          ? {
+              token: capabilityToken,
+              url: this.#browserCdpUrl,
+            }
+          : null,
         event: context.occurrence.event,
         executionGeneration,
-        mcp: { token: capabilityToken, url: this.#agentToolsUrl },
+        mcp: {
+          token: capabilityToken,
+          url: this.#agentToolsUrl,
+        },
         occurrenceId: context.occurrence.id,
         program: context.revision.program,
         revisionId: context.revision.id,
         triggerId: context.trigger.id,
-        workspaceId: context.workspace.id,
-        workspaceAccess,
       },
       correlationId: CorrelationIdSchema.parse(command.id),
       environmentId: context.anchorThread.environmentId,
+      location: context.location,
       type: "trigger.execute",
     };
-    // Trigger setup can cross the membership-revocation transaction. Make the
+    // Trigger setup can cross a stop transaction. Make the
     // running occurrence generation and its execution authority current at the
     // same boundary where the command leaves the Host.
     await this.#triggers.assertActiveExecutionBinding({
@@ -855,14 +857,18 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       runnerBootId: identity.bootId,
       runnerId: identity.runnerId,
       threadId: context.anchorThread.id,
-      workspaceId: context.workspace.id,
     });
     if (signal.aborted) {
-      throw signal.reason ?? new OpensteerError({ code: "internal", message: "Dispatch aborted" });
+      throw (
+        signal.reason ??
+        new OpensteerError({
+          code: "internal",
+          message: "Dispatch aborted",
+        })
+      );
     }
     await this.#runners.dispatch(runnerCommand, signal);
   }
-
   async #dispatchControl(command: CommandRow, signal: AbortSignal): Promise<void> {
     if (!command.environmentId)
       throw new CommandDispatchError("Control command has no environment", "failed");
@@ -887,7 +893,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             threadId: data.threadId,
             requestedBy: command.requestedBy,
             idempotencyKey: command.idempotencyKey,
-            ...(data.authority ? { authority: data.authority } : {}),
+            ...(data.authority
+              ? {
+                  authority: data.authority,
+                }
+              : {}),
           },
           data.bindingGeneration,
           command.id,
@@ -902,7 +912,9 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
                 bindingGeneration: data.bindingGeneration,
               },
               signal,
-              { beforeAck },
+              {
+                beforeAck,
+              },
             ),
         );
         return;
@@ -947,10 +959,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
                 runId: responsePayload.runId,
                 type: "request.resolve",
               };
-              await this.#runners.dispatch(runnerCommand, signal, { beforeAck });
+              await this.#runners.dispatch(runnerCommand, signal, {
+                beforeAck,
+              });
             },
           )) {
-            this.#onWorkspaceEvent(event);
+            this.#onDeploymentEvent(event);
           }
           return;
         }
@@ -964,7 +978,11 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             createdAt: steer.message.createdAt,
             kind: steer.message.kind,
             messageId: steer.message.id,
-            ...(steer.message.quote ? { quote: steer.message.quote } : {}),
+            ...(steer.message.quote
+              ? {
+                  quote: steer.message.quote,
+                }
+              : {}),
           }),
           runId: steer.runId,
           threadId: steer.threadId,
@@ -994,7 +1012,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     await this.#runners.dispatch(runnerCommand, signal);
     for (const event of await this.#store.succeedCommand(command.id)) {
-      this.#onWorkspaceEvent(event);
+      this.#onDeploymentEvent(event);
     }
   }
 
@@ -1004,7 +1022,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
    */
   async #dispatchSteer(
     command: CommandRow,
-    runnerCommand: Extract<RunnerCommand, { readonly type: "run.steer" }>,
+    runnerCommand: Extract<
+      RunnerCommand,
+      {
+        readonly type: "run.steer";
+      }
+    >,
     signal: AbortSignal,
     validate: () => Promise<void>,
   ): Promise<void> {
@@ -1014,10 +1037,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         for (const event of await this.#store.dispatchChannelCommand(
           command.id,
           async (beforeAck) => {
-            await this.#runners.dispatch(runnerCommand, signal, { beforeAck });
+            await this.#runners.dispatch(runnerCommand, signal, {
+              beforeAck,
+            });
           },
         )) {
-          this.#onWorkspaceEvent(event);
+          this.#onDeploymentEvent(event);
         }
         return;
       }
@@ -1029,12 +1054,12 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         error.message,
         ProtocolErrorSchema.safeParse(error.cause).data?.reason,
       )) {
-        this.#onWorkspaceEvent(event);
+        this.#onDeploymentEvent(event);
       }
       return;
     }
     for (const event of await this.#store.succeedCommand(command.id)) {
-      this.#onWorkspaceEvent(event);
+      this.#onDeploymentEvent(event);
     }
   }
 }

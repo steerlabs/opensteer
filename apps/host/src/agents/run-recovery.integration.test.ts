@@ -54,7 +54,9 @@ const fixture = fileURLToPath(
 );
 const selection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const terminal = ["completed", "failed", "interrupted"];
@@ -82,8 +84,17 @@ const captureSchema = z
         priorPidsAlive: z.array(z.boolean()).optional(),
       })
       .optional(),
-    recoveryChild: z.object({ pid: z.number(), scope: z.string().nullable() }).optional(),
-    fakeOpensteerTokens: z.object({ agentTools: z.string().optional() }).optional(),
+    recoveryChild: z
+      .object({
+        pid: z.number(),
+        scope: z.string().nullable(),
+      })
+      .optional(),
+    fakeOpensteerTokens: z
+      .object({
+        agentTools: z.string().optional(),
+      })
+      .optional(),
   })
   .passthrough();
 type Capture = z.infer<typeof captureSchema>;
@@ -104,18 +115,17 @@ interface Evidence {
   readonly wire: readonly unknown[];
   readonly checkpoints: readonly unknown[];
 }
-
 integration.sequential("Run recovery acceptance", () => {
   let fixtureState: Fixture | undefined;
   const runs: RunId[] = [];
+  const companionRuns = new Map<RunId, VerticalStack>();
   const checkpoints: unknown[] = [];
   const artifacts: Evidence[] = [];
-
   afterEach(async (context) => {
     const current = fixtureState;
     try {
       const snapshots = current
-        ? await Promise.all(runs.map((id) => snapshot(current.active, id)))
+        ? await Promise.all(runs.map((id) => snapshot(companionRuns.get(id) ?? current.active, id)))
         : [];
       artifacts.push({
         name: context.task.name,
@@ -132,12 +142,19 @@ integration.sequential("Run recovery acceptance", () => {
               )
               .map((entry) =>
                 entry.recoveryTurn
-                  ? { recoveryTurn: entry.recoveryTurn }
+                  ? {
+                      recoveryTurn: entry.recoveryTurn,
+                    }
                   : entry.recoveryChild
-                    ? { recoveryChild: entry.recoveryChild }
+                    ? {
+                        recoveryChild: entry.recoveryChild,
+                      }
                     : {
                         method: entry.method,
-                        params: { threadId: entry.params?.threadId, input: entry.params?.input },
+                        params: {
+                          threadId: entry.params?.threadId,
+                          input: entry.params?.input,
+                        },
                       },
               )
           : [],
@@ -215,7 +232,12 @@ integration.sequential("Run recovery acceptance", () => {
               "runner.command-rejected",
               "runner.command-uncertain",
             ].includes(frame.type)
-              ? [{ direction, frame }]
+              ? [
+                  {
+                    direction,
+                    frame,
+                  },
+                ]
               : [];
           }) ?? [],
         checkpoints: [...checkpoints],
@@ -224,14 +246,18 @@ integration.sequential("Run recovery acceptance", () => {
       try {
         await current?.active.close();
       } finally {
-        if (current) await rm(current.scratch, { recursive: true, force: true });
+        if (current)
+          await rm(current.scratch, {
+            recursive: true,
+            force: true,
+          });
         fixtureState = undefined;
         runs.splice(0);
+        companionRuns.clear();
         checkpoints.splice(0);
       }
     }
   }, 90_000);
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-run-recovery-"));
     const path = join(directory, "recovery.json");
@@ -248,7 +274,6 @@ integration.sequential("Run recovery acceptance", () => {
     );
     console.info(`Run recovery artifact: ${path}`);
   });
-
   async function start(
     options: {
       readonly firstScenario?: string;
@@ -277,7 +302,11 @@ integration.sequential("Run recovery acceptance", () => {
     let active: VerticalStack;
     try {
       active = await startVerticalStack({
-        ...(clock ? { executionClock: clock } : {}),
+        ...(clock
+          ? {
+              executionClock: clock,
+            }
+          : {}),
         databaseUrl: databaseUrl!,
         catalogTimeoutMs: 30_000,
         runTimeoutMs: 60_000,
@@ -286,12 +315,21 @@ integration.sequential("Run recovery acceptance", () => {
         runnerWire: {
           ...(options.contained === undefined
             ? {}
-            : { contained: () => options.contained === true }),
-          ...(options.filter ? { filter: options.filter } : {}),
+            : {
+                contained: () => options.contained === true,
+              }),
+          ...(options.filter
+            ? {
+                filter: options.filter,
+              }
+            : {}),
         },
         ...(options.child
           ? {
-              runnerChild: { fixture, arguments: ["--scenario=recovery-held", ...engineArguments] },
+              runnerChild: {
+                fixture,
+                arguments: ["--scenario=recovery-held", ...engineArguments],
+              },
             }
           : {}),
         harnessInstance: {
@@ -320,13 +358,15 @@ integration.sequential("Run recovery acceptance", () => {
         harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       });
     } catch (error) {
-      await rm(scratch, { recursive: true, force: true });
+      await rm(scratch, {
+        recursive: true,
+        force: true,
+      });
       throw error;
     }
     const threadId = await active.createThread({
       modelSelection: selection,
       title: "Recovery acceptance",
-      workspaceId: active.mainWorkspaceId,
     });
     const value: Fixture = {
       clock,
@@ -340,12 +380,17 @@ integration.sequential("Run recovery acceptance", () => {
     fixtureState = value;
     return value;
   }
-
   async function queue(current: Fixture, text = "Finish the recovery acceptance task.") {
-    const queued = await current.active.queueMessage({ text, threadId: current.threadId });
+    const queued = await current.active.queueMessage({
+      text,
+      threadId: current.threadId,
+    });
     if (!queued.runId) throw new Error("Seed did not create a Run");
     runs.push(queued.runId);
-    return { runId: queued.runId, messageId: queued.messageId };
+    return {
+      runId: queued.runId,
+      messageId: queued.messageId,
+    };
   }
   async function held(current: Fixture, text?: string) {
     const queued = await queue(current, text);
@@ -359,7 +404,6 @@ integration.sequential("Run recovery acceptance", () => {
     );
     return queued;
   }
-
   async function expireDisconnected(current: Fixture, runId: RunId) {
     if (!current.clock) throw new Error("Expected a controlled execution clock");
     await waitFor(() => executionDisconnected(current.active), "Host observed Runner disconnect");
@@ -391,13 +435,23 @@ integration.sequential("Run recovery acceptance", () => {
     ).toBeNull();
     expect(terminal).not.toContain(state.status);
     const listed = await attempts(current.active, runId);
-    expect(listed[ordinal - 1]).toMatchObject({ ordinal, reason: "recovery" });
-    expect(listed[ordinal - 2]).toMatchObject({ outcome: "interrupted", status: "superseded" });
+    expect(listed[ordinal - 1]).toMatchObject({
+      ordinal,
+      reason: "recovery",
+    });
+    expect(listed[ordinal - 2]).toMatchObject({
+      outcome: "interrupted",
+      status: "superseded",
+    });
     const messages = await recoveryMessages(current.active, current.threadId);
     expect(messages).toHaveLength(ordinal - 1);
     expect(messages.at(-1)).toMatchObject({
       kind: "continuation",
-      author: { kind: "platform", cause: "run-recovery", referenceId: listed[ordinal - 2]!.id },
+      author: {
+        kind: "platform",
+        cause: "run-recovery",
+        referenceId: listed[ordinal - 2]!.id,
+      },
     });
     const events = await eventsOf(current.active, runId);
     expect(events.filter((event) => event.type === "run.restarted")).toHaveLength(ordinal - 1);
@@ -415,13 +469,15 @@ integration.sequential("Run recovery acceptance", () => {
       "Run terminal outcome",
       60_000,
     );
-    expect(await row(current.active, runId)).toMatchObject({ status: "completed", failure: null });
+    expect(await row(current.active, runId)).toMatchObject({
+      status: "completed",
+      failure: null,
+    });
     expect(
       (await eventsOf(current.active, runId)).filter((entry) => entry.type === "run.completed"),
     ).toHaveLength(1);
     expect(await failedNotifications(current.active, runId)).toEqual([]);
   }
-
   it("1. resumes the same native conversation after a mid-turn Runner restart", async () => {
     const current = await start();
     const { runId, messageId } = await held(current);
@@ -443,7 +499,11 @@ integration.sequential("Run recovery acceptance", () => {
     );
     const resumed = captures.filter((entry) => entry.recoveryTurn).at(-1)!.recoveryTurn!;
     expect(resumed.threadId).toBe(original.threadId);
-    expect(executeFrames(current.active).at(-1)!.inputs).toMatchObject([{ messageId: message.id }]);
+    expect(executeFrames(current.active).at(-1)!.inputs).toMatchObject([
+      {
+        messageId: message.id,
+      },
+    ]);
     expect(executeFrames(current.active).at(-1)!.inputs).toHaveLength(1);
     expect(nativeMessageInputs(resumed.input)).toHaveLength(1);
     expect(textOf(resumed.input)).toContain(textOf(message.content));
@@ -460,7 +520,6 @@ integration.sequential("Run recovery acceptance", () => {
     const lost = (await attempts(current.active, runId))[0]!;
     expect(lost.usage).toBeNull();
   }, 120_000);
-
   it("2. keeps the Assignment open and delivers one successful parent result", async () => {
     const current = await start();
     const parent = await held(current, "Delegate a recovery task.");
@@ -471,13 +530,20 @@ integration.sequential("Run recovery acceptance", () => {
       .match(/http:\/\/127\.0\.0\.1:\d+\/[\w-]+\/agent-tools/gu)
       ?.at(-1);
     if (!token || !proxy) throw new Error("Parent engine did not receive its control endpoint");
-    const client = new Client({ name: "recovery-acceptance", version: "1" });
+    const client = new Client({
+      name: "recovery-acceptance",
+      version: "1",
+    });
     const delegated = await (async () => {
       try {
         await client.connect(
           // The SDK getter includes undefined; its Transport interface uses an exact optional property.
           new StreamableHTTPClientTransport(new URL(proxy), {
-            requestInit: { headers: { authorization: `Bearer ${token}` } },
+            requestInit: {
+              headers: {
+                authorization: `Bearer ${token}`,
+              },
+            },
           }) as Transport,
         );
         const result = await client.callTool({
@@ -485,7 +551,6 @@ integration.sequential("Run recovery acceptance", () => {
           arguments: {
             task: "Keep working through a restart",
             title: "Recovery worker",
-            workspaceId: current.active.mainWorkspaceId,
           },
         });
         expect(result.isError).not.toBe(true);
@@ -517,7 +582,10 @@ integration.sequential("Run recovery acceptance", () => {
     const statusBefore = await current.active.api["thread.assignments.list"]({
       threadId: current.threadId,
     });
-    checkpoints.push({ stage: "assignment before restart", assignment: statusBefore });
+    checkpoints.push({
+      stage: "assignment before restart",
+      assignment: statusBefore,
+    });
     expect(statusBefore).toMatchObject({
       ok: true,
       data: {
@@ -531,7 +599,13 @@ integration.sequential("Run recovery acceptance", () => {
       },
     });
     await current.active.restartRunner();
-    await recovery({ ...current, threadId: thread.id }, child.id);
+    await recovery(
+      {
+        ...current,
+        threadId: thread.id,
+      },
+      child.id,
+    );
     await waitFor(
       async () => (await attempts(current.active, child.id))[1]?.startedAt !== null,
       "child recovery started",
@@ -539,7 +613,10 @@ integration.sequential("Run recovery acceptance", () => {
     const statusDuring = await current.active.api["thread.assignments.list"]({
       threadId: current.threadId,
     });
-    checkpoints.push({ stage: "assignment during recovery", assignment: statusDuring });
+    checkpoints.push({
+      stage: "assignment during recovery",
+      assignment: statusDuring,
+    });
     expect(statusDuring).toMatchObject({
       ok: true,
       data: {
@@ -571,13 +648,22 @@ integration.sequential("Run recovery acceptance", () => {
     expect(resultMessages).toHaveLength(1);
     expect(textOf(resultMessages[0]!.content)).toContain("Task completed: Recovery worker");
     expect(
-      await current.active.api["thread.assignments.list"]({ threadId: current.threadId }),
+      await current.active.api["thread.assignments.list"]({
+        threadId: current.threadId,
+      }),
     ).toMatchObject({
       ok: true,
-      data: { assignments: [expect.objectContaining({ id: assignmentId, status: "completed" })] },
+      data: {
+        assignments: [
+          expect.objectContaining({
+            id: assignmentId,
+            status: "completed",
+          }),
+        ],
+      },
     });
     const activity = await current.active.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["type", "data"])
       .where("threadId", "=", thread.id)
       .orderBy("sequence", "asc")
@@ -585,7 +671,6 @@ integration.sequential("Run recovery acceptance", () => {
     expect(JSON.stringify(activity)).not.toContain('"status":"failed"');
     expect(await failedNotifications(current.active, parent.runId)).toEqual([]);
   }, 180_000);
-
   for (const [id, effect] of [
     ["3", false],
     ["3′", true],
@@ -606,11 +691,18 @@ integration.sequential("Run recovery acceptance", () => {
         .executeTakeFirstOrThrow();
       const passiveReport = "Passive recovery context: preserve the project permission decision.";
       const reported = await current.active.host.store.enqueueThreadInput({
-        content: [{ type: "text", text: passiveReport }],
+        content: [
+          {
+            type: "text",
+            text: passiveReport,
+          },
+        ],
         idempotencyKey: randomUUID(),
         policy: "report",
         requestedBy: person.id,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: current.threadId,
       });
       expect(reported.run).toBeNull();
@@ -625,10 +717,9 @@ integration.sequential("Run recovery acceptance", () => {
         // The fake executed the user's requested write before the start receipt.
         await waitFor(
           async () =>
-            (await readFile(
-              join(current.active.mountedWorkspacePath, "recovery-effect"),
-              "utf8",
-            ).catch(() => "")) === "effect\n",
+            (await readFile(join(current.active.agentHome.path, "recovery-effect"), "utf8").catch(
+              () => "",
+            )) === "effect\n",
           "effect before run.started",
         );
       }
@@ -672,14 +763,15 @@ integration.sequential("Run recovery acceptance", () => {
       });
       expect(receipts).toHaveLength(1);
       if (effect)
-        expect(
-          await readFile(join(current.active.mountedWorkspacePath, "recovery-effect"), "utf8"),
-        ).toBe("effect\n");
+        expect(await readFile(join(current.active.agentHome.path, "recovery-effect"), "utf8")).toBe(
+          "effect\n",
+        );
     }, 120_000);
   }
-
   it("4. describes unfinished tools and contains their real processes", async () => {
-    const current = await start({ engineArguments: ["--recovery-tool"] });
+    const current = await start({
+      engineArguments: ["--recovery-tool"],
+    });
     const { runId } = await held(current);
     await current.active.waitForToolStart(runId);
     const child = (await current.captures()).find((entry) => entry.recoveryChild)!.recoveryChild!;
@@ -693,7 +785,6 @@ integration.sequential("Run recovery acceptance", () => {
     expect(alive(child.pid)).toBe(false);
     await finish(current, runId);
   }, 120_000);
-
   it("5. cancels a lost live approval and accepts a fresh approval", async () => {
     const current = await start({
       firstScenario: "run-scoped-approval",
@@ -705,7 +796,10 @@ integration.sequential("Run recovery acceptance", () => {
     await current.active.restartRunner();
     const message = await recovery(current, runId);
     const lost = await requestRow(current.active, request.id);
-    expect(lost).toMatchObject({ status: "cancelled", cancellationReason: "process-lost" });
+    expect(lost).toMatchObject({
+      status: "cancelled",
+      cancellationReason: "process-lost",
+    });
     expect(textOf(message.content)).toContain("did not complete; ask again if you still need it.");
     expect(textOf(message.content)).toContain(request.presentation.title);
     const fresh = await pendingApproval(current.active, runId, request.id);
@@ -716,7 +810,6 @@ integration.sequential("Run recovery acceptance", () => {
     );
     expect((await row(current.active, runId)).status).toBe("completed");
   }, 120_000);
-
   it("6. Stop wins over a subsequent Runner restart", async () => {
     const current = await start();
     const { runId } = await held(current);
@@ -734,7 +827,6 @@ integration.sequential("Run recovery acceptance", () => {
     expect(await recoveryMessages(current.active, current.threadId)).toEqual([]);
     expect(await failedNotifications(current.active, runId)).toEqual([]);
   }, 120_000);
-
   it("7. permits three recoveries and ends the fourth restart visibly", async () => {
     const current = await start();
     const { runId } = await held(current);
@@ -755,7 +847,9 @@ integration.sequential("Run recovery acceptance", () => {
     );
     expect(await row(current.active, runId)).toMatchObject({
       status: "failed",
-      failure: { code: "runner_restarted" },
+      failure: {
+        code: "runner_restarted",
+      },
     });
     expect(JSON.stringify((await row(current.active, runId)).failure)).toMatch(
       /three|repeated|five minutes/iu,
@@ -767,9 +861,11 @@ integration.sequential("Run recovery acceptance", () => {
     ).toHaveLength(3);
     expect(await recoveryMessages(current.active, current.threadId)).toHaveLength(3);
   }, 180_000);
-
   it("8. queues an expired execution and runs its recovery once after reattach", async () => {
-    const current = await start({ leaseMs: 12_000, contained: false });
+    const current = await start({
+      leaseMs: 12_000,
+      contained: false,
+    });
     const { runId } = await held(current);
     current.active.network.block();
     await expireDisconnected(current, runId);
@@ -779,7 +875,10 @@ integration.sequential("Run recovery acceptance", () => {
       bindingGeneration: null,
     });
     const before = await snapshot(current.active, runId);
-    checkpoints.push({ stage: "offline", snapshot: before });
+    checkpoints.push({
+      stage: "offline",
+      snapshot: before,
+    });
     current.active.network.unblock();
     await waitFor(
       async () => (await current.captures()).filter((entry) => entry.recoveryTurn).length === 2,
@@ -795,9 +894,10 @@ integration.sequential("Run recovery acceptance", () => {
       textOf((await recoveryMessages(current.active, current.threadId))[0]!.content),
     ).toContain("stopped responding");
   }, 120_000);
-
   it("9. refuses cross-boot recovery dispatch without the containment capability", async () => {
-    const current = await start({ contained: false });
+    const current = await start({
+      contained: false,
+    });
     const { runId } = await held(current);
     await current.active.restartRunner();
     await waitFor(
@@ -806,7 +906,9 @@ integration.sequential("Run recovery acceptance", () => {
     );
     expect(await row(current.active, runId)).toMatchObject({
       status: "failed",
-      failure: { code: "runner_restarted" },
+      failure: {
+        code: "runner_restarted",
+      },
     });
     // Classification must still create the recovery; its one dispatch gate refuses it.
     expect((await attempts(current.active, runId))[1]).toMatchObject({
@@ -815,9 +917,10 @@ integration.sequential("Run recovery acceptance", () => {
     });
     expect((await current.captures()).filter((entry) => entry.recoveryTurn)).toHaveLength(1);
   }, 120_000);
-
   it("10. preserves the background reply, phase and deadline across restart", async () => {
-    const current = await start({ firstScenario: "background-children" });
+    const current = await start({
+      firstScenario: "background-children",
+    });
     const { runId } = await queue(current, "Research in the background.");
     await waitFor(
       async () => (await row(current.active, runId)).phase === "background",
@@ -849,9 +952,10 @@ integration.sequential("Run recovery acceptance", () => {
       before.backgroundDeadlineAt,
     );
   }, 120_000);
-
   it("10a. ends an already-expired background Run at loss classification without recovery", async () => {
-    const current = await start({ firstScenario: "background-children" });
+    const current = await start({
+      firstScenario: "background-children",
+    });
     const { runId } = await queue(current, "Research until the background deadline.");
     await waitFor(
       async () => (await row(current.active, runId)).phase === "background",
@@ -871,13 +975,21 @@ integration.sequential("Run recovery acceptance", () => {
       const expired = new Date(Date.now() - 60_000);
       await store.database
         .updateTable("runs")
-        .set({ backgroundDeadlineAt: expired })
+        .set({
+          backgroundDeadlineAt: expired,
+        })
         .where("id", "=", runId)
         .execute();
       const before = await row(current.active, runId);
-      expect(before).toMatchObject({ phase: "background", status: "running" });
+      expect(before).toMatchObject({
+        phase: "background",
+        status: "running",
+      });
       classifiedAfterDeadline = true;
-      checkpoints.push({ stage: "deadline expired before loss classification", run: before });
+      checkpoints.push({
+        stage: "deadline expired before loss classification",
+        run: before,
+      });
       return attach(...args);
     });
     try {
@@ -896,9 +1008,11 @@ integration.sequential("Run recovery acceptance", () => {
       releaseSweep.resolve();
     }
   }, 120_000);
-
   it("10b. expires a queued background recovery and never dispatches it on reconnect", async () => {
-    const current = await start({ firstScenario: "background-children", leaseMs: 12_000 });
+    const current = await start({
+      firstScenario: "background-children",
+      leaseMs: 12_000,
+    });
     const { runId } = await queue(current, "Research while the computer is away.");
     await waitFor(
       async () => (await row(current.active, runId)).phase === "background",
@@ -911,10 +1025,14 @@ integration.sequential("Run recovery acceptance", () => {
       phase: "background",
       status: "queued",
     });
-    expect(await inputState(current.active, message.id)).toMatchObject({ state: "claimed" });
+    expect(await inputState(current.active, message.id)).toMatchObject({
+      state: "claimed",
+    });
     await current.active.host.store.database
       .updateTable("runs")
-      .set({ backgroundDeadlineAt: new Date(Date.now() - 60_000) })
+      .set({
+        backgroundDeadlineAt: new Date(Date.now() - 60_000),
+      })
       .where("id", "=", runId)
       .execute();
     await advanceExecutionClock(current.clock!, current.active.host, 5_000);
@@ -930,9 +1048,14 @@ integration.sequential("Run recovery acceptance", () => {
     expect((await row(current.active, runId)).status).toBe("interrupted");
     const listed = await attempts(current.active, runId);
     expect(listed).toHaveLength(2);
-    expect(listed[1]).toMatchObject({ reason: "recovery", dispatchedAt: null });
+    expect(listed[1]).toMatchObject({
+      reason: "recovery",
+      dispatchedAt: null,
+    });
     expect(listed[1]!.endedAt).not.toBeNull();
-    expect(await inputState(current.active, message.id)).toMatchObject({ state: "cancelled" });
+    expect(await inputState(current.active, message.id)).toMatchObject({
+      state: "cancelled",
+    });
     await expectDeadlineSettled(current.active, runId, current.threadId);
     const commands = await current.active.host.store.database
       .selectFrom("commands")
@@ -959,7 +1082,6 @@ integration.sequential("Run recovery acceptance", () => {
     expect((await row(current.active, runId)).status).toBe("interrupted");
     await expectDeadlineSettled(current.active, runId, current.threadId);
   }, 120_000);
-
   it("11. interrupts an occurrence without replay, preserves failure count, and runs the next tick", async () => {
     const current = await start();
     const log = join(current.scratch, "occurrences");
@@ -977,10 +1099,18 @@ integration.sequential("Run recovery acceptance", () => {
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery recurring program",
-        program: { language: "javascript", source: program, toolContractVersion: 2 },
+        program: {
+          language: "javascript",
+          source: program,
+          toolContractVersion: 3,
+        },
         source: {
           kind: "schedule",
-          schedule: { kind: "cron", expression: "*/5 * * * * *", timezone: "UTC" },
+          schedule: {
+            kind: "cron",
+            expression: "*/5 * * * * *",
+            timezone: "UTC",
+          },
         },
       },
     });
@@ -1048,12 +1178,23 @@ integration.sequential("Run recovery acceptance", () => {
       .selectAll()
       .where("triggerId", "=", triggerId)
       .execute();
-    checkpoints.push({ triggerId, before, lost, occurrences });
+    checkpoints.push({
+      triggerId,
+      before,
+      lost,
+      occurrences,
+    });
     expect(occurrences.filter((entry) => entry.id === before.id)).toHaveLength(1);
     const launches = (await readFile(log, "utf8"))
       .split("\n")
       .filter(Boolean)
-      .map((line) => z.object({ id: z.string() }).parse(JSON.parse(line)));
+      .map((line) =>
+        z
+          .object({
+            id: z.string(),
+          })
+          .parse(JSON.parse(line)),
+      );
     expect(launches.filter((entry) => entry.id === before.id)).toHaveLength(1);
     const paused = await current.active.api["commands.dispatch"]({
       type: "trigger.status.set",
@@ -1076,11 +1217,14 @@ integration.sequential("Run recovery acceptance", () => {
             writeFileSync(${JSON.stringify(oneShotStarted)}, process.env.OPENSTEER_OCCURRENCE_ID);
             await new Promise(() => { setInterval(() => {}, 1000); });
           }`,
-          toolContractVersion: 2,
+          toolContractVersion: 3,
         },
         source: {
           kind: "schedule",
-          schedule: { kind: "at", at: new Date(Date.now() + 2_000).toISOString() },
+          schedule: {
+            kind: "at",
+            at: new Date(Date.now() + 2_000).toISOString(),
+          },
         },
       },
     });
@@ -1103,13 +1247,18 @@ integration.sequential("Run recovery acceptance", () => {
     const notice = (await messagesOf(current.active, current.threadId)).find((message) =>
       textOf(message.content).includes("Recovery one-shot"),
     )!;
-    checkpoints.push({ oneShotId, notice });
-    expect(notice.author).toMatchObject({ kind: "platform", cause: "automation-stopped" });
+    checkpoints.push({
+      oneShotId,
+      notice,
+    });
+    expect(notice.author).toMatchObject({
+      kind: "platform",
+      cause: "automation-stopped",
+    });
     expect(textOf(notice.content)).toMatch(/restart|interrupt/iu);
     expect(textOf(notice.content)).toMatch(/may not have finished/iu);
     expect(textOf(notice.content)).toMatch(/run.*again/iu);
   }, 180_000);
-
   it("12. relaunches a watch on the next boot with generation +1 and restartCount zero", async () => {
     const current = await start();
     const created = await current.active.api["commands.dispatch"]({
@@ -1118,12 +1267,14 @@ integration.sequential("Run recovery acceptance", () => {
       input: {
         anchorThreadId: current.threadId,
         name: "Recovery watch",
-        source: { kind: "watch" },
+        source: {
+          kind: "watch",
+        },
         program: {
           language: "javascript",
           source:
             "export default async function () { await new Promise(() => { setInterval(() => {}, 1000); }); }",
-          toolContractVersion: 2,
+          toolContractVersion: 3,
         },
       },
     });
@@ -1156,11 +1307,17 @@ integration.sequential("Run recovery acceptance", () => {
           .executeTakeFirstOrThrow()
       ).status,
     ).toBe("active");
-    checkpoints.push({ triggerId, before, after });
+    checkpoints.push({
+      triggerId,
+      before,
+      after,
+    });
   }, 120_000);
-
   it("13. deduplicates concurrent expiry, attach and a replayed lease-lost event", async () => {
-    const current = await start({ leaseMs: 12_000, contained: false });
+    const current = await start({
+      leaseMs: 12_000,
+      contained: false,
+    });
     const { runId } = await held(current);
     const original = current.active.wire!.frames.find(
       ({ frame }) => frame.type === "runner.event",
@@ -1221,7 +1378,10 @@ integration.sequential("Run recovery acceptance", () => {
       ...eventSchema.parse(original.event),
       type: "run.interrupted",
       ordinal: nextOrdinal,
-      data: { status: "interrupted", cause: "lease-lost" },
+      data: {
+        status: "interrupted",
+        cause: "lease-lost",
+      },
     };
     const wireStart = current.active.wire!.frames.length;
     sendStale(current.active, original, staleEvent);
@@ -1232,9 +1392,11 @@ integration.sequential("Run recovery acceptance", () => {
     expect(await recoveryMessages(current.active, current.threadId)).toHaveLength(1);
     await finish(current, runId);
   }, 120_000);
-
   it("14. Stop settles a queued recovery before it can dispatch", async () => {
-    const current = await start({ leaseMs: 12_000, contained: false });
+    const current = await start({
+      leaseMs: 12_000,
+      contained: false,
+    });
     const { runId } = await held(current);
     current.active.network.block();
     await expireDisconnected(current, runId);
@@ -1245,7 +1407,9 @@ integration.sequential("Run recovery acceptance", () => {
       async () => (await row(current.active, runId)).status === "interrupted",
       "queued recovery stopped",
     );
-    expect(await inputState(current.active, message.id)).toMatchObject({ state: "cancelled" });
+    expect(await inputState(current.active, message.id)).toMatchObject({
+      state: "cancelled",
+    });
     expect((await attempts(current.active, runId))[1]).toMatchObject({
       outcome: "cancelled",
       dispatchedAt: null,
@@ -1261,9 +1425,11 @@ integration.sequential("Run recovery acceptance", () => {
     expect((await current.captures()).filter((entry) => entry.recoveryTurn)).toHaveLength(1);
     expect((await row(current.active, runId)).status).toBe("interrupted");
   }, 120_000);
-
   it("15. drops late lost-binding events without storing or consuming their ordinal", async () => {
-    const current = await start({ leaseMs: 12_000, contained: false });
+    const current = await start({
+      leaseMs: 12_000,
+      contained: false,
+    });
     const { runId } = await held(current);
     const original = current.active.wire!.frames.find(
       ({ frame }) => frame.type === "runner.event",
@@ -1288,7 +1454,12 @@ integration.sequential("Run recovery acceptance", () => {
       ordinal: before.nextRunnerOrdinal,
       data: {
         messageId: createId("message"),
-        content: [{ type: "text", text: "STALE_LOST_BINDING_EFFECT" }],
+        content: [
+          {
+            type: "text",
+            text: "STALE_LOST_BINDING_EFFECT",
+          },
+        ],
       },
     };
     PendingAgentEventSchema.parse(stale);
@@ -1304,7 +1475,6 @@ integration.sequential("Run recovery acceptance", () => {
     );
     await finish(current, runId);
   }, 120_000);
-
   it("16. settles an approval answer given while its engine is lost", async () => {
     const current = await start({
       firstScenario: "run-scoped-approval",
@@ -1358,13 +1528,14 @@ integration.sequential("Run recovery acceptance", () => {
     );
     expect((await row(current.active, runId)).status).toBe("completed");
   }, 120_000);
-
   for (const mode of ["no native reference", "resume failure"] as const) {
     it(`17. fails visibly on ${mode} without silently starting a fresh conversation`, async () => {
       let lostBoot: unknown;
       const current = await start(
         mode === "resume failure"
-          ? { laterScenario: "resume-missing" }
+          ? {
+              laterScenario: "resume-missing",
+            }
           : {
               filter: (direction: "host" | "runner", frame: WireRecord) => {
                 if (direction !== "runner") return true;
@@ -1409,15 +1580,13 @@ integration.sequential("Run recovery acceptance", () => {
       }
     }, 120_000);
   }
-
-  it("18. leaves a healthy second Runner's Run and binding untouched", async () => {
+  it("18. leaves a healthy second Personal Deployment's Run and binding untouched", async () => {
     const current = await start();
-    const companion = await current.active.startAdditionalRunner();
-    const created = await current.active.api["commands.dispatch"]({
+    const companion = await current.active.startAdditionalPersonal();
+    const created = await companion.api["commands.dispatch"]({
       type: "thread.create",
       idempotencyKey: randomUUID(),
       title: "Healthy companion task",
-      workspaceId: companion.workspaceId,
       environmentId: companion.environmentId,
       harnessInstanceId: companion.harnessInstanceId,
       modelSelection: selection,
@@ -1426,18 +1595,19 @@ integration.sequential("Run recovery acceptance", () => {
       throw new Error("Companion thread creation failed");
     const healthyThreadId = created.data.thread.id;
     const { runId } = await held(current);
-    const queued = await current.active.queueMessage({
+    const queued = await companion.queueMessage({
       threadId: healthyThreadId,
       text: "Keep the healthy task running.",
     });
     if (!queued.runId) throw new Error("No healthy Run");
     const healthyId = queued.runId;
     runs.push(healthyId);
+    companionRuns.set(healthyId, companion);
     await waitFor(
-      async () => (await row(current.active, healthyId)).startedAt !== null,
+      async () => (await row(companion, healthyId)).startedAt !== null,
       "second Runner working",
     );
-    const before = await row(current.active, healthyId);
+    const before = await row(companion, healthyId);
     const initialTurns = (await current.captures()).flatMap((entry) =>
       entry.recoveryTurn ? [entry.recoveryTurn] : [],
     );
@@ -1448,13 +1618,17 @@ integration.sequential("Run recovery acceptance", () => {
     expect(companionEngine.scope).toBeTruthy();
     expect(companionEngine.scope!.split(".")[0]).not.toBe(primaryEngine.scope!.split(".")[0]);
     expect(alive(companionEngine.pid)).toBe(true);
-    checkpoints.push({ stage: "distinct Runner installations", primaryEngine, companionEngine });
+    checkpoints.push({
+      stage: "distinct Runner installations",
+      primaryEngine,
+      companionEngine,
+    });
     await current.active.restartRunner();
     expect(alive(companionEngine.pid), "primary startup must not reap the companion engine").toBe(
       true,
     );
     await recovery(current, runId);
-    const after = await row(current.active, healthyId);
+    const after = await row(companion, healthyId);
     expect(alive(companionEngine.pid), "companion PID survives primary recovery dispatch").toBe(
       true,
     );
@@ -1474,16 +1648,15 @@ integration.sequential("Run recovery acceptance", () => {
       bindingGeneration: before.bindingGeneration,
       nextRunnerOrdinal: before.nextRunnerOrdinal,
     });
-    expect(await attempts(current.active, healthyId)).toHaveLength(1);
-    expect(await recoveryMessages(current.active, healthyThreadId)).toEqual([]);
+    expect(await attempts(companion, healthyId)).toHaveLength(1);
+    expect(await recoveryMessages(companion, healthyThreadId)).toEqual([]);
     await current.release();
     await waitFor(
-      async () => (await row(current.active, healthyId)).status === "completed",
+      async () => (await row(companion, healthyId)).status === "completed",
       "healthy Runner completes",
     );
     await finish(current, runId);
   }, 180_000);
-
   it("19. reaps a SIGKILLed Runner's surviving marked processes before recovery executes", async () => {
     const current = await start({
       child: true,
@@ -1503,7 +1676,7 @@ integration.sequential("Run recovery acceptance", () => {
     expect(alive(engine.pid)).toBe(true);
     expect(alive(child.pid)).toBe(true);
     await writeFile(
-      join(current.active.mountedWorkspacePath, "recovery-prior-pids.json"),
+      join(current.active.agentHome.path, "recovery-prior-pids.json"),
       JSON.stringify([engine.pid, child.pid]),
     );
     await current.active.crashRunner(async () => {
@@ -1539,15 +1712,20 @@ integration.sequential("Run recovery acceptance", () => {
     ).toEqual([false, false]);
     expect(textOf(message.content)).toContain("Started, completion unknown:");
     checkpoints.push({
-      abandoned: { engine, child },
+      abandoned: {
+        engine,
+        child,
+      },
       recovered: newTurn,
       oldPidsDead: [!alive(engine.pid), !alive(child.pid)],
     });
     await finish(current, runId);
   }, 180_000);
-
   it("20. recovers a watchdog lease-lost interruption after a Host outage", async () => {
-    const current = await start({ leaseMs: 12_000, contained: false });
+    const current = await start({
+      leaseMs: 12_000,
+      contained: false,
+    });
     const { runId } = await held(current);
     await current.active.restartHost({
       whileDown: async () => {
@@ -1558,7 +1736,9 @@ integration.sequential("Run recovery acceptance", () => {
         );
         expect(current.active.settledRunEvent(runId)).toMatchObject({
           type: "run.interrupted",
-          data: { cause: "lease-lost" },
+          data: {
+            cause: "lease-lost",
+          },
         });
         checkpoints.push({
           stage: "watchdog settled before Host restart",
@@ -1582,11 +1762,14 @@ integration.sequential("Run recovery acceptance", () => {
     expect(
       leaseLost,
       "Runner watchdog must classify the interruption on its public wire",
-    ).toMatchObject({ data: { cause: "lease-lost" } });
+    ).toMatchObject({
+      data: {
+        cause: "lease-lost",
+      },
+    });
     await recovery(current, runId);
     await finish(current, runId);
   }, 120_000);
-
   it("21. reuses one unconfirmed recovery message through another loss and delivers originals once", async () => {
     let holdStarts = true;
     const current = await start({
@@ -1633,9 +1816,22 @@ integration.sequential("Run recovery acceptance", () => {
     );
     expect((await row(current.active, original.runId)).failure).toBeNull();
     expect(await attempts(current.active, original.runId)).toMatchObject([
-      { ordinal: 1, reason: "initial", outcome: "interrupted" },
-      { ordinal: 2, reason: "recovery", outcome: "interrupted", startedAt: null },
-      { ordinal: 3, reason: "recovery", startedAt: null },
+      {
+        ordinal: 1,
+        reason: "initial",
+        outcome: "interrupted",
+      },
+      {
+        ordinal: 2,
+        reason: "recovery",
+        outcome: "interrupted",
+        startedAt: null,
+      },
+      {
+        ordinal: 3,
+        reason: "recovery",
+        startedAt: null,
+      },
     ]);
     const reused = await recoveryMessages(current.active, current.threadId);
     expect(reused).toHaveLength(1);
@@ -1655,9 +1851,17 @@ integration.sequential("Run recovery acceptance", () => {
     const dispatches = executeFrames(current.active);
     expect(dispatches).toHaveLength(3);
     for (const dispatch of dispatches) expect(dispatch.inputs).toHaveLength(1);
-    expect(dispatches[0]!.inputs).toMatchObject([{ messageId: original.messageId }]);
+    expect(dispatches[0]!.inputs).toMatchObject([
+      {
+        messageId: original.messageId,
+      },
+    ]);
     for (const dispatch of dispatches.slice(1))
-      expect(dispatch.inputs).toMatchObject([{ messageId: firstRecovery.id }]);
+      expect(dispatch.inputs).toMatchObject([
+        {
+          messageId: firstRecovery.id,
+        },
+      ]);
     checkpoints.push({
       stage: "same claimed recovery message reused",
       snapshot: await snapshot(current.active, original.runId),
@@ -1686,7 +1890,6 @@ integration.sequential("Run recovery acceptance", () => {
     expect(await recoveryMessages(current.active, current.threadId)).toHaveLength(1);
     expect(executeFrames(current.active)).toHaveLength(3);
   }, 180_000);
-
   it("22. clears a retired binding's revocation before dispatching recovery on the same connection", async () => {
     let lostRunId: RunId | undefined;
     let retiredGeneration: number | undefined;
@@ -1782,7 +1985,9 @@ integration.sequential("Run recovery acceptance", () => {
         async () => dispatchWaiting,
         "recovery dispatch held before registry admission",
       );
-      expect(await row(current.active, runId)).toMatchObject({ status: "starting" });
+      expect(await row(current.active, runId)).toMatchObject({
+        status: "starting",
+      });
       expect((await attempts(current.active, runId))[1]).toMatchObject({
         reason: "recovery",
         dispatchedAt: null,
@@ -1812,14 +2017,21 @@ integration.sequential("Run recovery acceptance", () => {
           event.type === "run.interrupted"
         );
       })!.frame;
-      expect(recordSchema.parse(delayed.event).data).toMatchObject({ cause: "lease-lost" });
+      expect(recordSchema.parse(delayed.event).data).toMatchObject({
+        cause: "lease-lost",
+      });
       const replayStart = wire.frames.length;
       wire.sendRunner(delayed);
       wire.sendRunner(bound);
       // A correlated read on the same serial wire proves both stale reports
       // were handled, whether they were dropped or refused with a revocation.
       const requestId = randomUUID();
-      wire.sendRunner({ ...fence, type: "runner.grants.refresh", runId, requestId });
+      wire.sendRunner({
+        ...fence,
+        type: "runner.grants.refresh",
+        runId,
+        requestId,
+      });
       await waitFor(
         async () =>
           wire.frames.some(
@@ -1866,12 +2078,17 @@ integration.sequential("Run recovery acceptance", () => {
       .parse(executeFrames(current.active)[1]!.context.bindingGeneration);
     expect(successorGeneration).not.toBe(retiredGeneration);
     const replayStart = wire.frames.length;
-    wire.sendRunner({ ...bound });
+    wire.sendRunner({
+      ...bound,
+    });
     sendStale(current.active, original, {
       ...eventSchema.parse(original.event),
       ordinal: (await row(current.active, runId)).nextRunnerOrdinal,
       type: "run.interrupted",
-      data: { status: "interrupted", cause: "lease-lost" },
+      data: {
+        status: "interrupted",
+        cause: "lease-lost",
+      },
     });
     await confirmHealthyBindingAfterReplay(current.active, runId, replayStart);
     await finish(current, runId);
@@ -1884,7 +2101,13 @@ integration.sequential("Run recovery acceptance", () => {
       const event = eventSchema.parse(frame.event);
       if (event.runId !== runId || event.bindingGeneration !== successorGeneration) return [];
       expect(frame).toMatchObject(fence);
-      return [{ runnerOrdinal: event.ordinal, type: event.type, data: event.data }];
+      return [
+        {
+          runnerOrdinal: event.ordinal,
+          type: event.type,
+          data: event.data,
+        },
+      ];
     });
     const emitted = [...new Map(reports.map((event) => [event.runnerOrdinal, event])).values()];
     expect(emitted.map((event) => event.type)).toEqual([
@@ -1893,7 +2116,7 @@ integration.sequential("Run recovery acceptance", () => {
       "run.completed",
     ]);
     const stored = await store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["runnerOrdinal", "type", "data"])
       .where("runId", "=", runId)
       .where("runnerBindingGeneration", "=", successorGeneration)
@@ -1907,14 +2130,20 @@ integration.sequential("Run recovery acceptance", () => {
       .executeTakeFirstOrThrow();
     const assistant = stored.find((event) => event.type === "assistant.message")!;
     expect(recordSchema.parse(assistant.data).content).toEqual([
-      { type: "text", text: "Recovery task completed." },
+      {
+        type: "text",
+        text: "Recovery task completed.",
+      },
     ]);
     expect(
       stored.map((event) => {
         if (event.type !== "run.completed") return event;
         const { replyMessageId, ...data } = recordSchema.parse(event.data);
         expect(replyMessageId).toBe(recordSchema.parse(assistant.data).messageId);
-        return { ...event, data };
+        return {
+          ...event,
+          data,
+        };
       }),
     ).toEqual(
       emitted.map((event) =>
@@ -1940,7 +2169,6 @@ integration.sequential("Run recovery acceptance", () => {
     });
   }, 120_000);
 });
-
 async function waitFor(
   check: () => Promise<boolean>,
   label: string,
@@ -1961,12 +2189,17 @@ function row(active: VerticalStack, runId: RunId) {
     .executeTakeFirstOrThrow();
 }
 async function attempts(active: VerticalStack, runId: RunId) {
-  const result = await active.api["run.attempts.list"]({ runId });
+  const result = await active.api["run.attempts.list"]({
+    runId,
+  });
   if (!result.ok) throw new Error(result.error.message);
   return result.data.attempts;
 }
 async function messagesOf(active: VerticalStack, threadId: ThreadId) {
-  const result = await active.api["thread.messages.list"]({ threadId, limit: 100 });
+  const result = await active.api["thread.messages.list"]({
+    threadId,
+    limit: 100,
+  });
   if (!result.ok) throw new Error(result.error.message);
   return result.data.messages;
 }
@@ -1983,7 +2216,7 @@ async function recoveryMessages(active: VerticalStack, threadId: ThreadId) {
 }
 function eventsOf(active: VerticalStack, runId: RunId) {
   return active.host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select(["eventId", "type", "data", "runnerOrdinal", "runnerBootId", "sequence"])
     .where("runId", "=", runId)
     .orderBy("sequence", "asc")
@@ -1998,7 +2231,7 @@ function inputState(active: VerticalStack, messageId: MessageId) {
 }
 async function failedNotifications(active: VerticalStack, runId: RunId) {
   const rows = await active.host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("runId", "=", runId)
     .where("type", "in", ["run.failed", "run.interrupted"])
@@ -2008,7 +2241,10 @@ async function failedNotifications(active: VerticalStack, runId: RunId) {
     await Promise.all(
       rows.map((row) =>
         notifications.decide(
-          AgentEventSchema.parse({ ...row, createdAt: row.createdAt.toISOString() }),
+          AgentEventSchema.parse({
+            ...row,
+            createdAt: row.createdAt.toISOString(),
+          }),
         ),
       ),
     )
@@ -2049,7 +2285,10 @@ async function answer(active: VerticalStack, request: Awaited<ReturnType<typeof 
     type: "request.respond",
     idempotencyKey: randomUUID(),
     requestId: request.id,
-    response: { kind: "choice", optionId: option.id },
+    response: {
+      kind: "choice",
+      optionId: option.id,
+    },
   });
   if (!result.ok) throw new Error(result.error.message);
   if (option.hint === "allow-once") return "accept";
@@ -2061,7 +2300,14 @@ function executeFrames(active: VerticalStack) {
     if (direction !== "host" || frame.type !== "host.command") return [];
     const command = recordSchema.parse(frame.command);
     return command.type === "run.execute"
-      ? [z.object({ context: recordSchema }).passthrough().parse(command)]
+      ? [
+          z
+            .object({
+              context: recordSchema,
+            })
+            .passthrough()
+            .parse(command),
+        ]
       : [];
   });
 }
@@ -2083,7 +2329,7 @@ async function snapshot(active: VerticalStack, runId: RunId) {
   const run = await row(active, runId);
   const thread = await active.host.store.database
     .selectFrom("threads")
-    .select(["id", "workspaceId", "status", "inputQueuePaused"])
+    .select(["id", "status", "inputQueuePaused"])
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
   return {
@@ -2125,7 +2371,9 @@ async function snapshot(active: VerticalStack, runId: RunId) {
       .execute(),
     messages: await messagesOf(active, run.threadId),
     notifications: active.notifications.filter((entry) => entry.runId === runId),
-    assignments: await active.api["thread.assignments.list"]({ threadId: run.threadId }),
+    assignments: await active.api["thread.assignments.list"]({
+      threadId: run.threadId,
+    }),
     commands: await active.host.store.database
       .selectFrom("commands")
       .select(["id", "type", "status", "lastError", "idempotencyKey"])
@@ -2145,7 +2393,14 @@ async function snapshot(active: VerticalStack, runId: RunId) {
 }
 function textOf(content: unknown): string {
   return z
-    .array(z.object({ type: z.string(), text: z.string().optional() }).passthrough())
+    .array(
+      z
+        .object({
+          type: z.string(),
+          text: z.string().optional(),
+        })
+        .passthrough(),
+    )
     .parse(content)
     .flatMap((part) => (part.type === "text" ? [part.text ?? ""] : []))
     .join("\n");
@@ -2158,7 +2413,6 @@ function alive(pid: number): boolean {
     return false;
   }
 }
-
 async function settledTriggerDispatches(active: VerticalStack) {
   await waitFor(
     async () =>
@@ -2177,13 +2431,19 @@ async function settledTriggerDispatches(active: VerticalStack) {
 /** Codex sends passive context parts alongside the one envelope per actionable Thread input. */
 function nativeMessageInputs(input: readonly unknown[]): string[] {
   return z
-    .array(z.object({ text: z.string().optional(), type: z.string() }).passthrough())
+    .array(
+      z
+        .object({
+          text: z.string().optional(),
+          type: z.string(),
+        })
+        .passthrough(),
+    )
     .parse(input)
     .flatMap((part) =>
       part.type === "text" && part.text?.startsWith("[Opensteer input]") ? [part.text] : [],
     );
 }
-
 async function expectDeadlineSettled(active: VerticalStack, runId: RunId, threadId: ThreadId) {
   const inputs = await active.host.store.database
     .selectFrom("threadInputs")
@@ -2194,7 +2454,7 @@ async function expectDeadlineSettled(active: VerticalStack, runId: RunId, thread
   for (const input of inputs) expect(["delivered", "cancelled"]).toContain(input.state);
   const thread = await active.host.store.database
     .selectFrom("threads")
-    .select(["workspaceId", "inputQueuePaused"])
+    .select(["inputQueuePaused"])
     .where("id", "=", threadId)
     .executeTakeFirstOrThrow();
   expect(thread.inputQueuePaused).toBe(false);
@@ -2237,7 +2497,11 @@ async function confirmHealthyBindingAfterReplay(
   const revokesRun = (frame: WireRecord) =>
     frame.type === "host.runs.revoked" &&
     z
-      .array(z.object({ runId: z.string() }))
+      .array(
+        z.object({
+          runId: z.string(),
+        }),
+      )
       .parse(frame.revocations)
       .some((entry) => entry.runId === runId);
   const renewed = (frame: WireRecord) => {

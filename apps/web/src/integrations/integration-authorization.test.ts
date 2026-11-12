@@ -218,12 +218,12 @@ describe("integration authorization client", () => {
           getSnapshot: () => ({ deploymentId, user: { id: userId } }),
         } as unknown as HostClient,
         begin,
-        returnPath: "/threads/thread_123?panel=apps#request",
+        returnPath: "/tasks/thread_123?panel=apps#request",
       }),
     ).resolves.toEqual(started);
 
     expect(browser.open).not.toHaveBeenCalled();
-    expect(begin).toHaveBeenCalledWith("/threads/thread_123?panel=apps#request", {});
+    expect(begin).toHaveBeenCalledWith("/tasks/thread_123?panel=apps#request", {});
     expect(openIntegrationAuthorization).toHaveBeenCalledWith({
       attemptId: started.attemptId,
       launchTicket: started.launchTicket,
@@ -305,7 +305,7 @@ describe("integration authorization client", () => {
   it("reports only the opaque attempt to router-owned tracking", async () => {
     const tab = authorizationTab();
     const browser = installWindow({
-      href: "https://host.example/threads/thread_123?panel=apps#request-9",
+      href: "https://host.example/tasks/thread_123?panel=apps#request-9",
       open: vi.fn(() => tab),
     });
     const onStarted = vi.fn();
@@ -320,7 +320,7 @@ describe("integration authorization client", () => {
     expect(onStarted).toHaveBeenCalledOnce();
     expect(onStarted).toHaveBeenCalledWith(started.attemptId, false);
     expect(JSON.stringify(onStarted.mock.calls)).not.toContain(started.launchTicket);
-    expect(browser.href()).toBe("https://host.example/threads/thread_123?panel=apps#request-9");
+    expect(browser.href()).toBe("https://host.example/tasks/thread_123?panel=apps#request-9");
     expect(browser.href()).not.toContain(started.launchTicket);
   });
 });

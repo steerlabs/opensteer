@@ -1,3 +1,8 @@
+import {
+  teamApiVersion,
+  teamOidcStatePrefix,
+  teamOAuthVersionParameter,
+} from "@opensteer/deployment-authority";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -10,7 +15,6 @@ import {
   HostKeyFingerprintSchema,
   IdentityPasswordSchema,
   IdentityConfigSchema,
-  InvitationPreviewSchema,
   NativeOAuthClientSetSchema,
   NativeOAuthRegistrationMetadataSchema,
   OpensteerError,
@@ -26,7 +30,6 @@ import {
   type AuthAdmissionId,
   type AuthenticatedSession,
   type IdentityConfig,
-  type InvitationPreview,
   type NativeOAuthApplication,
   type NativeOAuthRegistrationMetadata,
   type PersonalRemoteSessionCredential,
@@ -36,7 +39,7 @@ import {
   identityPasswordMaxLength,
   identityPasswordMinLength,
 } from "@opensteer/core";
-import { OpensteerStore, readTeamInvitation, type DatabaseSchema } from "@opensteer/database";
+import type { DatabaseSchema } from "@opensteer/database";
 import { describeSessionDevice } from "./session-device.js";
 import { sso } from "@better-auth/sso";
 import {
@@ -165,12 +168,16 @@ function displayNameFromEmail(email: string): string {
 
 export class IdentityService {
   readonly #admissionLifetimeMilliseconds: number;
-  readonly #auth: OpensteerAuth;
+  #auth: OpensteerAuth;
   readonly #database: Kysely<DatabaseSchema>;
-  readonly #options: IdentityServiceOptions;
-  readonly #store: OpensteerStore;
+  #options: IdentityServiceOptions;
 
   constructor(database: Kysely<DatabaseSchema>, options: IdentityServiceOptions) {
+    if (
+      options.team &&
+      (options.localMachineOwner || options.localPasswordEnabled || options.signupPolicy === "open")
+    )
+      throw new Error("A team uses Account sign-in and explicit admission only");
     if (options.secret.length < 32) {
       throw new Error("Opensteer identity secret must contain at least 32 characters");
     }
@@ -183,10 +190,30 @@ export class IdentityService {
         : hostedAdmissionLifetimeMilliseconds;
     this.#database = database;
     this.#options = options;
-    this.#store = new OpensteerStore(database);
-    this.#auth = createOpensteerAuth(database, options, async (request, email) => {
-      await this.#requireSignupAdmission(request, email);
-    });
+    this.#auth = this.#createAuth();
+  }
+
+  #createAuth() {
+    return createOpensteerAuth(this.#database, this.#options, (request, email) =>
+      this.#requireSignupAdmission(request, email),
+    );
+  }
+
+  async issueSetupAccountAdoptionProof(headers: Headers, account: AccountAdoptionAccount) {
+    const proof = await this.#admissionFromHeaders(headers);
+    if (!this.#options.team || !proof)
+      throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
+    return this.#options.team.issueAdoption(proof, parseAccountAdoptionAccount(account));
+  }
+  async completeTeamAccountAdoption(grant: unknown, bundle: unknown) {
+    const team = this.#options.team;
+    if (!team)
+      throw new OpensteerError({ code: "not_found", message: "Team setup is unavailable" });
+    const provider = await team.completeAdoption(null, grant, bundle);
+    this.#options = { ...this.#options, oidcProviders: [provider] };
+    this.#auth = this.#createAuth();
+    await this.#ensureNativeOAuthClients();
+    return { completed: true as const };
   }
 
   async initialize(): Promise<void> {
@@ -424,6 +451,7 @@ export class IdentityService {
       )
       .select([
         "authSessions.absoluteExpiresAt",
+        "authSessions.memberGeneration",
         "authSessions.createdAt",
         "authSessions.expiresAt",
         "hostOAuthClients.metadata as registration",
@@ -441,6 +469,14 @@ export class IdentityService {
     ) {
       throw new OpensteerError({ code: "unauthorized", message: "Native access token is invalid" });
     }
+    if (
+      this.#options.team &&
+      !(await this.#options.team.sessionActive(subject.data, session.memberGeneration))
+    )
+      throw new OpensteerError({
+        code: "unauthorized",
+        message: "Team session is no longer active",
+      });
     // The registration row, not the configuration, is the trusted statement of
     // which application holds this credential and of when the credentials it
     // issued stopped counting. A JWT access token has no row to delete, so
@@ -499,6 +535,7 @@ export class IdentityService {
     }
     const url = new URL(request.url);
     const publicPath = url.pathname.slice(publicNativeAuthPath.length);
+    if (this.#options.team) url.searchParams.delete(teamOAuthVersionParameter);
     if (request.method === "GET" && publicPath === "/oauth2/authorize") {
       forceInteractiveConsent(url);
     }
@@ -649,17 +686,33 @@ export class IdentityService {
     const tokenHash = digestSecret(enrollment.token);
     await this.#database.transaction().execute(async (transaction) => {
       await sqlAdvisoryLock(transaction, "initial-owner-enrollment");
-      const existingAdministrator = await transaction
-        .selectFrom("users")
-        .select("id")
-        .where("instanceRole", "=", "administrator")
-        .executeTakeFirst();
+      const existingAdministrator = this.#options.team
+        ? await transaction
+            .selectFrom("teamMembers")
+            .select("userId as id")
+            .where("role", "=", "owner")
+            .where("state", "=", "active")
+            .executeTakeFirst()
+        : await transaction
+            .selectFrom("users")
+            .select("id")
+            .where("disabledAt", "is", null)
+            .executeTakeFirst();
       if (existingAdministrator) {
         // The durable administrator and consumed enrollment are authoritative. A stale deployment
         // secret must be removed by the operator, but it must never make an otherwise healthy Host
         // fail to restart. Exchange also checks both durable conditions before admitting signup.
         return;
       }
+      if (this.#options.team)
+        await transaction
+          .selectFrom("authAdmissions")
+          .select("id")
+          .where("purpose", "=", "setup")
+          .where("consumedAt", "is", null)
+          .orderBy("id")
+          .forNoKeyUpdate()
+          .execute();
       const existingEnrollment = await transaction
         .selectFrom("ownerEnrollments")
         .selectAll()
@@ -691,7 +744,11 @@ export class IdentityService {
         // code moves its deadline forward, because a local Host that sat idle
         // past the original window must not become permanently unclaimable. An
         // operator-configured code keeps its fixed deadline.
-        if (enrollment.renewable && existingEnrollment.expiresAt < enrollment.expiresAt) {
+        if (
+          !this.#options.team &&
+          enrollment.renewable &&
+          existingEnrollment.expiresAt < enrollment.expiresAt
+        ) {
           await transaction
             .updateTable("ownerEnrollments")
             .set({ expiresAt: enrollment.expiresAt })
@@ -701,9 +758,19 @@ export class IdentityService {
         }
         return;
       }
-      if (existingEnrollment.consumedAt || existingEnrollment.expiresAt > new Date()) {
+      if (
+        existingEnrollment.consumedAt ||
+        (!this.#options.team && existingEnrollment.expiresAt > new Date())
+      ) {
         throw new Error("Initial owner enrollment secret does not match durable Host state");
       }
+      if (this.#options.team)
+        await transaction
+          .updateTable("authAdmissions")
+          .set({ expiresAt: new Date() })
+          .where("purpose", "=", "setup")
+          .where("consumedAt", "is", null)
+          .execute();
       await transaction
         .updateTable("ownerEnrollments")
         .set({
@@ -726,18 +793,19 @@ export class IdentityService {
           requestId: null,
           targetId: existingEnrollment.id,
           targetType: "owner-enrollment",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
     });
   }
 
   async configuration(): Promise<IdentityConfig> {
-    const administrator = await this.#database
-      .selectFrom("users")
-      .select("id")
-      .where("instanceRole", "=", "administrator")
-      .executeTakeFirst();
+    const administrator = this.#options.team
+      ? await this.#options.team.hasOwner()
+      : await this.#database
+          .selectFrom("users")
+          .select("id")
+          .where("disabledAt", "is", null)
+          .executeTakeFirst();
     return IdentityConfigSchema.parse({
       deployment: this.#options.deployment,
       emailDeliveryAvailable: this.#options.emailDeliveryAvailable ?? false,
@@ -825,7 +893,10 @@ export class IdentityService {
     );
   }
 
-  async #authenticateSessionCookie(headers: Headers): Promise<AuthenticatedSession | null> {
+  async #authenticateSessionCookie(
+    headers: Headers,
+    pendingTeamAdmission = false,
+  ): Promise<AuthenticatedSession | null> {
     const raw = await this.#auth.api.getSession({ headers });
     if (!raw) return null;
     const sessionId = AuthSessionIdSchema.safeParse(raw.session.id);
@@ -836,6 +907,7 @@ export class IdentityService {
       .innerJoin("users", "users.id", "authSessions.userId")
       .select([
         "authSessions.absoluteExpiresAt",
+        "authSessions.memberGeneration",
         "authSessions.createdAt",
         "authSessions.expiresAt",
         "authSessions.id",
@@ -846,7 +918,6 @@ export class IdentityService {
         "users.emailVerified",
         "users.id as userId",
         "users.image",
-        "users.instanceRole",
       ])
       .where("authSessions.id", "=", sessionId.data)
       .where("users.id", "=", userId.data)
@@ -858,6 +929,12 @@ export class IdentityService {
       }
       return null;
     }
+    if (
+      this.#options.team &&
+      !pendingTeamAdmission &&
+      !(await this.#options.team.sessionActive(row.userId, row.memberGeneration))
+    )
+      return null;
     if (now.getTime() - row.lastSeenAt.getTime() >= 5 * 60 * 1_000) {
       await this.#database
         .updateTable("authSessions")
@@ -878,7 +955,6 @@ export class IdentityService {
         emailVerified: row.emailVerified,
         id: row.userId,
         image: row.image,
-        instanceRole: row.instanceRole,
       },
     });
   }
@@ -910,7 +986,7 @@ export class IdentityService {
     const owner = await transaction
       .selectFrom("users")
       .selectAll()
-      .where("instanceRole", "=", "administrator")
+      .where("disabledAt", "is", null)
       .where("disabledAt", "is", null)
       .forShare()
       .executeTakeFirst();
@@ -961,7 +1037,6 @@ export class IdentityService {
         emailVerified: owner.emailVerified,
         id: owner.id,
         image: owner.image,
-        instanceRole: owner.instanceRole,
       },
     });
     const credential = `${token}.${createHmac("sha256", this.#options.secret).update(token).digest("base64")}`;
@@ -1093,7 +1168,6 @@ export class IdentityService {
       emailVerified: row.emailVerified,
       id: row.id,
       image: row.image,
-      instanceRole: row.instanceRole,
     });
   }
 
@@ -1111,7 +1185,6 @@ export class IdentityService {
     session: AuthenticatedSession,
     requestedAccount: AccountAdoptionAccount,
   ): Promise<IssuedAccountAdoptionProof> {
-    requireAdministrator(session);
     const account = parseAccountAdoptionAccount(requestedAccount);
     const proofId = `hap_${globalThis.crypto.randomUUID()}`;
     const proofCredential = `oap_${randomBytes(32).toString("base64url")}`;
@@ -1194,7 +1267,6 @@ export class IdentityService {
           requestId: null,
           targetId: proofId,
           targetType: "account-adoption-proof",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       return authority;
@@ -1213,6 +1285,11 @@ export class IdentityService {
     readonly proofCredential: string;
     readonly proofId: string;
   }): Promise<ConsumedAccountAdoptionProof> {
+    if (this.#options.team) {
+      const receipt = await this.#options.team.consumeAdoption(input);
+      if (receipt) return receipt;
+      throw invalidAccountAdoptionProof();
+    }
     const proofId = parseAccountAdoptionProofId(input.proofId);
     const proofCredential = parseAccountAdoptionCredential(input.proofCredential);
     const expectedAccount = parseAccountAdoptionAccount(input.expectedAccount);
@@ -1289,7 +1366,7 @@ export class IdentityService {
         transaction,
         {
           id: proof.authorizedBySessionId,
-          user: { id: proof.authorizedByUserId, instanceRole: "administrator" },
+          user: { id: proof.authorizedByUserId },
         },
         now,
       );
@@ -1319,7 +1396,6 @@ export class IdentityService {
           requestId: null,
           targetId: proofId,
           targetType: "account-adoption-proof",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       return {
@@ -1349,7 +1425,6 @@ export class IdentityService {
     readonly providerId: string;
     readonly userId: UserId;
   }> {
-    requireAdministrator(session);
     const adoption = this.#options.accountAdoption;
     if (!adoption) {
       throw new OpensteerError({
@@ -1358,6 +1433,8 @@ export class IdentityService {
       });
     }
     const verified = parseVerifiedAccountAdoptionGrant(await adoption.grantVerifier.verify(grant));
+    if (!("userId" in verified.authorizedBy)) throw invalidAccountAdoptionGrant();
+    const authorizedBy = verified.authorizedBy;
     const logicalProviderId = parseLogicalProviderId(adoption.logicalProviderId);
     const providerId = oidcIdentityProviderIdForIssuer(logicalProviderId, verified.account.issuer);
     const now = new Date();
@@ -1372,10 +1449,7 @@ export class IdentityService {
         throw invalidAccountAdoptionGrant();
       }
       await requireLiveAdministratorSession(transaction, session, now);
-      if (
-        verified.authorizedBy.userId !== session.user.id ||
-        verified.authorizedBy.sessionId !== session.id
-      ) {
+      if (authorizedBy.userId !== session.user.id || authorizedBy.sessionId !== session.id) {
         throw invalidAccountAdoptionGrant();
       }
       const proof = await transaction
@@ -1487,7 +1561,6 @@ export class IdentityService {
           requestId: null,
           targetId: liveDeployment.deploymentId,
           targetType: "deployment",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
     });
@@ -1584,16 +1657,12 @@ export class IdentityService {
         const recovery = userId.success
           ? await transaction
               .selectFrom("users")
-              .select(["id as userId", "disabledAt", "instanceRole"])
+              .select(["id as userId", "disabledAt"])
               .where("id", "=", userId.data)
               .forNoKeyUpdate()
               .executeTakeFirst()
           : undefined;
-        if (
-          !recovery ||
-          recovery.instanceRole !== "administrator" ||
-          recovery.disabledAt !== null
-        ) {
+        if (!recovery || recovery.disabledAt !== null) {
           throw invalidOperatorRecoveryLink();
         }
         const sessions = await transaction
@@ -1630,7 +1699,6 @@ export class IdentityService {
         requestId: null,
         targetId: recovery.userId,
         targetType: "user",
-        workspaceId: null,
       })
       .executeTakeFirstOrThrow();
   }
@@ -1756,7 +1824,7 @@ export class IdentityService {
     const administrator = await this.#database
       .selectFrom("users")
       .select(["disabledAt", "email", "id"])
-      .where("instanceRole", "=", "administrator")
+      .where("disabledAt", "is", null)
       .executeTakeFirst();
     if (administrator && (administrator.disabledAt || administrator.email !== email)) {
       throw new OpensteerError({
@@ -1842,41 +1910,58 @@ export class IdentityService {
       throw new OpensteerError({ code: "internal", message: "OIDC provider returned no redirect" });
     }
     return {
-      data: { redirectUrl: body.url },
+      data: {
+        redirectUrl: this.#options.team ? this.#versionedTeamOidcRedirect(body.url) : body.url,
+      },
       headers: response.headers,
       status: response.status,
     };
   }
 
+  #versionedTeamOidcRedirect(value: string): string {
+    const url = new URL(value),
+      state = url.searchParams.get("state");
+    if (!state)
+      throw new OpensteerError({ code: "internal", message: "OIDC sign-in returned no state" });
+    url.searchParams.set("state", `${teamOidcStatePrefix}${teamApiVersion}.${state}`);
+    return url.toString();
+  }
   async handleOidcCallback(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (this.#options.team) {
+      const state = url.searchParams.get("state"),
+        prefix = `${teamOidcStatePrefix}${teamApiVersion}.`;
+      if (!state?.startsWith(prefix))
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "api-version-mismatch",
+          message: "Team API version mismatch",
+        });
+      url.searchParams.set("state", state.slice(prefix.length));
+    }
     url.pathname = `${internalAuthPath}/sso/callback`;
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),
     );
     if (response.status < 300 || response.status >= 400) return response;
     const admission = await this.#admissionFromHeaders(request.headers);
-    if (!admission) return response;
-
-    const teamInvitation = await this.#teamInvitationForAdmission(admission);
-    if (teamInvitation) {
-      if (
-        teamInvitation.acceptedAt ||
-        admission.consumedBy ||
-        admission.reservedEmail !== teamInvitation.intendedEmail
-      )
-        throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
+    const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
+    if (this.#options.team) {
+      // The SSO plugin commits its user/account/session transaction before returning this response.
+      const session = await this.#authenticateSessionCookie(authenticatedHeaders, true);
+      if (!session) return response;
+      try {
+        await this.#options.team.admit(session.user.id, admission, session.id);
+      } catch (error) {
+        await this.#database.deleteFrom("authSessions").where("id", "=", session.id).execute();
+        throw error;
+      }
       const headers = new Headers(response.headers);
-      headers.set(
-        "location",
-        new URL(
-          `/join/${encodeURIComponent(teamInvitation.selector)}`,
-          this.#options.publicOrigin,
-        ).toString(),
-      );
+      for (const cookie of clearAdmissionCookie(this.#options.publicOrigin).getSetCookie())
+        headers.append("set-cookie", cookie);
       return new Response(response.body, { headers, status: response.status });
     }
-    const authenticatedHeaders = headersWithResponseCookies(request.headers, response.headers);
+    if (!admission) return response;
     const completionHeaders =
       admission.purpose === "setup"
         ? (await this.completeInitialOwnerSetup(authenticatedHeaders)).headers
@@ -1896,6 +1981,7 @@ export class IdentityService {
       .selectFrom("authSessions")
       .select([
         "authSessions.absoluteExpiresAt",
+        "authSessions.memberGeneration",
         "authSessions.createdAt",
         "authSessions.deviceLabel",
         "authSessions.expiresAt",
@@ -1963,190 +2049,34 @@ export class IdentityService {
     this.announceSessionsEnded([parsedId], afterResponse);
   }
 
-  async exchangeInvitation(
-    selector: string,
-    verifier: string,
-    headers: Headers = new Headers(),
-  ): Promise<TokenFreeAuthResponse<{ readonly preview: InvitationPreview }>> {
-    const record = await this.#store.invitationForExchange(selector);
-    if (
-      !record ||
-      record.invitation.acceptedAt ||
-      record.invitation.revokedAt ||
-      record.invitation.expiresAt <= new Date() ||
-      record.tokenHash !== digestSecret(verifier)
-    ) {
-      throw new OpensteerError({ code: "forbidden", message: "Invitation is invalid" });
-    }
-    const admission = await this.#createOrReuseAdmission(
-      {
-        purpose: "invitation",
-        reservedEmail: record.invitation.intendedEmail,
-        subjectSelector: selector,
-      },
-      headers,
-    );
-    return {
-      data: {
-        preview: InvitationPreviewSchema.parse({
-          expiresAt: record.invitation.expiresAt.toISOString(),
-          invitationType: record.invitation.type,
-          inviterName: record.inviterName,
-          requiresVerifiedEmail: record.invitation.type === "email",
-          role: record.invitation.role,
-          workspaceName: record.workspaceName,
-        }),
-      },
-      headers: admission.headers,
-      status: 200,
-    };
-  }
-
   async exchangeTeamInvitation(selector: string, verifier: string, headers: Headers) {
-    const invitation = await readTeamInvitation(this.#database, selector, verifier);
-    if (!invitation)
-      throw new OpensteerError({
-        code: "forbidden",
-        reason: "invite-unavailable",
-        message: "This invitation is unavailable.",
-      });
+    const team = this.#options.team;
+    if (!team)
+      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
+    const invite = await team.invites.verify(selector, verifier);
     return this.#createOrReuseAdmission(
-      {
-        purpose: "invitation",
-        reservedEmail: invitation.intendedEmail,
-        subjectSelector: invitation.selector,
-      },
+      { purpose: "invitation", reservedEmail: null, subjectSelector: invite.selector },
       headers,
     );
   }
-
-  async #teamInvitationForAdmission(proof: { purpose: string; subjectSelector: string }) {
-    if (proof.purpose !== "invitation") return null;
-    const row = await this.#database
-      .selectFrom("teamInvitations")
-      .select("selector")
-      .where("selector", "=", proof.subjectSelector)
-      .executeTakeFirst();
-    if (!row || (await this.#store.invitationForExchange(proof.subjectSelector))) return null;
-    return readTeamInvitation(this.#database, row.selector);
-  }
-
-  async teamInvitationAdmission(headers: Headers, session: AuthenticatedSession) {
-    const proof = await this.#admissionFromHeaders(headers);
-    const cookie = readCookie(headers.get("cookie"), admissionCookieName);
-    if (!proof || !cookie || !(await this.#teamInvitationForAdmission(proof)))
-      throw new OpensteerError({
-        code: "forbidden",
-        reason: "invite-unavailable",
-        message: "This invitation is unavailable.",
-      });
-    return {
-      admissionId: proof.id,
-      browserNonce: cookie.slice(cookie.indexOf(".") + 1),
-      userId: session.user.id,
-      sessionId: session.id,
-    };
-  }
-
-  async createWorkspaceInvitation(input: {
-    readonly createdBy: UserId;
-    readonly idempotencyKey: string;
-    readonly intendedEmail?: string;
-    readonly lifetimeSeconds: number;
-    readonly role: "owner" | "collaborator";
-    readonly type: "email" | "link";
-    readonly workspaceId: import("@opensteer/core").WorkspaceId;
-  }) {
-    if (input.type === "email" && !this.#options.emailDeliveryAvailable) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Email invitations are unavailable on this Host",
-      });
-    }
-    if (
-      !Number.isSafeInteger(input.lifetimeSeconds) ||
-      input.lifetimeSeconds < 5 * 60 ||
-      input.lifetimeSeconds > 30 * 24 * 60 * 60
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Invitation lifetime must be between five minutes and 30 days",
-      });
-    }
-    if (!/^[\x21-\x7e]{1,255}$/u.test(input.idempotencyKey)) {
-      throw new OpensteerError({ code: "bad_request", message: "Idempotency key is invalid" });
-    }
-    const intendedEmail = input.intendedEmail ? normalizeIdentityEmail(input.intendedEmail) : null;
-    if ((input.type === "email") !== (intendedEmail !== null)) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Email invitations require exactly one intended email address",
-      });
-    }
-    const transcript = JSON.stringify([
-      "opensteer-workspace-invitation-v1",
-      input.createdBy,
-      input.workspaceId,
-      input.idempotencyKey,
-      input.type,
-      input.role,
-      intendedEmail,
-      input.lifetimeSeconds,
-    ]);
-    const selector = createHmac("sha256", this.#options.secret)
-      .update(`selector\0${transcript}`)
-      .digest("base64url");
-    const verifier = createHmac("sha256", this.#options.secret)
-      .update(`verifier\0${transcript}`)
-      .digest("base64url");
-    const invitation = await this.#store.createWorkspaceInvitation({
-      createdBy: input.createdBy,
-      expiresAt: new Date(Date.now() + input.lifetimeSeconds * 1_000),
-      idempotencyKey: input.idempotencyKey,
-      intendedEmail,
-      requestFingerprint: digestSecret(transcript),
-      role: input.role,
-      selector,
-      tokenHash: digestSecret(verifier),
-      type: input.type,
-      workspaceId: input.workspaceId,
-    });
-    return { invitation, verifier };
-  }
-
   async acceptInvitation(headers: Headers, authenticated?: AuthenticatedSession) {
+    const team = this.#options.team;
+    if (!team)
+      throw new OpensteerError({ code: "not_found", message: "Team invitations are unavailable" });
     const session = authenticated ?? (await this.requireSession(headers));
-    const admission = await this.#admissionFromHeaders(headers);
-    if (!admission || admission.purpose !== "invitation") {
-      throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
-    }
-    const team = await this.#database
-      .selectFrom("teamInvitations")
-      .select("id")
-      .where("selector", "=", admission.subjectSelector)
-      .executeTakeFirst();
-    if (team)
-      throw new OpensteerError({ code: "forbidden", message: "Invitation admission required" });
-    const record = await this.#store.invitationForExchange(admission.subjectSelector);
-    if (!record) {
-      throw new OpensteerError({ code: "not_found", message: "Invitation not found" });
-    }
-    const membership = await this.#store.acceptWorkspaceInvitation({
-      selector: admission.subjectSelector,
-      tokenHash: record.tokenHash,
-      userEmail: session.user.email,
-      userEmailVerified: session.user.emailVerified,
-      userId: session.user.id,
-    });
-    await this.#consumeAdmission(admission.id, session.user.id);
-    return { headers: clearAdmissionCookie(this.#options.publicOrigin), membership };
+    const proof = await this.#admissionFromHeaders(headers);
+    const generation = await team.admit(session.user.id, proof);
+    return {
+      headers: clearAdmissionCookie(this.#options.publicOrigin),
+      membership: { userId: session.user.id, generation },
+    };
   }
 
   async exchangeInitialOwnerEnrollment(
     token: string,
     headers: Headers = new Headers(),
   ): Promise<TokenFreeAuthResponse<{ readonly admitted: true }>> {
-    await this.#ensureInitialOwnerEnrollment();
+    if (!this.#options.team) await this.#ensureInitialOwnerEnrollment();
     const tokenHash = digestSecret(token.trim());
     const [enrollment, administrator] = await Promise.all([
       this.#database
@@ -2155,11 +2085,13 @@ export class IdentityService {
         .where("tokenHash", "=", tokenHash)
         .where("kind", "=", "initial")
         .executeTakeFirst(),
-      this.#database
-        .selectFrom("users")
-        .select("id")
-        .where("instanceRole", "=", "administrator")
-        .executeTakeFirst(),
+      this.#options.team
+        ? this.#options.team.hasOwner()
+        : this.#database
+            .selectFrom("users")
+            .select("id")
+            .where("disabledAt", "is", null)
+            .executeTakeFirst(),
     ]);
     if (
       administrator ||
@@ -2189,6 +2121,11 @@ export class IdentityService {
     readonly userId: UserId;
   }> {
     const session = await this.requireSession(headers);
+    if (this.#options.team) {
+      if (!(await this.#options.team.hasOwner()))
+        throw new OpensteerError({ code: "forbidden", message: "Owner admission required" });
+      return { headers: clearAdmissionCookie(this.#options.publicOrigin), userId: session.user.id };
+    }
     const admission = await this.#admissionFromHeaders(headers);
     if (!admission || admission.purpose !== "setup") {
       throw new OpensteerError({ code: "forbidden", message: "Setup admission required" });
@@ -2213,7 +2150,7 @@ export class IdentityService {
       const historicalAdministrator = await transaction
         .selectFrom("users")
         .select("id")
-        .where("instanceRole", "=", "administrator")
+        .where("disabledAt", "is", null)
         .forNoKeyUpdate()
         .executeTakeFirst();
       if (historicalAdministrator && historicalAdministrator.id !== session.user.id) {
@@ -2222,7 +2159,7 @@ export class IdentityService {
       const now = new Date();
       await transaction
         .updateTable("users")
-        .set({ instanceRole: "administrator", updatedAt: now })
+        .set({ updatedAt: now })
         .where("id", "=", session.user.id)
         .executeTakeFirstOrThrow();
       await transaction
@@ -2242,7 +2179,6 @@ export class IdentityService {
           requestId: null,
           targetId: session.user.id,
           targetType: "user",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
     });
@@ -2417,6 +2353,12 @@ export class IdentityService {
   }
 
   async #requireSignupAdmission(request: Request | undefined, email: string): Promise<void> {
+    if (this.#options.team) {
+      const proof = request ? await this.#admissionFromHeaders(request.headers) : null;
+      if (!proof) throw new APIError("FORBIDDEN", { message: "Team admission required" });
+      await this.#options.team.validateAdmission(proof);
+      return;
+    }
     if (this.#options.signupPolicy === "open") return;
     if (!request) throw new APIError("FORBIDDEN", { message: "Signup admission required" });
     const admission = await this.#admissionFromHeaders(request.headers);
@@ -2427,23 +2369,8 @@ export class IdentityService {
     ) {
       throw new APIError("FORBIDDEN", { message: "Signup admission required" });
     }
-    if (admission.purpose === "invitation") {
-      const team = await this.#teamInvitationForAdmission(admission);
-      if (team) {
-        if (team.acceptedAt || team.intendedEmail !== email || admission.reservedEmail !== email)
-          throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-        return;
-      }
-      const invitation = await this.#store.invitationForExchange(admission.subjectSelector);
-      if (
-        !invitation ||
-        invitation.invitation.acceptedAt ||
-        invitation.invitation.revokedAt ||
-        invitation.invitation.expiresAt <= new Date()
-      ) {
-        throw new APIError("FORBIDDEN", { message: "Signup admission required" });
-      }
-    }
+    if (admission.purpose === "invitation")
+      throw new APIError("FORBIDDEN", { message: "Team admission required" });
     if (admission.purpose === "setup") {
       const enrollment = await this.#database
         .selectFrom("ownerEnrollments")
@@ -2532,6 +2459,40 @@ function createOpensteerAuth(
     baseURL: options.publicOrigin.origin,
     database: databaseOption,
     databaseHooks: {
+      ...(options.team
+        ? {
+            account: {
+              create: {
+                before: async (account) => ({
+                  data: {
+                    ...account,
+                    accessToken: null,
+                    refreshToken: null,
+                    idToken: null,
+                    accessTokenExpiresAt: null,
+                    refreshTokenExpiresAt: null,
+                    scope: null,
+                    password: null,
+                  },
+                }),
+              },
+              update: {
+                before: async (account) => ({
+                  data: {
+                    ...account,
+                    accessToken: null,
+                    refreshToken: null,
+                    idToken: null,
+                    accessTokenExpiresAt: null,
+                    refreshTokenExpiresAt: null,
+                    scope: null,
+                    password: null,
+                  },
+                }),
+              },
+            },
+          }
+        : {}),
       session: {
         create: {
           before: async (session, context) => {
@@ -2681,6 +2642,7 @@ function createOpensteerAuth(
     session: {
       additionalFields: {
         absoluteExpiresAt: { input: false, returned: false, type: "date" },
+        memberGeneration: { input: false, returned: false, required: false, type: "string" },
         deviceLabel: { input: false, returned: false, type: "string" },
         lastSeenAt: { input: false, returned: false, type: "date" },
       },
@@ -2693,12 +2655,6 @@ function createOpensteerAuth(
     user: {
       additionalFields: {
         disabledAt: { input: false, required: false, returned: false, type: "date" },
-        instanceRole: {
-          defaultValue: "user",
-          input: false,
-          returned: false,
-          type: ["administrator", "user"],
-        },
       },
       deleteUser: { enabled: false },
       fields: { name: "displayName" },
@@ -2782,8 +2738,9 @@ function parseVerifiedAccountAdoptionGrant(
   const proofId = parseAccountAdoptionProofId(input?.proofId);
   const account = parseAccountAdoptionAccount(input?.account);
   const deployment = parseAccountAdoptionAuthority(input?.deployment);
-  const userId = UserIdSchema.safeParse(input?.authorizedBy?.userId);
-  const sessionId = AuthSessionIdSchema.safeParse(input?.authorizedBy?.sessionId);
+  const by = input?.authorizedBy;
+  const userId = UserIdSchema.safeParse(by && "userId" in by ? by.userId : null);
+  const sessionId = AuthSessionIdSchema.safeParse(by && "sessionId" in by ? by.sessionId : null);
   const consumedAt = input?.consumedAt instanceof Date ? input.consumedAt : null;
   const issuedAt = input?.issuedAt instanceof Date ? input.issuedAt : null;
   const expiresAt = input?.expiresAt instanceof Date ? input.expiresAt : null;
@@ -2862,50 +2819,45 @@ async function activeDeploymentAuthority(
 
 async function requireLiveAdministratorSession(
   transaction: Transaction<DatabaseSchema>,
-  session: {
-    readonly id: AuthSessionId;
-    readonly user: { readonly id: UserId; readonly instanceRole: string };
-  },
+  session: { readonly id: AuthSessionId; readonly user: { readonly id: UserId } },
   now: Date,
 ): Promise<void> {
-  await transaction
-    .selectFrom("users")
-    .select("id")
-    .where("id", "=", session.user.id)
-    .forNoKeyUpdate()
-    .executeTakeFirst();
   const row = await transaction
-    .selectFrom("authSessions")
-    .innerJoin("users", "users.id", "authSessions.userId")
-    .select([
-      "authSessions.absoluteExpiresAt",
-      "authSessions.expiresAt",
-      "users.disabledAt",
-      "users.instanceRole",
-    ])
-    .where("authSessions.id", "=", session.id)
-    .where("authSessions.userId", "=", session.user.id)
-    .forNoKeyUpdate("authSessions")
+    .selectFrom("authSessions as s")
+    .innerJoin("users as u", "u.id", "s.userId")
+    .select(["s.expiresAt", "s.absoluteExpiresAt", "u.disabledAt"])
+    .where("s.id", "=", session.id)
+    .where("s.userId", "=", session.user.id)
+    .forShare("s")
     .executeTakeFirst();
+  const deployment = await transaction
+    .selectFrom("deployments")
+    .select("deploymentShape")
+    .executeTakeFirstOrThrow();
+  const owner =
+    deployment.deploymentShape.kind === "team"
+      ? await transaction
+          .selectFrom("teamMembers")
+          .select("userId as id")
+          .where("userId", "=", session.user.id)
+          .where("role", "in", ["owner", "admin"])
+          .where("state", "=", "active")
+          .executeTakeFirst()
+      : await transaction
+          .selectFrom("users")
+          .select("id")
+          .orderBy("createdAt")
+          .orderBy("id")
+          .executeTakeFirst();
   if (
-    session.user.instanceRole !== "administrator" ||
     !row ||
-    row.instanceRole !== "administrator" ||
+    !owner ||
+    owner.id !== session.user.id ||
     row.disabledAt ||
     row.expiresAt <= now ||
     row.absoluteExpiresAt <= now
-  ) {
-    throw new OpensteerError({
-      code: "unauthorized",
-      message: "Administrator session is no longer live",
-    });
-  }
-}
-
-function requireAdministrator(session: AuthenticatedSession): void {
-  if (session.user.instanceRole !== "administrator") {
-    throw new OpensteerError({ code: "forbidden", message: "Administrator access required" });
-  }
+  )
+    throw new OpensteerError({ code: "unauthorized", message: "Owner session is no longer live" });
 }
 
 function sameAccountAdoptionAuthority(

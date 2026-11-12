@@ -65,31 +65,6 @@ describe("computerAppRoute", () => {
 });
 
 describe("currentDeviceMachineId", () => {
-  it.each([true, false])(
-    "uses Main ownership for join guidance independently of grouping: %s",
-    (ownsMain) => {
-      const client = new MockHostClient({ latencyMs: 0 });
-      try {
-        const snapshot = serverSnapshot(client);
-        const markup = renderPage({
-          client,
-          desktopBridge: {} as OpensteerDesktopBridge,
-          localExecutionStatus: localStatus({ enrolled: false }),
-          snapshot: {
-            ...snapshot,
-            deploymentPolicy: {
-              ...snapshot.deploymentPolicy,
-              ownership: ownsMain ? "members" : "single-user",
-              deploymentOwnsMainComputer: ownsMain,
-            },
-          },
-        });
-        expect(markup.includes("Add it and agents on")).toBe(ownsMain);
-      } finally {
-        client.dispose();
-      }
-    },
-  );
   it("uses the hosting desktop's positive fact for a Personal Main with no local Runner slot", () => {
     const machines = [
       machineFixture({ id: laptopId, ownership: "mine" }),
@@ -98,20 +73,6 @@ describe("currentDeviceMachineId", () => {
 
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         hostsDeploymentOnThisComputer: true,
         localRunnerId: null,
         machines,
@@ -119,20 +80,6 @@ describe("currentDeviceMachineId", () => {
     ).toBe(macMiniId);
     expect(
       currentDeviceMachineId({
-        deploymentPolicy: {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        },
         hostsDeploymentOnThisComputer: false,
         localRunnerId: null,
         machines,
@@ -143,159 +90,13 @@ describe("currentDeviceMachineId", () => {
 
 describe("machineRemovalPrompt", () => {
   it("names what is lost before anyone confirms", () => {
-    expect(
-      machineRemovalPrompt(
-        machineFixture({ localWorkspaces: 2, name: "Mac mini", pinnedThreads: 1 }),
-        [],
-      ),
-    ).toBe(
-      "Remove Mac mini? Agents will no longer be able to use it. 1 Thread runs here and 2 Workspaces keep their files on its disk, and will have nowhere to run until you move them.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles: stay on the computer.\nOpensteer on it: stays signed in. Manage that in Account.",
+    expect(machineRemovalPrompt(machineFixture({ name: "Mac mini", pinnedThreads: 1 }), [])).toBe(
+      "Remove Mac mini? Agents will no longer be able to use it. 1 task runs here, and will have nowhere to run.\n\nAgent access: apps, Terminal, screen control and shared folders stop being available here.\nFiles: stay on the computer.\nOpensteer on it: stays signed in. Manage that in Account.",
     );
   });
 });
 
 describe("ComputersPage", () => {
-  it("shows an Android Opensteer phone's browser without Agent Phone setup", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const phone = machineFixture({
-      allowedModules: ["browser", "integrations"],
-      device: { app: "opensteer", form: "phone", platform: "android" },
-      id: "rnr_99999999-9999-4999-8999-999999999999",
-      modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
-      name: "Pixel 9",
-      status: "needs-update",
-    });
-    const snapshot = serverSnapshot(client);
-    const page = await interactivePage({
-      client,
-      path: `/settings/devices/computers/${phone.id}`,
-      snapshot: { ...snapshot, machines: [...snapshot.machines, phone] },
-    });
-    const text = page.container.textContent ?? "";
-    expect(text).toContain("Update Opensteer on Pixel 9.");
-    expect(text).toContain("Opensteer browsers");
-    expect(text).not.toContain("Agent Phone");
-    expect(text).not.toContain("USB");
-    expect(text).not.toContain("phone’s screen");
-  });
-
-  it("offers the Mac in front of the reader by name, and adds it", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const performLocalExecutionAction = vi.fn(async () => undefined);
-    const page = await interactivePage({
-      client,
-      desktopBridge: {} as OpensteerDesktopBridge,
-      localExecutionStatus: localStatus({ enrolled: false }),
-      performLocalExecutionAction,
-      snapshot: client.getSnapshot(),
-    });
-
-    expect(page.container.textContent).toContain("You’re on Alex's MacBook Pro");
-    expect(page.container.textContent).toContain("Add a different computer");
-    await click(button(page.container, "Add Alex's MacBook Pro"));
-
-    expect(performLocalExecutionAction).toHaveBeenCalledWith({
-      kind: "add",
-      name: "Alex's MacBook Pro",
-      runAgents: false,
-    });
-  });
-
-  it("reviews Full Disk Access before opening settings for a Mac that just joined", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const checkFullDiskAccess = vi.fn(async () => ({ granted: false }) as const);
-    const requestFullDiskAccess = vi.fn(async () => ({ opened: true }) as const);
-    const page = await interactivePage({
-      client,
-      desktopBridge: {
-        checkFullDiskAccess,
-        requestFullDiskAccess,
-      } as unknown as OpensteerDesktopBridge,
-      localExecutionStatus: localStatus({ enrolled: false }),
-      snapshot: client.getSnapshot(),
-    });
-
-    await click(button(page.container, "Add Alex's MacBook Pro"));
-    await vi.waitFor(() => expect(checkFullDiskAccess).toHaveBeenCalledOnce());
-
-    expect(page.container.textContent).toContain("Review macOS Full Disk Access");
-    expect(page.container.textContent).toContain(
-      "Full Disk Access lets Opensteer access protected files on this Mac, beyond any one app integration.",
-    );
-    expect(requestFullDiskAccess).not.toHaveBeenCalled();
-
-    await click(button(page.container, "Open System Settings"));
-
-    expect(requestFullDiskAccess).toHaveBeenCalledOnce();
-    await vi.waitFor(() =>
-      expect(page.container.textContent).not.toContain("Review macOS Full Disk Access"),
-    );
-  });
-
-  it("adds a Windows computer to a server running agents, and never asks it about macOS", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const checkFullDiskAccess = vi.fn(async () => ({ granted: false }) as const);
-    const performLocalExecutionAction = vi.fn(async () => undefined);
-    const page = await interactivePage({
-      client,
-      desktopBridge: { checkFullDiskAccess } as unknown as OpensteerDesktopBridge,
-      localExecutionStatus: localStatus({ enrolled: false, platform: "windows" }),
-      performLocalExecutionAction,
-      snapshot: serverSnapshot(client),
-    });
-
-    expect(page.container.textContent).toContain("Add it and agents can work right on it");
-    await click(button(page.container, "Add Alex's MacBook Pro"));
-
-    expect(performLocalExecutionAction).toHaveBeenCalledWith({
-      kind: "add",
-      name: "Alex's MacBook Pro",
-      runAgents: true,
-    });
-    expect(checkFullDiskAccess).not.toHaveBeenCalled();
-  });
-
-  it("grants a headless computer agents and reach, and labels both setup commands", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const dispatch = vi.spyOn(client, "dispatch");
-    const page = await interactivePage({ client, snapshot: serverSnapshot(client) });
-
-    await click(button(page.container, "Add a computer"));
-    await change(labelledInput(page.container, "Computer name"), "Office computer");
-    await click(button(page.container, "Create connection code"));
-    await vi.waitFor(() => expect(page.container.textContent).toContain("Runs in a container"));
-
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        allowedModules: ["agents", "shell"],
-        name: "Office computer",
-        type: "runner.enrollment.createLocal",
-      }),
-    );
-    const text = page.container.textContent ?? "";
-    expect(text).toContain("Runs in a container: agents get only what you mount");
-    expect(text).toContain("Needs Docker on that computer.");
-    expect(text).toContain("no published runner download");
-  });
-
-  it("offers a new code after the current addition expires", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-12T20:00:00.000Z"));
-    const client = new MockHostClient({ latencyMs: 0, now: () => new Date(Date.now()) });
-    const page = await interactivePage({ client, snapshot: serverSnapshot(client) });
-
-    await click(button(page.container, "Add a computer"));
-    await click(button(page.container, "Create connection code"));
-    await act(async () => vi.advanceTimersByTimeAsync(10 * 60_000 + 1_000));
-
-    expect(button(page.container, "Create a new code")).toBeTruthy();
-  });
-
-  /**
-   * A Personal Opensteer admits no second computer until other computers can
-   * reach it, so that is the first step while — and only while — it is off,
-   * and the Mac hosting it links straight to the switch.
-   */
   it("asks the hosting Mac to let other computers connect only while it cannot", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const bridge = {} as unknown as OpensteerDesktopBridge;
@@ -477,87 +278,6 @@ describe("ComputerDetailPage", () => {
    * a switch would be offering a change the Host refuses, so the page says
    * where agents do run instead.
    */
-  it("offers no agents switch on a Personal computer that was never granted it", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const page = await interactivePage({
-      client,
-      desktopBridge: {} as OpensteerDesktopBridge,
-      desktopDeploymentKind: "personal",
-      localExecutionStatus: localStatus({ enrolled: true, runnerId: laptopId }),
-      path: `/settings/devices/computers/${laptopId}`,
-      snapshot: client.getSnapshot(),
-    });
-
-    expect(page.container.textContent).toContain(
-      "Agents work on Mac mini. Choose what they can use on Alex's MacBook Pro.",
-    );
-    expect(page.container.textContent).not.toContain("Agents work here");
-    expect(
-      page.container.querySelector('[aria-label="Agents work on Alex\'s MacBook Pro"]'),
-    ).toBeNull();
-  });
-
-  it.each([true, false])(
-    "uses existing-computer execution controls independently of local enrollment: %s",
-    (computerExecutionControls) => {
-      const client = new MockHostClient({ latencyMs: 0 });
-      try {
-        const snapshot = serverSnapshot(client);
-        const markup = renderPage({
-          client,
-          path: `/settings/devices/computers/${macMiniId}`,
-          snapshot: {
-            ...snapshot,
-            deploymentPolicy: {
-              ...snapshot.deploymentPolicy,
-              computerExecutionControls,
-              localRunnerDefaultModules: computerExecutionControls
-                ? ["shell"]
-                : ["agents", "shell"],
-            },
-          },
-        });
-        expect(markup.includes('aria-labelledby="runs-agents-title"')).toBe(
-          computerExecutionControls,
-        );
-      } finally {
-        client.dispose();
-      }
-    },
-  );
-
-  it("switches agent work on this device, and states it as a fact elsewhere", async () => {
-    const client = new MockHostClient({ latencyMs: 0 });
-    const performLocalExecutionAction = vi.fn(async () => undefined);
-    const snapshot = serverSnapshot(client);
-    const here = await interactivePage({
-      client,
-      desktopBridge: {} as OpensteerDesktopBridge,
-      localExecutionStatus: localStatus({ enrolled: true, runAgents: false, runnerId: macMiniId }),
-      path: `/settings/devices/computers/${macMiniId}`,
-      performLocalExecutionAction,
-      snapshot,
-    });
-
-    await click(labelledInput(here.container, "Agents work on Mac mini"));
-    expect(performLocalExecutionAction).toHaveBeenCalledWith({
-      kind: "set-run-agents",
-      runAgents: true,
-    });
-    expect(here.container.textContent).toContain(
-      "New threads can run on Mac mini, using its own files, apps and sign-ins.",
-    );
-
-    // The same computer read from another device: a fact, not a control.
-    const elsewhere = renderPage({
-      client,
-      path: `/settings/devices/computers/${macMiniId}`,
-      snapshot,
-    });
-    expect(elsewhere).toContain("Agents work here");
-    expect(elsewhere).not.toContain("Agents work on Mac mini");
-  });
-
   it("states Full Disk Access and opens settings only after local review", async () => {
     const client = new MockHostClient({ latencyMs: 0 });
     const requestFullDiskAccess = vi.fn(async () => ({ opened: true }) as const);
@@ -825,13 +545,12 @@ describe("ComputerDetailPage for an iPhone", () => {
     lastSeenAt: "2026-09-19T00:00:00.000Z",
     modules: { integrations: { checkedAt: null, detail: null, readiness: "ready" } },
     name: "Alex's iPhone",
-    ownerName: "Alex",
     status: "offline",
   });
 
   it("shows only what an iPhone lends, in an iPhone's words", () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    const snapshot = serverSnapshot(client);
+    const snapshot = client.getSnapshot();
     const html = renderPage({
       client,
       path: `/settings/devices/computers/${iphoneId}`,
@@ -840,7 +559,6 @@ describe("ComputerDetailPage for an iPhone", () => {
     const text = html.replace(/<[^>]+>/g, " ");
 
     expect(text).toContain("Offline · Available while Opensteer is open on Alex&#x27;s iPhone");
-    expect(text).toContain("Alex’s phone");
     expect(text).toContain(
       "Agents can use only the apps turned on for Alex&#x27;s iPhone, and only while Opensteer is open on it.",
     );
@@ -854,7 +572,7 @@ describe("ComputerDetailPage for an iPhone", () => {
 
   it("waits for a new iPhone in its own words", () => {
     const client = new MockHostClient({ latencyMs: 0 });
-    const snapshot = serverSnapshot(client);
+    const snapshot = client.getSnapshot();
     const pending = { ...iphone, lastSeenAt: null, status: "pending" as const };
     const text = renderPage({
       client,
@@ -883,16 +601,13 @@ function machineFixture(overrides: Partial<MachineSummary> = {}): MachineSummary
     fullDiskAccess: null,
     id: "rnr_55555555-5555-4555-8555-555555555555",
     lastSeenAt: null,
-    localWorkspaces: 0,
     modules: { agents: { checkedAt: null, detail: null, readiness: "ready" } },
     name: "Fixture",
     ownership: "mine",
-    ownerName: null,
     pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
     ...overrides,
   };
 }
@@ -943,28 +658,6 @@ function withMessagesNeedingFullDiskAccess(
   };
 }
 
-function serverSnapshot(client: MockHostClient): ShellContext["snapshot"] {
-  return {
-    ...client.getSnapshot(),
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-    deploymentPolicy: {
-      ownership: "members",
-      personalRemoteAccess: false,
-      nativeWebLinks: false,
-      localOwnerClaim: false,
-      deploymentOwnsMainComputer: false,
-      nativePasswords: false,
-      deploymentComputerAccess: false,
-      computerExecutionControls: true,
-      sharing: true,
-      serviceManagement: true,
-      runnerEnrollmentMode: "unrestricted",
-      projectConsent: "per-project",
-      localRunnerDefaultModules: ["agents", "browser", "shell"],
-    },
-  };
-}
-
 function localStatus(input: {
   readonly deploymentId?: DeploymentId;
   readonly enrolled: boolean;
@@ -995,7 +688,7 @@ interface PageInput {
   readonly desktopAccess?: "connect" | "native" | "owner";
   readonly client: MockHostClient;
   readonly desktopBridge?: OpensteerDesktopBridge | null;
-  readonly desktopDeploymentKind?: "personal" | "self-hosted";
+  readonly desktopDeploymentKind?: "personal" | "team";
   readonly desktopDeploymentName?: string;
   readonly localExecutionStatus?: ShellContext["localExecutionStatus"];
   /** Whether the desktop app supervises the Deployment on the computer it runs on. */
@@ -1035,7 +728,7 @@ function pageElement(input: PageInput) {
         activeOrigin: "https://opensteer.example.test",
         canonicalOrigin: "https://opensteer.example.test",
         id: input.localExecutionStatus?.deploymentId ?? createId("deployment"),
-        kind: input.desktopDeploymentKind ?? "self-hosted",
+        kind: input.desktopDeploymentKind ?? "personal",
         lastUsedAt: null,
         name: input.desktopDeploymentName ?? "Mac mini",
         onThisComputer: input.onThisComputer ?? false,
@@ -1045,10 +738,7 @@ function pageElement(input: PageInput) {
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
-    createThreadAndSend: async () => null,
+    createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: input.desktopBridge ?? null,
@@ -1063,14 +753,11 @@ function pageElement(input: PageInput) {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: input.performLocalExecutionAction ?? (async () => undefined),
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot: input.snapshot,
   };
   return (
@@ -1110,25 +797,6 @@ function dangerButton(container: HTMLElement): HTMLButtonElement {
   return match;
 }
 
-function labelledInput(container: HTMLElement, label: string): HTMLInputElement {
-  const input = [...container.querySelectorAll("input")].find(
-    (candidate) =>
-      candidate.getAttribute("aria-label") === label ||
-      candidate.labels?.[0]?.textContent?.includes(label),
-  );
-  if (!input) throw new Error(`Missing input: ${label}`);
-  return input;
-}
-
 async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
-}
-
-async function change(input: HTMLInputElement, value: string): Promise<void> {
-  await act(async () => {
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    if (!setValue) throw new Error("The test DOM has no input value setter.");
-    setValue.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
 }

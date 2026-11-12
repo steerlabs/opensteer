@@ -386,31 +386,30 @@ extension VaultTamperTests {
     let vaultId = unlocked.head.vaultId
     let entries = unlocked.entries
     let login = try XCTUnwrap(entries.first).id
-    func grant(_ workspace: String, _ loginId: String) -> Grant {
+    func grant(_ deployment: String, _ loginId: String) -> Grant {
       Grant(
-        key: GrantKey(deploymentId: "dep_personal", workspaceId: workspace, site: "https://example.com"), loginId: loginId,
-        deploymentName: "Personal", workspaceName: "Main")
+        key: GrantKey(deploymentId: deployment, site: "https://example.com"), loginId: loginId,
+        deploymentName: "Personal", revision: 1)
     }
     func opens(_ grants: [Grant]) throws -> Manifest {
       let sealed = try Manifest(vaultId: vaultId, seq: 9, items: entries, grants: grants).seal(epochKey: epochKey, epoch: 0)
       return try Manifest.open(sealed, hash: Hex.sha256(sealed), epochKey: epochKey, vaultId: vaultId, epoch: 0, seq: 9)
     }
-    let legacy = try opens([grant("wsp_a", login), grant("wsp_b", login)])
-    XCTAssertEqual(legacy.grants.count, 2)
-    XCTAssertTrue(legacy.grants.allSatisfy { !$0.isCurrentPermission && $0.revision == nil })
-    let historical = grant("wsp_a", login)
-    XCTAssertEqual(try Grant(json: historical.json).json, historical.json, "legacy encoding is unchanged")
-    let migrating = UnlockedVault(vault: try fixture.open(), owner: fixture.owner, epochKey: epochKey, manifest: legacy)
-    defer { migrating.close() }
-    XCTAssertNil(try migrating.grant(for: historical.key), "old consent never authorizes field filling")
-    _ = try migrating.commit(VaultChanges(add: [draft("example.org")]))
-    XCTAssertTrue(migrating.grants.isEmpty, "the next write purges all legacy grants")
-    XCTAssertTrue(try fixture.withUnlocked { $0.grants.isEmpty }, "the purge survives reopening")
+    let manifest = try opens([grant("dep_a", login), grant("dep_b", login)])
+    XCTAssertEqual(manifest.grants.count, 2)
+    let current = grant("dep_a", login)
+    XCTAssertEqual(try Grant(json: current.json), current)
+    guard case .object(var oldFields) = current.json else { return XCTFail("grant") }
+    oldFields["permissionVersion"] = .integer(5)
+    XCTAssertThrowsError(try Grant(json: .object(oldFields)))
+    oldFields["permissionVersion"] = .integer(6)
+    oldFields["workspaceId"] = .string("wsp_old")
+    XCTAssertThrowsError(try Grant(json: .object(oldFields)))
     let bad: [[Grant]] = [
-      [grant("wsp_a", "00000000-0000-4000-8000-000000000000")],
-      [grant("wsp_a", login), grant("wsp_a", login)],
-      [grant("wsp_b", login), grant("wsp_a", login)],
-      [grant("wsp_a", "NOT-A-UUID")],
+      [grant("dep_a", "00000000-0000-4000-8000-000000000000")],
+      [grant("dep_a", login), grant("dep_a", login)],
+      [grant("dep_b", login), grant("dep_a", login)],
+      [grant("dep_a", "NOT-A-UUID")],
     ]
     for grants in bad {
       XCTAssertThrowsError(try opens(grants)) {
@@ -438,10 +437,10 @@ extension VaultTamperTests {
     let login = try XCTUnwrap(try fixture.items().first).id
     let snapshot = fixture.directory.appendingPathComponent("snapshot")
     try FileManager.default.copyItem(at: fixture.root, to: snapshot)
-    let key = GrantKey(deploymentId: "dep_personal", workspaceId: "wsp_SYNTHETIC-WORKSPACE", site: "https://example.com")
+    let key = GrantKey(deploymentId: "dep_00000000-0000-4000-8000-000000000003", site: "https://example.com")
     try fixture.withUnlocked {
       _ = try $0.commit(VaultChanges(grant: [
-        GrantChange(key: key, login: .saved(id: login), deploymentName: "SYNTHETIC-DEPLOYMENT", workspaceName: "SYNTHETIC-NAME")
+        GrantChange(key: key, login: .saved(id: login), deploymentName: "SYNTHETIC-DEPLOYMENT")
       ]))
     }
     XCTAssertEqual(try fixture.withUnlocked { $0.grants.map(\.key) }, [key])
@@ -449,7 +448,7 @@ extension VaultTamperTests {
     for file in files {
       guard let data = FileManager.default.contents(atPath: fixture.root.appendingPathComponent(file).path) else { continue }
       let text = String(decoding: data, as: UTF8.self)
-      for secret in ["SYNTHETIC", "dep_personal", "example.com"] {
+      for secret in ["SYNTHETIC", "dep_00000000-0000-4000-8000-000000000003", "example.com"] {
         XCTAssertFalse(text.contains(secret), "\(secret) readable in \(file)")
       }
     }

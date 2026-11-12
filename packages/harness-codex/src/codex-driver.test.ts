@@ -2287,7 +2287,7 @@ describe("Codex app-server harness", () => {
       expect(context.opensteer_current_instructions).toEqual({
         kind: "application",
         value: expect.stringMatching(
-          /Newer Opensteer platform guide[\s\S]*There are no current Workspace instructions/u,
+          /Newer Opensteer platform guide[\s\S]*There are no current task instructions/u,
         ),
       });
     }
@@ -3302,7 +3302,6 @@ async function setup(scenario: string, options: SetupOptions = {}): Promise<Fixt
     threadId: createId("thread"),
     threadStateDirectory: join(directory, "state", "threads", "thread-fixture"),
     wrapProcessLaunch: options.wrapProcessLaunch ?? ((launch) => launch),
-    workspaceId: createId("workspace"),
     workspacePath: directory,
     writableRoots: [
       directory,
@@ -3453,8 +3452,6 @@ function agentInput(text: string): HarnessInput {
       kind: "agent",
       runId: createId("run"),
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
-      workspaceName: "Research",
     },
     content: [{ text, type: "text" }],
     createdAt: "2026-08-22T00:00:00.000Z",

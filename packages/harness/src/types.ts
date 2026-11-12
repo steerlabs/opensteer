@@ -1,4 +1,4 @@
-import { deploymentPolicy, OpensteerError } from "@opensteer/core";
+import { OpensteerError } from "@opensteer/core";
 import type {
   ExecutionNodeId,
   AgentEventType,
@@ -21,7 +21,6 @@ import type {
   ThreadId,
   ThreadAccessMode,
   UserId,
-  WorkspaceId,
 } from "@opensteer/core";
 import type {
   HarnessInput,
@@ -192,31 +191,13 @@ export const isolatedServiceHarnessRuntimeBoundary: HarnessRuntimeBoundary = Obj
   kind: "isolated-service",
 });
 
-/**
- * The boundary one Runner executes under.
- *
- * Ownership decides this, not the Deployment's kind. A `local` Runner is
- * enrolled by one person and the database refuses any other binding
- * (`runners_owner_binding_check`: `kind = 'local'` implies an owning user), so
- * its process runs as that person on their own computer — and their existing
- * Claude Code and Codex sign-ins are the whole reason they lent the machine to
- * a shared Deployment. Deriving the boundary from `deploymentKind` alone took
- * that away the moment the Deployment was a `server`.
- *
- * A `main` or `managed` Runner is owned by the Deployment and executes work for
- * whoever asks, so it stays isolated; a Personal Deployment is single-user by
- * construction, which is why its Runner is native-user whatever its kind.
- */
+/** Team servers run no engines; personal engines retain their native access-mode sandbox. */
 export function harnessRuntimeBoundaryForRunner(runner: {
   readonly deploymentKind: DeploymentKind;
   readonly runnerKind: ExecutionEnvironmentKind;
 }): HarnessRuntimeBoundary {
-  return deploymentPolicy({
-    kind: runner.deploymentKind,
-    defaultWorkspaceBacking: "local-directory",
-  }).harnessBoundaries[runner.runnerKind] === "native-user"
-    ? nativeUserHarnessRuntimeBoundary
-    : isolatedServiceHarnessRuntimeBoundary;
+  if (runner.deploymentKind !== "personal") throw new Error("Team servers cannot run agents");
+  return nativeUserHarnessRuntimeBoundary;
 }
 
 /**
@@ -346,7 +327,6 @@ export interface HarnessSessionContext {
   readonly threadStateDirectory: string;
   /** See {@link HarnessProcessLaunchWrapper}. */
   readonly wrapProcessLaunch: HarnessProcessLaunchWrapper;
-  readonly workspaceId: WorkspaceId;
   readonly workspacePath: string;
   readonly writableRoots: readonly string[];
   readonly signal: AbortSignal;

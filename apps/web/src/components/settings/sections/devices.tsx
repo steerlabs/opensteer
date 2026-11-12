@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useCallback, useRef, useState } from "react";
 import { settingsSessionRows } from "@opensteer/client/settings";
 import { Link } from "react-router";
@@ -130,9 +129,7 @@ export function useSessions(): SessionsState {
 /** The Mac a Personal Opensteer runs on, as the Computers page draws it. */
 export function useHomeComputer(): { readonly icon: IconName; readonly name: string | null } {
   const { snapshot } = useShell();
-  const home = snapshot.machines.find((machine) =>
-    hostsDeployment(machine, hostDeploymentPolicy(snapshot) ?? null),
-  );
+  const home = snapshot.machines.find(hostsDeployment);
   return {
     icon: home ? computerIcon(computerGlyph(home)) : "desktop",
     name: home?.name ?? null,

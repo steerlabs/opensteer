@@ -1,13 +1,6 @@
 import { z } from "zod";
 import { surrogateSafeCut } from "./live.js";
 
-/**
- * Who decided a Thread's title, which decides whether anything may replace it.
- * A `provisional` title is the first line of what started the Thread, shown
- * until its engine names it; the Host replaces only these, so a name a person
- * or an agent chose, or a fixed one such as a Chat or a channel conversation,
- * is never overwritten. `generated` is the engine's name.
- */
 export const ThreadTitleSourceSchema = z.enum(["provisional", "generated", "chosen"]);
 export type ThreadTitleSource = z.infer<typeof ThreadTitleSourceSchema>;
 

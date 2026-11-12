@@ -1,10 +1,15 @@
+import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import {
+  testReadyHarnessCatalog,
+  testModelSelection,
+} from "@opensteer/database/test-support/store";
 import type {
   ComputerAppApprovalAnswer,
   ComputerAppApprovalOutcome,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 type ComputerAppApprovalList = {
   readonly approvals: readonly {
     readonly request: import("@opensteer/integration-core").ComputerAppSetupRequest;
@@ -14,10 +19,8 @@ import { placeList, type HostSnapshot } from "@opensteer/client/host";
 import {
   createId,
   HarnessIdSchema,
-  ModelSelectionSchema,
   placeInputFailure,
   SequenceSchema,
-  ThreadAccessModeSchema,
   type AgentEventView as AgentEvent,
   type ContentPart,
   type EnvironmentId,
@@ -26,14 +29,14 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type TaskFolder,
+  type DeploymentId,
 } from "@opensteer/core";
 import {
   createDatabase,
   IntegrationPlatformStore,
   IntegrationStore,
   OpensteerStore,
-  WorkspaceTabStore,
 } from "@opensteer/database";
 import { resolvedInputParts } from "@opensteer/harness";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
@@ -56,8 +59,6 @@ import {
   RunnerConnectionIdSchema,
   RunnerConnectionLeaseIdSchema,
   WindowInfoSchema,
-  type BrowserSessionId,
-  type BrowserSessionOpenerRecord,
   type BrowserTabOpenBinding,
   type ComputerUseErrorCode,
   type ComputerUseSessionId,
@@ -67,12 +68,11 @@ import {
   type HostIntegrationsOperation,
   type PendingAgentEvent,
   type RunnerAuxiliaryFrameFence,
-  type RunnerDescriptor,
 } from "@opensteer/protocol";
 
 import { ManualClock } from "@opensteer/shared/test-support/clock";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -83,8 +83,7 @@ import {
   type IntegrationInventorySource,
 } from "../agents/continuation-service.js";
 import type { RunCapabilityClaims } from "../agents/run-capability.js";
-import { BrowserService } from "../browser/browser-service.js";
-import { BrowserAttachTicketSigner } from "../browser/browser-ticket.js";
+
 import { ComputerAppHub, type ComputerAppControlPeer } from "../computer-apps/computer-app-hub.js";
 import {
   computerUseBusyNextStep,
@@ -94,9 +93,8 @@ import { PlaceContextService } from "../computer-use/place-context-service.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 import {
   createMachineAccessDatabase,
-  resetMachineAccessDatabase,
-  startMachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+  startPrivateMachineHost,
+} from "../integrations/personal-machine.test-support.js";
 import { projectMachines } from "../runtime/machines.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { createHostServer } from "../server.js";
@@ -238,7 +236,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     mcp.callHandler = undefined;
     mcp.listHandler = undefined;
     mcp.registrations = 0;
-    await resetMachineAccessDatabase(isolated.url);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
   });
   afterAll(async () => {
     await database?.destroy();
@@ -312,7 +312,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       expect(completed.data.output.text).toBe("Stopped. This step was cancelled.");
       expect(await world.persistence.computerOperations.finalize()).toEqual([]);
       const rows = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
         .where("runId", "=", run.runId)
         .where("type", "in", ["tool.started", "tool.completed"])
@@ -333,7 +333,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
   });
 
   it("reloads reordered Host transcript pairs across turn pages and cancels unfinished steps on Host restart", async () => {
-    const host = await startMachineAccessHost(isolated.url);
+    const host = await startPrivateMachineHost(isolated.url);
     // The scripted engine owns both turns; a live continuation worker would race it.
     await host.runtime.close();
     const world = await createWorld(database, { phone: true, ownerUserId: host.ownerId });
@@ -350,9 +350,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         ).isError,
       ).toBeUndefined();
       const store = new OpensteerStore(database);
-      const hostEvents = (
-        await store.eventsAfter(first.workspaceId, SequenceSchema.parse("0"))
-      ).filter(
+      const hostEvents = (await store.eventsAfter(SequenceSchema.parse("0"))).filter(
         (event) => event.type === "tool.started" && event.data.tool.name.startsWith("computer."),
       );
       expect(hostEvents).toHaveLength(3);
@@ -361,7 +359,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         environmentId: first.environmentId,
         threadId: first.threadId,
         runId: first.runId,
-        workspaceId: first.workspaceId,
+
         emittedAt: new Date().toISOString(),
         ordinal: 1,
         type: "tool.started",
@@ -409,7 +407,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const second = await startRun(
         world.store,
         world.owner,
-        world.workspace,
+        world.folder,
         "Next turn",
         first.threadId,
       );
@@ -426,9 +424,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         operation: "act",
         subject: { ...subject, effect: "write", operation: { name: "act", title: "Act" } },
       });
-      const expected = (
-        await store.eventsAfter(first.workspaceId, SequenceSchema.parse("0"))
-      ).filter((event) => event.threadId === first.threadId);
+      const expected = (await store.eventsAfter(SequenceSchema.parse("0"))).filter(
+        (event) => event.threadId === first.threadId,
+      );
       const paged: AgentEvent[] = [];
       let before: string | undefined;
       let pages = 0;
@@ -461,11 +459,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       }
       await host.runtime.close();
       restarted = await createHostRuntime(host.config, { logger: { level: "error" } });
+      if (restarted.kind !== "personal") throw new Error("Expected Personal Host");
       await restarted.listen();
-      const after = await new OpensteerStore(database).eventsAfter(
-        first.workspaceId,
-        SequenceSchema.parse("0"),
-      );
+      const after = await new OpensteerStore(database).eventsAfter(SequenceSchema.parse("0"));
       const cancelled = after.filter(
         (event) => event.type === "tool.completed" && event.data.callId === unfinished.data.callId,
       );
@@ -565,7 +561,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ).toEqual(["phone-obs-1", "phone-obs-2"]);
       expect(fake.completedActions).toBe(2);
       const rows = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
         .where("runId", "=", run.runId)
         .where("type", "in", ["tool.started", "tool.completed"])
@@ -614,7 +610,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const [row] = await world.platform.listCallableTools({
         ownerUserId: world.owner.userId,
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       });
       if (!row) throw new Error("Missing callable phone");
       expect(
@@ -668,7 +663,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       resume();
       await vi.waitFor(async () => {
         const rows = await database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select("data")
           .where("runId", "=", run.runId)
           .where("type", "=", "tool.completed")
@@ -748,9 +743,9 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           abort.signal,
         );
         await vi.waitFor(() => expect(world.fakeMac.completedActions).toBe(1));
-        const started = (
-          await world.store.eventsAfter(run.workspaceId, SequenceSchema.parse("0"))
-        ).find((event) => event.type === "tool.started" && event.data.tool.name === "computer.act");
+        const started = (await world.store.eventsAfter(SequenceSchema.parse("0"))).find(
+          (event) => event.type === "tool.started" && event.data.tool.name === "computer.act",
+        );
         if (started?.type !== "tool.started") throw new Error("Missing admitted batch");
         if (termination === "MCP cancellation") abort.abort();
         else ending = world.platform.endComputerRun(run.runId);
@@ -759,15 +754,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         if (termination === "MCP cancellation")
           expect(JSON.stringify(cancelled)).toContain("outcome-unknown");
         ending ??= world.platform.endComputerRun(run.runId);
-        const before = (
-          await world.store.eventsAfter(run.workspaceId, SequenceSchema.parse("0"))
-        ).filter(
+        const before = (await world.store.eventsAfter(SequenceSchema.parse("0"))).filter(
           (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
         );
         expect(before).toEqual([]);
         resume();
         await ending;
-        const events = await world.store.eventsAfter(run.workspaceId, SequenceSchema.parse("0"));
+        const events = await world.store.eventsAfter(SequenceSchema.parse("0"));
         const completed = events.filter(
           (event) => event.type === "tool.completed" && event.data.callId === started.data.callId,
         );
@@ -924,7 +917,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       ]);
       expect(JSON.stringify(frame)).not.toContain(loginRef);
       const rows = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select("data")
         .where("runId", "=", run.runId)
         .where("type", "in", ["tool.started", "tool.completed"])
@@ -1092,14 +1085,13 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const grant = (
         await world.persistence.listGrants({
           ownerUserId: world.owner.userId,
-          workspaceId: run.workspaceId,
         })
       ).find((row) => row.connectionId === connection.id);
       if (!grant) throw new Error("Missing phone grant");
       await world.platform.revokeGrant({
         grantId: grant.id,
         ownerUserId: world.owner.userId,
-        workspaceId: run.workspaceId,
+
         requestId: "revoke-repl-phone",
       });
       expect(
@@ -1345,7 +1337,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
 
   it("recovers accepted native latest place after immediate end and a real Host restart", async () => {
     const scheduled = new Set<() => void>();
-    const host = await startMachineAccessHost(isolated.url, {
+    const host = await startPrivateMachineHost(isolated.url, {
       browserActivityClock: {
         now: Date.now,
         schedule: (callback) => {
@@ -1390,7 +1382,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         environmentId: run.environmentId,
         threadId: run.threadId,
         runId: run.runId,
-        workspaceId: run.workspaceId,
+
         ordinal: 1,
         emittedAt: new Date().toISOString(),
         type: "tool.started",
@@ -1412,7 +1404,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         notices.mock.calls.some(([, notice]) => notice.type === "host.place-activity-cleared"),
       ).toBe(true);
       expect(scheduled.size).toBe(0);
-      const persisted = await store.eventsAfter(run.workspaceId, SequenceSchema.parse("0"));
+      const persisted = await store.eventsAfter(SequenceSchema.parse("0"));
       const operationStarted = persisted.find(
         (event) => event.type === "tool.started" && event.data.tool.name === "computer.click",
       );
@@ -1487,6 +1479,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       });
       await host.runtime.close();
       restarted = await createHostRuntime(host.config, { logger: { level: "error" } });
+      if (restarted.kind !== "personal") throw new Error("Expected Personal Host");
       await restarted.listen();
       expect(await restarted.browser.latestPlaces(host.ownerId)).toEqual(
         expect.arrayContaining([expect.objectContaining({ title: "Notes" })]),
@@ -1578,7 +1571,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       const scope = {
         ownerId: world.owner.userId,
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       };
       const approvalsBefore = (
         await world.persistence.listComputerAppSetupRequests(world.owner.userId)
@@ -1593,7 +1585,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           maxQueuedCommands: 64,
         }),
         onExecutionQueued: () => undefined,
-        onWorkspaceEvent: () => undefined,
+        onDeploymentEvent: () => undefined,
       });
       let capabilities = ["native-place-input-v1", "browser-page-input-v1"];
       const host = await createHostServer(
@@ -1606,7 +1598,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
             deploymentId: createId("deployment"),
             hostInstanceId: createId("hostInstance"),
             hostKey: { algorithm: "Ed25519" },
-            deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+            deploymentShape: { kind: "personal" },
           }),
           authenticator: {
             authenticateSessionContext: async () => ({
@@ -1621,7 +1613,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
                   email: "owner@example.test",
                   emailVerified: true,
                   image: null,
-                  instanceRole: "administrator",
                 },
                 createdAt: new Date().toISOString(),
                 expiresAt: new Date(Date.now() + 60_000).toISOString(),
@@ -1699,16 +1690,16 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           parts: [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
-      const specialist = await world.createWorkspace("Unrelated specialist");
-      const other = await world.startRun("Other task", specialist);
+      const otherFolder = await world.createFolder("Another task folder");
+      const other = await world.startRun("Other task", otherFolder);
       await expect(
         places.assertUsable({
           ...scope,
-          workspaceId: specialist.id,
+
           threadId: other.threadId,
           parts: content,
         }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      ).resolves.toBeUndefined();
       const phoneLease = await world.computerUse.prepare(
         { ownerUserId: world.owner.userId, runnerId: world.phoneId!, runnerName: phone },
         run.claims,
@@ -1772,17 +1763,14 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         } as never,
         canRunHarness: () => true,
         commands,
-        defaultWorkspaceBacking: "local-directory",
-        environmentWorkspaceBackings: () => ["local-directory"],
+        folders: personalTestFolders(store, world.owner),
         isEnvironmentConnected: () => true,
-        onWorkspaceEvent: () => undefined,
+        onEvent: () => undefined,
         store,
         placeContext: places,
         tokens: {
           authenticate: async () => ({ ...run.claims, aud: "opensteer-run-tools" }),
         } as never,
-        workspaceMounts: {} as never,
-        workspaces: {} as never,
       });
       const appPart = content.find((part) => part.type === "computer-app")!;
       const delegated = await control.handle("test-token", {
@@ -1790,7 +1778,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         requestId: randomUUID(),
         task: "Read the included Notes app",
         title: "Read Notes",
-        workspaceId: run.workspaceId,
+
         places: [appPart],
       });
       if (delegated.type !== "thread.delegate.result") throw new Error("Missing delegated child");
@@ -1851,7 +1839,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
             ordinal: 1,
             runId: run.runId,
             threadId: run.threadId,
-            workspaceId: run.workspaceId,
+
             data: { messageId: createId("message"), content: [appPart] },
           },
         }),
@@ -1862,7 +1850,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           type: "thread.delegate",
           requestId: randomUUID(),
           task: "Read unrelated Calendar",
-          workspaceId: run.workspaceId,
+
           places: [{ type: "computer-app", machineId: world.macId, app: apps.calendar, name: mac }],
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
@@ -1877,7 +1865,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           type: "thread.delegate",
           requestId: randomUUID(),
           task: "Read the Calendar the person included",
-          workspaceId: run.workspaceId,
+
           places: [unapproved],
         }),
       ).rejects.toMatchObject({ code: "forbidden" });
@@ -2016,163 +2004,6 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         ),
       );
     } finally {
-      await world.close();
-    }
-  });
-
-  it("projects durable browser openers for two readers and redacts historical task IDs after access changes", async () => {
-    const world = await createWorld(database);
-    const reader = await world.store.createUser("Second reader");
-    const keys = generateKeyPairSync("ed25519");
-    const browser = new BrowserService({
-      repository: world.store,
-      workspaceTabs: new WorkspaceTabStore(world.database),
-      signer: new BrowserAttachTicketSigner({ keyId: "test", privateKey: keys.privateKey }),
-      hostOrigin: new URL("https://test-host.invalid"),
-      onSessionsChanged: () => undefined,
-      onWorkspaceEvent: () => undefined,
-    });
-    try {
-      await world.database
-        .insertInto("workspaceMemberships")
-        .values({
-          id: createId("workspaceMembership"),
-          workspaceId: world.workspace.id,
-          userId: reader,
-          role: "collaborator",
-          state: "active",
-          generation: 1,
-          invitedBy: world.owner.userId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          updatedAt: new Date(),
-        })
-        .execute();
-      const openerWorkspace = await world.createWorkspace("Opener workspace");
-      await world.database
-        .insertInto("workspaceMemberships")
-        .values({
-          id: createId("workspaceMembership"),
-          workspaceId: openerWorkspace.id,
-          userId: reader,
-          role: "collaborator",
-          state: "active",
-          generation: 1,
-          invitedBy: world.owner.userId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          updatedAt: new Date(),
-        })
-        .execute();
-      const run = await world.startRun("Visible task opener", openerWorkspace);
-      const taskOpener = await world.store.browserSessionOpenerForBinding(
-        `run:${run.runId}`,
-        world.owner.userId,
-      );
-      expect(taskOpener).toEqual({ kind: "task", threadId: run.threadId, runId: run.runId });
-      const homeThread = await world.store.getThreadForOwner(run.threadId, world.owner.userId);
-      if (!homeThread) throw new Error("Missing task");
-      const openers: readonly (BrowserSessionOpenerRecord | null)[] = [
-        { kind: "person", userId: world.owner.userId },
-        taskOpener,
-        { kind: "opensteer", threadId: run.threadId },
-        { kind: "automation" },
-        null,
-      ];
-      const ids: BrowserSessionId[] = [];
-      for (const opener of openers) {
-        const id = createBrowserSessionId();
-        ids.push(id);
-        await world.store.createBrowserSession({
-          id,
-          opener,
-          placementKey: `runner:${world.macId}:privacy`,
-          runnerId: world.macId,
-          origin:
-            opener?.kind === "person" || !opener
-              ? "workspace"
-              : opener.kind === "automation"
-                ? "trigger"
-                : "agent",
-          profileId: null,
-          runtimeId: "privacy",
-          workspaceId: world.workspace.id,
-        });
-        await world.store.transitionBrowserSession({
-          from: ["starting"],
-          sessionId: id,
-          state: "ready",
-        });
-      }
-      const first = await browser.bootstrap(world.owner.userId);
-      const second = await browser.bootstrap(reader);
-      const byId = (bootstrap: typeof first) =>
-        ids.map((id) => bootstrap.groups.rows.find((session) => session.sessionId === id)?.opener);
-      expect(byId(first)).toEqual([
-        { kind: "you" },
-        { kind: "task", threadId: run.threadId },
-        { kind: "opensteer" },
-        { kind: "automation" },
-        { kind: "unknown" },
-      ]);
-      expect(byId(second)).toEqual([
-        { kind: "unknown" },
-        { kind: "task", threadId: run.threadId },
-        { kind: "opensteer" },
-        { kind: "automation" },
-        { kind: "unknown" },
-      ]);
-      expect(JSON.stringify(second.groups.rows)).not.toContain(world.owner.userId);
-      await world.database
-        .updateTable("runs")
-        .set({ status: "completed" })
-        .where("id", "=", run.runId)
-        .execute();
-      expect(
-        await world.store.browserSessionOpenerForBinding(`run:${run.runId}`, world.owner.userId),
-      ).toEqual(taskOpener);
-      await world.database
-        .updateTable("threads")
-        .set({ title: "Renamed after completion" })
-        .where("id", "=", run.threadId)
-        .execute();
-      expect(byId(await browser.bootstrap(reader))[1]).toEqual({
-        kind: "task",
-        threadId: run.threadId,
-      });
-      // Keep the browser in shared work while its opener conversation moves behind a separate membership boundary.
-      await world.store.changeWorkspaceMembership({
-        actorId: world.owner.userId,
-        targetUserId: reader,
-        workspaceId: openerWorkspace.id,
-        state: "revoked",
-      });
-      const redacted = await browser.bootstrap(reader);
-      expect(byId(redacted)).toEqual([
-        { kind: "unknown" },
-        { kind: "unknown" },
-        { kind: "unknown" },
-        { kind: "automation" },
-        { kind: "unknown" },
-      ]);
-      expect(JSON.stringify(redacted.groups.rows)).not.toContain(run.threadId);
-      expect(JSON.stringify(redacted.groups.rows)).not.toContain("Renamed after completion");
-      const directory =
-        process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR ??
-        path.join(tmpdir(), "opensteer-owner-view-e2e");
-      await mkdir(directory, { recursive: true });
-      await writeFile(
-        path.join(directory, "opener-privacy.json"),
-        JSON.stringify(
-          { ids, first, second, redacted, authoritativeAfterCompletion: taskOpener },
-          null,
-          2,
-        ),
-      );
-    } finally {
-      await browser.close();
       await world.close();
     }
   });
@@ -2423,7 +2254,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     );
     const [legacy] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
-      workspaceId: runA.workspaceId,
+
       threadId: runA.threadId,
     });
     if (!legacy) throw new Error("Missing internal authority row");
@@ -2586,10 +2417,10 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         `Request ${requestId} was fulfilled. ${app} on ${mac} is ready. Use app(${JSON.stringify(app)}, {computer: ${JSON.stringify(mac)}}) in the computer tool. Continue.`,
       );
     }
-    // Both Threads share the wider Workspace grant, independent of ask order.
+    // Both Threads share the wider personal grant, independent of ask order.
     const callable = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
-      workspaceId: runA.workspaceId,
+
       threadId: runA.threadId,
     });
     for (const app of ["Notes", "Calendar"]) {
@@ -2618,38 +2449,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
     await world.close();
   });
 
-  it("lets a Main Workspace task use an app it asked for through inherited access", async () => {
-    const world = await createWorld(database);
-    const main = await world.createWorkspace("Main", "main");
-    const m = await world.gateway(await world.startRun("Main task", main));
-    const pending = json(
-      await m.call("integration_request", {
-        kind: "computer-app",
-        app: "Notes",
-        access: "read-write",
-        reason: "Add the groceries.",
-      }),
-    );
-    const [setup] = await world.persistence.listComputerAppSetupRequests(world.owner.userId);
-    await world.approveOnMac(setup!);
-    const listed = json(await m.call("integration_search", { runnerId: world.macId })).apps[0];
-    expect(listed).toMatchObject({
-      status: "approved",
-      callable: true,
-    });
-    const fulfilled = await world.requestById(pending.requestId);
-    expect(await continuationMessage(fulfilled, inventorySource(world.platform))).toBe(
-      `Request ${fulfilled.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in the computer tool. Continue.`,
-    );
-    expect(
-      text(
-        await m.call("computer", { code: 'await (await (await app("Notes")).window()).observe()' }),
-      ),
-    ).toMatch(/^Looked at Notes\nObservation obs-1 of Notes /u);
-    await world.close();
-  });
-
-  it("approves automatically, never widens, blocks, keeps connections, grants other Workspaces, and refuses offline and Trigger calls", async () => {
+  it("approves automatically, never widens, blocks, keeps connections, and refuses offline and Trigger calls", async () => {
     const world = await createWorld(database);
     const runA = await world.startRun("Shopping list");
     const a = await world.gateway(runA);
@@ -2840,79 +2640,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
       macRow(json(await a.call("integration_search", { query: "Computer use" }))).computers[0],
     ).toMatchObject({ appApproval: "ask" });
 
-    // Another Workspace asks for an approved app: an ordinary Request, approvable anywhere.
-    const sideProject = await world.createWorkspace("Side project");
-    const runD = await world.startRun("Side notes", sideProject);
-    const d = await world.gateway(runD);
-    const sideListing = json(await d.call("integration_search", { runnerId: world.macId }));
-    expect(sideListing.apps[0]).toEqual({
-      name: "Notes",
-      bundleId: "com.apple.Notes",
-      status: "approved",
-      access: "read-write",
-      callable: false,
-    });
-    const sideResults = json(await d.call("integration_search", { query: "Computer use" }));
-    expect(macRow(sideResults).computers[0]!.apps).toContainEqual(
-      expect.objectContaining({
-        name: "Notes",
-        status: "approved",
-        callable: false,
-      }),
-    );
-    expect(sideResults.guidance.computers).toContain(
-      "An approved app with callable:false needs Workspace access, approved from anywhere",
-    );
-    const grantAsk = await d.call("integration_request", {
-      kind: "computer-app",
-      app: "Notes",
-      access: "read",
-      reason: "Read the side notes.",
-    });
-    const grantBody = JSON.parse(text(grantAsk).split("\n")[0]!);
-    expect(grantBody).toMatchObject({ kind: "integration.access", status: "pending" });
-    expect(text(grantAsk)).toContain("The user has been asked in Opensteer.");
-    expect(
-      json(await d.call("integration_search", { runnerId: world.macId })).apps[0],
-    ).toMatchObject({
-      pending: "workspace",
-    });
-    const notesConnection = await world.connectionFor("Notes");
-    const { request: granted } = await world.platform.resolveRequest({
-      requestId: grantBody.requestId,
-      resolvedBy: world.owner.userId,
-      response: {
-        kind: "external",
-        value: {
-          alias: "Notes on Alex's Mac",
-          access: "read",
-          connectionId: notesConnection.id,
-          decision: "fulfilled",
-          isDefault: true,
-        },
-      },
-    });
-    const sideNotes = json(await d.call("integration_search", { runnerId: world.macId })).apps[0];
-    expect(sideNotes).toMatchObject({
-      callable: true,
-    });
-    expect(sideNotes).not.toHaveProperty("toolRefs");
-    // Discovery names the owner's approval; the Workspace grant remains read-only.
-    expect(sideNotes.access).toBe("read-write");
-    const sideTools = await world.platform.listCallableTools({
-      ownerUserId: world.owner.userId,
-      workspaceId: runD.workspaceId,
-      threadId: runD.threadId,
-    });
-    expect(
-      sideTools
-        .filter((row) => row.grant.connectionId === notesConnection.id)
-        .map((row) => row.tool.name),
-    ).toEqual(["observe"]);
-    expect(await continuationMessage(granted, inventorySource(world.platform))).toBe(
-      `Request ${granted.id} was fulfilled. Notes on ${mac} is ready. Use app("Notes", {computer: "Alex's Mac"}) in the computer tool. Continue.`,
-    );
-
+    const runD = await world.startRun("More notes");
     // Several Macs and no runnerId: the refusal names each with its id.
     const studio = await world.addMac("Studio Mac");
     const d2 = await world.gateway(runD);
@@ -3011,7 +2739,9 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     mcp.callHandler = undefined;
     mcp.listHandler = undefined;
     mcp.registrations = 0;
-    await resetMachineAccessDatabase(isolated.url);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
   });
   afterAll(async () => {
     await database?.destroy();
@@ -3175,7 +2905,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     await world.close();
   });
 
-  it.each(["revoked", "expired lease", "lost membership"] as const)(
+  it.each(["revoked", "expired lease"] as const)(
     "never sends admitted phone work with %s authority",
     async (invalidation) => {
       const world = await createWorld(database, { phone: true });
@@ -3230,31 +2960,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           .set({ leaseExpiresAt: new Date(0) })
           .where("threadId", "=", run.threadId)
           .execute();
-      if (invalidation === "lost membership") {
-        const otherOwner = await world.store.createUser("Remaining owner");
-        await database
-          .insertInto("workspaceMemberships")
-          .values({
-            generation: 1,
-            id: createId("workspaceMembership"),
-            invitedBy: world.owner.userId,
-            joinedAt: new Date(),
-            revokedAt: null,
-            revokedBy: null,
-            role: "owner",
-            state: "active",
-            updatedAt: new Date(),
-            userId: otherOwner,
-            workspaceId: run.workspaceId,
-          })
-          .execute();
-        await world.store.changeWorkspaceMembership({
-          actorId: otherOwner,
-          state: "revoked",
-          targetUserId: world.owner.userId,
-          workspaceId: run.workspaceId,
-        });
-      }
+
       world.computerUse.closeForConnection(phoneId, {
         kind: "display",
         definitionId: "android-phone",
@@ -3304,7 +3010,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       },
       harnessInstanceId: world.owner.harnessInstanceId,
       leaseTokenHash: randomUUID(),
-      membershipGeneration: 1,
+
       runnerBootId: "replacement-boot",
       runnerId: run.agentRunnerId,
       runId: run.runId,
@@ -3335,6 +3041,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       code: "stopped-by-user",
     });
     const restarted = new ComputerUseService({
+      deploymentId: world.owner.deploymentId,
       hub: world.hub,
       authorizer: world.store,
       listMachines: async () => [],
@@ -3442,7 +3149,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       access: new Map(),
       apps: new Map(),
       deploymentOwnsMainComputer: false,
-      localWorkspaces: [],
+
       pendingRunners: [],
       threadsByEnvironment: new Map(),
       runners: [
@@ -3546,7 +3253,6 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       const entries = await world.platform.listDiscoveryInventory({
         ownerUserId: world.owner.userId,
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       });
       const entry = entries.find(
         (entry) => entry.installation.provenance.definitionId === "android-phone",
@@ -3735,7 +3441,6 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const [row] = await world.platform.listCallableTools({
       ownerUserId: world.owner.userId,
       threadId: runA.threadId,
-      workspaceId: runA.workspaceId,
     });
     if (!row) throw new Error("Missing callable authority row");
     expect(
@@ -3817,7 +3522,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     }).assertUsable({
       ownerId: world.owner.userId,
       threadId: runA.threadId,
-      workspaceId: runA.workspaceId,
+
       parts: [phonePart],
     });
 
@@ -3859,7 +3564,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           runnerId: phoneId,
         }),
       );
-      // The phone already covers this Workspace's ask, so it comes straight back.
+      // The phone already covers this task’s ask, so it comes straight back.
       expect(asked).toMatchObject({ status: "already-available" });
       expect(asked).not.toHaveProperty("toolRefs");
     })();
@@ -3979,14 +3684,12 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         const grant = (
           await world.persistence.listGrants({
             ownerUserId: world.owner.userId,
-            workspaceId: run.workspaceId,
           })
         ).find(({ connectionId }) => connectionId === connection.id);
         await world.platform.revokeGrant({
           grantId: grant!.id,
           ownerUserId: world.owner.userId,
           requestId: "revoke-phone-grant",
-          workspaceId: run.workspaceId,
         });
         break;
       }
@@ -3996,7 +3699,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
           actorUserId: world.owner.userId,
           app: null,
           definitionId: "android-phone",
-          isAdministrator: true,
+
           kind: "app",
           requestId: "lower-phone",
           runnerId: phoneId,
@@ -4037,7 +3740,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
     const actRow = (
       await world.platform.listCallableTools({
         ownerUserId: world.owner.userId,
-        workspaceId: run.workspaceId,
+
         threadId: run.threadId,
       })
     ).find((row) => row.tool.name === "act");
@@ -4048,7 +3751,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
       actorUserId: world.owner.userId,
       app: null,
       definitionId: "android-phone",
-      isAdministrator: true,
+
       kind: "app",
       requestId: "lower-phone",
       runnerId: phoneId,
@@ -4156,7 +3859,7 @@ integration.sequential("An Android phone, end to end as a model sees it", () => 
         actorUserId: world.owner.userId,
         app: null,
         definitionId: "android-phone",
-        isAdministrator: true,
+
         kind: "app",
         requestId: `owner-phone-${access}`,
         runnerId: phoneId,
@@ -4231,7 +3934,6 @@ function json(result: ToolResult) {
       'integration_request {kind: "computer-app", runnerId, app, access, reason}',
       "blocked: only the computer owner can unblock it from any Opensteer app",
       "pending:mac waits for its owner",
-      "pending:workspace waits on a Workspace grant",
       "do not poll, repeat or route around the Request",
       "Pending grants no access; do not poll, repeat or route around the Request",
       "do not retry in a loop",
@@ -5107,14 +4809,8 @@ async function createWorld(
   const store = new OpensteerStore(database);
   const persistence = new IntegrationPlatformStore(database);
   const connections = new IntegrationStore(database);
-  const owner = await createOwner(store, randomUUID(), options.ownerUserId);
-  const workspace = await createWorkspace(
-    store,
-    owner.userId,
-    randomUUID(),
-    "project",
-    owner.environmentId,
-  );
+  const owner = await createOwner(store, randomUUID(), dataDirectory, options.ownerUserId);
+  const folder = owner.agentHome;
   // The Runner authenticates its transport; the Host authorizes owner decisions.
   const keys = generateKeyPairSync("ed25519");
 
@@ -5181,11 +4877,7 @@ async function createWorld(
   // The Mac's owner also administers this Deployment, so their first Allow
   // adds Computer use to it; an answer on the Mac's stream carries no session
   // to say so, and the Host reads the role.
-  await database
-    .updateTable("users")
-    .set({ instanceRole: "administrator" })
-    .where("id", "=", owner.userId)
-    .execute();
+
   // The owner opened this Mac's page on the Mac, which registered its key.
 
   const definitions = options.phone ? [definition, phoneDefinition] : [definition];
@@ -5197,6 +4889,7 @@ async function createWorld(
     onRunnerDetached: (runnerId) => computerUse.forgetRunner(runnerId),
   });
   computerUse = new ComputerUseService({
+    deploymentId: owner.deploymentId,
     hub,
     ...(options.passwords
       ? {
@@ -5290,7 +4983,7 @@ async function createWorld(
     ...(options.computerReplTime ? { computerReplTime: options.computerReplTime } : {}),
     mcpImageContent: async () => imageGate.on,
     mcpOauth: { providerFor: vi.fn() },
-    onWorkspaceEvent: () => undefined,
+    onDeploymentEvent: () => undefined,
     onConnectionsChanged: () => {
       void persistence
         .listComputerAppSetupRequests(owner.userId)
@@ -5307,7 +5000,7 @@ async function createWorld(
         setupRequestId,
         decision: answer.kind,
         actorUserId: owner.userId,
-        isAdministrator: true,
+
         requestId: randomUUID(),
         authorize: async () => undefined,
       });
@@ -5345,14 +5038,14 @@ async function createWorld(
       return insertComputer(name, "phone", stranger);
     },
     owner,
-    workspace,
+    folder,
     persistence,
     connections,
     computerUse,
     hub,
     fakeMac,
     platform,
-    async startRun(title: string, target = workspace) {
+    async startRun(title: string, target = folder) {
       return startRun(store, owner, target, title);
     },
     /** Another Mac of the same owner, enrolled but not connected. */
@@ -5367,7 +5060,7 @@ async function createWorld(
         actorUserId: owner.userId,
         app: null,
         definitionId: "android-phone",
-        isAdministrator: true,
+
         kind: "app",
         requestId: `owner-allow:${setup.id}`,
         runnerId: setup.runnerId,
@@ -5397,8 +5090,10 @@ async function createWorld(
         ]),
       );
     },
-    async createWorkspace(name: string, kind: "main" | "project" = "project") {
-      return createWorkspace(store, owner.userId, randomUUID(), kind, owner.environmentId, name);
+    async createFolder(name: string) {
+      const folder = { ...owner.agentHome, path: path.join(owner.agentHome.path, name) };
+      await mkdir(folder.path, { recursive: true });
+      return folder;
     },
     async requestById(id: string) {
       const request = await persistence.requests.get(id as never);
@@ -5457,13 +5152,12 @@ async function openGateway(
     runnerBootId: "boot",
     runnerId: run.agentRunnerId,
     threadId: run.threadId,
-    toolContractVersion: 2 as const,
-    workspaceId: run.workspaceId,
+    toolContractVersion: 3 as const,
   };
   const service = createIntegrationMcpFixture({
     definitions,
-    getWorkspaceForOwner: async (workspaceId) => ({ id: workspaceId }),
-    onWorkspaceEvent: () => undefined,
+
+    onEvent: () => undefined,
     platform,
     publicUrl: new URL("https://opensteer.example.test"),
     runTokens: {
@@ -5538,32 +5232,9 @@ async function openGateway(
   };
 }
 
-async function createWorkspace(
-  store: OpensteerStore,
-  createdBy: UserId,
-  suffix: string,
-  kind: "main" | "project",
-  ownerEnvironmentId: EnvironmentId,
-  name = `Workspace ${suffix}`,
-) {
-  return createTestWorkspace(store, {
-    backing: {
-      kind: "local-directory",
-      generation: 1,
-      bindingId: createId("workspaceBinding"),
-      ownerEnvironmentId,
-      storageAuthorityId: createId("storageAuthority"),
-    },
-
-    createdBy,
-    idempotencyKey: `workspace-${suffix}`,
-    kind,
-    name,
-    status: "ready",
-  });
-}
-
 interface Owner {
+  readonly agentHome: TaskFolder;
+  readonly deploymentId: DeploymentId;
   readonly agentRunnerId: RunnerId;
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
@@ -5574,92 +5245,60 @@ interface Owner {
 async function createOwner(
   store: OpensteerStore,
   suffix: string,
+  directory: string,
   existingUserId?: UserId,
 ): Promise<Owner> {
-  const userId = existingUserId ?? (await store.createUser(`Owner ${suffix}`));
-  const agentRunnerId = createId("runner");
-  const environmentId = createId("environment");
-  if (!(await store.getDeployment())) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" as const },
-      hostInstanceId: createId("hostInstance"),
-    });
-  }
-  const pair = generateKeyPairSync("ed25519");
-  const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-  const enrollmentTokenHash = `sha256:${createHash("sha256")
-    .update(`test-enrollment-${suffix}`, "utf8")
-    .digest("base64url")}`;
-  await store.createRunnerEnrollment({
-    allowedModules: ["agents"],
-    createdBy: userId,
-    expiresAt: new Date(Date.now() + 60_000),
-    id: `ren_${randomUUID()}`,
-    idempotencyKey: `test-runner-${suffix}`,
-    mainEnrollmentPurpose: "initial",
-    name: `Test runner ${suffix}`,
-    requestFingerprint: `sha256:test-runner-${suffix}`,
-    runnerKind: "main",
-    tokenHash: enrollmentTokenHash,
-  });
-  const descriptor: RunnerDescriptor = {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: {
-      agents: {
-        computerTool: 1,
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        localStorage: null,
-        maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
-      },
-    },
-    name: `Runner ${suffix}`,
-    runnerId: agentRunnerId,
-    runnerKind: "main",
-    runtimeVersion: "test",
-  };
-  await store.enrollRunnerConnection({
-    descriptor,
-    enrollmentTokenHash,
-    publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-    publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-  });
+  const settings = await store.database
+    .selectFrom("personalSettings")
+    .selectAll()
+    .executeTakeFirst();
+  let personal;
+  if (settings) {
+    const environment = await store.database
+      .selectFrom("executionEnvironments")
+      .select("id")
+      .where("runnerId", "=", settings.agentHomeComputerId)
+      .executeTakeFirstOrThrow();
+    personal = {
+      userId: settings.ownerId,
+      runnerId: settings.agentHomeComputerId,
+      environmentId: environment.id,
+      agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
+      deploymentId: (await store.getDeployment())!.id,
+    };
+  } else personal = await seedPersonalFixture(store.database, directory);
+  if (existingUserId && existingUserId !== personal.userId)
+    throw new Error("Computer-use fixture must use the real personal owner");
+  await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
+    store.database,
+  );
   const harnessInstance = await store.createHarnessInstance({
-    config: { model: "test" },
+    config: {},
     driverKind: HarnessIdSchema.parse("native"),
-    environmentId,
-    name: "Native",
-    sourceId: "native",
+    environmentId: personal.environmentId,
+    name: suffix,
     stateKind: "isolated",
   });
-  return { agentRunnerId, environmentId, harnessInstanceId: harnessInstance.id, userId };
+  await store.recordHarnessCatalogs({
+    environmentId: personal.environmentId,
+    catalogs: [testReadyHarnessCatalog(harnessInstance.id)],
+    expectedRevisions: new Map([[harnessInstance.id, harnessInstance.runtimeRevision]]),
+  });
+  return {
+    agentRunnerId: personal.runnerId,
+    environmentId: personal.environmentId,
+    harnessInstanceId: harnessInstance.id,
+    userId: personal.userId,
+    agentHome: personal.agentHome,
+    deploymentId: personal.deploymentId,
+  };
 }
 
 /** One Thread with a running Run, which is what a Request and a session belong to. */
 async function startRun(
   store: OpensteerStore,
   owner: Owner,
-  workspace: { readonly id: WorkspaceId },
+  folder: TaskFolder,
   title: string,
   existingThreadId?: ThreadId,
 ) {
@@ -5668,16 +5307,12 @@ async function startRun(
     ? { thread: { id: existingThreadId } }
     : await store.createThread({
         createdBy: owner.userId,
+        folder,
         environmentId: owner.environmentId,
         harnessInstanceId: owner.harnessInstanceId,
         idempotencyKey: `thread-${suffix}`,
-        modelSelection: ModelSelectionSchema.parse({
-          modelId: "gpt-5.6-sol",
-          options: { effort: "low" },
-          providerId: "openai",
-        }),
+        modelSelection: testModelSelection,
         title,
-        workspaceId: workspace.id,
       });
   const admitted = await store.enqueueThreadInput({
     content: [{ text: "Start the work", type: "text" }],
@@ -5698,7 +5333,7 @@ async function startRun(
     },
     harnessInstanceId: owner.harnessInstanceId,
     leaseTokenHash: `${suffix}-lease`,
-    membershipGeneration: 1,
+
     runnerBootId,
     runnerId: owner.agentRunnerId,
     runId: admitted.run.id,
@@ -5713,7 +5348,6 @@ async function startRun(
     runId: admitted.run.id,
     threadId: thread.id,
     type: "run.started",
-    workspaceId: workspace.id,
   };
   await store.commitRunnerEvent({
     environmentId: owner.environmentId,
@@ -5738,7 +5372,6 @@ async function startRun(
     environmentId: owner.environmentId,
     runId: admitted.run.id,
     threadId: thread.id,
-    workspaceId: workspace.id,
   };
 }
 

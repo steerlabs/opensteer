@@ -1,4 +1,3 @@
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import {
   computerGlyph,
   computerRole,
@@ -326,7 +325,7 @@ export const connectedAppsSettingsRow = {
   title: "Connections",
 } as const;
 
-/** Installed by an administrator, then turned on per project, apart from what it may access. */
+/** Installed, then turned on or off, apart from what it may access. */
 export const pluginsSettingsRow = {
   detail: "Skills, tools and specialists for your agents",
   title: "Plugins",
@@ -349,10 +348,6 @@ export const quietTasksTitle = "Move quiet tasks to Done";
 export const quietTasksFooter =
   "Finished tasks you’ve read, with nothing waiting on you, move to Done after this long.";
 
-/** Under the projects' switches: what muting one silences, and what it never does. */
-export const projectNotificationsFooter =
-  "Turning one off silences its replies and updates. Approvals and questions still notify you, and its work keeps running.";
-
 /**
  * Passwords live in the Opensteer app on the Mac that runs a Personal
  * Opensteer. A phone is never that Mac, so the row only says where they are,
@@ -366,15 +361,12 @@ export interface PasswordsSettingsModel {
 }
 
 export function passwordsSettingsModel(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   /** A Personal Opensteer is named after its Mac until that Mac reports itself. */
   readonly deploymentName: string;
   readonly machines: readonly MachineSummary[];
 }): PasswordsSettingsModel {
-  const personal = input.deploymentPolicy?.nativePasswords === true;
-  const homeName =
-    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.name ??
-    input.deploymentName;
+  const personal = true;
+  const homeName = input.machines.find(hostsDeployment)?.name ?? input.deploymentName;
   return {
     body: passwordsElsewhere({ homeName, personal }),
     detail: passwordsSettingsSubtitle({ homeName, personal }),
@@ -462,7 +454,6 @@ export const computerSymbols: Readonly<Record<ComputerGlyph, ComputerSymbol>> = 
  */
 export function computersSettingsRows(input: {
   readonly apps: ComputerAppsData | null;
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly here?: ThisIphoneSettings | null;
   readonly hostConnected: boolean;
@@ -479,29 +470,14 @@ export function computersSettingsRows(input: {
   );
   const overview = computersOverview({ ...input, hereId: null, machines });
   const home = overview.home;
-  const homeStatus =
-    home.kind === "mac"
-      ? home.machine
-        ? computerStatus(home.machine).label
-        : "Starting"
-      : input.hostConnected
-        ? "Online"
-        : "Offline";
+  const homeStatus = home.machine ? computerStatus(home.machine).label : "Starting";
   const rows: ComputerSettingsRow[] = [
     {
       detail: `Your Opensteer runs here · ${homeStatus}`,
       key: "home",
-      opens:
-        home.kind === "mac" && home.machine
-          ? { kind: "computer", machineId: home.machine.id }
-          : null,
-      name: home.kind === "server" ? home.address : home.name,
-      symbol:
-        home.kind === "server"
-          ? "server.rack"
-          : home.machine
-            ? computerSymbols[computerGlyph(home.machine)]
-            : "desktopcomputer",
+      opens: home.machine ? { kind: "computer", machineId: home.machine.id } : null,
+      name: home.name,
+      symbol: home.machine ? computerSymbols[computerGlyph(home.machine)] : "desktopcomputer",
     },
   ];
   if (here !== null) rows.push(thisIphoneRow(here, heldHere, input));
@@ -564,7 +540,6 @@ function computerSettingsDetail(
   const uses = computerUses(machine, input.apps);
   const role = computerRole(machine, uses, input.apps !== null);
   return [
-    machine.ownerName,
     role ? computerRoleLabel[role] : null,
     computerUseNow(machine, input.hostConnected) ?? computerStatus(machine).label,
   ]

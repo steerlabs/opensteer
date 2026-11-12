@@ -49,7 +49,6 @@ export function ExternalAgentsSection({
       ? externalAgentAddresses({ identity, remoteAccess: null }).thisComputer
       : null;
   const [guide, setGuide] = useState<ExternalAgentGuide | null>(null);
-  const workspaces = shell.snapshot.workspaces;
   const connections = agents.connections ?? [];
   // Setup takes its baseline from the loaded list, so it waits for the first read.
   const available = (entry: ExternalAgentGuide) =>
@@ -83,7 +82,7 @@ export function ExternalAgentsSection({
               key={connection.id}
               icon="sparkles"
               title={connection.label}
-              detail={connectionDetail(connection, workspaces)}
+              detail={connectionDetail(connection)}
               action={
                 <button
                   aria-label={`Remove ${connection.label}`}
@@ -114,11 +113,9 @@ export function ExternalAgentsSection({
             title="Turn on Remote access first"
             detail="These agents run in the cloud and reach Opensteer through it."
             action={
-              view.administrator ? (
-                <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
-                  Turn on
-                </Link>
-              ) : null
+              <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
+                Turn on
+              </Link>
             }
           />
         ) : null}

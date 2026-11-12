@@ -1,7 +1,7 @@
-import type { TriggerOccurrence } from "@opensteer/triggers";
+import type { TriggerOccurrence } from "@opensteer/triggers/models";
 import type { TriggerDetail } from "./client.js";
 import cronstrue from "cronstrue";
-import type { TriggerSchedule, TriggerSource, TriggerSummary } from "@opensteer/triggers";
+import type { TriggerSchedule, TriggerSource, TriggerSummary } from "@opensteer/triggers/models";
 
 /** What an automation is, told by when it runs. */
 export type AutomationShape = "once" | "repeating" | "webhook" | "watch";

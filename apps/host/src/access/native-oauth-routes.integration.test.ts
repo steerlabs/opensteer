@@ -1,3 +1,4 @@
+import { requirePersonalOwner } from "@opensteer/database";
 import {
   createId,
   opensteerDesktopHostOAuthCallback,
@@ -43,7 +44,6 @@ integration("Host native OAuth routes", () => {
         auth_admissions,
         auth_sso_providers,
         owner_enrollments,
-        security_effects,
         security_audit,
         auth_accounts,
         auth_sessions,
@@ -557,7 +557,7 @@ function endSessionUrl(clientId: string, idToken: string): string {
  */
 async function hostWithNativeOAuth(onSessionEnded?: (sessionId: string) => void) {
   const identity = new IdentityService(database, {
-    deployment: { kind: "self-hosted", name: null },
+    deployment: { kind: "personal", name: null },
     localPasswordEnabled: true,
     nativeOAuth: { clients: opensteerHostNativeOAuthClients },
     ...(onSessionEnded ? { onSessionEnded } : {}),
@@ -575,7 +575,9 @@ async function hostWithNativeOAuth(onSessionEnded?: (sessionId: string) => void)
     (_request, body, done) => done(null, body),
   );
   const authenticator = new HostAuthenticator({ identity, publicUrl: new URL(origin) });
-  registerIdentityRoutes(app, authenticator);
+  registerIdentityRoutes(app, authenticator, {
+    assertOwner: (id) => requirePersonalOwner(database, id),
+  });
   const identityHandlers = {
     ...createIdentityRpcHandlers(authenticator),
     "commands.dispatch": async (command, context) => {

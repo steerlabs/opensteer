@@ -1,47 +1,45 @@
 import {
   connectCallerMachine,
-  enrollmentToken,
+  startPrivateMachineHost,
   type CallerMachine,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
-import type { HostConfig } from "@opensteer/config";
-import { createId } from "@opensteer/core";
+} from "../integrations/personal-machine.test-support.js";
+
 import { createDatabase, migrateToLatest } from "@opensteer/database";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+
 import {
   BrowserServerMessageSchema,
   decodeBrowserFrameEnvelope,
-  hostApiVersionHeader,
   type BrowserClientMessage,
   type BrowserServerMessage,
 } from "@opensteer/protocol";
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+
 import { sql } from "kysely";
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
 import { ownChild } from "../agents/owned-child.test-support.js";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+
 import { testRpcData } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-const accessToken = "browser-access-".padEnd(40, "a");
+"browser-access-".padEnd(40, "a");
 
 integration("Host and Chromium editing contract", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
-  let dataDirectory: string | undefined;
   let caller: CallerMachine | undefined;
-  let runtime: HostRuntime | undefined;
+  let runtime: import("../runtime/runtime.js").PersonalHostRuntime | undefined;
+  let personalHost: MachineAccessHost | undefined;
   const sockets: WebSocket[] = [];
   let engineProcess: ChildProcess | undefined;
   let engineOwner: ReturnType<typeof ownChild> | undefined;
@@ -51,26 +49,7 @@ integration("Host and Chromium editing contract", () => {
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
     await migrateToLatest(database);
     await sql`
-      truncate table
-        credential_access_audit,
-        credential_vault_canaries,
-        browser_profile_grants,
-        browser_sessions,
-        browser_profiles,
-        credentials,
-        workspace_events,
-        commands,
-        provider_sessions,
-        messages,
-        runs,
-        threads,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
+      truncate table credential_vault_canaries, deployments, users, runners restart identity cascade
     `.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
@@ -90,7 +69,7 @@ integration("Host and Chromium editing contract", () => {
         }),
       () => browserRuntime?.close(),
       () => caller?.close(),
-      () => runtime?.close(),
+      () => personalHost?.close(),
       async () => {
         fixture?.closeAllConnections();
         if (fixture) await new Promise<void>((resolve) => fixture!.close(() => resolve()));
@@ -103,50 +82,15 @@ integration("Host and Chromium editing contract", () => {
       }
     }
     if (failures.length) throw new AggregateError(failures, "Browser editing cleanup failed");
-    if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
   it("projects old viewers and attributes native clipboard over the real Host route", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-browser-host-integration-"));
-    const hostPort = await freePort();
-    const config: HostConfig = {
-      acceptsExternalRunners: true,
-      authSecret: "browser-auth-secret".padEnd(40, "x"),
-      bindAddress: "127.0.0.1",
-      canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-      browserRuntime: { attachKeyId: "host-integration" },
-      credentialKeyPath: undefined,
-      databaseUrl: databaseUrl ?? "postgres://unconfigured",
-      dataDirectory,
-      identity: {
-        initialOwnerEnrollment: { lifetimeSeconds: 3_600, token: accessToken },
-        localPasswordEnabled: true,
-        oidcConfigPath: undefined,
-        signupPolicy: "invite-only",
-      },
-      executionLeaseMs: 90_000,
-      maxConcurrentDispatches: 2,
-      maxConcurrentTriggerDispatches: 2,
-      mode: "development",
-      port: hostPort,
-      exposure: "networked" as const,
-      privateKeyPath: undefined,
-      publicKeyPath: undefined,
-      runtimeOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-      workspace: {
-        deletionRetentionDays: 14,
-        shape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "server" as const,
-        },
-        storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
-      },
-    };
-    runtime = await createHostRuntime(config);
-    await runtime.listen();
-    const origin = config.runtimeOrigin.origin;
-    const cookie = await setupInitialOwner(origin, accessToken);
-    const sessionHeaders = { cookie, origin };
+    personalHost = await startPrivateMachineHost(databaseUrl!, { remoteAccess: true });
+    runtime = personalHost.runtime;
+
+    const hostPort = personalHost.hostPort;
+    const origin = personalHost.origin.origin;
+    const sessionHeaders = personalHost.ownerHeaders;
     // The browser is a module of an enrolled computer: it dials the Host and
     // relays over its own stream, so no Runtime address is ever configured.
     const enrollment = await testRpcData(
@@ -240,41 +184,23 @@ integration("Host and Chromium editing contract", () => {
       });
       const owner = await runtime.store.firstUser();
       if (!owner) throw new Error("Owner was not created");
-      const machineHost: MachineAccessHost = {
-        close: async () => undefined,
-        config,
-        hostPort,
-        origin,
-        ownerHeaders: sessionHeaders,
-        ownerId: owner.id,
-        runtime,
-        store: runtime.store,
-      };
+      const machineHost = personalHost;
       caller = await connectCallerMachine(machineHost, {
         name: "Storage computer",
-        token: await enrollmentToken(machineHost, {
-          allowedModules: ["agents"],
-          idempotencyKey: "storage-computer",
-          name: "Storage computer",
-        }),
+        token: await machineHost.hostingRunnerEnrollmentToken,
       });
       await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-      const workspace = await testRpcData(
-        origin,
-        "commands.dispatch",
-        { type: "workspace.create", idempotencyKey: "editing-workspace", name: "Editing" },
-        { headers: sessionHeaders },
-      );
-      if (workspace.type !== "workspace.create") throw new Error("Wrong workspace result");
+
       const opened = await testRpcData(
         origin,
         "commands.dispatch",
         {
           type: "browser.session.start",
-          workspaceId: workspace.workspace.id,
+
           idempotencyKey: "editing-session",
           input: {
             fresh: true,
+            placement: { kind: "runner", runnerId: browserRuntime.runnerId },
             reuseExisting: false,
             initialUrl: `http://127.0.0.1:${fixtureAddress.port}/`,
           },
@@ -285,7 +211,7 @@ integration("Host and Chromium editing contract", () => {
       expect(browserRuntime.lastClaims()).toMatchObject({ editingVersion: 1 });
       const base = `ws://127.0.0.1:${hostPort}/v1/browser-sessions/${opened.session.id}/connect`;
       const connect = async (query: string) => {
-        const socket = new WebSocket(base + query, { headers: { cookie, origin } });
+        const socket = new WebSocket(base + query, { headers: sessionHeaders });
         sockets.push(socket);
         const messages: BrowserServerMessage[] = [];
         const frames: Record<string, unknown>[] = [];
@@ -660,41 +586,3 @@ integration("Host and Chromium editing contract", () => {
     if (captureFailure) throw new Error(captureFailure);
   }, 60_000);
 });
-async function setupInitialOwner(origin: string, token: string): Promise<string> {
-  const exchanged = await fetch(`${origin}/v1/rpc/auth.setup.exchange`, {
-    body: JSON.stringify({ token }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      origin,
-    },
-    method: "POST",
-  });
-  if (!exchanged.ok) throw new Error(`Setup exchange failed with HTTP ${exchanged.status}.`);
-  const admissionCookies = responseCookies(exchanged);
-  const claimed = await fetch(`${origin}/v1/rpc/auth.setup.claim`, {
-    body: JSON.stringify({
-      email: "browser-owner@example.com",
-      kind: "password",
-      password: "browser-owner-password",
-    }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      cookie: admissionCookies.join("; "),
-      origin,
-    },
-    method: "POST",
-  });
-  if (!claimed.ok) throw new Error(`Owner claim failed with HTTP ${claimed.status}.`);
-  const sessionCookies = responseCookies(claimed);
-  if (sessionCookies.length === 0) throw new Error("Host did not issue a session cookie.");
-  return sessionCookies.join("; ");
-}
-
-function responseCookies(response: Response): string[] {
-  return response.headers
-    .getSetCookie()
-    .map((value) => value.split(";", 1)[0])
-    .filter((value): value is string => Boolean(value));
-}

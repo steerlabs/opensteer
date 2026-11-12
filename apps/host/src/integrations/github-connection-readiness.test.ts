@@ -94,7 +94,7 @@ function fixture() {
   const service = new IntegrationService({
     attempts: {} as never,
     definitions: [githubIntegration],
-    deploymentPosture: async () => "independent-self-hosted",
+    deploymentPosture: async () => "account-free-personal",
     fetch,
     onConnectionConnected,
     publicUrl: new URL("https://host.example"),

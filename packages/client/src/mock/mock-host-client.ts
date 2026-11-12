@@ -1,17 +1,25 @@
+import { listedRowThreadId } from "../host/task-list.js";
+import {
+  DeploymentSnapshotSchema,
+  parseTeamLinkOffer,
+  PersonalTeamLinkSchema,
+  type PersonalTeamLink,
+} from "@opensteer/protocol";
+import { firstTriggerFireAt } from "@opensteer/triggers/schedule";
+import { mockPersonalFolder } from "./personal-fixtures.js";
 import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
 import { BrowserSessionIdSchema, previewToolOutput } from "@opensteer/core";
-import type { WorkspaceTabLineage } from "../host/client.js";
+import type { PersonalTabLineage } from "../host/client.js";
 import { mockBrowserRows } from "./mock-browser-stream.js";
 import { BrowserTabStore } from "../host/browser-tab-store.js";
 import { MockBrowserStream } from "./mock-browser-stream.js";
 import { seedMockSubagents } from "./mock-subagents.js";
 import { seedMockSubagentScene, type MockSubagentScene } from "./mock-subagent-scenes.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "../host/node-detail.js";
-import { hostDeploymentPolicy } from "../host/deployment-policy.js";
-import { deploymentPolicy, deploymentClientPolicy } from "@opensteer/core";
+
 import { AppTabSchema, CreateBrowserProfileBodySchema } from "@opensteer/protocol";
 import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
@@ -45,7 +53,6 @@ import {
 } from "@opensteer/protocol";
 import { MockDesktopUpdates, type MockDesktopUpdateScenario } from "./mock-desktop-updates.js";
 import { MockSettingsFixtures } from "./settings-fixtures.js";
-import { MockTeamAccess, type MockTeamScenario } from "./mock-team-access.js";
 import type { PasswordSignInCard } from "@opensteer/protocol";
 import { BrowserCursorStore } from "../host/browser-cursor.js";
 import type { PersonShowMessage, PluginRow } from "@opensteer/protocol";
@@ -74,7 +81,6 @@ import {
   AttachmentSchema,
   BrowserSurfaceIdSchema,
   BrowserTabGroupIdSchema,
-  CHAT_THREAD_TITLE,
   DEFAULT_THREAD_ACCESS_MODE,
   DeploymentIdSchema,
   MessageAuthorSchema,
@@ -96,7 +102,6 @@ import {
   ThreadSchema,
   ThreadTitleSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   attachmentMaxBytes,
   attachmentNativeImageMediaTypes,
   createId,
@@ -125,7 +130,6 @@ import {
   type AuthSessionSummary,
   type BrowserPageContentPart,
   type ContentPart,
-  type EnvironmentId,
   type ExecutionPreferences,
   type ExecutionChoice as HostExecutionChoice,
   type MarkColor,
@@ -142,8 +146,7 @@ import {
   type ThreadInputQueue,
   type ThreadReadState,
   type WaitingRequest,
-  type WorkspaceIconName,
-  type WorkspaceNotificationPreference,
+  type IconName,
 } from "@opensteer/core";
 import type {
   ComputerAppIdentity,
@@ -207,14 +210,13 @@ import {
   TriggerSchema,
   TriggerWatchActivationSchema,
   MANAGED_MEMORY_REFUSAL,
-  firstTriggerFireAt,
   type Trigger,
   type TriggerOccurrence,
   type TriggerRevision,
   type TriggerSource,
   type TriggerSummary,
   type TriggerWatchActivation,
-} from "@opensteer/triggers";
+} from "@opensteer/triggers/models";
 import { z } from "zod";
 import { accessModeUnavailableReason } from "../host/access-modes.js";
 import { BrowserHistoryClient } from "../host/browser-history.js";
@@ -228,13 +230,11 @@ import {
 import type {
   BrowserCommand,
   BrowserFrameStore,
-  BrowserProfileGrantSummary,
   BrowserTabOpenInput,
   BrowserTabOpenOptions,
   PendingBrowserTab,
   CreateHarnessInstanceInput,
   CreateThreadInput,
-  CreateWorkspaceInput,
   HarnessAuthenticationEnvelope,
   HarnessSummary,
   HostClient,
@@ -255,7 +255,6 @@ import type {
   TranscriptEntry,
   UpdateThreadAccessModeInput,
   UpdateThreadExecutionInput,
-  WorkspaceSummary,
 } from "../host/client.js";
 import { HostClientRequestError, mainDoneTasks } from "../host/client.js";
 import { computerViewMethods } from "../host/computer-views.js";
@@ -287,7 +286,7 @@ import {
   threadInputDelivery,
 } from "../host/transcript.js";
 import { ViewerScope, viewerScopeOf } from "../host/viewer-scope.js";
-import { WorkspaceTabActivations } from "../host/workspace-tab-activations.js";
+import { PersonalTabActivations } from "../host/personal-tab-activations.js";
 import { mockAppIcons } from "./mock-app-icons.js";
 import {
   mockNightlyTriggerId,
@@ -352,7 +351,7 @@ async function* binaryChunks(body: Blob, signal?: AbortSignal): AsyncIterable<Ui
 // A mock launch represents the same signed-in person and seeded requests, so
 // account-scoped device preferences and drafts behave like a real attachment.
 const mockUserId = UserIdSchema.parse("usr_0192f4a1-0000-4000-8000-000000000001");
-const mockMainWorkspaceId = "wsp_00000000-0000-4000-8000-000000000001";
+const mockMainDeploymentId = "dep_00000000-0000-4000-8000-000000000001";
 
 /** Where the preview is served; a pairing names it as the address Chrome connects to. */
 function mockPreviewOrigin(): string {
@@ -449,7 +448,7 @@ export const mockAgentPhoneAccessRequest = RequestSchema.parse({
   originatingOccurrenceId: null,
   originatingRunId: "run_00000000-0000-4000-8000-000000000001",
   originatingThreadId: mockComputerUseThreadId,
-  originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+
   payload: {
     access: "read-write",
     app: null,
@@ -458,7 +457,6 @@ export const mockAgentPhoneAccessRequest = RequestSchema.parse({
     reason: "Check the order status in the delivery app.",
     runnerId: mockAgentPhoneRunnerId,
     setupRequestId: "0192f4a1-9999-4000-8000-000000000009",
-    workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
   },
   presentation: {
     detail:
@@ -468,12 +466,11 @@ export const mockAgentPhoneAccessRequest = RequestSchema.parse({
     title: "Wants to see and control Pixel 7",
   },
   requestedBy: mockUserId,
-  requiredActor: "workspace-owner",
+  requiredActor: "owner",
   resolvedAt: null,
   resolvedBy: null,
   response: null,
   status: "pending",
-  targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
 });
 /**
  * Where the preview's Host says a phone reaches it, as the real Host builds
@@ -529,19 +526,6 @@ const MainIntegrationAccessResponseSchema = z.strictObject({
     }),
   ]),
 });
-const ProjectIntegrationAccessResponseSchema = z.strictObject({
-  kind: z.literal("external"),
-  value: z.discriminatedUnion("decision", [
-    DeclinedIntegrationAccessDecisionSchema,
-    z.strictObject({
-      access: z.enum(["read", "read-write"]),
-      alias: z.string(),
-      connectionId: z.string().nullable(),
-      decision: z.literal("fulfilled"),
-      isDefault: z.boolean(),
-    }),
-  ]),
-});
 
 function mockHumanAuthor(): MessageEntry["author"] {
   return {
@@ -553,36 +537,32 @@ function mockHumanAuthor(): MessageEntry["author"] {
 }
 
 function mockAgentAuthor(runId: string, threadId: string): MessageEntry["author"] {
-  return {
+  return MessageAuthorSchema.parse({
     displayName: "Opensteer",
     kind: "agent",
     runId,
     threadId,
-    workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
-    workspaceName: "Main",
-  } as MessageEntry["author"];
+  });
 }
 
 /** A cross-thread arrival: authorship is the sending thread, not this one. */
 function mockCrossThreadAuthor(): MessageEntry["author"] {
-  return {
+  return MessageAuthorSchema.parse({
     displayName: "Prepare the product launch",
     kind: "agent",
     runId: "run_00000000-0000-4000-8000-000000000003",
     threadId: "thr_00000000-0000-4000-8000-000000000003",
-    workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
-    workspaceName: "Customer launch",
-  } as MessageEntry["author"];
+  });
 }
 
 function mockTriggerAuthor(): MessageEntry["author"] {
-  return {
+  return MessageAuthorSchema.parse({
     displayName: "Nightly typecheck",
     kind: "trigger",
     occurrenceId: "toc_00000000-0000-4000-8000-000000000001",
     source: "schedule",
     triggerId: mockNightlyTriggerId,
-  } as MessageEntry["author"];
+  });
 }
 const mockCodexHarnessInstanceId = "hin_00000000-0000-4000-8000-000000000001";
 const mockClaudeHarnessInstanceId = "hin_00000000-0000-4000-8000-000000000002";
@@ -1384,55 +1364,50 @@ function mockAccountCatalog(harness: HarnessSummary, ready: boolean): HarnessIns
   });
 }
 
-interface MockWorkspaceFile {
+interface MockFolderFile {
   content: string | null;
   path: string;
   type: "directory" | "file";
 }
 
-const mockWorkspaceFiles: Readonly<Record<string, readonly MockWorkspaceFile[]>> = {
-  "wsp_00000000-0000-4000-8000-000000000003": [
-    { content: null, path: "reports", type: "directory" },
-    {
-      content: "# August reconciliation\n\nPending review.",
-      path: "reports/august.md",
-      type: "file",
-    },
-  ],
-  "wsp_00000000-0000-4000-8000-000000000002": [
-    { content: null, path: "briefs", type: "directory" },
-    {
-      content: "# Launch brief\n\nOpensteer gives everyday teams durable AI workspaces.",
-      path: "briefs/launch.md",
-      type: "file",
-    },
-  ],
-  "wsp_00000000-0000-4000-8000-000000000001": [
-    { content: null, path: "apps", type: "directory" },
-    { content: null, path: "apps/host", type: "directory" },
-    { content: null, path: "apps/web", type: "directory" },
-    { content: null, path: "docs", type: "directory" },
-    {
-      content:
-        "# Opensteer architecture\n\nThe Host owns durable product truth. Runners own execution. Workspaces own files and memory.",
-      path: "docs/architecture.md",
-      type: "file",
-    },
-    { content: null, path: "packages", type: "directory" },
-    { content: null, path: "packages/protocol", type: "directory" },
-    { content: null, path: "packages/protocol/src", type: "directory" },
-    {
-      content: "export interface HostClient {\n  subscribe(listener: () => void): () => void;\n}\n",
-      path: "packages/protocol/src/client.ts",
-      type: "file",
-    },
-    {
-      content: '{\n  "name": "opensteer",\n  "private": true\n}\n',
-      path: "package.json",
-      type: "file",
-    },
-  ],
-};
+const mockFolderFiles: readonly MockFolderFile[] = [
+  { content: null, path: "reports", type: "directory" },
+  {
+    content: "# August reconciliation\n\nPending review.",
+    path: "reports/august.md",
+    type: "file",
+  },
+  { content: null, path: "briefs", type: "directory" },
+  {
+    content:
+      "# Launch brief\n\nOpensteer runs tasks on your computer and connects your agent to team channels.",
+    path: "briefs/launch.md",
+    type: "file",
+  },
+  { content: null, path: "apps", type: "directory" },
+  { content: null, path: "apps/host", type: "directory" },
+  { content: null, path: "apps/web", type: "directory" },
+  { content: null, path: "docs", type: "directory" },
+  {
+    content:
+      "# Opensteer architecture\n\nThe Host owns durable product truth. Runners own execution. Files stay in their personal folders.",
+    path: "docs/architecture.md",
+    type: "file",
+  },
+  { content: null, path: "packages", type: "directory" },
+  { content: null, path: "packages/protocol", type: "directory" },
+  { content: null, path: "packages/protocol/src", type: "directory" },
+  {
+    content: "export interface HostClient {\n  subscribe(listener: () => void): () => void;\n}\n",
+    path: "packages/protocol/src/client.ts",
+    type: "file",
+  },
+  {
+    content: '{\n  "name": "opensteer",\n  "private": true\n}\n',
+    path: "package.json",
+    type: "file",
+  },
+];
 
 function encodeMockFileKey(path: string): string {
   const binary = Array.from(new TextEncoder().encode(path.replaceAll("/", "\0")), (byte) =>
@@ -1441,8 +1416,8 @@ function encodeMockFileKey(path: string): string {
   return globalThis.btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-function mockFileForKey(workspaceId: string, key: string): MockWorkspaceFile | undefined {
-  return mockWorkspaceFiles[workspaceId]?.find((file) => encodeMockFileKey(file.path) === key);
+function mockFileForKey(key: string): MockFolderFile | undefined {
+  return mockFolderFiles.find((file) => encodeMockFileKey(file.path) === key);
 }
 
 interface ActiveMockRun {
@@ -1468,11 +1443,9 @@ interface PendingMockInput {
   message: Message;
 }
 
-/** What a task Home hands out in the preview does, from the ask to Home's answer. */
 interface MockTaskScript {
-  /** Home's one sentence as it hands the work on. */
   readonly accepted: string;
-  /** Home's answer once the task's result is back. */
+
   readonly answer: string;
   /** A step the task will not take without asking, and what follows a no. */
   readonly decision: {
@@ -1494,159 +1467,6 @@ interface MockTaskScript {
     readonly tool: { readonly name: string; readonly namespace: string };
   }[];
   readonly title: string;
-}
-
-const mockWebSearch = { name: "web_search", namespace: "codex" } as const;
-
-const mockMattressTask: MockTaskScript = {
-  accepted: "I’ll compare the best mattresses in the browser and bring the shortlist back here.",
-  answer:
-    "The comparison is back. For side sleeping, the **Helix Midnight Luxe** ($1,749) is the pick: it’s zoned to take pressure off your shoulder, and returns are free for 100 nights. If you’d rather spend less, the **Nectar Premier** ($1,149) is the best value, and the **Saatva Classic** suits you if you prefer springs. Want me to check delivery dates for one of them?",
-  decision: null,
-  note: "Heads up: Helix’s 20% sale ends Sunday, so the Helix prices I’m comparing include it.",
-  objective:
-    "Research the best mattresses for a side sleeper under $2,000. Check current prices, trial length and return costs on each brand’s own site, and bring back a shortlist of three with one line on each.",
-  result:
-    "**Shortlist for a side sleeper under $2,000**\n\n1. **Helix Midnight Luxe**: $1,749 (queen). Zoned support that relieves the shoulder; 100-night trial, free returns.\n2. **Saatva Classic, Plush Soft**: $1,995. Coil-on-coil with a pillow top; 365-night trial, $99 return pickup.\n3. **Nectar Premier**: $1,149. Memory foam and the best value; 365-night trial, free returns.\n\nPrices checked on each brand’s site today.",
-  steps: [
-    {
-      arguments: { url: "https://www.google.com" },
-      output: "Opened a browser.",
-      tool: { name: "browser_session_open", namespace: "opensteer" },
-    },
-    {
-      arguments: { query: "best mattress for side sleepers under $2000" },
-      output: "Helix Midnight Luxe, Saatva Classic, Nectar Premier, Purple Plus…",
-      tool: mockWebSearch,
-    },
-    {
-      arguments: {
-        action: { type: "openPage", url: "https://helixsleep.com/products/midnight-luxe" },
-      },
-      output: "Helix Midnight Luxe, queen $1,749. 100-night trial.",
-      tool: mockWebSearch,
-    },
-    {
-      arguments: {
-        action: { type: "openPage", url: "https://www.saatva.com/mattresses/saatva-classic" },
-      },
-      output: "Saatva Classic, queen $1,995. 365-night home trial.",
-      tool: mockWebSearch,
-    },
-  ],
-  title: "Compare mattresses",
-};
-
-const mockBookingTask: MockTaskScript = {
-  accepted: "I’ll find a table for four at Nopa on Friday and check with you before booking.",
-  answer:
-    "You’re booked at **Nopa on Friday at 7:30 pm** for four. The confirmation is in your email.",
-  decision: {
-    accept: "Book it",
-    decline: "Don’t book",
-    declinedAnswer:
-      "I didn’t book it. Nopa still has 7:30 pm open on Friday if you change your mind.",
-    declinedResult: "Not booked. Friday at 7:30 pm is still open at Nopa.",
-    detail:
-      "Submits the reservation on opentable.com. Nopa holds $50 on your card and releases it at the meal.",
-    title: "Book Nopa for 4 at 7:30 pm on Friday",
-  },
-  note: null,
-  objective:
-    "Book a table for four at Nopa this Friday around 7:30 pm. Ask before submitting anything that holds a card.",
-  result:
-    "Booked: **Nopa, Friday at 7:30 pm, 4 people**. The confirmation is in your email; the $50 hold is released at the meal.",
-  steps: [
-    {
-      arguments: { query: "Nopa San Francisco reservations Friday" },
-      output: "Nopa · OpenTable · 560 Divisadero St",
-      tool: mockWebSearch,
-    },
-    {
-      arguments: {
-        action: { type: "openPage", url: "https://www.opentable.com/r/nopa-san-francisco" },
-      },
-      output: "Friday: 7:00 pm, 7:30 pm and 9:15 pm open for 4.",
-      tool: mockWebSearch,
-    },
-  ],
-  title: "Book a table for Friday",
-};
-
-/** Home hands an ask on when it is research or an errand; anything else it answers itself. */
-function mockTaskScript(body: string): MockTaskScript | null {
-  if (/\bmattress/i.test(body)) return mockMattressTask;
-  if (/\b(book|reserve)\b/i.test(body)) return mockBookingTask;
-  if (!/\b(research|compare|look into|find out)\b/i.test(body)) return null;
-  const ask = body
-    .trim()
-    .replace(/^(can|could|would) you\s+|^please\s+/i, "")
-    .replace(/[?.!]+$/, "");
-  const title = `${ask.charAt(0).toUpperCase()}${ask.slice(1)}`.slice(0, 60);
-  return {
-    ...mockMattressTask,
-    accepted: `I’ll ${ask} and bring what I find back here.`,
-    answer: "The research is back: three sources agree on the main points.",
-    note: null,
-    objective: `${title}. Bring back a short summary with sources.`,
-    result: `**${title}**\n\nThree sources agree on the main points; the details are in this task.`,
-    steps: mockMattressTask.steps
-      .slice(0, 2)
-      .map((step) => (step.tool === mockWebSearch ? { ...step, arguments: { query: ask } } : step)),
-    title,
-  };
-}
-
-function mockDelegateCall(
-  runId: string,
-  assignment: AssignmentView,
-  title: string,
-  workspaceId: string,
-): ToolEntry {
-  const createdAt = assignment.createdAt;
-  return {
-    arguments: { task: assignment.objective, title },
-    callId: "call-delegate-1",
-    completedAt: createdAt,
-    createdAt,
-    id: `tool:${runId}:call-delegate-1`,
-    integration: null,
-    isError: false,
-    kind: "tool",
-    output: {
-      text: JSON.stringify({
-        assignment: { id: assignment.id },
-        thread: { id: assignment.workerThreadId, workspaceId },
-      }),
-    },
-    runId,
-    state: "done",
-    streamText: "",
-    tool: { name: "delegate_task", namespace: "opensteer" },
-  };
-}
-
-function mockTaskStep(
-  runId: string,
-  index: number,
-  step: MockTaskScript["steps"][number],
-  createdAt: string,
-): ToolEntry {
-  return {
-    arguments: step.arguments,
-    callId: `call-task-${index}`,
-    completedAt: null,
-    createdAt,
-    id: `tool:${runId}:call-task-${index}`,
-    integration: null,
-    isError: false,
-    kind: "tool",
-    output: undefined,
-    runId,
-    state: "running",
-    streamText: "",
-    tool: { ...step.tool },
-  };
 }
 
 /**
@@ -1725,7 +1545,7 @@ const mockMachines: readonly MachineSummary[] = [
     fullDiskAccess: true,
     id: "rnr_11111111-1111-4111-8111-111111111111",
     lastSeenAt: null,
-    localWorkspaces: 2,
+
     modules: {
       agents: { checkedAt: null, detail: null, readiness: "ready" },
       browser: { checkedAt: null, detail: null, readiness: "ready" },
@@ -1734,12 +1554,11 @@ const mockMachines: readonly MachineSummary[] = [
     },
     name: "Mac mini",
     ownership: "deployment",
-    ownerName: null,
+
     pinnedThreads: 3,
     revocable: false,
     status: "online",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
   },
   {
     tabOpenedAt: null,
@@ -1809,19 +1628,18 @@ const mockMachines: readonly MachineSummary[] = [
     fullDiskAccess: false,
     id: "rnr_33333333-3333-4333-8333-333333333333",
     lastSeenAt: "2026-09-13T08:12:00.000Z",
-    localWorkspaces: 0,
+
     modules: {
       integrations: { checkedAt: null, detail: null, readiness: "ready" },
       shell: { checkedAt: null, detail: null, readiness: "ready" },
     },
     name: "Alex's MacBook Pro",
     ownership: "mine",
-    ownerName: null,
+
     pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
-    unlinkedLocalFolders: 1,
   },
   {
     tabOpenedAt: null,
@@ -1844,19 +1662,18 @@ const mockMachines: readonly MachineSummary[] = [
     fullDiskAccess: true,
     id: "rnr_44444444-4444-4444-8444-444444444444",
     lastSeenAt: "2026-09-16T21:40:00.000Z",
-    localWorkspaces: 0,
+
     modules: {
       integrations: { checkedAt: null, detail: null, readiness: "unavailable" },
       shell: { checkedAt: null, detail: null, readiness: "unavailable" },
     },
     name: "Studio iMac",
     ownership: "mine",
-    ownerName: null,
+
     pinnedThreads: 0,
     revocable: true,
     status: "offline",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
   },
   {
     tabOpenedAt: mockAgentPhoneSession.openedAt,
@@ -1890,16 +1707,15 @@ const mockMachines: readonly MachineSummary[] = [
     fullDiskAccess: null,
     id: mockAgentPhoneRunnerId,
     lastSeenAt: null,
-    localWorkspaces: 0,
+
     modules: { integrations: { checkedAt: null, detail: null, readiness: "ready" } },
     name: "Pixel 7",
     ownership: "mine",
-    ownerName: null,
+
     pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: "0.1.117",
-    unlinkedLocalFolders: 0,
   },
   {
     tabOpenedAt: null,
@@ -1920,16 +1736,15 @@ const mockMachines: readonly MachineSummary[] = [
     fullDiskAccess: null,
     id: "rnr_22222222-2222-4222-8222-222222222222",
     lastSeenAt: "2026-08-12T19:04:00.000Z",
-    localWorkspaces: 0,
+
     modules: { messaging: { checkedAt: null, detail: null, readiness: "unavailable" } },
     name: "Slack runtime",
     ownership: "deployment",
-    ownerName: null,
+
     pinnedThreads: 0,
     revocable: true,
     status: "offline",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
   },
 ];
 
@@ -1947,31 +1762,24 @@ export interface MockHostClientOptions {
   subagents?: "seeded" | "absent" | MockSubagentScene;
   desktopUpdates?: MockDesktopUpdateScenario;
   specialistPlugins?: { id: string; name: string; manifest: SpecialistManifest }[];
-  /** Plugins an agent made in Main, from a folder in that Workspace. */
+
   agentPlugins?: { id: string; name: string }[];
+  memoryPasses?: "active" | "off" | "waiting-for-model";
   /** `seeded`: devices reached through agent-made plugins, with their setup tasks. */
   devices?: "seeded" | "absent";
   readonly browserPreferencesStorage?: BrowserPreferencesStorage;
-  readonly sharedTaskDoneAvailable?: boolean;
   readonly quietTasksAvailable?: boolean;
   /** The platform's lifecycle, reported to display sockets as the real client reports it. */
   readonly lifecycle?: ClientLifecycle;
   /** Automations covering every state the Automations page shows; seeded by default. */
   automations?: "seeded" | "absent";
-  memoryPasses?: "active" | "off" | "waiting-for-model";
   /** `none`: no account could run background work, for Settings' empty state. */
   automaticModels?: "seeded" | "edited" | "excluded" | "none";
   automaticModelsAvailable?: boolean;
   places?: "seeded" | "absent";
-  /** Development fixture for the first message before a Chat exists. */
-  initialHome?: "seeded" | "absent";
-  /**
-   * `first-run`: a reader who has asked nothing yet — no Chat, no tasks, no
-   * places — for the screens a first visit sees.
-   */
+
   world?: "seeded" | "first-run" | "busy" | "stress";
   /** The team this Host plays; `absent`, today's Hosts, by default. */
-  team?: MockTeamScenario;
   latencyMs?: number;
   now?: () => Date;
   pendingRequests?: readonly Request[];
@@ -2016,7 +1824,6 @@ function mockWatchActivation(
     stdoutTail: "",
     triggerId: trigger.id,
     updatedAt: now.toISOString(),
-    workspaceId: trigger.workspaceId,
   });
 }
 
@@ -2071,9 +1878,90 @@ function mockVoiceEnded(message: string, reason: "voice-ended" | "voice-refused"
  * member without teaching the preview about it is a compile error rather than a
  * page that fails at runtime in `VITE_OPENSTEER_USE_MOCK`.
  */
-function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
+function mockNeedsYou(
+  snapshot: Pick<
+    PublicHostSnapshot,
+    "threads" | "tasks" | "activeTasks" | "doneTasks" | "waitingRequests"
+  >,
+  before?: string,
+  limit = 50,
+) {
+  const rows = snapshot.waitingRequests.flatMap(({ request }) => {
+    const thread = snapshot.threads.find(({ id }) => id === request.originatingThreadId);
+    return thread
+      ? [
+          {
+            request,
+            originThreadId: thread.id,
+            navigationThreadId: listedRowThreadId(snapshot, thread.id),
+            purpose: thread.purpose,
+            title: thread.title,
+          },
+        ]
+      : [];
+  });
+  const start = before ? Number(before) : 0;
+  if (!Number.isSafeInteger(start) || start < 0 || start > rows.length)
+    throw new Error("Invalid Needs-you cursor.");
+  const entries = rows
+      .slice(start, start + limit)
+      .map((entry) => hostApi["needsYou.get"].success.shape.entries.element.parse(entry)),
+    end = start + entries.length;
   return {
-    ...client.team.handlers(),
+    count: rows.length,
+    entries,
+    window: {
+      ...mockWindow(entries.length),
+      hasMore: end < rows.length,
+      nextBefore: end < rows.length ? String(end) : null,
+      totalItems: rows.length,
+    },
+  };
+}
+
+function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
+  const handlers: Partial<HostApiHandlers> = {
+    "attention.get": async () => {
+      const snapshot = client.getSnapshot();
+      return rpcSuccess({
+        needsYou: snapshot.waitingRequests.length,
+        unread: snapshot.threads.some(
+          (thread) =>
+            thread.listed &&
+            thread.purpose === "task" &&
+            thread.status !== "archived" &&
+            isThreadUnread(snapshot.threadReadStates[thread.id]),
+        ),
+      });
+    },
+    "needsYou.get": async (input) =>
+      rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
+    "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
+    "teams.channelFolder.get": async ({ teamId, channelId }) =>
+      rpcSuccess({
+        folder:
+          client.teamFolders.get(JSON.stringify([teamId, channelId])) ??
+          client.getSnapshot().personalSettings!.agentHome,
+      }),
+    "teams.replyTask.get": async () => rpcSuccess({ taskId: null, throughSequence: null }),
+    "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
+      rpcSuccess(
+        hostApi["teams.threadTask.get"].success.parse({
+          taskId:
+            client
+              .getSnapshot()
+              .threads.find(
+                ({ teamOrigin }) =>
+                  teamOrigin?.teamId === teamId &&
+                  teamOrigin.channelId === channelId &&
+                  teamOrigin.threadRootId === threadRootId,
+              )?.id ?? null,
+        }),
+      ),
+    "folder.files.list": async ({ folder, ...input }) =>
+      rpcSuccess(await client.listFolderFiles(folder, input)),
+    "folder.files.preview": async ({ folder, fileKey }) =>
+      rpcSuccess(await client.previewFolderFile(folder, fileKey)),
     "connections.list": async () => rpcSuccess({ connections: client.listConnections() }),
     "connections.authorization.get": async ({ requestId }) =>
       rpcSuccess(client.connectionConsent(requestId)),
@@ -2099,15 +1987,9 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
       rpcSuccess(
         hostApi["auth.config"].success.parse(requiredMockIdentityConfig(client.getSnapshot())),
       ),
-    // Accepting an invitation admits a second identity into a Workspace, and
+
     // the preview only ever has the one owner.
-    "auth.invitation.accept": unsupportedMockRpc,
-    "auth.invitation.exchange": async () =>
-      rpcSuccess(
-        hostApi["auth.invitation.exchange"].success.parse({
-          preview: await client.exchangeInvitation(),
-        }),
-      ),
+
     "auth.native.complete": async (input) =>
       rpcSuccess({ url: await client.completeNativeAuthorization(input.oauthQuery, input.accept) }),
     "auth.oidc.begin": async (input) =>
@@ -2201,27 +2083,27 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "channels.get": async () =>
       rpcSuccess(hostApi["channels.get"].success.parse(await client.loadChannels())),
     "plugins.overview.get": async () => {
-      const workspaceId = WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id);
-      client.settings.syncServices(workspaceId, await client.loadIntegrationPlatform());
-      client.settings.syncPackages(workspaceId, await client.listPlugins(workspaceId), (id) =>
+      const deploymentId = DeploymentIdSchema.parse(client.getSnapshot().deploymentId!);
+      client.settings.syncServices(deploymentId, await client.loadIntegrationPlatform());
+      client.settings.syncPackages(deploymentId, await client.listPlugins(deploymentId), (id) =>
         client.pluginDevice(id),
       );
-      const overview = client.settings.overview(workspaceId);
+      const overview = client.settings.overview(deploymentId);
       return rpcSuccess({ ...overview, rows: overview.rows.map(listedMockRow) });
     },
     "plugins.detail.get": async ({ target }) => {
       try {
         client.settings.syncServices(
-          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
           await client.loadIntegrationPlatform(),
         );
         client.settings.syncPackages(
-          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
           await client.listPlugins(),
           (id) => client.pluginDevice(id),
         );
         const detail = client.settings.detail(
-          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
           target,
         );
         return rpcSuccess({ ...detail, row: listedMockRow(detail.row) });
@@ -2265,7 +2147,6 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           .map(({ request }) => ({
             requestId: request.id,
             title: request.presentation.title,
-            workspaceId: request.targetWorkspaceId,
           })),
       });
     },
@@ -2302,8 +2183,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "voice.stop": async () => rpcSuccess({}),
     "integration.authorization.get": async (input) =>
       rpcSuccess(await client.getIntegrationAuthorization(input.attemptId)),
-    "integration.grants.list": async (input) =>
-      rpcSuccess({ grants: await client.loadIntegrationGrants(input.workspaceId) }),
+    "integration.grants.list": async () =>
+      rpcSuccess({
+        grants: await client.loadIntegrationGrants(client.getSnapshot().deploymentId!),
+      }),
     "computer.app.windows": async (input) => {
       try {
         return rpcSuccess({
@@ -2343,10 +2226,10 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           requests: client.listComputerAppSetupRequests(),
         }),
       ),
-    "specialist.list": async (input) =>
-      rpcSuccess({ specialists: client.listSpecialists(input.workspaceId) }),
-    "plugin.list": async (input) =>
-      rpcSuccess({ plugins: await client.listPlugins(input.workspaceId) }),
+    "specialist.list": async () =>
+      rpcSuccess({ specialists: client.listSpecialists(client.getSnapshot().deploymentId!) }),
+    "plugin.list": async () =>
+      rpcSuccess({ plugins: await client.listPlugins(client.getSnapshot().deploymentId!) }),
     "integration.platform.get": async () =>
       rpcSuccess(
         hostApi["integration.platform.get"].success.parse(await client.loadIntegrationPlatform()),
@@ -2361,26 +2244,8 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     // The preview holds every task, so a page is a slice of what it holds.
     "tasks.list": async (input) => {
       const snapshot = client.getSnapshot();
-      if (
-        input.workspaceId &&
-        !snapshot.workspaces.some((workspace) => workspace.id === input.workspaceId)
-      ) {
-        return mockRefusal(
-          new HostClientRequestError({
-            code: "not_found",
-            message: "Workspace not found",
-            status: 404,
-          }),
-        );
-      }
-      const projects = new Set(
-        snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
-      );
       const entries = (snapshot.tasks?.entries ?? []).filter(
         ({ thread }) =>
-          (input.workspaceId
-            ? thread.workspaceId === input.workspaceId
-            : !input.done || !projects.has(thread.workspaceId)) &&
           (!input.active || thread.status === "running" || thread.status === "waiting") &&
           (!input.done || thread.doneAt !== null),
       );
@@ -2675,51 +2540,16 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
     "triggers.list": async (input) =>
       rpcSuccess(
         hostApi["triggers.list"].success.parse({
-          triggers: client.listTriggers(input.workspaceId, input.anchorThreadId, input.systemRole),
+          triggers: client.listTriggers(undefined, input.anchorThreadId, input.systemRole),
         }),
       ),
-    "workspace.catalog.list": async () => {
-      const snapshot = client.getSnapshot();
-      return rpcSuccess(
-        hostApi["workspace.catalog.list"].success.parse({
-          notificationPreferences: snapshot.workspaces.map(({ id }) =>
-            client.workspaceNotificationPreference(id),
-          ),
-          window: snapshot.workspaceWindow,
-          workspaces: snapshot.workspaces.map(mockWorkspaceView),
-        }),
-      );
-    },
-    "workspace.files.list": async (input) =>
-      rpcSuccess(
-        hostApi["workspace.files.list"].success.parse(
-          await client.listWorkspaceFiles(input.workspaceId, { parentKey: input.parentKey }),
-        ),
-      ),
-    "workspace.files.preview": async (input) => {
-      const preview = await client.previewWorkspaceFile(input.workspaceId, input.fileKey);
-      return rpcSuccess({
-        bytes: new TextEncoder().encode(preview.content ?? ""),
-        metadata: preview.metadata,
-      });
-    },
-    "workspace.invitations.list": async (input) =>
-      rpcSuccess(
-        hostApi["workspace.invitations.list"].success.parse({
-          invitations: (await client.loadWorkspaceSharing(input.workspaceId)).invitations,
-        }),
-      ),
-    "workspace.members.list": async (input) =>
-      rpcSuccess(
-        hostApi["workspace.members.list"].success.parse({
-          members: (await client.loadWorkspaceSharing(input.workspaceId)).members,
-        }),
-      ),
-    // Every Workspace is already resident in memory, so there is nothing to warm.
-    "workspace.prefetch": async () => rpcSuccess({}),
+
     "thread.messages.list": async (input) => rpcSuccess(client.listThreadMessages(input)),
     "thread.readState.get": async ({ threadId }) => rpcSuccess(client.threadReadState(threadId)),
-  } satisfies HostApiHandlers;
+  };
+  return new Proxy(handlers, {
+    get: (target, name) => Reflect.get(target, name) ?? unsupportedMockRpc,
+  }) as HostApiHandlers;
 }
 
 /** A queued message joins the conversation where a Run takes it, as the Host places it. */
@@ -2747,21 +2577,37 @@ function placeMockMessage(
   return [...entries.filter((candidate) => candidate !== entry), { ...entry, runId }];
 }
 
-async function executeMockCommand(client: MockHostState, command: HostApiCommand) {
+async function executeMockCommand(
+  client: MockHostState,
+  command: HostApiCommand,
+): Promise<Awaited<ReturnType<HostApiClient["commands.dispatch"]>>> {
   switch (command.type) {
-    case "team.project.create":
-    case "team.access.apply":
-    case "team.access.selfGrant":
-    case "team.member.change":
-    case "team.connection.revoke":
-    case "team.project.settings.set":
-    case "team.invitation.create":
-    case "team.invitation.revoke":
-      return rpcSuccess(
-        await client.team.command(command, async (name) =>
-          WorkspaceIdSchema.parse((await client.createWorkspace({ name })).id),
-        ),
-      );
+    case "teams.link.join": {
+      const offer = parseTeamLinkOffer(command.link);
+      if (!offer) throw new Error("Invalid team link.");
+      const link = PersonalTeamLinkSchema.parse({
+        teamId: offer.teamId,
+        hostInstanceId: createId("hostInstance"),
+        origin: offer.origin,
+        teamName: "Acme",
+        remoteLinkId: createId("teamLink"),
+        ownerUserId: mockUserId,
+        state: "active",
+        lastContactAt: new Date().toISOString(),
+      });
+      client.teamLinks.set(link.teamId, link);
+      return rpcSuccess({ type: command.type, link });
+    }
+    case "teams.link.leave":
+      client.teamLinks.delete(command.teamId);
+      for (const key of client.teamFolders.keys())
+        if (JSON.parse(key)[0] === command.teamId) client.teamFolders.delete(key);
+      return rpcSuccess({ type: command.type });
+    case "teams.channelFolder.set":
+      if (!client.teamLinks.has(command.teamId)) throw new Error("Team link missing.");
+      client.teamFolders.set(JSON.stringify([command.teamId, command.channelId]), command.folder);
+      return rpcSuccess({ type: command.type });
+
     case "phone.tab.close":
       client.closePhoneTab(command.machineId);
       return rpcSuccess(hostApi["commands.dispatch"].success.parse({ type: command.type }));
@@ -2775,10 +2621,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         }),
       );
     case "settings.plugin.enabled.set":
-    case "settings.plugin.placement.set":
       return rpcSuccess(
         client.settings.mutate(
-          WorkspaceIdSchema.parse(client.getSnapshot().workspaces[0]!.id),
+          DeploymentIdSchema.parse(client.getSnapshot().deploymentId!),
           command,
         ),
       );
@@ -2787,85 +2632,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "attachment.upload.discard":
       client.discardAttachment(command.attachmentId);
       return rpcSuccess({ type: command.type });
-    case "workspace.create":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(
-            await client.createWorkspace({
-              ...(command.icon ? { icon: command.icon } : {}),
-              name: command.name,
-            }),
-          ),
-        }),
-      );
-    case "workspace.icon.set":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(
-            await client.setWorkspaceIcon(command.workspaceId, command.icon),
-          ),
-        }),
-      );
-    case "workspace.color.set":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(
-            await client.setWorkspaceColor(command.workspaceId, command.color),
-          ),
-        }),
-      );
-    case "workspace.adoptRelocated":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(await client.adoptRelocated(command.workspaceId)),
-        }),
-      );
-    case "workspace.storage.retry":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(await client.retryWorkspaceStorage(command.workspaceId)),
-        }),
-      );
-    case "workspace.delete":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(await client.deleteWorkspace(command.workspaceId)),
-        }),
-      );
-    case "workspace.deletion.recover":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          workspace: mockWorkspaceView(await client.recoverWorkspace(command.workspaceId)),
-        }),
-      );
-    case "workspace.invitation.create": {
-      const result = await client.createWorkspaceInvitation(command);
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({ ...result, type: command.type }),
-      );
-    }
-    case "workspace.invitation.revoke":
-      await client.revokeWorkspaceInvitation();
-      return rpcSuccess({ type: command.type });
-    case "workspace.member.update":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          membership: await client.updateWorkspaceMember({
-            ...(command.role ? { role: command.role } : {}),
-            ...(command.state ? { state: command.state } : {}),
-            userId: command.userId,
-            workspaceId: command.workspaceId,
-          }),
-          type: command.type,
-        }),
-      );
+
     case "thread.create": {
       // A repeat under the same key is answered with the Thread it made, as
       // the Host does, so a creation whose answer was lost can be retried.
@@ -2886,20 +2653,14 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       const parent = command.parentThreadId
         ? client.getSnapshot().threads.find((thread) => thread.id === command.parentThreadId)
         : undefined;
-      const priorHomeId = command.home
-        ? client.getSnapshot().workspaces.find((workspace) => workspace.id === command.workspaceId)
-            ?.homeThreadId
-        : null;
       const thread = await client.createThread({
         accessMode: command.accessMode ?? parent?.accessMode ?? DEFAULT_THREAD_ACCESS_MODE,
         environmentId: command.environmentId,
         harnessInstanceId: command.harnessInstanceId,
         modelSelection: command.modelSelection,
-        ...(command.home ? { home: true } : {}),
         ...(command.generateTitle ? { generateTitle: true } : {}),
         ...(command.parentThreadId ? { parentThreadId: command.parentThreadId } : {}),
-        title: command.home ? CHAT_THREAD_TITLE : command.title,
-        workspaceId: command.workspaceId,
+        title: command.title,
       });
       client.recordThreadCreation(idempotencyKey, request, thread.id);
       return rpcSuccess(
@@ -2907,7 +2668,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
           asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
           thread: mockThread(thread),
           type: command.type,
-          wasDuplicate: Boolean(command.home && priorHomeId === thread.id),
+          wasDuplicate: false,
         }),
       );
     }
@@ -2977,30 +2738,9 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       const state = client.markThreadRead(command.threadId, command.throughSequence);
       return rpcSuccess({ state, type: command.type });
     }
-    case "thread.done.set":
-      return {
-        ok: false as const,
-        error: HostApiErrorSchema.parse({
-          code: "bad_request",
-          reason: "shared-task-done-required",
-          message:
-            "Update Opensteer on this device to mark tasks Done. Done now stops the task for everyone.",
-          retryable: false,
-        }),
-      };
-    case "thread.shared-done.set":
-      return rpcSuccess({
-        thread: mockThread(await client.setTaskDone(command.threadId, command.done)),
-        asOfSequence: SequenceSchema.parse(String(client.getSnapshot().revision)),
-        wasDuplicate: false,
-        type: command.type,
-      });
-    case "workspace.notifications.update": {
-      const preference = client.setWorkspaceNotificationMute(command.workspaceId, command.muted);
-      return rpcSuccess({
-        ...preference,
-        type: command.type,
-      });
+    case "thread.done.set": {
+      await client.setTaskDone(command.threadId, command.done);
+      return rpcSuccess({ type: command.type, state: client.threadReadState(command.threadId) });
     }
     case "notification.preview.register":
       return rpcSuccess({
@@ -3219,11 +2959,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         ...(await client.createLocalRunnerEnrollment(command.name)),
         type: command.type,
       });
-    case "runner.enrollment.createManaged":
-      return rpcSuccess({
-        ...(await client.createManagedRunnerEnrollment(command.name)),
-        type: command.type,
-      });
+
     case "runner.enrollment.createPhone":
       return rpcSuccess({
         ...(await client.createPhoneRunnerEnrollment(
@@ -3322,20 +3058,23 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "specialist.list":
       return rpcSuccess({
         type: command.type,
-        specialists: client.listSpecialists(command.workspaceId),
+        specialists: client.listSpecialists(client.getSnapshot().deploymentId!),
       });
     case "specialist.add":
       return rpcSuccess({
         type: command.type,
-        specialist: await client.addSpecialist(command.workspaceId, command.pluginId),
+        specialist: await client.addSpecialist(
+          client.getSnapshot().deploymentId!,
+          command.pluginId,
+        ),
       });
     case "specialist.remove":
-      client.removeSpecialist(command.workspaceId, command.specialistId);
+      client.removeSpecialist(client.getSnapshot().deploymentId!, command.specialistId);
       return rpcSuccess({ type: command.type });
     case "plugin.list":
       return rpcSuccess({
         type: command.type,
-        plugins: await client.listPlugins(command.workspaceId),
+        plugins: await client.listPlugins(client.getSnapshot().deploymentId!),
       });
     case "plugin.update":
     case "plugin.remove":
@@ -3362,7 +3101,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         type: command.type,
       });
     case "integration.grant.revoke":
-      await client.revokeIntegrationGrant(command.workspaceId, command.grantId);
+      await client.revokeIntegrationGrant(client.getSnapshot().deploymentId!, command.grantId);
       return rpcSuccess({ type: command.type });
     case "channel.connection.create":
       await client.createChannelConnection({
@@ -3370,7 +3109,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         credentials: command.credentials,
         provider: command.provider,
         routingMode: command.routingMode,
-        workspaceId: command.workspaceId,
+        deploymentId: client.getSnapshot().deploymentId!,
       });
       return unsupportedMockRpc();
     case "channel.binding.create":
@@ -3405,7 +3144,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ type: command.type });
     case "browser.session.start": {
       const startedBrowser = await client.startBrowser(
-        command.workspaceId,
+        client.getSnapshot().deploymentId!,
         "profileId" in command.input
           ? { kind: "profile", profileId: command.input.profileId }
           : { kind: "fresh" },
@@ -3440,7 +3179,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       client.chrome.revoke(command.sourceId);
       return rpcSuccess({ type: command.type });
     case "browser.site.remove":
-      client.chrome.removeSite(command.workspaceId, command.site);
+      client.chrome.removeSite(client.getSnapshot().deploymentId!, command.site);
       return rpcSuccess({ type: command.type });
     case "browser.session.sign-in":
       return rpcSuccess({ outcome: client.signInBrowserSession(command), type: command.type });
@@ -3448,16 +3187,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       return rpcSuccess({ outcome: client.respondBrowserSignIn(command), type: command.type });
     case "browser.password-sign-in.respond":
       return rpcSuccess({ ...client.respondPasswordSignIn(command), type: command.type });
-    case "browser.profile.grant":
-      return rpcSuccess(
-        hostApi["commands.dispatch"].success.parse({
-          type: command.type,
-          grant: await client.grantBrowserProfile(command),
-        }),
-      );
-    case "browser.profileGrant.revoke":
-      await client.revokeBrowserProfileGrant(command.grantId);
-      return rpcSuccess({ type: command.type });
+
     case "browser.history.remove":
       client.places!.removeHistory(command.profileId, command.url);
       return rpcSuccess({ type: command.type });
@@ -3482,7 +3212,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
     case "computer.view.renew":
       if (!client.computerViews) return unsupportedMockRpc();
       return rpcSuccess({ type: command.type, view: client.computerViews.command(command) });
-    case "workspace.tabs.group": {
+    case "tabs.group": {
       const layout = client.tabGroups;
       const known = new Set(
         placeList(client.getSnapshot()).flatMap((place) =>
@@ -3535,7 +3265,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       );
       return rpcSuccess({ type: command.type, groupId, layout: client.tabGroups });
     }
-    case "workspace.tabs.ungroup":
+    case "tabs.ungroup":
       client.setTabGroups(
         arrangedBrowserTabLayout(
           {
@@ -3549,7 +3279,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         ),
       );
       return rpcSuccess({ type: command.type, layout: client.tabGroups });
-    case "workspace.tabs.move": {
+    case "tabs.move": {
       const result = moveBrowserTabs(
         browserTabArrangement(client.tabGroups, browserTabOrderTabs(client.browserTabs)),
         command,
@@ -3568,7 +3298,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       );
       return rpcSuccess({ type: command.type, layout: client.tabGroups });
     }
-    case "workspace.tabGroup.update": {
+    case "tabGroup.update": {
       if (!client.tabGroups.groups.some((group) => group.id === command.groupId))
         throw new Error("The group no longer exists.");
       const { title, color, collapsed } = command;
@@ -3588,7 +3318,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
       });
       return rpcSuccess({ type: command.type, layout: client.tabGroups });
     }
-    case "workspace.tabs.close": {
+    case "tabs.close": {
       const closed: string[] = [];
       const failed: { tabId: string; message: string }[] = [];
       for (const tabId of new Set(command.tabIds)) {
@@ -3604,7 +3334,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
           .getSnapshot()
           .browserSessions.find((session) => session.id === sessionId)?.catalog;
         try {
-          if (!catalog && place?.workspaceTab && place.workspaceTab.state !== "live") {
+          if (!catalog && place?.personalTab && place.personalTab.state !== "live") {
             const snapshot = client.getSnapshot();
             client.updatePlaces({
               ...snapshot,
@@ -3640,17 +3370,17 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         hostApi["commands.dispatch"].success.parse({ type: command.type, closed, failed }),
       );
     }
-    case "workspace.tab.reopen": {
+    case "tab.reopen": {
       if (!client.places) return unsupportedMockRpc();
       const result = client.places.reopen(command.idempotencyKey);
       client.setTabGroups(result.layout);
       return rpcSuccess(result);
     }
-    case "workspace.tab.activate":
+    case "tab.activate":
       return client.places
-        ? rpcSuccess(client.places.activateWorkspaceTab(command.tabId))
+        ? rpcSuccess(client.places.activatePersonalTab(command.tabId))
         : unsupportedMockRpc();
-    case "workspace.tab.close":
+    case "tab.close":
       return unsupportedMockRpc();
     case "browser.tab.open": {
       if (!client.places) return unsupportedMockRpc();
@@ -3704,6 +3434,7 @@ async function executeMockCommand(client: MockHostState, command: HostApiCommand
         }),
       );
   }
+  return unsupportedMockRpc();
 }
 
 function mockRpcContext(): HostApiServerContext {
@@ -3734,35 +3465,13 @@ function mockAuthenticatedSession(snapshot: HostSnapshot) {
   };
 }
 
-function mockWorkspaceView(workspace: WorkspaceSummary) {
-  return {
-    homeThreadId: workspace.homeThreadId,
-    voiceThreadId: workspace.voiceThreadId,
-    capacity: { kind: "host-filesystem" as const },
-    createdAt: workspace.updatedAt,
-    icon: workspace.icon,
-    ...(workspace.color === null ? {} : { color: workspace.color }),
-    id: workspace.id,
-    kind: workspace.kind,
-    location: {
-      environmentId: "env_00000000-0000-4000-8000-000000000001" as EnvironmentId,
-      kind: "machine" as const,
-      name: "Main runner",
-    },
-    name: workspace.name,
-    status: workspace.status,
-    storageIssue: workspace.storageIssue,
-    updatedAt: workspace.updatedAt,
-  };
-}
-
 function mockThread(thread: ThreadSummary): Thread {
   return ThreadSchema.parse({
     providerSessionId: thread.providerSessionId,
     doneAt: thread.doneAt,
     doneReason: thread.doneReason,
     accessMode: thread.accessMode,
-    inheritsMain: false,
+
     continuationIdentity: thread.continuationIdentity,
     askedAt: thread.askedAt,
     createdAt: thread.createdAt,
@@ -3776,13 +3485,14 @@ function mockThread(thread: ThreadSummary): Thread {
     modelSelection: thread.modelSelection,
     parentThreadId: thread.parentThreadId,
     pendingRequests: thread.pendingRequests,
-    role: thread.role,
+    purpose: thread.purpose,
     status: thread.status,
     title: thread.title,
     icon: thread.icon,
     ...(thread.color === null ? {} : { color: thread.color }),
     updatedAt: thread.updatedAt,
-    workspaceId: thread.workspaceId,
+    folder: thread.folder,
+    teamOrigin: thread.teamOrigin,
   });
 }
 
@@ -3894,40 +3604,35 @@ function mockHarnessRecord(
 function mockBootstrap(
   snapshot: HostSnapshot,
   sourceConfigs: ReadonlyMap<string, Readonly<Record<string, string>>>,
-  preference: (workspaceId: string) => WorkspaceNotificationPreference,
 ) {
-  if (!snapshot.deploymentShape) throw new Error("Mock deployment shape is missing.");
   const rows = mockBrowserRows(snapshot);
   return {
+    deploymentId: snapshot.deploymentId,
+    personalSettings: snapshot.personalSettings,
+    can: snapshot.can,
+    sessionId: snapshot.sessionId,
+    appTabs: snapshot.appTabs ?? [],
+    latestPlaces: [],
     browser: {
       available: snapshot.browserAvailable,
-      ...(snapshot.browserTabGroups
-        ? { tabGroupsVersion: 1, tabGroups: snapshot.browserTabGroups }
-        : {}),
-      workspaceTabRestoreVersion: snapshot.workspaceTabRestoreVersion,
+      tabGroupsVersion: 1,
+      tabGroups: snapshot.browserTabGroups,
+      tabRestoreVersion: snapshot.tabRestoreVersion,
       groups: { rows: rows.groups, complete: true },
       tabs: [...rows.tabs].map(([groupId, rows]) => ({ groupId, rows, complete: true })),
       placements: snapshot.browserPlacements,
-      profileGrants: snapshot.browserProfileGrants,
       profiles: snapshot.browserProfiles,
-      ...(snapshot.browserProfileHomes ? { profileHomes: snapshot.browserProfileHomes } : {}),
+      profileHomes: snapshot.browserProfileHomes,
       profileDeletions: snapshot.browserProfileDeletions,
     },
-    deploymentShape: snapshot.deploymentShape,
-    deploymentPolicy: snapshot.deploymentPolicy,
-    deploymentId: DeploymentIdSchema.parse(snapshot.deploymentId),
-    notificationPreferences: snapshot.workspaces.map(({ id }) => preference(id)),
     environments: snapshot.environments,
-    executionPreferences: snapshot.executionPreferences,
     harnesses: snapshot.harnesses.map((harness) => mockHarnessRecord(harness, sourceConfigs)),
-    homeWorkspace: snapshot.workspaces[0] ? mockWorkspaceView(snapshot.workspaces[0]) : null,
+    executionPreferences: snapshot.executionPreferences,
+    quietTaskDays: snapshot.quietTaskDays,
     identityConfig: requiredMockIdentityConfig(snapshot),
     machines: snapshot.machines,
-    sessionSurface: "canonical" as const,
+    sessionSurface: "canonical",
     user: snapshot.user,
-    workspaceSharingAvailable: snapshot.workspaceSharingAvailable,
-    workspaces: snapshot.workspaces.map(mockWorkspaceView),
-    workspaceWindow: snapshot.workspaceWindow,
   };
 }
 
@@ -3944,6 +3649,48 @@ const MockMacAnswerSchema = z.discriminatedUnion("kind", [
 type MockMacAnswer = z.output<typeof MockMacAnswerSchema>;
 
 export class MockHostClient implements HostClient {
+  deploymentSnapshot(sequence = String(this.getSnapshot().revision)) {
+    const snapshot = this.getSnapshot(),
+      page = (entries: readonly TaskEntry[]) => ({
+        readStates: entries
+          .slice(0, 100)
+          .map(({ thread }) => this.#state.threadReadState(thread.id)),
+        tasks: entries
+          .slice(0, 100)
+          .map((entry) => ({ ...entry, thread: mockThread(entry.thread) })),
+        window: {
+          ...mockWindow(Math.min(100, entries.length)),
+          hasMore: entries.length > 100,
+          nextBefore: entries.length > 100 ? "100" : null,
+          totalItems: entries.length,
+        },
+      });
+    const recent = snapshot.tasks?.entries ?? [];
+    const cut = DeploymentSnapshotSchema.parse({
+      deploymentId: snapshot.deploymentId,
+      sequence,
+      serializedBytes: 1,
+      threads: snapshot.threads.slice(0, 100).map(mockThread),
+      threadWindow: mockWindow(Math.min(100, snapshot.threads.length)),
+      messages: [],
+      messageWindows: [],
+      messagesOmitted: true,
+      pendingRequests: snapshot.waitingRequests.map(({ request }) => request).slice(0, 100),
+      pendingRequestWindow: mockWindow(snapshot.waitingRequests.length),
+      runQueue: [],
+      readStates: Object.values(snapshot.threadReadStates).slice(0, 100),
+      tasks: {
+        recent: page(recent),
+        active: page(snapshot.activeTasks),
+        done: page(recent.filter(({ thread }) => thread.doneAt !== null)),
+      },
+      needsYou: mockNeedsYou(snapshot),
+      resources: { appTabs: snapshot.appTabs ?? [], browser: this.#state.bootstrap().browser },
+    });
+    const serializedBytes = new TextEncoder().encode(JSON.stringify(cut)).byteLength;
+    return DeploymentSnapshotSchema.parse({ ...cut, serializedBytes });
+  }
+
   readonly desktopUpdates: MockDesktopUpdates;
   subscribePluginsChanged(
     listener: (message: { type: "host.plugins-changed" }) => void,
@@ -3997,7 +3744,7 @@ export class MockHostClient implements HostClient {
     return this.#state.searchSuggestionRequests;
   }
   readonly #tabGroups: BrowserTabGroupClient;
-  readonly #workspaceTabActivations: WorkspaceTabActivations;
+  readonly #personalTabActivations: PersonalTabActivations;
   readonly #nodeDetails: NodeDetailStore;
   readonly #state: MockHostState;
   readonly #places: MockPlaceWorld;
@@ -4031,11 +3778,7 @@ export class MockHostClient implements HostClient {
         });
       },
     });
-    if (
-      options.places !== "absent" &&
-      options.initialHome !== "absent" &&
-      options.world !== "first-run"
-    )
+    if (options.places !== "absent" && options.world !== "first-run")
       this.#state.seedPlaces(
         options.world === "busy" || options.world === "stress" ? options.world : "seeded",
       );
@@ -4047,15 +3790,15 @@ export class MockHostClient implements HostClient {
       (runId, threadId, data) => this.#state.enterPlace(runId, threadId, data),
     );
     this.#state.places = this.#places;
-    this.#workspaceTabActivations = new WorkspaceTabActivations({
+    this.#personalTabActivations = new PersonalTabActivations({
       snapshot: this.#state.getSnapshot,
       subscribe: (listener) => this.#state.subscribe(listener),
       changed: (ids) =>
-        this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: ids }),
+        this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingPersonalTabs: ids }),
       dispatch: async (tabId) => {
         const dormant = this.#dormantBrowser;
         // Only the journey's scripted tab waits to be finished; any other saved tab opens at once.
-        if (dormant?.tabId !== tabId) return this.#places.activateWorkspaceTab(tabId);
+        if (dormant?.tabId !== tabId) return this.#places.activatePersonalTab(tabId);
         await new Promise<void>((resolve, reject) => {
           dormant.finish = (error) => (error ? reject(new Error(error)) : resolve());
         }).finally(() => {
@@ -4065,7 +3808,7 @@ export class MockHostClient implements HostClient {
           .getSnapshot()
           .browserGroups!.find((value) => value.session.id === dormant.session.id)!;
         return {
-          type: "workspace.tab.activate",
+          type: "tab.activate",
           groupId: group.id,
           sessionId: group.session.id,
           session: group.session,
@@ -4105,7 +3848,7 @@ export class MockHostClient implements HostClient {
           ...snapshot,
           pendingBrowserTabs: this.#pendingBrowserTabs.rows,
         });
-        this.#workspaceTabActivations.clear();
+        this.#personalTabActivations.clear();
         this.#computerViews.clear();
       }
       this.#computerViews.setConnected(scope !== null && snapshot.connection !== "offline");
@@ -4151,9 +3894,9 @@ export class MockHostClient implements HostClient {
             nodeId: ExecutionNodeIdSchema.parse(input.nodeId),
           }),
         ),
-      sendWatch: (workspaceId, nodeId) => {
+      sendWatch: (deploymentId, nodeId) => {
         const sequence = this.#state.nodeEvents.at(-1)?.sequence ?? SequenceSchema.parse("0");
-        queueMicrotask(() => this.#nodeDetails.watched(workspaceId, nodeId, sequence));
+        queueMicrotask(() => this.#nodeDetails.watched(deploymentId, nodeId, sequence));
         return true;
       },
     });
@@ -4209,7 +3952,6 @@ export class MockHostClient implements HostClient {
     this.#state.applyThreadStateChanged(event);
   }
 
-  /** For journeys: an agent's input as the Host attributes it, such as one from a teammate's Chat. */
   receiveAgentInput(
     threadId: string,
     author: z.input<typeof MessageAuthorSchema>,
@@ -4369,10 +4111,8 @@ export class MockHostClient implements HostClient {
     this.#dormantBrowser.finish(error);
   }
 
-  readonly activateWorkspaceTab: NonNullable<HostClient["activateWorkspaceTab"]> = (
-    tabId,
-    options,
-  ) => this.#workspaceTabActivations.activate(tabId, options);
+  readonly activatePersonalTab: NonNullable<HostClient["activatePersonalTab"]> = (tabId, options) =>
+    this.#personalTabActivations.activate(tabId, options);
 
   /** Connection, closure and lasting reasons can change while a saved tab waits. */
   setDormantBrowserState(change: {
@@ -4543,14 +4283,14 @@ export class MockHostClient implements HostClient {
     target: string | BrowserTabOpenInput,
     options: BrowserTabOpenOptions = {},
   ) => this.beginBrowserTabOpen(target, options).result;
-  readonly reopenWorkspaceTab = async () => {
+  readonly reopenPersonalTab = async () => {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "workspace.tab.reopen",
+        type: "tab.reopen",
         idempotencyKey: crypto.randomUUID(),
       }),
     );
-    if (result.type !== "workspace.tab.reopen") throw new Error("Unexpected tab reopen result.");
+    if (result.type !== "tab.reopen") throw new Error("Unexpected tab reopen result.");
     this.#tabGroups.receive(result.layout);
     return result;
   };
@@ -4562,15 +4302,15 @@ export class MockHostClient implements HostClient {
     this.#tabGroups.ungroupBrowserTabs(ids);
   readonly updateBrowserTabGroup: HostClient["updateBrowserTabGroup"] = (id, update) =>
     this.#tabGroups.updateBrowserTabGroup(id, update);
-  readonly closeWorkspaceTabs: HostClient["closeWorkspaceTabs"] = async (tabIds) => {
+  readonly closePersonalTabs: HostClient["closePersonalTabs"] = async (tabIds) => {
     const result = unwrapRpcResult(
       await this.rpc["commands.dispatch"]({
-        type: "workspace.tabs.close",
+        type: "tabs.close",
         tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
         idempotencyKey: crypto.randomUUID(),
       }),
     );
-    if (result.type !== "workspace.tabs.close") throw new Error("Unexpected tabs close result.");
+    if (result.type !== "tabs.close") throw new Error("Unexpected tabs close result.");
     this.#state.updatePlaces({
       ...this.#state.getSnapshot(),
       browserTabGroups: this.#tabGroups.receive(this.#state.tabGroups),
@@ -4680,7 +4420,6 @@ export class MockHostClient implements HostClient {
   };
 
   async createAttachment(input: {
-    readonly workspaceId: string;
     readonly name: string;
     readonly mediaType: string;
     readonly sizeBytes: number;
@@ -4734,15 +4473,10 @@ export class MockHostClient implements HostClient {
     this.#state.activateThread(threadId);
   }
 
-  /** The preview projects every Thread it holds, so there is nothing to hold open. */
-  workspacePosition(_workspaceId: string): null {
-    return null;
-  }
-
   watchNode(threadId: string, nodeId: string): NodeDetailSubscription {
     const thread = this.getSnapshot().threads.find((entry) => entry.id === threadId);
     if (!thread) throw new Error("Conversation not found.");
-    return this.#nodeDetails.open(threadId, nodeId, thread.workspaceId);
+    return this.#nodeDetails.open(threadId, nodeId, this.getSnapshot().deploymentId!);
   }
 
   observeThread(_threadId: string): () => void {
@@ -4801,10 +4535,6 @@ export class MockHostClient implements HostClient {
     this.#state.mockPhoneAway(runnerId);
   }
 
-  activateWorkspace(workspaceId: string): void {
-    this.#state.activateWorkspace(workspaceId);
-  }
-
   /** A running subagent reports a new step, as the Host relays its progress line. */
   mockSubagentProgress(threadId: string, nodeId: string, progress: string): void {
     this.#state.mockSubagentProgress(threadId, nodeId, progress);
@@ -4841,36 +4571,13 @@ export class MockHostClient implements HostClient {
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
     const result = await this.dispatch({
-      accessMode: input.accessMode,
-      environmentId: input.environmentId,
-      harnessInstanceId: input.harnessInstanceId,
-      idempotencyKey: input.idempotencyKey ?? `mock-thread:${crypto.randomUUID()}`,
-      modelSelection: input.modelSelection,
-      ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
-      ...(input.home ? { home: true } : {}),
-      ...(input.generateTitle && this.#state.getSnapshot().threadRenameAvailable
-        ? { generateTitle: true }
-        : {}),
-      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
       type: "thread.create",
-      workspaceId: input.workspaceId,
+      ...input,
+      title: input.title?.trim() || "New task",
+      idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
     });
-    if (result.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const thread = this.#state.getSnapshot().threads.find(({ id }) => id === result.thread.id);
-    if (!thread) throw new Error("The mock Thread was not projected.");
-    await this.#rememberQuietly(
-      input.home
-        ? { accessMode: input.accessMode }
-        : {
-            accessMode: input.accessMode,
-            selection: {
-              environmentId: input.environmentId,
-              harnessInstanceId: input.harnessInstanceId,
-              modelSelection: input.modelSelection,
-            },
-          },
-    );
-    return thread;
+    if (result.type !== "thread.create") throw new Error("Thread result mismatch.");
+    return this.#state.getSnapshot().threads.find(({ id }) => id === result.thread.id)!;
   }
 
   async renameThread(threadId: string, title: string): Promise<ThreadSummary> {
@@ -4884,12 +4591,6 @@ export class MockHostClient implements HostClient {
     });
     if (result.type !== "thread.rename") throw new Error("Thread command mismatch.");
     return this.#state.getSnapshot().threads.find(({ id }) => id === threadId)!;
-  }
-
-  async createHome(
-    input: Omit<CreateThreadInput, "parentThreadId" | "title" | "home">,
-  ): Promise<ThreadSummary> {
-    return this.createThread({ ...input, home: true, title: CHAT_THREAD_TITLE });
   }
 
   async searchThreadMessages(input: {
@@ -4914,13 +4615,6 @@ export class MockHostClient implements HostClient {
       ...this.#state.getSnapshot(),
       savedViewReadiness: {
         ...(this.#state.getSnapshot().savedViewReadiness ?? emptySavedViewReadiness()),
-        home: {
-          status: "window",
-          threadId,
-          workspaceId: this.#state.getSnapshot().threads.find(({ id }) => id === threadId)!
-            .workspaceId,
-          latest: false,
-        },
       },
     });
   }
@@ -4929,14 +4623,12 @@ export class MockHostClient implements HostClient {
     if (!this.#state.getSnapshot().threads.some((thread) => thread.id === threadId))
       throw new Error("Thread not found.");
     const snapshot = this.#state.getSnapshot();
-    if (threadId === snapshot.homeThreadId && snapshot.homeWorkspaceId)
-      this.#state.updatePlaces({
-        ...snapshot,
-        savedViewReadiness: {
-          ...(snapshot.savedViewReadiness ?? emptySavedViewReadiness()),
-          home: { status: "window", threadId, workspaceId: snapshot.homeWorkspaceId, latest: true },
-        },
-      });
+    this.#state.updatePlaces({
+      ...snapshot,
+      savedViewReadiness: {
+        ...(snapshot.savedViewReadiness ?? emptySavedViewReadiness()),
+      },
+    });
   }
 
   subscribePersonalRemoteAccess(listener: () => void): () => void {
@@ -4962,29 +4654,26 @@ export class MockHostClient implements HostClient {
     });
   }
 
-  async setTaskDone(threadId: string, done: boolean): Promise<Thread> {
-    const result = await this.dispatch({
-      done,
-      idempotencyKey: `mock-done:${crypto.randomUUID()}`,
+  async setTaskDone(threadId: string, done: boolean): Promise<void> {
+    await this.dispatch({
+      type: "thread.done.set",
       threadId,
-      type: "thread.shared-done.set",
+      done,
+      idempotencyKey: crypto.randomUUID(),
     });
-    if (result.type !== "thread.shared-done.set") throw new Error("Done command mismatch.");
-    return result.thread;
-  }
-
-  async loadWorkspaceTasks(workspaceId: string): Promise<void> {
-    this.#state.loadWorkspaceTasks(workspaceId);
   }
 
   /** The preview's task lists always hold every task, so there is no earlier page. */
-  async loadEarlierTasks(_workspaceId?: string): Promise<void> {}
-
-  async loadDoneTasks(workspaceId?: string): Promise<void> {
-    if (this.#state.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(workspaceId);
+  async loadEarlierTasks(): Promise<void> {}
+  async loadEarlierNeedsYou(): Promise<void> {
+    this.#state.loadEarlierNeedsYou();
   }
 
-  async loadEarlierDoneTasks(_workspaceId?: string): Promise<void> {}
+  async loadDoneTasks(deploymentId?: string): Promise<void> {
+    if (this.#state.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(deploymentId);
+  }
+
+  async loadEarlierDoneTasks(_deploymentId?: string): Promise<void> {}
 
   /** Moves a task to Done as the Host's quiet pass would, so the preview can show it. */
   moveQuietly(threadId: string): void {
@@ -5000,15 +4689,6 @@ export class MockHostClient implements HostClient {
       }),
     );
     if (result.type !== "viewer.quietTasks.update") throw new Error("Setting command mismatch.");
-  }
-
-  async setWorkspaceNotificationMute(workspaceId: string, muted: boolean): Promise<void> {
-    await this.dispatch({
-      type: "workspace.notifications.update",
-      idempotencyKey: `mock-mute:${crypto.randomUUID()}`,
-      workspaceId,
-      muted,
-    });
   }
 
   async rememberExecution(choice: ExecutionChoice): Promise<ExecutionPreferences> {
@@ -5040,7 +4720,7 @@ export class MockHostClient implements HostClient {
       type: "thread.execution.update",
     });
     if (result.type !== "thread.execution.update") throw new Error("Thread command mismatch.");
-    if (thread.id !== this.#state.getSnapshot().homeThreadId) {
+    {
       await this.#rememberQuietly({
         selection: {
           environmentId: thread.environmentId,
@@ -5096,21 +4776,21 @@ export class MockHostClient implements HostClient {
     this.#nodeDetails.clear();
     this.#personShowListeners.clear();
     this.#pendingBrowserTabs.dispose();
-    this.#workspaceTabActivations.dispose();
+    this.#personalTabActivations.dispose();
     this.browserHistory.dispose();
-    this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingWorkspaceTabs: [] });
+    this.#state.updatePlaces({ ...this.#state.getSnapshot(), activatingPersonalTabs: [] });
     this.#computerViews.clear();
     this.#worldSubscription();
     this.#places.dispose();
     this.#state.dispose();
   }
 
-  listWorkspaceFiles(
-    workspaceId: string,
+  listFolderFiles(
+    folder: import("@opensteer/core").TaskFolder,
     input: { readonly parentKey: string },
     _signal?: AbortSignal,
   ) {
-    return this.#state.listWorkspaceFiles(workspaceId, input);
+    return this.#state.listFolderFiles(folder, input);
   }
 
   load(): Promise<void> {
@@ -5121,16 +4801,16 @@ export class MockHostClient implements HostClient {
     return this.#state.loadEarlierTranscript(threadId);
   }
 
-  loadEarlierWorkspaces(): Promise<void> {
-    return this.#state.loadEarlierWorkspaces();
-  }
-
   loadThreadInputQueue(threadId: string): Promise<ThreadInputQueue> {
     return Promise.resolve(this.#state.loadThreadInputQueue(threadId));
   }
 
-  previewWorkspaceFile(workspaceId: string, fileKey: string, _signal?: AbortSignal) {
-    return this.#state.previewWorkspaceFile(workspaceId, fileKey);
+  previewFolderFile(
+    _folder: import("@opensteer/core").TaskFolder,
+    fileKey: string,
+    _signal?: AbortSignal,
+  ) {
+    return this.#state.previewFolderFile(_folder, fileKey);
   }
 
   refresh(): Promise<void> {
@@ -5270,7 +4950,7 @@ export class MockHostClient implements HostClient {
   }
 
   async startBrowser(
-    workspaceId: string,
+    _deploymentId: string,
     identity: import("../host/client.js").BrowserStartIdentity,
     placement?: import("../host/client.js").BrowserPlacementSummary,
     threadId?: string,
@@ -5289,7 +4969,6 @@ export class MockHostClient implements HostClient {
           : { profileId: identity.profileId }),
       },
       type: "browser.session.start",
-      workspaceId,
     });
     if (result.type !== "browser.session.start") throw new Error("Browser command mismatch.");
     const session = this.getSnapshot().browserSessions.find(({ id }) => id === result.session.id);
@@ -5314,8 +4993,8 @@ export class MockHostClient implements HostClient {
     });
   }
 
-  workspaceFileDownloadUrl(workspaceId: string, fileKey: string): string {
-    return this.#state.workspaceFileDownloadUrl(workspaceId, fileKey);
+  folderFileDownloadUrl(_folder: import("@opensteer/core").TaskFolder, fileKey: string): string {
+    return this.#state.folderFileDownloadUrl(_folder, fileKey);
   }
 }
 
@@ -5372,7 +5051,7 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
         accountDisplayName:
           accounts.find((a) => a.harnessInstanceId === c.harnessInstanceId)?.accountDisplayName ??
           "Account",
-        computerDisplayName: "Main runner",
+        computerDisplayName: "Home Mac",
         providerDisplayName: c.storedModelSelection.providerId,
         modelDisplayName:
           c.account.catalog?.models.find((m) => m.modelId === c.storedModelSelection.modelId)
@@ -5390,9 +5069,8 @@ function mockAutomaticModelsView(state: MockHostState): AutomaticModelsView {
 interface MockPlugin {
   id: string;
   name: string;
-  scope: "deployment" | "workspace";
-  workspaceId: string | null;
-  source: { directory?: string; workspaceDirectory?: string };
+  scope: "deployment" | "folder";
+  source: { directory?: string; folderDirectory?: string };
   currentVersionId: string;
   versions: {
     id: string;
@@ -5400,11 +5078,13 @@ interface MockPlugin {
     manifest: { name: string; version?: string; description?: string; skills: unknown[] };
     specialistManifest?: SpecialistManifest | undefined;
   }[];
-  activations: { workspaceId: string }[];
+  enabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
 class MockHostState {
+  readonly teamLinks = new Map<string, PersonalTeamLink>();
+  readonly teamFolders = new Map<string, import("@opensteer/core").TaskFolder>();
   nodeEvents: readonly import("@opensteer/core").AgentEventView[] = [];
   openPhoneTab(machineId: string) {
     this.update({
@@ -5456,7 +5136,7 @@ class MockHostState {
             appId,
             title: origin.entry.title,
             threadId: thread.id,
-            workspaceId: thread.workspaceId,
+
             latestVersion: origin.entry.version,
             openedAt: this.now().toISOString(),
           }),
@@ -5490,19 +5170,13 @@ class MockHostState {
         throw mockConflict("This connection request has already been answered.");
     } else {
       if (command.decision.kind === "approve") {
-        const reach = command.decision.reach;
-        if (
-          reach.kind === "workspace" &&
-          !consent.workspaces.some((workspace) => workspace.id === reach.workspaceId)
-        )
-          throw mockConflict("Only a Workspace owner can connect an agent to it.");
         this.connections.push({
           id: `mcn_${crypto.randomUUID()}`,
           userId: this.snapshot.user!.id,
           label: command.decision.label,
           clientName: consent.clientName,
           accessMode: command.decision.accessMode,
-          reach,
+
           createdAt: this.now().toISOString(),
           lastUsedAt: null,
           expiresAt: new Date(this.now().getTime() + 30 * 24 * 60 * 60_000).toISOString(),
@@ -5526,15 +5200,8 @@ class MockHostState {
       (row) => row.id !== id || row.userId !== this.snapshot.user?.id,
     );
   }
-  readonly team: MockTeamAccess;
   readonly settings = new MockSettingsFixtures(
     () => this.emit(),
-    () =>
-      this.snapshot.workspaces.map(({ id, name, kind }) => ({
-        workspaceId: WorkspaceIdSchema.parse(id),
-        name,
-        kind,
-      })),
     () => ({
       devices: this.snapshot.machines.filter(
         (machine) =>
@@ -5572,22 +5239,22 @@ class MockHostState {
   }
   private readonly specialists: {
     id: string;
-    workspaceId: string;
+    deploymentId: string;
     pluginId: string;
     pluginVersionId: string;
     ownerUserId: string;
     manifest: SpecialistManifest;
   }[] = [];
-  listSpecialists(workspaceId: string) {
+  listSpecialists(deploymentId: string) {
     return this.specialists
-      .filter((s) => s.workspaceId === workspaceId)
+      .filter((s) => s.deploymentId === deploymentId)
       .map((s) => this.refreshSpecialist(s));
   }
   private refreshSpecialist(s: (typeof this.specialists)[number]): SpecialistRegistration {
     const plugin = this.plugins.find((p) => p.id === s.pluginId)!;
     return {
       id: s.id,
-      workspaceId: s.workspaceId,
+
       pluginId: s.pluginId,
       pluginVersionId: s.pluginVersionId,
       ownerUserId: s.ownerUserId,
@@ -5602,7 +5269,7 @@ class MockHostState {
       access: [],
     };
   }
-  async addSpecialist(workspaceId: string, pluginId: string) {
+  async addSpecialist(deploymentId: string, pluginId: string) {
     const plugin = this.plugins.find((p) => p.id === pluginId);
     const version = plugin?.versions.find((v) => v.id === plugin.currentVersionId);
     if (!plugin || !version?.specialistManifest)
@@ -5610,7 +5277,7 @@ class MockHostState {
     const ownerUserId = this.snapshot.user!.id;
     const previous = this.specialists.find(
       (s) =>
-        s.workspaceId === workspaceId && s.pluginId === pluginId && s.ownerUserId === ownerUserId,
+        s.deploymentId === deploymentId && s.pluginId === pluginId && s.ownerUserId === ownerUserId,
     );
     if (previous && previous.ownerUserId !== ownerUserId)
       throw new Error("Only the consent owner may re-add this specialist");
@@ -5618,12 +5285,12 @@ class MockHostState {
       type: "plugin.activation.set",
       idempotencyKey: crypto.randomUUID(),
       pluginId,
-      workspaceId: WorkspaceIdSchema.parse(workspaceId),
+
       active: true,
     });
     const registration = {
       id: previous?.id ?? crypto.randomUUID(),
-      workspaceId,
+      deploymentId,
       pluginId,
       pluginVersionId: version.id,
       ownerUserId,
@@ -5633,56 +5300,16 @@ class MockHostState {
     this.specialists.push(registration);
     return this.refreshSpecialist(registration);
   }
-  removeSpecialist(workspaceId: string, id: string) {
+  removeSpecialist(deploymentId: string, id: string) {
     const index = this.specialists.findIndex(
       (s) =>
-        s.id === id && s.workspaceId === workspaceId && s.ownerUserId === this.snapshot.user?.id,
+        s.id === id && s.deploymentId === deploymentId && s.ownerUserId === this.snapshot.user?.id,
     );
     if (index >= 0) this.specialists.splice(index, 1);
   }
-  /** The Host's rows: every Deployment plugin, and a Workspace's own when one is named. */
-  async listPlugins(workspaceId?: string): Promise<Record<string, unknown>[]> {
-    const administrator = this.snapshot.user?.instanceRole === "administrator";
-    if (!administrator) {
-      const sharing =
-        workspaceId && this.snapshot.workspaces.some((w) => w.id === workspaceId)
-          ? await this.loadWorkspaceSharing(workspaceId)
-          : null;
-      if (
-        !sharing?.members.some((m) => m.userId === this.snapshot.user?.id && m.state === "active")
-      )
-        throw new HostClientRequestError({
-          code: "forbidden",
-          message: "Active Workspace membership is required",
-          status: 403,
-        });
-    }
-    return this.plugins
-      .filter((p) => !workspaceId || p.scope === "deployment" || p.workspaceId === workspaceId)
-      .map((p) =>
-        administrator
-          ? { ...p, servers: [] }
-          : {
-              id: p.id,
-              name: p.name,
-              scope: p.scope,
-              workspaceId: p.workspaceId,
-              currentVersionId: p.currentVersionId,
-              updatedAt: p.updatedAt,
-              versions: p.versions.map((v) => ({
-                id: v.id,
-                digest: v.digest,
-                manifest: {
-                  description: v.manifest.description,
-                  version: v.manifest.version,
-                  skills: Array.isArray(v.manifest.skills) ? v.manifest.skills.map(() => ({})) : [],
-                },
-                specialistManifest: v.specialistManifest ? {} : null,
-              })),
-              activations: p.activations.filter((a) => a.workspaceId === workspaceId),
-              servers: [],
-            },
-      );
+
+  async listPlugins(_deploymentId?: string): Promise<Record<string, unknown>[]> {
+    return this.plugins.map((plugin) => ({ ...plugin, servers: [] }));
   }
   async mutatePlugin(
     command: Extract<
@@ -5690,29 +5317,7 @@ class MockHostState {
       { type: "plugin.update" | "plugin.remove" | "plugin.activation.set" }
     >,
   ) {
-    const administrator = this.snapshot.user?.instanceRole === "administrator";
-    if (command.type === "plugin.activation.set") {
-      const sharing = await this.loadWorkspaceSharing(command.workspaceId);
-      if (
-        !sharing.members.some(
-          (m) =>
-            m.userId === this.snapshot.user?.id &&
-            m.state === "active" &&
-            (m.role === "owner" || administrator),
-        )
-      )
-        throw new HostClientRequestError({
-          code: "forbidden",
-          message: "Only the Workspace owner or administrator can change plugins",
-          status: 403,
-        });
-    } else if (!administrator)
-      throw new HostClientRequestError({
-        code: "forbidden",
-        message: "Administrator access required",
-        status: 403,
-      });
-    const index = this.plugins.findIndex((p) => p.id === command.pluginId);
+    const index = this.plugins.findIndex((plugin) => plugin.id === command.pluginId);
     const plugin = this.plugins[index];
     if (!plugin) throw new Error("Plugin not found");
     if (command.type === "plugin.remove") {
@@ -5720,7 +5325,7 @@ class MockHostState {
       for (let i = this.specialists.length - 1; i >= 0; i--)
         if (this.specialists[i]?.pluginId === command.pluginId) this.specialists.splice(i, 1);
     } else if (command.type === "plugin.update") {
-      if (plugin.scope === "workspace")
+      if (plugin.scope === "folder")
         throw new HostClientRequestError({
           code: "forbidden",
           message: "Agent-made plugins update when an agent installs their folder again.",
@@ -5738,24 +5343,14 @@ class MockHostState {
       plugin.source = { directory: command.input.directory };
       plugin.updatedAt = this.now().toISOString();
     } else {
-      if (plugin.scope === "workspace" && plugin.workspaceId !== command.workspaceId)
-        throw new HostClientRequestError({
-          code: "forbidden",
-          message: "This plugin belongs to another Workspace",
-          status: 403,
-        });
       if (
         command.active &&
         this.plugins.some(
-          (p) =>
-            p.id !== plugin.id &&
-            p.name === plugin.name &&
-            p.activations.some((a) => a.workspaceId === command.workspaceId),
+          (other) => other.id !== plugin.id && other.name === plugin.name && other.enabled,
         )
       )
         throw new Error("A plugin with that name is already active here");
-      plugin.activations = plugin.activations.filter((a) => a.workspaceId !== command.workspaceId);
-      if (command.active) plugin.activations.push({ workspaceId: command.workspaceId });
+      plugin.enabled = command.active;
     }
   }
 
@@ -5773,7 +5368,7 @@ class MockHostState {
         deploymentId: createId("deployment"),
         hostInstanceId: createId("hostInstance"),
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+        deploymentShape: { kind: "personal" },
       },
       publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
       signature: "A".repeat(86),
@@ -5791,7 +5386,7 @@ class MockHostState {
   readonly #provisionalIcons = new Set<string>();
   readonly #recentMarkColors = new Map<string, MarkColor[]>();
   readonly #titleTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly preferenceRevisions = new Map<string, number>();
+
   listThreadMessages(input: {
     threadId: string;
     before?: string | undefined;
@@ -5892,22 +5487,13 @@ class MockHostState {
       threadId: ThreadIdSchema.parse(threadId),
       readSequence: read === null ? null : SequenceSchema.parse(read),
       unreadSequence: unread === null ? null : SequenceSchema.parse(unread),
-      placement:
-        read === null
-          ? null
-          : {
-              done: this.snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null,
-              sequence: SequenceSchema.parse(read),
-            },
-      placementRevision: SequenceSchema.parse(String(this.snapshot.revision)),
+
       asOfSequence: SequenceSchema.parse(String(this.snapshot.revision)),
     };
   }
 
   bootstrap() {
-    return mockBootstrap(this.snapshot, this.harnessSourceConfigs, (workspaceId) =>
-      this.workspaceNotificationPreference(workspaceId),
-    );
+    return mockBootstrap(this.snapshot, this.harnessSourceConfigs);
   }
 
   receiveAgentInput(threadId: string, author: MessageEntry["author"], body: string): void {
@@ -5955,7 +5541,6 @@ class MockHostState {
   applyThreadCommandResult(result: HostApiCommandOutput): void {
     switch (result.type) {
       case "thread.create":
-      case "thread.shared-done.set":
       case "thread.rename":
       case "thread.icon.set":
       case "thread.execution.update":
@@ -6013,11 +5598,7 @@ class MockHostState {
     const state: ThreadReadState = {
       ...current,
       readSequence,
-      placement: {
-        done: this.snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null,
-        sequence: readSequence,
-      },
-      placementRevision: current.asOfSequence,
+
       unreadSequence: this.unreadAfter(messages, readSequence),
     };
     this.applyThreadReadStates([state]);
@@ -6035,16 +5616,9 @@ class MockHostState {
   }
 
   async setTaskDone(threadId: string, done: boolean): Promise<ThreadSummary> {
-    if (!this.snapshot.sharedTaskDoneAvailable)
-      throw new Error("This Host does not support shared task Done.");
     const thread = this.snapshot.threads.find((item) => item.id === threadId);
     if (!thread) throw new Error("Task not found.");
-    if (
-      thread.role !== "work" ||
-      this.snapshot.homeThreadId === threadId ||
-      this.snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId)
-    )
-      throw new Error("Chat cannot be Done.");
+    if (thread.purpose !== "task") throw new Error("Only tasks can be Done.");
     const affected = new Set([threadId]);
     if (done) {
       // Discover descendants before cancellation ends their assignments.
@@ -6108,27 +5682,6 @@ class MockHostState {
     return this.snapshot.threads.find((item) => item.id === threadId)!;
   }
 
-  workspaceNotificationPreference(workspaceId: string): WorkspaceNotificationPreference {
-    if (!this.snapshot.workspaces.some((workspace) => workspace.id === workspaceId))
-      throw new Error("Workspace not found.");
-    return {
-      workspaceId: WorkspaceIdSchema.parse(workspaceId),
-      muted: this.snapshot.notificationMutes.includes(workspaceId),
-      revision: SequenceSchema.parse(String(this.preferenceRevisions.get(workspaceId) ?? 0)),
-    };
-  }
-
-  setWorkspaceNotificationMute(
-    workspaceId: string,
-    muted: boolean,
-  ): WorkspaceNotificationPreference {
-    if (!this.snapshot.workspaces.some((workspace) => workspace.id === workspaceId))
-      throw new Error("Workspace not found.");
-    const others = this.snapshot.notificationMutes.filter((id) => id !== workspaceId);
-    this.preferenceRevisions.set(workspaceId, (this.preferenceRevisions.get(workspaceId) ?? 0) + 1);
-    this.update({ ...this.snapshot, notificationMutes: muted ? [...others, workspaceId] : others });
-    return this.workspaceNotificationPreference(workspaceId);
-  }
   private readonly attachments = new Map<
     string,
     { attachment: Attachment; bytes: Uint8Array<ArrayBuffer> | null }
@@ -6154,7 +5707,6 @@ class MockHostState {
   }
 
   createAttachment(input: {
-    readonly workspaceId: string;
     readonly name: string;
     readonly mediaType: string;
     readonly sizeBytes: number;
@@ -6174,7 +5726,6 @@ class MockHostState {
     if (priorId) {
       const prior = this.getAttachment(priorId);
       if (
-        prior.workspaceId !== input.workspaceId ||
         prior.name !== input.name ||
         prior.mediaType !== input.mediaType ||
         prior.sizeBytes !== input.sizeBytes
@@ -6198,7 +5749,6 @@ class MockHostState {
       sha256: null,
       width: null,
       height: null,
-      workspaceId: input.workspaceId,
       uploaderId: mockUserId,
       threadId: null,
       messageId: null,
@@ -6348,7 +5898,6 @@ class MockHostState {
         previous.runId === null;
       if (
         attachment.state !== "ready" ||
-        attachment.workspaceId !== thread.workspaceId ||
         (attachment.messageId !== null && !canRebind) ||
         attachment.name !== part.name ||
         attachment.mediaType !== part.mediaType ||
@@ -6420,7 +5969,7 @@ class MockHostState {
     string,
     { readonly modelSelection: ModelSelection; readonly parentModelSelection: ModelSelection }
   >();
-  /** What each task in the preview does and how Home answers once it is back. */
+
   private readonly taskScripts = new Map<string, MockTaskScript>();
   private readonly now: () => Date;
   private sequence = 10;
@@ -6480,7 +6029,6 @@ class MockHostState {
         id: p.id,
         name: p.name,
         scope: "deployment",
-        workspaceId: null,
         source: { directory: `/opt/opensteer/plugins/${p.name}` },
         currentVersionId: id,
         versions: [
@@ -6491,7 +6039,7 @@ class MockHostState {
             specialistManifest: SpecialistManifestSchema.parse(p.manifest),
           },
         ],
-        activations: [],
+        enabled: false,
         createdAt: at,
         updatedAt: at,
       });
@@ -6502,12 +6050,11 @@ class MockHostState {
       this.plugins.push({
         id: p.id,
         name: p.name,
-        scope: "workspace",
-        workspaceId: mockMainWorkspaceId,
-        source: { workspaceDirectory: `plugins/${p.name}` },
+        scope: "folder",
+        source: { folderDirectory: `plugins/${p.name}` },
         currentVersionId: id,
         versions: [{ id, digest: id, manifest: { name: p.name, skills: [{}] } }],
-        activations: [{ workspaceId: mockMainWorkspaceId }],
+        enabled: true,
         createdAt: at,
         updatedAt: at,
       });
@@ -6529,31 +6076,26 @@ class MockHostState {
     this.latencyMs = options.latencyMs ?? 420;
     this.now = options.now ?? (() => new Date());
     this.chrome = new MockChromeSignIns(this.now);
-    this.team = new MockTeamAccess(options.team, this.now);
     const initial = {
       ...seedMockTaskMarks(createInitialSnapshot()),
-      teamAdministrationAvailable: this.team.available,
+
       browserTabGroups: this.tabGroups,
-      sharedTaskDoneAvailable: options.sharedTaskDoneAvailable ?? true,
+
       quietTasksAvailable: options.quietTasksAvailable ?? true,
     };
     const firstRun = options.world === "first-run";
-    this.snapshot = firstRun
-      ? firstRunWorld(initial)
-      : options.initialHome === "absent"
-        ? withoutInitialHome(initial)
-        : initial;
+    this.snapshot = firstRun ? firstRunWorld(initial) : initial;
     this.applyAutomaticEligibility();
-    if (options.initialHome !== "absent" && !firstRun) this.seedHomeTask();
     for (const thread of this.snapshot.threads) {
-      if (thread.icon === null && thread.id !== this.snapshot.homeThreadId)
-        this.#provisionalIcons.add(thread.id);
+      if (thread.icon === null && thread.purpose === "task") this.#provisionalIcons.add(thread.id);
     }
-    const homeThread = this.snapshot.threads.find(({ id }) => id === this.snapshot.homeThreadId);
+    const anchorThread = this.snapshot.threads.find(
+      (thread) => thread.listed && thread.purpose === "task",
+    );
     const workThread = this.snapshot.threads.find(({ id }) => id === mockstorageThreadId);
-    if (options.automations !== "absent" && homeThread && workThread) {
+    if (options.automations !== "absent" && anchorThread && workThread) {
       for (const record of seedMockAutomations({
-        homeThread,
+        anchorThread,
         now: this.now(),
         userId: mockUserId,
         workThread,
@@ -6561,20 +6103,22 @@ class MockHostState {
         this.triggers.set(record.trigger.id, record);
       }
     }
-    if (homeThread && options.memoryPasses) {
+    if (options.memoryPasses && this.snapshot.personalSettings) {
       for (const systemRole of ["memory-light", "memory-nightly"] as const) {
         const worker: ThreadSummary = {
-          ...homeThread,
+          ...initial.threads[0]!,
           id: createId("thread"),
           title: systemRole === "memory-light" ? "Memory light pass" : "Memory nightly pass",
-          role: "work",
+          purpose: "background-job",
           listed: false,
-          parentThreadId: homeThread.id,
+          parentThreadId: null,
           status: "idle",
           pendingRequests: 0,
           doneAt: null,
           doneReason: null,
           inputQueuePaused: false,
+          folder: this.snapshot.personalSettings!.agentHome,
+          teamOrigin: null,
         };
         this.snapshot = { ...this.snapshot, threads: [...this.snapshot.threads, worker] };
         const created = this.createTrigger({
@@ -6595,7 +6139,7 @@ class MockHostState {
           },
         });
         const record = this.getTrigger(created.trigger.id);
-        this.triggers.set(created.trigger.id, {
+        this.triggers.set(record.trigger.id, {
           ...record,
           trigger: {
             ...record.trigger,
@@ -6607,11 +6151,8 @@ class MockHostState {
                   nextFireAt: null,
                 }
               : {}),
-            ...(options.memoryPasses === "waiting-for-model" && systemRole === "memory-light"
-              ? {
-                  waitingReason:
-                    "Waiting for an AI account it can use on Main's computer. Connect one there, or turn one on for automatic work in AI settings; it resumes by itself.",
-                }
+            ...(options.memoryPasses === "waiting-for-model"
+              ? { waitingReason: "Waiting for an eligible AI account on the hosting computer." }
               : {}),
           },
         });
@@ -6619,7 +6160,7 @@ class MockHostState {
     }
     // The setup request behind the seeded Numbers Request, dated from this
     // client's clock so it is pending for as long as a real one would be.
-    if (options.initialHome !== "absent" && !firstRun)
+    if (!firstRun)
       this.computerAppSetupRequests.set(mockComputerUseSetupRequestId, {
         access: "read-write",
         app: mockComputerUseApps.numbers,
@@ -6637,8 +6178,6 @@ class MockHostState {
         server: null,
         threadId: ThreadIdSchema.parse(mockComputerUseThreadId),
         threadTitle: "Build the new architecture",
-        workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
-        workspaceName: "Main",
       });
     const pendingRequests = [...(options.pendingRequests ?? [])];
     if (options.devices === "seeded" && !firstRun) {
@@ -6667,8 +6206,6 @@ class MockHostState {
         server: null,
         threadId: ThreadIdSchema.parse(request.originatingThreadId),
         threadTitle: null,
-        workspaceId: payload.workspaceId,
-        workspaceName: null,
       });
     }
     if (pendingRequests.length) {
@@ -6694,6 +6231,33 @@ class MockHostState {
         })),
       };
     }
+    if (
+      !firstRun &&
+      options.subagents !== undefined &&
+      options.subagents !== "seeded" &&
+      options.subagents !== "absent"
+    ) {
+      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+    } else if (!firstRun && options.subagents !== "absent") {
+      const fixture = seedMockSubagents(this.snapshot);
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+      for (const assignment of [fixture.assignment, fixture.openAssignment]) {
+        this.assignments.set(assignment.id, assignment);
+        const worker = this.snapshot.threads.find(
+          (thread) => thread.id === assignment.workerThreadId,
+        )!;
+        const parent = this.snapshot.threads.find(
+          (thread) => thread.id === assignment.parentThreadId,
+        )!;
+        this.assignmentModels.set(assignment.id, {
+          modelSelection: worker.modelSelection,
+          parentModelSelection: parent.modelSelection,
+        });
+      }
+    }
     for (const run of this.snapshot.runQueue) {
       this.nextRunOrdinals.set(
         run.threadId,
@@ -6708,31 +6272,6 @@ class MockHostState {
           steered: [],
         });
       }
-    }
-    if (
-      !firstRun &&
-      options.subagents !== undefined &&
-      options.subagents !== "seeded" &&
-      options.subagents !== "absent"
-    ) {
-      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
-      this.snapshot = fixture.snapshot;
-      this.nodeEvents = fixture.events;
-    } else if (!firstRun && options.initialHome !== "absent" && options.subagents !== "absent") {
-      const fixture = seedMockSubagents(this.snapshot);
-      this.snapshot = fixture.snapshot;
-      this.nodeEvents = fixture.events;
-      this.assignments.set(fixture.assignment.id, fixture.assignment);
-      const worker = this.snapshot.threads.find(
-        (thread) => thread.id === fixture.assignment.workerThreadId,
-      )!;
-      const parent = this.snapshot.threads.find(
-        (thread) => thread.id === fixture.assignment.parentThreadId,
-      )!;
-      this.assignmentModels.set(fixture.assignment.id, {
-        modelSelection: worker.modelSelection,
-        parentModelSelection: parent.modelSelection,
-      });
     }
     // The rendered transcript and messages API must name the same published
     // positions: opening a seeded result can only mark what was actually seen.
@@ -6782,6 +6321,10 @@ class MockHostState {
     };
     const tasks = this.taskList(null);
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
   }
 
   private readonly acceptedCommands = new Map<
@@ -6792,10 +6335,8 @@ class MockHostState {
     const command = hostApi["commands.dispatch"].payload.parse(input);
     if (
       command.type !== "settings.plugin.enabled.set" &&
-      command.type !== "settings.plugin.placement.set" &&
       command.type !== "thread.sendMessage" &&
       command.type !== "thread.icon.set" &&
-      command.type !== "workspace.color.set" &&
       command.type !== "harness.create"
     )
       return executeMockCommand(this, command);
@@ -6828,20 +6369,8 @@ class MockHostState {
               asOfSequence: SequenceSchema.parse(String(this.snapshot.revision)),
             });
           }
-          case "workspace.color.set": {
-            const workspaceId = result.data.workspace.id;
-            const workspace = this.snapshot.workspaces.find(({ id }) => id === workspaceId);
-            if (!workspace) throw new Error("Workspace not found.");
-            return rpcSuccess(
-              hostApi["commands.dispatch"].success.parse({
-                type: "workspace.color.set",
-                workspace: mockWorkspaceView(workspace),
-              }),
-            );
-          }
-          default:
-            return result;
         }
+        return result;
       });
     }
     const result = executeMockCommand(this, command);
@@ -7019,7 +6548,6 @@ class MockHostState {
     });
   }
 
-  /** The Host's two refusals: no such task, or one in a Workspace this viewer cannot open. */
   getAssignment(assignmentId: string): AssignmentView {
     const assignment = this.assignments.get(assignmentId);
     if (!assignment)
@@ -7029,7 +6557,7 @@ class MockHostState {
         status: 404,
       });
     const worker = this.snapshot.threads.find(({ id }) => id === assignment.workerThreadId);
-    if (!worker || !this.snapshot.workspaces.some(({ id }) => id === worker.workspaceId))
+    if (!worker)
       throw new HostClientRequestError({
         code: "forbidden",
         message: "You no longer have access to this task.",
@@ -7148,6 +6676,7 @@ class MockHostState {
       status: assignment.status,
       updatedAt: assignment.updatedAt,
       workerThread: {
+        folder: thread.folder,
         environmentId: thread.environmentId,
         id: thread.id,
         pendingRequests: (this.snapshot.requests[thread.id] ?? []).filter(
@@ -7157,7 +6686,7 @@ class MockHostState {
         title: thread.title,
         icon: thread.icon,
         color: thread.color ?? undefined,
-        workspaceId: thread.workspaceId,
+        deploymentId: this.snapshot.deploymentId!,
       },
     });
   }
@@ -7419,6 +6948,7 @@ class MockHostState {
       updatedAt: timestamp,
     });
     const runRecord: Run = RunSchema.parse({
+      teamRequestId: null,
       accessMode: thread.accessMode,
       activationInputId: message.id,
       assignmentId: input.assignmentId,
@@ -7487,20 +7017,11 @@ class MockHostState {
     };
   }
 
-  /**
-   * What a Run in the preview does with the input that started it: Home
-   * answers a task's return and hands substantial asks to a task; every other
-   * Run is the generic one.
-   */
   private executeRun(thread: ThreadSummary, run: ActiveMockRun, pending: PendingMockInput) {
     const returned = assignmentReturnId(pending.message);
     if (returned !== null) return this.executeTaskAnswer(thread, run, returned);
-    const script = thread.id === this.snapshot.homeThreadId ? mockTaskScript(pending.body) : null;
-    if (script) return this.executeHomeDelegation(thread, run, script);
     return this.executeMockRun(thread, run, pending.body);
   }
-
-  activateWorkspace(_workspaceId: string): void {}
 
   async completeNativeAuthorization(_oauthQuery: string, _accept: boolean): Promise<string> {
     return "opensteer://oauth/host-callback?code=mock&state=mock";
@@ -7533,19 +7054,6 @@ class MockHostState {
       user: null,
     });
   }
-
-  async exchangeInvitation() {
-    return {
-      expiresAt: new Date(this.now().getTime() + 7 * 86_400_000).toISOString(),
-      invitationType: "link" as const,
-      inviterName: "Alex",
-      requiresVerifiedEmail: false,
-      role: "collaborator" as const,
-      workspaceName: "Opensteer",
-    };
-  }
-
-  async acceptInvitation(): Promise<void> {}
 
   async beginHarnessAuthentication(
     input: Extract<HostApiCommand, { type: "harness.authentication.begin" }>,
@@ -7950,7 +7458,7 @@ class MockHostState {
 
   /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
   listTriggers(
-    workspaceId?: string,
+    deploymentId?: string,
     anchorThreadId?: string,
     systemRole?: TriggerSummary["systemRole"],
   ): TriggerSummary[] {
@@ -7959,7 +7467,7 @@ class MockHostState {
         ({ trigger }) =>
           trigger.status !== "archived" &&
           (systemRole === undefined || trigger.systemRole === systemRole) &&
-          (workspaceId === undefined || trigger.workspaceId === workspaceId) &&
+          (deploymentId === undefined || mockMainDeploymentId === deploymentId) &&
           (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
       )
       .sort(
@@ -7981,7 +7489,7 @@ class MockHostState {
         return thread
           ? {
               ...mockThread(thread),
-              ...(record.trigger.systemRole ? { inheritsMain: true } : {}),
+              ...(record.trigger.systemRole ? {} : {}),
             }
           : null;
       })(),
@@ -8047,7 +7555,6 @@ class MockHostState {
       status: "active",
       updatedAt: now.toISOString(),
       webhookRouteKey,
-      workspaceId: thread.workspaceId,
     });
     this.triggers.set(triggerId, {
       activation:
@@ -8204,7 +7711,6 @@ class MockHostState {
           anchorThreadId: record.trigger.anchorThreadId,
           id: record.trigger.id,
           revisionId: record.revision.id,
-          workspaceId: record.trigger.workspaceId,
         },
       },
       exitCode: null,
@@ -8266,50 +7772,13 @@ class MockHostState {
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
   }
 
-  private readonly workspaceSharing = new Map<
-    string,
-    import("../host/client.js").WorkspaceSharingSnapshot
-  >();
-  async loadWorkspaceSharing(workspaceId: string) {
-    const existing = this.workspaceSharing.get(workspaceId);
-    if (existing) return existing;
-    const sharing: import("../host/client.js").WorkspaceSharingSnapshot = {
-      invitations: [],
-      members: [
-        {
-          displayName: "Alex",
-          email: "alex@example.com",
-          emailVerified: true,
-          generation: 1,
-          id: "wmb_00000000-0000-4000-8000-000000000001",
-          invitedBy: null,
-          joinedAt: this.now().toISOString(),
-          role: "owner" as const,
-          state: "active" as const,
-          userId: mockUserId,
-          workspaceId,
-        },
-      ],
-    };
-    this.workspaceSharing.set(workspaceId, sharing);
-    return sharing;
-  }
-
-  async listWorkspaceFiles(workspaceId: string, input: { readonly parentKey: string }) {
+  async listFolderFiles(
+    folder: import("@opensteer/core").TaskFolder,
+    input: { readonly parentKey: string },
+  ) {
     await delay(Math.min(this.latencyMs, 180));
     const { parentKey } = input;
-    const projectFiles: MockWorkspaceFile[] =
-      workspaceId === this.snapshot.homeWorkspaceId && this.projectSlugs.size > 0
-        ? [
-            { content: null, path: "Projects", type: "directory" as const },
-            ...[...this.projectSlugs].map((slug) => ({
-              content: null,
-              path: `Projects/${slug}`,
-              type: "directory" as const,
-            })),
-          ]
-        : [];
-    const files = [...(mockWorkspaceFiles[workspaceId] ?? []), ...projectFiles];
+    const files = mockFolderFiles;
     const parentPath =
       parentKey === ""
         ? ""
@@ -8339,13 +7808,13 @@ class MockHostState {
       cursor: null,
       entries,
       parentKey,
-      revision: `mock_revision_${workspaceId}_${parentKey || "root"}`,
+      revision: `mock_revision_${encodeMockFileKey(folder.path)}_${parentKey || "root"}`,
     };
   }
 
-  async previewWorkspaceFile(workspaceId: string, fileKey: string) {
+  async previewFolderFile(_folder: import("@opensteer/core").TaskFolder, fileKey: string) {
     await delay(Math.min(this.latencyMs, 180));
-    const file = mockFileForKey(workspaceId, fileKey);
+    const file = mockFileForKey(fileKey);
     if (!file || file.type !== "file") throw new Error("File not found.");
     const content = file.content ?? "";
     return {
@@ -8360,55 +7829,9 @@ class MockHostState {
     };
   }
 
-  workspaceFileDownloadUrl(workspaceId: string, fileKey: string): string {
-    const content = mockFileForKey(workspaceId, fileKey)?.content ?? "";
+  folderFileDownloadUrl(_folder: import("@opensteer/core").TaskFolder, fileKey: string): string {
+    const content = mockFileForKey(fileKey)?.content ?? "";
     return `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`;
-  }
-
-  async createWorkspaceInvitation(input: { role: "collaborator" | "owner"; workspaceId: string }) {
-    return {
-      invitation: {
-        acceptedAt: null,
-        acceptedBy: null,
-        createdAt: this.now().toISOString(),
-        createdBy: mockUserId,
-        expiresAt: new Date(this.now().getTime() + 7 * 86_400_000).toISOString(),
-        id: "inv_00000000-0000-4000-8000-000000000001",
-        intendedEmail: null,
-        revokedAt: null,
-        role: input.role,
-        selector: "mock_selector_that_is_long_enough",
-        type: "link" as const,
-        workspaceId: input.workspaceId,
-      },
-      invitationUrl: "https://opensteer.example.test/invite/mock#verifier",
-    };
-  }
-
-  async revokeWorkspaceInvitation(): Promise<void> {}
-
-  async updateWorkspaceMember(input: {
-    role?: "collaborator" | "owner";
-    state?: "active" | "revoked";
-    userId: string;
-    workspaceId: string;
-  }) {
-    const membership = {
-      displayName: "Alex",
-      email: "alex@example.com",
-      emailVerified: true,
-      generation: 2,
-      id: "wmb_00000000-0000-4000-8000-000000000001",
-      invitedBy: null,
-      joinedAt: this.now().toISOString(),
-      role: input.role ?? ("owner" as const),
-      state: input.state ?? ("active" as const),
-      userId: input.userId,
-      workspaceId: input.workspaceId,
-    };
-    const sharing = await this.loadWorkspaceSharing(input.workspaceId);
-    sharing.members = [...sharing.members.filter((m) => m.userId !== input.userId), membership];
-    return membership;
   }
 
   async exchangeSetupToken(_token: string): Promise<void> {}
@@ -8514,8 +7937,6 @@ class MockHostState {
         ),
       )
     ) {
-      if (this.snapshot.user?.instanceRole !== "administrator")
-        throw new Error("Ask an administrator to add this app.");
       const catalog = this.integrations.catalog.find(
         ({ definition }) => definition.id === request.definitionId,
       );
@@ -8550,17 +7971,16 @@ class MockHostState {
       this.plugins.push({
         id: device.id,
         name: device.id,
-        scope: "workspace",
-        workspaceId: mockMainWorkspaceId,
-        source: { workspaceDirectory: `plugins/${device.id}` },
+        scope: "folder",
+        source: { folderDirectory: `plugins/${device.id}` },
         currentVersionId: id,
         versions: [{ id, digest: id, manifest: { name: device.id, skills: [] } }],
-        activations: [{ workspaceId: mockMainWorkspaceId }],
+        enabled: true,
         createdAt: at,
         updatedAt: at,
       });
     }
-    const template = this.snapshot.threads.find(({ role }) => role === "work");
+    const template = this.snapshot.threads.find(({ purpose }) => purpose === "task");
     if (!template) return [];
     for (const task of mockDeviceTasks) {
       this.#provisionalIcons.add(task.threadId);
@@ -8579,7 +7999,6 @@ class MockHostState {
             title: task.title,
             unread: false,
             updatedAt: task.at,
-            workspaceId: mockMainWorkspaceId,
           },
         ],
         runQueue: [
@@ -8695,8 +8114,6 @@ class MockHostState {
       server: null,
       threadId: null,
       threadTitle: null,
-      workspaceId: null,
-      workspaceName: null,
     };
     this.computerAppSetupRequests.set(request.id, request);
     this.update({ ...this.snapshot, machines: [...this.snapshot.machines] });
@@ -9041,10 +8458,7 @@ class MockHostState {
    * Settles an agent's app request without ending its Run: the Run kept
    * working while it waited, and learns the answer as a continuation.
    */
-  /**
-   * The preview has no live Browser Runtime, so a session it does not list is
-   * taken as open: the sign-in lands and its Workspace is the Request's own.
-   */
+
   signInBrowserSession(
     command: Extract<HostApiCommand, { readonly type: "browser.session.sign-in" }>,
   ): BrowserSignInOutcome {
@@ -9053,7 +8467,7 @@ class MockHostState {
       profileName: this.#browserProfileName(session?.profileId ?? null),
       site: command.url,
       sourceId: command.sourceId,
-      workspaceId: session?.workspaceId ?? mockMainWorkspaceId,
+      deploymentId: this.snapshot.deploymentId!,
     });
   }
 
@@ -9075,7 +8489,7 @@ class MockHostState {
         id === (request.payload.kind === "browser.sign-in" ? request.payload.sessionId : ""),
     );
     this.chrome.remember(
-      request.targetWorkspaceId,
+      this.snapshot.deploymentId!,
       request.payload.site,
       command.decision.sourceId,
     );
@@ -9083,7 +8497,7 @@ class MockHostState {
       profileName: this.#browserProfileName(session?.profileId ?? null),
       site: request.payload.site,
       sourceId: command.decision.sourceId,
-      workspaceId: request.targetWorkspaceId,
+      deploymentId: this.snapshot.deploymentId!,
     });
     if (outcome.status === "applied") {
       this.settleBrowserSignIn(request, "fulfilled", {
@@ -9112,7 +8526,7 @@ class MockHostState {
       !request ||
       request.status !== "pending" ||
       request.payload.kind !== "browser.password-sign-in" ||
-      request.payload.permissionVersion !== 5
+      request.payload.permissionVersion !== 6
     )
       return { stage: "gone" };
     if (request.payload.credential === "card") {
@@ -9143,7 +8557,7 @@ class MockHostState {
     }
     return {
       stage: "approval",
-      permissionVersion: 5,
+      permissionVersion: 6,
       accounts: [
         {
           id: "00000000-0000-4000-8000-000000000001",
@@ -9358,8 +8772,7 @@ class MockHostState {
           request.payload.installationId !== null &&
           (request.payload.requestedConnectionId === null ||
             request.payload.requestedConnectionId === connectionId) &&
-          this.snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.kind ===
-            "main",
+          true,
       );
     for (const request of waiting) {
       try {
@@ -9390,14 +8803,11 @@ class MockHostState {
       ownerUserId: mockUserId,
       revokedAt: null,
       status: "active",
-      workspaceId: input.workspaceId,
     };
     this.integrations.grants = [
       ...this.integrations.grants.filter(
         (candidate) =>
-          candidate.workspaceId !== grant.workspaceId ||
-          candidate.installationId !== grant.installationId ||
-          candidate.alias !== grant.alias,
+          candidate.installationId !== grant.installationId || candidate.alias !== grant.alias,
       ),
       grant,
     ];
@@ -9426,16 +8836,15 @@ class MockHostState {
           fullDiskAccess: null,
           id: enrollmentId,
           lastSeenAt: null,
-          localWorkspaces: 0,
+
           modules: { agents: { checkedAt: null, detail: null, readiness: "unavailable" } },
           name,
           ownership: "mine",
-          ownerName: null,
+
           pinnedThreads: 0,
           revocable: false,
           status: "pending",
           runtimeVersion: null,
-          unlinkedLocalFolders: 0,
         },
       ],
     });
@@ -9538,16 +8947,15 @@ class MockHostState {
           fullDiskAccess: null,
           id: enrollmentId,
           lastSeenAt: null,
-          localWorkspaces: 0,
+
           modules: { integrations: { checkedAt: null, detail: null, readiness: "unavailable" } },
           name,
           ownership: "mine",
-          ownerName: null,
+
           pinnedThreads: 0,
           revocable: false,
           status: "pending",
           runtimeVersion: null,
-          unlinkedLocalFolders: 0,
         },
       ],
     });
@@ -9729,11 +9137,10 @@ class MockHostState {
       id,
       name,
       scope: "deployment",
-      workspaceId: null,
       source: { directory },
       currentVersionId: versionId,
       versions: [{ id: versionId, digest: versionId, manifest: { name, skills: [] } }],
-      activations: [],
+      enabled: false,
       createdAt: at,
       updatedAt: at,
     });
@@ -9898,14 +9305,12 @@ class MockHostState {
     return [...cancelled.values()].reduce((total, count) => total + count, 0);
   }
 
-  async loadIntegrationGrants(workspaceId: string): Promise<IntegrationGrant[]> {
-    return this.integrations.grants.filter((grant) => grant.workspaceId === workspaceId);
+  async loadIntegrationGrants(_deploymentId: string): Promise<IntegrationGrant[]> {
+    return this.integrations.grants;
   }
 
-  async revokeIntegrationGrant(workspaceId: string, grantId: string): Promise<void> {
-    this.integrations.grants = this.integrations.grants.filter(
-      (grant) => grant.workspaceId !== workspaceId || grant.id !== grantId,
-    );
+  async revokeIntegrationGrant(_deploymentId: string, grantId: string): Promise<void> {
+    this.integrations.grants = this.integrations.grants.filter((grant) => grant.id !== grantId);
   }
 
   async saveIntegrationProviderApplication(
@@ -10210,15 +9615,13 @@ class MockHostState {
   }
 
   async startBrowser(
-    workspaceId: string,
+    _deploymentId: string,
     identity: import("../host/client.js").BrowserStartIdentity,
     placement?: import("../host/client.js").BrowserPlacementSummary,
     threadId?: string,
     _viewport?: Extract<BrowserCommand, { type: "surface.open" }>["viewport"],
   ): Promise<BrowserSessionSummary> {
-    const template = this.snapshot.browserSessions.find(
-      (session) => session.origin === "workspace",
-    );
+    const template = this.snapshot.browserSessions.find((session) => session.origin === "person");
     if (!template) throw new Error("Enable the seeded place fixture to start a browser.");
     if (
       identity.kind === "profile" &&
@@ -10241,7 +9644,7 @@ class MockHostState {
       ...template,
       id,
       createdAt: this.now().toISOString(),
-      workspaceId,
+
       profileId: identity.kind === "profile" ? identity.profileId : null,
       placement: placement ? { kind: "runner", runnerId: placement.runnerId } : template.placement,
       threadIds: threadId ? [threadId] : [],
@@ -10296,19 +9699,17 @@ class MockHostState {
     const home =
       homeRunnerId ??
       homes?.find((id) => id === preferredRunnerId) ??
-      (hostDeploymentPolicy(this.snapshot)?.deploymentOwnsMainComputer === true
-        ? homes?.find((id) =>
-            this.snapshot.machines.some(
-              (machine) => machine.id === id && machine.ownership === "deployment",
-            ),
-          )
-        : undefined) ??
+      homes?.find((id) =>
+        this.snapshot.machines.some(
+          (machine) => machine.id === id && machine.ownership === "deployment",
+        ),
+      ) ??
       (homes?.length === 1 ? homes[0]! : null);
     if (homes?.length === 0)
       throw new HostClientRequestError({
-        code: "workspace_unavailable",
+        code: "folder_unavailable",
         reason: "browser-placement-unavailable",
-        status: rpcErrorStatus("workspace_unavailable"),
+        status: rpcErrorStatus("folder_unavailable"),
         message: "No computer can hold your browser profiles.",
       });
     if (home === null && homeRunnerId === null && homes !== undefined)
@@ -10321,31 +9722,6 @@ class MockHostState {
     const profile = { homeRunnerId: home, id: createId("browserProfile"), name };
     this.update({ ...this.snapshot, browserProfiles: [...this.snapshot.browserProfiles, profile] });
     return profile;
-  }
-  async grantBrowserProfile(input: {
-    profileId: string;
-    workspaceId: string;
-    access?: "read" | "read-write";
-  }): Promise<BrowserProfileGrantSummary> {
-    if (!this.snapshot.browserProfiles.some((p) => p.id === input.profileId))
-      throw new Error("Profile not found");
-    const grant = {
-      ...input,
-      access: input.access ?? ("read-write" as const),
-      id: createId("browserProfileGrant"),
-      createdAt: this.now().toISOString(),
-    };
-    this.update({
-      ...this.snapshot,
-      browserProfileGrants: [...this.snapshot.browserProfileGrants, grant],
-    });
-    return grant;
-  }
-  async revokeBrowserProfileGrant(grantId: string): Promise<void> {
-    this.update({
-      ...this.snapshot,
-      browserProfileGrants: this.snapshot.browserProfileGrants.filter((g) => g.id !== grantId),
-    });
   }
 
   dispose(): void {
@@ -10369,15 +9745,15 @@ class MockHostState {
     await this.load();
   }
 
-  private allocateMarkColor(kind: "thread" | "workspace"): MarkColor {
+  private allocateMarkColor(kind: "thread"): MarkColor {
     const key = `${this.snapshot.user?.id ?? mockUserId}:${kind}`;
     let recent = this.#recentMarkColors.get(key);
     if (!recent) {
-      const held = kind === "thread" ? this.snapshot.threads : this.snapshot.workspaces;
+      const held = this.snapshot.threads;
       recent = [...held]
         .sort((left, right) => {
-          const leftAt = "createdAt" in left ? left.createdAt : left.updatedAt;
-          const rightAt = "createdAt" in right ? right.createdAt : right.updatedAt;
+          const leftAt = left.createdAt;
+          const rightAt = right.createdAt;
           return rightAt.localeCompare(leftAt) || right.id.localeCompare(left.id);
         })
         .flatMap(({ color }) => (color === null ? [] : [color]))
@@ -10388,187 +9764,21 @@ class MockHostState {
     return color;
   }
 
-  async setWorkspaceColor(workspaceId: string, color: MarkColor): Promise<WorkspaceSummary> {
-    const workspace = this.snapshot.workspaces.find(({ id }) => id === workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    if (workspace.kind === "main") throw new Error("Main's mark cannot be changed.");
-    if (workspace.status === "deleting" || workspace.status === "deleted")
-      throw new Error("Workspace is being deleted.");
-    const updated = { ...workspace, color, updatedAt: this.now().toISOString() };
-    this.update({
-      ...this.snapshot,
-      workspaces: this.snapshot.workspaces.map((item) =>
-        item.id === workspaceId ? updated : item,
-      ),
-    });
-    return updated;
-  }
-
-  async setWorkspaceIcon(
-    workspaceId: string,
-    icon: WorkspaceIconName | null,
-  ): Promise<WorkspaceSummary> {
-    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    if (workspace.kind === "main") throw new Error("Main's mark cannot be changed.");
-    if (workspace.status === "deleting" || workspace.status === "deleted") {
-      throw new Error("Workspace is being deleted.");
-    }
-    const updated = { ...workspace, icon };
-    this.update({
-      ...this.snapshot,
-      workspaces: this.snapshot.workspaces.map((item) =>
-        item.id === workspaceId ? updated : item,
-      ),
-    });
-    return updated;
-  }
-
-  async adoptRelocated(workspaceId: string): Promise<WorkspaceSummary> {
-    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace || workspace.storageIssue?.code !== "relocation-required")
-      throw new Error("Project is not awaiting relocation");
-    const sharing = await this.loadWorkspaceSharing(workspaceId);
-    if (
-      !sharing.members.some(
-        (member) =>
-          member.userId === this.snapshot.user?.id &&
-          member.role === "owner" &&
-          member.state === "active",
-      )
-    )
-      throw new Error("Only the Project owner may confirm relocation");
-    const updated: WorkspaceSummary = { ...workspace, status: "ready", storageIssue: null };
-    this.update({
-      ...this.snapshot,
-      workspaces: this.snapshot.workspaces.map((item) =>
-        item.id === workspaceId ? updated : item,
-      ),
-    });
-    return updated;
-  }
-
-  async retryWorkspaceStorage(workspaceId: string): Promise<WorkspaceSummary> {
-    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    return workspace;
-  }
-
-  async deleteWorkspace(workspaceId: string): Promise<WorkspaceSummary> {
-    return this.setWorkspaceStatus(workspaceId, "deleting");
-  }
-
-  async recoverWorkspace(workspaceId: string): Promise<WorkspaceSummary> {
-    return this.setWorkspaceStatus(workspaceId, "ready");
-  }
-
-  private setWorkspaceStatus(
-    workspaceId: string,
-    status: WorkspaceSummary["status"],
-  ): WorkspaceSummary {
-    const workspace = this.snapshot.workspaces.find((item) => item.id === workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    const next = { ...workspace, status };
-    this.update({
-      ...this.snapshot,
-      workspaces: this.snapshot.workspaces.map((item) => (item.id === workspaceId ? next : item)),
-    });
-    return next;
-  }
-
   async loadEarlierTranscript(_threadId: string): Promise<void> {}
 
-  async loadEarlierWorkspaces(): Promise<void> {}
-
-  private readonly projectSlugs = new Set<string>();
-
-  async createWorkspace(input: CreateWorkspaceInput) {
-    const name = input.name.trim();
-    if (!name) throw new Error("Workspace name is required.");
-    const base =
-      name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .slice(0, 100)
-        .replace(/^-|-$/g, "") || "project";
-    let slug = base;
-    for (let suffix = 2; this.projectSlugs.has(slug); suffix++) slug = `${base}-${suffix}`;
-    this.projectSlugs.add(slug);
-    const timestamp = this.now().toISOString();
-    const workspace = {
-      description: "A durable Opensteer Workspace.",
-      fileCount: 0,
-      harnessLabel: this.snapshot.harnesses[0]?.name ?? "Opensteer",
-      homeThreadId: null,
-      voiceThreadId: null,
-      icon: input.icon ?? null,
-      id: this.nextId("workspace"),
-      kind: "project" as const,
-      machineName: "Main runner",
-      name,
-      runnerLabel: this.snapshot.environments[0]?.name ?? "Main runner",
-      status: "ready" as const,
-      storageIssue: null,
-      color: this.allocateMarkColor("workspace"),
-      updatedAt: timestamp,
-    };
-    this.update({
-      ...this.snapshot,
-      workspaceWindow: {
-        ...this.snapshot.workspaceWindow,
-        itemCount: this.snapshot.workspaceWindow.itemCount + 1,
-        totalItems: this.snapshot.workspaceWindow.totalItems + 1,
-      },
-      workspaces: [workspace, ...this.snapshot.workspaces],
-    });
-    const template =
-      this.snapshot.threads.find((t) => t.id === this.snapshot.homeThreadId) ??
-      this.snapshot.threads[0];
-    if (template) {
-      const chat = await this.createThread({
-        workspaceId: workspace.id,
-        home: true,
-        title: "Chat",
-        environmentId: template.environmentId,
-        harnessInstanceId: template.harnessInstanceId,
-        modelSelection: template.modelSelection,
-        accessMode: template.accessMode,
-      });
-      return { ...workspace, homeThreadId: chat.id };
-    }
-    return workspace;
-  }
-
   renameThread(threadId: string, title: string): ThreadSummary {
-    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
-    if (!thread) throw new Error("Thread not found.");
-    if (
-      thread.id === this.snapshot.homeThreadId ||
-      this.snapshot.workspaces.some((workspace) => workspace.homeThreadId === threadId)
-    )
-      throw new HostClientRequestError({
-        code: "bad_request",
-        message: "Chat cannot be renamed.",
-        status: 400,
-      });
-    const trimmed = ThreadTitleSchema.parse(title);
+    const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
+    if (!thread) throw new Error("Task not found.");
     this.#provisionalTitles.delete(threadId);
-    if (thread.title !== trimmed) this.publishThreadName(thread, { title: trimmed });
-    return this.snapshot.threads.find(({ id }) => id === threadId)!;
+    this.publishThreadName(thread, { title: ThreadTitleSchema.parse(title) });
+    return this.snapshot.threads.find((thread) => thread.id === threadId)!;
   }
-
-  setThreadIcon(threadId: string, icon: WorkspaceIconName | null): ThreadSummary {
-    const thread = this.snapshot.threads.find(({ id }) => id === threadId);
-    if (!thread) throw new Error("Thread not found.");
-    if (
-      threadId === this.snapshot.homeThreadId ||
-      this.snapshot.workspaces.some(({ homeThreadId }) => homeThreadId === threadId)
-    )
-      throw new Error("Chat's icon cannot be changed.");
+  setThreadIcon(threadId: string, icon: IconName | null): ThreadSummary {
+    const thread = this.snapshot.threads.find((thread) => thread.id === threadId);
+    if (!thread) throw new Error("Task not found.");
     this.#provisionalIcons.delete(threadId);
-    const chosen = icon ?? defaultTaskSymbol;
-    if (thread.icon !== chosen) this.publishThreadName(thread, { icon: chosen });
-    return this.snapshot.threads.find(({ id }) => id === threadId)!;
+    this.publishThreadName(thread, { icon: icon ?? defaultTaskSymbol });
+    return this.snapshot.threads.find((thread) => thread.id === threadId)!;
   }
 
   /**
@@ -10590,7 +9800,6 @@ class MockHostState {
       sequence: String(++this.sequence),
       threadId,
       type: "place.entered",
-      workspaceId: thread.workspaceId,
     });
     this.runPlaces.accept(event, false);
     this.update({
@@ -10604,14 +9813,14 @@ class MockHostState {
 
   private publishThreadName(
     thread: ThreadSummary,
-    name: { readonly title?: string; readonly icon?: WorkspaceIconName },
+    name: { readonly title?: string; readonly icon?: IconName },
   ): void {
     this.sequence = Math.max(this.sequence, this.snapshot.revision) + 1;
     const event = AgentEventSchema.parse({
       type: "thread.state-changed",
       eventId: createId("event"),
       threadId: thread.id,
-      workspaceId: thread.workspaceId,
+
       environmentId: thread.environmentId,
       runId: null,
       sequence: String(this.sequence),
@@ -10675,102 +9884,62 @@ class MockHostState {
       accessMode: this.snapshot.executionPreferences.accessMode,
       modelSelection: placement.modelSelection,
       title: "Voice",
-      workspaceId: this.snapshot.homeWorkspaceId!,
     });
     this.update({
       ...this.snapshot,
       voiceThreadId: thread.id,
       threads: this.snapshot.threads.map((item) =>
-        item.id === thread.id ? { ...item, listed: false, role: "conversation" } : item,
+        item.id === thread.id ? { ...item, listed: false, purpose: "voice" } : item,
       ),
     });
     return thread.id;
   }
 
   async createThread(input: CreateThreadInput): Promise<ThreadSummary> {
-    const workspace = this.snapshot.workspaces.find((item) => item.id === input.workspaceId);
-    if (!workspace) throw new Error("Workspace not found.");
-    if (input.home) {
-      const existing =
-        workspace.homeThreadId &&
-        this.snapshot.threads.find((thread) => thread.id === workspace.homeThreadId);
-      if (existing) return existing;
-    }
     const placement = resolveThreadPlacement(
       this.snapshot.environments,
       this.snapshot.harnesses,
       input,
     );
-    const harness = this.snapshot.harnesses.find((item) => item.id === placement.harnessInstanceId);
-    const modelSelection = input.modelSelection;
-    const model = placement.models.find(
-      (candidate) =>
-        candidate.modelId === modelSelection.modelId &&
-        candidate.providerId === modelSelection.providerId,
-    );
-    if (!model) throw new Error("That model is not available on this work location.");
-    const storedSelection = storedModelSelection(modelSelection, model);
-
+    const folder = input.folder ?? this.snapshot.personalSettings!.agentHome;
+    if (folder.computerId !== this.snapshot.personalSettings!.agentHome.computerId)
+      throw new Error("Tasks execute on the hosting computer.");
     const timestamp = this.now().toISOString();
-    const { accessMode } = input;
-    assertMockAccessModeEnforceable(placement, accessMode);
     const thread: ThreadSummary = {
-      accessMode,
-      continuationIdentity: null,
-      providerSessionId: createId("providerSession"),
+      id: this.nextId("thread"),
       askedAt: timestamp,
       createdAt: timestamp,
-      environmentId: placement.environmentId,
-      harnessInstanceId: placement.harnessInstanceId,
-      harnessLabel: harness?.name ?? workspace.harnessLabel,
-      id: this.nextId("thread"),
-      inputQueuePaused: false,
-      listed:
-        input.parentThreadId === undefined ||
-        this.snapshot.threads.find(({ id }) => id === input.parentThreadId)?.role ===
-          "conversation",
-      modelLabel: model.displayName,
-      modelSelection: storedSelection,
-      parentThreadId: input.parentThreadId ?? null,
-      pendingRequests: 0,
-      role: input.home ? "conversation" : "work",
-      runnerLabel: placement.whereLabel,
+      updatedAt: timestamp,
       doneAt: null,
       doneReason: null,
+      accessMode: input.accessMode,
+      continuationIdentity: null,
+      providerSessionId: createId("providerSession"),
+      environmentId: placement.environmentId,
+      harnessInstanceId: placement.harnessInstanceId,
+      harnessLabel: placement.accountName,
+      modelLabel: input.modelSelection.modelId,
+      modelSelection: input.modelSelection,
+      listed: input.parentThreadId === undefined,
+      parentThreadId: input.parentThreadId ?? null,
+      inputQueuePaused: false,
+      pendingRequests: 0,
+      purpose: "task",
+      folder,
+      teamOrigin: null,
       status: "idle",
-      title: input.home ? "Chat" : input.title?.trim() || "Untitled thread",
+      title: input.title?.trim() || "New task",
       icon: null,
       color: this.allocateMarkColor("thread"),
       unread: false,
-      updatedAt: timestamp,
-      workspaceId: workspace.id,
+      runnerLabel: placement.whereLabel,
     };
-
-    if (input.generateTitle && !input.home) this.#provisionalTitles.add(thread.id);
-    if (!input.home) this.#provisionalIcons.add(thread.id);
+    if (input.generateTitle) this.#provisionalTitles.add(thread.id);
+    this.#provisionalIcons.add(thread.id);
     this.update({
       ...this.snapshot,
-      requests: { ...this.snapshot.requests, [thread.id]: [] },
       threads: [thread, ...this.snapshot.threads],
-      workspaces: input.home
-        ? this.snapshot.workspaces.map((item) =>
-            item.id === workspace.id ? { ...item, homeThreadId: thread.id } : item,
-          )
-        : this.snapshot.workspaces,
-      ...(input.home && workspace.id === this.snapshot.homeWorkspaceId
-        ? { homeThreadId: thread.id }
-        : {}),
-      transcriptWindows: {
-        ...this.snapshot.transcriptWindows,
-        [thread.id]: {
-          byteCount: 2,
-          hasMore: false,
-          itemCount: 0,
-          nextBefore: null,
-          threadId: thread.id,
-          totalItems: 0,
-        },
-      },
+      requests: { ...this.snapshot.requests, [thread.id]: [] },
       transcripts: { ...this.snapshot.transcripts, [thread.id]: [] },
     });
     return thread;
@@ -10848,7 +10017,6 @@ class MockHostState {
       sequence: String(++this.sequence),
       threadId: updated.id,
       type: "thread.execution-updated",
-      workspaceId: updated.workspaceId,
     });
     this.update({
       ...this.snapshot,
@@ -10877,7 +10045,7 @@ class MockHostState {
     return hostApi["thread.live.get"].success.parse({
       runs: [...runs].map(([runId, items]) => ({
         afterSequence: String(this.sequence),
-        progress: { items, runId, threadId, workspaceId: thread.workspaceId },
+        progress: { items, runId, threadId },
       })),
       threadId,
     });
@@ -10987,6 +10155,8 @@ class MockHostState {
     const assignmentId = this.openAssignmentOf(thread.id)?.id ?? null;
     if (input.content) this.bindAttachments(input.content, thread.id, message.id);
     const threadInput: ThreadInput = ThreadInputSchema.parse({
+      teamRequestId: null,
+      teamSource: null,
       assignmentId,
       cancelReason: null,
       causalChainId: createId("causalChain"),
@@ -11071,7 +10241,7 @@ class MockHostState {
     thread: ThreadSummary,
     author: Message["author"],
   ): { readonly active: ActiveMockRun; readonly run: Run } | null {
-    if (thread.role !== "conversation" || author.kind !== "human") return null;
+    if (thread.purpose !== "voice" || author.kind !== "human") return null;
     const active = this.activeRuns.get(thread.id);
     const person = active?.person;
     if (!active || active.cancelled || !person) return null;
@@ -11115,6 +10285,7 @@ class MockHostState {
     if (!thread || seed?.kind !== "message" || seed.author.kind !== "human") return null;
     // Some seeded transcripts carry ids no Host would issue; their Runs take no one's message.
     const parsed = RunSchema.safeParse({
+      teamRequestId: null,
       accessMode: thread.accessMode,
       activationInputId: seed.id,
       assignmentId: null,
@@ -11158,7 +10329,7 @@ class MockHostState {
    */
   private joinWaitingMessages(thread: ThreadSummary, run: ActiveMockRun): void {
     const { person } = run;
-    if (thread.role !== "conversation" || person === null) return;
+    if (thread.purpose !== "voice" || person === null) return;
     const waiting = (this.threadInputQueues.get(thread.id) ?? []).filter((item) =>
       sentBy(item, person),
     );
@@ -11177,8 +10348,6 @@ class MockHostState {
       ),
     );
   }
-
-  /* ---- Tasks: Home hands work to a Thread of its own, and it reports back ---- */
 
   private openAssignmentOf(threadId: string): AssignmentView | undefined {
     return [...this.assignments.values()].find(
@@ -11209,230 +10378,6 @@ class MockHostState {
       entry(assignment.parentThreadId, assignment.parentRunId),
     );
     this.upsertEntry(assignment.workerThreadId, entry(assignment.workerThreadId, null));
-  }
-
-  /**
-   * Home's side of handing work on: the delegate call, the task and its own
-   * Thread, and one sentence about it. Home's turn then ends, so its composer
-   * is free while the task runs on its own.
-   */
-  private async executeHomeDelegation(
-    home: ThreadSummary,
-    run: ActiveMockRun,
-    script: MockTaskScript,
-  ): Promise<void> {
-    if (!this.beginMockRun(home, run)) return;
-    await delay(this.latencyMs / 2);
-    if (!this.isRunCurrent(home.id, run)) return;
-    const { assignment, run: taskRun } = this.createTask(home, run.id, script);
-    this.upsertEntry(home.id, mockDelegateCall(run.id, assignment, script.title, home.workspaceId));
-    void this.executeTaskRun(assignment.workerThreadId, taskRun, script);
-    if (await this.streamMockReply(home.id, run, script.accepted)) this.endMockRun(home.id, run);
-  }
-
-  /** A worker Thread in its parent's Workspace, the handoff message and the open assignment. */
-  private createTask(
-    parent: ThreadSummary,
-    parentRunId: string,
-    script: MockTaskScript,
-    createdAt = this.now().toISOString(),
-  ): { readonly assignment: AssignmentView; readonly run: ActiveMockRun } {
-    const run: ActiveMockRun = {
-      cancelled: false,
-      id: this.nextId("run"),
-      joined: [],
-      person: null,
-      steered: [],
-    };
-    const seed = (this.snapshot.transcripts[parent.id] ?? []).find(
-      (entry) =>
-        entry.kind === "message" &&
-        entry.runId === parentRunId &&
-        (entry.messageKind === "input" || entry.messageKind === "continuation"),
-    );
-    const worker: ThreadSummary = {
-      ...parent,
-      askedAt: createdAt,
-      createdAt,
-      id: this.nextId("thread"),
-      inputQueuePaused: false,
-      listed:
-        parent.role === "conversation" && seed?.kind === "message" && seed.author.kind === "human",
-      parentThreadId: parent.id,
-      pendingRequests: 0,
-      providerSessionId: createId("providerSession"),
-      role: "work",
-      status: "running",
-      title: script.title,
-      icon: mockGeneratedTaskIcon(`${script.title} ${script.objective}`),
-      color: this.allocateMarkColor("thread"),
-      unread: false,
-      updatedAt: createdAt,
-    };
-    const handoff: MessageEntry = {
-      author: MessageAuthorSchema.parse({
-        // As the Host attributes it: "Chat" is the owner's name for it alone.
-        displayName:
-          parent.id === this.snapshot.homeThreadId
-            ? `${this.snapshot.user?.displayName ?? "Alex"}’s Opensteer`
-            : parent.title,
-        kind: "agent",
-        runId: parentRunId,
-        threadId: parent.id,
-        workspaceId: parent.workspaceId,
-        workspaceName:
-          this.snapshot.workspaces.find(({ id }) => id === parent.workspaceId)?.name ?? "Main",
-      }),
-      body: script.objective,
-      createdAt,
-      id: this.nextId("message"),
-      kind: "message",
-      messageKind: "input",
-      policy: "queue",
-      runId: run.id,
-      sequence: String(++this.sequence),
-    };
-    const assignment = AssignmentViewSchema.parse({
-      createdAt,
-      finishedAt: null,
-      id: createId("delegation"),
-      initialInputMessageId: handoff.id,
-      initialRunId: run.id,
-      objective: script.objective,
-      origin: "run",
-      parentAssignmentId: null,
-      parentOccurrenceId: null,
-      parentRunId,
-      parentThreadId: parent.id,
-      parentWatchActivationId: null,
-      replyTarget: null,
-      resultRunId: null,
-      resultText: null,
-      returnAttemptedAt: null,
-      returnMessageId: null,
-      returnReason: null,
-      returnStatus: "pending",
-      revision: 1,
-      status: "open",
-      updatedAt: createdAt,
-      workerThreadId: worker.id,
-    });
-    this.assignmentModels.set(assignment.id, {
-      modelSelection: worker.modelSelection,
-      parentModelSelection: parent.modelSelection,
-    });
-    this.taskScripts.set(assignment.id, script);
-    this.nextRunOrdinals.set(worker.id, 1);
-    this.update({
-      ...this.snapshot,
-      runQueue: [
-        ...this.snapshot.runQueue,
-        { createdAt, id: run.id, runOrdinal: 0, status: "queued", threadId: worker.id },
-      ],
-      threads: [...this.snapshot.threads, worker],
-      transcripts: { ...this.snapshot.transcripts, [worker.id]: [handoff] },
-    });
-    this.publishAssignment(assignment);
-    return { assignment, run };
-  }
-
-  /** The task's own Run: a few browser steps, then a decision or its reply. */
-  private async executeTaskRun(
-    workerId: string,
-    run: ActiveMockRun,
-    script: MockTaskScript,
-  ): Promise<void> {
-    const worker = this.snapshot.threads.find(({ id }) => id === workerId);
-    if (!worker || !this.beginMockRun(worker, run)) return;
-    for (const [index, step] of script.steps.entries()) {
-      await delay(this.latencyMs);
-      if (!this.isRunCurrent(workerId, run)) return;
-      const call = mockTaskStep(run.id, index, step, this.now().toISOString());
-      this.upsertEntry(workerId, call);
-      await delay(this.latencyMs * 2);
-      if (!this.isRunCurrent(workerId, run)) return;
-      this.upsertEntry(workerId, {
-        ...call,
-        completedAt: this.now().toISOString(),
-        output: { text: step.output },
-        state: "done",
-      });
-      if (index === 0 && script.note !== null) this.leaveTaskNote(worker, run.id, script.note);
-    }
-    if (script.decision !== null) {
-      this.openTaskDecision(workerId, run.id, script.decision);
-      return;
-    }
-    if (await this.streamMockReply(workerId, run, script.result)) this.endMockRun(workerId, run);
-  }
-
-  /** A report from a task to the conversation that asked for it: it starts nothing there. */
-  private leaveTaskNote(worker: ThreadSummary, runId: string, note: string): void {
-    const parentId = this.openAssignmentOf(worker.id)?.parentThreadId;
-    if (!parentId) return;
-    this.upsertEntry(parentId, {
-      author: MessageAuthorSchema.parse({
-        displayName: worker.title,
-        kind: "agent",
-        runId,
-        threadId: worker.id,
-        workspaceId: worker.workspaceId,
-        workspaceName:
-          this.snapshot.workspaces.find(({ id }) => id === worker.workspaceId)?.name ?? "Main",
-      }),
-      body: note,
-      createdAt: this.now().toISOString(),
-      id: this.nextId("message"),
-      kind: "message",
-      messageKind: "input",
-      policy: "report",
-      runId: null,
-      sequence: String(++this.sequence),
-    });
-  }
-
-  /** The task asks before a step it cannot take back, and its Run waits for the answer. */
-  private openTaskDecision(
-    workerId: string,
-    runId: string,
-    decision: NonNullable<MockTaskScript["decision"]>,
-    createdAt = this.now().toISOString(),
-  ): void {
-    const worker = this.snapshot.threads.find(({ id }) => id === workerId);
-    if (!worker) return;
-    const request = RequestSchema.parse({
-      callId: `mock-decision-${runId}`,
-      cancellationReason: null,
-      createdAt,
-      id: createId("request"),
-      kind: "harness.approval",
-      mode: "live",
-      originatingOccurrenceId: null,
-      originatingRunId: runId,
-      originatingThreadId: workerId,
-      originatingWorkspaceId: worker.workspaceId,
-      payload: { kind: "harness.approval" },
-      presentation: {
-        detail: decision.detail,
-        kind: "choice",
-        options: [
-          { hint: "allow-once", id: "allow-once", label: decision.accept },
-          { hint: "reject-once", id: "reject", label: decision.decline },
-        ],
-        risk: "medium",
-        title: decision.title,
-      },
-      requestedBy: mockUserId,
-      requiredActor: "requester",
-      resolvedAt: null,
-      resolvedBy: null,
-      response: null,
-      status: "pending",
-      targetWorkspaceId: worker.workspaceId,
-    });
-    this.setTaskRunStatus(workerId, runId, "waiting", {
-      requests: [...(this.snapshot.requests[workerId] ?? []), request],
-    });
   }
 
   /** A task's decision answered: its Run carries on from where it asked, as a live Request's does. */
@@ -11611,6 +10556,8 @@ class MockHostState {
     const pending: PendingMockInput = {
       body: "",
       input: ThreadInputSchema.parse({
+        teamRequestId: null,
+        teamSource: null,
         assignmentId: null,
         cancelReason: null,
         causalChainId: createId("causalChain"),
@@ -11640,7 +10587,6 @@ class MockHostState {
     void this.startRunFromInput(parent, pending).execution;
   }
 
-  /** Home's turn after a task's outcome reached it: the answer the person asked for. */
   private async executeTaskAnswer(
     thread: ThreadSummary,
     run: ActiveMockRun,
@@ -11767,15 +10713,10 @@ class MockHostState {
     this.admitNextInput(threadId);
   }
 
-  /**
-   * The preview's side of the Host's decision that a Run replied to the person:
-   * one notification, unless they muted the Workspace it replied in. A task's
-   * reply is never one; it returns to the agent that assigned it.
-   */
   private notifyReply(threadId: string, runId: string): void {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     const reply = mockRunReply(this.snapshot.transcripts[threadId] ?? [], runId);
-    if (!thread || !reply || this.snapshot.notificationMutes.includes(thread.workspaceId)) return;
+    if (!thread || !reply || false) return;
     const body = mockNotificationExcerpt(reply);
     if (!body) return;
     const notification = NotificationViewSchema.parse({
@@ -11788,152 +10729,12 @@ class MockHostState {
       runId,
       threadId,
       title:
-        threadId === this.snapshot.homeThreadId
+        threadId === this.snapshot.threads.find((thread) => thread.purpose === "background-job")?.id
           ? "Opensteer"
           : truncateMockText(thread.title, notificationTitleMaxCharacters),
-      workspaceId: thread.workspaceId,
+      deploymentId: this.snapshot.deploymentId!,
     });
     for (const listener of this.notificationListeners) listener(notification);
-  }
-
-  /**
-   * An ask already handed to a task that is waiting on the person, so the
-   * preview opens with a card that needs them and a decision to answer.
-   */
-  private seedHomeTask(): void {
-    const home = this.snapshot.threads.find(({ id }) => id === this.snapshot.homeThreadId);
-    if (!home) return;
-    const script = mockBookingTask;
-    const startedAt = this.now().getTime() - 4 * 60_000;
-    const at = (seconds: number) => new Date(startedAt + seconds * 1_000).toISOString();
-    const pictureRun = this.nextId("run");
-    const pictureReplyId = this.nextId("message");
-    const homeRun = this.nextId("run");
-    this.update({
-      ...this.snapshot,
-      transcripts: {
-        ...this.snapshot.transcripts,
-        [home.id]: [
-          ...(this.snapshot.transcripts[home.id] ?? []),
-          // An engine links a file it saved by its path on the Runner, which
-          // names nothing the reader's app can open.
-          {
-            author: mockHumanAuthor(),
-            body: "Can you search for tiger, go to Images, pick the coolest picture and download it?",
-            createdAt: at(-90),
-            id: this.nextId("message"),
-            kind: "message",
-            messageKind: "input",
-            runId: pictureRun,
-            sequence: String(++this.sequence),
-          },
-          {
-            createdAt: at(-89),
-            error: null,
-            id: `run:${pictureRun}`,
-            kind: "run",
-            replyMessageId: pictureReplyId,
-            runId: pictureRun,
-            status: "completed",
-          },
-          {
-            arguments: {
-              command:
-                "curl --fail --location https://images.example/tiger-in-snow.jpg --output ~/Downloads/tiger-in-snow.jpg",
-            },
-            callId: "call-download-1",
-            completedAt: at(-62),
-            createdAt: at(-70),
-            id: `tool:${pictureRun}:call-download-1`,
-            integration: null,
-            isError: false,
-            kind: "tool",
-            output: { text: "/Users/person/Downloads/tiger-in-snow.jpg\n  pixelWidth: 1920\n" },
-            runId: pictureRun,
-            state: "done",
-            streamText: "",
-            tool: { name: "shell", namespace: "codex" },
-          },
-          {
-            author: mockAgentAuthor(pictureRun, home.id),
-            body: "Picked a tiger charging through snow and downloaded the full HD photo to your Downloads folder: [tiger-in-snow.jpg](/Users/person/Downloads/tiger-in-snow.jpg). 🐅\n\n[unsplash.com/photos/tiger-in-snow](https://unsplash.com/photos/tiger-in-snow)\n\n[localhost:5173/tiger](http://localhost:5173/tiger)",
-            createdAt: at(-60),
-            id: pictureReplyId,
-            kind: "message",
-            messageKind: "assistant",
-            runId: pictureRun,
-            sequence: String(++this.sequence),
-          },
-          {
-            author: mockHumanAuthor(),
-            body: "Can you book a table for four at Nopa on Friday?",
-            createdAt: at(0),
-            id: this.nextId("message"),
-            kind: "message",
-            messageKind: "input",
-            runId: homeRun,
-            sequence: String(++this.sequence),
-          },
-          {
-            createdAt: at(1),
-            error: null,
-            id: `run:${homeRun}`,
-            kind: "run",
-            replyMessageId: null,
-            runId: homeRun,
-            status: "completed",
-          },
-        ],
-      },
-    });
-    const { assignment, run } = this.createTask(home, homeRun, script, at(2));
-    this.upsertEntry(
-      home.id,
-      mockDelegateCall(homeRun, assignment, script.title, home.workspaceId),
-    );
-    this.upsertEntry(home.id, {
-      author: mockAgentAuthor(homeRun, home.id),
-      body: script.accepted,
-      createdAt: at(3),
-      id: this.nextId("message"),
-      kind: "message",
-      messageKind: "assistant",
-      runId: homeRun,
-      sequence: String(++this.sequence),
-    });
-    this.update({
-      ...this.snapshot,
-      transcripts: {
-        ...this.snapshot.transcripts,
-        [home.id]: completeMockRun(this.snapshot.transcripts[home.id] ?? [], homeRun),
-      },
-    });
-    const workerId = assignment.workerThreadId;
-    this.update({
-      ...this.snapshot,
-      transcripts: {
-        ...this.snapshot.transcripts,
-        [workerId]: [
-          ...(this.snapshot.transcripts[workerId] ?? []),
-          {
-            createdAt: at(4),
-            error: null,
-            id: `run:${run.id}`,
-            kind: "run",
-            replyMessageId: null,
-            runId: run.id,
-            status: "running",
-          },
-          ...script.steps.map((step, index): ToolEntry => ({
-            ...mockTaskStep(run.id, index, step, at(6 + index * 8)),
-            completedAt: at(10 + index * 8),
-            output: { text: step.output },
-            state: "done",
-          })),
-        ],
-      },
-    });
-    if (script.decision) this.openTaskDecision(workerId, run.id, script.decision, at(30));
   }
 
   async stopNode(threadId: string, nodeId: string): Promise<void> {
@@ -11991,9 +10792,9 @@ class MockHostState {
     const timestamp = this.now().toISOString();
     const runQueue = this.snapshot.runQueue.filter((entry) => entry.id !== runId);
     // In a conversation Stop ends this reply and nothing else: the messages
-    // the person sent into it that it never read are not sent, and Chat is
+
     // never paused, so the next Send starts a reply of its own.
-    const conversation = thread?.role === "conversation";
+    const conversation = thread?.purpose === "voice";
     const unsent = new Set<string>(
       conversation ? (active?.joined ?? []).map(({ message }) => message.id) : [],
     );
@@ -12170,13 +10971,7 @@ class MockHostState {
         });
         return;
       }
-      const target = this.snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId);
-      if (!target) throw new Error("The mock Host does not have the target Workspace.");
-      const response = (
-        target.kind === "main"
-          ? MainIntegrationAccessResponseSchema
-          : ProjectIntegrationAccessResponseSchema
-      ).parse(input.response);
+      const response = MainIntegrationAccessResponseSchema.parse(input.response);
       if (response.value.decision === "fulfilled") {
         this.#verifyMockIntegrationAccessFulfillment(request, response.value.connectionId);
       }
@@ -12207,11 +11002,6 @@ class MockHostState {
             await this.createBrowserProfile(creation.name, creation.homeRunnerId, preferred)
           ).id;
         }
-        if (
-          this.snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.kind ===
-          "project"
-        )
-          await this.grantBrowserProfile({ profileId, workspaceId: request.targetWorkspaceId });
       } else if (value?.["decision"] !== "declined")
         throw mockConflict("Browser Request decision is invalid.");
     }
@@ -12282,7 +11072,7 @@ class MockHostState {
   ): TranscriptEntry[] {
     const thread = this.snapshot.threads.find(({ id }) => id === threadId);
     const active = this.activeRuns.get(threadId);
-    if (thread?.role !== "conversation" || runId === null || active?.id !== runId) return [];
+    if (thread?.purpose !== "voice" || runId === null || active?.id !== runId) return [];
     const { person } = active;
     if (person === null) return [];
     const held = (this.threadInputQueues.get(threadId) ?? []).filter((item) =>
@@ -12459,7 +11249,7 @@ class MockHostState {
       text: "",
     };
     const reasoningSentences = [
-      "The request is scoped to this Workspace, so I should inspect the files before changing anything. ",
+      "I should inspect the task folder before changing anything. ",
       "One shell check plus a focused edit will keep the run small and verifiable.",
     ];
     for (const sentence of reasoningSentences) {
@@ -12621,7 +11411,7 @@ class MockHostState {
     return current?.id === run.id && !current.cancelled;
   }
 
-  private nextId(prefix: "message" | "run" | "thread" | "workspace"): string {
+  private nextId(prefix: "message" | "run" | "thread"): string {
     this.sequence += 1;
     return createId(prefix);
   }
@@ -12678,7 +11468,7 @@ class MockHostState {
     const tabsChanged = snapshot.browserSessions !== this.snapshot.browserSessions;
     if (tabsChanged) {
       const at = this.now().toISOString();
-      const browserGroups: WorkspaceTabLineage[] = snapshot.browserSessions.map((session) => {
+      const browserGroups: PersonalTabLineage[] = snapshot.browserSessions.map((session) => {
         const held = this.snapshot.browserGroups?.find((lineage) => lineage.id === session.id);
         return {
           id: BrowserSessionIdSchema.parse(session.id),
@@ -12710,7 +11500,7 @@ class MockHostState {
                 (held ? at : (session.createdAt ?? at)),
             })),
           ],
-        } satisfies WorkspaceTabLineage;
+        } satisfies PersonalTabLineage;
       });
       browserGroups.push(
         ...(snapshot.browserGroups ?? []).filter(
@@ -12733,7 +11523,7 @@ class MockHostState {
       snapshot = {
         ...snapshot,
         browserGroups,
-        workspaceTabRestoreVersion: 1,
+        tabRestoreVersion: 1,
         ...(removed.length ? { browserTabGroups: this.tabGroups } : {}),
       };
     }
@@ -12741,12 +11531,6 @@ class MockHostState {
       ...snapshot,
       browserTabs: this.browserTabs,
       revision: snapshot.revision + 1,
-      deploymentPolicy:
-        snapshot.deploymentShape === this.snapshot.deploymentShape
-          ? snapshot.deploymentPolicy
-          : snapshot.deploymentShape
-            ? deploymentClientPolicy(deploymentPolicy(snapshot.deploymentShape))
-            : undefined,
     };
     if (tabsChanged && this.projectTabGroups)
       this.snapshot = { ...this.snapshot, browserTabGroups: this.projectTabGroups() };
@@ -12785,7 +11569,7 @@ class MockHostState {
       tasks,
       activeTasks: this.activeTaskEntries(tasks),
       waitingRequests: this.waitingRequests(),
-      workspaceTasks: this.workspaceTaskLists(tasks, this.snapshot.workspaceTasks),
+
       doneTasks: this.doneTaskLists(tasks, this.snapshot.doneTasks),
     };
     if (
@@ -12793,27 +11577,15 @@ class MockHostState {
       this.snapshot.user &&
       this.snapshot.session === "authenticated"
     ) {
-      const held = this.snapshot.savedViewReadiness ?? emptySavedViewReadiness();
-      const main = this.snapshot.workspaces.find(
-        ({ id, kind }) => kind === "main" && id === this.snapshot.homeWorkspaceId,
-      );
-      const home = !main
-        ? { status: "unknown" as const }
-        : !this.snapshot.homeThreadId
-          ? { status: "absent" as const, workspaceId: main.id }
-          : held.home.status === "window" && held.home.threadId === this.snapshot.homeThreadId
-            ? held.home
-            : {
-                status: "window" as const,
-                threadId: this.snapshot.homeThreadId,
-                workspaceId: main.id,
-                latest: true,
-              };
       this.snapshot = {
         ...this.snapshot,
-        savedViewReadiness: { tasksReady: true, workspaceRefusal: held.workspaceRefusal, home },
+        savedViewReadiness: { tasksReady: true },
       };
     }
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
     this.runPlaces.flush();
     this.emit();
   }
@@ -12828,13 +11600,21 @@ class MockHostState {
       : entries;
   }
 
-  /** The Workspaces whose own task list a screen asked for. */
-  private readonly workspaceTaskScopes = new Set<string>();
   /** The Done lists a screen asked for, by `doneTasks` key. */
   private readonly doneTaskScopes = new Set<string>();
 
-  loadDoneTasks(workspaceId?: string): void {
-    this.doneTaskScopes.add(workspaceId ?? mainDoneTasks);
+  private needsYouLimit = 50;
+  loadEarlierNeedsYou(): void {
+    this.needsYouLimit += 50;
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
+    this.emit();
+  }
+
+  loadDoneTasks(deploymentId?: string): void {
+    this.doneTaskScopes.add(deploymentId ?? mainDoneTasks);
     this.update(this.snapshot);
   }
 
@@ -12845,73 +11625,15 @@ class MockHostState {
   /** Each asked-for Done list: the reader's Done tasks, newest Done first. */
   private doneTaskLists(
     tasks: TaskListState | null,
-    held: Record<string, TaskListState>,
+    _held: Record<string, TaskListState>,
   ): Record<string, TaskListState> {
-    if (!tasks) {
-      this.doneTaskScopes.clear();
-      return {};
-    }
-    const projects = new Set(
-      this.snapshot.workspaces.filter(({ kind }) => kind === "project").map(({ id }) => id),
-    );
-    let changed = Object.keys(held).length !== this.doneTaskScopes.size;
-    const lists: Record<string, TaskListState> = {};
-    for (const key of this.doneTaskScopes) {
-      const entries = tasks.entries
-        .filter(
-          ({ thread }) =>
-            thread.doneAt !== null &&
-            (key === mainDoneTasks
-              ? !projects.has(thread.workspaceId)
-              : thread.workspaceId === key),
-        )
-        .sort(newestDone);
-      const previous = held[key];
-      const same =
-        previous?.entries.length === entries.length &&
-        previous.entries.every((entry, index) => entry === entries[index]);
-      lists[key] = same && previous ? previous : { entries, window: mockWindow(entries.length) };
-      changed ||= lists[key] !== previous;
-    }
-    return changed ? lists : held;
-  }
-
-  loadWorkspaceTasks(workspaceId: string): void {
-    if (!this.snapshot.workspaces.some((workspace) => workspace.id === workspaceId))
-      throw new HostClientRequestError({
-        code: "not_found",
-        message: "Workspace not found",
-        status: 404,
-      });
-    this.workspaceTaskScopes.add(workspaceId);
-    this.update(this.snapshot);
-  }
-
-  /**
-   * Each asked-for Workspace's tasks: the reader's list, cut to that
-   * Workspace. A list nothing in moved stays the same list.
-   */
-  private workspaceTaskLists(
-    tasks: TaskListState | null,
-    held: Record<string, TaskListState>,
-  ): Record<string, TaskListState> {
-    if (!tasks) {
-      this.workspaceTaskScopes.clear();
-      return {};
-    }
-    let changed = Object.keys(held).length !== this.workspaceTaskScopes.size;
-    const lists: Record<string, TaskListState> = {};
-    for (const workspaceId of this.workspaceTaskScopes) {
-      const entries = tasks.entries.filter(({ thread }) => thread.workspaceId === workspaceId);
-      const previous = held[workspaceId];
-      const same =
-        previous?.entries.length === entries.length &&
-        previous.entries.every((entry, index) => entry === entries[index]);
-      lists[workspaceId] =
-        same && previous ? previous : { entries, window: mockWindow(entries.length) };
-      changed ||= lists[workspaceId] !== previous;
-    }
-    return changed ? lists : held;
+    if (!tasks) return {};
+    return {
+      [mainDoneTasks]: {
+        entries: tasks.entries.filter(({ thread }) => thread.doneAt !== null).sort(newestDone),
+        window: mockWindow(tasks.entries.filter(({ thread }) => thread.doneAt !== null).length),
+      },
+    };
   }
 
   /**
@@ -12982,7 +11704,7 @@ class MockHostState {
           request.status === "pending" &&
           (request.requiredActor === "requester"
             ? request.requestedBy === user.id
-            : request.requiredActor === "workspace-owner" || user.instanceRole === "administrator"),
+            : request.requiredActor === "owner"),
       )
       .map((request) => {
         const held: WaitingRequest["assignments"] = [];
@@ -13001,26 +11723,9 @@ class MockHostState {
             ? this.assignments.get(assignment.parentAssignmentId)
             : undefined;
         }
-        // The preview's engines start no subagents.
-        const trigger = [...this.triggers.values()].find(
-          ({ trigger }) =>
-            trigger.systemRole && trigger.anchorThreadId === request.originatingThreadId,
-        );
-        const worker = this.snapshot.threads.find(({ id }) => id === request.originatingThreadId);
-        const presentation =
-          trigger &&
-          worker &&
-          !worker.listed &&
-          worker.parentThreadId === this.snapshot.homeThreadId &&
-          trigger.trigger.createdBy === user.id
-            ? {
-                threadId: ThreadIdSchema.parse(this.snapshot.homeThreadId),
-                workerThread: { id: ThreadIdSchema.parse(worker.id), title: worker.title },
-              }
-            : null;
         return {
           assignments: held,
-          presentation,
+          presentation: null,
           request: PendingRequestSchema.parse(request),
           subagent: null,
         };
@@ -13085,7 +11790,7 @@ function buildAssistantReply(prompt: string, steered: readonly string[] = []): s
     "",
     `I worked through “${subject}” end to end on the main runner.`,
     "",
-    "- Inspected the Workspace files before changing anything",
+    "- Inspected the task folder before changing anything",
     "- Ran the checks in a sandboxed shell",
     "- Applied one focused patch and recorded it in this Thread",
     // A promoted message reached the Run mid-turn, so the reply says it was heard.
@@ -13255,11 +11960,9 @@ function completeMockRun(entries: readonly TranscriptEntry[], runId: string): Tr
   );
 }
 
-/** The alternate mock keeps unrelated work while removing every seeded Chat reference. */
-/** Nothing asked yet: the deployment, its Workspaces and computers, and no work at all. */
 function firstRunWorld(snapshot: HostSnapshot): HostSnapshot {
   return {
-    ...withoutInitialHome(snapshot),
+    ...snapshot,
     activeTasks: [],
     assignments: {},
     browserSessions: [],
@@ -13278,44 +11981,6 @@ function firstRunWorld(snapshot: HostSnapshot): HostSnapshot {
   };
 }
 
-function withoutInitialHome(snapshot: HostSnapshot): HostSnapshot {
-  const homeId = snapshot.homeThreadId;
-  const home = snapshot.threads.find((thread) => thread.id === homeId);
-  if (!homeId || !home) throw new Error("The seeded mock has no Chat to remove.");
-  return {
-    ...snapshot,
-    homeThreadId: null,
-    voiceThreadId: null,
-    machines: snapshot.machines.map((machine) =>
-      machine.computerUse
-        ? {
-            ...machine,
-            computerUse: {
-              ...machine.computerUse,
-              sessions: machine.computerUse.sessions.filter(
-                (session) => session.threadId !== homeId,
-              ),
-            },
-          }
-        : machine,
-    ),
-    requests: Object.fromEntries(
-      Object.entries(snapshot.requests).filter(([threadId]) => threadId !== homeId),
-    ),
-    runQueue: snapshot.runQueue.filter((run) => run.threadId !== homeId),
-    threads: snapshot.threads.filter((thread) => thread.id !== homeId),
-    transcripts: Object.fromEntries(
-      Object.entries(snapshot.transcripts).filter(([threadId]) => threadId !== homeId),
-    ),
-    transcriptWindows: Object.fromEntries(
-      Object.entries(snapshot.transcriptWindows).filter(([threadId]) => threadId !== homeId),
-    ),
-    workspaces: snapshot.workspaces.map((workspace) =>
-      workspace.id === home.workspaceId ? { ...workspace, homeThreadId: null } : workspace,
-    ),
-  };
-}
-
 function withMockThreadMarks(
   threads: readonly (Omit<ThreadSummary, "icon" | "color" | "doneAt" | "doneReason" | "askedAt"> & {
     readonly doneAt?: string | null;
@@ -13327,7 +11992,7 @@ function withMockThreadMarks(
     askedAt: thread.createdAt,
     doneAt: thread.doneAt ?? null,
     doneReason: thread.doneReason ?? null,
-    icon: thread.role === "conversation" ? null : mockGeneratedTaskIcon(thread.title),
+    icon: thread.purpose === "voice" ? null : mockGeneratedTaskIcon(thread.title),
     color: markColorAllocationOrder[index % markColorAllocationOrder.length]!,
   }));
 }
@@ -13347,7 +12012,7 @@ function createInitialSnapshot(): HostSnapshot {
     "thr_00000000-0000-4000-8000-000000000001": [
       {
         author: mockHumanAuthor(),
-        body: "Build the new Opensteer foundation from scratch. Keep the architecture simple, make the Host authoritative, and keep Workspace storage explicit for each deployment profile.",
+        body: "Build the new Opensteer foundation from scratch. Keep the architecture simple, make the Host authoritative, and keep Folder access explicit for each deployment profile.",
         createdAt: "2026-08-09T16:31:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000001",
         kind: "message",
@@ -13359,7 +12024,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000001",
           "thr_00000000-0000-4000-8000-000000000001",
         ),
-        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a Thread’s pinned environment.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable Workspace and Thread records\n- a storage-neutral filesystem boundary\n- protected local-directory and storage adapters\n- harness-neutral run events\n- one web client that works hosted or on-prem",
+        body: "The foundation is taking shape around one clear rule: the Host owns durable truth, while Runners execute work in a task’s hosting computer.\n\nThe first slice includes:\n\n- versioned Host and Runner protocols\n- durable task records\n- a storage-neutral filesystem boundary\n- protected local-directory and storage adapters\n- harness-neutral run events\n- clients for web, desktop and mobile",
         createdAt: "2026-08-09T16:34:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000002",
         kind: "message",
@@ -13372,7 +12037,7 @@ function createInitialSnapshot(): HostSnapshot {
         kind: "reasoning",
         runId: "run_00000000-0000-4000-8000-000000000001",
         state: "done",
-        text: "Workspace storage is an explicit deployment capability, so local binding and storage authority contracts both need review before protocol work continues.",
+        text: "Folder access is an explicit deployment capability, so local binding and storage authority contracts both need review before protocol work continues.",
       },
       {
         arguments: { path: "docs/architecture.md" },
@@ -13447,7 +12112,7 @@ function createInitialSnapshot(): HostSnapshot {
           "run_00000000-0000-4000-8000-000000000002",
           "thr_00000000-0000-4000-8000-000000000002",
         ),
-        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\n![Mount sequence](/Users/person/Workspaces/main/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
+        body: "Opensteer only needs an authority endpoint, a scoped mount grant, and lifecycle visibility. storage should remain unaware of Threads, harnesses, or credentials.\n\nSources: the [storage mount guide](https://storage.example/docs/mounts), the [old mirror](http://mirror.storage.example/docs) and my draft, [storage-contract.md](docs/storage-contract.md). Questions go to [storage@storage.example](mailto:storage@storage.example).\n\nThe local diagram is [mount-sequence.png](/Users/person/Opensteer/mount-sequence.png).\n\n![Mount sequence](/Users/person/Opensteer/mount-sequence.png)\n\n[![Grant flow](https://storage.example/images/grant-flow.png)](https://storage.example/docs/grants)",
         createdAt: "2026-08-09T13:08:00.000Z",
         id: "msg_00000000-0000-4000-8000-000000000007",
         kind: "message",
@@ -13661,7 +12326,7 @@ function createInitialSnapshot(): HostSnapshot {
           originatingOccurrenceId: null,
           originatingRunId: "run_00000000-0000-4000-8000-000000000001",
           originatingThreadId: mockComputerUseThreadId,
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+
           payload: {
             access: "read-write",
             app: mockComputerUseApps.numbers,
@@ -13670,7 +12335,6 @@ function createInitialSnapshot(): HostSnapshot {
             reason: mockComputerUseReason,
             runnerId: mockMessagesRunnerId,
             setupRequestId: mockComputerUseSetupRequestId,
-            workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
           },
           presentation: {
             detail: `${mockComputerUseReason} Numbers on Mac mini — can see and control. Allow or decline from any Opensteer app.`,
@@ -13679,12 +12343,11 @@ function createInitialSnapshot(): HostSnapshot {
             title: "Wants to use Numbers on Mac mini",
           },
           requestedBy: mockUserId,
-          requiredActor: "workspace-owner",
+          requiredActor: "owner",
           resolvedAt: null,
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
         }),
       ],
       "thr_00000000-0000-4000-8000-000000000002": [
@@ -13698,7 +12361,7 @@ function createInitialSnapshot(): HostSnapshot {
           originatingOccurrenceId: null,
           originatingRunId: "run_00000000-0000-4000-8000-000000000002",
           originatingThreadId: "thr_00000000-0000-4000-8000-000000000002",
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+
           payload: { kind: "harness.input" },
           presentation: {
             detail:
@@ -13744,7 +12407,6 @@ function createInitialSnapshot(): HostSnapshot {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
         }),
       ],
       "thr_00000000-0000-4000-8000-000000000003": [
@@ -13758,7 +12420,7 @@ function createInitialSnapshot(): HostSnapshot {
           originatingOccurrenceId: null,
           originatingRunId: "run_00000000-0000-4000-8000-000000000003",
           originatingThreadId: "thr_00000000-0000-4000-8000-000000000003",
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000002",
+
           payload: { kind: "harness.approval" },
           presentation: {
             detail: "Send briefs/launch.md to the external announcement list.",
@@ -13776,7 +12438,6 @@ function createInitialSnapshot(): HostSnapshot {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000002",
         }),
       ],
       [mockVapiThreadId]: [
@@ -13790,7 +12451,7 @@ function createInitialSnapshot(): HostSnapshot {
           originatingOccurrenceId: null,
           originatingRunId: mockVapiRunId,
           originatingThreadId: mockVapiThreadId,
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+
           payload: {
             access: "read",
             installationId: mockVapi.installationId,
@@ -13813,7 +12474,6 @@ function createInitialSnapshot(): HostSnapshot {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
         }),
       ],
       [mockTmdbThreadId]: [
@@ -13827,7 +12487,7 @@ function createInitialSnapshot(): HostSnapshot {
           originatingOccurrenceId: null,
           originatingRunId: mockTmdbRunId,
           originatingThreadId: mockTmdbThreadId,
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+
           payload: {
             access: "read",
             installationId: null,
@@ -13853,7 +12513,6 @@ function createInitialSnapshot(): HostSnapshot {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
         }),
       ],
     },
@@ -13903,7 +12562,6 @@ function createInitialSnapshot(): HostSnapshot {
         runOrdinal: 0,
       },
     ],
-    browserProfileGrants: [],
     browserAvailable: false,
     browserPlacements: [],
     browserProfiles: [],
@@ -13912,13 +12570,15 @@ function createInitialSnapshot(): HostSnapshot {
     connection: "connecting",
     connectionInterrupted: false,
     network: "unknown",
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
-    deploymentPolicy: deploymentClientPolicy(
-      deploymentPolicy({ defaultWorkspaceBacking: "local-directory", kind: "personal" }),
-    ),
+    deploymentShape: { kind: "personal" },
     deploymentId: "dep_00000000-0000-4000-8000-000000000001",
+    sessionId: createId("authSession"),
+    personalSettings: { ownerId: mockUserId, agentHome: mockPersonalFolder, voiceThreadId: null },
+    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+    needsYou: null,
     environments: [
       {
+        can: { executeTasks: true },
         capabilities: ["filesystem", "container", "network-egress"],
         connected: true,
         harnessAuthenticationAllowed: true,
@@ -13975,18 +12635,18 @@ function createInitialSnapshot(): HostSnapshot {
         ],
         id: "env_00000000-0000-4000-8000-000000000001",
         kind: "main",
-        name: "Main runner",
+        name: "Home Mac",
         providerStateModes: ["ambient", "isolated"],
-        // The Mac mini's own Runner: the Main Mac a Personal deployment runs on.
+        // The hosting Runner for this personal Deployment.
         runnerId: "rnr_11111111-1111-4111-8111-111111111111",
         status: "connected",
-        workspaceBackings: ["local-directory"],
       },
       // A second computer whose person never installed Cursor's CLI. Cursor
       // ships no bytes of its own, so the Runner reports the engine
       // `unavailable` with the install command, and the account already added
       // for it carries that sentence wherever it is offered.
       {
+        can: { executeTasks: true },
         capabilities: ["filesystem"],
         connected: true,
         harnessAuthenticationAllowed: true,
@@ -14010,7 +12670,6 @@ function createInitialSnapshot(): HostSnapshot {
         providerStateModes: ["ambient", "isolated"],
         runnerId: "rnr_44444444-4444-4444-8444-444444444444",
         status: "connected",
-        workspaceBackings: ["local-directory"],
       },
     ],
     revision: 1,
@@ -14107,14 +12766,13 @@ function createInitialSnapshot(): HostSnapshot {
         stateKind: "ambient",
       },
     ],
-    homeWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
-    homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
+
     voiceThreadId: null,
-    notificationMutes: [],
+
     threadReadStates: {},
     tasks: null,
     activeTasks: [],
-    workspaceTasks: {},
+
     doneTasks: {},
     quietTaskDays: 3,
     // The mock stands in for a Personal Deployment on the computer running it:
@@ -14147,22 +12805,23 @@ function createInitialSnapshot(): HostSnapshot {
       emailVerified: true,
       id: mockUserId,
       image: null,
-      instanceRole: "administrator",
     },
     executionPreferences: emptyExecutionPreferences,
     threadRenameAvailable: true,
     taskMarksAvailable: true,
     harnessUpdateAvailable: true,
-    sharedTaskDoneAvailable: true,
-    workspaceTabReopenAvailable: true,
+
+    tabReopenAvailable: true,
     browserProfileManageAvailable: true,
     searchSuggestionsAvailable: true,
     iphoneAppsAvailable: true,
     ownerViewWindowsAvailable: true,
     voiceAvailable: true,
-    workspaceSharingAvailable: true,
+
     threads: withMockThreadMarks([
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14177,15 +12836,16 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 1,
-        role: "conversation",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "running",
         title: "Build the new architecture",
         unread: false,
         updatedAt: "2026-08-09T16:39:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
       },
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14200,15 +12860,16 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 1,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "waiting",
         title: "Review storage integration",
         unread: false,
         updatedAt: "2026-08-09T13:08:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
       },
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14223,15 +12884,16 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 1,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "waiting",
         title: "Prepare the product launch",
         unread: true,
         updatedAt: "2026-08-08T20:04:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
       },
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14246,16 +12908,17 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 0,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         doneAt: null,
         status: "idle",
         title: "Reconcile August expenses",
         unread: false,
         updatedAt: "2026-08-07T19:12:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000003",
       },
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14270,13 +12933,12 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 0,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "failed",
         title: "Download the September card statements",
         unread: false,
         updatedAt: "2026-08-08T09:41:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000003",
       },
       ...(
         [
@@ -14284,6 +12946,8 @@ function createInitialSnapshot(): HostSnapshot {
           [mockSlackLiveThreadId, "running", "Switch Slack to Opensteer"],
         ] as const
       ).map(([id, status, title]) => ({
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14298,15 +12962,17 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 0,
-        role: "work" as const,
-        runnerLabel: "Main runner",
+        purpose: "task" as const,
+        runnerLabel: "Home Mac",
         status,
         title,
         unread: false,
         updatedAt: "2026-08-06T23:29:37.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
+        deploymentId: "dep_00000000-0000-4000-8000-000000000001",
       })),
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14321,15 +12987,16 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 1,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "waiting",
         title: "List the Vapi assistants",
         unread: false,
         updatedAt: "2026-08-09T09:32:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
       },
       {
+        folder: mockPersonalFolder,
+        teamOrigin: null,
         accessMode: DEFAULT_THREAD_ACCESS_MODE,
         continuationIdentity: mockCodexContinuationIdentity,
         providerSessionId: createId("providerSession"),
@@ -14344,13 +13011,12 @@ function createInitialSnapshot(): HostSnapshot {
         modelSelection: mockCodexModelSelection,
         parentThreadId: null,
         pendingRequests: 1,
-        role: "work",
-        runnerLabel: "Main runner",
+        purpose: "task",
+        runnerLabel: "Home Mac",
         status: "waiting",
         title: "Look up movies on TMDB",
         unread: false,
         updatedAt: "2026-08-09T10:02:00.000Z",
-        workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
       },
     ]),
     transcriptWindows: Object.fromEntries(
@@ -14367,66 +13033,6 @@ function createInitialSnapshot(): HostSnapshot {
       ]),
     ),
     transcripts,
-    workspaceWindow: {
-      byteCount: 2,
-      hasMore: false,
-      itemCount: 3,
-      nextBefore: null,
-      totalItems: 3,
-    },
-    workspaces: [
-      {
-        description: "The new product, Host, Runners, protocols, and UI.",
-        homeThreadId: "thr_00000000-0000-4000-8000-000000000001",
-        voiceThreadId: null,
-        fileCount: 18,
-        harnessLabel: "Codex",
-        id: "wsp_00000000-0000-4000-8000-000000000001",
-        kind: "main",
-        icon: null,
-        machineName: "Main runner",
-        name: "Main",
-        runnerLabel: "Main runner",
-        status: "ready",
-        storageIssue: null,
-        color: "blue",
-        updatedAt: "2026-08-09T16:39:00.000Z",
-      },
-      {
-        description: "Positioning, launch briefs, website, and customer proof.",
-        homeThreadId: null,
-        voiceThreadId: null,
-        fileCount: 27,
-        harnessLabel: "Codex",
-        id: "wsp_00000000-0000-4000-8000-000000000002",
-        kind: "project",
-        icon: "rocket",
-        machineName: "Main runner",
-        name: "Customer launch",
-        runnerLabel: "Main runner",
-        status: "ready",
-        storageIssue: null,
-        color: "green",
-        updatedAt: "2026-08-08T20:04:00.000Z",
-      },
-      {
-        description: "Monthly close, invoices, budgets, and operating reports.",
-        homeThreadId: null,
-        voiceThreadId: null,
-        fileCount: 42,
-        harnessLabel: "Codex",
-        id: "wsp_00000000-0000-4000-8000-000000000003",
-        kind: "project",
-        icon: "chart",
-        machineName: "Main runner",
-        name: "Finance & operations",
-        runnerLabel: "Main runner",
-        status: "ready",
-        storageIssue: null,
-        color: "lime",
-        updatedAt: "2026-08-07T19:12:00.000Z",
-      },
-    ],
   };
 }
 
@@ -14459,7 +13065,7 @@ export function mockPasswordSignInRequest(
     originatingOccurrenceId: null,
     originatingRunId: "run_00000000-0000-4000-8000-000000000004",
     originatingThreadId: mockPasswordSignInThreadId,
-    originatingWorkspaceId: mockPasswordSignInWorkspaceId,
+
     payload: {
       computerName: "Mac mini",
       expiresAt: input.expiresAt ?? new Date(Date.now() + 14 * 60_000).toISOString(),
@@ -14467,8 +13073,8 @@ export function mockPasswordSignInRequest(
       operationId: `0192f4a1-7777-4000-8000-${String(index).padStart(12, "0")}`,
       reason: `Download the October statement from ${domain} to finish the reconciliation.`,
       runnerId: "rnr_11111111-1111-4111-8111-111111111111",
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
       site,
     },
     presentation: {
@@ -14489,12 +13095,10 @@ export function mockPasswordSignInRequest(
             ? { kind: "external", value: input.response }
             : { kind: "external" },
     status,
-    targetWorkspaceId: mockPasswordSignInWorkspaceId,
   });
 }
 
 const mockPasswordSignInThreadId = "thr_00000000-0000-4000-8000-000000000004";
-const mockPasswordSignInWorkspaceId = "wsp_00000000-0000-4000-8000-000000000003";
 
 /** A built-in service wears its listing's name, as the Host's own rows do. */
 function listedMockRow(row: PluginRow): PluginRow {

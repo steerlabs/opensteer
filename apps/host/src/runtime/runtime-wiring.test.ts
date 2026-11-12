@@ -65,7 +65,6 @@ describe("Host runtime wiring", () => {
         sequence: 1,
         threadId: createId("thread"),
         type,
-        workspaceId: createId("workspace"),
       }) as never;
 
     it("releases Run-owned sessions when a Run ends", async () => {

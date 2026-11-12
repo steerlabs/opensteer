@@ -3,6 +3,8 @@ import { z } from "zod";
 import {
   ContentPartSchema,
   PlaceContentPartSchema,
+  TaskFolderSchema,
+  type TaskFolder,
   type ArtifactContentPart,
   type ContentPart,
   type PlaceContentPart,
@@ -48,8 +50,8 @@ const DraftSchema = z.object({
   refusal: z.string().optional(),
   text: z.string(),
   updatedAt: z.number(),
-  /** Where a new task would start. It can change; the draft stays the same draft. */
-  workspaceId: z.string().optional(),
+  /** The folder a new task would start in. It can change; the draft stays the same draft. */
+  folder: TaskFolderSchema.optional().catch(undefined),
 });
 
 export type DraftFile = z.infer<typeof FileSchema>;
@@ -58,8 +60,10 @@ export type ComposerDraft = Omit<z.infer<typeof DraftSchema>, "files" | "places"
   readonly places?: readonly PlaceContentPart[] | undefined;
 };
 
+/** Home's own unsent draft: the one new task it keeps until sent. */
+export const homeDraftId = "home";
+
 export type ComposerDraftTarget =
-  | { readonly kind: "chat" }
   | { readonly kind: "task"; readonly draftId: string }
   | { readonly kind: "thread"; readonly threadId: string };
 
@@ -76,24 +80,23 @@ export interface ReturnedToDraft {
   /** Why it came back, shown when the draft is read. */
   readonly reason?: string;
   /** Where its task was to start: sending may have emptied the draft that knew. */
-  readonly workspaceId?: string | undefined;
+  readonly folder?: TaskFolder | undefined;
 }
 
 export interface TaskDraftRow {
   readonly draftId: string;
   readonly refused: boolean;
   readonly title: string;
-  readonly workspaceId: string | null;
+  readonly folder: TaskFolder | null;
 }
 
 /** What the sidebar shows of the drafts in one Deployment, for one person. */
 export interface ComposerDraftIndex {
-  readonly chat: boolean;
   readonly replies: ReadonlySet<string>;
   readonly tasks: readonly TaskDraftRow[];
 }
 
-const emptyIndex: ComposerDraftIndex = { chat: false, replies: new Set(), tasks: [] };
+const emptyIndex: ComposerDraftIndex = { replies: new Set(), tasks: [] };
 
 function scopePrefix({ deploymentId, userId }: ComposerDraftScope): string {
   return `${prefix}${encodeURIComponent(deploymentId)}:${encodeURIComponent(userId)}:`;
@@ -101,11 +104,9 @@ function scopePrefix({ deploymentId, userId }: ComposerDraftScope): string {
 
 export function composerDraftKey(scope: ComposerDraftScope, target: ComposerDraftTarget): string {
   const name =
-    target.kind === "chat"
-      ? "chat"
-      : target.kind === "task"
-        ? `task:${encodeURIComponent(target.draftId)}`
-        : `thread:${encodeURIComponent(target.threadId)}`;
+    target.kind === "task"
+      ? `task:${encodeURIComponent(target.draftId)}`
+      : `thread:${encodeURIComponent(target.threadId)}`;
   return `${scopePrefix(scope)}${name}`;
 }
 
@@ -248,15 +249,12 @@ export function createComposerDraftStore(
     const start = scopePrefix(scope);
     const tasks: (TaskDraftRow & { readonly updatedAt: number })[] = [];
     const replies = new Set<string>();
-    let chat = false;
     for (const key of keys(start)) {
       const draft = read(key);
       if (!draft || !holdsContent(draft)) continue;
       const name = key.slice(start.length);
       const open = opened.has(key);
-      if (name === "chat") {
-        chat = !open;
-      } else if (name.startsWith("thread:")) {
+      if (name.startsWith("thread:")) {
         if (!open) replies.add(decodeURIComponent(name.slice("thread:".length)));
       } else if (name.startsWith("task:")) {
         tasks.push({
@@ -264,14 +262,12 @@ export function createComposerDraftStore(
           refused: draft.refusal !== undefined,
           title: rowTitle(draft),
           updatedAt: draft.updatedAt,
-          workspaceId: draft.workspaceId ?? null,
+          folder: draft.folder ?? null,
         });
       }
     }
     tasks.sort((first, second) => second.updatedAt - first.updatedAt);
-    return tasks.length === 0 && replies.size === 0 && !chat
-      ? emptyIndex
-      : { chat, replies, tasks };
+    return tasks.length === 0 && replies.size === 0 ? emptyIndex : { replies, tasks };
   };
 
   return {
@@ -338,7 +334,7 @@ export function createComposerDraftStore(
         ...(returned.reason === undefined ? {} : { refusal: returned.reason }),
         text: returned.edit(draft.text),
         updatedAt: now(),
-        ...(returned.workspaceId ? { workspaceId: returned.workspaceId } : {}),
+        ...(returned.folder ? { folder: returned.folder } : {}),
       });
       publish();
     },

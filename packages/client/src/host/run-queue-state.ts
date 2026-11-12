@@ -18,52 +18,36 @@ interface RunRecord {
   readonly sequence: Sequence | null;
   readonly status: ActiveRunStatus;
   readonly threadId: string;
-  readonly workspaceId: string;
 }
 
 /** One absolute read of some Threads' non-terminal Runs. */
 export interface RunQueueRead {
   readonly runQueue: readonly RunQueueEntry[];
-  /** Each Thread the read covers, with the Workspace sequence it was read at. */
+
   readonly threads: ReadonlyMap<string, Sequence>;
-  /**
-   * A Workspace snapshot replaces the stream it interrupted, so a Run of that
-   * Workspace on a Thread it does not cover is no longer known either way.
-   */
-  readonly wholeWorkspace: boolean;
-  readonly workspaceId: string;
+
+  readonly wholeDeployment: boolean;
 }
 
-/**
- * The Run queue, reconciled the way Thread state is: every source is an
- * absolute word about a Run at a Workspace sequence, and the newer word wins.
- * An event says what became of the Run it names; a snapshot or Thread page
- * says which Runs of the Threads it covers were not terminal when it was read.
- * An ended Run stays ended, so a read that was in flight when it ended can
- * never show it executing again.
- */
 export class RunQueueProjection {
   readonly #active = new Map<string, RunRecord>();
   readonly #ended = new Set<string>();
 
   /** Whether the event changed what the queue shows. */
   record(event: AgentEvent): boolean {
-    const { runId, sequence, threadId, workspaceId } = event;
+    const { runId, sequence, threadId } = event;
     switch (event.type) {
       case "run.queued": {
         const entry = toRunQueueEntry(event.data.run);
         if (!entry) return this.#end(event.data.run.id);
-        return this.#accept(entry.id, { entry, sequence, status: entry.status, workspaceId });
+        return this.#accept(entry.id, { entry, sequence, status: entry.status });
       }
       case "run.started":
-        return (
-          runId !== null &&
-          this.#accept(runId, { sequence, status: "running", threadId, workspaceId })
-        );
+        return runId !== null && this.#accept(runId, { sequence, status: "running", threadId });
       case "run.status":
         if (runId === null) return false;
         return isActiveRunStatus(event.data.status)
-          ? this.#accept(runId, { sequence, status: event.data.status, threadId, workspaceId })
+          ? this.#accept(runId, { sequence, status: event.data.status, threadId })
           : this.#end(runId);
       case "run.completed":
       case "run.failed":
@@ -73,7 +57,7 @@ export class RunQueueProjection {
         return (
           runId !== null &&
           event.data.request.mode === "live" &&
-          this.#accept(runId, { sequence, status: "waiting", threadId, workspaceId })
+          this.#accept(runId, { sequence, status: "waiting", threadId })
         );
       default:
         return false;
@@ -93,13 +77,12 @@ export class RunQueueProjection {
           entry,
           sequence,
           status: entry.status,
-          workspaceId: read.workspaceId,
         }) || changed;
     }
     for (const [runId, record] of this.#active) {
-      if (record.workspaceId !== read.workspaceId || listed.has(runId)) continue;
+      if (listed.has(runId)) continue;
       const asOf = read.threads.get(record.threadId);
-      if (asOf === undefined && !read.wholeWorkspace) continue;
+      if (asOf === undefined && !read.wholeDeployment) continue;
       // A Run the read leaves out had ended by then, unless something newer
       // than the read said otherwise. One only an answer named may postdate
       // the read, and a Thread a snapshot does not cover is unknown, so those
@@ -118,14 +101,13 @@ export class RunQueueProjection {
    * A Run a command answer names. The answer carries no sequence, so it only
    * introduces a Run nothing else has spoken about.
    */
-  acknowledge(entry: RunQueueEntry, workspaceId: string): boolean {
+  acknowledge(entry: RunQueueEntry): boolean {
     if (this.#ended.has(entry.id) || this.#active.has(entry.id)) return false;
     this.#active.set(entry.id, {
       entry,
       sequence: null,
       status: entry.status,
       threadId: entry.threadId,
-      workspaceId,
     });
     return true;
   }
@@ -151,7 +133,6 @@ export class RunQueueProjection {
       readonly sequence: Sequence;
       readonly status: ActiveRunStatus;
       readonly threadId?: string;
-      readonly workspaceId: string;
     },
   ): boolean {
     const threadId = word.entry?.threadId ?? word.threadId;
@@ -168,7 +149,12 @@ export class RunQueueProjection {
     const sequence = newer ? word.sequence : previous.sequence;
     const status = newer ? word.status : previous.status;
     const entry = shape === null || shape.status === status ? shape : { ...shape, status };
-    this.#active.set(runId, { entry, sequence, status, threadId, workspaceId: word.workspaceId });
+    this.#active.set(runId, {
+      entry,
+      sequence,
+      status,
+      threadId: word.entry?.threadId ?? word.threadId ?? previous!.threadId,
+    });
     return entry !== null && entry !== previous?.entry;
   }
 

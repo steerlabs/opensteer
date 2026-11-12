@@ -1,23 +1,16 @@
-import type { HostSnapshot, MessageEntry } from "./client.js";
+import type { HostSnapshot } from "./client.js";
 import { compareTaskOrder } from "./task-entries.js";
 import { taskList } from "./task-list.js";
-import { visibleTranscript } from "./transcript.js";
-import {
-  groupTranscriptEntries,
-  conversationRows,
-  conversationTurn,
-} from "./agent-activity-model.js";
 import {
   CanonicalOriginSchema,
   DeploymentIdSchema,
   HostInstanceIdSchema,
   IsoDateTimeSchema,
-  MessageIdSchema,
   MarkColorSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
-  WorkspaceIconNameSchema,
+  TaskFolderSchema,
+  IconNameSchema,
 } from "@opensteer/core";
 import { ControlPlaneAccountIdSchema } from "@opensteer/control-plane-protocol";
 import { z } from "zod";
@@ -47,24 +40,12 @@ export const SavedViewScopeSchema = z.strictObject({
     .optional(),
 });
 export type SavedViewScope = z.infer<typeof SavedViewScopeSchema>;
-export const SavedChatSchema = z
-  .strictObject({
-    workspaceId: WorkspaceIdSchema,
-    // A known Main with no Home is an answer too; an omitted home is unknown.
-    threadId: ThreadIdSchema.nullable(),
-    messages: z
-      .array(z.strictObject({ voice: z.enum(["mine", "input", "agent"]), text: text(65_536) }))
-      .max(200),
-  })
-  .refine((home) => home.threadId !== null || home.messages.length === 0)
-  .refine((home) => utf8.encode(JSON.stringify(home)).byteLength <= 262_144);
-export type SavedChat = z.infer<typeof SavedChatSchema>;
 export const SavedTaskSchema = z.strictObject({
-  workspaceId: WorkspaceIdSchema,
+  folder: TaskFolderSchema,
   id: ThreadIdSchema,
   title: text(512),
   glyph: z.strictObject({
-    icon: WorkspaceIconNameSchema.nullable(),
+    icon: IconNameSchema.nullable(),
     color: MarkColorSchema.nullable(),
   }),
   group: z.enum(["working", "ready", "done"]),
@@ -73,7 +54,6 @@ export type SavedTask = z.infer<typeof SavedTaskSchema>;
 export const SavedHostViewSchema = SavedViewScopeSchema.extend({
   userId: UserIdSchema,
   capturedAt: IsoDateTimeSchema,
-  home: SavedChatSchema.optional(),
   tasks: z
     .array(SavedTaskSchema)
     .max(50)
@@ -103,72 +83,9 @@ export interface SavedViewStore {
 /** Volatile accepted answers for this viewer; never persisted or used as read authority. */
 export interface SavedViewReadiness {
   readonly tasksReady: boolean;
-  readonly home:
-    | { readonly status: "unknown" }
-    | { readonly status: "absent"; readonly workspaceId: string }
-    | {
-        readonly status: "window";
-        readonly workspaceId: string;
-        readonly threadId: string;
-        readonly latest: boolean;
-      };
-  readonly workspaceRefusal: number;
 }
 export function emptySavedViewReadiness(): SavedViewReadiness {
-  return { tasksReady: false, home: { status: "unknown" }, workspaceRefusal: 0 };
-}
-
-/** Text-only projection of the accepted latest window. Synthetic stream IDs never qualify. */
-export function projectSavedHome(snapshot: HostSnapshot): SavedChat | undefined {
-  const answer = snapshot.savedViewReadiness?.home;
-  if (!answer || answer.status === "unknown") return undefined;
-  if (answer.status === "absent")
-    return SavedChatSchema.parse({ workspaceId: answer.workspaceId, threadId: null, messages: [] });
-  if (
-    !answer.latest ||
-    answer.threadId !== snapshot.homeThreadId ||
-    answer.workspaceId !== snapshot.homeWorkspaceId
-  )
-    return undefined;
-  const entries = (snapshot.transcripts[answer.threadId] ?? []).filter(
-    (entry) =>
-      entry.kind !== "message" ||
-      (entry.published !== false &&
-        entry.streaming !== true &&
-        entry.messageKind !== "continuation" &&
-        MessageIdSchema.safeParse(entry.id).success),
-  );
-  const rows = conversationRows(
-    groupTranscriptEntries(visibleTranscript(entries, null, { conversation: true })),
-    { live: false, atComputer: () => false },
-  );
-  const messages: SavedChat["messages"] = [];
-  for (const { group } of rows) {
-    const message: MessageEntry | null =
-      group.kind === "message"
-        ? group.entry
-        : group.kind === "turn"
-          ? conversationTurn(group.turn).reply
-          : null;
-    if (!message || message.body.trim() === "") continue;
-    messages.push({
-      voice:
-        message.messageKind === "assistant"
-          ? "agent"
-          : message.author.kind === "human" && message.author.userId === snapshot.user?.id
-            ? "mine"
-            : "input",
-      text: boundedSavedText(message.body, 65_536, true),
-    });
-  }
-  const home = {
-    workspaceId: answer.workspaceId,
-    threadId: answer.threadId,
-    messages: messages.slice(-200),
-  };
-  while (home.messages.length && utf8.encode(JSON.stringify(home)).byteLength > 262_144)
-    home.messages.shift();
-  return SavedChatSchema.parse(home);
+  return { tasksReady: false };
 }
 
 /** Reuse the shared list's membership/order, but retain no state, attention or action. */
@@ -199,7 +116,7 @@ export function projectSavedTasks(snapshot: HostSnapshot): SavedTask[] {
       .filter(({ threadId }) => recent.has(threadId))
       .map((row) =>
         SavedTaskSchema.parse({
-          workspaceId: row.workspaceId,
+          folder: row.folder,
           id: row.threadId,
           title: boundedSavedText(row.title, 512),
           glyph: { icon: row.icon, color: row.color ?? null },

@@ -21,7 +21,6 @@ export interface MockDevicePlugin {
   readonly setupThreadId: string | null;
 }
 
-const mainWorkspaceId = "wsp_00000000-0000-4000-8000-000000000001";
 const studioImacRunnerId = "rnr_44444444-4444-4444-8444-444444444444";
 export const mockTvThreadId = "thr_00000000-0000-4000-8000-0000000000d1";
 export const mockLightsThreadId = "thr_00000000-0000-4000-8000-0000000000d2";
@@ -106,7 +105,7 @@ export function mockTvPairingRequest(userId: string): Request {
     originatingOccurrenceId: null,
     originatingRunId: mockTvRunId,
     originatingThreadId: mockTvThreadId,
-    originatingWorkspaceId: mainWorkspaceId,
+
     payload: {
       installationId: "iin_0192f4a1-dddd-4000-8000-0000000000d1",
       kind: "integration.input",
@@ -124,7 +123,6 @@ export function mockTvPairingRequest(userId: string): Request {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: mainWorkspaceId,
   });
 }
 
@@ -159,7 +157,5 @@ export function mockLightsServerSetup(userId: string, now: Date): ComputerAppSet
     },
     threadId: mockLightsThreadId,
     threadTitle: "Connect the desk lights",
-    workspaceId: mainWorkspaceId,
-    workspaceName: "Main",
   });
 }

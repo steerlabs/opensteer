@@ -17,8 +17,7 @@ import {
   type ComparableRow,
 } from "./report.js";
 import { TurnClock, type TurnTiming } from "./timing.js";
-import { engineVersion, prepareEngine, runEngine, type Engine } from "./engine.js";
-import { startFakeHost } from "./host.js";
+import type { Engine } from "./engine.js";
 
 const checkout = resolve(import.meta.dirname, "../..");
 const integer = z.coerce.number().int().positive();
@@ -75,6 +74,8 @@ async function main() {
     console.log(`Validated ${cases.length} cases for ${engine}`);
     return;
   }
+  const { engineVersion, prepareEngine, runEngine } = await import("./engine.js");
+  const { startFakeHost } = await import("./host.js");
   let output = resolve(
     parsed.values.out ??
       join(
@@ -327,8 +328,7 @@ async function main() {
               area: c.area,
               profile: c.profile,
               caller: c.caller,
-              reach: c.reach,
-              role: c.role,
+              purpose: c.purpose,
               fingerprint: runFingerprint,
               identity,
               treatment,

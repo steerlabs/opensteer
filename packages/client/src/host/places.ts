@@ -13,7 +13,7 @@ import {
 import { BrowserTabStore, type BrowserTabKey } from "./browser-tab-store.js";
 import type { BrowserSessionSummary, HostSnapshot } from "./client.js";
 import { phoneOwnerView, phonePlaceKey, phoneTabOpen, phoneTaskSession } from "./phone-tab.js";
-import type { WorkspaceSurfaceDestination as SurfaceDestination } from "./surfaces.js";
+import type { PersonalSurfaceDestination as SurfaceDestination } from "./surfaces.js";
 export type { PlaceOccupant } from "@opensteer/protocol";
 
 export function browserPlaceUnavailableReason(
@@ -36,9 +36,8 @@ export interface PlaceItem {
   readonly opensteerApp?: {
     readonly appId: string;
     readonly threadId: string;
-    readonly workspaceId: string;
   };
-  readonly workspaceTab?: BrowserTabOrderTab & {
+  readonly personalTab?: BrowserTabOrderTab & {
     readonly lineageId: string;
     readonly unavailableReason?: string | undefined;
     readonly state: "suspended" | "restoring" | "live";
@@ -69,10 +68,7 @@ export interface PlaceItem {
   readonly loading: boolean;
   readonly closable: boolean;
 }
-/**
- * A task or Chat is in the place: it holds it, or worked there moments ago.
- * These are the places that wear task marks, and what "Tabs with agents" shows.
- */
+
 export function placeHasAgents(place: Pick<PlaceItem, "occupants">): boolean {
   return place.occupants.length > 0;
 }
@@ -95,13 +91,13 @@ const sourceKeys = [
   "browserTabGroups",
   "browserTabs",
   "browserSessions",
-  "activatingWorkspaceTabs",
+  "activatingPersonalTabs",
   "browserProfiles",
   "browserPlacements",
   "machines",
 ] as const;
 export type PlaceListSource = Pick<HostSnapshot, (typeof sourceKeys)[number]> &
-  Partial<Pick<HostSnapshot, "workspaceTabRestoreVersion">>;
+  Partial<Pick<HostSnapshot, "tabRestoreVersion">>;
 export function samePlaceListSource(a: PlaceListSource, b: PlaceListSource): boolean {
   return sourceKeys.every((key) => a[key] === b[key]);
 }
@@ -122,7 +118,7 @@ export interface PlaceDescriptor {
   readonly destination: SurfaceDestination;
   readonly device: PlaceItem["device"];
   readonly browser: { readonly sessionId: string } | null;
-  readonly workspaceTab?: BrowserTabOrderTab & { readonly lineageId: string };
+  readonly personalTab?: BrowserTabOrderTab & { readonly lineageId: string };
 }
 const noTabs = new BrowserTabStore();
 const projections = new WeakMap<BrowserTabStore, PlaceProjection>();
@@ -197,7 +193,7 @@ export class PlaceProjection {
       this.#sessionSource = source.browserSessions;
       const sessions = source.browserSessions?.map((session) => session.id);
       if (!sessions || !sameDependencies(this.#sessions, sessions)) this.#sessions = sessions;
-      const versions = source.browserSessions.map((session) => session.workspaceTabRestoreVersion);
+      const versions = source.browserSessions.map((session) => session.tabRestoreVersion);
       if (!sameDependencies(this.#versions, versions)) this.#versions = versions;
     }
     const dependencies = [
@@ -215,7 +211,7 @@ export class PlaceProjection {
     const bindings = new Map<string, BrowserTabKey>();
     const durable = new Set(
       source.browserSessions
-        .filter((session) => session.workspaceTabRestoreVersion === 1)
+        .filter((session) => session.tabRestoreVersion === 1)
         .map((session) => session.id),
     );
     const next: PlaceDescriptor[] = [];
@@ -234,7 +230,7 @@ export class PlaceProjection {
       const item: PlaceDescriptor =
         held &&
         this.#bindings.get(key) === tab &&
-        !!held.workspaceTab === persistent &&
+        !!held.personalTab === persistent &&
         held.device?.machineId === machineId &&
         held.device.name === name
           ? held
@@ -246,7 +242,7 @@ export class PlaceProjection {
               browser: { sessionId: tab.sessionId },
               ...(persistent
                 ? {
-                    workspaceTab: {
+                    personalTab: {
                       id: tab.tabId,
                       order: tab.order,
                       openerId: tab.openerId,
@@ -282,9 +278,7 @@ export class PlaceProjection {
     this.#bindings = bindings;
     const layout = source.browserTabGroups;
     const saved = new Map(
-      next.flatMap((place) =>
-        place.workspaceTab ? [[place.workspaceTab.id, place] as const] : [],
-      ),
+      next.flatMap((place) => (place.personalTab ? [[place.personalTab.id, place] as const] : [])),
     );
     const groupOf = new Map(
       layout?.groups.flatMap((group) => group.tabIds.map((id) => [id, group.id] as const)),
@@ -293,10 +287,10 @@ export class PlaceProjection {
       ? [
           ...resolveBrowserTabOrder(
             layout.order,
-            [...saved.values()].map((place) => place.workspaceTab!),
+            [...saved.values()].map((place) => place.personalTab!),
             groupOf,
           ).map((id) => saved.get(id)!),
-          ...next.filter((place) => !place.workspaceTab),
+          ...next.filter((place) => !place.personalTab),
         ]
       : next;
     if (!sameDependencies(this.#structure, ordered)) this.#structure = ordered;
@@ -315,7 +309,7 @@ export class PlaceProjection {
     const placement = source.browserPlacements.find(
       (placement) => placement.runnerId === group.placement.runnerId,
     );
-    const activating = source.activatingWorkspaceTabs?.includes(tab.id) === true;
+    const activating = source.activatingPersonalTabs?.includes(tab.id) === true;
     const dependencies = [
       descriptor,
       tab,
@@ -335,13 +329,13 @@ export class PlaceProjection {
       placement?.unavailableReason,
     );
     const live = tab.state === "live";
-    const { workspaceTab, ...base } = descriptor;
+    const { personalTab, ...base } = descriptor;
     const item: PlaceItem = {
       ...base,
-      ...(workspaceTab
+      ...(personalTab
         ? {
-            workspaceTab: {
-              ...workspaceTab,
+            personalTab: {
+              ...personalTab,
               state: tab.state,
               unavailableReason: group.unavailableReason ?? undefined,
             },
@@ -376,7 +370,7 @@ export class PlaceProjection {
       this.#store.groupRevision,
       source.browserProfiles,
       source.browserPlacements,
-      source.activatingWorkspaceTabs,
+      source.activatingPersonalTabs,
     ];
     if (!sameDependencies(this.#listDependencies, dependencies)) {
       this.#listDependencies = dependencies;
@@ -423,7 +417,7 @@ function nativePlaces(source: PlaceListSource): readonly PlaceItem[] {
         key: `opensteer-app:${tab.appId}`,
         title: tab.title,
         destination: { kind: "opensteer-app", appId: tab.appId },
-        opensteerApp: { appId: tab.appId, threadId: tab.threadId, workspaceId: tab.workspaceId },
+        opensteerApp: { appId: tab.appId, threadId: tab.threadId },
         device: null,
         occupants: [],
         availability: "ready",
@@ -616,7 +610,7 @@ export function placeDestinationEnded(
   if (destination.kind === "browser") {
     const store = source.browserTabs;
     const groupId = store?.groupForSession(destination.sessionId);
-    if (groupId === undefined) return source.workspaceTabRestoreVersion !== 1;
+    if (groupId === undefined) return source.tabRestoreVersion !== 1;
     return (
       groupId !== undefined && store!.tabs(groupId).whole && !store!.tab(groupId, destination.tabId)
     );

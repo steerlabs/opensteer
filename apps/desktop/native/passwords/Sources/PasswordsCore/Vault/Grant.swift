@@ -1,21 +1,19 @@
 import Foundation
 
-/// The Deployment, Workspace and site a grant answers for: at most one grant
+/// The personal Deployment and site a grant answers for: at most one grant
 /// per key. Keys compare as UTF-8 bytes, never by Unicode equivalence, so two
 /// IDs that only look alike are two keys.
 public struct GrantKey: Hashable, Sendable {
   public let deploymentId: String
-  public let workspaceId: String
   /// `https://<registrable domain>`.
   public let site: String
 
-  public init(deploymentId: String, workspaceId: String, site: String) {
+  public init(deploymentId: String, site: String) {
     self.deploymentId = deploymentId
-    self.workspaceId = workspaceId
     self.site = site
   }
 
-  private var fields: [String] { [deploymentId, workspaceId, site] }
+  private var fields: [String] { [deploymentId, site] }
 
   public static func == (left: GrantKey, right: GrantKey) -> Bool {
     zip(left.fields, right.fields).allSatisfy { $0.utf8.elementsEqual($1.utf8) }
@@ -34,55 +32,40 @@ public struct GrantKey: Hashable, Sendable {
   }
 }
 
-/// "Agents in this Workspace may sign in to this site as this login", which
-/// the requester allowed once through their authenticated Host session. The names are
-/// what the Host called the Workspace and Deployment then, kept for display.
-///
-/// Current grants add `permissionVersion` (4 for browsers, 5 for websites and apps)
-/// and the pinned login `revision`
-/// to the legacy names/key fields,
-/// inside the sealed manifest.
+/// Remembered personal consent pins the selected login and revision in the sealed manifest.
 public struct Grant: Sendable, Equatable {
   public let key: GrantKey
   public let permissionVersion: Int64
-  public let revision: Int64?
+  public let revision: Int64
   public var isCurrentPermission: Bool {
-    [4, 5].contains(permissionVersion) && revision != nil
+    permissionVersion == 6 && revision >= 1
   }
 
   public func authorizes(permissionVersion required: Int64) -> Bool {
-    switch required {
-    case 4: return isCurrentPermission
-    case 5: return isCurrentPermission && permissionVersion == 5
-    default: return false
-    }
+    required == 6 && isCurrentPermission
   }
   public let loginId: String
   public let deploymentName: String
-  public let workspaceName: String
 
   public init(
-    key: GrantKey, loginId: String, deploymentName: String, workspaceName: String,
-    revision: Int64? = nil, permissionVersion: Int64 = 4
+    key: GrantKey, loginId: String, deploymentName: String,
+    revision: Int64, permissionVersion: Int64 = 6
   ) {
-    self.permissionVersion = revision == nil ? 3 : permissionVersion
+    self.permissionVersion = permissionVersion
     self.revision = revision
     self.key = key
     self.loginId = loginId
     self.deploymentName = deploymentName
-    self.workspaceName = workspaceName
   }
 
   /// Field shape, which needs no Public Suffix List. The site rule
   /// (`Origins.isSite`) is checked when a grant is written; on read, the
   /// broker checks the login is within the site at every release.
   func validateStored() throws {
-    if permissionVersion != 3 || revision != nil {
-      guard [4, 5].contains(permissionVersion), let revision, revision >= 1 else {
-        throw VaultError.invalidGrant("a grant has an unsupported permission")
-      }
+    guard permissionVersion == 6, revision >= 1 else {
+      throw VaultError.invalidGrant("a grant has an unsupported permission")
     }
-    for field in [key.deploymentId, key.workspaceId, deploymentName, workspaceName] {
+    for field in [key.deploymentId, deploymentName] {
       guard (1...VaultLimits.maxGrantFieldBytes).contains(field.utf8.count),
         !field.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7F })
       else {
@@ -104,13 +87,9 @@ public struct Grant: Sendable, Equatable {
       "deploymentName": .string(deploymentName),
       "loginId": .string(loginId),
       "site": .string(key.site),
-      "workspaceId": .string(key.workspaceId),
-      "workspaceName": .string(workspaceName),
     ]
-    if let revision {
-      fields["permissionVersion"] = .integer(permissionVersion)
-      fields["revision"] = .integer(revision)
-    }
+    fields["permissionVersion"] = .integer(permissionVersion)
+    fields["revision"] = .integer(revision)
     return .object(fields)
   }
 
@@ -118,21 +97,16 @@ public struct Grant: Sendable, Equatable {
     guard case .object(let fields) = json else {
       throw VaultError.invalidGrant("a grant is not an object")
     }
-    let versioned = fields["permissionVersion"] != nil || fields["revision"] != nil
-    var keys: Set<String> = [
-      "deploymentId", "deploymentName", "loginId", "site", "workspaceId", "workspaceName",
-    ]
-    if versioned { keys.formUnion(["permissionVersion", "revision"]) }
-    let object = try StrictObject(json, keys: keys, context: "grant")
-    permissionVersion = versioned ? try object.integer("permissionVersion") : 3
-    revision = versioned ? try object.integer("revision") : nil
+    let object = try StrictObject(json, keys: [
+      "deploymentId", "deploymentName", "loginId", "site", "permissionVersion", "revision",
+    ], context: "grant")
+    permissionVersion = try object.integer("permissionVersion")
+    revision = try object.integer("revision")
     key = GrantKey(
       deploymentId: try object.string("deploymentId"),
-      workspaceId: try object.string("workspaceId"),
       site: try object.string("site"))
     loginId = try object.string("loginId")
     deploymentName = try object.string("deploymentName")
-    workspaceName = try object.string("workspaceName")
     try validateStored()
   }
 }

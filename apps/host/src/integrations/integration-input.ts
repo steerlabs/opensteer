@@ -257,8 +257,6 @@ export class IntegrationInput {
         mode: "durable",
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
-        targetWorkspaceId: run.workspaceId,
         payload: {
           kind: "integration.input",
           installationId: call.callable.installation.id,

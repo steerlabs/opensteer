@@ -24,6 +24,9 @@ const allowedFiles = new Set([
   // Reads `AccountDeploymentDirectoryEntry.reachability` — the control-plane
   // homonym, which is a different field on a different type.
   "apps/desktop/src/account/personal-directory-projection.ts",
+  // Writes a previous-release catalog's persisted bytes for compatibility tests;
+  // it chooses no route.
+  "packages/client/src/test-support/previous-release-catalog.ts",
 ]);
 
 /**

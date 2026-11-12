@@ -54,7 +54,6 @@ import { IntegrationIcon } from "./integration-icon.js";
 export function IntegrationDetail({
   dashboard,
   headerAction,
-  showWorkspaceAccess = true,
   error,
   hostConnected,
   hostName,
@@ -72,13 +71,12 @@ export function IntegrationDetail({
   onRepositoryAccess,
   onTurnOnComputer,
   onUninstall,
-  onWorkspaceAccess,
+  onAgentAccess,
   pending,
   platform,
   reconnectConnectionId,
 }: {
   readonly headerAction?: ReactNode;
-  readonly showWorkspaceAccess?: boolean;
   readonly dashboard: IntegrationDashboard;
   readonly error: string | null;
   readonly hostConnected: boolean;
@@ -113,7 +111,7 @@ export function IntegrationDetail({
     readonly runnerId: string;
   }) => void;
   readonly onUninstall: (installationId: string) => void;
-  readonly onWorkspaceAccess: () => void;
+  readonly onAgentAccess: () => void;
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
   /** A connection made with a key that this page replaces the key of. */
@@ -594,20 +592,18 @@ export function IntegrationDetail({
         </section>
       ) : null}
 
-      {active && (showWorkspaceAccess || signInChoices) ? (
+      {active ? (
         <section className="section">
           <div className="card">
-            {showWorkspaceAccess ? (
-              <button className="card__row intg-link" onClick={onWorkspaceAccess} type="button">
-                <span className="card__row-body">
-                  <span className="card__row-title">Workspace access</span>
-                  <span className="card__row-detail">
-                    {`Choose which Workspaces’ agents can use ${definition.name}.`}
-                  </span>
+            <button className="card__row intg-link" onClick={onAgentAccess} type="button">
+              <span className="card__row-body">
+                <span className="card__row-title">Agent access</span>
+                <span className="card__row-detail">
+                  {`Choose what your agent can do with ${definition.name}.`}
                 </span>
-                <Icon name="chevron-right" />
-              </button>
-            ) : null}
+              </span>
+              <Icon name="chevron-right" />
+            </button>
             {signInChoices ? (
               <button
                 className="card__row intg-link"

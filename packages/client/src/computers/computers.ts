@@ -1,4 +1,3 @@
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import type {
   IntegrationConnectionSummary,
   IntegrationDefinitionSummaryView,
@@ -22,19 +21,13 @@ import {
  * same computer two ways.
  */
 
-export type DeploymentKind = "personal" | "server";
-
 /** Where the Deployment runs: the top of the page, never a row. */
-export type ComputersHome =
-  | {
-      readonly kind: "mac";
-      /** The Mac the Personal Deployment runs on, once its Runner has connected. */
-      readonly machine: MachineSummary | null;
-      readonly name: string;
-    }
-  | { readonly kind: "server"; readonly address: string };
-
-export type ComputerGroupId = "others" | "shared" | "yours" | "teammates";
+export interface ComputersHome {
+  readonly kind: "mac";
+  readonly machine: MachineSummary | null;
+  readonly name: string;
+}
+export type ComputerGroupId = "others";
 
 export interface ComputerGroup {
   readonly id: ComputerGroupId;
@@ -52,60 +45,26 @@ export interface ComputersOverview {
 }
 
 export function computersOverview(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
-  /** The machine the reader is sitting at, when a desktop can say so. */
   readonly hereId: string | null;
   readonly machines: readonly MachineSummary[];
-  /** The Deployment's canonical origin. */
   readonly publicOrigin: string | null;
 }): ComputersOverview {
-  const services = input.machines.filter(isServiceMachine);
-  const main =
-    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy)) ?? null;
-  const home: ComputersHome =
-    input.deploymentPolicy?.deploymentOwnsMainComputer === true
-      ? { kind: "mac", machine: main, name: main?.name ?? input.deploymentName }
-      : { kind: "server", address: originAddress(input.publicOrigin) ?? input.deploymentName };
-  const computers = sortComputers(
-    input.machines.filter((machine) => machine !== main && !isServiceMachine(machine)),
-    input.hereId,
-  );
-  if (input.deploymentPolicy?.ownership === "single-user") {
-    return {
-      addTo: "others",
-      groups: [
-        {
-          id: "others",
-          machines: computers,
-          title: "Other computers agents can use",
-        },
-      ],
-      home,
-      services,
-    };
-  }
+  const main = input.machines.find(hostsDeployment) ?? null;
   return {
-    addTo: "yours",
+    addTo: "others",
+    home: { kind: "mac", machine: main, name: main?.name ?? input.deploymentName },
+    services: input.machines.filter(isServiceMachine),
     groups: [
       {
-        id: "shared",
-        machines: computers.filter(({ ownership }) => ownership === "deployment"),
-        title: "Shared computers",
-      },
-      {
-        id: "yours",
-        machines: computers.filter(({ ownership }) => ownership === "mine"),
-        title: "Your computers",
-      },
-      {
-        id: "teammates",
-        machines: computers.filter(({ ownership }) => ownership === "other"),
-        title: "Teammates’ computers",
+        id: "others",
+        title: "Other computers agents can use",
+        machines: sortComputers(
+          input.machines.filter((machine) => machine !== main && !isServiceMachine(machine)),
+          input.hereId,
+        ),
       },
     ],
-    home,
-    services,
   };
 }
 
@@ -125,15 +84,8 @@ export function isServiceMachine(machine: MachineSummary): boolean {
  * person, and nothing else on a Personal Deployment is Deployment-owned but a
  * service.
  */
-export function hostsDeployment(
-  machine: MachineSummary,
-  deploymentPolicy: DeploymentClientPolicy | null,
-): boolean {
-  return (
-    deploymentPolicy?.deploymentOwnsMainComputer === true &&
-    machine.ownership === "deployment" &&
-    !isServiceMachine(machine)
-  );
+export function hostsDeployment(machine: MachineSummary): boolean {
+  return machine.ownership === "deployment" && !isServiceMachine(machine);
 }
 
 /** The computer you are at, then the ones that are there, away, and expected. */
@@ -403,7 +355,7 @@ export function computerRole(
   if (machine.modules.agents) return "works";
   // A device that lends its browser has shared something even with no app on.
   if (uses.length > 0 || machine.modules.browser !== undefined) return "uses";
-  if (machine.ownership === "other" || !appsLoaded) return null;
+  if (!appsLoaded) return null;
   return "idle";
 }
 
@@ -459,14 +411,4 @@ export function computerUsesChosenElsewhere(machine: MachineSummary): string {
   return isIphone(machine)
     ? `Choose which apps agents can use on ${machine.name} in Opensteer on that iPhone.`
     : `Choose which apps, folders and commands agents can use on ${machine.name} in Opensteer on a computer.`;
-}
-
-/** The hostname people reach a server at, from its canonical origin. */
-function originAddress(origin: string | null): string | null {
-  if (!origin) return null;
-  try {
-    return new URL(origin).hostname;
-  } catch {
-    return null;
-  }
 }

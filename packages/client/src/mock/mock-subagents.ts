@@ -17,9 +17,11 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
   snapshot: Snapshot;
   events: readonly AgentEvent[];
   assignment: AssignmentView;
+  openAssignment: AssignmentView;
 } {
   const base =
-    snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId) ?? snapshot.threads[0];
+    snapshot.threads.find((thread) => thread.listed && thread.purpose === "task") ??
+    snapshot.threads[0];
   if (!base || !snapshot.user) throw new Error("Subagents need a mock conversation.");
   const threadId = createId("thread");
   const runId = createId("run");
@@ -29,7 +31,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     ...base,
     id: threadId,
     title: "Subagents everywhere",
-    role: "work" as const,
+    purpose: "task" as const,
     parentThreadId: null,
     status: "running" as const,
     pendingRequests: 1,
@@ -132,7 +134,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
   const worker = {
     ...thread,
     id: workerId,
-    role: "work" as const,
+    purpose: "task" as const,
     parentThreadId: threadId,
     title: "Review the release notes",
     pendingRequests: 0,
@@ -171,10 +173,11 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     objectivePreview: assignment.objective,
     resultPreview: assignment.resultText,
     workerThread: {
+      folder: worker.folder,
       id: workerId,
       title: worker.title,
       environmentId: worker.environmentId,
-      workspaceId: worker.workspaceId,
+
       pendingRequests: 0,
       status: "idle",
       icon: null,
@@ -192,8 +195,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     originatingRunId: runId,
     originatingOccurrenceId: null,
     originatingThreadId: threadId,
-    originatingWorkspaceId: thread.workspaceId,
-    targetWorkspaceId: thread.workspaceId,
+
     requestedBy: snapshot.user.id,
     requiredActor: "requester",
     resolvedAt: null,
@@ -208,6 +210,70 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
       options: [
         { id: "phone", label: "Phone first", hint: "other" },
         { id: "web", label: "Web first", hint: "other" },
+      ],
+    },
+  });
+
+  const openWorkerId = createId("thread"),
+    openRunId = createId("run");
+  const openWorker = {
+    ...worker,
+    id: openWorkerId,
+    parentThreadId: base.id,
+    title: "Book a table for Friday",
+    status: "waiting" as const,
+    pendingRequests: 1,
+  };
+  const parentRunId = snapshot.runQueue.find((row) => row.threadId === base.id)?.id;
+  if (!parentRunId) throw new Error("Mock delegation needs its parent task's Run");
+  const openAssignment = AssignmentViewSchema.parse({
+    ...assignment,
+    id: createId("delegation"),
+    parentThreadId: base.id,
+    parentRunId,
+    workerThreadId: openWorkerId,
+    initialRunId: openRunId,
+    initialInputMessageId: createId("message"),
+    objective: openWorker.title,
+    status: "open",
+    finishedAt: null,
+    resultRunId: null,
+    resultText: null,
+    returnStatus: "pending",
+    returnAttemptedAt: null,
+    returnMessageId: null,
+  });
+  const openSummary = AssignmentSummarySchema.parse({
+    ...summary,
+    ...openAssignment,
+    currentRunId: openRunId,
+    currentRunStatus: "waiting",
+    objectivePreview: openWorker.title,
+    resultPreview: null,
+    workerThread: {
+      ...summary.workerThread,
+      id: openWorkerId,
+      title: openWorker.title,
+      status: "waiting",
+      pendingRequests: 1,
+    },
+  });
+  const openRequest = RequestSchema.parse({
+    ...request,
+    id: createId("request"),
+    kind: "harness.approval",
+    payload: { kind: "harness.approval" },
+    originatingNodeId: undefined,
+    originatingThreadId: openWorkerId,
+    originatingRunId: openRunId,
+    presentation: {
+      kind: "choice",
+      title: "Confirm the Friday reservation",
+      detail: "Reserve a table for two at 7pm.",
+      risk: "low",
+      options: [
+        { id: "allow-once", label: "Allow once", hint: "allow-once" },
+        { id: "reject", label: "Reject", hint: "reject-once" },
       ],
     },
   });
@@ -254,7 +320,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
         eventId: createId("event"),
         runId,
         threadId,
-        workspaceId: createId("workspace"),
+
         sequence: SequenceSchema.parse(String(++sequence)),
       }),
     );
@@ -309,20 +375,30 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     }
   return {
     assignment,
-    events: events.map((event) => ({
-      ...event,
-      workspaceId: thread.workspaceId as AgentEvent["workspaceId"],
-    })),
+    openAssignment,
+    events,
     snapshot: {
       ...snapshot,
-      threads: [...snapshot.threads, thread, worker],
-      assignments: { ...snapshot.assignments, [summary.id]: summary },
+      threads: [...snapshot.threads, thread, worker, openWorker],
+      assignments: {
+        ...snapshot.assignments,
+        [summary.id]: summary,
+        [openSummary.id]: openSummary,
+      },
       runQueue: [
         ...snapshot.runQueue,
+        {
+          id: openRunId,
+          threadId: openWorkerId,
+          runOrdinal: 1,
+          createdAt: at(28),
+          status: "waiting",
+        },
         { id: runId, threadId, runOrdinal: 1, createdAt: at(23), status: "running" },
       ],
       requests: {
         ...snapshot.requests,
+        [openWorkerId]: [openRequest],
         [threadId]: [
           request,
           {
@@ -336,6 +412,17 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
       transcripts: {
         ...snapshot.transcripts,
         [threadId]: entries,
+        [base.id]: [
+          ...(snapshot.transcripts[base.id] ?? []),
+          {
+            id: `assignment:${openSummary.id}`,
+            kind: "assignment",
+            assignment: openSummary,
+            createdAt: openSummary.createdAt,
+            runId: parentRunId,
+          },
+        ],
+        [openWorkerId]: [run(openRunId, "waiting", 28, null)],
         [workerId]: [run(workerRunId, "completed", 25, 29)],
       },
     },

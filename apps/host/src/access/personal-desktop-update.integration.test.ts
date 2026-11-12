@@ -8,7 +8,8 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import { beforeAll, beforeEach, afterAll, expect, it, vi } from "vitest";
 import { OpensteerError, createId, type AuthenticatedSession } from "@opensteer/core";
-import { createDatabase, migrateToLatest, PersonalDesktopUpdateStore } from "@opensteer/database";
+import { createDatabase, PersonalDesktopUpdateStore, OpensteerStore } from "@opensteer/database";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { DesktopUpdateState } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
@@ -19,7 +20,8 @@ import { registerDesktopUpdateMaintenance } from "./personal-desktop-update-rout
 
 const url = process.env.OPENSTEER_TEST_DATABASE_URL;
 if (!url) throw new Error("Run through pnpm test:integration for an isolated database");
-const database = createDatabase({ connectionString: url, maxConnections: 4 });
+let database: ReturnType<typeof createDatabase>;
+let clone: Awaited<ReturnType<typeof cloneTestDatabase>> | undefined;
 const userId = createId("user");
 const session: AuthenticatedSession = {
   id: createId("authSession"),
@@ -32,7 +34,6 @@ const session: AuthenticatedSession = {
     email: "desktop-owner@example.test",
     emailVerified: true,
     image: null,
-    instanceRole: "administrator",
     disabledAt: null,
   },
 };
@@ -45,12 +46,27 @@ const state: DesktopUpdateState = {
   downloadPercent: null,
   failed: null,
 };
-const store = new PersonalDesktopUpdateStore(database);
+let store: PersonalDesktopUpdateStore;
 const makeService = () => new PersonalDesktopUpdate(store);
 const request = { idempotencyKey: "update-once", intent: { action: "update" as const } };
 beforeAll(async () => {
-  await migrateToLatest(database);
+  clone = await cloneTestDatabase("host", { serverUrl: url });
+  database = createDatabase({ connectionString: clone.url, maxConnections: 4 });
+  store = new PersonalDesktopUpdateStore(database);
+  const deployment = await new OpensteerStore(database).ensureDeployment({
+    canonicalOrigin: "http://127.0.0.1:4310",
+    deploymentId: createId("deployment"),
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
   await database.insertInto("users").values(session.user).execute();
+  await (
+    await import("@opensteer/database/test-support/personal")
+  ).seedPersonalOwnerResources(database, {
+    deploymentId: deployment.id,
+    userId,
+    path: "/tmp/desktop-update-personal-home",
+  });
 });
 beforeEach(async () => {
   await database.deleteFrom("personalDesktopUpdate").execute();
@@ -73,7 +89,11 @@ beforeEach(async () => {
     .execute();
 });
 afterAll(async () => {
-  await database.destroy();
+  try {
+    await database?.destroy();
+  } finally {
+    await clone?.drop();
+  }
 });
 
 it("persists before acknowledgement, replays exactly, refuses conflicting keys and serializes competing requests", async () => {
@@ -91,7 +111,7 @@ it("persists before acknowledgement, replays exactly, refuses conflicting keys a
   expect(other).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
   expect(competing).toMatchObject({ status: "rejected", reason: { code: "conflict" } });
   await expect(
-    updates.request({ ...session, user: { ...session.user, instanceRole: "user" } }, request),
+    updates.request({ ...session, user: { ...session.user, id: createId("user") } }, request),
   ).rejects.toMatchObject({ code: "forbidden" });
   await database
     .updateTable("authSessions")
@@ -187,16 +207,7 @@ async function fixture(updates: PersonalDesktopUpdate | null) {
           absoluteExpiresAt: row.absoluteExpiresAt,
         };
       },
-      userSessionProfile: async () => ({
-        ...session.user,
-        instanceRole: (
-          await database
-            .selectFrom("users")
-            .select("instanceRole")
-            .where("id", "=", userId)
-            .executeTakeFirstOrThrow()
-        ).instanceRole,
-      }),
+      userSessionProfile: async () => session.user,
       requireSession: async (headers: Headers) => {
         if (headers.get("cookie") !== "session=owner")
           throw new OpensteerError({ code: "unauthorized", message: "No session" });
@@ -218,7 +229,7 @@ async function fixture(updates: PersonalDesktopUpdate | null) {
       )
       .send({ error: code });
   });
-  registerDesktopUpdateMaintenance(app, authenticator, updates);
+  registerDesktopUpdateMaintenance(app, authenticator, updates, database);
   return app;
 }
 
@@ -267,18 +278,18 @@ it("maintenance ignores the client epoch but retains authentication, current own
     ).toBe(409);
     await database
       .updateTable("users")
-      .set({ instanceRole: "user" })
+      .set({ disabledAt: new Date() })
       .where("id", "=", userId)
       .execute();
     expect((await app.inject({ url: path, headers })).statusCode).toBe(403);
-    const member = { ...session, user: { ...session.user, instanceRole: "user" as const } };
-    await expect(makeService().request(member, request)).rejects.toMatchObject({
+    const other = { ...session, user: { ...session.user, id: createId("user") } };
+    await expect(makeService().request(other, request)).rejects.toMatchObject({
       code: "forbidden",
     });
   } finally {
     await database
       .updateTable("users")
-      .set({ instanceRole: "administrator" })
+      .set({ disabledAt: null })
       .where("id", "=", userId)
       .execute();
     await app.close();

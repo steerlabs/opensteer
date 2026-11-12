@@ -1,5 +1,12 @@
+import { deploymentEventsAfter } from "./deployment-events.js";
+import { needsYouPage } from "./needs-you-store.js";
+import { personalSettings } from "./personal-settings-store.js";
+export { deploymentHead } from "./deployment-events.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import type { DeploymentId } from "@opensteer/core";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type RunId } from "@opensteer/core";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import {
   type UserId,
   type ExecutionNodeId,
@@ -11,7 +18,6 @@ import {
   type ThreadRunQueueEntry,
   type Thread,
   OpensteerError,
-  type WorkspaceId,
   nonTerminalRunStatuses,
   PendingRequestSchema,
   ThreadIdSchema,
@@ -19,14 +25,12 @@ import {
   SequenceSchema,
 } from "@opensteer/core";
 import {
-  type WorkspaceSnapshot,
-  type WorkspaceView,
-  workspaceSnapshotMaxRunQueueEntries,
-  workspaceSnapshotMaxThreads,
-  workspaceSnapshotMaxMessages,
-  workspaceSnapshotMaxSerializedBytes,
-  workspaceSnapshotMaxPendingRequests,
-  workspaceViewFromWorkspace,
+  type DeploymentSnapshot,
+  deploymentSnapshotMaxRunQueueEntries,
+  deploymentSnapshotMaxThreads,
+  deploymentSnapshotMaxMessages,
+  deploymentSnapshotMaxSerializedBytes,
+  deploymentSnapshotMaxPendingRequests,
   threadPageMaxItems,
   type ThreadMessagePage,
   type ThreadEventPage,
@@ -48,10 +52,9 @@ import {
   decodeWindowCursor,
   invalidWindowCursor,
   eventFromRow,
-  isLegacyLiveEventType,
 } from "./store-primitives.js";
 import { type Kysely, type Transaction, sql } from "kysely";
-import { type DatabaseSchema, legacyLiveEventTypes } from "./schema.js";
+import { type DatabaseSchema } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
   threadPendingRequestsSelection,
@@ -64,16 +67,20 @@ import {
   executionNodeFromRow,
 } from "./thread-row-mappers.js";
 import { requestFromRow } from "./request-store.js";
-import { workspaceFromRow } from "./store-primitives.js";
+
 import { type ThreadHistoryQuery, readThreadHistory } from "./thread-history.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
-
 export interface DurableWindowReadOptions {
   readonly maxBytes?: number;
   readonly maxItems?: number;
 }
-
-export interface WorkspaceSnapshotReadOptions {
+export type PersonalSnapshotResourcesReader = (input: {
+  readonly database: Transaction<DatabaseSchema>;
+  readonly ownerId: UserId;
+  readonly maxBytes: number;
+}) => Promise<DeploymentSnapshot["resources"]>;
+export interface DeploymentSnapshotReadOptions {
+  readonly readResources?: PersonalSnapshotResourcesReader;
   /** Skip message history and its counts; clients must read durable history on open. */
   readonly omitMessages?: boolean;
   readonly placeEvents?: "include";
@@ -84,33 +91,32 @@ export interface WorkspaceSnapshotReadOptions {
   /** Only the Threads navigation lists, which is what a person's client reads. */
   readonly listedOnly?: boolean;
 }
-
 export interface EventReplayWindow {
   readonly byteCount: number;
   readonly events: readonly AgentEvent[];
   readonly hasMore: boolean;
   /**
-   * The last sequence this window accounts for, including skipped legacy
-   * streaming rows. A reader resumes after it, never after the last event.
+   * The last sequence this window accounts for, including filtered detail rows. A reader resumes after it, never after the last event.
    */
   readonly scannedThrough: Sequence;
 }
-
-function buildWorkspaceSnapshot(input: {
-  readonly readStates: WorkspaceSnapshot["readStates"];
-  readonly notificationPreferences: WorkspaceSnapshot["notificationPreferences"];
+function buildDeploymentSnapshot(input: {
+  readonly readStates: DeploymentSnapshot["readStates"];
   readonly messageTotals: ReadonlyMap<ThreadId, number>;
   readonly omitMessages: boolean;
   readonly messagesDesc: readonly MessageView[];
   readonly pendingRequestTotal: number;
   readonly pendingRequestsDesc: readonly PendingRequest[];
   readonly runQueue: readonly ThreadRunQueueEntry[];
-  readonly runPlaces: WorkspaceSnapshot["runPlaces"];
+  readonly runPlaces: DeploymentSnapshot["runPlaces"];
   readonly sequence: Sequence;
   readonly threadTotal: number;
   readonly threads: readonly Thread[];
-  readonly workspace: WorkspaceView;
-}): WorkspaceSnapshot {
+  readonly deploymentId: DeploymentId;
+  readonly tasks: DeploymentSnapshot["tasks"];
+  readonly needsYou: DeploymentSnapshot["needsYou"];
+  readonly resources: DeploymentSnapshot["resources"];
+}): DeploymentSnapshot {
   const messages = [...input.messagesDesc].reverse();
   const pendingRequests = [...input.pendingRequestsDesc].reverse();
   const messageWindows = (input.omitMessages ? [] : input.threads).map((thread) => {
@@ -132,12 +138,15 @@ function buildWorkspaceSnapshot(input: {
   });
   const hasMoreThreads = input.threadTotal > input.threads.length;
   const oldestThread = input.threads.at(-1);
-  let snapshot: WorkspaceSnapshot = {
+  let snapshot: DeploymentSnapshot = {
     readStates: input.readStates,
-    notificationPreferences: input.notificationPreferences,
     messages,
     messageWindows,
-    ...(input.omitMessages ? { messagesOmitted: true } : {}),
+    ...(input.omitMessages
+      ? {
+          messagesOmitted: true,
+        }
+      : {}),
     pendingRequests,
     pendingRequestWindow: {
       byteCount: serializedArrayBytes(pendingRequests),
@@ -147,7 +156,11 @@ function buildWorkspaceSnapshot(input: {
       totalItems: input.pendingRequestTotal,
     },
     runQueue: [...input.runQueue],
-    ...(input.runPlaces === undefined ? {} : { runPlaces: input.runPlaces }),
+    ...(input.runPlaces === undefined
+      ? {}
+      : {
+          runPlaces: input.runPlaces,
+        }),
     sequence: input.sequence,
     serializedBytes: 1,
     threads: [...input.threads],
@@ -159,49 +172,85 @@ function buildWorkspaceSnapshot(input: {
         hasMoreThreads && oldestThread
           ? encodeWindowCursor(
               "thread",
-              input.workspace.id,
+              input.deploymentId,
               oldestThread.updatedAt,
               oldestThread.id,
             )
           : null,
       totalItems: input.threadTotal,
     },
-    workspace: input.workspace,
+    deploymentId: input.deploymentId,
+    tasks: input.tasks,
+    needsYou: input.needsYou,
+    resources: input.resources,
   };
   for (let attempt = 0; attempt < 8; attempt += 1) {
     const serializedBytes = Buffer.byteLength(JSON.stringify(snapshot), "utf8");
     if (snapshot.serializedBytes === serializedBytes) return snapshot;
-    snapshot = { ...snapshot, serializedBytes };
+    snapshot = {
+      ...snapshot,
+      serializedBytes,
+    };
   }
   throw new OpensteerError({
     code: "internal",
-    message: "Workspace snapshot byte accounting did not converge",
+    message: "Deployment snapshot byte accounting did not converge",
   });
 }
-
-export async function workspaceSnapshot(
+export async function deploymentSnapshot(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
-  workspaceId: WorkspaceId,
-  options: WorkspaceSnapshotReadOptions = {},
-): Promise<WorkspaceSnapshot> {
-  const maxThreads = boundedWindowLimit(options.maxThreads, workspaceSnapshotMaxThreads);
-  const maxMessages = boundedWindowLimit(options.maxMessages, workspaceSnapshotMaxMessages);
+  options: DeploymentSnapshotReadOptions = {},
+): Promise<DeploymentSnapshot> {
+  const maxThreads = boundedWindowLimit(options.maxThreads, deploymentSnapshotMaxThreads);
+  const maxMessages = boundedWindowLimit(options.maxMessages, deploymentSnapshotMaxMessages);
   const maxSerializedBytes = boundedWindowBytes(
     options.maxSerializedBytes,
-    workspaceSnapshotMaxSerializedBytes,
+    deploymentSnapshotMaxSerializedBytes,
   );
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
-      const workspace = await transaction
-        .selectFrom("workspaces")
+      const state = await transaction
+        .selectFrom("deploymentEventState")
         .selectAll()
-        .where("id", "=", workspaceId)
-        .executeTakeFirst();
-      if (!workspace)
-        throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-      // The lateral lookup uses workspace_events_run_places and reads only one
+        .executeTakeFirstOrThrow();
+      const ownerId = options.viewerId ?? (await personalSettings(transaction)).ownerId;
+      await requirePersonalOwner(transaction, ownerId);
+      if (!options.readResources)
+        throw new OpensteerError({
+          code: "internal",
+          message: "Personal resource snapshots are not configured.",
+        });
+      const [recent, active, done, needsYou, resources] = await Promise.all([
+        taskPageForUser(transaction, notificationState, {
+          userId: ownerId,
+          maxItems: 25,
+          maxBytes: 48 * 1024,
+        }),
+        taskPageForUser(transaction, notificationState, {
+          userId: ownerId,
+          active: true,
+          maxItems: 25,
+          maxBytes: 48 * 1024,
+        }),
+        taskPageForUser(transaction, notificationState, {
+          userId: ownerId,
+          done: true,
+          maxItems: 25,
+          maxBytes: 48 * 1024,
+        }),
+        needsYouPage(transaction, { userId: ownerId, limit: 20, maxBytes: 64 * 1024 }),
+        options.readResources({ database: transaction, ownerId, maxBytes: 128 * 1024 }),
+      ]);
+      const tasks = { recent, active, done };
+      if (Buffer.byteLength(JSON.stringify(resources)) > 128 * 1024)
+        throw new OpensteerError({
+          code: "resource_exhausted",
+          message: "Personal resources exceed the snapshot byte limit.",
+        });
+      if (options.viewerId) await requirePersonalOwner(transaction, options.viewerId);
+      // The lateral lookup uses deployment_events_run_places and reads only one
       // event per live Run, including Threads outside this snapshot's window.
       let runPlaces =
         options.placeEvents === "include"
@@ -212,38 +261,26 @@ export async function workspaceSnapshot(
                 .innerJoinLateral(
                   (query) =>
                     query
-                      .selectFrom("workspaceEvents")
-                      .selectAll("workspaceEvents")
-                      .whereRef("workspaceEvents.runId", "=", "runs.id")
-                      .where("workspaceEvents.type", "=", "place.entered")
-                      .orderBy("workspaceEvents.sequence", "desc")
+                      .selectFrom("deploymentEvents")
+                      .selectAll("deploymentEvents")
+                      .whereRef("deploymentEvents.runId", "=", "runs.id")
+                      .where("deploymentEvents.type", "=", "place.entered")
+                      .orderBy("deploymentEvents.sequence", "desc")
                       .limit(1)
                       .as("place"),
                   (join) => join.onTrue(),
                 )
                 .selectAll("place")
-                .where("threads.workspaceId", "=", workspaceId)
                 .where("runs.status", "in", nonTerminalRunStatuses)
-                .$if(options.viewerId !== undefined, (query) =>
-                  query.where(({ exists, selectFrom }) =>
-                    exists(
-                      selectFrom("workspaceMemberships")
-                        .select("workspaceMemberships.id")
-                        .whereRef("workspaceMemberships.workspaceId", "=", "threads.workspaceId")
-                        .where("workspaceMemberships.userId", "=", options.viewerId!)
-                        .where("workspaceMemberships.state", "=", "active"),
-                    ),
-                  ),
-                )
                 .orderBy("place.sequence", "desc")
-                .limit(workspaceSnapshotMaxRunQueueEntries + 1)
+                .limit(deploymentSnapshotMaxRunQueueEntries + 1)
                 .execute()
             )
               .map(eventFromRow)
               .filter((event) => event.type === "place.entered")
           : undefined;
       // Absence is unknown; a partial seed would falsely end every omitted Run on clients.
-      if (runPlaces && runPlaces.length > workspaceSnapshotMaxRunQueueEntries)
+      if (runPlaces && runPlaces.length > deploymentSnapshotMaxRunQueueEntries)
         runPlaces = undefined;
       const [threadRows, threadCountRow] = await Promise.all([
         transaction
@@ -254,7 +291,6 @@ export async function workspaceSnapshot(
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
-          .where("workspaceId", "=", workspaceId)
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .orderBy("updatedAt", "desc")
           .orderBy("id", "desc")
@@ -263,7 +299,6 @@ export async function workspaceSnapshot(
         transaction
           .selectFrom("threads")
           .select(({ fn }) => fn.countAll<string>().as("count"))
-          .where("workspaceId", "=", workspaceId)
           .$if(options.listedOnly === true, (query) => query.where("listed", "=", true))
           .executeTakeFirstOrThrow(),
       ]);
@@ -274,48 +309,46 @@ export async function workspaceSnapshot(
       );
       const threadIds = threads.items.map(({ id }) => id);
       const [messageRows, messageCountRows, pendingRows, pendingCountRow, runQueueRows] =
-        threadIds.length === 0
-          ? [[], [], [], { count: "0" }, []]
-          : await Promise.all([
-              options.omitMessages
-                ? []
-                : transaction
-                    .selectFrom("messages")
-                    .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
-                    .selectAll("messages")
-                    .select("threadInputs.policy")
-                    .select(publishedMessagePredicate("threadInputs").as("published"))
-                    .where("messages.threadId", "in", threadIds)
-                    .where(messageWasNotWithdrawn)
-                    .orderBy("messages.createdAt", "desc")
-                    .orderBy("messages.id", "desc")
-                    .limit(maxMessages + 1)
-                    .execute(),
-              options.omitMessages
-                ? []
-                : transaction
-                    .selectFrom("messages")
-                    .select(["threadId", ({ fn }) => fn.countAll<string>().as("count")])
-                    .where("threadId", "in", threadIds)
-                    .where(messageWasNotWithdrawn)
-                    .groupBy("threadId")
-                    .execute(),
-              transaction
-                .selectFrom("requests")
-                .selectAll()
-                .where("originatingThreadId", "in", threadIds)
-                .where("status", "=", "pending")
-                .orderBy("createdAt", "desc")
-                .orderBy("id", "desc")
-                .limit(workspaceSnapshotMaxPendingRequests + 1)
+        await Promise.all([
+          options.omitMessages || threadIds.length === 0
+            ? []
+            : transaction
+                .selectFrom("messages")
+                .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
+                .selectAll("messages")
+                .select("threadInputs.policy")
+                .select(publishedMessagePredicate("threadInputs").as("published"))
+                .where("messages.threadId", "in", threadIds)
+                .where(messageWasNotWithdrawn)
+                .orderBy("messages.createdAt", "desc")
+                .orderBy("messages.id", "desc")
+                .limit(maxMessages + 1)
                 .execute(),
-              transaction
-                .selectFrom("requests")
-                .select(({ fn }) => fn.countAll<string>().as("count"))
-                .where("originatingThreadId", "in", threadIds)
-                .where("status", "=", "pending")
-                .executeTakeFirstOrThrow(),
-              transaction
+          options.omitMessages || threadIds.length === 0
+            ? []
+            : transaction
+                .selectFrom("messages")
+                .select(["threadId", ({ fn }) => fn.countAll<string>().as("count")])
+                .where("threadId", "in", threadIds)
+                .where(messageWasNotWithdrawn)
+                .groupBy("threadId")
+                .execute(),
+          transaction
+            .selectFrom("requests")
+            .selectAll()
+            .where("status", "=", "pending")
+            .orderBy("createdAt", "desc")
+            .orderBy("id", "desc")
+            .limit(deploymentSnapshotMaxPendingRequests + 1)
+            .execute(),
+          transaction
+            .selectFrom("requests")
+            .select(({ fn }) => fn.countAll<string>().as("count"))
+            .where("status", "=", "pending")
+            .executeTakeFirstOrThrow(),
+          threadIds.length === 0
+            ? []
+            : transaction
                 .selectFrom("runs")
                 .select(["createdAt", "id", "status", "threadId", "runOrdinal"])
                 .where("threadId", "in", threadIds)
@@ -323,29 +356,36 @@ export async function workspaceSnapshot(
                 .orderBy("threadId", "asc")
                 .orderBy("runOrdinal", "asc")
                 .execute(),
-            ]);
+        ]);
       const messageTotals = new Map(
         messageCountRows.map((row) => [row.threadId, safeCount(row.count)]),
       );
       let messagesDesc = boundedSerializedPrefix(
         messageRows.slice(0, maxMessages).map(({ policy, published, ...row }): MessageView => ({
           ...messageFromRow(row),
-          ...(row.addressedToUserId ? { addressedToUserId: row.addressedToUserId } : {}),
+          ...(row.addressedToUserId
+            ? {
+                addressedToUserId: row.addressedToUserId,
+              }
+            : {}),
           published,
-          ...(policy ? { policy } : {}),
+          ...(policy
+            ? {
+                policy,
+              }
+            : {}),
         })),
         maxMessages,
         Math.min(640 * 1_024, maxSerializedBytes),
       ).items;
       let pendingRequestsDesc = boundedSerializedPrefix(
         PendingRequestSchema.array().parse(
-          pendingRows.slice(0, workspaceSnapshotMaxPendingRequests).map(requestFromRow),
+          pendingRows.slice(0, deploymentSnapshotMaxPendingRequests).map(requestFromRow),
         ),
-        workspaceSnapshotMaxPendingRequests,
+        deploymentSnapshotMaxPendingRequests,
         Math.min(600 * 1_024, maxSerializedBytes),
       ).items;
       const runQueue = threadRunQueueEntriesFromRows(runQueueRows);
-
       const readStates = options.viewerId
         ? [
             ...(await notificationState.listReadStates({
@@ -355,19 +395,8 @@ export async function workspaceSnapshot(
             })),
           ]
         : [];
-      const notificationPreferences = options.viewerId
-        ? [
-            ...(await notificationState.listWorkspacePreferences({
-              database: transaction,
-              userId: options.viewerId,
-              workspaceIds: [workspaceId],
-            })),
-          ]
-        : [];
-      const workspaceView = workspaceViewFromWorkspace(workspaceFromRow(workspace));
-      let snapshot = buildWorkspaceSnapshot({
+      let snapshot = buildDeploymentSnapshot({
         readStates,
-        notificationPreferences,
         messageTotals,
         omitMessages: options.omitMessages === true,
         messagesDesc,
@@ -375,16 +404,18 @@ export async function workspaceSnapshot(
         pendingRequestsDesc,
         runQueue,
         runPlaces,
-        sequence: workspace.eventSequence as Sequence,
+        sequence: state.sequence as Sequence,
         threadTotal: safeCount(threadCountRow.count),
         threads: threads.items,
-        workspace: workspaceView,
+        deploymentId: state.deploymentId,
+        tasks,
+        needsYou,
+        resources,
       });
       while (snapshot.serializedBytes > maxSerializedBytes && messagesDesc.length > 0) {
         messagesDesc = messagesDesc.slice(0, -1);
-        snapshot = buildWorkspaceSnapshot({
+        snapshot = buildDeploymentSnapshot({
           readStates,
-          notificationPreferences,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -392,17 +423,19 @@ export async function workspaceSnapshot(
           pendingRequestsDesc,
           runQueue,
           runPlaces,
-          sequence: workspace.eventSequence as Sequence,
+          sequence: state.sequence as Sequence,
           threadTotal: safeCount(threadCountRow.count),
           threads: threads.items,
-          workspace: workspaceView,
+          deploymentId: state.deploymentId,
+          tasks,
+          needsYou,
+          resources,
         });
       }
       while (snapshot.serializedBytes > maxSerializedBytes && pendingRequestsDesc.length > 0) {
         pendingRequestsDesc = pendingRequestsDesc.slice(0, -1);
-        snapshot = buildWorkspaceSnapshot({
+        snapshot = buildDeploymentSnapshot({
           readStates,
-          notificationPreferences,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -410,17 +443,19 @@ export async function workspaceSnapshot(
           pendingRequestsDesc,
           runQueue,
           runPlaces,
-          sequence: workspace.eventSequence as Sequence,
+          sequence: state.sequence as Sequence,
           threadTotal: safeCount(threadCountRow.count),
           threads: threads.items,
-          workspace: workspaceView,
+          deploymentId: state.deploymentId,
+          tasks,
+          needsYou,
+          resources,
         });
       }
       if (runPlaces !== undefined && snapshot.serializedBytes > maxSerializedBytes) {
         runPlaces = undefined;
-        snapshot = buildWorkspaceSnapshot({
+        snapshot = buildDeploymentSnapshot({
           readStates,
-          notificationPreferences,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -428,16 +463,19 @@ export async function workspaceSnapshot(
           pendingRequestsDesc,
           runQueue,
           runPlaces,
-          sequence: workspace.eventSequence as Sequence,
+          sequence: state.sequence as Sequence,
           threadTotal: safeCount(threadCountRow.count),
           threads: threads.items,
-          workspace: workspaceView,
+          deploymentId: state.deploymentId,
+          tasks,
+          needsYou,
+          resources,
         });
       }
       if (snapshot.serializedBytes > maxSerializedBytes) {
         throw new OpensteerError({
           code: "internal",
-          message: "Workspace snapshot metadata exceeds its serialized byte ceiling",
+          message: "Deployment snapshot metadata exceeds its serialized byte ceiling",
         });
       }
       return snapshot;
@@ -453,16 +491,6 @@ export async function workspaceSnapshot(
  */
 const taskLineSourceCharacters = 2_048;
 
-/**
- * The reader's tasks across every Workspace they actively belong to, or in the
- * one named: listed, unarchived Threads, ordered by when a person last asked
- * each task, newest first, with what it last said, why its latest Run failed
- * when it did, and the reader's read state. A cursor continues only the list it came from.
- *
- * `done` lists only Done tasks, newest Done first, and without a Workspace
- * leaves out Projects, whose Done work lives on their own page. A task moved
- * to Done long after it was last asked would otherwise sit pages deep.
- */
 export async function taskPageForUser(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
@@ -473,12 +501,11 @@ export async function taskPageForUser(
     readonly maxBytes?: number;
     readonly maxItems?: number;
     readonly userId: UserId;
-    readonly workspaceId?: WorkspaceId;
   },
 ): Promise<TaskPage> {
   const maxItems = boundedWindowLimit(input.maxItems, threadPageMaxItems);
   const maxBytes = boundedWindowBytes(input.maxBytes, 256 * 1_024);
-  const readerScope = input.workspaceId ? `${input.userId}:${input.workspaceId}` : input.userId;
+  const readerScope = input.userId;
   const scope = input.active ? `${readerScope}:active` : readerScope;
   const cursorKind = input.done ? "task-done" : "task-asked";
   const anchor = input.before ? decodeWindowCursor(input.before, cursorKind, scope) : null;
@@ -486,48 +513,18 @@ export async function taskPageForUser(
   // A Thread view carries its times to the millisecond, so the list is
   // ordered at that precision: a cursor then names exactly the place the
   // reader stopped, even between Threads asked within one millisecond.
-  const orderedAt = sql<Date>`date_trunc('milliseconds', ${sql.ref(
-    input.done ? "threads.done_at" : "threads.asked_at",
-  )})`;
-  return withDatabaseTransaction(
+  const orderedAt = sql<Date>`date_trunc('milliseconds', ${sql.ref(input.done ? "threads.done_at" : "threads.asked_at")})`;
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
+      await requirePersonalOwner(transaction, input.userId);
       let tasks = transaction
         .selectFrom("threads")
-        .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
-        .innerJoin("users", "users.id", "workspaceMemberships.userId")
-        .where("workspaceMemberships.userId", "=", input.userId)
-        .where("workspaceMemberships.state", "=", "active")
-        .where("users.disabledAt", "is", null)
-        .where("workspaces.status", "!=", "deleted")
         .where("threads.listed", "=", true)
         .where("threads.status", "!=", "archived");
       if (input.active) tasks = tasks.where("threads.status", "in", ["running", "waiting"]);
-      if (input.done) {
-        tasks = tasks.where("threads.doneAt", "is not", null);
-        if (!input.workspaceId) tasks = tasks.where("workspaces.kind", "!=", "project");
-      }
-      if (input.workspaceId) {
-        const member = await transaction
-          .selectFrom("workspaceMemberships")
-          .innerJoin("workspaces", "workspaces.id", "workspaceMemberships.workspaceId")
-          .innerJoin("users", "users.id", "workspaceMemberships.userId")
-          .select("workspaceMemberships.workspaceId")
-          .where("workspaceMemberships.workspaceId", "=", input.workspaceId)
-          .where("workspaceMemberships.userId", "=", input.userId)
-          .where("workspaceMemberships.state", "=", "active")
-          .where("users.disabledAt", "is", null)
-          .where("workspaces.status", "!=", "deleted")
-          .executeTakeFirst();
-        if (!member)
-          throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-        tasks = tasks.where("threads.workspaceId", "=", input.workspaceId);
-      }
+      if (input.done) tasks = tasks.where("threads.doneAt", "is not", null);
+      else tasks = tasks.where("threads.doneAt", "is", null);
       let page = tasks
         .selectAll("threads")
         .select([
@@ -603,7 +600,15 @@ export async function taskPageForUser(
 async function taskLines(
   transaction: Transaction<DatabaseSchema>,
   threadIds: readonly ThreadId[],
-): Promise<ReadonlyMap<ThreadId, { lastReply: string | null; failure: string | null }>> {
+): Promise<
+  ReadonlyMap<
+    ThreadId,
+    {
+      lastReply: string | null;
+      failure: string | null;
+    }
+  >
+> {
   if (threadIds.length === 0) return new Map();
   // Whitespace collapses before the line is cut, a run that holds a line
   // break into one break so Markdown that starts a line is still recognised
@@ -663,7 +668,6 @@ async function taskLines(
     ]),
   );
 }
-
 export async function threadMessagePageForOwner(
   database: Kysely<DatabaseSchema>,
   input: ThreadHistoryQuery,
@@ -688,7 +692,7 @@ const turnStartSelection = sql<boolean>`(
   and (
     data #>> '{message,author,kind}' = 'human'
     or not exists (select 1 from runs started_run
-      where started_run.id = coalesce(workspace_events.run_id, data #>> '{message,runId}')
+      where started_run.id = coalesce(deployment_events.run_id, data #>> '{message,runId}')
       and started_run.seed_input_id is distinct from data #>> '{message,id}')
   )
 )`;
@@ -700,8 +704,15 @@ const turnStartSelection = sql<boolean>`(
  * paging always advances.
  */
 function historyPageLength(
-  rows: readonly { readonly bytes: number; readonly turnStart: boolean }[],
-  bounds: { readonly maxBytes: number; readonly maxItems: number; readonly maxTurns: number },
+  rows: readonly {
+    readonly bytes: number;
+    readonly turnStart: boolean;
+  }[],
+  bounds: {
+    readonly maxBytes: number;
+    readonly maxItems: number;
+    readonly maxTurns: number;
+  },
 ): number {
   let bytes = 2;
   let turns = 0;
@@ -718,7 +729,6 @@ function historyPageLength(
   }
   return rows.length;
 }
-
 export async function threadEventPageForOwner(
   database: Kysely<DatabaseSchema>,
   notificationState: NotificationStateStore,
@@ -755,16 +765,11 @@ export async function threadEventPageForOwner(
       message: "Choose an event cursor or a message anchor",
     });
   }
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const thread = await transaction
         .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
         .selectAll("threads")
         .select([
           threadPendingRequestsSelection,
@@ -772,8 +777,6 @@ export async function threadEventPageForOwner(
           threadContinuationIdentitySelection,
         ])
         .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
       const [page, countRow] = await Promise.all([
@@ -790,16 +793,12 @@ export async function threadEventPageForOwner(
               placeEvents: input.placeEvents,
             }),
         transaction
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select(({ fn }) => fn.countAll<string>().as("count"))
           .where("threadId", "=", input.threadId)
           .where("nodeDetailId", "is", null)
-          .where(
-            "type",
-            "not in",
-            input.placeEvents === "include"
-              ? legacyLiveEventTypes
-              : [...legacyLiveEventTypes, "place.entered"],
+          .$if(input.placeEvents !== "include", (query) =>
+            query.where("type", "<>", "place.entered"),
           )
           .executeTakeFirstOrThrow(),
       ]);
@@ -847,9 +846,12 @@ async function newestTurns(
     readonly maxItems: number;
     readonly maxTurns: number;
   },
-): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
+): Promise<{
+  readonly events: AgentEvent[];
+  readonly hasMore: boolean;
+}> {
   let metadataQuery = transaction
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select([
       "sequence",
       // Stored JSON is written with `, ` and `: `, the wire's without spaces.
@@ -860,36 +862,31 @@ async function newestTurns(
     ])
     .where("threadId", "=", threadId)
     .where("nodeDetailId", "is", null)
-    .where(
-      "type",
-      "not in",
-      bounds.placeEvents === "include"
-        ? legacyLiveEventTypes
-        : [...legacyLiveEventTypes, "place.entered"],
-    );
+    .$if(bounds.placeEvents !== "include", (query) => query.where("type", "<>", "place.entered"));
   if (before !== null) metadataQuery = metadataQuery.where("sequence", "<", before);
   const metadata = await metadataQuery
     .orderBy("sequence", "desc")
     .limit(bounds.maxItems + 1)
     .execute();
   const estimated = historyPageLength(
-    metadata.map((row) => ({ bytes: Number(row.dataBytes), turnStart: row.turnStart })),
+    metadata.map((row) => ({
+      bytes: Number(row.dataBytes),
+      turnStart: row.turnStart,
+    })),
     bounds,
   );
   const oldest = metadata[estimated - 1];
-  if (!oldest) return { events: [], hasMore: false };
+  if (!oldest)
+    return {
+      events: [],
+      hasMore: false,
+    };
   let rowsQuery = transaction
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("threadId", "=", threadId)
     .where("nodeDetailId", "is", null)
-    .where(
-      "type",
-      "not in",
-      bounds.placeEvents === "include"
-        ? legacyLiveEventTypes
-        : [...legacyLiveEventTypes, "place.entered"],
-    )
+    .$if(bounds.placeEvents !== "include", (query) => query.where("type", "<>", "place.entered"))
     .where("sequence", ">=", oldest.sequence);
   if (before !== null) rowsQuery = rowsQuery.where("sequence", "<", before);
   const candidates = (await rowsQuery.orderBy("sequence", "desc").execute()).map(eventFromRow);
@@ -917,7 +914,10 @@ async function eventsAroundMessage(
     readonly maxBytes: number;
     readonly maxItems: number;
   },
-): Promise<{ readonly events: AgentEvent[]; readonly hasMore: boolean }> {
+): Promise<{
+  readonly events: AgentEvent[];
+  readonly hasMore: boolean;
+}> {
   const { maxBytes, maxItems } = bounds;
   const visibleMessage = await transaction
     .selectFrom("messages")
@@ -934,7 +934,7 @@ async function eventsAroundMessage(
     });
   }
   const target = await transaction
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select("sequence")
     .where("threadId", "=", threadId)
     .where("nodeDetailId", "is", null)
@@ -952,17 +952,11 @@ async function eventsAroundMessage(
   }
   const aroundSequence = target.sequence as Sequence;
   const query = transaction
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("threadId", "=", threadId)
     .where("nodeDetailId", "is", null)
-    .where(
-      "type",
-      "not in",
-      bounds.placeEvents === "include"
-        ? legacyLiveEventTypes
-        : [...legacyLiveEventTypes, "place.entered"],
-    );
+    .$if(bounds.placeEvents !== "include", (query) => query.where("type", "<>", "place.entered"));
   const [later, centre, earlier] = await Promise.all([
     query
       .where("sequence", ">", aroundSequence)
@@ -1016,9 +1010,11 @@ async function eventsAroundMessage(
         await query.select("eventId").where("sequence", "<", oldest.sequence).executeTakeFirst(),
       )
     : false;
-  return { events, hasMore };
+  return {
+    events,
+    hasMore,
+  };
 }
-
 export async function nodeEventPageForOwner(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -1037,27 +1033,21 @@ export async function nodeEventPageForOwner(
   const maxBytes = boundedWindowBytes(input.maxBytes, 640 * 1_024);
   const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
   if (before && !before.success) throw invalidWindowCursor();
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
+      await requirePersonalOwner(transaction, input.ownerId);
       const node = await transaction
         .selectFrom("executionNodes")
         .innerJoin("runs", "runs.id", "executionNodes.runId")
         .innerJoin("threads", "threads.id", "runs.threadId")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
         .selectAll("executionNodes")
         .where("executionNodes.id", "=", input.nodeId)
         .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!node) return null;
       let query = transaction
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .where("threadId", "=", input.threadId)
         .where("nodeDetailId", "=", input.nodeId);
       if (input.types) query = query.where("type", "in", input.types);
@@ -1082,8 +1072,15 @@ export async function nodeEventPageForOwner(
         .limit(maxItems + 1)
         .execute();
       const estimated = historyPageLength(
-        metadata.map((row) => ({ bytes: Number(row.dataBytes), turnStart: false })),
-        { maxBytes, maxItems, maxTurns: Number.POSITIVE_INFINITY },
+        metadata.map((row) => ({
+          bytes: Number(row.dataBytes),
+          turnStart: false,
+        })),
+        {
+          maxBytes,
+          maxItems,
+          maxTurns: Number.POSITIVE_INFINITY,
+        },
       );
       const sequences = metadata.slice(0, estimated).map((row) => row.sequence);
       const candidates =
@@ -1120,24 +1117,20 @@ export async function nodeEventPageForOwner(
     "repeatable read",
   );
 }
-
 export async function eventsAfter(
   database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
   afterSequence: Sequence,
   limit = 500,
 ): Promise<readonly AgentEvent[]> {
   return (
-    await eventsAfterWindow(database, workspaceId, afterSequence, {
+    await eventsAfterWindow(database, afterSequence, {
       maxBytes: 8 * 1_024 * 1_024,
       maxItems: limit,
     })
   ).events;
 }
-
 export async function eventsAfterWindow(
   database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
   afterSequence: Sequence,
   options: {
     readonly maxBytes: number;
@@ -1145,105 +1138,21 @@ export async function eventsAfterWindow(
     readonly throughSequence?: Sequence;
   },
 ): Promise<EventReplayWindow> {
-  const maxItems = boundedWindowLimit(options.maxItems, 10_000);
-  const maxBytes = boundedWindowBytes(options.maxBytes, 8 * 1_024 * 1_024);
-  return withDatabaseTransaction(
-    database,
-    async (transaction) => {
-      let metadataQuery = transaction
-        .selectFrom("workspaceEvents")
-        .select(["sequence", "type", sql<number>`pg_column_size(data)`.as("dataBytes")])
-        .where("workspaceId", "=", workspaceId)
-        .where("sequence", ">", afterSequence);
-      if (options.throughSequence) {
-        metadataQuery = metadataQuery.where("sequence", "<=", options.throughSequence);
-      }
-      const metadata = await metadataQuery
-        .orderBy("sequence", "asc")
-        .limit(maxItems + 1)
-        .execute();
-      // Rows are scanned in order; legacy streaming rows are skipped but still
-      // scanned, so a window made only of them advances the reader instead of
-      // looking like the end of the log.
-      const scanned: { readonly sequence: Sequence; readonly selected: boolean }[] = [];
-      const selectedSequences: Sequence[] = [];
-      let estimatedBytes = 2;
-      let fullWindow = false;
-      for (const row of metadata.slice(0, maxItems)) {
-        if (isLegacyLiveEventType(row.type)) {
-          scanned.push({ selected: false, sequence: row.sequence as Sequence });
-          continue;
-        }
-        const nextBytes = estimatedBytes + Number(row.dataBytes) + 2_048;
-        if (nextBytes > maxBytes) {
-          fullWindow = true;
-          break;
-        }
-        selectedSequences.push(row.sequence as Sequence);
-        scanned.push({ selected: true, sequence: row.sequence as Sequence });
-        estimatedBytes = nextBytes;
-      }
-      if (fullWindow && selectedSequences.length === 0) {
-        throw new OpensteerError({
-          code: "internal",
-          message: "A durable event exceeds the replay byte ceiling",
-        });
-      }
-      const rows =
-        selectedSequences.length === 0
-          ? []
-          : await transaction
-              .selectFrom("workspaceEvents")
-              .selectAll()
-              .where("workspaceId", "=", workspaceId)
-              .where("sequence", "in", selectedSequences)
-              .orderBy("sequence", "asc")
-              .execute();
-      const exact = boundedSerializedPrefix(rows.map(eventFromRow), maxItems, maxBytes);
-      if (rows.length > 0 && exact.items.length === 0) {
-        throw new OpensteerError({
-          code: "internal",
-          message: "A durable event exceeds the replay byte ceiling",
-        });
-      }
-      // The window ends at the last row it accounted for: every skipped
-      // legacy row up to the first selected event the byte bound cut off.
-      let scannedThrough = afterSequence;
-      let included = 0;
-      for (const row of scanned) {
-        if (row.selected) {
-          if (included >= exact.items.length) break;
-          included += 1;
-        }
-        scannedThrough = row.sequence;
-      }
-      const reachedEnd =
-        !fullWindow &&
-        metadata.length <= maxItems &&
-        included === scanned.filter((row) => row.selected).length;
-      if (reachedEnd && options.throughSequence) scannedThrough = options.throughSequence;
-      return {
-        byteCount: exact.byteCount,
-        events: exact.items,
-        hasMore: !reachedEnd,
-        scannedThrough,
-      };
-    },
-    "repeatable read",
-  );
-}
-
-export async function workspaceHead(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-): Promise<Sequence> {
-  const row = await database
-    .selectFrom("workspaces")
-    .select("eventSequence")
-    .where("id", "=", workspaceId)
-    .executeTakeFirst();
-  if (!row) throw new OpensteerError({ code: "not_found", message: "Workspace not found" });
-  return row.eventSequence as Sequence;
+  const state = await database
+    .selectFrom("deploymentEventState")
+    .select("deploymentId")
+    .executeTakeFirstOrThrow();
+  const window = await deploymentEventsAfter(database, {
+    deploymentId: state.deploymentId,
+    afterSequence,
+    ...options,
+  });
+  return {
+    byteCount: window.byteCount,
+    events: window.events,
+    hasMore: window.hasMore,
+    scannedThrough: window.resync ? afterSequence : window.throughSequence,
+  };
 }
 
 export async function toolOutputForOwner(
@@ -1257,18 +1166,19 @@ export async function toolOutputForOwner(
   },
 ) {
   const row = await database
-    .selectFrom("workspaceEvents")
-    .innerJoin("threads", "threads.id", "workspaceEvents.threadId")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
-    .selectAll("workspaceEvents")
+    .selectFrom("deploymentEvents")
+    .innerJoin("threads", "threads.id", "deploymentEvents.threadId")
+    .innerJoin("personalSettings", "personalSettings.ownerId", "threads.createdBy")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .selectAll("deploymentEvents")
+    .where("personalSettings.ownerId", "=", input.ownerId)
+    .where("users.disabledAt", "is", null)
     .where("threads.id", "=", input.threadId)
-    .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where("workspaceMemberships.state", "=", "active")
-    .where("workspaceEvents.runId", "=", input.runId)
-    .where("workspaceEvents.type", "=", "tool.completed")
-    .where("workspaceEvents.nodeDetailId", input.nodeId ? "=" : "is", input.nodeId ?? null)
+    .where("deploymentEvents.runId", "=", input.runId)
+    .where("deploymentEvents.type", "=", "tool.completed")
+    .where("deploymentEvents.nodeDetailId", input.nodeId ? "=" : "is", input.nodeId ?? null)
     .where(sql<string>`data->>'callId'`, "=", input.callId)
-    .orderBy("workspaceEvents.sequence", "desc")
+    .orderBy("deploymentEvents.sequence", "desc")
     .executeTakeFirst();
   if (!row) return null;
   const event = eventFromRow(row);

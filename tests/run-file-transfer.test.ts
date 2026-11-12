@@ -27,7 +27,7 @@ async function deployment() {
         deploymentId: createId("deployment"),
         hostInstanceId: createId("hostInstance"),
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: "personal" },
       }),
       runFiles: relay,
     }),

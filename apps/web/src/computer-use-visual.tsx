@@ -6,9 +6,9 @@ import { ComputerUsePermissionsPanel } from "./desktop/computer-use-permissions-
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
-import type { HostClient, TranscriptEntry, WorkspaceSummary } from "@opensteer/client/host";
+import type { HostClient, TranscriptEntry } from "@opensteer/client/host";
 import { mockComputerUseSlack, mockComputerUseTurn } from "@opensteer/client/mock";
-import { RunIdSchema, ThreadIdSchema, UserIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { RunIdSchema, ThreadIdSchema, UserIdSchema } from "@opensteer/core";
 import type {
   ComputerAppSetupRequest,
   IntegrationConnectionSummary,
@@ -206,7 +206,6 @@ const setupRequests =
           runnerId,
           threadId: "thr_00000000-0000-4000-8000-000000000002",
           threadTitle: "Compare the two contract drafts",
-          workspaceId: null,
         } as unknown as ComputerAppSetupRequest,
       ]
     : [];
@@ -377,8 +376,6 @@ if (panel === "transcript") {
       kind: "agent",
       runId,
       threadId,
-      workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000001"),
-      workspaceName: "Main",
     },
     runId,
     state: turnState,
@@ -523,7 +520,6 @@ if (panel === "transcript") {
               owned
               platform={null}
               setupRequests={setupRequests}
-              workspaces={[] as WorkspaceSummary[]}
             />
           </div>
         </main>

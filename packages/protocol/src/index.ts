@@ -1,5 +1,4 @@
 export * from "./access.js";
-export * from "./project-execution.js";
 export * from "./attachments.js";
 export * from "./run-plans.js";
 export * from "./browser.js";
@@ -29,7 +28,6 @@ export * from "./personal-remote-access.js";
 export * from "./runner.js";
 export * from "./runner-identity.js";
 export * from "./runner-auxiliary.js";
-export * from "./workspace-local.js";
 export * from "./rpc.js";
 export * from "./session-exchange.js";
 export * from "./shell.js";
@@ -51,7 +49,12 @@ export * from "./runner-skill-metadata.js";
 export * from "./automatic-models.js";
 
 export * from "./card-use.js";
-export {
-  UseCardOutputSchema as UseCardResultSchema,
-  type UseCardOutput as UseCardResult,
-} from "@opensteer/agent-tools/outputs";
+
+export * from "./team-chat.js";
+export * from "./team-link.js";
+export * from "./team-knowledge.js";
+export * from "./folders.js";
+
+export * from "./team-api.js";
+
+export * from "./needs-you.js";

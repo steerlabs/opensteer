@@ -1,4 +1,3 @@
-import { lockRequestWorkspaces } from "./request-workspace-locks.js";
 import {
   type AgentEvent,
   type Request,
@@ -7,17 +6,14 @@ import {
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
+import { lockDeploymentEvents } from "./personal-transaction.js";
 import type { Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-
-export { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
-
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 export async function cancelPending(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -27,9 +23,9 @@ export async function cancelPending(
     readonly originatingThreadId?: ThreadId;
     readonly requestIds?: readonly RequestId[];
     readonly requestedBy?: UserId;
-    readonly workspaceId?: WorkspaceId;
   },
 ): Promise<readonly AgentEvent[]> {
+  await lockDeploymentEvents(transaction);
   let pending = transaction.selectFrom("requests").selectAll().where("status", "=", "pending");
   if (input.requestIds) {
     if (input.requestIds.length === 0) return [];
@@ -42,19 +38,7 @@ export async function cancelPending(
   if (input.originatingThreadId) {
     pending = pending.where("originatingThreadId", "=", input.originatingThreadId);
   }
-  if (input.workspaceId) {
-    pending = pending.where((expression) =>
-      expression.or([
-        expression("originatingWorkspaceId", "=", input.workspaceId!),
-        expression("targetWorkspaceId", "=", input.workspaceId!),
-      ]),
-    );
-  }
   if (input.requestedBy) pending = pending.where("requestedBy", "=", input.requestedBy);
-  await lockRequestWorkspaces(
-    transaction,
-    (await pending.execute()).map((row) => row.originatingWorkspaceId),
-  );
   const locked = await pending.orderBy("id", "asc").forNoKeyUpdate().execute();
   if (locked.length === 0) return [];
   const responseCommandIds = locked
@@ -120,18 +104,19 @@ export async function cancelPending(
   }
   return events;
 }
-
 async function cancellationEvent(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
 ): Promise<AgentEvent> {
   if (request.status !== "cancelled") throw new Error("Cancellation event requires cancellation");
-  return appendHostWorkspaceEvent(transaction, {
-    data: { reason: request.cancellationReason, requestId: request.id },
+  return appendHostDeploymentEvent(transaction, {
+    data: {
+      reason: request.cancellationReason,
+      requestId: request.id,
+    },
     environmentId: await requestOriginEnvironment(transaction, request),
     runId: request.originatingRunId,
     threadId: request.originatingThreadId,
     type: "request.cancelled",
-    workspaceId: request.originatingWorkspaceId,
   });
 }

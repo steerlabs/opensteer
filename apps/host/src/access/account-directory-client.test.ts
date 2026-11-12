@@ -23,8 +23,7 @@ const authorityEnvelope = HostDiscoveryEnvelopeSchema.parse({
     hostInstanceId: deployment.activeHostInstanceId,
     hostKey: { algorithm: "Ed25519" },
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
-      kind: "server" as const,
+      kind: "personal" as const,
     },
   },
   publicKey: { algorithm: "Ed25519", spki: "a".repeat(59) },
@@ -59,7 +58,6 @@ const personalAccessRoute = PersonalHostAccessRouteEnvelopeSchema.parse({
       ...authorityEnvelope.document,
       canonicalOrigin: "http://127.0.0.1:4310",
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     },

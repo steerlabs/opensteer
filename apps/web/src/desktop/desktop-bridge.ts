@@ -1,4 +1,3 @@
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import type { ViewerClipboardBridge } from "@opensteer/client/editing";
 import type {
   DesktopLocalExecutionStatus,
@@ -41,20 +40,13 @@ export function localRunnerStateLabel(state: LocalRunnerState): string {
  * Whether the computer in front of the reader can join the Deployment on
  * screen, and running what.
  *
- * The `shell` module is deferred on Windows, so a Windows computer cannot join
- * only to be reached — it has to join running agents. A Personal Deployment
- * admits other computers only to be reached, so on Windows it admits none, and
- * no offer is made. Everywhere else a computer joins with both facts off and
- * the switches on its own page decide the rest.
+ * A Personal Deployment admits other computers only to be reached: agents run
+ * on the computer hosting it. The `shell` module is deferred on Windows, so a
+ * Windows computer has nothing to be reached for and no offer is made.
  */
-export function localJoinOffer(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
-  readonly status: DesktopLocalExecutionStatus | null;
-}): { readonly runAgents: boolean } | null {
-  const { deploymentPolicy, status } = input;
+export function localJoinOffer(
+  status: DesktopLocalExecutionStatus | null,
+): { readonly runAgents: false } | null {
   if (status === null || !status.available || status.runner.enrolled) return null;
-  if (status.platform !== "windows") return { runAgents: false };
-  return deploymentPolicy?.localRunnerDefaultModules?.includes("agents") === true
-    ? { runAgents: true }
-    : null;
+  return status.platform === "windows" ? null : { runAgents: false };
 }

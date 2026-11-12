@@ -3,7 +3,7 @@ import { computerConnectionCommands, runnerImageReference } from "./connection-c
 it("uses the caller's release image and keeps each enrollment in its own storage", () => {
   const revision = "a".repeat(40);
   const result = computerConnectionCommands({
-    deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    deploymentShape: { kind: "team" },
     enrollmentId: "ren_9f3c1d20-7a44-4c11-8b02-6d5e8f0a1b2c",
     hostOrigin: "https://host.example",
     name: "My Mac",

@@ -24,8 +24,7 @@ import {
   PasswordsBrokerHelloParamsSchema,
   PasswordsBrokerHelloResultSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV6ParamsSchema,
-  PasswordsBrokerSignInRequestV6ParamsSchema,
+  PasswordsBrokerSignInRequestParamsSchema,
   passwordsBrokerRequests,
 } from "./passwords-broker.js";
 
@@ -206,14 +205,13 @@ it("authorizes without a session and seals only to an explicit receiver/context"
     operationId: "00000000-0000-4000-8000-000000000003",
     loginRef: login.loginRef,
     site: "https://example.com",
-    workspaceId: createId("workspace"),
+    deploymentId: createId("deployment"),
     expiresAt: "2027-01-15T08:01:00.000Z",
     requester: {
       deploymentId: "personal",
       deploymentName: "Personal",
       reason: "Sign in",
       threadTitle: "Task",
-      workspaceName: "Main",
     },
   };
   expect(PasswordSignInAuthorityCommandSchema.safeParse(command).success).toBe(true);
@@ -231,8 +229,8 @@ it("authorizes without a session and seals only to an explicit receiver/context"
   expect(
     SessionlessPasswordSignInRequestPayloadSchema.safeParse({
       kind: "browser.password-sign-in",
-      scope: "workspace",
-      permissionVersion: 5,
+      scope: "personal",
+      permissionVersion: 6,
       computerName: "Mac",
       runnerId: createId("runner"),
       reason: command.requester.reason,
@@ -243,63 +241,62 @@ it("authorizes without a session and seals only to an explicit receiver/context"
   ).toBe(true);
 });
 
-it("retains v4 origin releases while giving v5 an explicit app release kind", () => {
+it("requires the current personal grant and explicit browser or app release", () => {
   const transactionId = "00000000-0000-4000-8000-000000000004";
   const legacy = { transactionId, field: "password", origin: "https://example.com" };
-  expect(PasswordsBrokerSignInReleaseParamsSchema.safeParse(legacy).success).toBe(true);
+  expect(PasswordsBrokerSignInReleaseParamsSchema.safeParse(legacy).success).toBe(false);
   expect(
     PasswordsBrokerSignInReleaseParamsSchema.safeParse({ transactionId, field: "password" })
       .success,
   ).toBe(false);
   expect(
-    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({
+    PasswordsBrokerSignInReleaseParamsSchema.safeParse({
       transactionId,
       field: "password",
       kind: "app",
     }).success,
   ).toBe(true);
   expect(
-    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...legacy, kind: "browser" }).success,
+    PasswordsBrokerSignInReleaseParamsSchema.safeParse({ ...legacy, kind: "browser" }).success,
   ).toBe(true);
   expect(
-    PasswordsBrokerSignInReleaseV6ParamsSchema.safeParse({ ...legacy, kind: "app" }).success,
+    PasswordsBrokerSignInReleaseParamsSchema.safeParse({ ...legacy, kind: "app" }).success,
   ).toBe(false);
-  expect(passwordsBrokerRequests["signin.release"].safeParse(legacy).success).toBe(true);
-  for (const protocolVersion of [4, 5]) {
+  expect(passwordsBrokerRequests["signin.release"].safeParse(legacy).success).toBe(false);
+  for (const protocolVersion of [4, 5, 6, 7, 8, 9]) {
     expect(
       PasswordsBrokerHelloParamsSchema.safeParse({
         protocolVersion,
-        client: { version: "0.1.178" },
+        client: { version: "fixture" },
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       PasswordsBrokerHelloResultSchema.safeParse({
         protocolVersion,
         development: true,
-        brokerVersion: "0.1.178",
+        brokerVersion: "fixture",
       }).success,
-    ).toBe(true);
+    ).toBe(false);
   }
   const request = {
-    deploymentId: "personal",
+    deploymentId: createId("deployment"),
     deploymentName: "Personal",
     reason: "Sign in",
     threadTitle: "Task",
-    workspaceName: "Main",
-    workspaceId: createId("workspace"),
+
     site: "https://example.com",
     transactionId,
     expiresAt: "2027-01-15T08:01:00.000Z",
-    protocolVersion: 6,
-    permissionVersion: 5,
+    protocolVersion: 10,
+    permissionVersion: 6,
   };
-  expect(PasswordsBrokerSignInRequestV6ParamsSchema.safeParse(request).success).toBe(true);
+  expect(PasswordsBrokerSignInRequestParamsSchema.safeParse(request).success).toBe(true);
   expect(
-    PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({ ...request, permissionVersion: 4 })
+    PasswordsBrokerSignInRequestParamsSchema.safeParse({ ...request, permissionVersion: 4 })
       .success,
   ).toBe(false);
   expect(
-    PasswordsBrokerSignInRequestV6ParamsSchema.safeParse({
+    PasswordsBrokerSignInRequestParamsSchema.safeParse({
       ...request,
       permissionVersion: undefined,
     }).success,

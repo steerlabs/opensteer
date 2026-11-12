@@ -65,10 +65,11 @@ const fakeCodexAppServer = fileURLToPath(
 );
 const codexSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 interface Journey {
   readonly events: readonly string[];
   readonly messages: readonly string[];
@@ -77,23 +78,19 @@ interface Journey {
   readonly run: unknown;
   readonly usage?: UsageRecord;
 }
-
 integration("Background work", () => {
   let stack: VerticalStack | undefined;
   const journeys: Journey[] = [];
-
   afterEach(async () => {
     await stack?.close();
     stack = undefined;
   });
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-background-"));
     const artifact = join(directory, "background.json");
     await writeFile(artifact, JSON.stringify(journeys, null, 2) + "\n");
     console.info(`Background work artifact: ${artifact}`);
   });
-
   async function start(engineArguments: readonly string[] = []) {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-background-codex-"));
     const releaseFile = join(scratch, "release");
@@ -132,7 +129,6 @@ integration("Background work", () => {
     const threadId = await stack.createThread({
       modelSelection: codexSelection,
       title: "Background journey",
-      workspaceId: stack.mainWorkspaceId,
     });
     const queued = await stack.queueMessage({
       text: "Research the release in the background",
@@ -148,14 +144,15 @@ integration("Background work", () => {
       threadId,
     };
   }
-
   async function record(
     name: string,
     active: VerticalStack,
     runId: RunId,
     usage?: UsageRecord,
   ): Promise<Journey> {
-    const listed = await active.api["run.attempts.list"]({ runId });
+    const listed = await active.api["run.attempts.list"]({
+      runId,
+    });
     if (!listed.ok) throw new Error(listed.error.message);
     const database = active.host.store.database;
     const messages = await database
@@ -171,15 +168,20 @@ integration("Background work", () => {
       name,
       nodes: listed.data.nodes,
       run: await runRow(active, runId),
-      ...(usage ? { usage } : {}),
+      ...(usage
+        ? {
+            usage,
+          }
+        : {}),
     };
     journeys.push(journey);
     return journey;
   }
-
   it(
     "keeps the Run live while its child works, and takes its requester's message as a new turn",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, captureFile, release, runId, threadId } = await start(["--token-usage"]);
       expect((await runRow(active, runId)).status).toBe("running");
@@ -189,15 +191,23 @@ integration("Background work", () => {
       expect(during.replies).toEqual(["The researcher is working in the background."]);
       expect(during.composing).toBe(false);
       expect(during.activity).toBe("background");
-      expect(during.indicator).toEqual({ kind: "status", label: "Working in the background" });
+      expect(during.indicator).toEqual({
+        kind: "status",
+        label: "Working in the background",
+      });
       expect(during.readThrough).toBe(during.replySequences.at(-1));
       // A history page that begins after the Run started shows the reply too.
-      const page = await clientView(active, threadId, runId, { pageAfter: "run.started" });
+      const page = await clientView(active, threadId, runId, {
+        pageAfter: "run.started",
+      });
       expect(page.replies).toEqual(["The researcher is working in the background."]);
       expect(page.composing).toBe(false);
 
       // An ordinary message, not a steer: the Run in the background takes it.
-      const sent = await active.queueMessage({ text: "Also check the changelog", threadId });
+      const sent = await active.queueMessage({
+        text: "Also check the changelog",
+        threadId,
+      });
       expect(sent.runId).toBe(runId);
       await waitFor(
         async () =>
@@ -212,7 +222,10 @@ integration("Background work", () => {
           .where("runId", "=", runId)
           .execute();
         throw new Error(
-          `${String(error)}\n${JSON.stringify({ commands, events: await eventTypes(active, runId) })}`,
+          `${String(error)}\n${JSON.stringify({
+            commands,
+            events: await eventTypes(active, runId),
+          })}`,
         );
       });
       await waitFor(async () => (await runRow(active, runId)).phase === "background", "background");
@@ -221,8 +234,10 @@ integration("Background work", () => {
         .select(["runId", "state"])
         .where("messageId", "=", sent.messageId)
         .executeTakeFirstOrThrow();
-      expect(input).toEqual({ runId, state: "delivered" });
-
+      expect(input).toEqual({
+        runId,
+        state: "delivered",
+      });
       await release();
       await settled(active, runId);
       // Both of the root's turns and every response of the child working
@@ -255,9 +270,15 @@ integration("Background work", () => {
         usageRecord(frames, expected, recorded),
       );
       expectRecordedUsage(recorded, expected);
-      expect(journey.run).toMatchObject({ status: "completed" });
+      expect(journey.run).toMatchObject({
+        status: "completed",
+      });
       expect(journey.nodes).toMatchObject([
-        { result: "Background research finished.", status: "completed", title: "researcher" },
+        {
+          result: "Background research finished.",
+          status: "completed",
+          title: "researcher",
+        },
       ]);
       expect(journey.messages).toEqual([
         "The researcher is working in the background.",
@@ -281,104 +302,135 @@ integration("Background work", () => {
       expect(runs).toHaveLength(1);
     },
   );
-
   it(
     "does not end the Run when its last child finishes while a new turn is starting",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, runId, threadId } = await start(["--child-ends-while-starting"]);
-      const sent = await active.queueMessage({ text: "Also check the changelog", threadId });
+      const sent = await active.queueMessage({
+        text: "Also check the changelog",
+        threadId,
+      });
       expect(sent.runId).toBe(runId);
       await settled(active, runId);
-
       const journey = await record("child ends while a turn starts", active, runId);
-      expect(journey.run).toMatchObject({ status: "completed" });
+      expect(journey.run).toMatchObject({
+        status: "completed",
+      });
       // The new turn answered before the Run ended; the child's end did not end it.
       expect(journey.messages).toEqual([
         "The researcher is working in the background.",
         expect.stringMatching(/^Noted:[\s\S]*Also check the changelog$/u),
       ]);
-      expect(journey.nodes).toMatchObject([{ status: "completed" }]);
+      expect(journey.nodes).toMatchObject([
+        {
+          status: "completed",
+        },
+      ]);
       const phases = journey.events.filter((type) => type === "run.phase");
       expect(phases).toHaveLength(2);
       expect(journey.events.filter((type) => type === "run.completed")).toHaveLength(1);
       expect(journey.events.at(-1)).toBe("run.completed");
     },
   );
-
   it.each([
-    { order: "answered and announced", engineArguments: ["--slow-follow-up-start"] },
+    {
+      order: "answered and announced",
+      engineArguments: ["--slow-follow-up-start"],
+    },
     {
       order: "announced long before it is answered",
       engineArguments: ["--slow-follow-up-start", "--announce-before-answer"],
     },
   ])(
-    "interrupts a new turn that was still starting when its Runner stops the Run: $order",
-    { timeout: 120_000 },
+    "interrupts a new turn that was still starting when the person stops the Run: $order",
+    {
+      timeout: 120_000,
+    },
     async ({ engineArguments }) => {
       const { active, captureFile, runId, threadId } = await start(engineArguments);
-      await active.queueMessage({ text: "Also check the changelog", threadId });
+      await active.queueMessage({
+        text: "Also check the changelog",
+        threadId,
+      });
       // The engine has been asked for the new turn and has not started it yet.
       await waitFor(
         async () => (await readFile(captureFile, "utf8")).split('"fakeTurn"').length - 1 === 2,
         "the new turn to be asked for",
       );
-      // A Runner that stops ends its Runs itself, there and then.
-      await active.restartRunner();
+      await active.interruptRun(threadId, runId);
       await settled(active, runId);
       // The turn that started after the stop was interrupted by its own id.
-      const interrupted = parseCaptureJsonl<{ rootInterrupted?: string | null }>(
-        await readFile(captureFile, "utf8"),
-      ).flatMap((line) => (line.rootInterrupted === undefined ? [] : [line.rootInterrupted]));
+      const interrupted = parseCaptureJsonl<{
+        rootInterrupted?: string | null;
+      }>(await readFile(captureFile, "utf8")).flatMap((line) =>
+        line.rootInterrupted === undefined ? [] : [line.rootInterrupted],
+      );
       expect(interrupted).toEqual(["codex-turn-2"]);
       const journey = await record("Runner stop while a turn starts", active, runId);
-      expect(journey.run).not.toMatchObject({ status: "completed" });
+      expect(journey.run).not.toMatchObject({
+        status: "completed",
+      });
     },
   );
-
-  it("stops background work when the Run is stopped", { timeout: 120_000 }, async () => {
-    const { active, captureFile, runId, threadId } = await start(["--token-usage"]);
-    await active.interruptRun(threadId, runId);
-    await settled(active, runId);
-    // Stopped between the root's turns: what it and its child had consumed.
-    const frames = await codexUsageFrames(captureFile);
-    const expected = expectedUsage(frames, await codexThreadOf(active, threadId));
-    expect(expected).toEqual({
-      attempt: {
-        cacheWriteTokens: 0,
-        cachedInputTokens: 9_984,
-        inputTokens: 11_416,
-        outputTokens: 700,
-        reasoningTokens: 364,
-      },
-      nodes: [
-        {
+  it(
+    "stops background work when the Run is stopped",
+    {
+      timeout: 120_000,
+    },
+    async () => {
+      const { active, captureFile, runId, threadId } = await start(["--token-usage"]);
+      await active.interruptRun(threadId, runId);
+      await settled(active, runId);
+      // Stopped between the root's turns: what it and its child had consumed.
+      const frames = await codexUsageFrames(captureFile);
+      const expected = expectedUsage(frames, await codexThreadOf(active, threadId));
+      expect(expected).toEqual({
+        attempt: {
           cacheWriteTokens: 0,
-          cachedInputTokens: 0,
-          inputTokens: 6_400,
-          outputTokens: 520,
-          reasoningTokens: 300,
+          cachedInputTokens: 9_984,
+          inputTokens: 11_416,
+          outputTokens: 700,
+          reasoningTokens: 364,
         },
-      ],
-    });
-    const recorded = await recordedUsage(active, runId);
-    const journey = await record(
-      "stop during background",
-      active,
-      runId,
-      usageRecord(frames, expected, recorded),
-    );
-    expectRecordedUsage(recorded, expected);
-    expect(journey.run).toMatchObject({ status: "interrupted" });
-    expect(journey.nodes).toMatchObject([{ status: "interrupted" }]);
-    expect(await readFile(captureFile, "utf8")).toContain(
-      '"childInterrupted":"codex-child-thread-1"',
-    );
-  });
-
+        nodes: [
+          {
+            cacheWriteTokens: 0,
+            cachedInputTokens: 0,
+            inputTokens: 6_400,
+            outputTokens: 520,
+            reasoningTokens: 300,
+          },
+        ],
+      });
+      const recorded = await recordedUsage(active, runId);
+      const journey = await record(
+        "stop during background",
+        active,
+        runId,
+        usageRecord(frames, expected, recorded),
+      );
+      expectRecordedUsage(recorded, expected);
+      expect(journey.run).toMatchObject({
+        status: "interrupted",
+      });
+      expect(journey.nodes).toMatchObject([
+        {
+          status: "interrupted",
+        },
+      ]);
+      expect(await readFile(captureFile, "utf8")).toContain(
+        '"childInterrupted":"codex-child-thread-1"',
+      );
+    },
+  );
   it(
     "stops background work at its deadline without holding the Thread",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const { active, runId, threadId } = await start();
       const run = await runRow(active, runId);
@@ -386,13 +438,21 @@ integration("Background work", () => {
       // The deadline was set once, when the Run first went to the background.
       await active.host.store.database
         .updateTable("runs")
-        .set({ backgroundDeadlineAt: new Date(Date.now() - 1_000) })
+        .set({
+          backgroundDeadlineAt: new Date(Date.now() - 1_000),
+        })
         .where("id", "=", runId)
         .execute();
       await settled(active, runId);
       const journey = await record("deadline", active, runId);
-      expect(journey.run).toMatchObject({ status: "interrupted" });
-      expect(journey.nodes).toMatchObject([{ status: "interrupted" }]);
+      expect(journey.run).toMatchObject({
+        status: "interrupted",
+      });
+      expect(journey.nodes).toMatchObject([
+        {
+          status: "interrupted",
+        },
+      ]);
       const thread = await active.host.store.database
         .selectFrom("threads")
         .select("inputQueuePaused")
@@ -401,10 +461,11 @@ integration("Background work", () => {
       expect(thread.inputQueuePaused).toBe(false);
     },
   );
-
   it(
     "keeps a Claude Run live for its background subagent, through a wake-up that races idle",
-    { timeout: 120_000 },
+    {
+      timeout: 120_000,
+    },
     async () => {
       const finish = Promise.withResolvers<void>();
       stack = await startVerticalStack({
@@ -438,13 +499,18 @@ integration("Background work", () => {
           providerId: model.providerId,
         }),
         title: "Background journey",
-        workspaceId: active.mainWorkspaceId,
       });
-      const runId = (await active.queueMessage({ text: "Research in the background", threadId }))
-        .runId!;
+      const runId = (
+        await active.queueMessage({
+          text: "Research in the background",
+          threadId,
+        })
+      ).runId!;
       await waitFor(async () => (await runRow(active, runId)).phase === "background", "background");
-
-      const sent = await active.queueMessage({ text: "Also check the changelog", threadId });
+      const sent = await active.queueMessage({
+        text: "Also check the changelog",
+        threadId,
+      });
       expect(sent.runId).toBe(runId);
       await waitFor(
         async () => (await assistantTexts(active, runId)).includes("Noted the changelog."),
@@ -456,7 +522,9 @@ integration("Background work", () => {
       finish.resolve();
       await settled(active, runId);
       const journey = await record("claude background and wake-up", active, runId);
-      expect(journey.run).toMatchObject({ status: "completed" });
+      expect(journey.run).toMatchObject({
+        status: "completed",
+      });
       expect(journey.messages).toEqual([
         "Started the research in the background.",
         "Noted the changelog.",
@@ -471,106 +539,121 @@ integration("Background work", () => {
       ]);
     },
   );
-
-  it("keeps background work through a Host restart", { timeout: 180_000 }, async () => {
-    let restartStage = "not requested";
-    const within = <T>(operation: Promise<T>, label: string, timeoutMs = 10_000) =>
-      withTimeout(operation, timeoutMs, {
-        timeoutError: () =>
-          new Error(
-            `Timed out waiting for ${label} (restart stage: ${restartStage}; Host closing step: ${stack?.host.closingStep() ?? "none"})`,
-          ),
-      });
-    const { active, release, runId } = await within(start(), "background stack startup", 30_000);
-    try {
-      const deadline = (await within(runRow(active, runId), "background deadline read"))
-        .backgroundDeadlineAt;
-      const oldHost = active.host;
-      const close = oldHost.close.bind(oldHost);
-      const stopped = vi.spyOn(oldHost, "close").mockImplementation(async () => {
-        restartStage = "stop requested; joining old Host";
-        await close();
-        restartStage = "old Host joined";
-      });
+  it(
+    "keeps background work through a Host restart",
+    {
+      timeout: 180_000,
+    },
+    async () => {
+      let restartStage = "not requested";
+      const within = <T>(operation: Promise<T>, label: string, timeoutMs = 10_000) =>
+        withTimeout(operation, timeoutMs, {
+          timeoutError: () =>
+            new Error(
+              `Timed out waiting for ${label} (restart stage: ${restartStage}; Host closing step: ${stack?.host.closingStep() ?? "none"})`,
+            ),
+        });
+      const { active, release, runId } = await within(start(), "background stack startup", 30_000);
       try {
-        restartStage = "stop requested";
+        const deadline = (await within(runRow(active, runId), "background deadline read"))
+          .backgroundDeadlineAt;
+        const oldHost = active.host;
+        const close = oldHost.close.bind(oldHost);
+        const stopped = vi.spyOn(oldHost, "close").mockImplementation(async () => {
+          restartStage = "stop requested; joining old Host";
+          await close();
+          restartStage = "old Host joined";
+        });
+        try {
+          restartStage = "stop requested";
+          await within(
+            active.restartHost({
+              whileDown: async () => {
+                expect(oldHost.closingStep()).toBeUndefined();
+                restartStage = "binding replacement listener";
+              },
+            }),
+            "Host restart",
+          );
+          restartStage = "replacement listener bound";
+        } finally {
+          stopped.mockRestore();
+        }
+        const environment = async () => {
+          const result = await active.api["bootstrap.get"]({});
+          if (!result.ok) throw new Error(result.error.message);
+          return result.data.environments.find((entry) => entry.id === active.environmentId);
+        };
         await within(
-          active.restartHost({
-            whileDown: async () => {
-              expect(oldHost.closingStep()).toBeUndefined();
-              restartStage = "binding replacement listener";
-            },
-          }),
-          "Host restart",
-        );
-        restartStage = "replacement listener bound";
-      } finally {
-        stopped.mockRestore();
-      }
-      const environment = async () => {
-        const result = await active.api["bootstrap.get"]({});
-        if (!result.ok) throw new Error(result.error.message);
-        return result.data.environments.find((entry) => entry.id === active.environmentId);
-      };
-      await within(
-        waitFor(
-          async () => (await environment())?.connected === true,
+          waitFor(
+            async () => (await environment())?.connected === true,
+            "Runner reauthentication",
+            10_000,
+          ),
           "Runner reauthentication",
-          10_000,
-        ),
-        "Runner reauthentication",
-      );
-      restartStage = "Runner reauthenticated";
-      await within(
-        waitFor(
-          async () =>
-            (await environment())?.harnessCatalogs.some(
-              (catalog) =>
-                catalog.harnessInstanceId === active.harnessInstanceId &&
-                catalog.status === "ready",
-            ) === true,
+        );
+        restartStage = "Runner reauthenticated";
+        await within(
+          waitFor(
+            async () =>
+              (await environment())?.harnessCatalogs.some(
+                (catalog) =>
+                  catalog.harnessInstanceId === active.harnessInstanceId &&
+                  catalog.status === "ready",
+              ) === true,
+            "ready catalog visible",
+            10_000,
+          ),
           "ready catalog visible",
-          10_000,
-        ),
-        "ready catalog visible",
-      );
-      restartStage = "ready catalog visible";
-      await within(
-        waitFor(
-          async () => (await runRow(active, runId)).phase === "background",
+        );
+        restartStage = "ready catalog visible";
+        await within(
+          waitFor(
+            async () => (await runRow(active, runId)).phase === "background",
+            "background projection restored",
+            10_000,
+          ),
           "background projection restored",
-          10_000,
-        ),
-        "background projection restored",
-      );
-      restartStage = "background projection restored";
-      expect(
-        (await within(runRow(active, runId), "restarted Run read")).backgroundDeadlineAt,
-      ).toEqual(deadline);
-      await within(release(), "background child release");
-      await within(settled(active, runId), "released completion persisted");
-      restartStage = "released completion persisted";
-      const journey = await within(
-        record("host restart", active, runId),
-        "restart journey recording",
-      );
-      expect(journey.run).toMatchObject({ status: "completed" });
-      expect(journey.nodes).toMatchObject([{ status: "completed" }]);
-    } finally {
-      // A failed restart must not leave the fake child waiting for the test
-      // while teardown drains that same restart operation.
-      await within(release(), "background child release during cleanup");
-    }
-  });
+        );
+        restartStage = "background projection restored";
+        expect(
+          (await within(runRow(active, runId), "restarted Run read")).backgroundDeadlineAt,
+        ).toEqual(deadline);
+        await within(release(), "background child release");
+        await within(settled(active, runId), "released completion persisted");
+        restartStage = "released completion persisted";
+        const journey = await within(
+          record("host restart", active, runId),
+          "restart journey recording",
+        );
+        expect(journey.run).toMatchObject({
+          status: "completed",
+        });
+        expect(journey.nodes).toMatchObject([
+          {
+            status: "completed",
+          },
+        ]);
+      } finally {
+        // A failed restart must not leave the fake child waiting for the test
+        // while teardown drains that same restart operation.
+        await within(release(), "background child release during cleanup");
+      }
+    },
+  );
 });
-
 function consumedUuids(consumed: readonly unknown[]) {
   const uuids = consumed.flatMap((input) =>
     input && typeof input === "object" && "uuid" in input && typeof input.uuid === "string"
       ? [input.uuid]
       : [],
   );
-  return uuids.length === 0 ? {} : { user_message_uuid: uuids.at(-1), user_message_uuids: uuids };
+  return uuids.length === 0
+    ? {}
+    : {
+        user_message_uuid: uuids.at(-1),
+        user_message_uuids: uuids,
+      };
 }
 
 /**
@@ -581,7 +664,10 @@ function consumedUuids(consumed: readonly unknown[]) {
 function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
   return {
     inspectModels: async () => ({
-      account: { email: "person@example.test", subscriptionType: "max" },
+      account: {
+        email: "person@example.test",
+        subscriptionType: "max",
+      },
       models: [
         {
           description: "Test model",
@@ -627,7 +713,10 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
             stop_reason: "end_turn",
             stop_sequence: null,
             type: "message",
-            usage: { input_tokens: 1, output_tokens: 1 },
+            usage: {
+              input_tokens: 1,
+              output_tokens: 1,
+            },
           },
           parent_tool_use_id: null,
           type: "assistant",
@@ -650,7 +739,11 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
           usage: {},
         });
       const roster = (tasks: unknown[]) =>
-        message({ subtype: "background_tasks_changed", tasks, type: "system" });
+        message({
+          subtype: "background_tasks_changed",
+          tasks,
+          type: "system",
+        });
       const prompt = (parameters.prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]();
       const closed = new AbortController();
       async function* turn() {
@@ -679,15 +772,28 @@ function backgroundClaudeSdk(finished: Promise<void>): ClaudeAgentSdk {
         });
         yield message({
           message: {
-            content: [{ content: "Launched", tool_use_id: "agent-call-1", type: "tool_result" }],
+            content: [
+              {
+                content: "Launched",
+                tool_use_id: "agent-call-1",
+                type: "tool_result",
+              },
+            ],
             role: "user",
           },
           parent_tool_use_id: null,
-          tool_use_result: { agentId: "agent-1", status: "async_launched" },
+          tool_use_result: {
+            agentId: "agent-1",
+            status: "async_launched",
+          },
           type: "user",
         });
         yield roster([
-          { description: "Background research", task_id: "agent-1", task_type: "local_agent" },
+          {
+            description: "Background research",
+            task_id: "agent-1",
+            task_type: "local_agent",
+          },
         ]);
         yield result("Started the research in the background.", [opening.value]);
         // A message steered in while the task works is a turn of its own.
@@ -734,10 +840,12 @@ async function clientView(
   active: VerticalStack,
   threadId: ThreadId,
   runId: RunId,
-  options: { readonly pageAfter?: string } = {},
+  options: {
+    readonly pageAfter?: string;
+  } = {},
 ) {
   const all = await active.host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("threadId", "=", threadId)
     .orderBy("sequence", "asc")
@@ -758,7 +866,6 @@ async function clientView(
         sequence: String(row.sequence),
         threadId: row.threadId,
         type: row.type,
-        workspaceId: row.workspaceId,
       }),
     );
   }
@@ -792,19 +899,24 @@ async function clientView(
             threadId,
           },
         ],
-    thread: { id: threadId, status: thread.status },
+    thread: {
+      id: threadId,
+      status: thread.status,
+    },
   });
   return {
     activity,
     composing: turns.some((turn) => turn.composing),
-    indicator: threadActivityIndicator(activity, { conversation: true, groups }),
+    indicator: threadActivityIndicator(activity, {
+      conversation: true,
+      groups,
+    }),
     readThrough: observedSequence(entries, true),
     replies: turns.flatMap((turn) => (turn.reply ? [turn.reply.body] : [])),
     subagentSteps,
     replySequences: turns.flatMap((turn) => (turn.reply?.sequence ? [turn.reply.sequence] : [])),
   };
 }
-
 async function settled(active: VerticalStack, runId: RunId) {
   await waitFor(
     async () =>
@@ -813,7 +925,6 @@ async function settled(active: VerticalStack, runId: RunId) {
     60_000,
   );
 }
-
 function runRow(active: VerticalStack, runId: RunId) {
   return active.host.store.database
     .selectFrom("runs")
@@ -821,7 +932,6 @@ function runRow(active: VerticalStack, runId: RunId) {
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
 }
-
 async function assistantTexts(active: VerticalStack, runId: RunId): Promise<string[]> {
   const rows = await active.host.store.database
     .selectFrom("messages")
@@ -831,19 +941,22 @@ async function assistantTexts(active: VerticalStack, runId: RunId): Promise<stri
     .execute();
   return rows.map((row) => textOf(row.content));
 }
-
 async function eventTypes(active: VerticalStack, runId: RunId): Promise<string[]> {
   const rows = await active.host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select("type")
     .where("runId", "=", runId)
     .orderBy("sequence", "asc")
     .execute();
   return rows.map((row) => row.type);
 }
-
 function textOf(content: unknown): string {
-  return (content as readonly { readonly text?: string; readonly type: string }[])
+  return (
+    content as readonly {
+      readonly text?: string;
+      readonly type: string;
+    }[]
+  )
     .flatMap((part) => (part.type === "text" && part.text ? [part.text] : []))
     .join("");
 }

@@ -1,0 +1,889 @@
+{
+  "version": 1,
+  "referenceOnly": true,
+  "noiseToleranceFraction": 0.2,
+  "methodology": "Single shared Mac, load generator and Host sharing one Node worker. Performance uses lock-order mode off; correctness uses enforce. These observations are not qualification on the D2 4-vCPU/8-GiB reference host. Store acknowledgements exclude HTTP. Fan-out is a saturation burst; search writes are scheduled at 5/s. Full raw plans, CPU, heap and wire details are external measurement artifacts.",
+  "sourceBaseSha": "69fa3cdbf8d8b5f98577e568594d2458c852aa93",
+  "productionPatchSha256": "03d0b391ce03b93f3d1d3100fcae09c4dce31f159cbd74cc0b509a7d885dbc27",
+  "machine": {
+    "cpu": "Apple M5 Max",
+    "logicalCpus": 18,
+    "memoryBytes": 137438953472,
+    "node": "v24.18.0",
+    "shared": true,
+    "postgres": "18.4 (aarch64 Linux, Docker)"
+  },
+  "scenarios": [
+    {
+      "scenario": "team-fanout-500",
+      "status": "complete",
+      "elapsedMs": 62287.369958999996,
+      "loadAverageBefore": [117.8359375, 157.16064453125, 143.203125],
+      "loadAverageAfter": [93.93603515625, 142.7158203125, 138.71923828125],
+      "eventLoopMs": {
+        "p99": 20.447231,
+        "max": 60.489727
+      },
+      "metrics": {
+        "viewers": 500,
+        "payload": {
+          "messages": 10,
+          "bytesPerMessage": "<64",
+          "note": "Saturation burst; no artificial inter-message sleep. Status/reply share channel sequence."
+        },
+        "commitToLastViewerMs": {
+          "count": 10,
+          "p50": 46.10558299999866,
+          "p95": 73.01783300000534,
+          "p99": 73.01783300000534,
+          "max": 73.01783300000534
+        },
+        "storeAckMs": {
+          "count": 10,
+          "p50": 22.55054199999904,
+          "p95": 63.40041600000404,
+          "p99": 63.40041600000404,
+          "max": 63.40041600000404
+        },
+        "targets": {
+          "fanoutP95Below250": true,
+          "ackP95Below100": true
+        }
+      }
+    },
+    {
+      "scenario": "team-history-keyset",
+      "status": "complete",
+      "elapsedMs": 8596.839333000002,
+      "loadAverageBefore": [128.26806640625, 111.89794921875, 115.130859375],
+      "loadAverageAfter": [138.67138671875, 114.6533203125, 116.06982421875],
+      "eventLoopMs": {
+        "p99": 13.713407,
+        "max": 33.718271
+      },
+      "metrics": {
+        "dataset": {
+          "channelRoots": 100000,
+          "threadReplies": 20000,
+          "payloadBytes": 270
+        },
+        "pages": [
+          {
+            "case": "newest",
+            "ms": {
+              "count": 10,
+              "p50": 23.944499999997788,
+              "p95": 54.34054200000173,
+              "p99": 54.34054200000173,
+              "max": 54.34054200000173
+            },
+            "targetP95Below50": false
+          },
+          {
+            "case": "start",
+            "ms": {
+              "count": 10,
+              "p50": 20.838707999999315,
+              "p95": 43.167750000000524,
+              "p99": 43.167750000000524,
+              "max": 43.167750000000524
+            },
+            "targetP95Below50": true
+          },
+          {
+            "case": "middle-before",
+            "ms": {
+              "count": 10,
+              "p50": 16.11975000000166,
+              "p95": 32.72962499999994,
+              "p99": 32.72962499999994,
+              "max": 32.72962499999994
+            },
+            "targetP95Below50": true
+          },
+          {
+            "case": "middle-after",
+            "ms": {
+              "count": 10,
+              "p50": 15.897292000001471,
+              "p95": 59.6214579999978,
+              "p99": 59.6214579999978,
+              "max": 59.6214579999978
+            },
+            "targetP95Below50": false
+          },
+          {
+            "case": "deep-before",
+            "ms": {
+              "count": 10,
+              "p50": 17.270833999999013,
+              "p95": 32.20287500000268,
+              "p99": 32.20287500000268,
+              "max": 32.20287500000268
+            },
+            "targetP95Below50": true
+          },
+          {
+            "case": "thread-20000",
+            "ms": {
+              "count": 10,
+              "p50": 16.65375000000131,
+              "p95": 25.122708000002604,
+              "p99": 25.122708000002604,
+              "max": 25.122708000002604
+            },
+            "targetP95Below50": true
+          }
+        ]
+      }
+    },
+    {
+      "scenario": "team-search-acl",
+      "status": "complete",
+      "elapsedMs": 122409.863917,
+      "loadAverageBefore": [206.1748046875, 168.06787109375, 139.45458984375],
+      "loadAverageAfter": [202.46240234375, 175.81640625, 146.08935546875],
+      "eventLoopMs": {
+        "p99": 19.087359,
+        "max": 34.504703
+      },
+      "metrics": {
+        "dataset": {
+          "messages": 1000000,
+          "channels": 1000,
+          "plainTextBytes": 270
+        },
+        "searches": [
+          {
+            "channels": 5,
+            "query": "selectiveneedle",
+            "ms": {
+              "count": 8,
+              "p50": 7.467333000007784,
+              "p95": 11.141959000000497,
+              "p99": 11.141959000000497,
+              "max": 11.141959000000497
+            },
+            "targetP95Below300": true
+          },
+          {
+            "channels": 5,
+            "query": "common",
+            "ms": {
+              "count": 8,
+              "p50": 25.445542000001296,
+              "p95": 29.71249999999418,
+              "p99": 29.71249999999418,
+              "max": 29.71249999999418
+            },
+            "targetP95Below300": true
+          },
+          {
+            "channels": 200,
+            "query": "selectiveneedle",
+            "ms": {
+              "count": 8,
+              "p50": 9.882582999998704,
+              "p95": 18.87879200000316,
+              "p99": 18.87879200000316,
+              "max": 18.87879200000316
+            },
+            "targetP95Below300": true
+          },
+          {
+            "channels": 200,
+            "query": "common",
+            "ms": {
+              "count": 8,
+              "p50": 44.552249999993364,
+              "p95": 59.07595899999433,
+              "p99": 59.07595899999433,
+              "max": 59.07595899999433
+            },
+            "targetP95Below300": true
+          },
+          {
+            "channels": 1000,
+            "query": "selectiveneedle",
+            "ms": {
+              "count": 8,
+              "p50": 24.711249999993015,
+              "p95": 29.815457999997307,
+              "p99": 29.815457999997307,
+              "max": 29.815457999997307
+            },
+            "targetP95Below300": true
+          },
+          {
+            "channels": 1000,
+            "query": "common",
+            "ms": {
+              "count": 8,
+              "p50": 59.04716699999699,
+              "p95": 69.98537500000384,
+              "p99": 69.98537500000384,
+              "max": 69.98537500000384
+            },
+            "targetP95Below300": true
+          }
+        ],
+        "transactionalGinWriteMs": {
+          "count": 25,
+          "p50": 25.111166999995476,
+          "p95": 38.18412499999977,
+          "p99": 41.82966699999815,
+          "max": 41.82966699999815
+        },
+        "targetWritesPerSecond": 5,
+        "indexLagMs": 0,
+        "indexLagReason": "Generated stored tsvector and GIN; every commit searched immediately; no indexing outbox after Fable's cut."
+      }
+    },
+    {
+      "scenario": "team-unread-1000",
+      "status": "complete",
+      "elapsedMs": 100926.163042,
+      "loadAverageBefore": [84.7353515625, 102.87646484375, 117.3349609375],
+      "loadAverageAfter": [102.54150390625, 105.45849609375, 116.779296875],
+      "eventLoopMs": {
+        "p99": 12.967935,
+        "max": 28.590079
+      },
+      "metrics": {
+        "dataset": {
+          "members": 1000,
+          "channels": 50,
+          "burst": 5000
+        },
+        "senderMs": {
+          "count": 5000,
+          "p50": 15.198292000015499,
+          "p95": 46.38362499998766,
+          "p99": 65.73562500000116,
+          "max": 194.83983300000546
+        },
+        "mutationStatementsPerMessage": {
+          "count": 5000,
+          "p50": 4,
+          "p95": 4,
+          "p99": 4,
+          "max": 4
+        },
+        "recipientReadMarkersAfterBurst": 0,
+        "sidebar50Ms": {
+          "count": 10,
+          "p50": 52.76141600002302,
+          "p95": 89.02900000000955,
+          "p99": 89.02900000000955,
+          "max": 89.02900000000955
+        },
+        "targetSidebarP95Below100": true
+      }
+    },
+    {
+      "scenario": "team-link-crash-cuts",
+      "status": "complete",
+      "elapsedMs": 80029.02516599999,
+      "loadAverageBefore": [216.35986328125, 165.04736328125, 137.24072265625],
+      "loadAverageAfter": [186.47509765625, 168.99609375, 141.31591796875],
+      "eventLoopMs": {
+        "p99": 20.479999,
+        "max": 40.271871
+      },
+      "metrics": {
+        "idleWire": {
+          "pongs": 2,
+          "bytes": 60,
+          "bytesPerMinute": 59.97663884926555,
+          "excludesTransportOverhead": true
+        },
+        "owners": 100,
+        "teamReplyReceiptMs": {
+          "count": 100,
+          "p50": 44.88249999999971,
+          "p95": 101.8850420000017,
+          "p99": 173.69966700000077,
+          "max": 188.08587500000067
+        },
+        "scope": "Real team request/accept/reply/receipt persistence. Personal Host restart/local-input crash cuts are the separately failing production journey; not qualified by this team-store scenario.",
+        "qualified": false
+      }
+    },
+    {
+      "scenario": "team-knowledge-resource",
+      "status": "complete",
+      "elapsedMs": 4226.221291,
+      "loadAverageBefore": [127.0791015625, 111.05224609375, 118.228515625],
+      "loadAverageAfter": [126.67236328125, 111.23388671875, 118.25048828125],
+      "eventLoopMs": {
+        "p99": 12.664831,
+        "max": 15.392767
+      },
+      "metrics": {
+        "members": 1000,
+        "facts": {
+          "readable": 1000,
+          "hidden": 1
+        },
+        "keyedReadMs": {
+          "count": 20,
+          "p50": 11.60412499999984,
+          "p95": 36.93720800000028,
+          "p99": 39.945708999999624,
+          "max": 39.945708999999624
+        },
+        "corpus": [
+          {
+            "outcome": "rejected",
+            "milliseconds": 6.917208999999275,
+            "code": "bad_request"
+          },
+          {
+            "outcome": "rejected",
+            "milliseconds": 6.42279199999939,
+            "code": "bad_request"
+          },
+          {
+            "fingerprint": "af7687e8b3c8c0de16066e87d01bda1872501ac000a6c1242e5ddf09a715ead6",
+            "outcome": "bounded",
+            "milliseconds": 109.2602079999997,
+            "bytes": 4896
+          }
+        ],
+        "concurrent": {
+          "calls": 40,
+          "rejected": 24
+        },
+        "caps": "2GiB / 2CPU; Docker verified",
+        "hostSurvived": true,
+        "postgresqlRestarts": "No process restart observed; no claim of hard per-query memory isolation."
+      }
+    },
+    {
+      "scenario": "team-reconnect-storm",
+      "status": "complete",
+      "elapsedMs": 6346.351874999999,
+      "loadAverageBefore": [128.4658203125, 111.66015625, 115.06689453125],
+      "loadAverageAfter": [128.26806640625, 111.89794921875, 115.130859375],
+      "eventLoopMs": {
+        "p99": 42.434559,
+        "max": 103.022591
+      },
+      "metrics": {
+        "devices": 1000,
+        "resumeHandshakeMs": {
+          "count": 1000,
+          "p50": 4533.278,
+          "p95": 4728.096749999999,
+          "p99": 4766.065584,
+          "max": 4767.432917
+        },
+        "targetP95Below2000": false,
+        "frames": {
+          "count": 3000,
+          "bytes": 53598000,
+          "largest": 51538
+        }
+      }
+    }
+  ],
+  "mobile": [
+    {
+      "seed": "team",
+      "profile": "cell-target",
+      "scenario": "team-cold-attach",
+      "samples": 3,
+      "medianMs": 1253.765958,
+      "medianWireBytesDown": 53873,
+      "gzipEquivalentPayloadBytes": 3231,
+      "loadAverage": [212.1591796875, 165.8359375, 137.84521484375],
+      "note": "Normal text, 50-row page.",
+      "variant": "normal-text"
+    },
+    {
+      "seed": "team",
+      "profile": "cell-target",
+      "scenario": "team-network-change",
+      "samples": 3,
+      "medianMs": 469.42841599999883,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 351,
+      "loadAverage": [210.14404296875, 166.18701171875, 138.1328125],
+      "note": "Normal text, 50-row page.",
+      "variant": "normal-text"
+    },
+    {
+      "seed": "team",
+      "profile": "cell-target",
+      "scenario": "team-open-channel",
+      "samples": 3,
+      "medianMs": 705.7807919999996,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2303,
+      "loadAverage": [210.14404296875, 166.18701171875, 138.1328125],
+      "note": "Normal text, 50-row page.",
+      "variant": "normal-text"
+    },
+    {
+      "seed": "team",
+      "profile": "cell-target",
+      "scenario": "team-open-thread",
+      "samples": 3,
+      "medianMs": 1046.6438750000016,
+      "medianWireBytesDown": 63238,
+      "gzipEquivalentPayloadBytes": 3778,
+      "loadAverage": [210.14404296875, 166.18701171875, 138.1328125],
+      "note": "Normal text, 50-row page.",
+      "variant": "normal-text"
+    },
+    {
+      "seed": "team",
+      "profile": "cell-target",
+      "scenario": "team-reconnect",
+      "samples": 3,
+      "medianMs": 598.4855410000018,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1565,
+      "loadAverage": [210.14404296875, 166.18701171875, 138.1328125],
+      "note": "Normal text, 50-row page.",
+      "variant": "normal-text"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 1141.4520420000008,
+      "medianWireBytesDown": 53006,
+      "gzipEquivalentPayloadBytes": 3513,
+      "loadAverage": [196.4189453125, 176.10107421875, 146.8779296875],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 2480.456915999999,
+      "medianWireBytesDown": 197872,
+      "gzipEquivalentPayloadBytes": 196608,
+      "loadAverage": [196.4189453125, 176.10107421875, 146.8779296875],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 440.19054199999846,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 351,
+      "loadAverage": [194.94384765625, 176.13232421875, 147.06005859375],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 659.667625,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2301,
+      "loadAverage": [196.4189453125, 176.10107421875, 146.8779296875],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 994.355916999999,
+      "medianWireBytesDown": 62371,
+      "gzipEquivalentPayloadBytes": 4061,
+      "loadAverage": [196.4189453125, 176.10107421875, 146.8779296875],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 673.4807500000006,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1563,
+      "loadAverage": [196.4189453125, 176.10107421875, 146.8779296875],
+      "note": "Padded PNG fixtures; media case has four 8-MiB originals and four 48-KiB previews.",
+      "variant": "media-48KiB-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 586.0132499999963,
+      "medianWireBytesDown": 52994,
+      "gzipEquivalentPayloadBytes": 3504,
+      "loadAverage": [186.47509765625, 168.99609375, 141.31591796875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 1589.4294579999987,
+      "medianWireBytesDown": 52994,
+      "gzipEquivalentPayloadBytes": 3512,
+      "loadAverage": [207.7109375, 171.39453125, 141.47607421875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 4700.607041000003,
+      "medianWireBytesDown": 52994,
+      "gzipEquivalentPayloadBytes": 3513,
+      "loadAverage": [167.10546875, 165.669921875, 140.76318359375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 385.9595829999962,
+      "medianWireBytesDown": 52994,
+      "gzipEquivalentPayloadBytes": 3499,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-cold-attach",
+      "samples": 1,
+      "medianMs": 1804.178875000005,
+      "medianWireBytesDown": 52994,
+      "gzipEquivalentPayloadBytes": 3509,
+      "loadAverage": [174.71435546875, 167.0400390625, 140.9443359375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 627.6527920000008,
+      "medianWireBytesDown": 1524,
+      "gzipEquivalentPayloadBytes": 272,
+      "loadAverage": [186.47509765625, 168.99609375, 141.31591796875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 1225.5432500000024,
+      "medianWireBytesDown": 1524,
+      "gzipEquivalentPayloadBytes": 272,
+      "loadAverage": [207.7109375, 171.39453125, 141.47607421875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 3997.389375000006,
+      "medianWireBytesDown": 1524,
+      "gzipEquivalentPayloadBytes": 272,
+      "loadAverage": [166.6962890625, 165.60888671875, 140.88720703125],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 317.1967919999952,
+      "medianWireBytesDown": 1524,
+      "gzipEquivalentPayloadBytes": 272,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-media-previews",
+      "samples": 1,
+      "medianMs": 1764.1756250000035,
+      "medianWireBytesDown": 1524,
+      "gzipEquivalentPayloadBytes": 272,
+      "loadAverage": [174.71435546875, 167.0400390625, 140.9443359375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 256.90312500000437,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 350,
+      "loadAverage": [179.39013671875, 167.8173828125, 141.06201171875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 584.1980000000003,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 350,
+      "loadAverage": [203.81005859375, 171.1884765625, 141.57861328125],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 1955.7165419999947,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 350,
+      "loadAverage": [173.0107421875, 166.96337890625, 141.654296875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 245.23520799999824,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 347,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-network-change",
+      "samples": 1,
+      "medianMs": 938.0547920000026,
+      "medianWireBytesDown": 968,
+      "gzipEquivalentPayloadBytes": 350,
+      "loadAverage": [171.29345703125, 166.4580078125, 140.8916015625],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 288.75675000000047,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2301,
+      "loadAverage": [186.47509765625, 168.99609375, 141.31591796875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 769.0902080000014,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2294,
+      "loadAverage": [207.7109375, 171.39453125, 141.47607421875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 2719.863375000001,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2299,
+      "loadAverage": [167.44091796875, 165.78125, 141.0927734375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 232.19212499999412,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2294,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-open-channel",
+      "samples": 1,
+      "medianMs": 897.7637919999979,
+      "medianWireBytesDown": 51414,
+      "gzipEquivalentPayloadBytes": 2294,
+      "loadAverage": [174.71435546875, 167.0400390625, 140.9443359375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 406.01420900000085,
+      "medianWireBytesDown": 62359,
+      "gzipEquivalentPayloadBytes": 4066,
+      "loadAverage": [186.47509765625, 168.99609375, 141.31591796875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 1148.9634579999984,
+      "medianWireBytesDown": 62359,
+      "gzipEquivalentPayloadBytes": 4084,
+      "loadAverage": [203.81005859375, 171.1884765625, 141.57861328125],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 4073.9093749999884,
+      "medianWireBytesDown": 62359,
+      "gzipEquivalentPayloadBytes": 4071,
+      "loadAverage": [167.44091796875, 165.78125, 141.0927734375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 561.8147079999981,
+      "medianWireBytesDown": 62359,
+      "gzipEquivalentPayloadBytes": 4076,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-open-thread",
+      "samples": 1,
+      "medianMs": 1481.1212919999962,
+      "medianWireBytesDown": 62359,
+      "gzipEquivalentPayloadBytes": 4070,
+      "loadAverage": [174.71435546875, 167.0400390625, 140.9443359375],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "4g",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 374.6866249999948,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1562,
+      "loadAverage": [179.39013671875, 167.8173828125, 141.06201171875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "cell-target",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 1047.411250000001,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1564,
+      "loadAverage": [203.81005859375, 171.1884765625, 141.57861328125],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "edge",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 2169.07925000001,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1569,
+      "loadAverage": [173.0107421875, 166.96337890625, 141.654296875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "lan",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 425.7985409999965,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1561,
+      "loadAverage": [194.43798828125, 170.24560546875, 141.58935546875],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    },
+    {
+      "seed": "team-media",
+      "profile": "weak-cell",
+      "scenario": "team-reconnect",
+      "samples": 1,
+      "medianMs": 1017.6864169999972,
+      "medianWireBytesDown": 4763,
+      "gzipEquivalentPayloadBytes": 1563,
+      "loadAverage": [171.29345703125, 166.4580078125, 140.8916015625],
+      "note": "Small-preview media fixture for profile comparisons.",
+      "variant": "media-small-previews"
+    }
+  ],
+  "systemJourney": {
+    "status": "blocked",
+    "attempts": 3,
+    "failure": "Offline mention is durably queued; after Personal Host restart no local request/input is observed within the event deadline. Runtime also has no production caller of PersonalTeamRequests.runChanged."
+  }
+}

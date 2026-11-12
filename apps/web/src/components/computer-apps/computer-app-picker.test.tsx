@@ -266,13 +266,11 @@ function machine(id: string, name: string): MachineSummary {
     fullDiskAccess: false,
     id,
     lastSeenAt: null,
-    localWorkspaces: 0,
     modules: {},
     name,
     ownership: "mine",
     pinnedThreads: 0,
     revocable: true,
     status: "online",
-    unlinkedLocalFolders: 0,
   } as MachineSummary;
 }

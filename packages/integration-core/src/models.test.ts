@@ -110,15 +110,7 @@ describe("provider application sources", () => {
         brokerIssuer: "https://accounts.opensteer.test",
         deploymentSource: deployment,
         hostedProviderApplicationRevision: 4,
-        posture: "independent-self-hosted",
-      }),
-    ).toEqual(deployment);
-    expect(
-      defaultOAuthApplicationSource({
-        brokerIssuer: "https://accounts.opensteer.test",
-        deploymentSource: deployment,
-        hostedProviderApplicationRevision: 4,
-        posture: "account-adopted-self-hosted",
+        posture: "account-free-personal",
       }),
     ).toEqual(deployment);
     expect(defaultOAuthApplicationSource({ posture: "account-free-personal" })).toBeNull();
@@ -172,23 +164,11 @@ describe("provider application sources", () => {
   });
 
   it.each([
-    ["canonical", false, "server", "account-adopted-self-hosted"],
-    ["routed", false, "server", "account-adopted-self-hosted"],
-    [null, true, "personal", "account-linked-personal"],
-    [null, false, "personal", "account-free-personal"],
-    [null, false, "server", "independent-self-hosted"],
-  ] as const)(
-    "derives %s/%s/%s as %s",
-    (accountReachability, personalAccountLinked, kind, expected) => {
-      expect(
-        resolveIntegrationDeploymentPosture({
-          accountReachability,
-          personalAccountLinked,
-          kind,
-        }),
-      ).toBe(expected);
-    },
-  );
+    [true, "account-linked-personal"],
+    [false, "account-free-personal"],
+  ] as const)("derives Personal Account link %s as %s", (personalAccountLinked, expected) => {
+    expect(resolveIntegrationDeploymentPosture({ personalAccountLinked })).toBe(expected);
+  });
 });
 
 describe("integration proposal projections", () => {

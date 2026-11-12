@@ -1,4 +1,5 @@
-import { OpensteerError, type UserId, type WorkspaceId } from "@opensteer/core";
+import { assertPersonalOwner } from "./private-resource-owner.js";
+import { OpensteerError, type UserId } from "@opensteer/core";
 import {
   IntegrationApplicationSourceSchema,
   IntegrationConnectionRequirementSchema,
@@ -23,7 +24,6 @@ export interface CreateIntegrationGrantInput {
   readonly isDefault: boolean;
   readonly ownerUserId: UserId;
   readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-  readonly workspaceId: WorkspaceId;
 }
 
 export function integrationGrantFromRow(row: Selectable<IntegrationGrantTable>): IntegrationGrant {
@@ -38,12 +38,11 @@ export function integrationGrantFromRow(row: Selectable<IntegrationGrantTable>):
     ownerUserId: row.ownerUserId,
     revokedAt: row.revokedAt?.toISOString() ?? null,
     status: row.status,
-    workspaceId: row.workspaceId,
   });
 }
 
 /**
- * Serialises every grant write for one person, Workspace and installation.
+ * Serialises every grant write for one person and installation.
  *
  * Postgres advisory locks are re-entrant within a session, so a caller that
  * reads a grant before deciding what to write may take this first and still
@@ -54,13 +53,11 @@ export async function lockIntegrationGrantScopeInTransaction(
   scope: {
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<void> {
   await sql`select pg_advisory_xact_lock(hashtextextended(${[
     "integration-grant",
     scope.ownerUserId,
-    scope.workspaceId,
     scope.installationId,
   ].join(":")}, 0))`.execute(transaction);
 }
@@ -78,9 +75,17 @@ export async function writeIntegrationGrantInTransaction(
   await validateIntegrationGrantInTransaction(transaction, input);
   if (input.isDefault) {
     await transaction
+      .selectFrom("integrationGrants")
+      .select("id")
+      .where("ownerUserId", "=", input.ownerUserId)
+      .where("installationId", "=", input.installationId)
+      .where("revokedAt", "is", null)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction
       .updateTable("integrationGrants")
       .set({ isDefault: false, updatedAt: new Date() })
-      .where("workspaceId", "=", input.workspaceId)
       .where("ownerUserId", "=", input.ownerUserId)
       .where("installationId", "=", input.installationId)
       .where("revokedAt", "is", null)
@@ -115,7 +120,6 @@ export async function writeIntegrationGrantInTransaction(
           revokedAt: null,
           status: "active",
           updatedAt: now,
-          workspaceId: input.workspaceId,
         })
         .returningAll()
         .executeTakeFirstOrThrow();
@@ -127,13 +131,7 @@ export async function validateIntegrationGrantInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CreateIntegrationGrantInput,
 ): Promise<void> {
-  const membership = await transaction
-    .selectFrom("workspaceMemberships")
-    .select(["state"])
-    .where("workspaceId", "=", input.workspaceId)
-    .where("userId", "=", input.ownerUserId)
-    .executeTakeFirst();
-  if (!membership || membership.state !== "active") throw forbidden("Workspace access is required");
+  await assertPersonalOwner(transaction, input.ownerUserId);
   if (input.createdBy !== input.ownerUserId)
     throw forbidden("A user may grant only their own connection");
   const installation = await transaction
@@ -213,20 +211,18 @@ export async function validateIntegrationGrantInTransaction(
   }
 }
 
-/** The one active grant a Workspace holds on one connection of one installation. */
+/** The one active grant a person holds on one connection of one installation. */
 export async function activeIntegrationGrantInTransaction(
   transaction: Transaction<DatabaseSchema>,
   scope: {
     readonly connectionId: IntegrationConnectionId | null;
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<Selectable<IntegrationGrantTable> | undefined> {
   return transaction
     .selectFrom("integrationGrants")
     .selectAll()
-    .where("workspaceId", "=", scope.workspaceId)
     .where("ownerUserId", "=", scope.ownerUserId)
     .where("installationId", "=", scope.installationId)
     .where(sql<boolean>`connection_id is not distinct from ${scope.connectionId}`)

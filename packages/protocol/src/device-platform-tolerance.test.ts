@@ -44,7 +44,6 @@ const knownMachine = MachineSummarySchema.parse({
   expiresAt: null,
   id: "known-computer",
   lastSeenAt: null,
-  localWorkspaces: 0,
   modules: {},
   name: "Existing Mac",
   ownership: "mine",

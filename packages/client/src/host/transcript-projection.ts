@@ -13,13 +13,13 @@ export function drawnTranscriptRowKeys(
     assignments = {},
     waitingRequests = [],
   }: {
-    readonly thread: Pick<ThreadSummary, "id" | "role" | "inputQueuePaused">;
+    readonly thread: Pick<ThreadSummary, "id" | "purpose" | "inputQueuePaused">;
     readonly inputQueue?: ThreadInputQueue | null;
     readonly assignments?: Readonly<Record<string, AssignmentSummary>>;
     readonly waitingRequests?: readonly WaitingRequest[];
   },
 ): readonly string[] {
-  const conversation = thread.role === "conversation";
+  const conversation = thread.purpose === "voice";
   const groups = groupTranscriptEntries(
     withoutOwnAssignment(visibleTranscript(entries, inputQueue, { conversation }), thread.id),
     { assignments, inputQueuePaused: thread.inputQueuePaused },

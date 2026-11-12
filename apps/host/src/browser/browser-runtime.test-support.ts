@@ -26,7 +26,7 @@ import {
   closed,
   connectPrimary,
   type PrimaryConnection,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 
 /**
  * One enrolled computer whose only module is a browser.
@@ -58,7 +58,7 @@ export async function startBrowserRuntime(
     /** Attach a browser stream to the already enrolled Personal Main identity. */
     readonly primary?: PrimaryConnection;
     readonly targetedStreaming?: boolean;
-    readonly workspaceTabs?: boolean;
+    readonly personalTabs?: boolean;
     readonly signIn?: boolean;
     readonly initialDialog?: Record<string, unknown>;
   } = {},
@@ -110,7 +110,7 @@ export async function startBrowserRuntime(
         ...(options.navigationAttribution ? { navigationAttributionVersion: 1 } : {}),
         runtimeId: "browser-runtime-integration",
         ...(options.agentReady ? { cdpBoundary: 1, sharedControl: 1 } : {}),
-        ...(options.workspaceTabs ? { workspaceTabRestoreVersion: 1 } : {}),
+        ...(options.personalTabs ? { tabRestoreVersion: 1 } : {}),
         ...(options.signIn ? { signIn: { version: 3 } } : {}),
       },
     },

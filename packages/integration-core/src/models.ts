@@ -1,4 +1,3 @@
-import { deploymentPolicy } from "@opensteer/core";
 import { z } from "zod";
 import { JsonObjectSchema, McpIdentifierSchema } from "./schema-primitives.js";
 import {
@@ -6,7 +5,6 @@ import {
   RequestIdSchema,
   RunnerIdSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
   UserIdSchema,
   isLoopbackHostname,
   requestReasonMaxLength,
@@ -89,8 +87,6 @@ export type IntegrationApplicationSource = z.infer<typeof IntegrationApplication
 const IntegrationDeploymentPostureSchema = z.enum([
   "account-linked-personal",
   "account-free-personal",
-  "independent-self-hosted",
-  "account-adopted-self-hosted",
 ]);
 export type IntegrationDeploymentPosture = z.infer<typeof IntegrationDeploymentPostureSchema>;
 
@@ -103,18 +99,9 @@ export const IntegrationAuthorizationSurfaceSchema = z.enum(["canonical", "perso
 export type IntegrationAuthorizationSurface = z.infer<typeof IntegrationAuthorizationSurfaceSchema>;
 
 export function resolveIntegrationDeploymentPosture(input: {
-  readonly accountReachability: "canonical" | "routed" | null;
-  readonly kind: "personal" | "server";
   readonly personalAccountLinked: boolean;
 }): IntegrationDeploymentPosture {
-  if (input.accountReachability !== null) return "account-adopted-self-hosted";
-  if (
-    deploymentPolicy({ kind: input.kind, defaultWorkspaceBacking: "local-directory" })
-      .integrationAccountBinding === "personal-link"
-  ) {
-    return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
-  }
-  return "independent-self-hosted";
+  return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
 }
 
 export const IntegrationProviderAuthorizationCodeSchema = z.enum([
@@ -316,7 +303,6 @@ export function defaultOAuthApplicationSource(input: {
   if (input.posture === "account-linked-personal") {
     return hosted as Extract<IntegrationApplicationSource, { kind: "hosted-oauth" }> | null;
   }
-  if (input.posture === "account-free-personal") return input.deploymentSource ?? null;
   return input.deploymentSource ?? null;
 }
 
@@ -935,7 +921,6 @@ export const IntegrationGrantSchema = z.strictObject({
   ownerUserId: z.string().regex(/^usr_[0-9a-f-]{36}$/i),
   revokedAt: IsoDateTimeSchema.nullable(),
   status: z.enum(["active", "revoked"]),
-  workspaceId: z.string().regex(/^wsp_[0-9a-f-]{36}$/i),
 });
 export const IntegrationGrantViewSchema = z.object(IntegrationGrantSchema.shape);
 export type IntegrationGrant = z.infer<typeof IntegrationGrantSchema>;
@@ -974,9 +959,7 @@ const computerAppSetupRequestShapeSchema = z.strictObject({
   server: LocalMcpServerSetupSchema.nullable().default(null),
   reason: z.string().max(requestReasonMaxLength).nullable(),
   threadId: ThreadIdSchema.nullable(),
-  workspaceId: WorkspaceIdSchema.nullable(),
   /** The name the panel shows, fixed when this request was created. */
-  workspaceName: z.string().min(1).max(160).nullable(),
   threadTitle: z.string().max(240).nullable(),
   createdAt: IsoDateTimeSchema,
   expiresAt: IsoDateTimeSchema,
@@ -1471,6 +1454,5 @@ export const CreateIntegrationGrantSchema = z.strictObject({
   connectionId: IntegrationConnectionIdSchema.nullable(),
   installationId: IntegrationInstallationIdSchema,
   isDefault: z.boolean().default(false),
-  workspaceId: z.string().regex(/^wsp_[0-9a-f-]{36}$/i),
 });
 export type CreateIntegrationGrant = z.infer<typeof CreateIntegrationGrantSchema>;

@@ -59,23 +59,10 @@ function descriptor() {
       agents: {
         environmentIds: [createId("environment")],
         harnessDrivers: [driver],
-        localStorage: {
-          storageAuthorityId: createId("storageAuthority"),
-          bindings: [
-            {
-              bindingId: createId("workspaceBinding"),
-              generation: 1,
-              state: "ready",
-              workspaceId: createId("workspace"),
-              future: true,
-            },
-          ],
-          truncated: false,
-          future: true,
-        },
+
         maxConcurrentRuns: 1,
         providerStateModes: ["isolated", "future-state"],
-        workspaceBackings: ["local-directory", "future-backing"],
+
         future: true,
       },
       browser: {
@@ -168,19 +155,11 @@ describe("the owning Runner descriptor reader", () => {
       ...wire,
       modules: {
         ...wire.modules,
-        agents: { ...wire.modules.agents, computerTool: 1, knowledgeSkill: 1 },
+        agents: { ...wire.modules.agents, computerTool: 1 },
         integrations: { platform: "darwin", protocolVersion: 5, computerUseVersion: 2 },
       },
     });
     expect(current.modules.agents?.computerTool).toBe(1);
-    expect(current.modules.agents?.knowledgeSkill).toBe(1);
-    expect(RunnerDescriptorSchema.parse(wire).modules.agents?.knowledgeSkill).toBeUndefined();
-    expect(
-      RunnerDescriptorSchema.parse({
-        ...wire,
-        modules: { ...wire.modules, agents: { ...wire.modules.agents, knowledgeSkill: 2 } },
-      }).modules.agents?.knowledgeSkill,
-    ).toBeUndefined();
     expect(current.modules.integrations?.computerUseVersion).toBe(2);
     const future = RunnerDescriptorSchema.parse({
       ...wire,
@@ -294,24 +273,16 @@ describe("the owning Runner descriptor reader", () => {
     expect(parsed.modules.integrations?.macWindowVideoVersion).toBeUndefined();
   });
 
-  it("refuses unsupported inventory states and empty required state/backing sets without erasing agents", () => {
+  it("refuses unsupported and empty provider state modes", () => {
     const wire = descriptor();
-    for (const agents of [
-      { ...wire.modules.agents, providerStateModes: ["future-state"] },
-      { ...wire.modules.agents, workspaceBackings: ["future-backing"] },
-      {
-        ...wire.modules.agents,
-        localStorage: {
-          ...wire.modules.agents.localStorage,
-          bindings: [{ ...wire.modules.agents.localStorage.bindings[0], state: "future-state" }],
-        },
-      },
-    ])
+    for (const providerStateModes of [["future-state"], []])
       expect(
-        RunnerDescriptorSchema.safeParse({ ...wire, modules: { ...wire.modules, agents } }).success,
+        RunnerDescriptorSchema.safeParse({
+          ...wire,
+          modules: { ...wire.modules, agents: { ...wire.modules.agents, providerStateModes } },
+        }).success,
       ).toBe(false);
   });
-
   it("keeps known semantic refinements and required semantics validated", () => {
     const wire = descriptor();
     const invalid = [
@@ -319,7 +290,7 @@ describe("the owning Runner descriptor reader", () => {
       { ...wire, device: { form: "future-form", platform: "linux" } },
       {
         ...wire,
-        modules: { ...wire.modules, agents: { ...wire.modules.agents, localStorage: null } },
+        modules: { ...wire.modules, agents: { ...wire.modules.agents, maxConcurrentRuns: 0 } },
       },
       {
         ...wire,

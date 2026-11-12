@@ -1,5 +1,4 @@
 import { placeList } from "@opensteer/client/host";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import {
   browserTabPicture,
   browserThreadAgentTab,
@@ -39,7 +38,7 @@ import { AgentMarks } from "../browser/agent-marks.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { pageSite } from "../browser/surface-route.js";
 import { color, radius, space, touchTarget } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { enter, exit } from "../ui/motion.js";
 import { useContentInsets } from "../ui/pane.js";
 import { useMobileState } from "../ui/mobile-client-context.js";
@@ -158,19 +157,17 @@ function BrowserTabs(props: {
   const selectTask = useCallback(
     (snapshot: HostSnapshot): TaskView | null => {
       if (threadId === null) return null;
-      const home = snapshot.homeThreadId === threadId;
-      const thread = home ? null : threadInDirectory(threadId, snapshot);
+      const thread = threadInDirectory(threadId, snapshot);
       const at = browserThreadAgentTab(snapshot.browserSessions, threadId);
       const here = at?.sessionId === sessionId ? at : null;
       const occupant = here?.tab.occupants.find((value) => value.threadId === threadId);
       return {
         agent: {
           acting: occupant?.acting ?? false,
-          home,
           lastActiveAt: occupant?.lastActiveAt ?? "",
-          mark: home ? null : taskMark(thread ?? { icon: null, color: null }),
+          mark: taskMark(thread ?? { icon: null, color: null }),
           threadId,
-          title: home ? CHAT_THREAD_TITLE : thread?.title.trim() || "Task",
+          title: thread?.title.trim() || "Task",
         },
         agentTabId: here?.tabId ?? null,
       };
@@ -285,7 +282,7 @@ function BrowserTabs(props: {
           ) : (
             <View style={styles.taskName}>
               {agent.mark === null ? (
-                <ChatOrb size={20} />
+                <AgentOrb size={20} />
               ) : (
                 <TaskMark mark={agent.mark} size={20} />
               )}

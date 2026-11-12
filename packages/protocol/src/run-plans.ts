@@ -37,7 +37,7 @@ export const PinnedPluginSchema = z.strictObject({
 });
 export const RunPluginsPlanSchema = z.strictObject({
   // Send only to settings-plugin-policy-v1 Runners; required once overrides exist.
-  workspaceSkillPolicy: z
+  skillPolicy: z
     .strictObject({
       revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
       disabledFullNames: z.array(z.string().min(1).max(120)).max(64),

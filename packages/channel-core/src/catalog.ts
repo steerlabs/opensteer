@@ -3,7 +3,7 @@ import type { ChannelProviderManifest } from "./models.js";
 const slackAppManifest = JSON.stringify(
   {
     display_information: {
-      description: "Route Slack conversations to Opensteer Workspaces.",
+      description: "Route Slack conversations to Opensteer tasks.",
       name: "Opensteer",
     },
     features: {
@@ -64,7 +64,7 @@ export const slackChannelProviderManifest = {
     },
   ],
   defaultTransportKind: "socket",
-  description: "Route Slack channels, threads, and direct messages to Workspaces.",
+  description: "Route Slack channels, threads, and direct messages to tasks.",
   label: "Slack",
   maxMessageChars: 3_800,
   provider: "slack",

@@ -12,6 +12,7 @@ import "@fontsource-variable/fraunces/wght-italic.css";
 import "./styles/index.css";
 import { initializeDesktopWindowChrome } from "./desktop/window-controls-overlay.js";
 
+import { DeploymentKindSchema } from "@opensteer/core";
 import { personalWebBuildId } from "@opensteer/protocol";
 import { chromeConnectPagePath } from "@opensteer/client/host";
 
@@ -101,6 +102,17 @@ async function renderOpensteer(): Promise<void> {
     return;
   }
 
+  if (import.meta.env.VITE_OPENSTEER_USE_MOCK !== "true" && (await servedByTeam())) {
+    const { TeamWebApp } = await import("./team/team-web-app.js");
+    reactRoot.render(
+      <StrictMode>
+        <TeamWebApp />
+      </StrictMode>,
+    );
+    return;
+  }
+
+  let previewTeams: Parameters<typeof import("./app.js").App>[0]["previewTeams"] = null;
   const [{ App }, hostClient] = await Promise.all([
     import("./app.js"),
     import.meta.env.VITE_OPENSTEER_USE_MOCK === "true"
@@ -108,56 +120,96 @@ async function renderOpensteer(): Promise<void> {
           import("@opensteer/client/mock"),
           import("./host/browser-host-client.js"),
           import("./host/browser-lifecycle.js"),
+          import("@opensteer/client/team"),
         ]).then(
           ([
-            { MockHostClient, mockSubagentScenes, mockTeamScenarios },
+            { MockHostClient, mockSubagentScenes },
             { browserPreferencesStorage },
             { browserClientLifecycle },
+            {
+              MockTeamHost,
+              TeamSessionClient,
+              createMemoryTeamPersistence,
+              busyTeamIds,
+              seedBusyTeam,
+            },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
-            const team = mockTeamScenarios.find((scenario) => scenario === search.get("mock-team"));
-            const subagents = mockSubagentScenes.find(
-              (scene) => scene === search.get("mock-subagents"),
-            );
-            const client = new MockHostClient({
-              lifecycle: browserClientLifecycle(),
-              browserPreferencesStorage,
-              ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
-              ...(world === "first-run" || world === "busy" || world === "stress" ? { world } : {}),
-              ...(team ? { team } : {}),
-              ...(subagents ? { subagents } : {}),
+            // `?mock-team` puts one live mock team beside the person's own tasks;
+            // `?mock-team=busy` two teams full of people, threads, files and asks.
+            const attach = (team: InstanceType<typeof MockTeamHost>, origin: string) => ({
+              teamId: team.teamId,
+              name: team.bootstrap.teamName,
+              origin,
+              client: new TeamSessionClient({
+                scope: { teamDeploymentId: team.teamId, userId: team.userId },
+                persistence: createMemoryTeamPersistence(),
+                rpc: team.rpc,
+                connect: team.connect,
+                readFile: team.readFile,
+                uploadFile: team.uploadFile,
+              }),
+              link: null,
             });
-            // The preview's own client, for journeys that count what the page sends.
-            Object.assign(window, { opensteerMock: client });
-            const downloadsScript = new URLSearchParams(window.location.search).get(
-              "mock-downloads",
-            );
-            if (downloadsScript !== null) {
-              return Promise.all([
-                import("./desktop/desktop-preview-bridge.js"),
-                import("@opensteer/protocol/desktop"),
-              ]).then(
-                ([
-                  { desktopPreviewBridge, desktopPreviewDownloads },
-                  { DesktopDownloadsSnapshotSchema },
-                ]) => {
-                  const initial = DesktopDownloadsSnapshotSchema.parse({
-                    downloads: JSON.parse(downloadsScript),
-                  });
-                  const downloads = desktopPreviewDownloads(initial.downloads);
-                  Object.assign(window, {
-                    opensteerDesktop: {
-                      ...desktopPreviewBridge("?desktop-preview=first-run", true),
-                      downloads,
-                    },
-                    opensteerPreviewDownloads: downloads,
-                  });
-                  return client;
-                },
-              );
+            if (search.get("mock-team") === "busy") {
+              const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
+              const family = new MockTeamHost({ teamId: busyTeamIds[1] });
+              seedBusyTeam(acme, { name: "Acme", index: 1 });
+              seedBusyTeam(family, { name: "Family", index: 2 });
+              previewTeams = [
+                attach(acme, "https://chat.acme.example"),
+                attach(family, "https://family.example"),
+              ];
+              return mockClient();
             }
-            return client;
+            if (search.has("mock-team"))
+              previewTeams = [attach(new MockTeamHost(), "https://chat.acme.example")];
+            return mockClient();
+            function mockClient() {
+              const subagents = mockSubagentScenes.find(
+                (scene) => scene === search.get("mock-subagents"),
+              );
+              const client = new MockHostClient({
+                lifecycle: browserClientLifecycle(),
+                browserPreferencesStorage,
+                ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
+                ...(world === "first-run" || world === "busy" || world === "stress"
+                  ? { world }
+                  : {}),
+                ...(subagents ? { subagents } : {}),
+              });
+              // The preview's own client, for journeys that count what the page sends.
+              Object.assign(window, { opensteerMock: client });
+              const downloadsScript = new URLSearchParams(window.location.search).get(
+                "mock-downloads",
+              );
+              if (downloadsScript !== null) {
+                return Promise.all([
+                  import("./desktop/desktop-preview-bridge.js"),
+                  import("@opensteer/protocol/desktop"),
+                ]).then(
+                  ([
+                    { desktopPreviewBridge, desktopPreviewDownloads },
+                    { DesktopDownloadsSnapshotSchema },
+                  ]) => {
+                    const initial = DesktopDownloadsSnapshotSchema.parse({
+                      downloads: JSON.parse(downloadsScript),
+                    });
+                    const downloads = desktopPreviewDownloads(initial.downloads);
+                    Object.assign(window, {
+                      opensteerDesktop: {
+                        ...desktopPreviewBridge("?desktop-preview=first-run", true),
+                        downloads,
+                      },
+                      opensteerPreviewDownloads: downloads,
+                    });
+                    return client;
+                  },
+                );
+              }
+              return client;
+            }
           },
         )
       : import("./host/browser-host-client.js").then(({ createBrowserHostClient }) =>
@@ -178,9 +230,48 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} />
+      <App hostClient={hostClient} previewTeams={previewTeams} />
     </StrictMode>,
   );
+}
+
+const deploymentKindKey = "opensteer:deployment-kind";
+
+/**
+ * Whether a team server served this page. An origin's kind never changes, so
+ * it is asked once and remembered; later loads check behind the first screen
+ * and reload only if it differs.
+ */
+async function servedByTeam(): Promise<boolean> {
+  let remembered: string | null = null;
+  try {
+    remembered = localStorage.getItem(deploymentKindKey);
+  } catch {
+    // Storage refused: ask every time.
+  }
+  const asked = fetch("/.well-known/opensteer", {
+    cache: "no-store",
+    credentials: "omit",
+    headers: { accept: "application/json" },
+    redirect: "error",
+  })
+    .then((response) => (response.ok ? response.json() : null))
+    .then((body: unknown) => {
+      const kind = DeploymentKindSchema.safeParse((body as { kind?: unknown } | null)?.kind);
+      if (!kind.success) return null;
+      try {
+        localStorage.setItem(deploymentKindKey, kind.data);
+      } catch {
+        // Asked again next time.
+      }
+      return kind.data;
+    })
+    .catch(() => null);
+  if (remembered !== "personal" && remembered !== "team") return (await asked) === "team";
+  void asked.then((kind) => {
+    if (kind !== null && kind !== remembered) window.location.reload();
+  });
+  return remembered === "team";
 }
 
 async function resolveDesktopPreviewBridge() {

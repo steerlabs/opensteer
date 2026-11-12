@@ -52,7 +52,7 @@ import {
   type MachineAppStatus,
 } from "@opensteer/protocol";
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   carriesApproval,
   IntegrationAuthorizationRequiredError,
@@ -88,15 +88,26 @@ const runCaller = (run: RunToolContext): ToolCaller => ({
     iat: 1_900_000_000,
     iss: "opensteer-host",
     jti: "test",
-    membershipGeneration: 1,
+
     requestedBy: createId("user"),
     runnerBootId: "boot",
     runnerId: createId("runner"),
-    workspaceId: createId("workspace"),
   },
   threadId: run.threadId,
 });
 
+let testDataDirectory: string;
+const services: IntegrationPlatformService[] = [];
+beforeEach(async () => {
+  testDataDirectory = await mkdtemp(join(tmpdir(), "personal-platform-test-"));
+});
+afterEach(async () => {
+  try {
+    for (const service of services.splice(0)) await service.close();
+  } finally {
+    await rm(testDataDirectory, { recursive: true, force: true });
+  }
+});
 const now = "2026-08-13T12:00:00.000Z";
 const materialized = {
   authMethodId: "oauth",
@@ -128,7 +139,7 @@ function computerStatus(
 }
 
 describe("agent plugin replacement", () => {
-  it("replaces its own inactive package, records its Workspace folder and skips identical snapshots", async () => {
+  it("replaces its own package, records its folder and skips identical snapshots", async () => {
     const directory = await mkdtemp(join(tmpdir(), "plugin-replace-"));
     try {
       await writeFile(
@@ -138,13 +149,13 @@ describe("agent plugin replacement", () => {
           name: "mine",
         }),
       );
-      const workspaceId = createId("workspace"),
-        actorUserId = createId("user");
+      const actorUserId = createId("user");
+      const threadId = createId("thread");
       const owned = {
         id: "owned",
         name: "mine",
-        scope: "workspace",
-        workspaceId,
+        installedBy: actorUserId,
+
         currentVersionId: "old",
         versions: [{ id: "old", digest: "old" }],
         activations: [],
@@ -164,22 +175,21 @@ describe("agent plugin replacement", () => {
         adapters: [],
         store: {
           plugins: {
-            list: async () => [
-              owned,
-              { ...owned, id: "other", workspaceId: createId("workspace") },
-            ],
+            setupThread: async () => null,
+            recordSetupThread: async () => undefined,
+            list: async () => [owned, { ...owned, id: "other" }],
             update,
             install: installNew,
           } as never,
-          localMcp: { list: async () => [] } as never,
+          localMcp: { list: async () => [], requestApprovals: async () => [] } as never,
           listInstallations: async () => (previous ? [previous] : []),
           install,
         },
       });
       const input = {
         directory,
-        workspaceDirectory: "plugins/mine",
-        workspaceId,
+        threadId,
+
         actorUserId,
         requestId: "install",
       };
@@ -187,8 +197,8 @@ describe("agent plugin replacement", () => {
       expect(update).toHaveBeenCalledWith(
         expect.objectContaining({
           pluginId: "owned",
-          workspaceId,
-          source: { workspaceDirectory: "plugins/mine" },
+
+          source: { directory },
         }),
         expect.anything(),
       );
@@ -211,107 +221,6 @@ describe("agent plugin replacement", () => {
       await writeFile(join(directory, "extra/code.js"), "new code");
       await service.installAgentPlugin(input);
       expect(install).toHaveBeenCalledTimes(3);
-      const elsewhere = createId("workspace");
-      await service.installAgentPlugin({ ...input, workspaceId: elsewhere });
-      expect(installNew).toHaveBeenCalledWith(
-        expect.objectContaining({ workspaceId: elsewhere, name: "mine" }),
-        expect.anything(),
-      );
-      expect(update).toHaveBeenCalledTimes(3);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-
-  it("refuses an active person-installed name before modifying the installation", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "plugin-clash-"));
-    try {
-      await writeFile(
-        join(directory, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "mine",
-        }),
-      );
-      const workspaceId = createId("workspace");
-      const install = vi.fn();
-      const service = platform({
-        adapters: [],
-        store: {
-          install,
-          plugins: {
-            list: async () => [
-              { name: "mine", scope: "deployment", activations: [{ workspaceId }] },
-            ],
-          } as never,
-        },
-      });
-      await expect(
-        service.installAgentPlugin({
-          directory,
-          workspaceId,
-          actorUserId: createId("user"),
-          requestId: "clash",
-        }),
-      ).rejects.toThrow("Choose a more specific name");
-      expect(install).not.toHaveBeenCalled();
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  });
-  it("updates the copy turned on here when older installs left several", async () => {
-    const directory = await mkdtemp(join(tmpdir(), "plugin-copies-"));
-    try {
-      await writeFile(
-        join(directory, "plugin.json"),
-        JSON.stringify({
-          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-          name: "mine",
-        }),
-      );
-      const workspaceId = createId("workspace");
-      const copy = (id: string, updatedAt: string, on: boolean) => ({
-        id,
-        name: "mine",
-        scope: "workspace",
-        workspaceId,
-        updatedAt: new Date(updatedAt),
-        currentVersionId: "v",
-        versions: [{ id: "v", digest: "old" }],
-        activations: on ? [{ workspaceId }] : [],
-      });
-      const update = vi.fn();
-      const service = platform({
-        adapters: [],
-        store: {
-          plugins: {
-            list: async () => [
-              copy("newer-off", "2026-11-02", false),
-              copy("older-on", "2026-11-01", true),
-            ],
-            update,
-          } as never,
-          localMcp: { list: async () => [] } as never,
-          listInstallations: async () => [],
-          install: async (input: Parameters<IntegrationPlatformStore["install"]>[0]) => {
-            await input.beforeInstall?.({} as never);
-            return {
-              installation: { ...input.installation, createdAt: now, revision: 1, updatedAt: now },
-              requestEvents: [],
-            };
-          },
-        },
-      });
-      await service.installAgentPlugin({
-        directory,
-        workspaceId,
-        actorUserId: createId("user"),
-        requestId: "copies",
-      });
-      expect(update).toHaveBeenCalledWith(
-        expect.objectContaining({ pluginId: "older-on" }),
-        expect.anything(),
-      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -319,7 +228,7 @@ describe("agent plugin replacement", () => {
 
   it.each([
     ["moves an agent's update off a computer that left the Deployment", false],
-    ["keeps an agent's update on its current computer past a removed server's", true],
+    ["keeps an agent’s update on its current computer", true],
   ])("%s", async (_, current) => {
     const directory = await mkdtemp(join(tmpdir(), "plugin-computer-"));
     try {
@@ -337,7 +246,7 @@ describe("agent plugin replacement", () => {
           mcpServers: { camera: { type: "stdio", command: "node", args: ["server.js"] } },
         }),
       );
-      const workspaceId = createId("workspace");
+
       const gone = createId("runner"),
         agents = createId("runner"),
         kept = createId("runner");
@@ -350,16 +259,18 @@ describe("agent plugin replacement", () => {
         adapters: [],
         store: {
           plugins: {
+            setupThread: async () => null,
+            recordSetupThread: async () => undefined,
             list: async () => [
               {
                 id: "owned",
                 name: "mine",
                 scope: "workspace",
-                workspaceId,
+
                 updatedAt: new Date(now),
                 currentVersionId: "v",
                 versions: [{ id: "v", digest: "old" }],
-                activations: [{ workspaceId }],
+                activations: [{}],
               },
             ],
             update: vi.fn(),
@@ -399,7 +310,9 @@ describe("agent plugin replacement", () => {
       });
       await service.installAgentPlugin({
         directory,
-        workspaceId,
+
+        pluginId: "owned",
+        threadId: createId("thread"),
         runnerId: agents,
         actorUserId: createId("user"),
         requestId: "computer",
@@ -408,30 +321,6 @@ describe("agent plugin replacement", () => {
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
-  });
-
-  it("refuses a folder update of an agent-made plugin before reading the folder", async () => {
-    const install = vi.fn();
-    const service = platform({
-      adapters: [],
-      store: {
-        install,
-        plugins: {
-          list: async () => [
-            { id: "made", name: "mine", scope: "workspace", workspaceId: createId("workspace") },
-          ],
-        } as never,
-      },
-    });
-    await expect(
-      service.installAgentPlugin({
-        directory: "/deleted/staging",
-        pluginId: "made",
-        actorUserId: createId("user"),
-        requestId: "update",
-      }),
-    ).rejects.toThrow("Agent-made plugins update when an agent installs their folder again.");
-    expect(install).not.toHaveBeenCalled();
   });
 });
 
@@ -766,29 +655,6 @@ describe("IntegrationPlatformService uninstall", () => {
 });
 
 describe("IntegrationPlatformService computer connections", () => {
-  it("refuses a non-administrator when the app is not installed", async () => {
-    const service = platform({
-      adapters: [],
-      definitions: [computerDefinition],
-      store: { listInstallations: vi.fn(async () => []) },
-    });
-    await expect(
-      service.computerAppApprovals.setComputerConnection({
-        kind: "app",
-        app: null,
-        access: "read",
-        actorUserId: createId("user"),
-        definitionId: computerDefinition.id,
-        isAdministrator: false,
-        requestId: "computer-on",
-        runnerId: createId("runner"),
-      }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-      message: `Ask an administrator to add ${computerDefinition.name} to this Deployment.`,
-    });
-  });
-
   it("refuses an offline create but allows an offline access change", async () => {
     const runnerId = createId("runner");
     const installed = {
@@ -845,7 +711,7 @@ describe("IntegrationPlatformService computer connections", () => {
       access: "read-write" as const,
       actorUserId: createId("user"),
       definitionId: computerDefinition.id,
-      isAdministrator: false,
+
       requestId: "computer-change",
       runnerId,
     };
@@ -875,7 +741,7 @@ describe("IntegrationPlatformService computer connections", () => {
         requestEvents: [requestEvent],
       };
     });
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
       computerApps: {
@@ -891,7 +757,7 @@ describe("IntegrationPlatformService computer connections", () => {
           }
         }),
       },
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         getComputerConnectionForCall: vi.fn(async () => ({
           access: "read" as const,
@@ -911,7 +777,7 @@ describe("IntegrationPlatformService computer connections", () => {
         requestId: "disconnect-computer",
       }),
     ).resolves.toEqual({ notice: null, revokedUpstream: false });
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(requestEvent);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
   });
 });
 
@@ -1301,7 +1167,6 @@ describe("IntegrationPlatformService computer invocation", () => {
           grantId: callable.grant.id,
           ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
           requestId: "revoke-race",
-          workspaceId: callable.grant.workspaceId as ReturnType<typeof createId<"workspace">>,
         });
       } else if (mutation === "downgrade") {
         await service.createGrant({
@@ -1312,7 +1177,6 @@ describe("IntegrationPlatformService computer invocation", () => {
           installationId: callable.installation.id,
           isDefault: true,
           ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
-          workspaceId: callable.grant.workspaceId as ReturnType<typeof createId<"workspace">>,
         });
       } else if (mutation === "narrow") {
         await service.computerAppApprovals.setComputerConnection({
@@ -1321,7 +1185,7 @@ describe("IntegrationPlatformService computer invocation", () => {
           access: "read",
           actorUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
           definitionId: computerDefinition.id,
-          isAdministrator: false,
+
           requestId: "narrow-race",
           runnerId,
         });
@@ -1438,7 +1302,6 @@ describe("IntegrationPlatformService computer discovery", () => {
       const [entry] = await service.listDiscoveryInventory({
         ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
         threadId: createId("thread"),
-        workspaceId: createId("workspace"),
       });
       expect(entry?.readiness.servers[0]).toMatchObject({
         code: expectedCode,
@@ -1541,7 +1404,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     const [entry] = await service.listDiscoveryInventory({
       ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     });
     expect(entry?.readiness.servers[0]?.code).toBe("READY");
     expect(entry?.readiness.tools).toEqual([
@@ -1621,7 +1483,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     const [entry] = await service.listDiscoveryInventory({
       ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     });
     expect(entry?.readiness.servers[0]).toMatchObject({
       code: "INTEGRATION_UNAVAILABLE",
@@ -1686,7 +1547,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     const [entry] = await service.listDiscoveryInventory({
       ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     });
     expect(entry?.readiness.servers).toEqual([readiness]);
     expect(entry?.readiness.tools).toEqual([{ readiness, toolId: callable.tool.id }]);
@@ -1758,7 +1618,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     const [entry] = await service.listDiscoveryInventory({
       ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     });
     expect(entry?.readiness.servers[0]?.code).toBe("INTEGRATION_UNAVAILABLE");
     expect(entry?.readiness.tools[0]?.readiness.code).toBe("INTEGRATION_UNAVAILABLE");
@@ -1830,7 +1689,6 @@ describe("IntegrationPlatformService computer discovery", () => {
     const [entry] = await service.listDiscoveryInventory({
       ownerUserId: callable.grant.ownerUserId as ReturnType<typeof createId<"user">>,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     });
     expect(entry?.readiness.servers[0]).toMatchObject({
       code: "INTEGRATION_UNAVAILABLE",
@@ -2131,7 +1989,7 @@ describe("IntegrationPlatformService adapter invocation", () => {
     const materializeForAdapter = vi.fn(async (input: { readonly forceRefresh?: boolean }) => {
       if (input.forceRefresh) {
         throw new OpensteerError({
-          code: "workspace_unavailable",
+          code: "folder_unavailable",
           message: "The provider token refresh did not complete; this may be temporary — retry.",
           retryable: true,
         });
@@ -2154,7 +2012,7 @@ describe("IntegrationPlatformService adapter invocation", () => {
     });
 
     await expect(service.callTool(callable(), {}, caller)).rejects.toMatchObject({
-      code: "workspace_unavailable",
+      code: "folder_unavailable",
       message: expect.stringContaining("may be temporary"),
       retryable: true,
     });
@@ -2702,10 +2560,10 @@ describe("IntegrationPlatformService Request resolution", () => {
     }));
     const resolveIntegrationAccessRequest = vi.fn();
     const installForIntegrationAccessRequest = vi.fn();
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         requests: {
           get: vi.fn(async () => pending),
@@ -2734,7 +2592,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
     expect(installForIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(event);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("binds an already reviewed installation without fetching its source again", async () => {
@@ -2763,10 +2621,10 @@ describe("IntegrationPlatformService Request resolution", () => {
     const loadManifest = vi.fn();
     const install = vi.fn();
     const reuse = vi.fn(async () => ({ installation, request: pending, requestEvents: [event] }));
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         listTools: vi.fn(async () => []),
         requests: {
@@ -2787,7 +2645,7 @@ describe("IntegrationPlatformService Request resolution", () => {
     expect(reuse).toHaveBeenCalledOnce();
     expect(loadManifest).not.toHaveBeenCalled();
     expect(install).not.toHaveBeenCalled();
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(event);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("installs a preinstall access choice but keeps the access Request pending", async () => {
@@ -2842,11 +2700,11 @@ describe("IntegrationPlatformService Request resolution", () => {
       }),
     );
     const resolveIntegrationAccessRequest = vi.fn();
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [adapterWithInvoke(async () => ({ kind: "ok", value: {} }))],
       definitions: [definition],
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         listInstallations: vi.fn(async () => []),
         listTools: vi.fn(async () => []),
@@ -2878,7 +2736,7 @@ describe("IntegrationPlatformService Request resolution", () => {
       }),
     );
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(installEvent);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(installEvent);
   });
 
   it("proves the saved account still works before it tells the agent the account is connected", async () => {
@@ -2965,7 +2823,7 @@ describe("IntegrationPlatformService Request resolution", () => {
         .fn<IntegrationAdapterCredentialMaterializer["materializeForAdapter"]>()
         .mockRejectedValue(
           new OpensteerError({
-            code: "workspace_unavailable",
+            code: "folder_unavailable",
             message: "The provider token refresh did not complete; this may be temporary — retry.",
             retryable: true,
           }),
@@ -2985,7 +2843,7 @@ describe("IntegrationPlatformService Request resolution", () => {
         resolvedBy: pending.requestedBy,
         response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
       }),
-    ).rejects.toMatchObject({ code: "workspace_unavailable", retryable: true });
+    ).rejects.toMatchObject({ code: "folder_unavailable", retryable: true });
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
   });
 
@@ -3150,10 +3008,10 @@ describe("IntegrationPlatformService Request resolution", () => {
         };
       },
     );
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [openApiAdapter],
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         listInstallations: vi.fn(async () => []),
         listTools: vi.fn(async () => []),
@@ -3172,8 +3030,8 @@ describe("IntegrationPlatformService Request resolution", () => {
     });
 
     expect(result.installation).toMatchObject({ sourceKind: "proposed", status: "active" });
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(1, cancelledAccessEvent);
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(2, event);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, cancelledAccessEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, event);
     expect(resolveIntegrationInstallRequest).toHaveBeenCalledWith(
       expect.objectContaining({
         preparedFulfillment: expect.objectContaining({
@@ -3189,11 +3047,11 @@ describe("IntegrationPlatformService Request resolution", () => {
         response: { kind: "choice", optionId: "installed" },
       }),
     );
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(event);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 });
 
-describe("IntegrationPlatformService Main access Request fulfillment", () => {
+describe("IntegrationPlatformService personal access Request fulfillment", () => {
   it("fulfills a satisfied access Request with the arriving connection and publishes its event", async () => {
     const connectionId = createIntegrationId("connection");
     const tool = callable();
@@ -3204,16 +3062,16 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
       grant: null,
       request: { ...pending, resolvedAt: now, status: "fulfilled" as const },
     }));
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const service = platform({
       adapters: [],
       materializeForAdapter: vi
         .fn<IntegrationAdapterCredentialMaterializer["materializeForAdapter"]>()
         .mockResolvedValue(materialized),
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         listCallableTools: vi.fn(async () => [
           {
@@ -3236,7 +3094,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     });
 
     await expect(
-      service.fulfillSatisfiedMainAccessRequests({
+      service.fulfillSatisfiedAccessRequests({
         connectionId,
         ownerUserId: pending.requestedBy,
       }),
@@ -3246,9 +3104,18 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
       providerAuthorizations: {},
       requestId: pending.id,
       resolvedBy: pending.requestedBy,
-      response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+      response: {
+        kind: "external",
+        value: {
+          connectionId,
+          decision: "fulfilled",
+          access: "read",
+          alias: connectionId,
+          isDefault: false,
+        },
+      },
     });
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(event);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
 
   it("fulfills a connection-only Request with the exact arriving connection", async () => {
@@ -3269,7 +3136,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
         .mockResolvedValue(materialized),
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest,
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
@@ -3286,7 +3153,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
       },
     });
 
-    await service.fulfillSatisfiedMainAccessRequests({
+    await service.fulfillSatisfiedAccessRequests({
       connectionId,
       ownerUserId: pending.requestedBy,
     });
@@ -3300,28 +3167,31 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     });
     expect(resolveIntegrationAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+        response: {
+          kind: "external",
+          value: {
+            connectionId,
+            decision: "fulfilled",
+            access: "read",
+            alias: connectionId,
+            isDefault: false,
+          },
+        },
       }),
     );
   });
 
-  it("leaves project and unsatisfied Main Requests pending", async () => {
+  it("leaves unsatisfied Requests pending", async () => {
     const connectionId = createIntegrationId("connection");
     const project = integrationRequest("integration.access", "pending");
     const unsatisfied = {
       ...integrationRequest("integration.access", "pending"),
-      targetWorkspaceId: createId("workspace"),
     };
     const resolveIntegrationAccessRequest = vi.fn();
-    const mainAccess = vi.fn(async ({ workspaceId }: { readonly workspaceId: string }) =>
-      Promise.resolve(
-        workspaceId === unsatisfied.targetWorkspaceId ? ("inherited" as const) : null,
-      ),
-    );
+
     const service = platform({
       adapters: [],
       store: {
-        mainAccess,
         isConnectionUsableForAccessRequest: vi.fn(async () => false),
         listCallableTools: vi.fn(async () => []),
         requests: {
@@ -3344,7 +3214,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
       },
     });
 
-    await service.fulfillSatisfiedMainAccessRequests({
+    await service.fulfillSatisfiedAccessRequests({
       connectionId,
       ownerUserId: project.requestedBy,
     });
@@ -3352,7 +3222,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     expect(resolveIntegrationAccessRequest).not.toHaveBeenCalled();
   });
 
-  it("leaves a Main Request pending when the arriving connection fails verification", async () => {
+  it("leaves a personal Request pending when the arriving connection fails verification", async () => {
     const connectionId = createIntegrationId("connection");
     const pending = integrationRequest("integration.access", "pending");
     const resolveIntegrationAccessRequest = vi.fn();
@@ -3365,7 +3235,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
         ),
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
@@ -3382,7 +3252,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     });
 
     await expect(
-      service.fulfillSatisfiedMainAccessRequests({
+      service.fulfillSatisfiedAccessRequests({
         connectionId,
         ownerUserId: pending.requestedBy,
       }),
@@ -3400,7 +3270,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
         .mockResolvedValue(materialized),
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         requests: {
           listPendingIntegrationAccessRequests: vi.fn(async () => [
@@ -3419,7 +3289,7 @@ describe("IntegrationPlatformService Main access Request fulfillment", () => {
     });
 
     await expect(
-      service.fulfillSatisfiedMainAccessRequests({
+      service.fulfillSatisfiedAccessRequests({
         connectionId,
         ownerUserId: pending.requestedBy,
       }),
@@ -3480,7 +3350,7 @@ describe("IntegrationPlatformService connection reaction", () => {
       materializeForAdapter,
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         listInstallations: vi.fn(async () => []),
         requests: requests as never,
@@ -3509,7 +3379,7 @@ describe("IntegrationPlatformService connection reaction", () => {
       materializeForAdapter,
       store: {
         getConnectionKind: vi.fn(async () => "mcp-oauth" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         requests: requests as never,
       },
@@ -3533,7 +3403,7 @@ describe("IntegrationPlatformService connection reaction", () => {
         .mockRejectedValue(new OpensteerError({ code: "conflict", message: "Reconnect" })),
       store: {
         getConnectionKind: vi.fn(async () => "provider-account" as const),
-        mainAccess: vi.fn(async () => "inherited" as const),
+
         isConnectionUsableForAccessRequest: vi.fn(async () => true),
         requests: requests as never,
       },
@@ -3692,7 +3562,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
     const ownerUserId = createId("user");
     const runnerId = createId("runner");
     const threadId = createId("thread");
-    const workspaceId = createId("workspace");
+
     const runId = createId("run");
     const requestId = createId("request");
     const notes = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
@@ -3706,7 +3576,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       originatingOccurrenceId: null,
       originatingRunId: runId,
       originatingThreadId: threadId,
-      originatingWorkspaceId: workspaceId,
+
       payload: {
         access: "read",
         app: notes,
@@ -3714,7 +3584,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         kind: "computer.app.access",
         runnerId,
         setupRequestId: "setup-request",
-        workspaceId,
       },
       presentation: {
         kind: "external",
@@ -3722,12 +3591,11 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
         title: "Wants to use Notes",
       },
       requestedBy: ownerUserId,
-      requiredActor: "workspace-owner",
+      requiredActor: "requester",
       resolvedAt: null,
       resolvedBy: null,
       response: null,
       status: "pending",
-      targetWorkspaceId: workspaceId,
     } as Request;
     const openedEvent = {
       createdAt: now,
@@ -3736,7 +3604,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       runId,
       threadId,
       type: "request.opened",
-      workspaceId,
     } as unknown as AgentEvent;
     const replacementEvent = {
       createdAt: now,
@@ -3745,9 +3612,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       runId,
       threadId,
       type: "request.resolved",
-      workspaceId,
     } as unknown as AgentEvent;
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
     const requestComputerAppAccess = vi.fn(async (): Promise<ComputerAppAccessDecision> => ({
       kind: "computer",
@@ -3781,7 +3647,7 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       } as unknown as ComputerUseGateway,
       definitions: [guiDefinitionCandidate],
       onRequestsChanged,
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: {
         requestComputerAppAccess,
         getComputerUsePolicy: async () => ({
@@ -3800,11 +3666,10 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       ownerUserId,
       runnerId,
       threadId,
-      workspaceId,
     });
 
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(2, openedEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, openedEvent);
     expect(onRequestsChanged).toHaveBeenCalledOnce();
 
     requestComputerAppAccess.mockResolvedValueOnce({
@@ -3822,9 +3687,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       ownerUserId,
       runnerId,
       threadId,
-      workspaceId,
     });
-    expect(onWorkspaceEvent).toHaveBeenCalledTimes(2);
+    expect(onDeploymentEvent).toHaveBeenCalledTimes(2);
     expect(onRequestsChanged).toHaveBeenCalledOnce();
   });
 
@@ -3912,13 +3776,13 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestIds: [createId("request")],
       runnerId: null,
     }));
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
     const service = platform({
       adapters: [],
       definitions: [computerDefinition],
       onRequestsChanged,
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: { cancelComputerAppSetup, requestComputerAppSetup },
     });
 
@@ -3935,8 +3799,8 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestId: "setup-request",
     });
 
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(1, replacementEvent);
-    expect(onWorkspaceEvent).toHaveBeenNthCalledWith(2, cancellationEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(1, replacementEvent);
+    expect(onDeploymentEvent).toHaveBeenNthCalledWith(2, cancellationEvent);
     expect(onRequestsChanged).toHaveBeenCalledTimes(2);
   });
 
@@ -3946,7 +3810,6 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       data: { requestId: createId("request") },
       id: createId("event"),
       type: "request.declined",
-      workspaceId: createId("workspace"),
     } as unknown as AgentEvent;
     const expireComputerAppSetupRequests = vi.fn(async () => ({
       grants: [],
@@ -3954,21 +3817,21 @@ describe("IntegrationPlatformService computer app setup expiry", () => {
       requestIds: [createId("request")],
       runnerIds: [],
     }));
-    const onWorkspaceEvent = vi.fn();
+    const onDeploymentEvent = vi.fn();
     const onRequestsChanged = vi.fn();
     const onConnectionsChanged = vi.fn();
     const service = platform({
       adapters: [],
       onConnectionsChanged,
       onRequestsChanged,
-      onWorkspaceEvent,
+      onDeploymentEvent,
       store: { expireComputerAppSetupRequests },
     });
 
     await service.computerAppApprovals.expireComputerAppSetupRequests();
 
     expect(expireComputerAppSetupRequests).toHaveBeenCalledOnce();
-    expect(onWorkspaceEvent).toHaveBeenCalledWith(requestEvent);
+    expect(onDeploymentEvent).toHaveBeenCalledWith(requestEvent);
     // The same two a cancel fires: the Thread hears, and the list is stale.
     expect(onRequestsChanged).toHaveBeenCalledOnce();
     expect(onConnectionsChanged).toHaveBeenCalledOnce();
@@ -4231,6 +4094,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
     };
     const liveComputerUse = input.passwords
       ? new ComputerUseService({
+          deploymentId: createId("deployment"),
           passwords: input.passwords,
           loginReceiver: () => ({
             version: 1,
@@ -4430,7 +4294,6 @@ describe("IntegrationPlatformService computer use gateway", () => {
           grantId: f.callable.grant.id,
           ownerUserId: who.run!.requestedBy,
           requestId: "revoke-during-seal",
-          workspaceId: who.run!.workspaceId,
         });
         let revokedBeforeRelease = false;
         void revoke.then(() => {
@@ -4499,7 +4362,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
         const url = new URL(`http://127.0.0.1:${address.port}/mcp`);
         mcp = createIntegrationMcpFixture({
           definitions: [phone ? phoneDefinition : guiDefinition],
-          getWorkspaceForOwner: async () => ({ id: who.run!.workspaceId }),
+
           runTokens: {
             authenticate: async () => who.run!,
           },
@@ -4508,7 +4371,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
               throw new Error("Not a trigger token");
             },
           },
-          onWorkspaceEvent: () => undefined,
+          onEvent: () => undefined,
           platform: f.service,
           publicUrl: url,
         });
@@ -4774,6 +4637,7 @@ describe("IntegrationPlatformService computer use gateway", () => {
 
 type ApprovalHubMember = "reportsApp" | "machinesFor" | "compatibilityReason";
 
+createId("user");
 function platform(input: {
   readonly listConnections?: (
     ownerUserId: ReturnType<typeof createId<"user">>,
@@ -4788,7 +4652,7 @@ function platform(input: {
   readonly mcpOauth?: ConstructorParameters<typeof IntegrationPlatformService>[0]["mcpOauth"];
   readonly markAdapterAuthorizationRequired?: () => Promise<void>;
   readonly materializeForAdapter?: IntegrationAdapterCredentialMaterializer["materializeForAdapter"];
-  readonly onWorkspaceEvent?: (event: AgentEvent) => void;
+  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly onConnectionsChanged?: () => void;
   readonly onSettingsChanged?: ConstructorParameters<
     typeof IntegrationPlatformService
@@ -4796,7 +4660,7 @@ function platform(input: {
   readonly onRequestsChanged?: () => void;
   readonly store?: Partial<IntegrationPlatformStore>;
 }): IntegrationPlatformService {
-  return new IntegrationPlatformService({
+  const service = new IntegrationPlatformService({
     listConnections: input.listConnections ?? (async () => []),
     secretVault: new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
@@ -4834,25 +4698,33 @@ function platform(input: {
     computerToolEnabled: () => true,
     computerUseVersion: () => 2,
     ...(input.mcpImageContent ? { mcpImageContent: input.mcpImageContent } : {}),
-    dataDirectory: "/tmp/opensteer-integration-test",
+    dataDirectory: testDataDirectory,
     ...(input.definitions ? { definitions: input.definitions } : { definitions: [] }),
     isRunnerConnected: input.isRunnerConnected ?? vi.fn(() => true),
     mcpOauth: input.mcpOauth ?? {
       providerFor: vi.fn(async () => Promise.reject(new Error("unused"))),
     },
-    onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
+    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     onConnectionsChanged: input.onConnectionsChanged ?? vi.fn(),
     onSettingsChanged: input.onSettingsChanged ?? vi.fn(async () => undefined),
     onRequestsChanged: input.onRequestsChanged ?? vi.fn(),
     store: (input.store
-      ? { computerAppRunner: vi.fn(async () => null), ...input.store }
+      ? {
+          connections: { assertOwner: vi.fn(async () => undefined) },
+          computerAppRunner: vi.fn(async () => null),
+          listGrants: vi.fn(async () => []),
+          ...input.store,
+        }
       : {
+          connections: { assertOwner: vi.fn(async () => undefined) },
           getToolInvocation: vi.fn(async () => mailInvocation),
           computerAppRunner: vi.fn(async () => null),
           install: vi.fn(),
           listInstallations: vi.fn(async () => []),
         }) as IntegrationPlatformStore,
   });
+  services.push(service);
+  return service;
 }
 
 function computerConnectionSummary(
@@ -4915,7 +4787,6 @@ function computerCallable(
       ownerUserId: createId("user"),
       revokedAt: null,
       status: "active",
-      workspaceId: createId("workspace"),
     },
     installation: {
       createdAt: now,
@@ -4964,7 +4835,7 @@ function integrationRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
+
     payload:
       kind === "integration.install"
         ? { kind, manifest: { kind: "catalog" }, reason: "Install the connector" }
@@ -4993,12 +4864,11 @@ function integrationRequest(
             title: "Integration access",
           },
     requestedBy: createId("user"),
-    requiredActor: kind === "integration.install" ? "administrator" : "requester",
+    requiredActor: "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status,
-    targetWorkspaceId: createId("workspace"),
   } as Request;
 }
 
@@ -5093,7 +4963,6 @@ function callable(): CallableIntegrationTool {
       ownerUserId: createId("user"),
       revokedAt: null,
       status: "active",
-      workspaceId: createId("workspace"),
     },
     installation: {
       createdAt: now,
@@ -5151,7 +5020,7 @@ describe("computer app request matrix", () => {
       offline?: boolean;
       allowed?: boolean;
       /** What the store decided under the Mac's lock. */
-      decision?: "approved" | "computer" | "workspace-grant";
+      decision?: "approved" | "computer" | "personal-grant";
     } = {},
   ) {
     const runnerId = createId("runner");
@@ -5196,8 +5065,8 @@ describe("computer app request matrix", () => {
           case "approved":
             available = input.access;
             return { connection, kind: "approved", requestEvents: [] };
-          case "workspace-grant":
-            return { kind: "workspace-grant", replayed: false, request, requestEvents: [] };
+          case "personal-grant":
+            return { kind: "personal-grant", replayed: false, request, requestEvents: [] };
           case "computer":
             return {
               kind: "computer",
@@ -5290,7 +5159,6 @@ describe("computer app request matrix", () => {
       originatingRunId: createId("run"),
       runnerId,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     };
     return {
       service,

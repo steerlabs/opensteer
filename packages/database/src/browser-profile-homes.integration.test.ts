@@ -9,13 +9,13 @@ import {
   enrollTestRunner,
   type StoreFixture,
 } from "./store.integration.test-support.js";
+import { personalReachableGrant } from "./runner-store.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 
 async function computer(
   fixture: StoreFixture,
   ownerId: UserId,
   options: {
-    personal?: boolean;
     managed?: boolean;
     browser?: boolean;
   } = {},
@@ -30,36 +30,31 @@ async function computer(
     ...(options.managed ? { ownerUserId: ownerId } : {}),
     name: runnerId,
     tokenSuffix: runnerId,
-    allowedModules: options.personal
-      ? ["browser", "integrations", "messaging", "shell"]
-      : browser
-        ? ["browser"]
-        : ["integrations"],
+    allowedModules: personalReachableGrant,
     modules: browser
       ? { browser: { runtimeId: runnerId, wireVersion: 2 } }
       : { integrations: { platform: "android", protocolVersion: 4 } },
   });
+  if (!browser)
+    await fixture.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["integrations"]'::jsonb` })
+      .where("id", "=", runnerId)
+      .execute();
   return runnerId;
 }
 
-async function setup(fixture: StoreFixture, personal = false) {
-  const run = await fixture.createRunFixture(
-    "homes",
-    personal
-      ? {
-          deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
-          workspaceBacking: "local-directory",
-        }
-      : null,
-  );
+async function setup(fixture: StoreFixture) {
+  const run = await fixture.createRunFixture("homes");
   await fixture.database
     .updateTable("runners")
-    .set({ allowedModules: sql`'["agents","browser","messaging"]'::jsonb` })
+    .set({
+      allowedModules: sql`'["agents","browser","messaging"]'::jsonb`,
+    })
     .where("id", "=", run.runnerId)
     .execute();
-  const deployment = await fixture.store.getDeployment();
-  if (personal) await fixture.enablePersonalRemoteAccess();
-  return { ...run, deploymentId: deployment!.id };
+  await fixture.enablePersonalRemoteAccess();
+  return run;
 }
 
 function binding(
@@ -79,67 +74,44 @@ function binding(
 }
 
 describeStore("browser profile homes", (it) => {
-  it.for([false, true])(
-    "keeps computer ownership independent from shared Workspaces (Personal=%s)",
-    async (personal, { storeFixture: fixture }) => {
-      const run = await setup(fixture, personal);
-      const other = await fixture.store.createUser("Other member");
-      const own = await computer(fixture, run.userId, { personal });
-      const foreign = await computer(fixture, other, { personal });
-      const retired = await computer(fixture, run.userId, { personal });
-      await fixture.store.revokeRunner(retired, run.userId);
-      await sql`insert into workspace_memberships (id,workspace_id,user_id,role,state)
-      values (${createId("workspaceMembership")},${run.workspace.id},${other},'collaborator','active')`.execute(
-        fixture.database,
-      );
-      const expected = [run.runnerId, own];
-      if (!personal) {
-        const shared = await fixture.enrollBrowserRunner(run.userId, "Shared browser service");
-        const boundOther = await computer(fixture, other, { managed: true });
-        const withoutBrowser = await computer(fixture, run.userId, { browser: false });
-        expected.push(shared);
-        expect(
-          (await listEligibleBrowserRunners(fixture.database, run.userId)).map((row) => row.id),
-        ).not.toContain(boundOther);
-        expect(
-          (await listEligibleBrowserRunners(fixture.database, run.userId)).map((row) => row.id),
-        ).not.toContain(withoutBrowser);
-      }
-      expect(
-        (await fixture.store.listEligibleBrowserRunners(run.userId)).map((row) => row.id).sort(),
-      ).toEqual(expected.sort());
-      await expect(
-        fixture.store.createBrowserProfile({
-          ownerId: run.userId,
-          name: "Foreign",
-          homeRunnerId: foreign,
-          idempotencyKey: "foreign",
-        }),
-      ).rejects.toMatchObject({ code: "forbidden" });
-      const profile = await fixture.store.createBrowserProfile({
-        ownerId: run.userId,
-        name: "Offline home",
+  it("lists only active browser computers and refuses another person", async ({
+    storeFixture: fixture,
+  }) => {
+    const run = await setup(fixture);
+    const other = await fixture.store.createUser("Other person");
+    const own = await computer(fixture, run.userId);
+    const retired = await computer(fixture, run.userId);
+    const withoutBrowser = await computer(fixture, run.userId, { browser: false });
+    await fixture.store.revokeRunner(retired, run.userId);
+    expect(
+      (await listEligibleBrowserRunners(fixture.database, run.userId)).map((row) => row.id).sort(),
+    ).toEqual([run.runnerId, own].sort());
+    expect(
+      (await fixture.store.listEligibleBrowserRunners(run.userId)).map((row) => row.id),
+    ).not.toContain(withoutBrowser);
+    await expect(
+      fixture.store.createBrowserProfile({
+        ownerId: other,
+        name: "Foreign",
         homeRunnerId: own,
-        idempotencyKey: "own",
-      });
-      expect(profile.homeRunnerId).toBe(own);
-      await expect(
-        fixture.store.bindBrowserProfile(binding(run.deploymentId, foreign, profile.id)),
-      ).rejects.toMatchObject({ code: "forbidden" });
-    },
-  );
+        idempotencyKey: "foreign",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    const profile = await fixture.store.createBrowserProfile({
+      ownerId: run.userId,
+      name: "Offline home",
+      homeRunnerId: own,
+      idempotencyKey: "own",
+    });
+    expect(profile.homeRunnerId).toBe(own);
+    await expect(
+      fixture.store.bindBrowserProfile(binding(run.deploymentId, retired, profile.id)),
+    ).rejects.toMatchObject({ code: "forbidden" });
+  });
 
   it("requires a selection when ambiguous, preserves idempotency, and binds only to the chosen home", async ({
     storeFixture: fixture,
   }) => {
-    const unhomedOwner = await fixture.store.createUser("No computer");
-    await expect(
-      fixture.store.createBrowserProfile({
-        ownerId: unhomedOwner,
-        name: "No home",
-        idempotencyKey: "no-home",
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
     const run = await setup(fixture);
     const implicit = await fixture.store.createBrowserProfile({
       ownerId: run.userId,
@@ -185,82 +157,11 @@ describeStore("browser profile homes", (it) => {
     });
   });
 
-  it("lists unplaced Personal profiles without assigning their home at enrollment", async ({
-    storeFixture: fixture,
-  }) => {
-    await fixture.store.ensureDeployment({
-      canonicalOrigin: "http://127.0.0.1:4310",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
-    });
-    const ownerId = await fixture.store.createUser("Owner");
-    const profileIds = [createId("browserProfile"), createId("browserProfile")];
-    await fixture.database
-      .insertInto("browserProfiles")
-      .values(profileIds.map((id) => ({ id, ownerId, name: "Legacy", archivedAt: null })))
-      .execute();
-    const unplaced = profileIds.map((id) => ({ id, ownerId, name: "Legacy", homeRunnerId: null }));
-    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual(unplaced);
-    expect(await fixture.store.getBrowserProfile(profileIds[0]!, ownerId)).toEqual(unplaced[0]);
-    const otherOwner = await fixture.store.createUser("Other owner");
-    expect(await fixture.store.listBrowserProfiles(otherOwner)).toEqual([]);
-    expect(await fixture.store.getBrowserProfile(profileIds[0]!, otherOwner)).toBeNull();
-    const runnerId = createId("runner");
-    await enrollTestRunner(fixture.store, {
-      createdBy: null,
-      runnerId,
-      environmentId: createId("environment"),
-      allowedModules: ["agents", "browser"],
-      name: "Main",
-      tokenSuffix: "late-main",
-    });
-    expect(await fixture.store.listBrowserProfiles(ownerId)).toEqual(unplaced);
-    const deployment = (await fixture.store.getDeployment())!;
-    await fixture.store.bindBrowserProfile(binding(deployment.id, runnerId, profileIds[0]!));
-    expect(await fixture.store.getBrowserProfile(profileIds[0]!, ownerId)).toEqual({
-      ...unplaced[0],
-      homeRunnerId: runnerId,
-    });
-    expect(await fixture.store.getBrowserProfile(profileIds[1]!, ownerId)).toEqual(unplaced[1]);
-  });
-
-  it("adopts a legacy server home once and atomically refuses a competing first open", async ({
-    storeFixture: fixture,
-  }) => {
-    const run = await setup(fixture);
-    const other = await computer(fixture, run.userId);
-    const profile = await fixture.store.createBrowserProfile({
-      ownerId: run.userId,
-      name: "Legacy",
-      homeRunnerId: run.runnerId,
-      idempotencyKey: "legacy",
-    });
-    await fixture.database
-      .updateTable("browserProfiles")
-      .set({ homeRunnerId: null })
-      .where("id", "=", profile.id)
-      .execute();
-    const results = await Promise.allSettled(
-      [run.runnerId, other].map((runnerId) =>
-        fixture.store.bindBrowserProfile(binding(run.deploymentId, runnerId, profile.id)),
-      ),
-    );
-    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
-    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
-    const storage = await fixture.store.getBrowserProfileStorage(profile.id);
-    expect(storage.kind).toBe("local");
-    if (storage.kind !== "local") throw new Error("Legacy profile was not bound");
-    expect((await fixture.store.getBrowserProfile(profile.id, run.userId))?.homeRunnerId).toBe(
-      storage.binding.runnerId,
-    );
-  });
-
-  it("removes all homed profiles with history, grants, saved tabs and terminal unconfirmed erasure", async ({
+  it("removes all homed profiles with history, saved tabs and terminal unconfirmed erasure", async ({
     storeFixture: fixture,
   }) => {
     const run = await setup(fixture);
     const home = await computer(fixture, run.userId);
-    const project = await fixture.createProjectWorkspace(run.userId, "homes-removal");
     const profiles = [];
     for (let index = 0; index < 2; index++) {
       const profile = await fixture.store.createBrowserProfile({
@@ -278,24 +179,19 @@ describeStore("browser profile homes", (it) => {
         title: "History",
         typed: true,
       });
-      await fixture.store.createBrowserProfileGrant({
-        profileId: profile.id,
-        createdBy: run.userId,
-        workspaceId: project.id,
-        access: "read-write",
-      });
+
       const sessionId = createBrowserSessionId();
       await fixture.store.createBrowserSession({
         id: sessionId,
         runnerId: home,
-        origin: "workspace",
+        origin: "agent",
+        ownerId: run.userId,
         profileId: profile.id,
         placementKey: `runner:${home}`,
         runtimeId: "browser",
-        workspaceId: run.workspace.id,
       });
       await fixture.database
-        .insertInto("workspaceTabs")
+        .insertInto("personalTabs")
         .values({
           id: `${sessionId}-tab`,
           sessionId,
@@ -310,6 +206,47 @@ describeStore("browser profile homes", (it) => {
         })
         .execute();
     }
+    const oldGuest = createBrowserSessionId();
+    await fixture.store.createBrowserSession({
+      id: oldGuest,
+      runnerId: home,
+      origin: "agent",
+      ownerId: run.userId,
+      profileId: null,
+      placementKey: `runner:${home}`,
+      runtimeId: "browser",
+    });
+    await fixture.database
+      .updateTable("browserSessions")
+      .set({ state: "closed", closedAt: new Date() })
+      .where("id", "=", oldGuest)
+      .execute();
+    const replacementGuest = createBrowserSessionId();
+    await fixture.store.createBrowserSession({
+      id: replacementGuest,
+      tabGroupId: oldGuest,
+      runnerId: run.runnerId,
+      origin: "agent",
+      ownerId: run.userId,
+      profileId: null,
+      placementKey: `runner:${run.runnerId}`,
+      runtimeId: "browser",
+    });
+    await fixture.database
+      .insertInto("personalTabs")
+      .values({
+        id: "replacement-guest-tab",
+        sessionId: replacementGuest,
+        groupId: oldGuest,
+        createdAt: new Date(),
+        order: 0,
+        openerId: null,
+        state: "suspended",
+        title: "Reopened elsewhere",
+        url: "https://retained.test/",
+        closedAt: null,
+      })
+      .execute();
     const removed = await fixture.store.revokeRunner(home, run.userId, {
       administration: {
         requestedBy: run.userId,
@@ -327,10 +264,20 @@ describeStore("browser profile homes", (it) => {
     expect(
       await fixture.database.selectFrom("browserHistoryEntries").selectAll().execute(),
     ).toEqual([]);
-    expect(await fixture.store.listActiveBrowserProfileGrants(run.userId)).toEqual([]);
-    expect(await fixture.database.selectFrom("workspaceTabs").select("closedAt").execute()).toEqual(
-      [{ closedAt: expect.any(Date) }, { closedAt: expect.any(Date) }],
-    );
+    expect(
+      await fixture.database
+        .selectFrom("personalTabs")
+        .select("closedAt")
+        .where("groupId", "!=", oldGuest)
+        .execute(),
+    ).toEqual([{ closedAt: expect.any(Date) }, { closedAt: expect.any(Date) }]);
+    expect(
+      await fixture.database
+        .selectFrom("personalTabs")
+        .select("closedAt")
+        .where("id", "=", "replacement-guest-tab")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ closedAt: null });
     expect(
       await fixture.database
         .selectFrom("browserProfileDeletions")
@@ -372,7 +319,7 @@ describeStore("browser profile homes", (it) => {
   });
 
   it.for(["queued", "running"] as const)(
-    "removes a computer's profiles with its %s Run",
+    "refuses to remove the hosting computer and preserves its profiles and %s Run",
     async (state, { storeFixture: fixture }) => {
       const running = state === "running" ? await fixture.startRunFixture("homes-executing") : null;
       const run = running ?? (await fixture.createRunFixture("homes-queued"));
@@ -389,27 +336,20 @@ describeStore("browser profile homes", (it) => {
         idempotencyKey: "execution",
       });
       await fixture.store.bindBrowserProfile(binding(deployment!.id, run.runnerId, profile.id));
-      const project = await fixture.createProjectWorkspace(run.userId, "executing-home");
-      await fixture.store.createBrowserProfileGrant({
-        profileId: profile.id,
-        createdBy: run.userId,
-        workspaceId: project.id,
-        access: "read-write",
-      });
+
       const sessionId = createBrowserSessionId();
       await fixture.store.createBrowserSession({
         id: sessionId,
         runnerId: run.runnerId,
         profileId: profile.id,
-        origin: "workspace",
+        origin: "agent",
+        ownerId: run.userId,
         runtimeId: "browser",
         placementKey: `runner:${run.runnerId}`,
-        workspaceId: run.workspace.id,
       });
       await fixture.store.attachBrowserSession({
         agentBindingId: "trigger:home",
         ownerId: run.userId,
-        workspaceId: run.workspace.id,
         sessionId,
       });
       const runId =
@@ -422,23 +362,21 @@ describeStore("browser profile homes", (it) => {
             threadId: run.thread.id,
           })
         ).run.id;
-      const removed = await fixture.store.revokeRunner(run.runnerId, run.userId, {
-        allowDeployment: true,
-      });
-      expect(removed.deletedBrowserProfiles).toEqual([{ id: profile.id, ownerId: run.userId }]);
+      await expect(
+        fixture.store.revokeRunner(run.runnerId, run.userId, { allowDeployment: true }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      expect((await fixture.store.getBrowserProfile(profile.id, run.userId))?.homeRunnerId).toBe(
+        run.runnerId,
+      );
       expect(
-        (
-          await fixture.database
-            .selectFrom("runs")
-            .select("status")
-            .where("id", "=", runId)
-            .executeTakeFirst()
-        )?.status,
-      ).toBe("failed");
-      expect(await fixture.store.listActiveBrowserProfileGrants(run.userId)).toEqual([]);
+        await fixture.database
+          .selectFrom("runs")
+          .select("status")
+          .where("id", "=", runId)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status: state === "running" ? "running" : "queued" });
     },
   );
-
   it.for(["create", "implicit-create", "bind", "start"] as const)(
     "serializes %s against removal at the Runner row",
     async (operation, { storeFixture: fixture }) => {
@@ -508,10 +446,10 @@ describeStore("browser profile homes", (it) => {
                   id: createBrowserSessionId(),
                   runnerId: home,
                   profileId: profile.id,
-                  origin: "workspace",
+                  origin: "agent",
+                  ownerId: run.userId,
                   runtimeId: "browser",
                   placementKey: `runner:${home}`,
-                  workspaceId: run.workspace.id,
                 });
         competing = Promise.allSettled([action]);
         await vi.waitFor(

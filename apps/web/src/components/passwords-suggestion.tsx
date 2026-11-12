@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import {
   passwordsOfferLine,
@@ -35,9 +34,7 @@ export function PasswordsSuggestion({ offer }: { readonly offer: PasswordsSetupO
   const key = passwordsSuggestionKey(deploymentId, userId);
   if (dismissed.has(key)) return null;
   const onDismiss = () => store.dismiss(key);
-  return desktopBridge !== null &&
-    hostDeploymentPolicy(snapshot)?.nativePasswords === true &&
-    desktopDeployment?.onThisComputer ? (
+  return desktopBridge !== null && desktopDeployment?.onThisComputer ? (
     <OnThisMac bridge={desktopBridge} offer={offer} onDismiss={onDismiss} />
   ) : (
     <SuggestionLine onDismiss={onDismiss}>

@@ -1,5 +1,5 @@
 import { layoutRoute } from "../navigation-presentations.js";
-import type { WorkspaceSurfaceDestination } from "@opensteer/client/host";
+import type { PersonalSurfaceDestination } from "@opensteer/client/host";
 import { CommonActions, StackActions, type NavigationAction } from "@react-navigation/native";
 import { isRecord } from "@opensteer/shared/isRecord";
 import {
@@ -38,8 +38,7 @@ import {
   useReservedRegionsReady,
 } from "react-native-reserved-regions";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { paramsDestination, workspaceRoute } from "../browser/surface-route.js";
-import { newTaskDraftBlank, newTaskDraftId } from "../client/thread-drafts.js";
+import { paramsDestination, tabsRoute } from "../browser/surface-route.js";
 import {
   deriveShell,
   edgesAround,
@@ -49,11 +48,7 @@ import {
   type Size,
 } from "../layout.js";
 import { color } from "../theme.js";
-import {
-  useHostUserId,
-  useMobileClient,
-  useSelectedHostClient,
-} from "../ui/mobile-client-context.js";
+import { useHostUserId, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { appear, exit } from "../ui/motion.js";
 import { Pane } from "../ui/pane.js";
 import type { ScrollMemory } from "../ui/retained-scroll.js";
@@ -75,11 +70,11 @@ import {
  *
  * It is the stack's own `layout`, so it wraps the navigator in place: there is
  * still exactly one navigator, one history and one `navigationRef`, and every
- * destination the sidebar offers is an ordinary route pushed over Chat. Native
+ * destination the sidebar offers is an ordinary route pushed over Home. Native
  * sheets present above it, because UIKit presents them from the stack itself.
  *
  * Where the window has room, the sidebar docks as a column beside the stack,
- * so a task, Chat or a destination is always one press from another; there is
+ * so a task, a team or a destination is always one press from another; there is
  * no hiding it. A page in front takes the sidebar's side instead, for itself
  * and its agent's Thread: never three panes. Elsewhere it is Gesture Handler's
  * Reanimated drawer, whose drag and settle run on the UI thread and honour the
@@ -89,8 +84,8 @@ import {
  * and unfolding keep every screen, draft, scroll position and stream exactly
  * where it was.
  *
- * The drawer can be dragged open only from Chat, Projects, Tabs and
- * Schedules — the screens that carry the Menu and have no Back of their own —
+ * The drawer can be dragged open only from Home, All tasks, Tabs and
+ * Automations — the screens that carry the Menu and have no Back of their own —
  * so it never competes with a task's edge-swipe back or a sheet's gestures.
  */
 /** The narrowest drawer worth opening: past a fold nearer than this it may cross it. */
@@ -98,8 +93,8 @@ const sidebarMinimumWidth = 260;
 
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
+  "AllTasks",
   "Schedules",
-  "Projects",
   "Tabs",
 ]);
 
@@ -160,7 +155,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   // column are different views of it, and the shell outlives both, so a fold
   // that swaps one for the other returns the list where it was.
   const scrollMemory = useRef<ScrollMemory>({ offset: 0 }).current;
-  const shelfMemory = useRef<ShelfMemory>({ closedProjects: new Set(), list: null }).current;
+  const shelfMemory = useRef<ShelfMemory>({ list: null }).current;
   const { fontScale } = window;
   const rtl = I18nManager.isRTL;
   const [visible, setVisible] = useState(false);
@@ -189,15 +184,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     focused?.name === "Thread" && typeof focusedParams?.["threadId"] === "string"
       ? focusedParams["threadId"]
       : null;
-  const openDraftId =
-    focused?.name === "NewTask" && typeof focusedParams?.["draftId"] === "string"
-      ? focusedParams["draftId"]
-      : null;
-  const openProjectId =
-    (focused?.name === "Project" || focused?.name === "ProjectSettings") &&
-    typeof focusedParams?.["workspaceId"] === "string"
-      ? focusedParams["workspaceId"]
-      : null;
+  const openTeamId = typeof focusedParams?.["teamId"] === "string" ? focusedParams["teamId"] : null;
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
   const pageParams = focused?.name === "WorkspaceBrowser" ? focused.params : undefined;
@@ -303,7 +290,6 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const focusedKey = focused?.key ?? null;
   const hostClient = useSelectedHostClient();
   const readerId = useHostUserId(hostClient);
-  const { drafts } = useMobileClient();
   useEffect(() => {
     if (visibleRef.current) drawer.current?.closeDrawer();
   }, [deploymentId, docked, focusedKey, hostClient, readerId]);
@@ -330,13 +316,12 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
   const actions = useMemo<SidebarActions>(() => {
     const navigation = props.navigation;
     /**
-     * Goes to a place the sidebar offers. From Chat, Projects or Tabs — the
-     * only screens the drawer opens over — a task or tab is pushed, so Back
-     * returns there. A docked sidebar is beside every other screen, so from
-     * anywhere else the choice returns to Chat's level first: Chat's own route
-     * stays, so the mounted Chat keeps its draft and scroll, and the stack never
-     * grows by moving around the sidebar. The rule does not depend on the
-     * window's shape.
+     * Goes to a place the drawer offers. From Home or another drawer place —
+     * the only screens the drawer opens over — a task, tab or team is pushed,
+     * so Back returns there. A docked drawer is beside every other screen, so
+     * from anywhere else the choice returns to Home's level first: Home's own
+     * route stays, so the mounted Home keeps its draft, and the stack never
+     * grows by moving around the drawer.
      */
     const go = (name: string, params: object, replaceDestination: boolean): void => {
       const state = latest.current;
@@ -356,108 +341,58 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
       const reset = CommonActions.reset({ index: 1, routes: [home, { name, params }] });
       navigation.dispatch({ payload: reset.payload ?? {}, type: reset.type });
     };
-    const show = (target: SidebarDestination): void => {
+    const homeDeployment = (): string | null => {
+      const home = latest.current.routes[0];
+      return home !== undefined &&
+        isRecord(home.params) &&
+        typeof home.params["deploymentId"] === "string"
+        ? home.params["deploymentId"]
+        : null;
+    };
+    const show = (target: SidebarDestination, extra: object = {}): void => {
       leave();
       const state = latest.current;
-      const home = state.routes[0];
-      if (home === undefined || home.name !== "Home" || !isRecord(home.params)) return;
+      const deployment = homeDeployment();
+      if (deployment === null) return;
       if (target === "Home") {
         if (state.index > 0) navigation.dispatch(StackActions.popToTop());
         return;
       }
-      const current = state.routes[state.index];
-      if (current?.name === target) return;
-      // Chat stays mounted underneath, untouched, so its transcript, scroll
-      // position and draft are exactly where they were. One destination
-      // replaces another in place. Tabs is the Deployment's, never the
-      // conversation that happened to be in front.
-      go(target, { deploymentId: home.params["deploymentId"] }, true);
+      const params = { deploymentId: deployment, ...extra };
+      if (same(target, params)) return;
+      // Home stays mounted underneath, untouched, so its draft is exactly
+      // where it was. One destination replaces another in place.
+      go(target, params, true);
+    };
+    const same = (name: string, params: Record<string, unknown>): boolean => {
+      const current = latest.current.routes[latest.current.index];
+      return (
+        current?.name === name &&
+        isRecord(current.params) &&
+        Object.entries(params).every(([key, value]) => current.params?.[key as never] === value)
+      );
     };
     return {
       close,
-      onChat: () => show("Home"),
-      onOpenPlace: (destination: WorkspaceSurfaceDestination) => {
+      onHome: () => show("Home"),
+      onOpenAllTasks: (_deploymentId, filter) => show("AllTasks", { filter }),
+      onOpenPlace: (destination: PersonalSurfaceDestination) => {
         leave();
-        const home = latest.current.routes[0];
-        if (home === undefined || !isRecord(home.params)) return;
-        const targetDeploymentId = home.params["deploymentId"];
-        if (typeof targetDeploymentId !== "string") return;
+        const deployment = homeDeployment();
+        if (deployment === null) return;
         // Exactly the tab, alone: who opened it, or who is in front, is not
         // whom it talks to.
-        go("WorkspaceBrowser", workspaceRoute(targetDeploymentId, destination), false);
-      },
-      onNewProject: (targetDeploymentId) => {
-        leave();
-        navigation.dispatch(StackActions.push("NewProject", { deploymentId: targetDeploymentId }));
-      },
-      onNewTask: (targetDeploymentId, workspaceId) => {
-        leave();
-        const state = latest.current;
-        const current = state.routes[state.index];
-        const open =
-          current?.name === "NewTask" && isRecord(current.params) ? current.params : null;
-        const openId = open?.["draftId"];
-        // The blank draft already in front is the one this asks for.
-        if (
-          open?.["deploymentId"] === targetDeploymentId &&
-          open["workspaceId"] === workspaceId &&
-          typeof openId === "string" &&
-          readerId !== null &&
-          newTaskDraftBlank(drafts, targetDeploymentId, readerId, openId)
-        )
-          return;
-        go(
-          "NewTask",
-          { deploymentId: targetDeploymentId, draftId: newTaskDraftId(), workspaceId },
-          false,
-        );
-      },
-      onOpenDraft: (targetDeploymentId, workspaceId, draftId) => {
-        leave();
-        go("NewTask", { deploymentId: targetDeploymentId, draftId, workspaceId }, false);
-      },
-      onOpenDone: (targetDeploymentId) => {
-        leave();
-        const state = latest.current;
-        const current = state.routes[state.index];
-        if (
-          current?.name === "DoneTasks" &&
-          isRecord(current.params) &&
-          current.params["deploymentId"] === targetDeploymentId
-        )
-          return;
-        go("DoneTasks", { deploymentId: targetDeploymentId }, false);
-      },
-      onOpenQuietlyMoved: (targetDeploymentId) => {
-        leave();
-        navigation.dispatch(
-          StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId }),
-        );
-      },
-      onOpenProject: (targetDeploymentId, workspaceId) => {
-        leave();
-        const state = latest.current;
-        const current = state.routes[state.index];
-        if (
-          current?.name === "Project" &&
-          isRecord(current.params) &&
-          current.params["workspaceId"] === workspaceId
-        )
-          return;
-        go("Project", { deploymentId: targetDeploymentId, workspaceId }, false);
+        go("WorkspaceBrowser", tabsRoute(deployment, destination), false);
       },
       onOpenTask: (targetDeploymentId, threadId) => {
         leave();
-        const state = latest.current;
-        const current = state.routes[state.index];
-        if (
-          current?.name === "Thread" &&
-          isRecord(current.params) &&
-          current.params["threadId"] === threadId &&
-          current.params["deploymentId"] === targetDeploymentId
-        )
-          return;
+        if (same("Thread", { deploymentId: targetDeploymentId, threadId })) return;
         go("Thread", { deploymentId: targetDeploymentId, threadId }, false);
+      },
+      onOpenTeam: (teamId) => {
+        leave();
+        if (same("TeamHome", { teamId })) return;
+        go("TeamHome", { teamId }, false);
       },
       onSearch: (targetDeploymentId) => {
         leave();
@@ -468,10 +403,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         navigation.dispatch(StackActions.push("Settings"));
       },
       onSchedules: () => show("Schedules"),
-      onProjects: () => show("Projects"),
       onTabs: () => show("Tabs"),
     };
-  }, [close, drafts, leave, props.navigation, readerId]);
+  }, [close, leave, props.navigation]);
 
   return (
     <SidebarControlContext.Provider value={control}>
@@ -503,10 +437,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                   docked={false}
                   scroll={scrollMemory}
                   shelves={shelfMemory}
-                  openDraftId={openDraftId}
-                  openProjectId={openProjectId}
+                  openTeamId={openTeamId}
                   selectedThreadId={selectedThreadId}
-                  openThreadId={selectedThreadId}
                   visible={visible}
                 />
               )
@@ -543,10 +475,8 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
                       docked
                       scroll={scrollMemory}
                       shelves={shelfMemory}
-                      openDraftId={openDraftId}
-                      openProjectId={openProjectId}
+                      openTeamId={openTeamId}
                       selectedThreadId={selectedThreadId}
-                      openThreadId={selectedThreadId}
                       visible
                     />
                   </Pane>

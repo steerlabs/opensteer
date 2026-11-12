@@ -14,7 +14,7 @@ const other = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000002");
 const sessionId = BrowserSessionIdSchema.parse("bsn_00000000-0000-4000-8000-000000000001");
 const occupant = (overrides: Partial<PlaceOccupant> = {}): PlaceOccupant => ({
   threadId: thread,
-  home: false,
+
   holding: false,
   acting: false,
   lastActiveAt: "2026-11-01T10:00:00Z",

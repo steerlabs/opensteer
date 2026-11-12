@@ -628,7 +628,6 @@ async function setup(scenario: string) {
     skills: undefined,
     threadId: createId("thread"),
     threadStateDirectory: join(directory, "thread-state"),
-    workspaceId: createId("workspace"),
     workspacePath,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [workspacePath],

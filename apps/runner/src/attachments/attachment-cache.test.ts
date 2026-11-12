@@ -28,7 +28,6 @@ const attachment = {
   threadId: "thr_11111111-1111-4111-8111-111111111111",
   uploaderId: "usr_11111111-1111-4111-8111-111111111111",
   width: null,
-  workspaceId: "wsp_11111111-1111-4111-8111-111111111111",
 };
 
 describe("Runner attachment delivery", () => {

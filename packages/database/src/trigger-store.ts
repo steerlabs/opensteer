@@ -1,25 +1,25 @@
-import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
-import { jsonValue, lockWorkspaceRow } from "./store-primitives.js";
+import { personalExecutionLocation, requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+import { TransactionScopeChanged } from "./connection.js";
+import { jsonValue } from "./store-primitives.js";
 import { createHash } from "node:crypto";
 import {
+  threadAccessModeAtMost,
+  type ThreadAccessMode,
   CommandIdSchema,
   IsoDateTimeSchema,
   OpensteerError,
-  WorkspaceSchema,
   createId,
   type CommandId,
   type EnvironmentId,
   type RunnerId,
   type Run,
   type ThreadId,
-  type ThreadReachScope,
   type TriggerId,
   type TriggerOccurrenceId,
   type TriggerRevisionId,
   type TriggerWatchActivationId,
   type UserId,
-  type WorkspaceId,
-  type Workspace,
 } from "@opensteer/core";
 import {
   MANAGED_MEMORY_REFUSAL,
@@ -68,18 +68,16 @@ import { isFinalScheduledOccurrence, recordAutomationFailure } from "./automatio
 import { runFromRow } from "./thread-row-mappers.js";
 import { getThreadForOwner } from "./thread-store.js";
 import type { Thread } from "@opensteer/core";
-
 type TriggerRow = Selectable<DatabaseSchema["triggers"]>;
 type TriggerRevisionRow = Selectable<DatabaseSchema["triggerRevisions"]>;
 type TriggerOccurrenceRow = Selectable<TriggerOccurrenceTable>;
 type TriggerWatchActivationRow = Selectable<TriggerWatchActivationTable>;
-
 const maxPostgresInteger = 2_147_483_647;
 const triggerAuthorityLossPauseReason =
   "Paused because its conversation could not run when it was due.";
-
 interface CreateTriggerInput {
   readonly actorThreadId: ThreadId | null;
+  readonly actorAccessMode?: ThreadAccessMode;
   readonly anchorThreadId: ThreadId;
   readonly createdBy: UserId;
   readonly idempotencyKey: string;
@@ -89,7 +87,6 @@ interface CreateTriggerInput {
   readonly webhookRouteKey?: string;
   readonly webhookSecretHash?: string;
 }
-
 export interface TriggerDetail {
   readonly anchorThread: Thread | null;
   readonly activation: TriggerWatchActivation | null;
@@ -105,43 +102,31 @@ export interface TriggerDetail {
   readonly revision: TriggerRevision;
   readonly trigger: Trigger;
 }
-
 export interface TriggerDispatchContext {
   readonly anchorThread: {
     readonly environmentId: EnvironmentId;
     readonly id: ThreadId;
   };
   readonly occurrence: TriggerOccurrence;
-  readonly membershipGeneration: number;
   readonly revision: TriggerRevision;
   readonly trigger: Trigger;
-  readonly workspace: Workspace;
-}
-
-interface ActiveTriggerExecution {
-  readonly environmentId: EnvironmentId;
-  readonly occurrenceId: TriggerOccurrenceId;
+  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
 }
 
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
-  readonly membershipGeneration: number;
   readonly toolContractVersion: 1 | 2 | 3;
-  readonly workspace: Workspace;
+  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
 }
-
 export interface ActiveWatchBindingInput {
   readonly activationId: TriggerWatchActivationId;
   readonly anchorThreadId: ThreadId;
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
-  readonly membershipGeneration: number;
   readonly revisionId: TriggerRevisionId;
   readonly triggerId: TriggerId;
-  readonly workspaceId: WorkspaceId;
 }
-
 export interface ActiveTriggerExecutionBindingInput {
   readonly environmentId: EnvironmentId;
   readonly executionGeneration: number;
@@ -150,7 +135,6 @@ export interface ActiveTriggerExecutionBindingInput {
   readonly runnerBootId: string;
   readonly runnerId: RunnerId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
 
 /** Validates every fact carried by a Trigger execution capability. */
@@ -161,7 +145,7 @@ export async function assertActiveTriggerExecutionBinding(
   const row = await database
     .selectFrom("triggerOccurrences")
     .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-    .select(["triggers.anchorThreadId", "triggers.createdBy", "triggers.workspaceId"])
+    .select(["triggers.anchorThreadId", "triggers.createdBy"])
     .where("triggerOccurrences.id", "=", input.occurrenceId)
     .where("triggerOccurrences.environmentId", "=", input.environmentId)
     .where("triggerOccurrences.executionGeneration", "=", input.executionGeneration)
@@ -170,7 +154,6 @@ export async function assertActiveTriggerExecutionBinding(
     .where("triggerOccurrences.status", "=", "running")
     .where("triggers.anchorThreadId", "=", input.threadId)
     .where("triggers.createdBy", "=", input.requestedBy)
-    .where("triggers.workspaceId", "=", input.workspaceId)
     .executeTakeFirst();
   if (!row || !(await triggerExecutionAuthorityAvailable(database, row))) {
     throw new OpensteerError({
@@ -192,7 +175,6 @@ export async function assertActiveWatchBinding(
       "triggerWatchActivations.anchorThreadId",
       "triggerWatchActivations.createdBy",
       "triggerWatchActivations.environmentId",
-      "triggerWatchActivations.workspaceId",
     ])
     .where("triggerWatchActivations.id", "=", input.activationId)
     .where("triggerWatchActivations.triggerId", "=", input.triggerId)
@@ -211,11 +193,8 @@ export async function assertActiveWatchBinding(
     row.anchorThreadId !== input.anchorThreadId ||
     row.createdBy !== input.createdBy ||
     row.environmentId !== input.environmentId ||
-    row.workspaceId !== input.workspaceId ||
     !admission ||
-    admission.environmentId !== input.environmentId ||
-    admission.workspaceId !== input.workspaceId ||
-    admission.membershipGeneration !== input.membershipGeneration
+    admission.environmentId !== input.environmentId
   ) {
     throw new OpensteerError({
       code: "forbidden",
@@ -223,9 +202,7 @@ export async function assertActiveWatchBinding(
     });
   }
 }
-
 class TriggerOccurrenceSetChanged extends TransactionScopeChanged {}
-
 export async function createTriggerInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CreateTriggerInput,
@@ -241,17 +218,12 @@ export async function createTriggerInTransaction(
   const requestFingerprint = fingerprint({
     anchorThreadId: input.anchorThreadId,
     name: input.name,
-    program:
-      program.toolContractVersion === 1
-        ? { language: program.language, source: program.source }
-        : program,
+    program,
     source,
   });
-  await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
-    "trigger-create",
-    input.createdBy,
-    input.idempotencyKey,
-  ])}, 0))`.execute(transaction);
+  await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.createdBy, input.idempotencyKey])}, 0))`.execute(
+    transaction,
+  );
   const existing = await transaction
     .selectFrom("triggers")
     .selectAll()
@@ -264,6 +236,7 @@ export async function createTriggerInTransaction(
       transaction,
       {
         actorThreadId: input.actorThreadId,
+        ...(input.actorAccessMode ? { actorAccessMode: input.actorAccessMode } : {}),
         ownerId: input.createdBy,
         triggerId: existing.id,
       },
@@ -282,23 +255,27 @@ export async function createTriggerInTransaction(
       wasDuplicate: true,
     };
   }
-
   if (source.kind === "watch") {
     const anchor = await transaction
       .selectFrom("threads")
-      .select("workspaceId")
       .where("id", "=", input.anchorThreadId)
       .executeTakeFirst();
     if (!anchor) throw notFound();
-    await lockWatchCapacity(transaction, input.anchorThreadId, anchor.workspaceId);
+    await lockWatchCapacity(transaction, input.anchorThreadId);
   }
   const authority = await lockTriggerAuthorityThreads(
     transaction,
     input.actorThreadId,
     input.anchorThreadId,
+    input.actorAccessMode,
   );
   assertTriggerAccess(authority, "define");
-  const anchor = await requireAnchorThread(transaction, input.anchorThreadId, input.createdBy);
+  const anchor = await requireAnchorThread(
+    transaction,
+    input.anchorThreadId,
+    input.createdBy,
+    managed !== undefined,
+  );
   const triggerId = createId("trigger");
   const revisionId = createId("triggerRevision");
   const now = new Date();
@@ -325,7 +302,6 @@ export async function createTriggerInTransaction(
       updatedAt: now,
       webhookRouteKey: source.kind === "webhook" ? required(input.webhookRouteKey) : null,
       webhookSecretHash: source.kind === "webhook" ? required(input.webhookSecretHash) : null,
-      workspaceId: anchor.workspaceId,
     })
     .execute();
   await transaction
@@ -348,7 +324,6 @@ export async function createTriggerInTransaction(
       environmentId: anchor.environmentId,
       revisionId,
       triggerId,
-      workspaceId: anchor.workspaceId,
     });
   }
   const [trigger, revision] = await Promise.all([
@@ -369,36 +344,36 @@ export async function createTriggerInTransaction(
     wasDuplicate: false,
   };
 }
-
 export class TriggerStore {
   readonly #database: Kysely<DatabaseSchema>;
-
   constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
   }
-
   async create(input: CreateTriggerInput) {
-    return withDatabaseTransaction(this.#database, (transaction) =>
+    return withPersonalTransaction(this.#database, (transaction) =>
       createTriggerInTransaction(transaction, input),
     );
   }
-
   async update(input: {
     readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
     readonly expectedRevisionId: TriggerRevisionId;
     readonly name?: string;
     readonly ownerId: UserId;
     readonly program?: TriggerProgram;
     readonly source?: TriggerSource;
     readonly triggerId: TriggerId;
-  }): Promise<{ readonly revision: TriggerRevision; readonly trigger: Trigger }> {
+  }): Promise<{
+    readonly revision: TriggerRevision;
+    readonly trigger: Trigger;
+  }> {
     if (input.name === undefined && input.program === undefined && input.source === undefined) {
       throw new OpensteerError({
         code: "bad_request",
         message: "Trigger update requires at least one of name, program, or source",
       });
     }
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       await requireTriggerExecutionAuthority(transaction, trigger);
@@ -463,9 +438,15 @@ export class TriggerStore {
         .set({
           ...(input.program === undefined && input.source === undefined
             ? {}
-            : { consecutiveFailures: 0 }),
+            : {
+                consecutiveFailures: 0,
+              }),
           currentRevisionId: revisionId,
-          ...(input.name === undefined ? {} : { name: input.name }),
+          ...(input.name === undefined
+            ? {}
+            : {
+                name: input.name,
+              }),
           ...rearmed,
           updatedAt: now,
         })
@@ -486,7 +467,6 @@ export class TriggerStore {
             environmentId: anchor.environmentId,
             revisionId,
             triggerId: trigger.id,
-            workspaceId: trigger.workspaceId,
           });
         }
       }
@@ -495,17 +475,20 @@ export class TriggerStore {
         .selectAll()
         .where("id", "=", revisionId)
         .executeTakeFirstOrThrow();
-      return { revision: revisionFromRow(revision), trigger: triggerFromRow(updated) };
+      return {
+        revision: revisionFromRow(revision),
+        trigger: triggerFromRow(updated),
+      };
     });
   }
-
   async setStatus(input: {
     readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
     readonly ownerId: UserId;
     readonly status: "active" | "paused" | "archived";
     readonly triggerId: TriggerId;
   }): Promise<Trigger> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       await lockWatchCapacityForTrigger(transaction, input.triggerId);
       const trigger = await lockTriggerForMutation(
         transaction,
@@ -541,7 +524,11 @@ export class TriggerStore {
       const updated = await transaction
         .updateTable("triggers")
         .set({
-          ...(input.status === "active" ? { consecutiveFailures: 0 } : {}),
+          ...(input.status === "active"
+            ? {
+                consecutiveFailures: 0,
+              }
+            : {}),
           nextFireAt,
           pauseReason: null,
           status: input.status,
@@ -564,16 +551,15 @@ export class TriggerStore {
             environmentId: anchor.environmentId,
             revisionId: trigger.currentRevisionId,
             triggerId: trigger.id,
-            workspaceId: trigger.workspaceId,
           });
         }
       }
       return triggerFromRow(updated);
     });
   }
-
   async setNextFire(input: {
     readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
     readonly nextFireAt: string;
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
@@ -586,7 +572,7 @@ export class TriggerStore {
       });
     }
     const nextFireAt = new Date(parsed.data);
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "control");
       await requireTriggerExecutionAuthority(transaction, trigger);
       if (nextFireAt.getTime() <= Date.now()) {
@@ -609,40 +595,33 @@ export class TriggerStore {
       }
       const updated = await transaction
         .updateTable("triggers")
-        .set({ nextFireAt, updatedAt: new Date() })
+        .set({
+          nextFireAt,
+          updatedAt: new Date(),
+        })
         .where("id", "=", trigger.id)
         .returningAll()
         .executeTakeFirstOrThrow();
       return triggerFromRow(updated);
     });
   }
-
   async listForOwner(input: {
     readonly anchorThreadId?: ThreadId;
     readonly limit?: number;
     readonly ownerId: UserId;
-    readonly scope: ThreadReachScope;
     readonly systemRole?: TriggerSystemRole;
-    readonly workspaceId?: WorkspaceId;
   }): Promise<readonly TriggerSummary[]> {
+    await requirePersonalOwner(this.#database, input.ownerId);
     let query = this.#database
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-      .innerJoin("workspaceMemberships as reader", (join) =>
-        join
-          .onRef("reader.workspaceId", "=", "triggers.workspaceId")
-          .on("reader.userId", "=", input.ownerId)
-          .on("reader.state", "=", "active"),
-      )
       .selectAll("triggers")
       .select("threads.title as anchorThreadTitle")
       .where("triggers.createdBy", "=", input.ownerId)
       .where("triggers.status", "!=", "archived");
     if (input.systemRole) query = query.where("triggers.systemRole", "=", input.systemRole);
-    if (input.workspaceId) query = query.where("triggers.workspaceId", "=", input.workspaceId);
     if (input.anchorThreadId)
       query = query.where("triggers.anchorThreadId", "=", input.anchorThreadId);
-    query = query.where(threadReachPredicate(input.scope));
     const rows = await query
       .orderBy(sql<boolean>`triggers.system_role is not null`, "desc")
       .orderBy("triggers.updatedAt", "desc")
@@ -703,11 +682,15 @@ export class TriggerStore {
         source: withoutSchedulePayload(
           TriggerSourceSchema.parse(sources.get(row.currentRevisionId)),
         ),
-        watch: watch ? { lastError: watch.lastError, observed: watch.observed } : null,
+        watch: watch
+          ? {
+              lastError: watch.lastError,
+              observed: watch.observed,
+            }
+          : null,
       });
     });
   }
-
   async watchEnvironmentForTrigger(triggerId: TriggerId): Promise<EnvironmentId | null> {
     const row = await this.#database
       .selectFrom("triggerWatchActivations")
@@ -717,17 +700,14 @@ export class TriggerStore {
       .executeTakeFirst();
     return row?.environmentId ?? null;
   }
-
-  async watchEnvironmentsForWorkspace(workspaceId: WorkspaceId): Promise<readonly EnvironmentId[]> {
+  async watchEnvironments(): Promise<readonly EnvironmentId[]> {
     const rows = await this.#database
       .selectFrom("triggerWatchActivations")
       .select("environmentId")
       .distinct()
-      .where("workspaceId", "=", workspaceId)
       .execute();
     return rows.map(({ environmentId }) => environmentId);
   }
-
   async reconcileWatchesForRunner(input: {
     readonly environmentId: EnvironmentId;
     readonly leaseExpiresAt: Date;
@@ -738,7 +718,7 @@ export class TriggerStore {
     readonly activations: readonly WatchActivationContext[];
     readonly reconcileGeneration: number;
   }> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const rows = await transaction
         .selectFrom("triggerWatchActivations")
         .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
@@ -765,8 +745,7 @@ export class TriggerStore {
           trigger.status !== "active" ||
           trigger.currentRevisionId !== row.revisionId ||
           !admission ||
-          admission.environmentId !== row.environmentId ||
-          admission.workspaceId !== row.workspaceId
+          admission.environmentId !== row.environmentId
         ) {
           await transaction
             .updateTable("triggerWatchActivations")
@@ -797,7 +776,11 @@ export class TriggerStore {
             leaseExpiresAt: input.leaseExpiresAt,
             ...(row.runnerBootId === input.runnerBootId
               ? {}
-              : { healthySince: null, observed: "starting" as const, restartCount: 0 }),
+              : {
+                  healthySince: null,
+                  observed: "starting" as const,
+                  restartCount: 0,
+                }),
             runnerBootId: input.runnerBootId,
             runnerConnectionGeneration: input.runnerConnectionGeneration,
             runnerId: input.runnerId,
@@ -806,11 +789,6 @@ export class TriggerStore {
           .where("id", "=", row.id)
           .returningAll()
           .executeTakeFirstOrThrow();
-        const workspace = await transaction
-          .selectFrom("workspaces")
-          .selectAll()
-          .where("id", "=", row.workspaceId)
-          .executeTakeFirstOrThrow();
         const revision = await transaction
           .selectFrom("triggerRevisions")
           .select("program")
@@ -818,12 +796,13 @@ export class TriggerStore {
           .executeTakeFirstOrThrow();
         activations.push({
           activation: watchActivationFromRow(updated),
-          membershipGeneration: admission.membershipGeneration,
           toolContractVersion: TriggerProgramSchema.parse(revision.program).toolContractVersion,
-          workspace: workspaceFromRow(workspace),
+          location: await personalExecutionLocation(transaction, row.anchorThreadId),
         });
       }
-      const generation = await sql<{ generation: string }>`
+      const generation = await sql<{
+        generation: string;
+      }>`
         select nextval('public.trigger_watch_reconcile_generation')::text as generation
       `.execute(transaction);
       const reconcileGeneration = Number(generation.rows[0]?.generation);
@@ -833,14 +812,15 @@ export class TriggerStore {
           message: "Invalid watch reconcile generation",
         });
       }
-      return { activations, reconcileGeneration };
+      return {
+        activations,
+        reconcileGeneration,
+      };
     });
   }
-
   async assertActiveWatchBinding(input: ActiveWatchBindingInput): Promise<void> {
     await assertActiveWatchBinding(this.#database, input);
   }
-
   async watchProgram(input: ActiveWatchBindingInput): Promise<TriggerProgram> {
     await this.assertActiveWatchBinding(input);
     const revision = await this.#database
@@ -851,7 +831,6 @@ export class TriggerStore {
       .executeTakeFirstOrThrow();
     return TriggerProgramSchema.parse(revision.program);
   }
-
   async applyWatchStatus(input: {
     readonly activationId: TriggerWatchActivationId;
     readonly executionGeneration: number;
@@ -865,8 +844,11 @@ export class TriggerStore {
     readonly runnerId: RunnerId;
     readonly stderrTail: string;
     readonly stdoutTail: string;
-  }): Promise<{ readonly activation: TriggerWatchActivation; readonly autoPaused: boolean }> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+  }): Promise<{
+    readonly activation: TriggerWatchActivation;
+    readonly autoPaused: boolean;
+  }> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const identity = await transaction
         .selectFrom("triggerWatchActivations")
         .select("triggerId")
@@ -892,7 +874,10 @@ export class TriggerStore {
         Number(activation.runnerConnectionGeneration) !== input.runnerConnectionGeneration ||
         Number(activation.executionGeneration) !== input.executionGeneration
       ) {
-        throw new OpensteerError({ code: "forbidden", message: "Watch status binding is stale" });
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Watch status binding is stale",
+        });
       }
       if (input.restartCount < activation.restartCount) {
         throw conflict("Watch status is older than the stored restart count");
@@ -950,10 +935,12 @@ export class TriggerStore {
         .where("id", "=", activation.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      return { activation: watchActivationFromRow(updated), autoPaused };
+      return {
+        activation: watchActivationFromRow(updated),
+        autoPaused,
+      };
     });
   }
-
   async recordWatchUnavailable(input: {
     readonly activationId: TriggerWatchActivationId;
     readonly executionGeneration: number;
@@ -988,33 +975,23 @@ export class TriggerStore {
     }
     return watchActivationFromRow(updated);
   }
-
   async getForOwner(
     triggerId: TriggerId,
     ownerId: UserId,
     occurrenceLimit: number,
-    scope: ThreadReachScope,
   ): Promise<TriggerDetail | null> {
+    await requirePersonalOwner(this.#database, ownerId);
     let query = this.#database
       .selectFrom("triggers")
       .innerJoin("threads", "threads.id", "triggers.anchorThreadId")
-      .innerJoin("workspaceMemberships as reader", (join) =>
-        join
-          .onRef("reader.workspaceId", "=", "triggers.workspaceId")
-          .on("reader.userId", "=", ownerId)
-          .on("reader.state", "=", "active"),
-      )
       .selectAll("triggers")
       // The author is named only when the reader could reach that Thread itself.
       .leftJoin("threads as authorThread", (join) =>
-        join
-          .onRef("authorThread.id", "=", "triggers.createdByThreadId")
-          .on(threadReachPredicate(scope, "authorThread")),
+        join.onRef("authorThread.id", "=", "triggers.createdByThreadId"),
       )
       .select(["threads.title as anchorThreadTitle", "authorThread.title as createdByThreadTitle"])
       .where("triggers.id", "=", triggerId)
       .where("triggers.createdBy", "=", ownerId);
-    query = query.where(threadReachPredicate(scope));
     const row = await query.executeTakeFirst();
     if (!row) return null;
     const { anchorThreadTitle, createdByThreadTitle, ...trigger } = row;
@@ -1059,7 +1036,6 @@ export class TriggerStore {
               "in",
               occurrences.map(({ id }) => id),
             )
-            .where(threadReachPredicate(scope))
             .orderBy("runs.createdAt", "desc")
             .orderBy("runs.id", "desc")
             .orderBy("triggerOccurrences.id", "desc")
@@ -1086,7 +1062,6 @@ export class TriggerStore {
               "in",
               occurrences.map(({ id }) => id),
             )
-            .where(threadReachPredicate(scope))
             .orderBy("runs.createdAt", "desc")
             .orderBy("runs.id", "desc")
             .orderBy("triggerOccurrences.id", "desc")
@@ -1120,7 +1095,6 @@ export class TriggerStore {
       trigger: triggerFromRow(trigger),
     };
   }
-
   async webhookRoute(routeKey: string): Promise<{
     readonly secretHash: string;
     readonly trigger: Trigger;
@@ -1131,17 +1105,22 @@ export class TriggerStore {
       .where("webhookRouteKey", "=", routeKey)
       .executeTakeFirst();
     if (!row?.webhookSecretHash) return null;
-    return { secretHash: row.webhookSecretHash, trigger: triggerFromRow(row) };
+    return {
+      secretHash: row.webhookSecretHash,
+      trigger: triggerFromRow(row),
+    };
   }
-
   enqueueWebhook(input: {
     readonly deliveryId?: string;
     readonly headers: Readonly<Record<string, string>>;
     readonly method: string;
     readonly payload: unknown;
     readonly routeKey: string;
-  }): Promise<{ readonly occurrence: TriggerOccurrence; readonly wasDuplicate: boolean }> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+  }): Promise<{
+    readonly occurrence: TriggerOccurrence;
+    readonly wasDuplicate: boolean;
+  }> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const trigger = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1158,23 +1137,29 @@ export class TriggerStore {
       return enqueueOccurrence(transaction, trigger, sourceKey, {
         payload: input.payload,
         source: {
-          ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
-          headers: { ...input.headers },
+          ...(input.deliveryId
+            ? {
+                deliveryId: input.deliveryId,
+              }
+            : {}),
+          headers: {
+            ...input.headers,
+          },
           kind: "webhook",
           method: input.method,
         },
       });
     });
   }
-
   enqueueManual(input: {
     readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
     readonly ownerId: UserId;
     readonly idempotencyKey?: string;
     readonly payload?: unknown;
     readonly triggerId: TriggerId;
   }): Promise<TriggerOccurrence> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const trigger = await lockTriggerForMutation(transaction, input, "define");
       if (trigger.status === "archived") throw conflict("Archived Trigger cannot run");
       if (trigger.kind === "watch") {
@@ -1188,7 +1173,12 @@ export class TriggerStore {
         input.idempotencyKey === undefined
           ? `manual:${globalThis.crypto.randomUUID()}`
           : `manual-command:${JSON.stringify([input.ownerId, input.actorThreadId, input.idempotencyKey])}`,
-        { payload: input.payload ?? null, source: { kind: "manual" } },
+        {
+          payload: input.payload ?? null,
+          source: {
+            kind: "manual",
+          },
+        },
       );
       return enqueued.occurrence;
     });
@@ -1204,11 +1194,14 @@ export class TriggerStore {
     ownerId: UserId,
     input: {
       readonly actorThreadId: ThreadId | null;
+      readonly actorAccessMode?: ThreadAccessMode;
       readonly occurrenceId?: TriggerOccurrenceId;
       readonly triggerId: TriggerId;
     },
-  ): Promise<{ readonly canceledOccurrenceIds: readonly TriggerOccurrenceId[] }> {
-    return withDatabaseTransaction(
+  ): Promise<{
+    readonly canceledOccurrenceIds: readonly TriggerOccurrenceId[];
+  }> {
+    return withPersonalTransaction(
       this.#database,
       async (transaction) => {
         const observedPending = await transaction
@@ -1223,7 +1216,14 @@ export class TriggerStore {
           .forNoKeyUpdate()
           .execute();
         const heldOccurrences = new Set(observedPending.map(({ id }) => id));
-        const trigger = await lockTriggerForMutation(transaction, { ...input, ownerId }, "control");
+        const trigger = await lockTriggerForMutation(
+          transaction,
+          {
+            ...input,
+            ownerId,
+          },
+          "control",
+        );
         if (input.occurrenceId) {
           const target = await transaction
             .selectFrom("triggerOccurrences")
@@ -1254,7 +1254,11 @@ export class TriggerStore {
         for (const row of pending) {
           const command = await transaction
             .updateTable("commands")
-            .set({ lastError: jsonValue(cancellation), status: "failed", updatedAt: now })
+            .set({
+              lastError: jsonValue(cancellation),
+              status: "failed",
+              updatedAt: now,
+            })
             .where("id", "=", row.commandId)
             .where("status", "=", "pending")
             .executeTakeFirst();
@@ -1272,7 +1276,9 @@ export class TriggerStore {
             .execute();
           canceledOccurrenceIds.push(row.id);
         }
-        return { canceledOccurrenceIds };
+        return {
+          canceledOccurrenceIds,
+        };
       },
       undefined,
       (error) => error instanceof TriggerOccurrenceSetChanged,
@@ -1282,16 +1288,25 @@ export class TriggerStore {
   /**
    * Fires every due schedule. Each due Trigger changes whether or not it gets
    * an Occurrence — it is paused, or its next instant moves on — so the
-   * Workspaces of all of them are returned for their lists to refresh.
+   * The caller refreshes the Deployment's Trigger list after commit.
    */
   async claimDueSchedules(
     now = new Date(),
     limit = 64,
   ): Promise<{
     readonly occurrences: readonly TriggerOccurrence[];
-    readonly workspaceIds: readonly WorkspaceId[];
+    readonly changed: boolean;
   }> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    const candidate = await this.#database
+      .selectFrom("triggers")
+      .select("id")
+      .where("kind", "=", "schedule")
+      .where("status", "=", "active")
+      .where("nextFireAt", "<=", now)
+      .limit(1)
+      .executeTakeFirst();
+    if (!candidate) return { occurrences: [], changed: false };
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const due = await transaction
         .selectFrom("triggers")
         .selectAll()
@@ -1308,8 +1323,7 @@ export class TriggerStore {
       for (const trigger of due) {
         if (!trigger.nextFireAt) continue;
         if (!(await triggerExecutionAuthorityAvailable(transaction, trigger))) {
-          // Authority can be unavailable transiently — an offline Runner, a
-          // Workspace mid-provision. Pausing keeps the Trigger recoverable by
+          // Authority can be unavailable transiently — an offline Runner. Pausing keeps the Trigger recoverable by
           // its owner; archiving would be a permanent answer to a temporary
           // condition.
           await transaction
@@ -1343,7 +1357,10 @@ export class TriggerStore {
             `schedule:${revision.id}:${scheduledFor.toISOString()}`,
             {
               payload: source.schedule.payload ?? null,
-              source: { kind: "schedule", scheduledFor: scheduledFor.toISOString() },
+              source: {
+                kind: "schedule",
+                scheduledFor: scheduledFor.toISOString(),
+              },
             },
           );
           occurrences.push(enqueued.occurrence);
@@ -1354,17 +1371,19 @@ export class TriggerStore {
         );
         await transaction
           .updateTable("triggers")
-          .set({ nextFireAt: next, updatedAt: new Date() })
+          .set({
+            nextFireAt: next,
+            updatedAt: new Date(),
+          })
           .where("id", "=", trigger.id)
           .execute();
       }
       return {
         occurrences,
-        workspaceIds: [...new Set(due.map(({ workspaceId }) => workspaceId))],
+        changed: due.length > 0,
       };
     });
   }
-
   async loadDispatchContext(commandId: CommandId): Promise<TriggerDispatchContext> {
     const occurrence = await this.#database
       .selectFrom("triggerOccurrences")
@@ -1372,14 +1391,17 @@ export class TriggerStore {
       .where("commandId", "=", commandId)
       .executeTakeFirst();
     if (!occurrence)
-      throw new OpensteerError({ code: "not_found", message: "Trigger command not found" });
+      throw new OpensteerError({
+        code: "not_found",
+        message: "Trigger command not found",
+      });
     const trigger = await this.#database
       .selectFrom("triggers")
       .selectAll()
       .where("id", "=", occurrence.triggerId)
       .executeTakeFirstOrThrow();
-    const admission = await requireTriggerExecutionAuthority(this.#database, trigger);
-    const [revision, anchorThread, workspace] = await Promise.all([
+    await requireTriggerExecutionAuthority(this.#database, trigger);
+    const [revision, anchorThread] = await Promise.all([
       this.#database
         .selectFrom("triggerRevisions")
         .selectAll()
@@ -1390,28 +1412,24 @@ export class TriggerStore {
         .select(["environmentId", "id"])
         .where("id", "=", trigger.anchorThreadId)
         .executeTakeFirstOrThrow(),
-      this.#database
-        .selectFrom("workspaces")
-        .selectAll()
-        .where("id", "=", trigger.workspaceId)
-        .executeTakeFirstOrThrow(),
     ]);
     return {
       anchorThread,
-      membershipGeneration: admission.membershipGeneration,
       occurrence: occurrenceFromRow(occurrence),
       revision: revisionFromRow(revision),
       trigger: triggerFromRow(trigger),
-      workspace: workspaceFromRow(workspace),
+      location: await personalExecutionLocation(this.#database, trigger.anchorThreadId),
     };
   }
-
   async startExecution(input: {
     readonly commandId: CommandId;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
-  }): Promise<{ readonly context: TriggerDispatchContext; readonly executionGeneration: number }> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+  }): Promise<{
+    readonly context: TriggerDispatchContext;
+    readonly executionGeneration: number;
+  }> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .innerJoin("commands", "commands.id", "triggerOccurrences.commandId")
@@ -1457,18 +1475,16 @@ export class TriggerStore {
       };
     });
   }
-
   async assertActiveExecutionBinding(input: ActiveTriggerExecutionBindingInput): Promise<void> {
     await assertActiveTriggerExecutionBinding(this.#database, input);
   }
-
   async completeExecution(input: {
     readonly executionGeneration: number;
     readonly output: TriggerExecutionOutput;
     readonly runnerBootId: string;
     readonly runnerId: RunnerId;
   }): Promise<TriggerOccurrence> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const occurrence = await transaction
         .selectFrom("triggerOccurrences")
         .selectAll()
@@ -1489,14 +1505,21 @@ export class TriggerStore {
         occurrence.runnerId !== input.runnerId ||
         occurrence.runnerBootId !== input.runnerBootId
       ) {
-        throw new OpensteerError({ code: "forbidden", message: "Trigger result binding is stale" });
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Trigger result binding is stale",
+        });
       }
       const now = new Date();
       const updated = await transaction
         .updateTable("triggerOccurrences")
         .set({
           completedAt: new Date(input.output.completedAt),
-          error: input.output.error ? jsonValue({ message: input.output.error }) : null,
+          error: input.output.error
+            ? jsonValue({
+                message: input.output.error,
+              })
+            : null,
           exitCode: input.output.exitCode,
           result: input.output.result === null ? null : jsonValue(input.output.result),
           status: input.output.status,
@@ -1515,8 +1538,17 @@ export class TriggerStore {
           await transaction
             .updateTable("triggers")
             .set({
-              ...(recovered ? { consecutiveFailures: 0 } : {}),
-              ...(finished ? { pauseReason: null, status: "archived" as const } : {}),
+              ...(recovered
+                ? {
+                    consecutiveFailures: 0,
+                  }
+                : {}),
+              ...(finished
+                ? {
+                    pauseReason: null,
+                    status: "archived" as const,
+                  }
+                : {}),
               updatedAt: now,
             })
             .where("id", "=", trigger.id)
@@ -1557,21 +1589,23 @@ export class TriggerStore {
       }
       await transaction
         .updateTable("commands")
-        .set({ lastError: null, status: "succeeded", updatedAt: now })
+        .set({
+          lastError: null,
+          status: "succeeded",
+          updatedAt: now,
+        })
         .where("id", "=", occurrence.commandId)
         .where("status", "=", "dispatched")
         .execute();
       return occurrenceFromRow(updated);
     });
   }
-
   failActiveAfterHostRestart(): Promise<number> {
     return this.#failActive({
       code: "host_restarted",
       message: "Host restarted before the Trigger program finished",
     });
   }
-
   failActiveForRunnerDisconnect(input: {
     readonly activeOccurrenceIds: readonly TriggerOccurrenceId[];
     readonly runnerBootId: string;
@@ -1587,168 +1621,7 @@ export class TriggerStore {
     });
   }
 
-  async workspaceIdsForOccurrences(
-    occurrenceIds: readonly TriggerOccurrenceId[],
-  ): Promise<readonly WorkspaceId[]> {
-    if (occurrenceIds.length === 0) return [];
-    const rows = await this.#database
-      .selectFrom("triggerOccurrences")
-      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select("triggers.workspaceId")
-      .distinct()
-      .where("triggerOccurrences.id", "in", occurrenceIds)
-      .execute();
-    return rows.map(({ workspaceId }) => workspaceId);
-  }
-
   /** Permanently disables a revoked member's Triggers and fences all live work. */
-  async activeExecutionsForMembershipRevocation(input: {
-    readonly membershipGeneration: number;
-    readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<readonly ActiveTriggerExecution[]> {
-    const membership = await this.#database
-      .selectFrom("workspaceMemberships")
-      .select(["generation", "state"])
-      .where("workspaceId", "=", input.workspaceId)
-      .where("userId", "=", input.userId)
-      .executeTakeFirst();
-    if (
-      !membership ||
-      membership.state !== "revoked" ||
-      Number(membership.generation) !== input.membershipGeneration
-    ) {
-      return [];
-    }
-    const rows = await this.#database
-      .selectFrom("triggerOccurrences")
-      .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-      .select(["triggerOccurrences.environmentId", "triggerOccurrences.id as occurrenceId"])
-      .where("triggers.workspaceId", "=", input.workspaceId)
-      .where("triggers.createdBy", "=", input.userId)
-      .where("triggerOccurrences.status", "=", "running")
-      .execute();
-    return rows;
-  }
-
-  async revokeForMembershipRevocation(input: {
-    readonly membershipGeneration: number;
-    readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<number> {
-    return withDatabaseTransaction(
-      this.#database,
-      async (transaction) => {
-        const observedOccurrences = await transaction
-          .selectFrom("triggerOccurrences")
-          .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
-          .select("triggerOccurrences.id")
-          .where("triggers.workspaceId", "=", input.workspaceId)
-          .where("triggers.createdBy", "=", input.userId)
-          .where("triggerOccurrences.status", "in", ["pending", "running"])
-          .orderBy("triggerOccurrences.id", "asc")
-          .forNoKeyUpdate("triggerOccurrences")
-          .execute();
-        const heldOccurrences = new Set(observedOccurrences.map(({ id }) => id));
-        await lockWorkspaceRow(transaction, input.workspaceId);
-        const membership = await transaction
-          .selectFrom("workspaceMemberships")
-          .select(["generation", "state"])
-          .where("workspaceId", "=", input.workspaceId)
-          .where("userId", "=", input.userId)
-          .executeTakeFirst();
-        if (
-          !membership ||
-          membership.state !== "revoked" ||
-          Number(membership.generation) !== input.membershipGeneration
-        ) {
-          return 0;
-        }
-        const triggers = await transaction
-          .selectFrom("triggers")
-          .select("id")
-          .where("workspaceId", "=", input.workspaceId)
-          .where("createdBy", "=", input.userId)
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute();
-        if (triggers.length === 0) return 0;
-        const now = new Date();
-        const triggerIds = triggers.map(({ id }) => id);
-        const occurrences = await transaction
-          .selectFrom("triggerOccurrences")
-          .select(["commandId", "id"])
-          .where("triggerId", "in", triggerIds)
-          .where("status", "in", ["pending", "running"])
-          .orderBy("id", "asc")
-          .execute();
-        if (occurrences.some(({ id }) => !heldOccurrences.has(id))) {
-          throw new TriggerOccurrenceSetChanged("Occurrences changed before revocation fencing");
-        }
-        await transaction
-          .selectFrom("triggerWatchActivations")
-          .select("id")
-          .where("triggerId", "in", triggerIds)
-          .where("desired", "=", "active")
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute();
-        if (occurrences.length)
-          await transaction
-            .selectFrom("commands")
-            .select("id")
-            .where(
-              "id",
-              "in",
-              occurrences.map(({ commandId }) => commandId),
-            )
-            .orderBy("id", "asc")
-            .forNoKeyUpdate()
-            .execute();
-        await transaction
-          .updateTable("triggers")
-          .set({
-            nextFireAt: null,
-            pauseReason: null,
-            status: sql<
-              "paused" | "archived"
-            >`case when system_role is not null then 'paused' else 'archived' end`,
-            updatedAt: now,
-          })
-          .where("id", "in", triggerIds)
-          .execute();
-        await transaction
-          .updateTable("triggerWatchActivations")
-          .set({ desired: "stopped", leaseExpiresAt: null, observed: "stopped", updatedAt: now })
-          .where("triggerId", "in", triggerIds)
-          .where("desired", "=", "active")
-          .execute();
-        if (occurrences.length > 0) {
-          const occurrenceIds = occurrences.map(({ id }) => id);
-          const commandIds = occurrences.map(({ commandId }) => commandId);
-          const failure = {
-            code: "workspace_access_revoked",
-            message: "Workspace access was revoked before the Trigger finished",
-          };
-          await transaction
-            .updateTable("triggerOccurrences")
-            .set({ completedAt: now, error: jsonValue(failure), status: "failed", updatedAt: now })
-            .where("id", "in", occurrenceIds)
-            .where("status", "in", ["pending", "running"])
-            .execute();
-          await transaction
-            .updateTable("commands")
-            .set({ lastError: jsonValue(failure), status: "failed", updatedAt: now })
-            .where("id", "in", commandIds)
-            .where("status", "in", ["pending", "dispatched"])
-            .execute();
-        }
-        return triggers.length;
-      },
-      undefined,
-      (error) => error instanceof TriggerOccurrenceSetChanged,
-    );
-  }
 
   async #failActive(input: {
     readonly activeOccurrenceIds?: readonly TriggerOccurrenceId[];
@@ -1757,7 +1630,7 @@ export class TriggerStore {
     readonly runnerBootId?: string;
     readonly runnerId?: RunnerId;
   }): Promise<number> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       let query = transaction
         .selectFrom("triggerOccurrences")
         .select(["commandId", "event", "id", "revisionId", "triggerId"])
@@ -1776,7 +1649,10 @@ export class TriggerStore {
         .updateTable("triggerOccurrences")
         .set({
           completedAt: now,
-          error: jsonValue({ code: input.code, message: input.message }),
+          error: jsonValue({
+            code: input.code,
+            message: input.message,
+          }),
           status: "failed",
           updatedAt: now,
         })
@@ -1793,7 +1669,10 @@ export class TriggerStore {
       await transaction
         .updateTable("commands")
         .set({
-          lastError: jsonValue({ code: input.code, message: input.message }),
+          lastError: jsonValue({
+            code: input.code,
+            message: input.message,
+          }),
           status: "failed",
           updatedAt: now,
         })
@@ -1819,7 +1698,10 @@ export class TriggerStore {
 /** Whether a failed Occurrence was the only run its one-shot Trigger will make. */
 async function isFinalOccurrence(
   transaction: Transaction<DatabaseSchema>,
-  occurrence: { readonly event: unknown; readonly revisionId: TriggerRevisionId },
+  occurrence: {
+    readonly event: unknown;
+    readonly revisionId: TriggerRevisionId;
+  },
 ): Promise<boolean> {
   const revision = await transaction
     .selectFrom("triggerRevisions")
@@ -1828,7 +1710,10 @@ async function isFinalOccurrence(
     .executeTakeFirst();
   return (
     revision !== undefined &&
-    isFinalScheduledOccurrence({ event: occurrence.event, revisionSource: revision.source })
+    isFinalScheduledOccurrence({
+      event: occurrence.event,
+      revisionSource: revision.source,
+    })
   );
 }
 
@@ -1859,21 +1744,27 @@ async function oneTimeTriggerFinished(
     (trigger.status === "active" || Date.parse(source.schedule.at) <= now.getTime())
   );
 }
-
 async function enqueueOccurrence(
   transaction: Transaction<DatabaseSchema>,
   trigger: TriggerRow,
   sourceKey: string,
   input: Pick<TriggerProgramEvent, "payload" | "source">,
-): Promise<{ readonly occurrence: TriggerOccurrence; readonly wasDuplicate: boolean }> {
-  const admission = await requireTriggerExecutionAuthority(transaction, trigger);
+): Promise<{
+  readonly occurrence: TriggerOccurrence;
+  readonly wasDuplicate: boolean;
+}> {
+  await requireTriggerExecutionAuthority(transaction, trigger);
   const existing = await transaction
     .selectFrom("triggerOccurrences")
     .selectAll()
     .where("triggerId", "=", trigger.id)
     .where("sourceKey", "=", sourceKey)
     .executeTakeFirst();
-  if (existing) return { occurrence: occurrenceFromRow(existing), wasDuplicate: true };
+  if (existing)
+    return {
+      occurrence: occurrenceFromRow(existing),
+      wasDuplicate: true,
+    };
   // Every caller holds the Trigger row lock, so this count cannot race another
   // ingress. An offline Runner must not accumulate an unbounded durable queue:
   // over the cap the sender's own retry policy is the overflow buffer.
@@ -1881,10 +1772,14 @@ async function enqueueOccurrence(
   if (pending >= MAX_PENDING_TRIGGER_OCCURRENCES) {
     throw new OpensteerError({
       code: "resource_exhausted",
-      details: { pendingLimit: MAX_PENDING_TRIGGER_OCCURRENCES, triggerId: trigger.id },
+      details: {
+        pendingLimit: MAX_PENDING_TRIGGER_OCCURRENCES,
+        triggerId: trigger.id,
+      },
       message: `Trigger already has ${MAX_PENDING_TRIGGER_OCCURRENCES} pending Occurrences, its durable limit`,
     });
   }
+  const admission = await requireTriggerExecutionAuthority(transaction, trigger);
   const revision = await transaction
     .selectFrom("triggerRevisions")
     .select("id")
@@ -1902,7 +1797,6 @@ async function enqueueOccurrence(
       anchorThreadId: trigger.anchorThreadId,
       id: trigger.id,
       revisionId: revision.id,
-      workspaceId: trigger.workspaceId,
     },
   });
   const principalId = await principalIdForUser(transaction, trigger.createdBy);
@@ -1910,13 +1804,19 @@ async function enqueueOccurrence(
     .insertInto("commands")
     .values({
       actorPrincipalId: principalId,
-      authoritySource: jsonValue({ kind: "trigger", triggerId: trigger.id }),
+      authoritySource: jsonValue({
+        kind: "trigger",
+        triggerId: trigger.id,
+      }),
       dispatcherId: null,
       environmentId: admission.environmentId,
       id: commandId,
       idempotencyKey: `trigger-occurrence:${occurrenceId}`,
       lastError: null,
-      payload: jsonValue({ occurrenceId, type: "trigger.execute" }),
+      payload: jsonValue({
+        occurrenceId,
+        type: "trigger.execute",
+      }),
       requestedBy: trigger.createdBy,
       runId: null,
       status: "pending",
@@ -1950,9 +1850,11 @@ async function enqueueOccurrence(
     })
     .returningAll()
     .executeTakeFirstOrThrow();
-  return { occurrence: occurrenceFromRow(row), wasDuplicate: false };
+  return {
+    occurrence: occurrenceFromRow(row),
+    wasDuplicate: false,
+  };
 }
-
 async function pendingScheduleOccurrenceExists(
   transaction: Transaction<DatabaseSchema>,
   triggerId: TriggerId,
@@ -1966,7 +1868,6 @@ async function pendingScheduleOccurrenceExists(
     .executeTakeFirst();
   return row !== undefined;
 }
-
 async function countPendingOccurrences(
   transaction: Transaction<DatabaseSchema>,
   triggerId: TriggerId,
@@ -1979,11 +1880,13 @@ async function countPendingOccurrences(
     .executeTakeFirstOrThrow();
   const parsed = Number(row.count);
   if (!Number.isSafeInteger(parsed) || parsed < 0) {
-    throw new OpensteerError({ code: "internal", message: "Invalid pending Occurrence count" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Invalid pending Occurrence count",
+    });
   }
   return parsed;
 }
-
 async function loadDispatchContext(
   transaction: Transaction<DatabaseSchema>,
   occurrenceId: TriggerOccurrenceId,
@@ -1998,8 +1901,8 @@ async function loadDispatchContext(
     .selectAll()
     .where("id", "=", occurrence.triggerId)
     .executeTakeFirstOrThrow();
-  const admission = await requireTriggerExecutionAuthority(transaction, trigger);
-  const [revision, anchorThread, workspace] = await Promise.all([
+  await requireTriggerExecutionAuthority(transaction, trigger);
+  const [revision, anchorThread] = await Promise.all([
     transaction
       .selectFrom("triggerRevisions")
       .selectAll()
@@ -2010,76 +1913,83 @@ async function loadDispatchContext(
       .select(["environmentId", "id"])
       .where("id", "=", trigger.anchorThreadId)
       .executeTakeFirstOrThrow(),
-    transaction
-      .selectFrom("workspaces")
-      .selectAll()
-      .where("id", "=", trigger.workspaceId)
-      .executeTakeFirstOrThrow(),
   ]);
   return {
     anchorThread,
-    membershipGeneration: admission.membershipGeneration,
     occurrence: occurrenceFromRow(occurrence),
     revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
-    workspace: workspaceFromRow(workspace),
+    location: await personalExecutionLocation(transaction, trigger.anchorThreadId),
   };
 }
-
 async function requireAnchorThread(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   userId: UserId,
+  backgroundJob = false,
 ): Promise<{
   readonly environmentId: EnvironmentId;
   readonly id: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }> {
+  const anchor = await transaction
+    .selectFrom("threads")
+    .select(["purpose", "doneAt", "status"])
+    .where("id", "=", threadId)
+    .executeTakeFirst();
+  if (
+    !anchor ||
+    (anchor.purpose !== "task" && !(backgroundJob && anchor.purpose === "background-job")) ||
+    anchor.doneAt ||
+    anchor.status === "archived"
+  )
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Choose an open task as the Trigger anchor.",
+    });
   const admission = await admitThreadExecution(transaction, threadId, userId);
   if (!admission)
-    throw new OpensteerError({ code: "forbidden", message: "Anchor Thread is unavailable" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Anchor Thread is unavailable",
+    });
   return {
     environmentId: admission.environmentId,
     id: threadId,
-    workspaceId: admission.workspaceId,
   };
 }
-
 type LockedTriggerAuthority = {
   readonly actor: AuthorityThread;
   readonly anchor: AuthorityThread;
 } | null;
-
 async function lockTriggerAuthorityThreads(
   transaction: Transaction<DatabaseSchema>,
   actorThreadId: ThreadId | null,
   anchorThreadId: ThreadId,
+  ceiling?: ThreadAccessMode,
 ): Promise<LockedTriggerAuthority> {
-  if (actorThreadId === null) return null;
+  if (actorThreadId === null && ceiling === undefined) return null;
   const rows = await transaction
     .selectFrom("threads")
-    .select([
-      "accessMode",
-      "inheritsMain",
-      "specialistId",
-      "id",
-      "lineageRootThreadId",
-      "workspaceId",
-    ])
-    .where("id", "in", [actorThreadId, anchorThreadId])
-    .orderBy("id", "asc")
+    .select(["id", "accessMode"])
+    .where("id", "in", actorThreadId ? [actorThreadId, anchorThreadId] : [anchorThreadId])
+    .orderBy("id")
     .forShare()
     .execute();
-  const actor = rows.find(({ id }) => id === actorThreadId);
-  const anchor = rows.find(({ id }) => id === anchorThreadId);
-  if (!actor || !anchor) throw notFound();
-  return { actor, anchor };
+  const actor = rows.find((row) => row.id === actorThreadId);
+  const anchor = rows.find((row) => row.id === anchorThreadId);
+  if (!anchor || (actorThreadId !== null && !actor)) throw notFound();
+  if (actor && ceiling && !threadAccessModeAtMost(ceiling, actor.accessMode))
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "The calling task's access was reduced.",
+    });
+  return { actor: { accessMode: ceiling ?? actor!.accessMode }, anchor };
 }
-
 async function lockTriggerForMutation(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly actorThreadId: ThreadId | null;
+    readonly actorAccessMode?: ThreadAccessMode;
     readonly ownerId: UserId;
     readonly triggerId: TriggerId;
   },
@@ -2096,6 +2006,7 @@ async function lockTriggerForMutation(
     transaction,
     input.actorThreadId,
     observed.anchorThreadId,
+    input.actorAccessMode,
   );
   const trigger = await transaction
     .selectFrom("triggers")
@@ -2109,7 +2020,6 @@ async function lockTriggerForMutation(
   assertTriggerAccess(authority, requiredAccess);
   return trigger;
 }
-
 function assertTriggerAccess(
   authority: LockedTriggerAuthority,
   requiredAccess: "control" | "define",
@@ -2119,48 +2029,34 @@ function assertTriggerAccess(
   if (access === "none") throw notFound();
   if (access === "define" || (access === "control" && requiredAccess === "control")) return;
   const messages: Record<Exclude<TriggerAccess, "none" | "define">, string> = {
-    see: "This Thread can read this Trigger, but controlling when it runs requires an access mode at least as high as its anchor; changing what it runs requires full access in the same kind of Thread and Workspace as its anchor (or Main).",
+    see: "This task can read this Trigger. Controlling it requires an access mode at least as high as its anchor; changing its program requires full access.",
     control:
-      "This Thread can pause, resume, cancel pending runs or reschedule the next run of this Trigger, but changing what it runs requires full access in the same kind of Thread and Workspace as its anchor (or Main).",
+      "This task can pause, resume, cancel pending runs or reschedule this Trigger. Changing its program requires full access.",
   };
-  throw new OpensteerError({ code: "forbidden", message: messages[access] });
+  throw new OpensteerError({
+    code: "forbidden",
+    message: messages[access],
+  });
 }
 
-function threadReachPredicate(
-  scope: ThreadReachScope,
-  thread: "authorThread" | "threads" = "threads",
-) {
-  switch (scope.kind) {
-    case "user":
-      return sql<boolean>`true`;
-    case "workspace":
-      return sql<boolean>`${sql.ref(`${thread}.workspaceId`)} = ${scope.workspaceId}`;
-    case "lineage":
-      return sql<boolean>`${sql.ref(`${thread}.lineageRootThreadId`)} = ${scope.lineageRootThreadId}`;
-  }
-}
-
-/** The Workspace fence keeps the anchor placement stable while capacity is reserved. */
+/** The Deployment fence keeps anchor placement stable while capacity is reserved. */
 async function lockWatchCapacityForTrigger(
   transaction: Transaction<DatabaseSchema>,
   triggerId: TriggerId,
 ): Promise<void> {
   const observed = await transaction
     .selectFrom("triggers")
-    .select(["anchorThreadId", "workspaceId"])
+    .select(["anchorThreadId"])
     .where("id", "=", triggerId)
     .where("kind", "=", "watch")
     .executeTakeFirst();
   if (!observed) return;
-  await lockWatchCapacity(transaction, observed.anchorThreadId, observed.workspaceId);
+  await lockWatchCapacity(transaction, observed.anchorThreadId);
 }
-
 async function lockWatchCapacity(
   transaction: Transaction<DatabaseSchema>,
   anchorThreadId: ThreadId,
-  workspaceId: WorkspaceId,
 ): Promise<void> {
-  await lockWorkspaceRow(transaction, workspaceId);
   const anchor = await transaction
     .selectFrom("threads")
     .select("environmentId")
@@ -2173,7 +2069,6 @@ async function lockWatchCapacity(
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
 }
-
 async function createWatchActivation(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -2182,7 +2077,6 @@ async function createWatchActivation(
     readonly environmentId: EnvironmentId;
     readonly revisionId: TriggerRevisionId;
     readonly triggerId: TriggerId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<TriggerWatchActivation> {
   await transaction
@@ -2233,13 +2127,11 @@ async function createWatchActivation(
       stdoutTail: "",
       triggerId: input.triggerId,
       updatedAt: now,
-      workspaceId: input.workspaceId,
     })
     .returningAll()
     .executeTakeFirstOrThrow();
   return watchActivationFromRow(row);
 }
-
 async function stopActiveWatchActivation(
   transaction: Transaction<DatabaseSchema>,
   triggerId: TriggerId,
@@ -2247,26 +2139,29 @@ async function stopActiveWatchActivation(
 ): Promise<void> {
   await transaction
     .updateTable("triggerWatchActivations")
-    .set({ desired: "stopped", leaseExpiresAt: null, observed: "stopped", updatedAt: now })
+    .set({
+      desired: "stopped",
+      leaseExpiresAt: null,
+      observed: "stopped",
+      updatedAt: now,
+    })
     .where("triggerId", "=", triggerId)
     .where("desired", "=", "active")
     .execute();
 }
-
 async function triggerExecutionAuthorityAvailable(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "workspaceId">,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy">,
 ): Promise<boolean> {
   const admission = await admitThreadExecution(database, trigger.anchorThreadId, trigger.createdBy);
-  return admission?.workspaceId === trigger.workspaceId;
+  return admission !== null;
 }
-
 async function requireTriggerExecutionAuthority(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
-  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy" | "workspaceId">,
+  trigger: Pick<TriggerRow, "anchorThreadId" | "createdBy">,
 ) {
   const admission = await admitThreadExecution(database, trigger.anchorThreadId, trigger.createdBy);
-  if (!admission || admission.workspaceId !== trigger.workspaceId) {
+  if (!admission) {
     throw new OpensteerError({
       code: "forbidden",
       message: "Trigger execution authority is no longer active",
@@ -2274,7 +2169,6 @@ async function requireTriggerExecutionAuthority(
   }
   return admission;
 }
-
 async function principalIdForUser(transaction: Transaction<DatabaseSchema>, userId: UserId) {
   const principal = await transaction
     .selectFrom("principals")
@@ -2283,16 +2177,22 @@ async function principalIdForUser(transaction: Transaction<DatabaseSchema>, user
     .where("userId", "=", userId)
     .executeTakeFirst();
   if (!principal)
-    throw new OpensteerError({ code: "internal", message: "User principal is missing" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "User principal is missing",
+    });
   return PrincipalIdSchema.parse(principal.id);
 }
-
 function validateSource(source: TriggerSource): void {
   if (source.kind === "schedule") validateTriggerSchedule(source.schedule);
 }
-
 function resumedScheduleFireAt(
-  schedule: Extract<TriggerSource, { kind: "schedule" }>["schedule"],
+  schedule: Extract<
+    TriggerSource,
+    {
+      kind: "schedule";
+    }
+  >["schedule"],
   now: Date,
 ): Date | null {
   if (schedule.kind === "at") {
@@ -2306,9 +2206,11 @@ function resumedScheduleFireAt(
 function withoutSchedulePayload(source: TriggerSource): TriggerSource {
   if (source.kind !== "schedule") return source;
   const { payload: _payload, ...schedule } = source.schedule;
-  return { kind: "schedule", schedule };
+  return {
+    kind: "schedule",
+    schedule,
+  };
 }
-
 function triggerFromRow(row: TriggerRow): Trigger {
   return TriggerSchema.parse({
     systemRole: row.systemRole,
@@ -2327,14 +2229,14 @@ function triggerFromRow(row: TriggerRow): Trigger {
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     webhookRouteKey: row.webhookRouteKey,
-    workspaceId: row.workspaceId,
   });
 }
-
 function revisionFromRow(row: TriggerRevisionRow): TriggerRevision {
-  return TriggerRevisionSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+  return TriggerRevisionSchema.parse({
+    ...row,
+    createdAt: row.createdAt.toISOString(),
+  });
 }
-
 function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
   return TriggerOccurrenceSchema.parse({
     commandId: CommandIdSchema.parse(row.commandId),
@@ -2354,7 +2256,6 @@ function occurrenceFromRow(row: TriggerOccurrenceRow): TriggerOccurrence {
     triggerId: row.triggerId,
   });
 }
-
 function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchActivation {
   return TriggerWatchActivationSchema.parse({
     ...row,
@@ -2368,40 +2269,25 @@ function watchActivationFromRow(row: TriggerWatchActivationRow): TriggerWatchAct
   });
 }
 
-function workspaceFromRow(row: Selectable<DatabaseSchema["workspaces"]>): Workspace {
-  return WorkspaceSchema.parse({
-    ...row,
-    createdAt: row.createdAt.toISOString(),
-    storageIssue:
-      row.storageErrorCode && row.storageErrorMessage && row.storageErrorAt
-        ? {
-            code: row.storageErrorCode,
-            message: row.storageErrorMessage,
-            occurredAt: row.storageErrorAt.toISOString(),
-            retryable: row.storageErrorRetryable,
-          }
-        : null,
-    updatedAt: row.updatedAt.toISOString(),
-  });
-}
-
 function fingerprint(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
 }
-
 function required(value: string | undefined): string {
   if (!value) throw new TypeError("Webhook identity is required");
   return value;
 }
-
 function notFound(message = "Trigger not found"): OpensteerError {
-  return new OpensteerError({ code: "not_found", message });
+  return new OpensteerError({
+    code: "not_found",
+    message,
+  });
 }
-
 function conflict(message: string): OpensteerError {
-  return new OpensteerError({ code: "conflict", message });
+  return new OpensteerError({
+    code: "conflict",
+    message,
+  });
 }
-
 function idempotencyConflict(): OpensteerError {
   return conflict("Idempotency key was already used with different Trigger input");
 }

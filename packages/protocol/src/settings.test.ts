@@ -7,7 +7,7 @@ import { PluginTargetSchema } from "./settings.js";
 describe("Settings authority inputs", () => {
   it("rejects session associations, injected authority, invalid branded IDs and overview paging", () => {
     expect(
-      PluginTargetSchema.safeParse({ kind: "skill", workspaceId: "other", fullName: "skill" })
+      PluginTargetSchema.safeParse({ kind: "skill", workspaceId: "removed", fullName: "skill" })
         .success,
     ).toBe(false);
     expect(
@@ -36,14 +36,8 @@ describe("Settings authority inputs", () => {
       connectionLeaseId: "rls_00000000-0000-4000-8000-000000000001",
       connectionGeneration: 1,
       environmentId: createId("environment"),
-      storageAuthorityId: createId("storageAuthority"),
-      binding: {
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-        workspaceId: createId("workspace"),
-      },
+      bindingGeneration: 1,
+      binding: { computerId: createId("runner"), path: "/tmp/fixture" },
       scanSequence: 1,
       scannedAt: "2026-11-03T12:00:00.000Z",
       result: { status: "complete", skills: [], warnings: [] },

@@ -202,7 +202,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     ...base,
     identityConfig: {
       ...base.identityConfig,
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       machineOwner: false,
       publicOrigin: "https://steer.example.test",
     } as HostSnapshot["identityConfig"],
@@ -211,10 +211,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
-    createThreadAndSend: async () => null,
+    createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: null,
@@ -229,14 +226,11 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     placements: [],
     performLocalExecutionAction: async () => undefined,
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot,
     ...overrides,
   };
@@ -273,7 +267,7 @@ function renderSettings(overrides: Partial<ShellContext>, path: string): string 
 
 function placementFixtures(): Readonly<Record<SettingsScenario, Partial<ShellContext>>> {
   const personal = personalDeployment();
-  const server = { ...serverDeployment(), kind: "self-hosted" as const, name: "home-server" };
+  const server = { ...serverDeployment(), kind: "team" as const, name: "home-server" };
   return {
     browser: {},
     "personal-remote": {
@@ -339,7 +333,7 @@ function serverDeployment(): DesktopDeploymentSummary {
     activeOrigin: "https://server.example.test",
     canonicalOrigin: "https://server.example.test",
     id: createId("deployment"),
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: "2026-08-12T22:00:00.000Z",
     name: "Design server",
     access: "native",

@@ -36,7 +36,6 @@ export function createSettingsReadHandlers(options: {
             .map(({ request }) => ({
               requestId: request.id,
               title: requestTitleText(request.presentation).slice(0, 120),
-              workspaceId: request.originatingWorkspaceId,
             })),
           hasMoreRequests: pending.window.hasMore,
         }),

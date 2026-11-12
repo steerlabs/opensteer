@@ -41,10 +41,10 @@ final class JourneyPresence: PresenceChecker, @unchecked Sendable {
       let disk = try Vault.open(root: paths.vault, protectedStore: protected)
       let unlocked = try disk.unlock(owner: owner)
       let grants: [[String: Any]] = unlocked.grants.map { grant in [
-        "deploymentId": grant.key.deploymentId, "workspaceId": grant.key.workspaceId,
+        "deploymentId": grant.key.deploymentId,
         "site": grant.key.site, "permissionVersion": grant.permissionVersion,
-        "revision": grant.revision ?? 0, "loginId": grant.loginId,
-        "deploymentName": grant.deploymentName, "workspaceName": grant.workspaceName,
+        "revision": grant.revision, "loginId": grant.loginId,
+        "deploymentName": grant.deploymentName,
       ] }
       unlocked.close()
       let snapshot: [String: Any] = ["grants": grants, "presenceReasons": presence.reasons, "headSeq": disk.head.seq]

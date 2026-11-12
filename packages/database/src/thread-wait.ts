@@ -1,3 +1,4 @@
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   OpensteerError,
   type AssignmentId,
@@ -9,7 +10,7 @@ import {
   SequenceSchema,
 } from "@opensteer/core";
 import type { Kysely } from "kysely";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import type { DatabaseSchema } from "./schema.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { messageFromRow } from "./thread-row-mappers.js";
@@ -27,23 +28,19 @@ export function readThreadWaitSnapshot(
     readonly assignmentId?: AssignmentId;
   },
 ) {
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       const thread = await tx
         .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.userId)
-        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread)
-        throw new OpensteerError({ code: "forbidden", message: "Thread is unavailable" });
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Thread is unavailable",
+        });
       const visible = tx
         .selectFrom("messages")
         .leftJoin("threadInputs", "threadInputs.messageId", "messages.id")
@@ -104,8 +101,16 @@ export function readThreadWaitSnapshot(
         .limit(1)
         .executeTakeFirst();
       return {
-        ...(run ? { run } : {}),
-        ...(pendingRequest ? { pendingRequest } : {}),
+        ...(run
+          ? {
+              run,
+            }
+          : {}),
+        ...(pendingRequest
+          ? {
+              pendingRequest,
+            }
+          : {}),
         messages: kept,
         hasMore: messages.length > kept.length,
         lastSequence: latest ? SequenceSchema.parse(latest.sequence) : undefined,

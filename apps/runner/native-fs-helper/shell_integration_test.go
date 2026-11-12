@@ -721,7 +721,7 @@ func TestShellPathsUseUTF8ByteLimitAndRejectNUL(t *testing.T) {
 		Authority: shellAuthority{
 			CallerMachineName: "caller", PolicyRevision: 1, RequestedBy: "usr_test", RunID: "run_test",
 			SessionID: "shell_test", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), ThreadID: "thr_test",
-			ThreadTitle: "Shell helper test", WorkspaceID: "ws_test",
+			ThreadTitle: "Shell helper test",
 		},
 		HostKeyPath: "/tmp/shell-key",
 		MachineName: "Target Mac",
@@ -758,7 +758,6 @@ func TestShellInitRequiresMachineNameWithinRuneLimit(t *testing.T) {
 		Authority: shellAuthority{
 			CallerMachineName: "caller", PolicyRevision: 1, RequestedBy: "usr_test", RunID: "run_test",
 			SessionID: "shell_test", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), ThreadID: "thr_test",
-			WorkspaceID: "ws_test",
 		},
 		HostKeyPath: "/tmp/shell-key",
 		MachineName: strings.Repeat("雪", 160),
@@ -1767,7 +1766,7 @@ func newShellSSHFixtureWithIdle(t *testing.T, policy shellPolicy, idle time.Dura
 		Authority: shellAuthority{
 			CallerMachineName: "caller", PolicyRevision: 1, RequestedBy: "usr_test", RunID: "run_test",
 			SessionID: "shell_test", StartedAt: time.Now().UTC().Format(time.RFC3339Nano), ThreadID: "thr_test",
-			ThreadTitle: "Shell helper test", WorkspaceID: "ws_test",
+			ThreadTitle: "Shell helper test",
 		},
 		HostKeyPath: filepath.Join(keyDirectory, shellHostKeyName),
 		MachineName: "Target Mac",

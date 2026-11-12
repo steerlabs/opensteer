@@ -5,7 +5,6 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AssignmentIdSchema,
-  ThreadReadStateSchema,
   WaitingRequestSchema,
   createId,
   type AssignmentSummary,
@@ -14,7 +13,7 @@ import {
 import type { AssignmentEntry, HostSnapshot, TranscriptEntry } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import { AppShell } from "./app-shell.js";
-import { HomeRoute } from "./home-view.js";
+import { HomeRoute } from "./home/home-route.js";
 import { ThreadRoute } from "./thread-view.js";
 import { ToastProvider } from "./toast.js";
 
@@ -31,7 +30,7 @@ afterEach(() => {
 });
 
 /**
- * Chat with the tasks one of its turns handed out replaced by `tasks`, each
+ * A task with the tasks one of its turns handed out replaced by `tasks`, each
  * reading the given summary, and `waiting` as the questions on the reader.
  */
 async function chatWith(
@@ -48,7 +47,8 @@ async function chatWith(
   clients.push(client);
   const read = client.getSnapshot.bind(client);
   const base = read();
-  const home = base.homeThreadId!;
+  // The task that handed work out: its transcript holds the task lines.
+  const home = Object.values(base.assignments)[0]!.parentThreadId;
   const seeded = base.transcripts[home]!.find(
     (entry): entry is AssignmentEntry => entry.kind === "assignment",
   )!;
@@ -110,11 +110,11 @@ async function chatWith(
   await act(async () =>
     root.render(
       <ToastProvider>
-        <MemoryRouter initialEntries={["/"]}>
+        <MemoryRouter initialEntries={[`/tasks/${home}`]}>
           <Routes>
             <Route element={<AppShell hostClient={client} loadError={null} />}>
               <Route index element={<HomeRoute />} />
-              <Route path="threads/:threadId" element={<ThreadRoute />} />
+              <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -132,6 +132,9 @@ function variant(
   return {
     ...seeded,
     id: index === 0 ? seeded.id : AssignmentIdSchema.parse(createId("delegation")),
+    // Open unless the change settles it: the seeded task may have finished.
+    finishedAt: null,
+    status: "open",
     ...change,
   };
 }
@@ -233,7 +236,10 @@ describe("tasks one turn handed out together", () => {
     ]);
     expect(secondLine(lines(node)[1]!)).toBe("Asked you a question");
     expect(node.querySelectorAll("a.agent-step__head")).toHaveLength(3);
-    const group = node.querySelector<HTMLButtonElement>("button.agent-step__head[aria-expanded]")!;
+    // The conversation's subagents fold beside it; this is the tasks' own group row.
+    const group = [
+      ...node.querySelectorAll<HTMLButtonElement>("button.agent-step__head[aria-expanded]"),
+    ].find((button) => button.getAttribute("aria-label")?.includes(" tasks: "))!;
     expect(group.getAttribute("aria-label")).toBe(
       "3 tasks: 1 needs you, 1 working, 1 finished. Hide tasks",
     );
@@ -307,105 +313,3 @@ function stubLayoutApis(): void {
     }),
   );
 }
-
-it("keeps an opened Done task in the sidebar and renders authoritative ask reorders", async () => {
-  stubLayoutApis();
-  const client = new MockHostClient({ latencyMs: 0 });
-  clients.push(client);
-  await client.load();
-  const base = client.getSnapshot();
-  const template = base.tasks!.entries.find(({ thread }) => thread.role === "work")!;
-  const first = {
-    ...template,
-    thread: {
-      ...template.thread,
-      status: "idle" as const,
-      title: "Read my result",
-      doneAt: "2026-10-01T00:00:00Z",
-      askedAt: "2026-10-01T00:00:00Z",
-    },
-  };
-  const second = {
-    ...first,
-    thread: {
-      ...first.thread,
-      id: createId("thread"),
-      title: "Another task",
-      doneAt: null,
-      askedAt: "2026-10-02T00:00:00Z",
-    },
-  };
-  let current: HostSnapshot = {
-    ...base,
-    activeTasks: [],
-    threads: [],
-    tasks: { ...base.tasks!, entries: [first, second] },
-    threadReadStates: {
-      [first.thread.id]: ThreadReadStateSchema.parse({
-        threadId: first.thread.id,
-        readSequence: "0",
-        unreadSequence: "1",
-        asOfSequence: "1",
-      }),
-    },
-  };
-  vi.spyOn(client, "getSnapshot").mockImplementation(() => current);
-  const listeners = new Set<() => void>();
-  vi.spyOn(client, "subscribe").mockImplementation((listener) => {
-    listeners.add(listener);
-    return () => {
-      listeners.delete(listener);
-    };
-  });
-  const node = document.createElement("div");
-  document.body.append(node);
-  const root = createRoot(node);
-  roots.push(root);
-  await act(async () =>
-    root.render(
-      <ToastProvider>
-        <MemoryRouter initialEntries={["/"]}>
-          <Routes>
-            <Route element={<AppShell hostClient={client} loadError={null} />}>
-              <Route index element={<div />} />
-              <Route path="threads/:threadId" element={<div />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </ToastProvider>,
-    ),
-  );
-  const taskRows = () => [
-    ...node.querySelectorAll<HTMLElement>(".side-section--tasks [data-thread-id]"),
-  ];
-  expect(taskRows().map((row) => row.dataset.threadId)).toEqual([
-    second.thread.id,
-    first.thread.id,
-  ]);
-  await act(async () => taskRows()[1]!.querySelector<HTMLAnchorElement>("a")!.click());
-  await act(async () => {
-    current = { ...current, threadReadStates: {} };
-    for (const listener of listeners) listener();
-  });
-  expect(taskRows().map((row) => row.dataset.threadId)).toEqual([
-    second.thread.id,
-    first.thread.id,
-  ]);
-  await act(async () => {
-    current = {
-      ...current,
-      tasks: {
-        ...current.tasks!,
-        entries: [
-          { ...first, thread: { ...first.thread, askedAt: "2026-10-03T00:00:00Z" } },
-          second,
-        ],
-      },
-    };
-    for (const listener of listeners) listener();
-  });
-  expect(taskRows().map((row) => row.dataset.threadId)).toEqual([
-    first.thread.id,
-    second.thread.id,
-  ]);
-});

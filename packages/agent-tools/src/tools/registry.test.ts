@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   agentTools,
@@ -6,6 +8,11 @@ import {
   pending_request,
   thread_wait,
   thread_configure,
+  environment_list,
+  orchestrator_capabilities,
+  thread_read,
+  thread_list,
+  thread_send,
 } from "./index.js";
 import { sign_in } from "./browser.js";
 import { person_message } from "./person.js";
@@ -155,4 +162,180 @@ describe("Opensteer tool registry", () => {
     expect(trigger_write.output.parse(result)).toEqual(result);
     expect(trigger_read.output.parse(result)).toEqual({});
   });
+});
+
+const agentToolPayloadMaxSerializedBytes = 432 * 1024;
+
+it("fits largest catalog and single-message tool pages but rejects an oversized combined page", () => {
+  const requestId = randomUUID();
+  const harnessIds = Array.from({ length: 64 }, () => createId("harnessInstance"));
+  const environments = Array.from({ length: 64 }, (_, index) => ({
+    capabilities: ["filesystem", "shell", "browser"],
+    connected: true,
+    id: createId("environment"),
+    kind: index === 0 ? ("main" as const) : ("local" as const),
+    name: "e".repeat(120),
+    can: { executeTasks: index === 0 },
+  }));
+  const threads = Array.from({ length: 100 }, () => {
+    const id = createId("thread");
+    return {
+      accessMode: "full-access" as const,
+      continuationIdentity: null,
+      createdAt: new Date().toISOString(),
+      createdBy: createId("user"),
+      environmentId: createId("environment"),
+      harnessInstanceId: harnessIds[0],
+      id,
+      inputQueuePaused: false,
+      lineageRootThreadId: id,
+      modelSelection: {
+        modelId: "gpt-5.6-sol",
+        options: { effort: "low" },
+        providerId: "openai",
+      },
+      listed: true,
+      parentThreadId: null,
+      pendingRequests: 0,
+      purpose: "task" as const,
+      teamOrigin: null,
+      status: "idle" as const,
+      title: "t".repeat(240),
+      updatedAt: new Date().toISOString(),
+      folder: { computerId: createId("runner"), path: "/tasks" },
+    };
+  });
+  // Every model a discovery page may show, each at its longest names.
+  const longestModel = (index: number) => ({
+    modelId: `${index}`.padEnd(255, "m"),
+    providerId: `p${index}`.padEnd(100, "p"),
+  });
+  const catalog = orchestrator_capabilities.output.parse({
+    folder: { computerId: createId("runner"), path: "/tasks" },
+    accessCeiling: "full-access",
+    limits: {
+      maxDepth: 4,
+      remainingDepth: 4,
+      maxTasks: 32,
+      remainingTasks: 32,
+      maxAutonomousRuns: 64,
+      remainingAutonomousRuns: 64,
+      maxWaitMs: 100_000,
+      taskDeadlineAt: null,
+    },
+    delegationDefault: {
+      environmentId: environments[0]!.id,
+      harnessInstanceId: harnessIds[0],
+      model: {
+        ...longestModel(0),
+        options: Object.fromEntries(
+          Array.from({ length: 16 }, (_, option) => [`o${option}`.padEnd(100, "o"), true]),
+        ),
+      },
+    },
+    harnesses: harnessIds.map((id, index) => ({
+      driverKind: "d".repeat(100),
+      enabled: true,
+      environmentId: environments[index % environments.length]!.id,
+      id,
+      models:
+        index < 5 ? Array.from({ length: 8 }, (_, model) => longestModel(index * 8 + model)) : [],
+      modelsOmitted: index < 5 ? 8_184 : 0,
+      status: "ready",
+      name: "h".repeat(120),
+    })),
+    requestId,
+  });
+  expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
+    agentToolPayloadMaxSerializedBytes,
+  );
+  expect(
+    Buffer.byteLength(JSON.stringify(environment_list.output.parse({ environments })), "utf8"),
+  ).toBeLessThanOrEqual(agentToolPayloadMaxSerializedBytes);
+
+  const threadId = createId("thread");
+  const thread = { ...threads[0], id: threadId };
+  const largeItem = {
+    itemId: createId("message"),
+    type: "message",
+    status: "published",
+    runId: createId("run"),
+    title: null,
+    text: "m".repeat(256 * 1_024),
+    textTruncated: false,
+    nextTextOffset: null,
+    createdAt: new Date().toISOString(),
+  };
+  const readPage = {
+    items: [largeItem],
+    recentRuns: [],
+    recentPlaces: [],
+    hasMore: false,
+    nextBefore: null,
+    thread,
+  };
+  expect(thread_read.output.safeParse(readPage).success).toBe(true);
+  const oversized = thread_read.output.safeParse({
+    ...readPage,
+    items: [largeItem, { ...largeItem, itemId: createId("message") }],
+  });
+  expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
+    "Thread history exceeds the agent output byte limit",
+  ]);
+});
+
+it("fits a full Thread listing page and requires explicit agent message delivery", () => {
+  const listing = thread_list.output.parse({
+    threads: Array.from({ length: 50 }, () => ({
+      assignmentId: createId("delegation"),
+      taskStatus: "open" as const,
+      environmentConnected: true,
+      environmentId: createId("environment"),
+      id: createId("thread"),
+      parentThreadId: createId("thread"),
+      pendingRequests: 2,
+      status: "running" as const,
+      title: "t".repeat(240),
+      updatedAt: new Date().toISOString(),
+      folder: { computerId: createId("runner"), path: "/tasks" },
+    })),
+    hasMore: true,
+    nextBefore: "cursor",
+  });
+  expect(Buffer.byteLength(JSON.stringify(listing), "utf8")).toBeLessThanOrEqual(
+    agentToolPayloadMaxSerializedBytes,
+  );
+  expect(
+    thread_list.output.safeParse({
+      ...listing,
+      threads: [...listing.threads, listing],
+    }).success,
+  ).toBe(false);
+
+  const untitled = thread_send.input.parse({
+    message: "Status?",
+    delivery: "queue",
+    threadId: createId("thread"),
+  });
+  expect(untitled).toMatchObject({ delivery: "queue" });
+  expect(
+    thread_send.input.safeParse({
+      message: "Status?",
+      threadId: createId("thread"),
+    }).success,
+  ).toBe(false);
+  for (const delivery of ["turn", "notify"] as const) {
+    expect(
+      thread_send.input.safeParse({
+        message: "Status?",
+        delivery,
+        threadId: createId("thread"),
+      }).success,
+    ).toBe(false);
+  }
+  expect(thread_list.input.parse({ limit: 50 })).toMatchObject({ limit: 50 });
+  expect(thread_list.input.parse({})).toMatchObject({
+    limit: 25,
+  });
+  expect(thread_list.input.safeParse({ limit: 51 }).success).toBe(false);
 });

@@ -9,7 +9,7 @@ import {
   DesktopWebLinkDeliverySchema,
   type DesktopWebLink,
   type DesktopWebLinkDelivery,
-  type DesktopWorkspaceTabCommand,
+  type DesktopPersonalTabCommand,
   type OpensteerDesktopBridge,
 } from "../packages/protocol/src/desktop.js";
 
@@ -23,9 +23,9 @@ async function deliveryFixture() {
     userId: snapshot.user!.id,
     identity: (): BrowserIdentityChoice => ({ kind: "guest" }),
   };
-  let listener: ((link: DesktopWorkspaceTabCommand) => void) | undefined;
+  let listener: ((link: DesktopPersonalTabCommand) => void) | undefined;
   const sender = {
-    send: (_channel: string, value: DesktopWorkspaceTabCommand) => listener?.(value),
+    send: (_channel: string, value: DesktopPersonalTabCommand) => listener?.(value),
     once: vi.fn(),
     removeListener: vi.fn(),
     isDestroyed: () => false,
@@ -37,7 +37,7 @@ async function deliveryFixture() {
     () => true,
   );
   const bridge = {
-    onWorkspaceTabCommand: (receive: typeof listener) => {
+    onPersonalTabCommand: (receive: typeof listener) => {
       listener = receive;
       return () => {
         listener = undefined;

@@ -35,7 +35,7 @@ interface Draft {
 
 /**
  * Routed page for changing an automation's program by hand, at
- * `/automations/:triggerId/edit`. Most people never come here; they ask in Chat.
+ * `/automations/:triggerId/edit`. Most people never come here; they ask their agent in a task.
  */
 export function AutomationEditorPage() {
   const { triggerId = "" } = useParams();
@@ -82,7 +82,7 @@ export function AutomationEditorPage() {
         {editing?.trigger.systemRole != null ? (
           <p className="card__empty">
             Opensteer manages this memory pass. You can inspect it and pause or resume it from its
-            automation page. To stop remembering, ask Chat.
+            automation page. To stop remembering, ask your agent.
           </p>
         ) : null}
         {editing?.trigger.status === "archived" ? (
@@ -157,7 +157,7 @@ function EditorForm({ editing }: { readonly editing: TriggerDetail }) {
               ) : null}
               {conversations.map((thread) => (
                 <option key={thread.id} value={thread.id}>
-                  {conversationLabel(thread, snapshot)}
+                  {conversationLabel(thread)}
                 </option>
               ))}
             </select>
@@ -294,17 +294,8 @@ function ScheduleFields({
   );
 }
 
-function conversationLabel(
-  thread: ThreadSummary,
-  snapshot: {
-    readonly homeThreadId: string | null;
-    readonly workspaces: readonly { readonly id: string; readonly name: string }[];
-  },
-): string {
-  const name = conversationName(thread.id, thread.title, snapshot.homeThreadId);
-  if (thread.id === snapshot.homeThreadId) return name;
-  const workspace = snapshot.workspaces.find(({ id }) => id === thread.workspaceId)?.name;
-  return workspace ? `${name} (${workspace})` : name;
+function conversationLabel(thread: ThreadSummary): string {
+  return conversationName(thread.title);
 }
 
 function sourceFrom(draft: Draft, editing: TriggerDetail): TriggerSource {

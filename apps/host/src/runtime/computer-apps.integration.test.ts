@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createId } from "@opensteer/core";
-import { IntegrationPlatformStore } from "@opensteer/database";
+
 import {
   RunnerAuxiliaryStreamIdSchema,
   type ComputerUseDataGrants,
@@ -22,7 +22,7 @@ import { computerAppIntegrations } from "@opensteer/integration-catalog";
 import { isComputerAppDefinition } from "@opensteer/integration-core";
 import { computerAppOperationContract } from "@opensteer/integration-core/computer-app-tools";
 import type { IntegrationAccess } from "@opensteer/integration-core";
-import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
+import { testRpcData } from "../server/test-host-api-request.js";
 import {
   connectComputerAppMachine,
   integrationGateway,
@@ -38,15 +38,13 @@ import {
   configurePersonalRemoteAccess,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
   resetMachineAccessDatabase,
   revokeMachine,
-  signUpUser,
-  startMachineAccessHost,
-  startPersonalMachineAccessHost,
+  additionalOwnerSession,
+  startMachineAccessWireHost,
   waitForCondition,
   type MachineAccessHost,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -76,7 +74,7 @@ integration("computer apps", () => {
     const directory =
       process.env.OPENSTEER_APPROVAL_COMPAT_E2E_ARTIFACT_DIR ??
       (await mkdtemp(join(tmpdir(), "opensteer-approval-compat-")));
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+    const host = await startMachineAccessWireHost(databaseUrl, { remoteAccess: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       for (const close of closers) await close();
@@ -118,18 +116,17 @@ integration("computer apps", () => {
   });
 
   it("uses one real Host, Runner stream, connection, grant, and gateway lifecycle", async () => {
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       for (const close of closers) await close().catch(() => undefined);
     };
     const caller = await connectCallerMachine(host, {
       name: "Caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "computer-app-caller",
-        name: "Caller",
-      }),
+      token: host.hostingRunnerEnrollmentToken,
     });
     closers.unshift(() => caller.close());
     const provider = fakeMessagesProvider();
@@ -185,10 +182,6 @@ integration("computer apps", () => {
       ),
     ).rejects.toThrow(/HTTP 403.*forbidden/u);
     const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "messages-read");
-    const second = await signUpUser(host, {
-      email: "second@example.test",
-      password: "second-user-password",
-    });
     const respond = (setupRequestId: string, headers: Record<string, string>) =>
       testRpcData(
         host.origin,
@@ -201,21 +194,7 @@ integration("computer apps", () => {
         },
         { headers },
       );
-    await expect(respond(setup.id, second.headers)).rejects.toThrow("no longer waiting for you");
-    const signedIn = await testRpcRequest(
-      host.origin,
-      "auth.password.signIn",
-      { email: "alex@example.com", password: "machine-access-owner-password" },
-      { headers: { origin: host.origin, "user-agent": "Owner's iPhone" } },
-    );
-    expect(signedIn.status).toBe(200);
-    const otherOwnerSession = {
-      origin: host.origin,
-      cookie: signedIn.headers
-        .getSetCookie()
-        .map((cookie) => cookie.split(";", 1)[0])
-        .join("; "),
-    };
+    const otherOwnerSession = await additionalOwnerSession(host);
     expect(otherOwnerSession.cookie.length).toBeGreaterThan(0);
     expect(otherOwnerSession.cookie === host.ownerHeaders.cookie).toBe(false);
     await respond(setup.id, otherOwnerSession);
@@ -229,59 +208,6 @@ integration("computer apps", () => {
         .executeTakeFirstOrThrow(),
     };
     await expect(respond(setup.id, host.ownerHeaders)).rejects.toThrow("no longer waiting");
-
-    const secondDashboard = await testRpcData(
-      host.origin,
-      "integrations.get",
-      {},
-      {
-        headers: second.headers,
-      },
-    );
-    expect(secondDashboard.connections).not.toContainEqual(
-      expect.objectContaining({ id: enabled.connection.id }),
-    );
-    const secondCaller = await connectCallerMachine(
-      { ...host, ownerHeaders: second.headers, ownerId: second.userId },
-      {
-        name: "Second owner's computer",
-        token: await enrollmentToken(
-          { ...host, ownerHeaders: second.headers },
-          {
-            allowedModules: ["agents"],
-            idempotencyKey: "second-owner-computer",
-            name: "Second owner's computer",
-          },
-        ),
-      },
-    );
-    closers.unshift(() => secondCaller.close());
-    const secondWorkspace = await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "second-user-workspace",
-        name: "Second user workspace",
-        type: "workspace.create",
-      },
-      { headers: second.headers },
-    );
-    if (secondWorkspace.type !== "workspace.create") throw new Error("Command mismatch");
-    const secondPlatform = new IntegrationPlatformStore(host.store.database);
-    await expect(
-      secondPlatform.getComputerConnectionForCall({
-        connectionId: enabled.connection.id,
-        ownerUserId: second.userId,
-      }),
-    ).resolves.toBeNull();
-    await expect(
-      secondPlatform.listCallableTools({
-        ownerUserId: second.userId,
-        providerAuthorizations: {},
-        threadId: createId("thread"),
-        workspaceId: secondWorkspace.workspace.id,
-      }),
-    ).resolves.toEqual([]);
 
     const run = await dispatchCallerRun(host, caller, {
       key: "computer-app-run",
@@ -476,7 +402,7 @@ integration("computer apps", () => {
     });
     await expect(
       host.store.database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select("type")
         .where("runId", "=", run.runId)
         .where("type", "=", "request.cancelled")
@@ -508,7 +434,7 @@ integration("computer apps", () => {
   }, 180_000);
 
   it("rejects out-of-sequence, malformed, and stale integration heartbeats", async () => {
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+    const host = await startMachineAccessWireHost(databaseUrl, { remoteAccess: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       for (const close of closers) await close().catch(() => undefined);
@@ -552,119 +478,8 @@ integration("computer apps", () => {
     });
   });
 
-  it("lets an administrator disconnect another owner's computer without inheriting its apps", async () => {
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
-    const closers: (() => Promise<void>)[] = [() => host.close()];
-    closeCurrent = async () => {
-      for (const close of closers) await close().catch(() => undefined);
-    };
-    const computer = await connectComputerAppMachine(host, fakeMessagesProvider());
-    closers.unshift(() => computer.close());
-    const setup = await requestComputerAppSetup(host, computer.runnerId, "read", "admin-boundary");
-    const enabled = await setComputerApp(host, computer, setup, setup.id);
-    const administrator = await signUpUser(host, {
-      email: "administrator@example.test",
-      password: "administrator-password",
-    });
-    await host.store.database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", administrator.userId)
-      .executeTakeFirstOrThrow();
-    const dashboard = await testRpcData(
-      host.origin,
-      "integrations.get",
-      {},
-      { headers: administrator.headers },
-    );
-    expect(dashboard.connections).not.toContainEqual(
-      expect.objectContaining({ id: enabled.connection.id }),
-    );
-    const administratorMachines = await testRpcData(
-      host.origin,
-      "machines.list",
-      {},
-      {
-        headers: administrator.headers,
-      },
-    );
-    expect(
-      administratorMachines.machines.find(({ id }) => id === computer.runnerId)?.apps ?? null,
-    ).toBeNull();
-    const pending = await requestComputerAppSetup(
-      host,
-      computer.runnerId,
-      "read-write",
-      "owner-only-approval",
-    );
-    await expect(
-      testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          type: "integration.computer.setup.respond",
-          idempotencyKey: "administrator-cannot-approve",
-          setupRequestId: pending.id,
-          decision: "allow",
-        },
-        { headers: administrator.headers },
-      ),
-    ).rejects.toThrow("no longer waiting for you");
-    expect(
-      await host.store.database
-        .selectFrom("computerAppSetupRequests")
-        .select("id")
-        .where("id", "=", pending.id)
-        .executeTakeFirst(),
-    ).toEqual({ id: pending.id });
-    expect(
-      await host.store.database
-        .selectFrom("integrationConnections")
-        .select("computerAccess")
-        .where("id", "=", enabled.connection.id)
-        .executeTakeFirstOrThrow(),
-    ).toEqual({ computerAccess: "read" });
-    const requests = await testRpcData(
-      host.origin,
-      "integration.computer.setup.list",
-      {},
-      { headers: administrator.headers },
-    );
-    expect(requests.requests).toEqual([]);
-    await expect(
-      testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "administrator-cannot-enable",
-          input: {
-            kind: "app",
-            app: null,
-            access: "read-write",
-            definitionId: "apple-messages",
-            runnerId: computer.runnerId,
-          },
-          type: "integration.computer.setup.set",
-        },
-        { headers: administrator.headers },
-      ),
-    ).rejects.toThrow(/HTTP 403.*forbidden/u);
-    await expect(
-      testRpcData(
-        host.origin,
-        "commands.dispatch",
-        {
-          idempotencyKey: "administrator-disconnects-computer",
-          machineId: computer.runnerId,
-          type: "machine.revoke",
-        },
-        { headers: administrator.headers },
-      ),
-    ).resolves.toMatchObject({ type: "machine.revoke" });
-  }, 180_000);
-
-  it("serves an app from a non-Main computer on a Personal Deployment", async () => {
-    const host = await startPersonalMachineAccessHost(databaseUrl);
+  it("serves an app from another computer on a Personal Deployment", async () => {
+    const host = await startMachineAccessWireHost(databaseUrl, { manualRunner: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       for (const close of closers) await close().catch(() => undefined);
@@ -672,12 +487,13 @@ integration("computer apps", () => {
     const caller = await connectCallerMachine(host, {
       environmentId: host.ownerEnvironmentId,
       localDirectory: true,
-      name: "Main computer",
+      name: "Home Mac",
       runnerKind: "main",
-      token: host.mainRunnerEnrollmentToken,
+      token: host.hostingRunnerEnrollmentToken,
     });
     closers.unshift(() => caller.close());
     await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "private",
       routeOrigin: "https://personal.computer-apps.test",
     });
@@ -783,18 +599,17 @@ integration("computer apps", () => {
     const helper = scriptedHelper();
     let failure: unknown = null;
     try {
-      const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+      const host = await startMachineAccessWireHost(databaseUrl, {
+        remoteAccess: true,
+        manualRunner: true,
+      });
       const closers: (() => Promise<void>)[] = [() => host.close()];
       closeCurrent = async () => {
         for (const close of closers) await close().catch(() => undefined);
       };
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "helper-apps-caller",
-          name: "Caller",
-        }),
+        token: host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const computer = await connectComputerAppMachine(

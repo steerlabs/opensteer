@@ -4,7 +4,6 @@ import {
   queuedMessages,
   type HostClient,
   type QueuedMessage,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import type { ArtifactContentPart, ThreadInputQueue } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
@@ -210,18 +209,15 @@ function QueuedBubble(props: {
     <Message
       queued
       conversation={false}
-      homeThreadId={null}
       onReply={undefined}
       message={props.message.entry}
       open={open}
       onToggle={() => setOpen(!open)}
       onOpenThread={ignoreThread}
       viewerUserId={props.viewerUserId}
-      workspaces={noWorkspaces}
     />
   );
 }
-const noWorkspaces: readonly WorkspaceSummary[] = [];
 const ignoreThread = (): void => undefined;
 const styles = StyleSheet.create({
   section: { gap: space[12], paddingTop: space[16] },

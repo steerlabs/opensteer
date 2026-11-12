@@ -94,7 +94,6 @@ function testPort(options: {
   const verified: string[] = [];
   /** Makes the most recent attachment answer the way a refused Host does. */
   const refusals: (() => void)[] = [];
-  const workspaceRefusals: (() => void)[] = [];
   const factory: MobileHostPortFactory = ({ oauth, sessions }): MobileHostPort => ({
     credentials:
       options.realCredentials === true
@@ -124,12 +123,7 @@ function testPort(options: {
       // to give, so it is layered over the two members `MobileClient` reads:
       // everything else still runs on the real object and its private state.
       const listeners = new Set<() => void>();
-      let refused = false,
-        workspaceRefused = false;
-      workspaceRefusals.push(() => {
-        workspaceRefused = true;
-        for (const listener of listeners) listener();
-      });
+      let refused = false;
       refusals.push(() => {
         refused = true;
         for (const listener of listeners) listener();
@@ -144,15 +138,6 @@ function testPort(options: {
                 "capabilities" in options.verification &&
                 options.verification.capabilities.includes("integration-app-finish-v1"),
               ...(refused ? { session: "authentication-required" as const } : {}),
-              ...(workspaceRefused
-                ? {
-                    savedViewReadiness: {
-                      tasksReady: false,
-                      home: { status: "unknown" as const },
-                      workspaceRefusal: 1,
-                    },
-                  }
-                : {}),
             });
           }
           const send: SignalledDispatch = (command, call) => {
@@ -206,7 +191,6 @@ function testPort(options: {
     disposed,
     factory,
     refusals,
-    workspaceRefusals,
     verified,
   };
 }
@@ -597,7 +581,9 @@ describe("MobileClient integration authorization", () => {
         });
       },
     });
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
 
@@ -647,7 +633,9 @@ describe("MobileClient integration authorization", () => {
         return callback;
       },
     });
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
     await expect(
@@ -701,7 +689,9 @@ describe("MobileClient integration authorization", () => {
             returnProof: "r".repeat(43),
           }),
       });
-      await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await client.catalog.upsert(
+        asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+      );
       await client.initialize();
       await client.select(serverId);
       vi.useFakeTimers();
@@ -947,7 +937,9 @@ describe("MobileClient integration authorization", () => {
           throw new Error("browser unavailable");
         },
       }).client;
-      await first.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await first.catalog.upsert(
+        asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+      );
       await first.initialize();
       await first.select(serverId);
       await expect(first.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow(
@@ -975,7 +967,9 @@ describe("MobileClient integration authorization", () => {
       ).toHaveLength(0);
       try {
         if (mode === "selection-changed") {
-          await second.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
+          await second.catalog.upsert(
+            asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
+          );
           await second.select(otherId);
         }
         if (mode === "signed-out") await second.signOut(serverId);
@@ -1069,7 +1063,9 @@ describe("MobileClient integration authorization", () => {
           });
         },
       });
-      await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+      await client.catalog.upsert(
+        asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+      );
       await client.initialize();
       await client.select(serverId);
       const requestId = createId("request");
@@ -1103,7 +1099,9 @@ describe("MobileClient integration authorization", () => {
           deploymentId: DeploymentIdSchema.parse(serverId),
         }),
     });
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
 
@@ -1116,9 +1114,13 @@ describe("MobileClient integration authorization", () => {
   it("drops an unsolicited cold callback before selection or RPC", async () => {
     const port = testPort({ held: true });
     const { client } = open(port.factory);
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
+    );
     const previous = client.getSnapshot().selection.deploymentId;
     const commands = port.commands.length;
     const callback = buildNativeIntegrationAuthorizationCallback({
@@ -1152,7 +1154,9 @@ describe("MobileClient integration authorization", () => {
         throw new Error("offline");
       },
     });
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
     await expect(client.beginIntegrationAuthorization({ definitionId: "slack" })).rejects.toThrow();
@@ -1234,7 +1238,9 @@ describe("MobileClient cancelling an integration sign-in", () => {
           );
         }),
     });
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
     const controller = new AbortController();
@@ -1544,7 +1550,9 @@ describe("MobileClient startup selection", () => {
   it("selects the only locally known deployment once on a new phone", async () => {
     const files = new MemoryPrivateFilesystem();
     const { client } = open(testPort({ held: false }).factory, files);
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
 
     await client.initialize();
 
@@ -1563,7 +1571,9 @@ describe("MobileClient startup selection", () => {
       JSON.stringify({ schemaVersion: 1, selectedDeploymentId: null }),
     );
     const { client } = open(testPort({ held: false }).factory, files);
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
 
     await client.initialize();
 
@@ -1578,7 +1588,7 @@ describe("MobileClient startup selection", () => {
     const files = new MemoryPrivateFilesystem();
     const first = open(testPort({ held: true }).factory, files);
     await first.client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await first.client.initialize();
     await first.client.select(serverId);
@@ -1669,13 +1679,20 @@ describe("MobileClient Account directory state", () => {
     await client.catalog.upsertAndSelect(
       asInput(
         testDeploymentConnection({
+          kind: "personal",
           deploymentId: serverId,
           source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
         }),
       ),
     );
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "manual server" })),
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: otherId,
+          name: "manual server",
+        }),
+      ),
     );
     await client.initialize();
     await client.select(serverId);
@@ -1990,10 +2007,12 @@ describe("MobileClient attachment reconciliation", () => {
       },
     }));
     await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "available" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "available" }),
+      ),
     );
     await client.initialize();
 
@@ -2052,7 +2071,9 @@ describe("MobileClient attachment reconciliation", () => {
     await client.select(serverId);
 
     await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "new server" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "new server" }),
+      ),
     );
     await client.reconcile();
     await settle();
@@ -2083,7 +2104,9 @@ describe("MobileClient attachment reconciliation", () => {
     const { client } = open(port.factory, storage.filesystem);
     await client.catalog.upsertAndSelect(connectComputer(1));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "elsewhere" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "elsewhere" }),
+      ),
     );
     await client.initialize();
     await client.select(serverId);
@@ -2130,7 +2153,9 @@ describe("MobileClient attachment reconciliation", () => {
     // A row arriving from the Account directory, which never moves the
     // selection: the attachment has no reason to notice it.
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "elsewhere" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "elsewhere" }),
+      ),
     );
     await settle();
 
@@ -2144,10 +2169,12 @@ describe("MobileClient attachment reconciliation", () => {
     const files = new MemoryPrivateFilesystem();
     const { client } = open(port.factory, files);
     await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "remaining" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "remaining" }),
+      ),
     );
     await client.initialize();
     await client.select(serverId);
@@ -2228,7 +2255,7 @@ describe("MobileClient cold saved launch", () => {
     expect(write).toHaveBeenCalled();
     write.mockClear();
     delayed = true;
-    port.workspaceRefusals.at(-1)!();
+    const changing = client.sessions.save(personalSession());
     await started.promise;
     await client.retrySelection();
     await settle();
@@ -2236,12 +2263,13 @@ describe("MobileClient cold saved launch", () => {
     await client.savedViews.flush();
     expect(write).not.toHaveBeenCalled();
     release.resolve();
+    await changing;
     await vi.waitFor(async () => {
       await client.savedViews.flush();
       expect(write).toHaveBeenCalled();
     });
     expect(client.getSnapshot().savedViewFailure).toBeNull();
-    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
     client.dispose();
   });
 
@@ -2317,7 +2345,7 @@ describe("MobileClient cold saved launch", () => {
         (await client.sessions.load(DeploymentIdSchema.parse(serverId)))!.viewLoginId,
       ).not.toBe(before.loginId);
       expect(await store.load(before, () => true)).toBeNull();
-      expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+      expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
       await client.savedViews.flush();
       const after = write.mock.calls.at(-1)![0];
       expect(after.loginId).not.toBe(before.loginId);
@@ -2347,29 +2375,29 @@ describe("MobileClient cold saved launch", () => {
     await signInTestAccount(client, opened);
     const accountConnection = () =>
       testDeploymentConnection({
+        kind: "personal",
         deploymentId: serverId,
         source: { kind: "account", issuer: accountOrigin, subject },
       });
     await client.catalog.upsert(asInput(accountConnection()));
     await client.select(serverId);
-    await client.signIn(serverId);
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
+    await client.sessions.save(personalSession());
+    await client.retrySelection();
     await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await settle();
     await client.savedViews.flush();
     const before = write.mock.calls.at(-1)![0],
-      hostLogin = client.oauth.hostViewLoginId(accountConnection());
+      hostLogin = (await client.sessions.load(DeploymentIdSchema.parse(serverId)))?.viewLoginId;
     expect(before.accountSource?.subject).toBe(accountSubject);
     expect(await store.load(before, () => true)).toEqual(before);
     const signing = client.oauth.beginAccountSignIn();
-    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
     expect(client.getSnapshot().selection.hostClient).toBeNull();
     await signing;
     expect(encrypted.slots()).toEqual([]);
-    expect(client.oauth.hostViewLoginId(accountConnection())).toBe(hostLogin);
+    expect((await client.sessions.load(DeploymentIdSchema.parse(serverId)))?.viewLoginId).toBe(
+      hostLogin,
+    );
     subject = ControlPlaneAccountIdSchema.parse("acct_0192f4a1-8888-4000-8000-000000000008");
     const callback = new URL(opensteerMobileAccountOAuthCallback);
     callback.searchParams.set("code", "account-code");
@@ -2381,11 +2409,8 @@ describe("MobileClient cold saved launch", () => {
     expect(await store.load(before, () => true)).toBeNull();
     await client.catalog.upsert(asInput(accountConnection()));
     await client.select(serverId);
-    await client.signIn(serverId);
-    const hostState = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${hostState}`,
-    );
+    await client.sessions.save(personalSession());
+    await client.retrySelection();
     await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await settle();
     await client.savedViews.flush();
@@ -2397,7 +2422,7 @@ describe("MobileClient cold saved launch", () => {
     client.dispose();
   });
 
-  it.each(["workspace", "authentication", "marker-write"] as const)(
+  it.each(["authentication", "marker-write"] as const)(
     "keeps refused encrypted content denied across owner restart after %s failure",
     async (reason) => {
       const encrypted = savedViewFixture(savedViewCleanup),
@@ -2432,9 +2457,8 @@ describe("MobileClient cold saved launch", () => {
         reason === "marker-write"
           ? vi.spyOn(files, "writeFileExclusive").mockRejectedValue(new Error("disk full"))
           : null;
-      if (reason === "authentication") port.refusals.at(-1)!();
-      else port.workspaceRefusals.at(-1)!();
-      expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+      port.refusals.at(-1)!();
+      expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
       await vi.waitFor(() =>
         expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u),
       );
@@ -2490,19 +2514,16 @@ describe("MobileClient cold saved launch", () => {
       }),
       files = new MemoryPrivateFilesystem();
     const firstPort = testPort({ held: true, realCredentials: true });
-    const { client: first, opened } = open(firstPort.factory, files, {
+    const { client: first } = open(firstPort.factory, files, {
       records,
       savedViewStore: store,
     });
     await first.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await first.initialize();
-    await first.signIn(serverId);
-    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
-    await first.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
+    await first.sessions.save(personalSession());
+    await first.retrySelection();
     await settle();
     await first.savedViews.flush();
     const load = vi.spyOn(store, "load");
@@ -2524,8 +2545,6 @@ describe("MobileClient cold saved launch", () => {
                 session: "checking",
                 savedViewReadiness: {
                   tasksReady: false,
-                  home: { status: "unknown" },
-                  workspaceRefusal: 0,
                 },
               },
         );
@@ -2538,7 +2557,7 @@ describe("MobileClient cold saved launch", () => {
     });
     const { client } = open(port.factory, files, { records, savedViewStore: store });
     await client.initialize();
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("saved"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("saved"));
     expect(client.getSnapshot().selection).toMatchObject({
       deploymentId: serverId,
       status: "ready",
@@ -2554,13 +2573,13 @@ describe("MobileClient cold saved launch", () => {
     expect(await capabilities()).toEqual([]);
     expect(port.verified).toHaveLength(1);
     bootstrap.resolve();
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await client.savedViews.flush();
     expect(await capabilities()).toEqual([]);
     expect(port.verified).toHaveLength(1);
     client.dispose();
   });
-  it("does not revive old presentation or capture when local scope initialization crosses interactive sign-in", async () => {
+  it("does not revive old presentation or capture when local scope initialization crosses personal sign-out", async () => {
     const base = testPort({ held: true }),
       gate = deferred<void>(),
       loginId = globalThis.crypto.randomUUID(),
@@ -2590,14 +2609,15 @@ describe("MobileClient cold saved launch", () => {
       },
     });
     await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await client.initialize();
     await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
-    await client.signIn(serverId);
+    const changing = client.signOut(serverId);
     gate.resolve();
+    await changing;
     await settle();
-    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
     await client.savedViews.flush();
     expect(writes).not.toHaveBeenCalled();
     client.dispose();
@@ -2607,7 +2627,7 @@ describe("MobileClient cold saved launch", () => {
     const memory = createMemorySavedViews(),
       write = vi.spyOn(memory, "write"),
       secure = new MemorySecureStore();
-    const { client } = open(createMockHostPort({ initialHome: "absent" }), undefined, {
+    const { client } = open(createMockHostPort(), undefined, {
       savedViewStore: memory,
       records: createSecureRecordStore({ keyPrefix: "mock-auth", secureStore: secure }),
     });
@@ -2616,12 +2636,12 @@ describe("MobileClient cold saved launch", () => {
     await client.catalog.upsertAndSelect(connection);
     await client.initialize();
     await client.select(connection.authority.document.deploymentId);
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await client.savedViews.flush();
     expect(write).toHaveBeenCalled();
     expect(write.mock.calls.at(-1)?.[0]).toMatchObject({
       loginId: expect.any(String),
-      home: { threadId: null, messages: [] },
+      tasks: expect.any(Array),
     });
     expect(secure.keys).toEqual([]);
     write.mockClear();
@@ -2652,14 +2672,14 @@ describe("MobileClient sign-in", () => {
     expect(base.attached).toHaveLength(1);
     expect(client.getSnapshot().selection.row?.status).toBe("connected");
     await client.savedViews.flush();
-    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
     expect(load).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     client.dispose();
   });
 
-  it("hides before interactive login, replaces healthy clients, and reconfirms a cancelled login", async () => {
-    const port = testPort({ held: true, realCredentials: true });
+  it("keeps the selected computer attached while a team signs in or cancels sign-in", async () => {
+    const port = testPort({ held: true });
     const deleted: string[] = [];
     const { client, opened } = open(port.factory, undefined, {
       savedViewStore: {
@@ -2670,37 +2690,41 @@ describe("MobileClient sign-in", () => {
         },
       },
     });
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
+    );
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
     );
     await client.initialize();
-    const exchange = async () => {
+    await client.select(otherId);
+    const computer = client.getSnapshot().selection.hostClient;
+    const signIn = async () => {
+      await client.signIn(serverId);
       const state = new URL(opened.at(-1)!).searchParams.get("state")!;
       await client.oauth.handleCallback(
         `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
       );
       await settle();
     };
-    await client.signIn(serverId);
-    await exchange();
-    await vi.waitFor(() => expect(client.getSnapshot().selection.row?.status).toBe("connected"));
-    const first = client.getSnapshot().selection.hostClient;
-    await client.signIn(serverId);
-    expect(deleted).toContain(serverId);
-    expect(client.getSnapshot().selection.hostClient).toBeNull();
-    await exchange();
-    expect(client.getSnapshot().selection.hostClient).not.toBe(first);
-    const second = client.getSnapshot().selection.hostClient;
+    await signIn();
+    const team = client.getSnapshot().teams[0]!.connection;
+    expect(client.oauth.hostCredentialState(team).status).toBe("signed-in");
+    const login = client.oauth.hostViewLoginId(team);
     await client.signIn(serverId);
     client.oauth.abandonHostSignIn(DeploymentIdSchema.parse(serverId));
     await settle();
-    expect(client.getSnapshot().selection.hostClient).not.toBe(second);
-    expect(port.attached).toHaveLength(3);
+    expect(client.oauth.hostViewLoginId(team)).toBe(login);
+    expect(client.getSnapshot().selection.hostClient).toBe(computer);
+    expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
+    expect(deleted).toContain(serverId);
+    expect(deleted).not.toContain(otherId);
+    expect(port.disposed).toEqual([]);
     client.dispose();
   });
 
-  it("deletes the saved key before revocation, retaining a visible cleanup failure for retry", async () => {
-    const port = testPort({ held: true, realCredentials: true });
+  it("clears a team's cached authority before revocation and retries a failed cleanup", async () => {
+    const port = testPort({ held: true });
     const events: string[] = [];
     let fail = false;
     const { client, opened } = open(port.factory, undefined, {
@@ -2717,8 +2741,8 @@ describe("MobileClient sign-in", () => {
         return testFetch(input);
       },
     });
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
     );
     await client.initialize();
     await client.signIn(serverId);
@@ -2729,12 +2753,11 @@ describe("MobileClient sign-in", () => {
     await settle();
     events.length = 0;
     fail = true;
-    const signingOut = client.signOut(serverId);
-    expect(client.getSnapshot().selection.hostClient).toBeNull();
-    await signingOut;
+    await client.signOut(serverId);
     expect(events[0]).toBe("delete-key");
     expect(events).toContain("revoke");
     expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u);
+    expect(port.attached).toEqual([]);
     fail = false;
     await client.foregrounded();
     expect(client.getSnapshot().savedViewFailure).toBeNull();
@@ -2767,7 +2790,9 @@ describe("MobileClient sign-in", () => {
     await client.initialize();
     await client.catalog.upsert(connectComputer(1));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "elsewhere" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "elsewhere" }),
+      ),
     );
     const exchange = deferred<ReturnType<typeof sessionExchangeResponse>>();
     const started = deferred<void>();
@@ -2788,52 +2813,80 @@ describe("MobileClient sign-in", () => {
     client.dispose();
   });
 
-  it("opens Host OAuth for a user-opened self-hosted deployment and attaches after callback", async () => {
-    const port = testPort({ held: false, realCredentials: true });
-    const { client, opened } = open(port.factory);
+  it("refuses to select or open a team as a computer before and after sign-in", async () => {
+    const port = testPort({ held: true });
+    const { client, opened, privateFiles } = open(port.factory);
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
+    );
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
+    );
     await client.initialize();
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
-    await settle();
-
-    await client.openDeployment(serverId);
-
-    expect(client.getSnapshot().selection.deploymentId).toBe(serverId);
-    expect(opened).toHaveLength(1);
-    expect(opened[0]).toContain("https://host.example.com");
-    expect(port.attached).toEqual([]);
-
-    const state = new URL(opened[0]!).searchParams.get("state") ?? "";
+    await client.select(otherId);
+    const computer = client.getSnapshot().selection.hostClient;
+    for (const action of ["select", "openDeployment"] as const) {
+      await expect(client[action](serverId)).rejects.toThrow(
+        /team cannot be opened as a computer/u,
+      );
+    }
+    expect(opened).toEqual([]);
+    await client.signIn(serverId);
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
     await client.oauth.handleCallback(
       `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
     );
     await settle();
-
-    expect(port.attached).toHaveLength(1);
-    expect(client.getSnapshot().selection.row?.status).toBe("connected");
+    await client.catalog.upsert({
+      ...asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
+      kind: "personal",
+    });
+    for (const action of ["select", "openDeployment"] as const) {
+      await expect(client[action](serverId)).rejects.toThrow(
+        /team cannot be opened as a computer/u,
+      );
+    }
+    expect(client.getSnapshot().selection.hostClient).toBe(computer);
+    expect(client.getSnapshot().rows.map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
+    expect(await client.catalog.load()).toMatchObject({ selectedDeploymentId: otherId });
+    expect(
+      new TextDecoder().decode((await privateFiles.readFile("/private/selection.json", 1024))!),
+    ).toContain(otherId);
+    expect(port.attached.every(({ deploymentId }) => deploymentId === otherId)).toBe(true);
     client.dispose();
   });
 
-  it("does not open a browser when a self-hosted deployment is selected automatically", async () => {
-    const port = testPort({ held: false });
-    const { client, opened } = open(port.factory);
-    await client.initialize();
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
-
-    await client.select(serverId);
-
-    expect(opened).toEqual([]);
-    expect(client.getSnapshot().selection.row).toMatchObject({
-      signIn: "host-oauth",
-      status: "needs-sign-in",
-    });
-    client.dispose();
+  it("leaves a team-only catalog unselected on a fresh phone or stale remembered selection", async () => {
+    for (const remembered of [false, true]) {
+      const port = testPort({ held: true });
+      const files = new MemoryPrivateFilesystem();
+      if (remembered)
+        await files.writeFileAtomic(
+          "/private/selection.json",
+          JSON.stringify({ schemaVersion: 1, selectedDeploymentId: serverId }),
+        );
+      const { client, opened } = open(port.factory, files);
+      await client.catalog.upsertAndSelect(
+        asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
+      );
+      await client.initialize();
+      await settle();
+      expect(client.getSnapshot().selection.deploymentId).toBeNull();
+      expect(client.getSnapshot().rows).toEqual([]);
+      expect(client.getSnapshot().teams).toHaveLength(1);
+      expect(port.attached).toEqual([]);
+      expect(opened).toEqual([]);
+      client.dispose();
+    }
   });
 
   it("does not open Host OAuth when opening discovers an identity mismatch", async () => {
     const port = testPort({ held: false, verification: "identity-mismatch" });
     const { client, opened } = open(port.factory);
     await client.initialize();
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await settle();
 
     await client.openDeployment(serverId);
@@ -2861,9 +2914,13 @@ describe("MobileClient sign-in", () => {
       },
     }));
     await client.initialize();
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "newer choice" })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
+    await client.catalog.upsert(
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "newer choice" }),
+      ),
     );
 
     const opening = client.openDeployment(serverId);
@@ -2931,18 +2988,17 @@ describe("MobileClient sign-in", () => {
     client.dispose();
   });
 
-  it("opens the Host's own authorization server for a self-hosted deployment", async () => {
+  it("opens a team's authorization server without selecting it", async () => {
     const port = testPort({ held: false });
     const { client, opened } = open(port.factory);
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
     );
     await client.initialize();
-
     await client.signIn(serverId);
-
     expect(opened).toHaveLength(1);
     expect(opened[0]).toContain("https://host.example.com");
+    expect(client.getSnapshot().selection.deploymentId).toBeNull();
     expect(port.attached).toEqual([]);
     expect(port.credentialRequests).toEqual([]);
     client.dispose();
@@ -2970,7 +3026,7 @@ describe("MobileClient sign-in", () => {
     const port = testPort({ held: true });
     const { client } = open(port.factory);
     await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await client.initialize();
     await client.select(serverId);
@@ -2981,60 +3037,44 @@ describe("MobileClient sign-in", () => {
     await settle();
 
     expect(client.getSnapshot().selection.row?.status).toBe("needs-sign-in");
-    expect(client.getSnapshot().selection.row?.signIn).toBe("host-oauth");
+    expect(client.getSnapshot().selection.row?.signIn).toBe("pairing-code");
     client.dispose();
   });
 
-  it("replaces a refused attachment when the new credential lands, not when the browser opens", async () => {
-    const port = testPort({ held: true });
-    const { client, opened } = open(port.factory);
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+  it("replaces a refused personal attachment only after a new pairing session is stored", async () => {
+    const port = testPort({ held: false, realCredentials: true });
+    const { client } = open(port.factory);
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
     );
     await client.initialize();
+    await client.sessions.save(personalSession());
     await client.select(serverId);
-    port.refusals.at(-1)?.();
     await settle();
-
-    await client.signIn(serverId);
+    port.refusals.at(-1)!();
     await settle();
-    // Handing the authorize URL to the browser is not a credential: the code
-    // has still to be exchanged, and re-attaching here would send the refused
-    // token a second time.
     expect(port.attached).toHaveLength(1);
-
-    const state = new URL(opened.at(-1) ?? "").searchParams.get("state") ?? "";
-    await client.oauth.handleCallback(
-      `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
-    );
-    await settle();
-
-    // The refused client is latched on the Host's answer, so the credential
-    // that just landed reaches the Host only through a new attachment.
+    await client.sessions.save(personalSession());
+    await vi.waitFor(() => expect(port.attached).toHaveLength(2));
     expect(port.disposed).toEqual([serverId]);
-    expect(port.attached).toHaveLength(2);
     expect(client.getSnapshot().selection.row?.status).toBe("connected");
     client.dispose();
   });
 
-  it("does not restore a prior deployment when its credential lands behind a newer selection", async () => {
+  it("keeps a newer computer selection when a team's OAuth callback arrives", async () => {
     const port = testPort({ held: true });
     const files = blockedSelectionWrites(new MemoryPrivateFilesystem());
     const { client, opened } = open(port.factory, files.filesystem);
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
     );
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "elsewhere" })),
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
     );
     await client.initialize();
-    await client.select(serverId);
-    await settle();
-    port.refusals.at(-1)?.();
-    await settle();
+    await client.deselect();
     await client.signIn(serverId);
-    const state = new URL(opened.at(-1) ?? "").searchParams.get("state") ?? "";
-
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
     const blocked = files.blockNext();
     const switching = client.select(otherId);
     await blocked.started;
@@ -3044,9 +3084,9 @@ describe("MobileClient sign-in", () => {
     blocked.release();
     await switching;
     await settle();
-
     expect(client.getSnapshot().selection.deploymentId).toBe(otherId);
     expect(port.attached.at(-1)?.deploymentId).toBe(otherId);
+    expect(client.getSnapshot().rows.some((row) => row.deploymentId === serverId)).toBe(false);
     client.dispose();
   });
 });
@@ -3061,7 +3101,9 @@ describe("MobileClient attachment identity", () => {
     // reached on its signed route, the server on its canonical origin.
     await client.catalog.upsertAndSelect(connectComputer(1));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "elsewhere" })),
+      asInput(
+        testDeploymentConnection({ kind: "personal", deploymentId: otherId, name: "elsewhere" }),
+      ),
     );
     await client.initialize();
 
@@ -3168,34 +3210,27 @@ describe("MobileClient version verification", () => {
 });
 
 describe("MobileClient per-deployment sign out", () => {
-  it("drops a Host credential and leaves the deployment listed at Needs sign-in", async () => {
+  it("revokes a team's OAuth credential while retaining its independent team listing", async () => {
     const port = testPort({ held: false, realCredentials: true });
     const { client, opened } = open(port.factory);
-    await client.catalog.upsertAndSelect(
-      asInput(testDeploymentConnection({ deploymentId: serverId })),
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
     );
     await client.initialize();
     await client.signIn(serverId);
-    const state = new URL(opened.at(-1) ?? "").searchParams.get("state") ?? "";
+    const state = new URL(opened.at(-1)!).searchParams.get("state")!;
     await client.oauth.handleCallback(
       `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
     );
     await settle();
-    await client.select(serverId);
-    await settle();
-    expect(client.getSnapshot().selection.row?.status).toBe("connected");
-
+    expect(client.getSnapshot().teams[0]?.signedIn).toBe(true);
     await client.signOut(serverId);
     await settle();
-
-    const snapshot = client.getSnapshot();
-    const row = snapshot.rows.find((candidate) => candidate.deploymentId === serverId);
-    expect(port.disposed).toEqual([serverId]);
-    expect(row?.status).toBe("needs-sign-in");
-    expect(row?.signIn).toBe("host-oauth");
-    // Signing out is not forgetting: the deployment is still somewhere this
-    // phone knows how to reach.
-    expect(snapshot.catalog.deployments).toHaveLength(1);
+    expect(client.getSnapshot().teams[0]?.signedIn).toBe(false);
+    expect(client.getSnapshot().selection.deploymentId).toBeNull();
+    expect(client.getSnapshot().rows).toEqual([]);
+    expect(client.getSnapshot().catalog.deployments).toHaveLength(1);
+    expect(port.attached).toEqual([]);
     client.dispose();
   });
 
@@ -3446,6 +3481,76 @@ describe("MobileClient per-deployment sign out", () => {
  * - J2: a Host that cannot be told holds up or undoes the sign-out, or the
  *   person is never told the Host still lists the iPhone.
  */
+describe("MobileClient other computers' attention", () => {
+  const otherComputer = () =>
+    asInput(
+      testDeploymentConnection({
+        deploymentId: otherId,
+        kind: "personal",
+        route: { kind: "connect" },
+      }),
+    );
+
+  it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
+    const port = testPort({ held: true });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await client.select(serverId).catch(() => undefined);
+    await settle();
+    const selection = client.getSnapshot().selection;
+    expect(selection.deploymentId).toBe(serverId);
+    const before = port.attached.length;
+
+    expect(await client.readAttention(serverId)).toBeNull();
+    expect(port.attached).toHaveLength(before);
+
+    await expect(client.readAttention(otherId)).resolves.toEqual({
+      needsYou: expect.any(Number),
+      unread: expect.any(Boolean),
+    });
+    expect(port.attached.slice(before).map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
+    expect(port.disposed).toEqual([otherId]);
+    expect(client.getSnapshot().selection.deploymentId).toBe(selection.deploymentId);
+    expect(client.getSnapshot().selection.hostClient).toBe(selection.hostClient);
+    client.dispose();
+  });
+
+  it("shows nothing for a computer that is slow, and asks nothing of one signed out", async () => {
+    const port = testPort({
+      held: true,
+      configureClient: (host) => {
+        const rpc = host.rpc;
+        Object.defineProperty(host, "rpc", {
+          value: new Proxy(rpc, {
+            get: (target, name) =>
+              name === "attention.get"
+                ? () => new Promise(() => undefined)
+                : Reflect.get(target, name),
+          }),
+        });
+      },
+    });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await settle();
+    await expect(client.readAttention(otherId, 20)).resolves.toBeNull();
+    expect(port.disposed).toEqual([otherId]);
+    client.dispose();
+
+    const signedOut = testPort({ held: false });
+    const second = open(signedOut.factory).client;
+    await second.catalog.upsert(otherComputer());
+    await second.initialize();
+    await expect(second.readAttention(otherId)).resolves.toBeNull();
+    expect(signedOut.attached).toEqual([]);
+    second.dispose();
+  });
+});
+
 describe("MobileClient and this iPhone's apps", () => {
   const laptopRunnerId = "rnr_33333333-3333-4333-8333-333333333333";
 
@@ -3509,13 +3614,20 @@ describe("MobileClient and this iPhone's apps", () => {
     await client.catalog.upsertAndSelect(
       asInput(
         testDeploymentConnection({
+          kind: "personal",
           deploymentId: serverId,
           source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
         }),
       ),
     );
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "manual server" })),
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: otherId,
+          name: "manual server",
+        }),
+      ),
     );
     await client.initialize();
 
@@ -3532,13 +3644,20 @@ describe("MobileClient and this iPhone's apps", () => {
     await second.client.catalog.upsertAndSelect(
       asInput(
         testDeploymentConnection({
+          kind: "personal",
           deploymentId: serverId,
           source: { issuer: accountOrigin, kind: "account", subject: accountSubject },
         }),
       ),
     );
     await second.client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "manual server" })),
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: otherId,
+          name: "manual server",
+        }),
+      ),
     );
     await second.client.initialize();
     await second.client.signOutAccount();
@@ -3556,7 +3675,13 @@ describe("MobileClient and this iPhone's apps", () => {
     const { client } = open(port.factory, undefined, { iphoneApps: iphone.controller.owner });
     await client.catalog.upsertAndSelect(connectComputer(1));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "manual server" })),
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: otherId,
+          name: "manual server",
+        }),
+      ),
     );
     await client.initialize();
     await client.sessions.save(personalSession());
@@ -3578,7 +3703,13 @@ describe("MobileClient and this iPhone's apps", () => {
     const { client } = open(port.factory, undefined, { iphoneApps: iphone.controller.owner });
     await client.catalog.upsertAndSelect(connectComputer(1));
     await client.catalog.upsert(
-      asInput(testDeploymentConnection({ deploymentId: otherId, name: "manual server" })),
+      asInput(
+        testDeploymentConnection({
+          kind: "personal",
+          deploymentId: otherId,
+          name: "manual server",
+        }),
+      ),
     );
     await client.initialize();
     await settle();
@@ -3688,7 +3819,9 @@ it("keeps previews when an Account sign-in starts and is left unfinished", async
     notificationPreviews: previews,
   });
   try {
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
     await client.oauth.beginAccountSignIn();
@@ -3708,7 +3841,9 @@ it("refreshes previews when Account sign-in returns on a retained manual Host", 
     notificationPreviews: previews,
   });
   try {
-    await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: serverId })));
+    await client.catalog.upsert(
+      asInput(testDeploymentConnection({ kind: "personal", deploymentId: serverId })),
+    );
     await client.initialize();
     await client.select(serverId);
     await vi.waitFor(() => expect(attach).toHaveBeenCalled());
@@ -3726,7 +3861,7 @@ it("refreshes previews when Account sign-in returns on a retained manual Host", 
 describe("pending computer destination", () => {
   it("suppresses startup singleton selection and asks for Account sign-in", async () => {
     const { client } = open(testPort({ held: false }).factory);
-    await client.catalog.upsert(asInput(testDeploymentConnection({})));
+    await client.catalog.upsert(asInput(testDeploymentConnection({ kind: "personal" })));
     client.openComputer(serverId);
     await client.initialize();
     expect(client.getSnapshot().selection.deploymentId).toBeNull();
@@ -3755,6 +3890,7 @@ describe("pending computer destination", () => {
       await client.catalog.upsert(
         asInput(
           testDeploymentConnection({
+            kind: "personal",
             source: { kind: "account", issuer: accountOrigin, subject: accountSubject },
           }),
         ),
@@ -3794,7 +3930,7 @@ describe("pending computer destination", () => {
             : [],
       });
       await client.initialize();
-      await client.catalog.upsert(asInput(testDeploymentConnection({})));
+      await client.catalog.upsert(asInput(testDeploymentConnection({ kind: "personal" })));
       await signInTestAccount(client, opened);
       await vi.waitFor(() => expect(client.getSnapshot().pendingComputer?.status).toBe(status), {
         timeout: 2000,
@@ -3859,8 +3995,12 @@ it("restarts a pending computer link when an earlier selection lands mid-lookup"
     unavailable: [],
   });
   const thirdId = createId("deployment");
-  await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: otherId })));
-  await client.catalog.upsert(asInput(testDeploymentConnection({ deploymentId: thirdId })));
+  await client.catalog.upsert(
+    asInput(testDeploymentConnection({ kind: "personal", deploymentId: otherId })),
+  );
+  await client.catalog.upsert(
+    asInput(testDeploymentConnection({ kind: "personal", deploymentId: thirdId })),
+  );
   await client.initialize();
   await signInTestAccount(client, opened);
   await client.refreshDirectory();
@@ -3892,7 +4032,7 @@ it("retains a cold computer intent above the remembered selection", async () => 
     JSON.stringify({ schemaVersion: 1, selectedDeploymentId: serverId }),
   );
   const { client } = open(testPort({ held: false }).factory, files);
-  await client.catalog.upsert(asInput(testDeploymentConnection({})));
+  await client.catalog.upsert(asInput(testDeploymentConnection({ kind: "personal" })));
   client.openComputer(otherId);
   await client.initialize();
   expect(client.getSnapshot().pendingComputer).toEqual({

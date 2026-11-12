@@ -194,6 +194,7 @@ function harness(
   const onSessionEnded = vi.fn();
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
+    deploymentId: deploymentId,
     ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
     ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
@@ -284,6 +285,7 @@ const callable: AppCallable = {
   runnerId,
   runnerName: "Alex's Mac",
 };
+const deploymentId = createId("deployment");
 const context: ComputerUseContext = {
   aud: "opensteer-integration-tools",
   bindingGeneration: 1,
@@ -292,13 +294,12 @@ const context: ComputerUseContext = {
   iat: 1_900_000_000,
   iss: "opensteer-host",
   jti: "test",
-  membershipGeneration: 1,
+
   requestedBy: ownerUserId,
   runnerBootId: "boot",
   runnerId: createId("runner"),
   runId: createId("run"),
   threadId: createId("thread"),
-  workspaceId: createId("workspace"),
 };
 
 function otherRun(): ComputerUseContext {
@@ -1778,18 +1779,8 @@ describe("display sessions on an Android phone", () => {
     await observePhone(test.service, context);
 
     test.service.closeForConnection(phoneId, { appKey: "com.apple.notes", kind: "app" });
-    test.service.closeForConnection(
-      phoneId,
-      { definitionId: "android-phone", kind: "display" },
-      createId("workspace"),
-    );
     expect(test.service.sessionsForRunner(phoneId)).toHaveLength(1);
-
-    test.service.closeForConnection(
-      phoneId,
-      { definitionId: "android-phone", kind: "display" },
-      context.workspaceId,
-    );
+    test.service.closeForConnection(phoneId, { definitionId: "android-phone", kind: "display" });
     expect(test.service.sessionsForRunner(phoneId)).toEqual([]);
     await vi.waitFor(() => expect(test.sent.at(-1)).toMatchObject({ operation: "close" }));
     await test.service.shutdown();
@@ -2097,7 +2088,7 @@ describe("saved login batch admission", () => {
         ]);
         expect(JSON.stringify(frame)).not.toContain(loginRef);
         expect(passwords.seal.mock.calls[0]?.[0]).toMatchObject({
-          workspaceId: context.workspaceId,
+          deploymentId: deploymentId,
           binding: {
             runId: context.runId,
             sessionId: lease.sessionId,

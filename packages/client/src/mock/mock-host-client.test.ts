@@ -5,14 +5,11 @@ import {
 } from "@opensteer/integration-core";
 
 import {
-  WorkspaceIdSchema,
-  SpecialistManifestSchema,
   AgentEventSchema,
   BrowserSessionIdSchema,
   createId,
   DEFAULT_THREAD_ACCESS_MODE,
   ModelSelectionSchema,
-  RequestSchema,
   type ThreadAccessMode,
   type PlaceContentPart,
 } from "@opensteer/core";
@@ -79,7 +76,6 @@ it("implements installed-engine update commands in the mock", async () => {
  */
 function threadInput(
   client: MockHostClient,
-  workspaceId: string,
   options: {
     readonly accessMode?: ThreadAccessMode;
     readonly environmentId?: string;
@@ -101,7 +97,6 @@ function threadInput(
     environmentId: placement.environmentId,
     harnessInstanceId: placement.harnessInstanceId,
     modelSelection: placement.modelSelection,
-    workspaceId,
   };
 }
 
@@ -142,12 +137,6 @@ async function integrationPlatform(client: MockHostClient) {
   return result.data;
 }
 
-async function integrationGrants(client: MockHostClient, workspaceId: string) {
-  const result = await client.rpc["integration.grants.list"]({ workspaceId });
-  if (!result.ok) throw new Error(result.error.message);
-  return result.data.grants;
-}
-
 describe("MockHostClient", () => {
   it.each(["rename", "icon", "default", "chosen title"] as const)(
     "settles title and icon independently after %s",
@@ -155,7 +144,7 @@ describe("MockHostClient", () => {
       const client = createClient();
       try {
         const thread = await client.createThread({
-          ...threadInput(client, client.getSnapshot().workspaces[0]!.id),
+          ...threadInput(client),
           title: "Chosen task title",
           ...(choice !== "chosen title" ? { generateTitle: true } : {}),
         });
@@ -201,12 +190,11 @@ describe("MockHostClient", () => {
   it("settles an unclassified mock name to document and allocates seven serial colours independently of project colour", async () => {
     const client = createClient();
     try {
-      const workspace = client.getSnapshot().workspaces[0]!;
       const threads: ThreadSummary[] = [];
       for (let index = 0; index < 7; index += 1)
         threads.push(
           await client.createThread({
-            ...threadInput(client, workspace.id),
+            ...threadInput(client),
             title: `Task ${index}`,
           }),
         );
@@ -217,36 +205,6 @@ describe("MockHostClient", () => {
           "document",
         ),
       );
-      const project = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
-      const before = client.getSnapshot().threads.map(({ id, color }) => ({ id, color }));
-      const result = await client.dispatch({
-        type: "workspace.color.set",
-        workspaceId: project.id,
-        color: "magenta",
-        idempotencyKey: "project-color",
-      });
-      expect(result).toMatchObject({
-        type: "workspace.color.set",
-        workspace: { color: "magenta" },
-      });
-      expect(client.getSnapshot().threads.map(({ id, color }) => ({ id, color }))).toEqual(before);
-      expect(client.getSnapshot().taskMarksAvailable).toBe(true);
-      await expect(
-        client.dispatch({
-          type: "thread.icon.set",
-          threadId: client.getSnapshot().homeThreadId!,
-          icon: "hotel",
-          idempotencyKey: "chat-icon",
-        }),
-      ).rejects.toThrow("Chat");
-      await expect(
-        client.dispatch({
-          type: "workspace.color.set",
-          workspaceId: workspace.id,
-          color: "blue",
-          idempotencyKey: "main-color",
-        }),
-      ).rejects.toThrow("Main");
     } finally {
       client.dispose();
     }
@@ -277,7 +235,7 @@ describe("MockHostClient", () => {
                 }
               : { type: kind, machineId: createId("runner"), display: "main", name: "My phone" };
         const thread = await client.createThread({
-          ...threadInput(client, snapshot.workspaces[0]!.id),
+          ...threadInput(client),
           title: "Keep this seed",
           generateTitle: true,
         });
@@ -314,7 +272,6 @@ describe("MockHostClient", () => {
       sequence: "1",
       threadId: thread.id,
       type: "thread.state-changed",
-      workspaceId: thread.workspaceId,
     });
     if (event.type !== "thread.state-changed") throw new Error("Wrong event type");
     try {
@@ -348,7 +305,6 @@ describe("MockHostClient", () => {
       sequence: "1",
       threadId: thread.id,
       type: "thread.state-changed",
-      workspaceId: thread.workspaceId,
     });
     if (event.type !== "thread.state-changed") throw new Error("Wrong event type");
     client.applyThreadStateChanged(event);
@@ -356,79 +312,10 @@ describe("MockHostClient", () => {
     client.dispose();
   });
 
-  it("starts the no-Home fixture without orphaning Chat state or unrelated requests", async () => {
-    const client = new MockHostClient({
-      initialHome: "absent",
-      latencyMs: 0,
-      now: () => fixedNow,
-    });
-    const snapshot = client.getSnapshot();
-    const workspaceId = snapshot.homeWorkspaceId;
-    const initialHomeId = createClient().getSnapshot().homeThreadId;
-    expect(workspaceId).not.toBeNull();
-    expect(initialHomeId).not.toBeNull();
-    if (workspaceId === null || initialHomeId === null)
-      throw new Error("Missing fixture identifiers");
-
-    expect(snapshot.homeThreadId).toBeNull();
-    expect(
-      snapshot.workspaces.find((workspace) => workspace.id === workspaceId)?.homeThreadId,
-    ).toBeNull();
-    expect(snapshot.threads.some((thread) => thread.id === initialHomeId)).toBe(false);
-    expect(snapshot.transcripts[initialHomeId]).toBeUndefined();
-    expect(snapshot.transcriptWindows[initialHomeId]).toBeUndefined();
-    expect(snapshot.requests[initialHomeId]).toBeUndefined();
-    expect(snapshot.runQueue.some((run) => run.threadId === initialHomeId)).toBe(false);
-    expect(
-      snapshot.machines
-        .flatMap((machine) => machine.computerUse?.sessions ?? [])
-        .some((session) => session.threadId === initialHomeId),
-    ).toBe(false);
-    expect(
-      Object.values(snapshot.requests)
-        .flat()
-        .map((request) => request.presentation.title),
-    ).toContain("Send the launch email");
-
-    await client.createThread(threadInput(client, workspaceId));
-    const taskDefault = structuredClone(client.getSnapshot().executionPreferences.history);
-    const homeInput = threadInput(client, workspaceId);
-    const home = await client.createHome({
-      ...homeInput,
-      modelSelection: ModelSelectionSchema.parse({
-        ...homeInput.modelSelection,
-        options: { effort: "high" },
-      }),
-    });
-    expect(client.getSnapshot().homeThreadId).toBe(home.id);
-    expect(
-      client.getSnapshot().workspaces.find((workspace) => workspace.id === workspaceId)
-        ?.homeThreadId,
-    ).toBe(home.id);
-    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
-
-    await client.updateThreadExecution(home.id, {
-      harnessInstanceId: home.harnessInstanceId,
-      modelSelection: ModelSelectionSchema.parse({
-        ...home.modelSelection,
-        options: { effort: "low" },
-      }),
-    });
-    expect(client.getSnapshot().executionPreferences.history).toEqual(taskDefault);
-    const chatSelection = client
-      .getSnapshot()
-      .threads.find(({ id }) => id === home.id)?.modelSelection;
-
-    await client.createThread(threadInput(client, workspaceId));
-    expect(client.getSnapshot().threads.find(({ id }) => id === home.id)?.modelSelection).toEqual(
-      chatSelection,
-    );
-  });
-
   it("rebinds a withdrawn queued attachment to a resend in the same Thread", async () => {
     const client = createClient();
-    const workspaceId = "wsp_00000000-0000-4000-8000-000000000001";
-    const thread = await client.createThread(threadInput(client, workspaceId));
+
+    const thread = await client.createThread(threadInput(client));
     const first = sendMessage(client, thread.id, "Keep the Run busy");
     const source = new Blob(["photo bytes"], { type: "image/jpeg" });
     const attachment = await client.createAttachment({
@@ -436,7 +323,6 @@ describe("MockHostClient", () => {
       mediaType: source.type,
       name: "photo.jpg",
       sizeBytes: source.size,
-      workspaceId,
     });
     await client.uploadAttachment({ attachmentId: attachment.id, source });
     const content = [
@@ -468,7 +354,7 @@ describe("MockHostClient", () => {
     expect(resent.input.state).toBe("pending");
     expect((await client.getAttachment(attachment.id)).messageId).toBe(resent.message.id);
 
-    const otherThread = await client.createThread(threadInput(client, workspaceId));
+    const otherThread = await client.createThread(threadInput(client));
     await expect(
       client.dispatch({
         content,
@@ -482,9 +368,7 @@ describe("MockHostClient", () => {
 
   it("dispatches thread.input.steer and thread.input.cancel with typed results and refusals", async () => {
     const client = createClient();
-    const thread = await client.createThread(
-      threadInput(client, "wsp_00000000-0000-4000-8000-000000000001"),
-    );
+    const thread = await client.createThread(threadInput(client));
     const first = sendMessage(client, thread.id, "First turn");
     const steered = unwrapSend(await sendMessage(client, thread.id, "Steer this"));
     const withdrawn = unwrapSend(await sendMessage(client, thread.id, "Withdraw this"));
@@ -633,14 +517,6 @@ describe("MockHostClient", () => {
     expect(dashboard.providerAuthorizations["github"]?.availableSources).toHaveLength(2);
     expect(dashboard.applications.map(({ provider }) => provider)).toEqual(["github"]);
     expect(dashboard.callbackUrls["github"]).toMatch(/\/callback\/github$/);
-    expect(
-      await integrationGrants(client, "wsp_00000000-0000-4000-8000-000000000002"),
-    ).toHaveLength(2);
-    expect(
-      (await integrationGrants(client, "wsp_00000000-0000-4000-8000-000000000003")).map(
-        ({ status }) => status,
-      ),
-    ).toEqual(["active"]);
   });
   it("keeps every seeded Thread at work holding the Run the Host would, and stops it", async () => {
     const client = createClient();
@@ -749,185 +625,18 @@ describe("MockHostClient", () => {
  * the next Send waits for a Resume nobody offers; a stopped exchange's unsent
  * message reads as sent; a work Thread loses its queue, Steer or pause.
  */
-describe("MockHostClient Chat messaging", () => {
+describe("MockHostClient task input queue", () => {
   const homeId = "thr_00000000-0000-4000-8000-000000000001";
-  const homeRunId = "run_00000000-0000-4000-8000-000000000001";
   const transcript = (client: MockHostClient, threadId = homeId) =>
     client.getSnapshot().transcripts[threadId] ?? [];
   const entry = (client: MockHostClient, id: string, threadId = homeId) =>
     transcript(client, threadId).find((candidate) => candidate.id === id);
 
-  it("joins a message sent while Opensteer is replying to that reply, where it was sent", async () => {
-    const client = createClient();
-    try {
-      // The Host answers a joined send with the Run it joined: steering, not queueing.
-      const joined = hostApi["commands.dispatch"].success.parse(
-        unwrap(
-          await client.rpc["commands.dispatch"]({
-            content: [{ text: "Keep it short", type: "text" }],
-            idempotencyKey: `mock-message:${crypto.randomUUID()}`,
-            threadId: homeId,
-            type: "thread.sendMessage",
-          }),
-        ),
-      );
-      if (joined.type !== "thread.sendMessage") throw new Error("Command mismatch.");
-      expect(joined.input).toMatchObject({ runId: homeRunId, state: "claimed" });
-      expect(joined.message.runId).toBe(homeRunId);
-      expect(joined.run).toMatchObject({
-        id: homeRunId,
-        replyTarget: null,
-        requestedBy: "usr_0192f4a1-0000-4000-8000-000000000001",
-        status: "running",
-        threadId: homeId,
-      });
-      expect(client.getSnapshot().inputQueues[homeId]?.items ?? []).toEqual([]);
-      expect(transcript(client).at(-1)).toMatchObject({ id: joined.message.id, runId: homeRunId });
-      expect(client.getSnapshot().threads.find(({ id }) => id === homeId)?.inputQueuePaused).toBe(
-        false,
-      );
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("joins a message to a fresh reply in progress, and the reply takes it in", async () => {
-    const client = new MockHostClient({
-      initialHome: "absent",
-      latencyMs: 0,
-      now: () => fixedNow,
-    });
-    try {
-      const home = await client.createThread({
-        ...threadInput(client, "wsp_00000000-0000-4000-8000-000000000001"),
-        home: true,
-      });
-      expect(home.role).toBe("conversation");
-      const first = sendMessage(client, home.id, "Plan my week");
-      const joined = unwrapSend(await sendMessage(client, home.id, "Keep it short"));
-      const runId = joined.input.runId;
-      expect(joined.input.state).toBe("claimed");
-      expect(joined.run).toMatchObject({ id: runId, status: "running", threadId: home.id });
-      await first;
-      const after = transcript(client, home.id);
-      const run = after.find((candidate) => candidate.kind === "run" && candidate.runId === runId);
-      expect(run).toMatchObject({ status: "completed" });
-      const reply = after.find(
-        (candidate) => run?.kind === "run" && candidate.id === run.replyMessageId,
-      );
-      expect(reply).toMatchObject({ kind: "message", messageKind: "assistant" });
-      expect(reply?.kind === "message" ? reply.body : "").toContain("Keep it short");
-      // The reply answers both, so it comes after the message that joined it.
-      expect(after.findIndex(({ id }) => id === reply?.id)).toBeGreaterThan(
-        after.findIndex(({ id }) => id === joined.message.id),
-      );
-      expect(
-        after.filter((candidate) => candidate.kind === "run" && candidate.runId !== null),
-      ).toHaveLength(1);
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("holds a message while the reply waits on an approval, and joins it once answered", async () => {
-    const approvalId = createId("request");
-    const client = new MockHostClient({
-      latencyMs: 0,
-      now: () => fixedNow,
-      pendingRequests: [
-        RequestSchema.parse({
-          callId: "send-email",
-          cancellationReason: null,
-          createdAt: fixedNow.toISOString(),
-          id: approvalId,
-          kind: "harness.approval",
-          mode: "live",
-          originatingOccurrenceId: null,
-          originatingRunId: homeRunId,
-          originatingThreadId: homeId,
-          originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
-          payload: { kind: "harness.approval" },
-          presentation: {
-            kind: "choice",
-            options: [
-              { hint: "allow-once", id: "send", label: "Send" },
-              { hint: "reject-once", id: "not-now", label: "Not now" },
-            ],
-            risk: "medium",
-            title: "Send email to Maya?",
-          },
-          requestedBy: "usr_0192f4a1-0000-4000-8000-000000000001",
-          requiredActor: "requester",
-          resolvedAt: null,
-          resolvedBy: null,
-          response: null,
-          status: "pending",
-          targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
-        }),
-      ],
-    });
-    try {
-      const held = unwrapSend(await sendMessage(client, homeId, "Make it friendlier"));
-      expect(held.input.state).toBe("pending");
-      expect(held.run).toBeNull();
-      expect(
-        (await client.loadThreadInputQueue(homeId)).items.map(({ message }) => message.id),
-      ).toEqual([held.message.id]);
-      // The approval is still the person's to answer; the message did not answer it.
-      expect(client.getSnapshot().requests[homeId]?.some(({ id }) => id === approvalId)).toBe(true);
-
-      await client.dispatch({
-        idempotencyKey: `mock-respond:${crypto.randomUUID()}`,
-        requestId: approvalId,
-        response: { kind: "choice", optionId: "send" },
-        type: "request.respond",
-      });
-      expect(client.getSnapshot().inputQueues[homeId]?.items ?? []).toEqual([]);
-      expect(entry(client, held.message.id)).toMatchObject({ runId: homeRunId });
-      const run = entry(client, `run:${homeRunId}`);
-      expect(run).toMatchObject({ status: "completed" });
-      const ids = transcript(client).map(({ id }) => id);
-      expect(ids.indexOf(run?.kind === "run" ? (run.replyMessageId ?? "") : "")).toBeGreaterThan(
-        ids.indexOf(held.message.id),
-      );
-    } finally {
-      client.dispose();
-    }
-  });
-
-  it("ends the reply on Stop without pausing, says what was not sent, and the next Send replies", async () => {
-    const client = createClient();
-    try {
-      const joined = unwrapSend(await sendMessage(client, homeId, "Also check Friday"));
-      await client.stopRun(homeId);
-      const stopped = client.getSnapshot();
-      expect(stopped.threads.find(({ id }) => id === homeId)).toMatchObject({
-        inputQueuePaused: false,
-        status: "idle",
-      });
-      expect(stopped.inputQueues[homeId]?.paused ?? false).toBe(false);
-      expect(entry(client, `run:${homeRunId}`)).toMatchObject({ status: "interrupted" });
-      expect(entry(client, joined.message.id)).toMatchObject({
-        delivery: { reason: "Not sent: you stopped the reply.", status: "failed" },
-      });
-
-      const next = unwrapSend(await sendMessage(client, homeId, "Just Thursday then"));
-      expect(next.run).not.toBeNull();
-      const run = entry(client, `run:${next.run?.id}`);
-      expect(run).toMatchObject({ status: "completed" });
-      expect(entry(client, next.message.id)).not.toHaveProperty("delivery");
-    } finally {
-      client.dispose();
-    }
-  });
-
   it("keeps a work Thread's queue, Steer and the pause a Stop leaves until Resume", async () => {
     const client = createClient();
     try {
-      const thread = await client.createThread(
-        threadInput(client, "wsp_00000000-0000-4000-8000-000000000001"),
-      );
-      expect(thread.role).toBe("work");
+      const thread = await client.createThread(threadInput(client));
+      expect(thread.purpose).toBe("task");
       vi.useFakeTimers();
       const first = sendMessage(client, thread.id, "First turn");
       const queued = unwrapSend(await sendMessage(client, thread.id, "Then this"));
@@ -1120,10 +829,9 @@ describe("shared task Done", () => {
     async (quietTasksAvailable) => {
       const client = new MockHostClient({ latencyMs: 0, now: () => fixedNow, quietTasksAvailable });
       try {
-        const task = await client.createThread(
-          threadInput(client, client.getSnapshot().workspaces[0]!.id),
-        );
-        const done = await client.setTaskDone(task.id, true);
+        const task = await client.createThread(threadInput(client));
+        await client.setTaskDone(task.id, true);
+        const done = client.getSnapshot().threads.find(({ id }) => id === task.id)!;
         expect(done.doneAt).toBe(fixedNow.toISOString());
         expect(done.inputQueuePaused).toBe(false);
         const held = () => client.getSnapshot().threads.find(({ id }) => id === task.id)!;
@@ -1135,7 +843,8 @@ describe("shared task Done", () => {
         await expect(sendMessage(client, task.id, "More work")).rejects.toThrow(
           "This task is Done. Reopen it first.",
         );
-        const reopened = await client.setTaskDone(task.id, false);
+        await client.setTaskDone(task.id, false);
+        const reopened = client.getSnapshot().threads.find(({ id }) => id === task.id)!;
         expect(reopened.doneAt).toBeNull();
         expect(reopened.status).toBe("idle");
         await expect(sendMessage(client, task.id, "More work")).resolves.toBeDefined();
@@ -1148,13 +857,13 @@ describe("shared task Done", () => {
   it("a second client receives absolute Done state and then Reopen", () => {
     const second = createClient();
     try {
-      const task = second.getSnapshot().threads.find((thread) => thread.role === "work")!;
+      const task = second.getSnapshot().threads.find((thread) => thread.purpose === "task")!;
       const event = (sequence: string, doneAt: string | null) =>
         AgentEventSchema.parse({
           type: "thread.state-changed",
           eventId: createId("event"),
           threadId: task.id,
-          workspaceId: task.workspaceId,
+
           environmentId: task.environmentId,
           runId: null,
           sequence,
@@ -1182,197 +891,11 @@ describe("shared task Done", () => {
 it("accepts a whole-turn history read without a durable mock event log", async () => {
   const client = createClient();
   try {
-    const threadId = client.getSnapshot().homeThreadId!;
+    const threadId = client.getSnapshot().threads[0]!.id;
     const result = unwrap(await client.rpc["thread.events.list"]({ threadId, turns: 10 }));
     expect(result.threadId).toBe(threadId);
     expect(result.events).toEqual([]);
     expect(result.window.hasMore).toBe(false);
-  } finally {
-    client.dispose();
-  }
-});
-
-it("creates mock Projects beneath Main with distinct case-insensitive slugs", async () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  try {
-    await client.load();
-    await client.dispatch({
-      type: "workspace.create",
-      idempotencyKey: "first-project",
-      name: "Research",
-    });
-    await client.dispatch({
-      type: "workspace.create",
-      idempotencyKey: "second-project",
-      name: "RESEARCH",
-    });
-    const main = client.getSnapshot().homeWorkspaceId!;
-    const root = await client.listWorkspaceFiles(main, { parentKey: "" });
-    const projects = root.entries.find((entry) => entry.name === "Projects");
-    expect(projects).toMatchObject({ kind: "directory" });
-    const children = await client.listWorkspaceFiles(main, { parentKey: projects!.key });
-    expect(children.entries.map((entry) => entry.name)).toEqual(["research", "research-2"]);
-  } finally {
-    client.dispose();
-  }
-});
-
-it("explicitly adopts a relocated Project in the mock and clears its notice", async () => {
-  const client = createClient();
-  try {
-    await client.load();
-    const workspace = client.getSnapshot().workspaces.find((item) => item.kind === "project")!;
-    workspace.status = "failed";
-    workspace.storageIssue = {
-      code: "relocation-required",
-      message: "Move /source to /Main/Projects/research",
-      occurredAt: fixedNow.toISOString(),
-      retryable: false,
-    };
-    const result = await client.dispatch({
-      type: "workspace.adoptRelocated",
-      workspaceId: workspace.id,
-      idempotencyKey: "adopt",
-    });
-    expect(result).toMatchObject({
-      type: "workspace.adoptRelocated",
-      workspace: { id: workspace.id, status: "ready", storageIssue: null },
-    });
-    expect(
-      client.getSnapshot().workspaces.find((item) => item.id === workspace.id)?.storageIssue,
-    ).toBeNull();
-  } finally {
-    client.dispose();
-  }
-});
-
-it("mock specialists require activation authority and are ready without bindings", async () => {
-  const client = new MockHostClient({
-    latencyMs: 0,
-    specialistPlugins: [
-      {
-        id: "research",
-        name: "research",
-        manifest: SpecialistManifestSchema.parse({
-          version: 1,
-          models: [{ engine: "claude", model: "haiku" }],
-          access: [{ type: "browser-profile", level: "read", reason: "Research" }],
-        }),
-      },
-    ],
-  });
-  try {
-    const workspaceId = createId("workspace");
-    const send = (command: Parameters<typeof client.dispatch>[0]) => client.dispatch(command);
-    const userId = client.getSnapshot().user!.id;
-    await send({
-      type: "workspace.member.update",
-      workspaceId,
-      userId,
-      state: "revoked",
-      idempotencyKey: "revoke-before-activation",
-    });
-    await expect(
-      send({
-        type: "specialist.add",
-        workspaceId,
-        pluginId: "research",
-        idempotencyKey: "refused-add",
-      }),
-    ).rejects.toThrow("Only the Workspace owner or administrator");
-    expect(await client.rpc["specialist.list"]({ workspaceId })).toMatchObject({
-      data: { specialists: [] },
-    });
-    await send({
-      type: "workspace.member.update",
-      workspaceId,
-      userId,
-      state: "active",
-      idempotencyKey: "restore-before-activation",
-    });
-    const added = await send({
-      type: "specialist.add",
-      workspaceId,
-      pluginId: "research",
-      idempotencyKey: "add",
-    });
-    expect(added).toMatchObject({
-      type: "specialist.add",
-      specialist: { status: "ready", access: [] },
-    });
-    if (added.type !== "specialist.add") throw new Error("Wrong response");
-    const specialistId = String(added.specialist.id);
-    const list = () => client.rpc["specialist.list"]({ workspaceId });
-    expect(await list()).toMatchObject({
-      ok: true,
-      data: { specialists: [{ status: "ready", access: [] }] },
-    });
-    await send({ type: "specialist.remove", workspaceId, specialistId, idempotencyKey: "remove" });
-    expect(await list()).toMatchObject({ data: { specialists: [] } });
-  } finally {
-    client.dispose();
-  }
-});
-
-it("mock Project creation gets a chat without replacing Main chat", async () => {
-  const client = createClient();
-  try {
-    await client.load();
-    const mainChat = client.getSnapshot().homeThreadId;
-    const result = await client.dispatch({
-      type: "workspace.create",
-      name: "Chat Project",
-      idempotencyKey: "project-chat-test",
-    });
-    if (result.type !== "workspace.create") throw new Error("Unexpected command");
-    const project = result.workspace;
-    expect(project.homeThreadId).toBeTruthy();
-    expect(client.getSnapshot().threads.find((t) => t.id === project.homeThreadId)).toMatchObject({
-      role: "conversation",
-      workspaceId: project.id,
-      title: "Chat",
-    });
-    expect(client.getSnapshot().homeThreadId).toBe(mainChat);
-  } finally {
-    client.dispose();
-  }
-});
-
-it("mock plugin member reads hide source paths and refuse collaborator changes", async () => {
-  const client = createClient();
-  try {
-    await client.load();
-    await client.dispatch({
-      type: "plugin.install",
-      input: { directory: "/private/source" },
-      idempotencyKey: "install-member-test",
-    });
-    const snapshot = client.getSnapshot();
-    const workspaceId = WorkspaceIdSchema.parse(
-      snapshot.workspaces.find((w) => w.kind === "project")!.id,
-    );
-    if (!snapshot.user) throw new Error("User missing");
-    snapshot.user.instanceRole = "user";
-    await client.dispatch({
-      type: "workspace.member.update",
-      workspaceId,
-      userId: snapshot.user.id,
-      role: "collaborator",
-      idempotencyKey: "member-role",
-    });
-    const listed = await client.rpc["plugin.list"]({ workspaceId });
-    expect(JSON.stringify(listed)).not.toContain("/private/source");
-    expect(listed).toMatchObject({ ok: true });
-    const plugin = unwrap(listed).plugins[0]!;
-    await expect(
-      client.dispatch({
-        type: "plugin.activation.set",
-        workspaceId,
-        pluginId: String(plugin.id),
-        active: true,
-        idempotencyKey: "member-toggle",
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
   } finally {
     client.dispose();
   }
@@ -1398,7 +921,7 @@ it("offers transient Passwords choices and settles the pinned shared command in 
         loginId: account.id,
         revision: account.revision,
         remember: true,
-        permissionVersion: 5,
+        permissionVersion: 6,
       },
     });
     expect(result).toMatchObject({ type: "browser.password-sign-in.respond", status: "fulfilled" });
@@ -1411,58 +934,53 @@ it("offers transient Passwords choices and settles the pinned shared command in 
   }
 });
 
-it("models managed role discovery, hidden authorized detail, waiting passes and store refusals", async () => {
-  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "waiting-for-model" });
+it("loads managed memory passes through the current strict trigger contract", async () => {
+  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "active" });
   try {
-    const { triggers } = unwrap(await client.rpc["triggers.list"]({ systemRole: "memory-light" }));
-    expect(triggers).toHaveLength(1);
-    const light = triggers[0]!;
-    expect(light).toMatchObject({
-      systemRole: "memory-light",
-      status: "active",
-      pauseReason: null,
-      waitingReason: expect.stringContaining("Waiting for an AI account it can use"),
+    await client.load();
+    const snapshot = client.getSnapshot();
+    const workers = snapshot.threads.filter(
+      (thread) => thread.purpose === "background-job" && thread.title.startsWith("Memory "),
+    );
+    expect(workers).toHaveLength(2);
+    for (const worker of workers) expect(snapshot.threadAutomations[worker.id]).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("seeds an actionable delegated task alongside its parent's places and automations", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.load();
+    const snapshot = client.getSnapshot();
+    const parent = snapshot.threads[0]!;
+    const assignment = Object.values(snapshot.assignments).find(
+      (row) => row.status === "open" && row.parentThreadId === parent.id,
+    )!;
+    expect(assignment).toBeDefined();
+    expect(assignment.workerThread.title).toBe("Book a table for Friday");
+    expect(snapshot.requests[assignment.workerThread.id]).toEqual([
+      expect.objectContaining({ status: "pending", kind: "harness.approval" }),
+    ]);
+    expect(snapshot.threadAutomations[parent.id]!.length).toBeGreaterThan(0);
+    const catalog = await client.rpc["thread.assignments.list"]({
+      threadId: parent.id,
+      open: true,
     });
-    const detail = unwrap(await client.rpc["triggers.get"]({ triggerId: light.id }));
-    expect(detail.anchorThread).toMatchObject({
-      id: light.anchorThreadId,
-      listed: false,
-      inheritsMain: true,
-      title: "Memory light pass",
-      parentThreadId: client.getSnapshot().homeThreadId,
-    });
-    await expect(
-      client.dispatch({ type: "trigger.run", triggerId: light.id, idempotencyKey: "managed-run" }),
-    ).rejects.toThrow("Opensteer manages this memory pass");
-    await expect(
-      client.dispatch({
-        type: "trigger.status.set",
-        triggerId: light.id,
-        status: "archived",
-        idempotencyKey: "managed-delete",
-      }),
-    ).rejects.toThrow("Opensteer manages this memory pass");
-    await expect(
-      client.dispatch({
-        type: "trigger.update",
-        triggerId: light.id,
-        input: { expectedRevisionId: detail.revision.id, name: "Renamed" },
-        idempotencyKey: "managed-edit",
-      }),
-    ).rejects.toThrow("Opensteer manages this memory pass");
-    expect(
-      await client.dispatch({
-        type: "trigger.status.set",
-        triggerId: light.id,
-        status: "active",
-        idempotencyKey: "managed-resume",
-      }),
-    ).toMatchObject({
-      trigger: { systemRole: "memory-light", status: "active", pauseReason: null },
-    });
-    expect(
-      unwrap(await client.rpc["triggers.list"]({ systemRole: "memory-nightly" })).triggers,
-    ).toHaveLength(1);
+    expect(catalog.ok && catalog.data.assignments.some((row) => row.id === assignment.id)).toBe(
+      true,
+    );
+    expect(snapshot.browserSessions.some((row) => row.page?.title === "Flight award alerts")).toBe(
+      true,
+    );
+    expect((await client.cancelAssignment(assignment.id)).status).toBe("cancelled");
+    const stopped = client.getSnapshot();
+    expect(stopped.requests[assignment.workerThread.id]).toEqual([]);
+    expect(stopped.runQueue.some((row) => row.threadId === assignment.workerThread.id)).toBe(false);
+    expect(stopped.transcripts[assignment.workerThread.id]).toContainEqual(
+      expect.objectContaining({ kind: "run", status: "interrupted" }),
+    );
   } finally {
     client.dispose();
   }

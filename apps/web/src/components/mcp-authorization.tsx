@@ -36,7 +36,6 @@ export function McpAuthorization({
   const [busy, setBusy] = useState(false);
   const [label, setLabel] = useState("");
   const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
-  const [reach, setReach] = useState("");
   const revision = useRef(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -46,7 +45,6 @@ export function McpAuthorization({
     setBusy(false);
     setLabel("");
     setMode("approval-required");
-    setReach("");
     if (!requestId) {
       setError("This connection request is missing. Start again from the agent.");
       return;
@@ -57,7 +55,6 @@ export function McpAuthorization({
         if (controller.signal.aborted) return;
         setConsent(result);
         setLabel(result.clientName);
-        setReach(result.workspaces[0]?.id ?? "user");
       })
       .catch(() => {
         if (!controller.signal.aborted)
@@ -69,7 +66,7 @@ export function McpAuthorization({
     };
   }, [client, requestId]);
   async function decide(approve: boolean) {
-    if (!consent || busy || !reach) return;
+    if (!consent || busy) return;
     const currentRevision = revision.current;
     setBusy(true);
     setError(null);
@@ -77,7 +74,7 @@ export function McpAuthorization({
       const completion = await answerAgentConnection(
         client,
         consent,
-        approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
+        approve ? { kind: "approve", label, accessMode: mode } : { kind: "deny" },
       );
       if (currentRevision !== revision.current) return;
       if (desktopBridge) {
@@ -124,22 +121,6 @@ export function McpAuthorization({
                   ))}
                 </div>
               </fieldset>
-              <label className="field">
-                <span className="field__label">Where</span>
-                <select
-                  className="text-input"
-                  value={reach}
-                  disabled={busy}
-                  onChange={(event) => setReach(event.target.value)}
-                >
-                  {consent.workspaces.map((workspace) => (
-                    <option key={workspace.id} value={workspace.id}>
-                      {workspace.name}
-                    </option>
-                  ))}
-                  <option value="user">Everything I can access</option>
-                </select>
-              </label>
               <label className="field">
                 <span className="field__label">Name</span>
                 <input

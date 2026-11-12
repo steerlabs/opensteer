@@ -6,7 +6,7 @@ import {
   type PersonalHostAccessRouteEnvelope,
 } from "@opensteer/control-plane-protocol";
 import {
-  hostApiVersion,
+  teamApiVersion,
   hostKeyFingerprint,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
@@ -14,6 +14,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import {
   MemoryPrivateFilesystem,
+  previousReleaseDeploymentCatalog,
   signTestDiscoveryEnvelope,
   signTestPersonalAccessRoute,
   testHostAuthorityKeys,
@@ -57,10 +58,10 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => times.shift() ?? new Date("2026-08-11T11:00:00.000Z"),
     });
-    const local = deploymentInput({ kind: "self-hosted", name: "Studio Mac" });
+    const local = deploymentInput({ kind: "team", name: "Studio Mac" });
     const cloud = deploymentInput({
       canonicalOrigin: "https://cloud.opensteer.example",
-      kind: "self-hosted",
+      kind: "team",
       name: "Team server",
     });
 
@@ -140,7 +141,6 @@ describe("DeploymentCatalogStore", () => {
         authority: signDiscovery({
           ...initial.authority.document,
           deploymentShape: {
-            defaultWorkspaceBacking: "local-directory",
             kind: "personal" as const,
           },
         }),
@@ -157,9 +157,9 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const manual = deploymentInput({ kind: "self-hosted", name: "Manual" });
-    const shared = deploymentInput({ kind: "self-hosted", name: "Shared" });
-    const unavailable = deploymentInput({ kind: "self-hosted", name: "Offline" });
+    const manual = deploymentInput({ kind: "team", name: "Manual" });
+    const shared = deploymentInput({ kind: "team", name: "Shared" });
+    const unavailable = deploymentInput({ kind: "team", name: "Offline" });
     await store.upsert(manual);
     await reconcileAccountDeployments(store, {
       connections: [shared],
@@ -189,8 +189,8 @@ describe("DeploymentCatalogStore", () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
     const manual = deploymentInput({ name: "Manual" });
-    const first = deploymentInput({ kind: "self-hosted", name: "First Account" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second Account" });
+    const first = deploymentInput({ kind: "team", name: "First Account" });
+    const second = deploymentInput({ kind: "team", name: "Second Account" });
     const secondSource = {
       ...accountSource,
       subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
@@ -309,8 +309,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "self-hosted", name: "First" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second" });
+    const first = deploymentInput({ kind: "team", name: "First" });
+    const second = deploymentInput({ kind: "team", name: "Second" });
     await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -337,7 +337,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const selected = deploymentInput({ kind: "self-hosted", name: "Selected" });
+    const selected = deploymentInput({ kind: "team", name: "Selected" });
     await reconcileAccountDeployments(store, {
       connections: [selected],
       directoryDeployments: [accountDeployment(selected)],
@@ -358,8 +358,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "self-hosted", name: "First" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second" });
+    const first = deploymentInput({ kind: "team", name: "First" });
+    const second = deploymentInput({ kind: "team", name: "Second" });
     const before = await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -385,7 +385,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const accountConnection = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const accountConnection = deploymentInput({ kind: "team", name: "Home" });
     const canonicalOnly = DeploymentConnectionInputSchema.parse({
       ...accountConnection,
       endpoints: accountConnection.endpoints.filter(({ kind }) => kind === "canonical"),
@@ -428,7 +428,7 @@ describe("DeploymentCatalogStore", () => {
   it("immediately fences a stale Account route during transfer or authority change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const current = deploymentInput({ kind: "team", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -449,7 +449,7 @@ describe("DeploymentCatalogStore", () => {
       canonicalOrigin: "https://moved.connect.opensteer.example",
       hostInstanceId: createId("hostInstance"),
       id: current.authority.document.deploymentId,
-      kind: "self-hosted",
+      kind: "team",
       name: "Home",
     });
     catalog = await reconcileAccountDeployments(store, {
@@ -468,7 +468,7 @@ describe("DeploymentCatalogStore", () => {
   it("follows a verified Account directory Host key change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const current = deploymentInput({ kind: "team", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -538,7 +538,7 @@ describe("DeploymentCatalogStore", () => {
   it("records the Account relation the directory reports and follows it when it changes", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const owned = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const owned = deploymentInput({ kind: "team", name: "Home" });
     const directory = accountDeployment(owned);
 
     await reconcileAccountDeployments(store, {
@@ -583,7 +583,7 @@ describe("DeploymentCatalogStore", () => {
     });
   });
 
-  it("loads a schema-four catalog whose signed authority uses the legacy backing name", async () => {
+  it("rejects a catalog that adds a retired field to signed authority", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
     const current = persistedDeployment({ name: "Home" });
@@ -606,11 +606,7 @@ describe("DeploymentCatalogStore", () => {
     });
     files.put(catalogPath, serialized);
 
-    await expect(store.load()).resolves.toMatchObject({
-      deployments: [
-        { authority: { document: { deploymentShape: { backing: "local-directory" } } } },
-      ],
-    });
+    await expect(store.load()).rejects.toThrow("incompatible or corrupt");
     expect(files.text(catalogPath)).toBe(serialized);
   });
 
@@ -695,22 +691,29 @@ describe("DeploymentCatalogStore", () => {
     await expect(store.load()).rejects.toThrow("not valid JSON");
   });
 
-  it("discards another schema version without rewriting it", async () => {
-    const files = new MemoryPrivateFilesystem();
-    const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = persistedDeployment({ name: "Home" });
-    const oldCatalog = JSON.stringify({
-      deployments: [current],
-      revision: 1,
-      schemaVersion: 6,
-      selectedDeploymentId: current.authority.document.deploymentId,
-      updatedAt: "2026-08-11T10:00:00.000Z",
-    });
-    files.put(catalogPath, oldCatalog);
+  it.each(["previous", "future"])(
+    "discards a %s release’s catalog without rewriting it",
+    async (release) => {
+      const files = new MemoryPrivateFilesystem();
+      const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
+      const current = persistedDeployment({ name: "Home" });
+      const oldCatalog = JSON.stringify(
+        release === "previous"
+          ? previousReleaseDeploymentCatalog
+          : {
+              deployments: [current],
+              revision: 1,
+              schemaVersion: 6,
+              selectedDeploymentId: current.authority.document.deploymentId,
+              updatedAt: "2026-08-11T10:00:00.000Z",
+            },
+      );
+      files.put(catalogPath, oldCatalog);
 
-    await expect(store.load()).resolves.toEqual(emptyDeploymentCatalog());
-    expect(files.text(catalogPath)).toBe(oldCatalog);
-  });
+      await expect(store.load()).resolves.toEqual(emptyDeploymentCatalog());
+      expect(files.text(catalogPath)).toBe(oldCatalog);
+    },
+  );
 });
 
 describe("Deployment connection schemas", () => {
@@ -835,7 +838,7 @@ describe("Host endpoint verification", () => {
       deploymentConnectionFromVerifiedEndpoints({
         accountAccess: null,
         endpoints: [canonical, direct],
-        kind: "self-hosted",
+        kind: "team",
         name: "Studio Mac",
         source: { kind: "manual" },
       }),
@@ -845,7 +848,7 @@ describe("Host endpoint verification", () => {
       bootstrapMethods: ["password"],
       capabilities: [],
       endpoints: [canonical.endpoint, direct.endpoint],
-      kind: "self-hosted",
+      kind: "team",
       name: "Studio Mac",
       reachability: "canonical",
       source: { kind: "manual" },
@@ -900,7 +903,7 @@ describe("Host endpoint verification", () => {
             },
           },
         ],
-        kind: "self-hosted",
+        kind: "team",
         name: "Mixed",
         source: { kind: "manual" },
       }),
@@ -913,6 +916,7 @@ describe("Host endpoint verification", () => {
     const descriptorWithout = (epoch: number | undefined) =>
       new Response(
         JSON.stringify({
+          kind: "team",
           ...(epoch === undefined ? {} : { apiVersion: epoch }),
           authority: signDiscovery(discovery),
           bootstrapMethods: ["password"],
@@ -930,14 +934,14 @@ describe("Host endpoint verification", () => {
     ).rejects.toMatchObject({ code: "host-too-old" });
     await expect(
       verifyAccessEndpoint({
-        fetch: async () => descriptorWithout(hostApiVersion + 1),
+        fetch: async () => descriptorWithout(teamApiVersion + 1),
         kind: "canonical",
         origin: discovery.canonicalOrigin,
       }),
     ).rejects.toMatchObject({ code: "client-too-old" });
 
     const verified = await verifyAccessEndpoint({
-      fetch: async () => descriptorWithout(hostApiVersion),
+      fetch: async () => descriptorWithout(teamApiVersion),
       kind: "canonical",
       origin: discovery.canonicalOrigin,
     });
@@ -954,7 +958,8 @@ describe("Host endpoint verification", () => {
         expectedHostKeyFingerprint: discoveryFingerprint,
         fetch: async () =>
           Response.json({
-            apiVersion: hostApiVersion + 1,
+            kind: "team",
+            apiVersion: teamApiVersion + 1,
             authority: forged,
             bootstrapMethods: [],
             capabilities: [],
@@ -1064,8 +1069,7 @@ function deploymentInput(input: {
       hostInstanceId: input.hostInstanceId ?? createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -1081,7 +1085,7 @@ function deploymentInput(input: {
         verifiedAt: "2026-08-11T09:00:00.000Z",
       },
     ],
-    kind: input.kind ?? "self-hosted",
+    kind: input.kind ?? "team",
     name: input.name,
     reachability: "canonical",
     source: { kind: "manual" },
@@ -1148,7 +1152,6 @@ function thisDevicePersonalInput(name: string): DeploymentConnectionInput {
       ...base.authority.document,
       canonicalOrigin,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),
@@ -1237,7 +1240,8 @@ function envelopeResponse(
 ): Response {
   return new Response(
     JSON.stringify({
-      apiVersion: hostApiVersion,
+      kind: "team",
+      apiVersion: teamApiVersion,
       authority: envelope,
       bootstrapMethods: ["password"],
       capabilities: [],

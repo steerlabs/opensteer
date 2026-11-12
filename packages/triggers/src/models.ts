@@ -10,7 +10,6 @@ import {
   TriggerRevisionIdSchema,
   TriggerWatchActivationIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   utf8ByteLength,
 } from "@opensteer/core";
 import { z } from "zod";
@@ -24,26 +23,26 @@ export const TriggerStatusSchema = z.enum(["active", "paused", "archived"]);
  */
 export const triggerProgramContract = [
   "Trigger programs execute as Node.js ESM modules (Node 24 or newer) on the anchor Thread's Runner,",
-  "with the anchor Workspace folder as the working directory, so relative paths and relative imports",
-  "resolve from the Workspace root. The source must export one default function (async or not):",
-  "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for computers and orchestrator_capabilities for engines and models, and project_list to find Projects.",
+  "with the anchor task folder as the working directory, so relative paths and relative imports",
+  "resolve from the task folder. The source must export one default function (async or not):",
+  "The program object must declare toolContractVersion: use 3 for new programs. Use environment_list for computers and orchestrator_capabilities for engines and models.",
   "`export default async function ({ event, capabilities, opensteer }) { ... }`.",
   "`event` is frozen ({ id, payload, receivedAt, source, trigger });",
   '`event.source.kind` is "schedule" (with scheduledFor), "webhook" (with method, headers, and optional deliveryId),',
   '"manual" (a manual run carries only the payload), or "watch" (the single startup event for a continuous watch).',
   "A watch program runs continuously on the anchor Thread's machine and must not resolve; Opensteer restarts unexpected exits with exponential backoff and pauses the Trigger after three consecutive unexpected exits.",
   "`capabilities.mcp` is the short-lived Opensteer MCP endpoint ({ url, token });",
-  "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when the Workspace has no browser grant.",
+  "`capabilities.browserCdp` is a short-lived CDP WebSocket endpoint ({ url, token }) or null when no browser access is available.",
   "For a watch, every non-null capability also has expiresAt.",
   "Watch capabilities rotate while the process runs: call `opensteer.capabilities()` for the current values, and reconnect an expired CDP session with its current browserCdp value.",
-  "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the Workspace.",
+  "`opensteer.callTool(name, input)` calls any Opensteer tool, including integration tools already granted to the owner.",
   "Supply a stable observationId with each watch call to thread_send or delegate_task; when omitted, the request ID is used. Opensteer deduplicates the ID and admits up to 120 independent observations per activation per hour.",
-  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in the Workspace's own node_modules are available;",
+  "Node built-ins (node:fs, node:child_process, ...), fetch, and packages installed in the task folder's own node_modules are available;",
   "Deno, Bun, and DOM globals such as window and document do not exist, and nothing installs packages automatically.",
   "TypeScript runs through Node's built-in type transform: type annotations, enums, and namespaces work; tsconfig paths, decorators, and JSX do not.",
   "For schedule, webhook, and manual runs, the awaited return value serialized as JSON (at most 512 KiB) becomes the occurrence result, and a thrown error fails the occurrence with its message and stack.",
   "Their console output is captured as stdout and stderr (512 KiB each); watch stdout and stderr retain only their latest 16 KiB tails.",
-  "A program acts as its anchor Thread: its Opensteer tool calls reach only what that Thread can reach, and only a full-access agent can write one.",
+  "A program acts as its anchor Thread: its Opensteer tool calls use its access-mode ceiling, and only a full-access agent can write one.",
 ].join(" ");
 
 export const TriggerProgramSchema = z.strictObject({
@@ -52,7 +51,7 @@ export const TriggerProgramSchema = z.strictObject({
     .string()
     .min(1)
     .max(512 * 1_024),
-  toolContractVersion: z.literal([1, 2, 3]),
+  toolContractVersion: z.literal(3),
 });
 const TriggerProgramViewSchema = z.object(TriggerProgramSchema.shape);
 export type TriggerProgram = z.infer<typeof TriggerProgramSchema>;
@@ -95,7 +94,7 @@ export const TriggerSystemRoleSchema = z.enum(["memory-light", "memory-nightly"]
 export type TriggerSystemRole = z.infer<typeof TriggerSystemRoleSchema>;
 
 export const MANAGED_MEMORY_REFUSAL =
-  "Opensteer manages this memory pass. Pause it instead; to stop remembering, ask Chat.";
+  "Opensteer manages this memory pass. Pause it instead; to stop remembering, ask your agent.";
 export const MANAGED_MEMORY_WAKE_SKIPPED = "Opensteer skipped this memory pass wake.";
 
 export const TriggerSchema = z.strictObject({
@@ -116,7 +115,6 @@ export const TriggerSchema = z.strictObject({
   status: TriggerStatusSchema,
   updatedAt: IsoDateTimeSchema,
   webhookRouteKey: z.string().min(32).max(255).nullable(),
-  workspaceId: WorkspaceIdSchema,
 });
 export const TriggerViewSchema = z.object(TriggerSchema.shape);
 export type Trigger = z.infer<typeof TriggerSchema>;
@@ -160,7 +158,6 @@ export const TriggerProgramEventSchema = z.strictObject({
     anchorThreadId: ThreadIdSchema,
     id: TriggerIdSchema,
     revisionId: TriggerRevisionIdSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
 });
 const TriggerProgramEventViewSchema = z.object({
@@ -219,7 +216,6 @@ export const TriggerWatchActivationSchema = z.strictObject({
     .refine((value) => utf8ByteLength(value) <= 16 * 1_024, "Watch stdout tail exceeds 16 KiB"),
   triggerId: TriggerIdSchema,
   updatedAt: IsoDateTimeSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 export const TriggerWatchActivationViewSchema = z.object(TriggerWatchActivationSchema.shape);
 export type TriggerWatchActivation = z.infer<typeof TriggerWatchActivationSchema>;
@@ -306,7 +302,6 @@ export const TriggerReadInputSchema = z.strictObject({
   limit: z.number().int().min(1).max(100).default(50),
   occurrenceLimit: z.number().int().min(1).max(100).default(25),
   triggerId: TriggerIdSchema.optional(),
-  workspaceId: WorkspaceIdSchema.optional(),
 });
 
 export const TriggerSourceInputSchema = z
@@ -322,19 +317,8 @@ export const TriggerSourceInputSchema = z
   );
 export type TriggerSourceInput = z.infer<typeof TriggerSourceInputSchema>;
 
-/**
- * The Thread a Trigger belongs to and wakes. "home" names the person's Chat,
- * which an agent can address without knowing its id; it is resolved to the
- * id when the Trigger is created. A refined string rather than a union, so
- * the tool schema stays union-free for every model runtime.
- */
-export const TriggerAnchorInputSchema = z
-  .string()
-  .refine(
-    (value) => value === "home" || ThreadIdSchema.safeParse(value).success,
-    'Anchor must be a Thread id or "home"',
-  )
-  .describe('A Thread id, or "home" for the person’s Chat');
+/** The real task that supplies the program's folder and access ceiling. */
+export const TriggerAnchorInputSchema = ThreadIdSchema;
 
 export const TriggerWriteInputSchema = z.strictObject({
   action: z.enum(["create", "update", "set_status", "set_next_fire", "run", "cancel"]),
@@ -364,7 +348,6 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     limit: z.number().int().min(1).max(100).default(50),
     operation: z.literal("list"),
     systemRole: TriggerSystemRoleSchema.optional(),
-    workspaceId: WorkspaceIdSchema.optional(),
   }),
   z.strictObject({
     occurrenceLimit: z.number().int().min(1).max(100).default(25),

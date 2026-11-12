@@ -156,7 +156,6 @@ console.log(JSON.stringify({ hookSpecificOutput: {
       skills: { skills: [] },
       threadId,
       threadStateDirectory,
-      workspaceId: createId("workspace"),
       workspacePath: directory,
       writableRoots: [directory],
       wrapProcessLaunch: (launch) => launch,

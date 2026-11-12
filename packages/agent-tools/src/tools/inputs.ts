@@ -1,15 +1,9 @@
-import { BrowserProfileIdSchema, MarkColorSchema, WorkspaceIconNameSchema } from "@opensteer/core";
+import { BrowserProfileIdSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
 export const CursorSchema = z.string().trim().min(1).max(2_048);
 
-export const workspaceNameSchema = z.string().trim().min(1).max(160);
-export const WorkspaceCreateInputSchema = z.strictObject({
-  icon: WorkspaceIconNameSchema.optional().describe("Symbol matching the Project’s purpose."),
-  color: MarkColorSchema.optional().describe("Project mark color; omit for an automatic choice."),
-  name: workspaceNameSchema,
-});
 export const BrowserSessionIdInputSchema = z.string().regex(/^bsn_[0-9a-f-]{36}$/i);
 export const BrowserAccessSuggestionInputSchema = z
   .discriminatedUnion("kind", [

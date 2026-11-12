@@ -1,4 +1,5 @@
-import { lockRequestWorkspaces } from "./request-workspace-locks.js";
+import { ResolvedRequestSchema } from "@opensteer/core";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   RequestResponseSchema,
   type AgentEvent,
@@ -16,15 +17,8 @@ import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
 
-/**
- * Settles Main-workspace access that a newly available computer connection now
- * covers. Main inherits authority, so no grant row is created; the durable
- * Request still receives the same continuation and terminal workspace event as
- * an explicit fulfillment.
- */
-export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
+export async function fulfillPendingIntegrationAccessRequestsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly access: IntegrationAccess;
@@ -36,14 +30,7 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
     readonly serverId: IntegrationServerId;
   },
 ): Promise<readonly AgentEvent[]> {
-  const pendingQuery = pendingMainIntegrationAccessRequests(transaction, input);
-  await lockRequestWorkspaces(
-    transaction,
-    (await pendingQuery.execute()).flatMap((row) => [
-      row.originatingWorkspaceId,
-      row.targetWorkspaceId,
-    ]),
-  );
+  const pendingQuery = pendingIntegrationAccessRequests(transaction, input);
   const pending = await pendingQuery.forNoKeyUpdate("requests").execute();
   const events: AgentEvent[] = [];
   const now = new Date();
@@ -71,7 +58,7 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
       .returningAll()
       .executeTakeFirst();
     if (!resolvedRow) continue;
-    const request = requestFromRow(resolvedRow);
+    const request = ResolvedRequestSchema.parse(requestFromRow(resolvedRow));
     if (request.mode === "durable") {
       await transaction
         .insertInto("requestContinuations")
@@ -87,13 +74,12 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
         .execute();
     }
     events.push(
-      await appendHostWorkspaceEvent(transaction, {
+      await appendHostDeploymentEvent(transaction, {
         data: { request },
         environmentId: await requestOriginEnvironment(transaction, request),
         runId: request.originatingRunId,
         threadId: request.originatingThreadId,
         type: "request.resolved",
-        workspaceId: request.originatingWorkspaceId,
       }),
     );
     if (request.originatingRunId) {
@@ -103,8 +89,7 @@ export async function fulfillPendingMainIntegrationAccessRequestsInTransaction(
   return events;
 }
 
-/** The Main Requests a connection change will settle, also used to fence the full Request set. */
-export function pendingMainIntegrationAccessRequests(
+export function pendingIntegrationAccessRequests(
   transaction: Transaction<DatabaseSchema>,
   input: {
     readonly access: IntegrationAccess;
@@ -117,8 +102,8 @@ export function pendingMainIntegrationAccessRequests(
   return transaction
     .selectFrom("requests")
     .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
-    .innerJoin("workspaces", "workspaces.id", "requests.targetWorkspaceId")
     .selectAll("requests")
+    .select("integrationRequestDetails.access as requestedAccess")
     .where("requests.kind", "=", "integration.access")
     .where("requests.status", "=", "pending")
     .where("requests.requestedBy", "=", input.ownerUserId)
@@ -129,8 +114,6 @@ export function pendingMainIntegrationAccessRequests(
         expression("integrationRequestDetails.requestedConnectionId", "=", input.connectionId),
       ]),
     )
-    .where("workspaces.kind", "=", "main")
-    .where("workspaces.createdBy", "=", input.ownerUserId)
     .where((expression) =>
       expression.or([
         expression("integrationRequestDetails.requestedServerId", "is", null),

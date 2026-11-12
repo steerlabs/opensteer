@@ -6,14 +6,17 @@ import {
   assignmentPresentation,
   assignmentReturnText,
   delegationPresentation,
-  taskOwner,
   taskRowNote,
   tasksUnderWay,
   type AssignmentPresentation,
 } from "./assignment-presentation.js";
 
 const snapshot = new MockHostClient({ latencyMs: 0 }).getSnapshot();
-const open = Object.values(snapshot.assignments).find(({ status }) => status === "open")!;
+const open: AssignmentSummary = {
+  ...Object.values(snapshot.assignments)[0]!,
+  status: "open",
+  finishedAt: null,
+};
 
 function settled(status: AssignmentSummary["status"]): AssignmentSummary {
   return { ...open, finishedAt: open.createdAt, status };
@@ -22,7 +25,7 @@ function settled(status: AssignmentSummary["status"]): AssignmentSummary {
 function delegation(outcome: DelegationEntry["outcome"]): DelegationEntry {
   return {
     childRunId: "run_child",
-    childThread: { id: "thr_child", title: "Check fares", workspaceId: "wsp_main" },
+    childThread: { id: "thr_child", title: "Check fares" },
     createdAt: open.createdAt,
     delegationId: "del_1",
     delivery: { resultMessageId: MessageIdSchema.parse(createId("message")), status: "delivered" },
@@ -148,19 +151,5 @@ describe("assignment return text", () => {
     expect(
       assignmentReturnText({ ...settled("cancelled"), returnStatus: "delivered" }, "Chat"),
     ).toBe("Chat was told");
-  });
-});
-
-describe("who does a task", () => {
-  const assignment = { workerThread: { workspaceId: "wsp_travel" } } as Parameters<
-    typeof taskOwner
-  >[0];
-  const workspace = (kind: "main" | "project", name: string) =>
-    ({ id: "wsp_travel", kind, name }) as Parameters<typeof taskOwner>[1]["workspaces"][number];
-
-  it("names a project, names Opensteer only for a known Main Workspace, and never guesses", () => {
-    expect(taskOwner(assignment, { workspaces: [workspace("project", "Travel")] })).toBe("Travel");
-    expect(taskOwner(assignment, { workspaces: [workspace("main", "Main")] })).toBe("Opensteer");
-    expect(taskOwner(assignment, { workspaces: [] })).toBeNull();
   });
 });

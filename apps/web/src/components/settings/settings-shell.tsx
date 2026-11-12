@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import {
@@ -24,7 +23,7 @@ import {
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
 import { computerIcon } from "../computers/device-art.js";
 import { SectionHeader, type SettingsView } from "./primitives.js";
-import { ChannelsPage } from "../channels-page.js";
+import { MessagingPage } from "../messaging-page.js";
 import { AgentDevicesSection } from "./sections/agent-devices.js";
 import { SignedInDevicesSection } from "./sections/devices.js";
 import { RemoteAccessSection } from "./sections/remote-access.js";
@@ -36,7 +35,7 @@ import { ChromeSection } from "./sections/chrome.js";
 import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
-import { TeamSettingsNavigation } from "../team/team-settings.js";
+import { TeamSettingsNavigation } from "../../team/team-settings-navigation.js";
 
 // Loaded with its page so connections cost nothing on attach.
 const ExternalAgentsSection = lazy(() =>
@@ -66,10 +65,8 @@ export function SettingsShell() {
     () =>
       kind
         ? {
-            administrator: shell.snapshot.user?.instanceRole === "administrator",
             deployment,
             kind,
-            deploymentPolicy: hostDeploymentPolicy(shell.snapshot),
             machineOwner: identity?.machineOwner === true,
             name: settingsDeploymentName({ deployment, identityConfig: identity }),
             facts: {
@@ -92,11 +89,9 @@ export function SettingsShell() {
       deployment,
       identity,
       kind,
-      hostDeploymentPolicy(shell.snapshot),
       shell.desktopBridge,
       shell.snapshot.connection,
       shell.snapshot.sessionSurface,
-      shell.snapshot.user?.instanceRole,
     ],
   );
   const context = useMemo(
@@ -121,9 +116,7 @@ export function SettingsShell() {
     };
   }, [mobile, navigationOpen]);
 
-  const home = shell.snapshot.machines.find((machine) =>
-    hostsDeployment(machine, hostDeploymentPolicy(shell.snapshot) ?? null),
-  );
+  const home = shell.snapshot.machines.find(hostsDeployment);
   if (!view || !context)
     return (
       <p className="settings-footnote" role="status">
@@ -304,9 +297,7 @@ export function SettingsSectionRoute({
       ) : (
         <>
           <AccountSection />
-          {view.deploymentPolicy?.personalRemoteAccess === true && view.administrator ? (
-            <RemoteAccessSection view={view} compact />
-          ) : null}
+          <RemoteAccessSection view={view} compact />
           <SignedInDevicesSection view={view} />
         </>
       );
@@ -331,7 +322,7 @@ export function SettingsSectionRoute({
       content = <PluginsSection view={view} />;
       break;
     case "messaging":
-      content = <ChannelsPage embedded />;
+      content = <MessagingPage embedded />;
       break;
     case "sign-ins":
       content = (

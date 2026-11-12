@@ -3,13 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   ClientToHostMessageSchema,
   HostToClientMessageSchema,
-  WorkspaceSnapshotSchema,
+  DeploymentSnapshotSchema,
 } from "./index.js";
 
 const now = "2026-08-22T12:00:00.000Z";
 
 function pendingRequest() {
-  const workspaceId = createId("workspace");
   const threadId = createId("thread");
   return {
     callId: "provider-call-1",
@@ -21,7 +20,7 @@ function pendingRequest() {
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: threadId,
-    originatingWorkspaceId: workspaceId,
+
     payload: { kind: "harness.approval" },
     presentation: {
       kind: "choice",
@@ -34,16 +33,15 @@ function pendingRequest() {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: workspaceId,
   } as const;
 }
 
 describe("Request protocol", () => {
-  it("uses Request naming in Workspace snapshots", () => {
+  it("uses Request naming in Deployment snapshots", () => {
     const request = pendingRequest();
     const thread = {
       accessMode: "full-access",
-      inheritsMain: true,
+
       continuationIdentity: null,
       createdAt: now,
       createdBy: request.requestedBy,
@@ -60,11 +58,12 @@ describe("Request protocol", () => {
       parentThreadId: null,
       pendingRequests: 1,
       providerSessionId: null,
-      role: "work",
+      purpose: "task",
+      folder: { computerId: createId("runner"), path: "/tmp/task" },
+      teamOrigin: null,
       status: "waiting",
       title: "Request test",
       updatedAt: now,
-      workspaceId: request.originatingWorkspaceId,
     } as const;
     const emptyWindow = {
       byteCount: 0,
@@ -73,9 +72,21 @@ describe("Request protocol", () => {
       nextBefore: null,
       totalItems: 0,
     } as const;
+    const emptyPage = { readStates: [], tasks: [], window: emptyWindow };
     const snapshot = {
+      tasks: { recent: emptyPage, active: emptyPage, done: emptyPage },
+      needsYou: { count: 1, entries: [], window: emptyWindow },
+      resources: {
+        appTabs: [],
+        browser: {
+          available: false,
+          profiles: [],
+          placements: [],
+          groups: { rows: [], complete: true },
+          tabs: [],
+        },
+      },
       readStates: [],
-      notificationPreferences: [],
       messageWindows: [],
       messages: [],
       pendingRequests: [request],
@@ -85,31 +96,18 @@ describe("Request protocol", () => {
       serializedBytes: 1,
       threadWindow: { ...emptyWindow, itemCount: 1, totalItems: 1 },
       threads: [thread],
-      workspace: {
-        capacity: { kind: "host-filesystem" },
-        createdAt: now,
-        id: request.originatingWorkspaceId,
-        homeThreadId: request.originatingThreadId,
-        voiceThreadId: null,
-        icon: null,
-        kind: "main",
-        location: { environmentId: createId("environment"), kind: "machine", name: null },
-        name: "Main",
-        status: "ready",
-        storageIssue: null,
-        updatedAt: now,
-      },
+      deploymentId: createId("deployment"),
     } as const;
-    expect(WorkspaceSnapshotSchema.parse(snapshot)).toEqual(snapshot);
-    expect(WorkspaceSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
+    expect(DeploymentSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(DeploymentSnapshotSchema.parse({ ...snapshot, messagesOmitted: true })).toEqual({
       ...snapshot,
       messagesOmitted: true,
     });
-    expect(WorkspaceSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success).toBe(
-      false,
-    );
     expect(
-      WorkspaceSnapshotSchema.safeParse({
+      DeploymentSnapshotSchema.safeParse({ ...snapshot, messagesOmitted: false }).success,
+    ).toBe(false);
+    expect(
+      DeploymentSnapshotSchema.safeParse({
         ...snapshot,
         messagesOmitted: true,
         messageWindows: [{ ...emptyWindow, threadId: thread.id }],
@@ -117,9 +115,8 @@ describe("Request protocol", () => {
     ).toBe(false);
     const subscription = {
       type: "client.subscribe",
-      afterSequence: "0",
+      cursor: { deploymentId: createId("deployment"), apiVersion: 52, afterSequence: "0" },
       threadId: null,
-      workspaceId: thread.workspaceId,
     } as const;
     expect(ClientToHostMessageSchema.parse(subscription)).toEqual(subscription);
     expect(ClientToHostMessageSchema.parse({ ...subscription, snapshotMessages: "omit" })).toEqual({
@@ -130,14 +127,14 @@ describe("Request protocol", () => {
       ClientToHostMessageSchema.safeParse({ ...subscription, snapshotMessages: "unknown" }).success,
     ).toBe(false);
     expect(
-      WorkspaceSnapshotSchema.parse({
+      DeploymentSnapshotSchema.parse({
         ...snapshot,
         unexpectedWindow: snapshot.pendingRequestWindow,
         unexpectedRequests: snapshot.pendingRequests,
       }),
     ).toEqual(snapshot);
     expect(
-      WorkspaceSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
+      DeploymentSnapshotSchema.safeParse({ ...snapshot, pendingRequests: undefined }).success,
     ).toBe(false);
 
     expect(
@@ -150,7 +147,6 @@ describe("Request protocol", () => {
   });
 
   it("strips additive fields from Host event frames without accepting new variants", () => {
-    const workspaceId = createId("workspace");
     const threadId = createId("thread");
     const event = {
       createdAt: now,
@@ -162,7 +158,6 @@ describe("Request protocol", () => {
       sequence: "1",
       threadId,
       type: "run.started",
-      workspaceId,
     } as const;
 
     expect(
@@ -170,6 +165,7 @@ describe("Request protocol", () => {
         events: [event],
         futureFrameField: true,
         type: "host.events",
+        throughSequence: "1",
       }),
     ).toEqual({
       events: [
@@ -182,17 +178,16 @@ describe("Request protocol", () => {
           sequence: "1",
           threadId,
           type: "run.started",
-          workspaceId,
         },
       ],
       type: "host.events",
+      throughSequence: "1",
     });
     expect(HostToClientMessageSchema.safeParse({ type: "host.future-frame" }).success).toBe(false);
     expect(
       HostToClientMessageSchema.safeParse({
         reason: "future-reason",
         type: "host.resync-required",
-        workspaceId,
       }).success,
     ).toBe(false);
   });

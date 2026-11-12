@@ -1,7 +1,6 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { AttachmentCache } from "../attachments/attachment-cache.js";
 import { agentTools } from "@opensteer/agent-tools";
-import { createId as createStorageFixtureId } from "@opensteer/core";
 import { processSupervisorExecutableVariable } from "@opensteer/shared/processControl";
 import {
   ignoreForeignTestRequest,
@@ -74,8 +73,8 @@ import { prepareHarnessProviderState } from "../harness/harness-provider-state.j
 import { createHarnessRegistry } from "../harness/harness-registry.js";
 import type { HarnessProcessSandbox, HarnessSandboxRunPlan } from "../sandbox/harness-sandbox.js";
 import { ExecutionContainment, executionScopeVariable } from "./execution-containment.js";
-import { RunnerRuntime, warmEngineKey, type RunnerMessageSink } from "./runtime.js";
-import { WarmEnginePool } from "./warm-engine-pool.js";
+import { RunnerRuntime, type RunnerMessageSink } from "./runtime.js";
+import { warmEngineKey, WarmEnginePool } from "./warm-engine-pool.js";
 import { providerContinuationIdentityProjector } from "@opensteer/runner-client";
 
 const testAgentSkills = {
@@ -90,21 +89,17 @@ const testAgentSkills = {
     "opensteer:devices": "/runner/agent-skills/skills/devices",
     "opensteer:threads": "/runner/agent-skills/skills/threads",
     "opensteer:triggers": "/runner/agent-skills/skills/triggers",
-    "opensteer:projects": "/runner/agent-skills/skills/projects",
   },
   rootPath: "/runner/agent-skills",
 } as const;
 const testDeploymentShape = {
-  defaultWorkspaceBacking: "local-directory",
-  kind: "server" as const,
+  kind: "personal" as const,
 } as const;
 const testPersonalDeploymentShape = {
-  defaultWorkspaceBacking: "local-directory",
   kind: "personal" as const,
 } as const;
 const testServerDeploymentShape = {
-  defaultWorkspaceBacking: "local-directory",
-  kind: "server" as const,
+  kind: "personal" as const,
 } as const;
 const noPlugins = async () => ({
   cleanup: async () => undefined,
@@ -404,7 +399,11 @@ describe("RunnerRuntime", () => {
       const registry = new HarnessRegistry();
       registry.registerDriver(driver);
       const environmentId = createId("environment");
-      const prepare = vi.fn(async () => ({ instructions: undefined, path: "/runner/workspace" }));
+      const prepare = vi.fn(async () => ({
+        agentHomePath: "/runner/workspace",
+        instructions: undefined,
+        path: "/runner/workspace",
+      }));
       const runtime = configuredRuntime({
         environmentId,
         manualLeaseGrants: true,
@@ -757,7 +756,7 @@ describe("RunnerRuntime", () => {
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => Promise.reject(new Error("Unexpected Workspace access")),
       },
@@ -870,7 +869,7 @@ describe("RunnerRuntime", () => {
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => Promise.reject(new Error("Unexpected Workspace access")),
       },
@@ -2616,7 +2615,11 @@ describe("RunnerRuntime", () => {
       maxConcurrentRuns: 2,
       privateStateDirectory: stateRoot,
       registry,
-      workspacePrepare: async () => ({ instructions: undefined, path: temporaryRoot }),
+      workspacePrepare: async () => ({
+        agentHomePath: temporaryRoot,
+        instructions: undefined,
+        path: temporaryRoot,
+      }),
     });
     const ambient = executeCommand(environmentId);
     const isolated = isolatedExecuteCommand(executeCommand(environmentId));
@@ -2681,7 +2684,11 @@ describe("RunnerRuntime", () => {
       environmentId,
       privateStateDirectory: stateRoot,
       registry,
-      workspacePrepare: async () => ({ instructions: undefined, path: temporaryRoot }),
+      workspacePrepare: async () => ({
+        agentHomePath: temporaryRoot,
+        instructions: undefined,
+        path: temporaryRoot,
+      }),
     });
     const first = isolatedExecuteCommand(executeCommand(environmentId));
     // The same Thread, bound to a second profile of the same driver, resuming
@@ -3327,10 +3334,11 @@ describe("RunnerRuntime", () => {
           };
         },
       },
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => {
           return {
+            agentHomePath: "/runner/triggers/test/workspace",
             instructions: undefined,
             path: "/runner/triggers/test/workspace",
           };
@@ -3404,9 +3412,10 @@ describe("RunnerRuntime", () => {
         },
       },
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => ({
+          agentHomePath: "/runner/triggers/test/workspace",
           instructions: undefined,
           path: "/runner/triggers/test/workspace",
         }),
@@ -3485,7 +3494,7 @@ describe("RunnerRuntime", () => {
         },
       },
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => {
           workspacePreparations += 1;
@@ -3529,30 +3538,6 @@ describe("RunnerRuntime", () => {
         error: { code: "not_found", message: expect.stringContaining("unavailable") },
         status: "rejected",
       });
-      const triggerRetryId = createId("command");
-      await expect(
-        runtime.handleCommand(
-          {
-            ...trigger,
-            commandId: triggerRetryId,
-            context: {
-              ...trigger.context,
-              workspaceAccess: {
-                ...trigger.context.workspaceAccess,
-                workspaceId: createId("workspace"),
-              },
-            },
-            correlationId: CorrelationIdSchema.parse(triggerRetryId),
-          },
-          sink,
-        ),
-      ).resolves.toMatchObject({
-        error: {
-          code: "forbidden",
-          message: "Trigger Workspace access plan does not match its context",
-        },
-        status: "rejected",
-      });
       expect(workspacePreparations).toBe(0);
       expect(triggerExecutions).toBe(0);
       expect(runtime.activeRunIds()).toEqual([]);
@@ -3568,11 +3553,12 @@ describe("RunnerRuntime", () => {
     registry.registerDriver(driver);
 
     let mounts = 0;
-    const workspaceManager = {
+    const folderManager = {
       writableRoots: () => ["/runner/workspaces"],
       prepare: async () => {
         mounts += 1;
         return {
+          agentHomePath: "/runner/runs/test/workspace",
           instructions: "Be precise.",
           path: "/runner/runs/test/workspace",
         };
@@ -3593,7 +3579,7 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
       projectContinuationIdentity,
-      workspaceManager,
+      folderManager,
     });
     const messages: RunnerOperationalReport[] = [];
     const sink: RunnerMessageSink = {
@@ -3609,7 +3595,7 @@ describe("RunnerRuntime", () => {
 
     expect(mounts).toBe(1);
     expect(driver.context?.instructions).toBe("Be precise.");
-    expect(command.context.workspaceAccess.kind).toBe("local-directory");
+    expect(command.location.folder.path).toBe("/runner/runs/control/workspace");
     expect(driver.context?.environment.OPENSTEER_AGENT_WORKSPACE).toBe(
       "/runner/runs/test/workspace",
     );
@@ -3742,9 +3728,10 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(stateRoot),
       privateStateDirectory: stateRoot,
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => ({
+          agentHomePath: "/runner/runs/claude/workspace",
           instructions: undefined,
           path: "/runner/runs/claude/workspace",
         }),
@@ -3775,7 +3762,9 @@ describe("RunnerRuntime", () => {
     [true, false],
     [false, true],
   ])("resolves skill layers with specialist=%s disabled=%s", async (specialist, disabled) => {
-    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-"));
+    const temporaryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
+    );
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
@@ -3831,16 +3820,17 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(stateRoot),
       privateStateDirectory: stateRoot,
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare: async () => ({
+          agentHomePath: workspacePath,
           instructions: "Workspace instructions",
           path: workspacePath,
         }),
       },
     });
     const reports: string[][] = [];
-    runtime.observeWorkspaceSkills(async (_workspaceId, scan) => {
+    runtime.observeFolderSkills(async (_folder, _generation, scan) => {
       reports.push(scan?.metadata.map((skill) => skill.fullName) ?? []);
       // A known file mutation after preparation must appear in the settled scan.
       if (reports.length === 1) await writeWorkspaceSkill(workspacePath, "after-run");
@@ -3848,8 +3838,10 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
+      command.location.folder.path = workspacePath;
+      command.location.agentHome.path = workspacePath;
       if (disabled)
-        command.context.plugins.workspaceSkillPolicy = {
+        command.context.plugins.skillPolicy = {
           revision: 1,
           disabledFullNames: ["research"],
         };
@@ -3868,7 +3860,7 @@ describe("RunnerRuntime", () => {
       if (specialist) {
         const pluginData = join(workspacePath, ".specialists", "registration-1");
         expect(driver.context?.workspacePath).toBe(workspacePath);
-        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces"]);
+        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces", workspacePath]);
         expect(driver.context?.instructions).toContain(
           `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
         );
@@ -3876,7 +3868,11 @@ describe("RunnerRuntime", () => {
           PLUGIN_ROOT: pluginRoot,
           PLUGIN_DATA: pluginData,
         });
-        expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
+        expect(
+          driver.context?.skills?.skills
+            .filter((skill) => skill.plugin === null)
+            .map((skill) => skill.fullName),
+        ).toEqual(["release-notes", "research"]);
         expect(
           driver.context?.skills?.skills
             .filter((skill) => skill.plugin === "example")
@@ -3884,6 +3880,8 @@ describe("RunnerRuntime", () => {
         ).toEqual(["example:research", "example:helper"]);
         hold = true;
         const running = executeCommand(environmentId);
+        running.location.folder.path = workspacePath;
+        running.location.agentHome.path = workspacePath;
         running.context.specialistId = "registration-1";
         running.context.plugins.versions = command.context.plugins.versions;
         await reconcile(registry, running);
@@ -3944,12 +3942,6 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "projects",
-            fullName: "opensteer:projects",
-            path: "/runner/agent-skills/skills/projects",
-          },
-          {
-            plugin: "opensteer",
             localName: "threads",
             fullName: "opensteer:threads",
             path: "/runner/agent-skills/skills/threads",
@@ -3987,7 +3979,7 @@ describe("RunnerRuntime", () => {
         ].filter((skill) => !disabled || skill.fullName !== "research"),
       );
       expect(logged).toEqual([
-        "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
+        "Folder skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -4687,7 +4679,7 @@ describe("RunnerRuntime", () => {
         originatingOccurrenceId: null,
         originatingRunId: createId("run"),
         originatingThreadId: createId("thread"),
-        originatingWorkspaceId: createId("workspace"),
+
         payload: { kind: "harness.approval" },
         presentation: {
           detail,
@@ -4704,7 +4696,6 @@ describe("RunnerRuntime", () => {
         resolvedBy: null,
         response: null,
         status: "pending",
-        targetWorkspaceId: createId("workspace"),
       };
       const form: PendingRequest = {
         ...base,
@@ -4861,16 +4852,6 @@ describe("RunnerRuntime", () => {
         dataDirectory: testPrivateStateRoot,
         listProcesses,
       }),
-      workspaceMountRegistry: {
-        detach,
-        detachAll: async () => undefined,
-        inventory: () =>
-          commands.map(({ context }) => ({
-            enrollmentId: "enrollment-1",
-            volumeId: "workspace_volume",
-            workspaceId: context.workspaceId,
-          })),
-      },
     };
     const runtime = configuredRuntime(options);
     const messages: RunnerOperationalReport[] = [];
@@ -5105,135 +5086,6 @@ describe("RunnerRuntime", () => {
     }
   });
 
-  it("accepts a local project Workspace plan without storage mount segments", async () => {
-    const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
-    const registry = new HarnessRegistry();
-    registry.registerDriver(driver);
-    const environmentId = createId("environment");
-    const targetWorkspaceId = createId("workspace");
-    const preparedPlans: RunnerCommand["type"][] = [];
-    const runtime = configuredRuntime({
-      environmentId,
-      registry,
-      workspacePrepare: async (input) => {
-        preparedPlans.push(
-          input.plan.workspaceId === targetWorkspaceId ? "workspace.mount" : "run.execute",
-        );
-        return {
-          instructions: undefined,
-          path:
-            input.plan.workspaceId === targetWorkspaceId
-              ? "/Users/test/Opensteer/Workspaces/main/Projects/research"
-              : "/Users/test/Opensteer/Workspaces/main",
-        };
-      },
-    });
-    const base = executeCommand(environmentId, "blocking-driver");
-    const execute = RunnerCommandSchema.parse({
-      ...base,
-      context: {
-        ...base.context,
-        workspaceAccess: {
-          ...base.context.workspaceAccess,
-        },
-        workspaceKind: "main",
-      },
-    }) as Extract<RunnerCommand, { type: "run.execute" }>;
-    const sink: RunnerMessageSink = { send: async () => undefined };
-    await reconcile(registry, execute);
-    try {
-      await runtime.handleCommand(execute, sink);
-      await waitUntil(() => driver.context !== undefined);
-      const decision = await runtime.handleCommand(
-        RunnerCommandSchema.parse({
-          commandId: createId("command"),
-          correlationId: CorrelationIdSchema.parse("local-workspace-attachment"),
-          environmentId,
-          plan: {
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            kind: "local-directory",
-            ownerEnvironmentId: environmentId,
-            storageAuthorityId: createId("storageAuthority"),
-            workspaceId: targetWorkspaceId,
-          },
-          runId: execute.context.runId,
-          threadId: execute.context.threadId,
-          type: "workspace.mount",
-          workspaceId: targetWorkspaceId,
-        }),
-        sink,
-      );
-
-      expect(decision).toEqual({
-        status: "accepted",
-        workspacePath: "/Users/test/Opensteer/Workspaces/main/Projects/research",
-      });
-      expect(preparedPlans).toEqual(["run.execute", "workspace.mount"]);
-    } finally {
-      await runtime.close();
-    }
-  });
-
-  it("lets Main attach a project Workspace already used by a child Run", async () => {
-    const driver = new FakeHarnessDriver("blocking-driver", () => new BlockingHarnessSession());
-    const registry = new HarnessRegistry();
-    registry.registerDriver(driver);
-    const environmentId = createId("environment");
-    const child = executeCommand(environmentId, "blocking-driver");
-    const mainBase = executeCommand(environmentId, "blocking-driver");
-    const main = RunnerCommandSchema.parse({
-      ...mainBase,
-      context: {
-        ...mainBase.context,
-        workspaceAccess: {
-          ...mainBase.context.workspaceAccess,
-        },
-        workspaceKind: "main",
-      },
-    }) as Extract<RunnerCommand, { type: "run.execute" }>;
-    const prepared: string[] = [];
-    const runtime = configuredRuntime({
-      environmentId,
-      maxConcurrentRuns: 2,
-      registry,
-      workspacePrepare: async ({ plan }) => {
-        prepared.push(plan.workspaceId);
-        return { instructions: undefined, path: `/workspaces/${plan.workspaceId}` };
-      },
-    });
-    const sink: RunnerMessageSink = { send: async () => undefined };
-    await reconcile(registry, child, main);
-    try {
-      await runtime.handleCommand(child, sink);
-      await runtime.handleCommand(main, sink);
-      await waitUntil(() => driver.contexts.length === 2);
-      await expect(
-        runtime.handleCommand(
-          RunnerCommandSchema.parse({
-            commandId: createId("command"),
-            correlationId: CorrelationIdSchema.parse("main-attach-child-workspace"),
-            environmentId,
-            plan: child.context.workspaceAccess,
-            runId: main.context.runId,
-            threadId: main.context.threadId,
-            type: "workspace.mount",
-            workspaceId: child.context.workspaceId,
-          }),
-          sink,
-        ),
-      ).resolves.toEqual({
-        status: "accepted",
-        workspacePath: `/workspaces/${child.context.workspaceId}`,
-      });
-      expect(
-        prepared.filter((workspaceId) => workspaceId === child.context.workspaceId),
-      ).toHaveLength(2);
-    } finally {
-      await runtime.close();
-    }
-  });
-
   it(
     "runs a production Personal turn over its co-located loopback Host transports",
     { timeout: 30_000 },
@@ -5253,14 +5105,6 @@ describe("RunnerRuntime", () => {
         ...base,
         context: {
           ...base.context,
-          workspaceAccess: {
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            kind: "local-directory",
-            ownerEnvironmentId: environmentId,
-            storageAuthorityId: createId("storageAuthority"),
-            workspaceId: base.context.workspaceId,
-          },
         },
       }) as Extract<RunnerCommand, { type: "run.execute" }>;
       const messages: RunnerOperationalReport[] = [];
@@ -5440,7 +5284,7 @@ class InteractiveHarnessSession implements HarnessSession {
           originatingOccurrenceId: null,
           originatingRunId: turn.runId,
           originatingThreadId: this.#context.threadId,
-          originatingWorkspaceId: this.#context.workspaceId,
+
           payload: { kind: "harness.approval" },
           presentation: {
             detail: "Allow the test action?",
@@ -5458,7 +5302,6 @@ class InteractiveHarnessSession implements HarnessSession {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: this.#context.workspaceId,
         },
       },
       type: "request.opened",
@@ -5476,7 +5319,7 @@ class InteractiveHarnessSession implements HarnessSession {
           originatingOccurrenceId: null,
           originatingRunId: turn.runId,
           originatingThreadId: this.#context.threadId,
-          originatingWorkspaceId: this.#context.workspaceId,
+
           payload: { kind: "harness.input" },
           presentation: {
             fields: [
@@ -5496,7 +5339,6 @@ class InteractiveHarnessSession implements HarnessSession {
           resolvedBy: null,
           response: null,
           status: "pending",
-          targetWorkspaceId: this.#context.workspaceId,
         },
       },
       type: "request.opened",
@@ -5958,11 +5800,15 @@ function executeCommand(
   driverKind = "test-driver",
   hostOrigin = "https://host.example",
 ): Extract<RunnerCommand, { type: "run.execute" }> {
-  const workspaceId = createId("workspace");
   return RunnerCommandSchema.parse({
+    location: {
+      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+    },
     commandId: createId("command"),
     context: {
       accessMode: "full-access",
+      personalContext: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
@@ -5974,7 +5820,6 @@ function executeCommand(
           "opensteer:computer-use",
           "opensteer:browser",
           "opensteer:computers",
-          "opensteer:projects",
           "opensteer:threads",
           "opensteer:triggers",
         ],
@@ -5992,7 +5837,7 @@ function executeCommand(
       },
       bindingGeneration: 3,
       executionLeaseMs: 90_000,
-      membershipGeneration: 1,
+
       egress: {
         maxRequestBytes: 8 * 1024 * 1024,
         maxResponseBytes: 8 * 1024 * 1024,
@@ -6024,21 +5869,10 @@ function executeCommand(
       requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
-      threadRole: "work",
+      taskPurpose: "task",
       threadState: { previousAssignment: null, previousRun: null },
-      workspaceId,
-      workspaceKind: "project",
-      machineAccess: { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
-      workspaceInstructionsPath: null,
-      workspaceAccess: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
 
-        workspaceId,
-      },
+      machineAccess: { callerMachineName: "cloud-1", machines: [], omittedMachines: 0 },
     },
     correlationId: CorrelationIdSchema.parse("runtime-test"),
     environmentId,
@@ -6067,8 +5901,11 @@ function triggerCommand(
   const occurrenceId = createId("triggerOccurrence");
   const revisionId = createId("triggerRevision");
   const triggerId = createId("trigger");
-  const workspaceId = createId("workspace");
   return RunnerCommandSchema.parse({
+    location: {
+      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
+    },
     commandId: createId("command"),
     context: {
       anchorThreadId,
@@ -6078,29 +5915,19 @@ function triggerCommand(
         payload: { action: "test" },
         receivedAt: new Date().toISOString(),
         source: { kind: "manual" },
-        trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
+        trigger: { anchorThreadId, id: triggerId, revisionId },
       },
       executionGeneration: 1,
 
       mcp: { token: "trigger-mcp-token", url: "https://host.example/internal/v1/mcp" },
       occurrenceId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => null",
       },
       revisionId,
       triggerId,
-      workspaceId,
-      workspaceAccess: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-
-        workspaceId,
-      },
     },
     correlationId: CorrelationIdSchema.parse("trigger-runtime-test"),
     environmentId,
@@ -6362,7 +6189,7 @@ function configuredRuntime(input: {
   readonly registry: HarnessRegistry;
   readonly workspacePrepare?: ConstructorParameters<
     typeof RunnerRuntime
-  >[0]["workspaceManager"]["prepare"];
+  >[0]["folderManager"]["prepare"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
@@ -6387,11 +6214,12 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
-      workspaceManager: {
+      folderManager: {
         writableRoots: () => ["/runner/workspaces"],
         prepare:
           input.workspacePrepare ??
           (async () => ({
+            agentHomePath: "/runner/runs/control/workspace",
             instructions: undefined,
             path: "/runner/runs/control/workspace",
           })),
@@ -6442,41 +6270,9 @@ function deferred<Value>(): {
 }
 import { mkdtempSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-
-it("refuses a Run while its Project is relocating and releases admission after failure", async () => {
-  const registry = new HarnessRegistry();
-  const environmentId = createId("environment");
-  const runtime = configuredRuntime({ environmentId, registry });
-  const command = executeCommand(environmentId);
-  const entered = deferred<void>();
-  const finish = deferred<void>();
-  const moving = runtime.relocateWorkspace(command.context.workspaceId, async () => {
-    entered.resolve();
-    await finish.promise;
-    throw new Error("Move failed");
-  });
-  const failed = expect(moving).rejects.toThrow("Move failed");
-  try {
-    await entered.promise;
-    const decision = await runtime.handleCommand(command, { send: async () => undefined });
-    expect(decision).toMatchObject({
-      status: "rejected",
-      error: { message: "Project relocation is in progress" },
-    });
-    finish.resolve();
-    await failed;
-    await expect(
-      runtime.relocateWorkspace(command.context.workspaceId, async () => undefined),
-    ).resolves.toBeUndefined();
-  } finally {
-    finish.resolve();
-    await failed;
-    await runtime.close();
-  }
-});
 
 it("invalidates warm engines when the pinned package set changes, regardless of order", () => {
   const context = executeCommand(createId("environment")).context;
@@ -6489,7 +6285,7 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
     providerSessionReference: null,
     runtimeBoundary: "native-user",
     skills: undefined,
-    workspaceSkillsDigest: "",
+    folderSkillsDigest: "",
     workspacePath: "/workspace",
     writableRoots: ["/workspace"],
   };
@@ -6497,18 +6293,17 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
   const second = { pluginId: "b", name: "beta", digest: "b".repeat(64) };
   context.plugins.versions = [first, second];
   const before = warmEngineKey(input);
-  context.plugins.workspaceSkillPolicy = { revision: 1, disabledFullNames: [] };
+  context.plugins.skillPolicy = { revision: 1, disabledFullNames: [] };
   expect(warmEngineKey(input)).not.toBe(before);
-  delete context.plugins.workspaceSkillPolicy;
+  delete context.plugins.skillPolicy;
   context.plugins.versions = [second, first];
   expect(warmEngineKey(input)).toBe(before);
   context.plugins.versions = [{ ...first, digest: "c".repeat(64) }, second];
   expect(warmEngineKey(input)).not.toBe(before);
   const current = warmEngineKey(input);
   // The revision names the Host's whole inventory, guide and skills.
-  context.agentTools.tools = [...context.agentTools.tools].reverse();
   context.agentTools.instructions = "Rephrased";
-  expect(warmEngineKey(input)).toBe(current);
+  expect(warmEngineKey(input)).not.toBe(current);
   context.agentTools.toolsRevision = "changed-tools";
   expect(warmEngineKey(input)).not.toBe(current);
 });

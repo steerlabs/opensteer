@@ -18,7 +18,7 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
  *   the card allows the other one;
  * - the allowed Chrome keeps reading signed in although its export failed, and
  *   every inspection re-sends;
- * - the site is removed from the Workspace after the Allow, and a retry adds
+ * - the site is removed after the Allow, and a retry adds
  *   it back;
  * - the problem is one no inspection can clear (the browser is too old), and
  *   the card retries whenever Chrome reads signed in.
@@ -26,7 +26,6 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
  */
 
 const site = "https://github.com";
-const workspaceId = "wsp_00000000-0000-4000-8000-000000000003";
 const macId = "bsr_00000000-0000-4000-8000-000000000001";
 const workId = "bsr_00000000-0000-4000-8000-000000000002";
 type Status = "available" | "stopped" | "offline";
@@ -102,7 +101,7 @@ describe("BrowserSignInRequestBody after Allow", () => {
     expect(allowedSources()).toHaveLength(2);
   });
 
-  it("does not retry once the site was removed from the Workspace", async () => {
+  it("does not retry once the site was removed", async () => {
     statuses = { [macId]: "available", [workId]: "offline" };
     outcomes = [problem("stopped")];
     await render();
@@ -154,7 +153,6 @@ async function render(): Promise<void> {
                   lastSignedInAt: null,
                   preferredSourceId: grantSource,
                   site,
-                  workspaceId,
                 },
               ]
             : [],
@@ -185,7 +183,6 @@ async function render(): Promise<void> {
         environment={{} as ChromeConnectEnvironment}
         profileName={null}
         request={signInRequest()}
-        workspaceName="Research"
       />,
     ),
   );
@@ -233,8 +230,7 @@ function signInRequest(): Request {
     mode: "durable",
     originatingOccurrenceId: null,
     originatingRunId: null,
-    originatingThreadId: null,
-    originatingWorkspaceId: workspaceId,
+    originatingThreadId: "thr_00000000-0000-4000-8000-000000000003",
     payload: {
       kind: "browser.sign-in",
       reason: "Open the pull request",
@@ -247,11 +243,10 @@ function signInRequest(): Request {
       title: "Sign in to github.com",
     },
     requestedBy: "usr_00000000-0000-4000-8000-000000000001",
-    requiredActor: "workspace-owner",
+    requiredActor: "owner",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: workspaceId,
   } as unknown as Request;
 }

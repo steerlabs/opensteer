@@ -51,6 +51,12 @@ export const darwinOnlyTests = [
   "apps/desktop/src/computer-use/computer-use-service.test.ts",
   "apps/desktop/src/passwords/broker-client.test.ts",
 ];
+// Opt-in measurements that skip every case unless their benchmark command supplies options, so
+// integration discovery leaves them out: `pnpm bench:mobile-network` and OPENSTEER_TEAM_PERF=1.
+export const optInIntegrationBenchmarks = [
+  "tests/team-mobile-network.integration.test.ts",
+  "tests/team-performance.integration.test.ts",
+];
 export const defaultTestExclude = [
   "**/*.integration.test.*",
   "**/*.gui.test.*",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { chmod, lstat, mkdir, readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,7 +14,6 @@ export async function main() {
   await verifyReleaseIdentity(environment);
   await expandSecretFiles(environment);
   await configureBrowserRuntime(environment);
-  await prepareRunnerWorkspaceRoot(environment);
 
   const [command, ...arguments_] = process.argv.slice(2);
   if (!command) fail("Opensteer container entrypoint requires a command.");
@@ -206,34 +205,6 @@ async function findChromiumExecutable(root) {
     }
   }
   return undefined;
-}
-
-export async function prepareRunnerWorkspaceRoot(target) {
-  const root = target.OPENSTEER_RUNNER_WORKSPACE_ROOT;
-  if (!root) return;
-  try {
-    await mkdir(root, { mode: 0o700, recursive: true });
-    await chmod(root, 0o700);
-  } catch (error) {
-    fail(`Could not create OPENSTEER_RUNNER_WORKSPACE_ROOT: ${safeMessage(error)}`);
-  }
-  let metadata;
-  try {
-    metadata = await lstat(root);
-  } catch (error) {
-    fail(`Could not inspect OPENSTEER_RUNNER_WORKSPACE_ROOT: ${safeMessage(error)}`);
-  }
-  if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    fail("OPENSTEER_RUNNER_WORKSPACE_ROOT must be a real directory.");
-  }
-  const uid = process.getuid?.();
-  const gid = process.getgid?.();
-  if (uid !== undefined && gid !== undefined && (metadata.uid !== uid || metadata.gid !== gid)) {
-    fail("OPENSTEER_RUNNER_WORKSPACE_ROOT must be owned by the Runner process identity.");
-  }
-  if ((metadata.mode & 0o777) !== 0o700) {
-    fail("OPENSTEER_RUNNER_WORKSPACE_ROOT must have mode 0700.");
-  }
 }
 
 function safeMessage(error) {

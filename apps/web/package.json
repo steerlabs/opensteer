@@ -13,7 +13,6 @@
     "prebuild": "pnpm --filter @opensteer/browser-extension build",
     "predev": "pnpm --filter @opensteer/browser-extension build",
     "test:agent-cursors": "tsx scripts/agent-cursors-journey.ts",
-    "test:chat-name": "tsx scripts/chat-name-journey.ts",
     "test:large-transcript": "tsx scripts/large-transcript-journey.ts",
     "test:model-picker": "tsx scripts/model-picker-journey.ts",
     "test:sidebar-split": "tsx scripts/sidebar-split-journey.ts",

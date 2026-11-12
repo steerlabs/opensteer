@@ -204,11 +204,10 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       const model = stack.catalog.models.find((candidate) => candidate.isDefault);
       if (!model) throw new Error("The real engine did not admit a default catalog model");
       evidence.model = model;
-      evidence.workspaceFilesBeforeRun = await readdir(stack.mountedWorkspacePath);
+      evidence.workspaceFilesBeforeRun = await readdir(stack.agentHome.path);
       const threadId = await stack.createThread({
-        home: true,
         title: "Pickup availability",
-        workspaceId: stack.mainWorkspaceId,
+
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           providerId: model.providerId,
@@ -221,7 +220,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
       const turn = await stack.sendMessage({
         text: prompt,
         threadId,
-        workspaceId: stack.mainWorkspaceId,
+
         onQueued: (id) => {
           runId = id;
           return Promise.resolve();
@@ -294,7 +293,7 @@ describe.sequential.each(matrix)("real $label browser element-action journey", (
           const durable: AgentEvent[] = [];
           let cursor = zeroSequence;
           for (;;) {
-            const batch = await stack.host.store.eventsAfter(stack.mainWorkspaceId, cursor);
+            const batch = await stack.host.store.eventsAfter(cursor);
             if (!batch.length) break;
             durable.push(...batch.filter((event) => event.runId === runId));
             cursor = batch.at(-1)!.sequence;

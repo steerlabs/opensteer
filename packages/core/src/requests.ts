@@ -1,10 +1,9 @@
 import { z } from "zod";
-import { BrowserSiteSchema, BrowserSourceSiteSchema } from "./browser-sources.js";
+import { BrowserSiteSchema } from "./browser-sources.js";
 import { ComputerAppIdentitySchema } from "./computer-app.js";
 import {
   AssignmentIdSchema,
   BrowserProfileIdSchema,
-  BrowserSourceIdSchema,
   BrowserSurfaceIdSchema,
   ExecutionNodeIdSchema,
   RequestIdSchema,
@@ -13,7 +12,6 @@ import {
   ThreadIdSchema,
   TriggerOccurrenceIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
   type UserId,
   type ExecutionNodeId,
 } from "./ids.js";
@@ -30,8 +28,6 @@ export const RequestKindSchema = z.enum([
   "harness.input",
   "browser.access",
   // Historical payloads/events only; the Host refuses new writes.
-  "browser.profile.save",
-  "browser.profile.import",
   "browser.sign-in",
   "browser.password-sign-in",
   "integration.access",
@@ -67,14 +63,13 @@ export const RequestCancellationReasonSchema = z.enum([
   "source-closed",
   // Shared Done puts a task away using the reason released readers know.
   "thread-archived",
-  "workspace-deleted",
-  "membership-revoked",
+  "task-deleted",
   "resource-deleted",
   "authority-revoked",
 ]);
 export type RequestCancellationReason = z.infer<typeof RequestCancellationReasonSchema>;
 
-export const RequestRequiredActorSchema = z.enum(["requester", "workspace-owner", "administrator"]);
+export const RequestRequiredActorSchema = z.enum(["requester", "owner"]);
 export type RequestRequiredActor = z.infer<typeof RequestRequiredActorSchema>;
 
 export const RequestOptionHintSchema = z.enum([
@@ -310,12 +305,6 @@ const requestPayloadVariants = [
     suggestion: BrowserAccessSuggestionSchema,
   }),
   z.strictObject({
-    kind: z.literal("browser.profile.save"),
-    reason: RequestReasonSchema,
-    sessionId: RequestIdentifierSchema,
-    suggestedName: z.string().trim().min(1).max(120).optional(),
-  }),
-  z.strictObject({
     access: z.enum(["read", "read-write"]),
     installationId: IntegrationIdentifierSchema.nullable(),
     kind: z.literal("integration.access"),
@@ -342,20 +331,6 @@ const requestPayloadVariants = [
     machineName: z.string().trim().min(1).max(160),
     reason: RequestReasonSchema,
   }),
-  /** Read-only: the copy-into-a-new-profile flow that browser sign-ins replaced. */
-  z.strictObject({
-    kind: z.literal("browser.profile.import"),
-    reason: RequestReasonSchema,
-    sourceId: BrowserSourceIdSchema,
-    sourceName: z.string().trim().min(1).max(120),
-    site: BrowserSourceSiteSchema,
-  }),
-  /**
-   * An agent wants one website signed in, in one live Browser Session, with
-   * the person's own Chrome sign-in. Allowing it remembers the site for the
-   * Request's target Workspace. It stays pending while no connected Chrome can
-   * supply the sign-in and completes by itself once one can.
-   */
   z.strictObject({
     kind: z.literal("browser.sign-in"),
     tabId: BrowserSurfaceIdSchema.optional(),
@@ -375,34 +350,21 @@ const requestPayloadVariants = [
    * the Mac itself for app access. Phone access may be approved by the owner
    * from any connected client.
    */
-  /**
-   * The requester approves or declines saved-login use from any signed-in client. Workspace consent covers websites and apps
-   * and outlives Browser Sessions. The legacy session payload remains readable
-   * so historical Requests retain their original scope and consent wording.
-   * `operationId` names live vault authority, never a persisted credential or
-   * loginRef; the Request expires unanswered at `expiresAt`.
-   */
-  z
-    .strictObject({
-      /** The approving Runner and its computer name when the Request was opened. */
-      computerName: z.string().trim().min(1).max(160),
-      expiresAt: IsoDateTimeSchema,
-      kind: z.literal("browser.password-sign-in"),
-      credential: z.literal("card").optional(),
-      /** Historical page binding; Workspace-scoped Requests have no page or session. */
-      tabId: BrowserSurfaceIdSchema.optional(),
-      operationId: z.uuid(),
-      reason: RequestReasonSchema,
-      runnerId: RunnerIdSchema,
-      sessionId: z.string().min(1).max(128).optional(),
-      scope: z.literal("workspace").optional(),
-      permissionVersion: z.literal(5).optional(),
-      site: BrowserSiteSchema,
-    })
-    .refine(
-      passwordSignInScopeValid,
-      "Password sign-in requires a legacy session or Workspace consent",
-    ),
+
+  z.strictObject({
+    /** The approving Runner and its computer name when the Request was opened. */
+    computerName: z.string().trim().min(1).max(160),
+    expiresAt: IsoDateTimeSchema,
+    kind: z.literal("browser.password-sign-in"),
+    credential: z.literal("card").optional(),
+
+    operationId: z.uuid(),
+    reason: RequestReasonSchema,
+    runnerId: RunnerIdSchema,
+    scope: z.literal("personal"),
+    permissionVersion: z.literal(6),
+    site: BrowserSiteSchema,
+  }),
   z
     .strictObject({
       access: z.enum(["read", "read-write"]),
@@ -412,7 +374,6 @@ const requestPayloadVariants = [
       reason: RequestReasonSchema,
       runnerId: RunnerIdSchema,
       setupRequestId: z.uuid(),
-      workspaceId: WorkspaceIdSchema,
     })
     .superRefine((payload, context) => {
       if ((payload.app === null) !== (payload.definitionId === "android-phone")) {
@@ -447,18 +408,11 @@ const RequestPayloadViewSchema = z.discriminatedUnion("kind", [
   z.object(requestPayloadVariants[5].shape),
   z.object(requestPayloadVariants[6].shape),
   z.object(requestPayloadVariants[7].shape),
-  z.object(requestPayloadVariants[8].shape),
-  z
-    .object(requestPayloadVariants[9].shape)
-    .refine(
-      passwordSignInScopeValid,
-      "Password sign-in requires a legacy session or Workspace consent",
-    ),
   z.object({
-    ...requestPayloadVariants[10].shape,
+    ...requestPayloadVariants[8].shape,
     app: z.object(computerAppIdentityShape).nullable(),
   }),
-  z.object(requestPayloadVariants[11].shape),
+  z.object(requestPayloadVariants[9].shape),
 ]);
 export type RequestPayload = z.infer<typeof RequestPayloadSchema>;
 
@@ -505,12 +459,10 @@ const requestBaseShape = {
   originatingNodeId: ExecutionNodeIdSchema.optional(),
   originatingRunId: RunIdSchema.nullable(),
   originatingThreadId: ThreadIdSchema,
-  originatingWorkspaceId: WorkspaceIdSchema,
   payload: RequestPayloadSchema,
   presentation: RequestPresentationSchema,
   requestedBy: UserIdSchema,
   requiredActor: RequestRequiredActorSchema,
-  targetWorkspaceId: WorkspaceIdSchema,
 } as const;
 const requestViewBaseShape = {
   ...requestBaseShape,
@@ -777,8 +729,6 @@ export function requestIsAgentAnswerable(
     "harness.input": true,
     "harness.approval": false,
     "browser.access": false,
-    "browser.profile.save": false,
-    "browser.profile.import": false,
     "browser.sign-in": false,
     "browser.password-sign-in": false,
     "integration.access": false,
@@ -813,21 +763,6 @@ export const ResolvedRequestEventSchema = ResolvedRequestSchema.superRefine(
 export const ResolvedRequestEventViewSchema = z
   .union([FulfilledRequestViewSchema, DeclinedRequestViewSchema, WithdrawnRequestViewSchema])
   .superRefine(validateResolvedRequestEvent);
-
-function passwordSignInScopeValid(payload: {
-  readonly credential?: "card" | undefined;
-  readonly sessionId?: string | undefined;
-  readonly tabId?: string | undefined;
-  readonly scope?: "workspace" | undefined;
-  readonly permissionVersion?: 5 | undefined;
-}): boolean {
-  if (payload.credential === "card" && payload.scope !== "workspace") return false;
-  return payload.scope === "workspace"
-    ? payload.permissionVersion === 5 &&
-        payload.sessionId === undefined &&
-        payload.tabId === undefined
-    : payload.sessionId !== undefined && payload.permissionVersion === undefined;
-}
 
 /** One unreadable Request must not hide the rest of a Host response or snapshot. */
 export function readableRequestList<T>(schema: z.ZodType<T>, max: number) {

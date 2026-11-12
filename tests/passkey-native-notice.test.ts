@@ -1,3 +1,8 @@
+import { DeploymentCatalogStore } from "../packages/client/src/connections/deployment-catalog.js";
+import {
+  MemoryPrivateFilesystem,
+  testDiscoveryEnvelope,
+} from "../packages/client/src/test-support/index.js";
 import { expect, it, vi } from "vitest";
 import {
   HostTransport,
@@ -20,8 +25,30 @@ it("keeps notice-mode native input with that person instead of offering another 
       events = observe(nativeSocket);
       return nativeSocket;
     });
+  const catalog = new DeploymentCatalogStore({
+    filePath: "/private/catalog.json",
+    privateFiles: new MemoryPrivateFilesystem(),
+  });
+  await catalog.upsertAndSelect({
+    authority: testDiscoveryEnvelope({
+      canonicalOrigin: "http://127.0.0.1:4310",
+      deploymentId: "dep_11111111-1111-4111-8111-111111111111",
+      hostInstanceId: "hst_22222222-2222-4222-8222-222222222222",
+      hostKey: { algorithm: "Ed25519" },
+      deploymentShape: { kind: "personal" },
+    }),
+    accountAccess: null,
+    bootstrapMethods: [],
+    endpoints: [
+      { kind: "canonical", origin: "http://127.0.0.1:4310", verifiedAt: new Date().toISOString() },
+    ],
+    kind: "personal",
+    name: "Home",
+    reachability: "canonical",
+    source: { kind: "manual" },
+  });
   const transport = new DesktopHostTransport({
-    catalog: {},
+    catalog,
     localRuntime: { current: async () => null },
     network: {},
     projection: {},
@@ -115,6 +142,7 @@ it("keeps notice-mode native input with that person instead of offering another 
     host.close();
     relay.close();
     transport.closeSocketsForOwner(7);
+    transport.dispose();
     open.mockRestore();
   }
 });

@@ -23,7 +23,7 @@ import { useHostSelector } from "@opensteer/client/react";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useLayoutEffect, useMemo, useState, useRef, useEffect, type ReactNode } from "react";
 import { StyleSheet } from "react-native";
-import { workspaceRoute } from "../browser/surface-route.js";
+import { tabsRoute } from "../browser/surface-route.js";
 import { operationDetail } from "../client/mobile-client.js";
 import { useLeaveSheets } from "./leave-sheets.js";
 
@@ -136,7 +136,7 @@ function ComputerDetail(props: {
         navigation.dispatch(
           StackActions.push(
             "WorkspaceBrowser",
-            workspaceRoute(props.deploymentId, { kind: "phone", machineId: props.machineId }),
+            tabsRoute(props.deploymentId, { kind: "phone", machineId: props.machineId }),
           ),
         );
     } catch (error) {

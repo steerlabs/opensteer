@@ -16,7 +16,6 @@ import {
   RequestIdSchema,
   RunnerIdSchema,
   ThreadIdSchema,
-  WorkspaceIdSchema,
 } from "./ids.js";
 import {
   AssignmentSummarySchema,
@@ -51,7 +50,7 @@ import {
   ResolvedRequestEventViewSchema,
 } from "./requests.js";
 import { ThreadTitleSchema } from "./thread-title.js";
-import { WorkspaceIconNameSchema } from "./workspace-icons.js";
+import { IconNameSchema } from "./icons.js";
 import { ToolOutputSchema, ToolOutputViewSchema, utf8Prefix } from "./tool-output.js";
 
 export const ToolIdentitySchema = z.strictObject({
@@ -218,7 +217,6 @@ const eventDataSchemas = {
     childThread: z.strictObject({
       id: ThreadIdSchema,
       title: z.string().trim().min(1).max(240),
-      workspaceId: WorkspaceIdSchema,
     }),
     delegationId: DelegationIdSchema,
     delivery: DelegationDeliverySchema,
@@ -253,7 +251,6 @@ const eventDataSchemas = {
   }),
   "thread.created": z.object({
     thread: ThreadSchema,
-    home: z.literal(true).optional(),
     voice: z.literal(true).optional(),
   }),
   "thread.execution-updated": z.object({ thread: ThreadSchema }),
@@ -279,7 +276,7 @@ const eventDataSchemas = {
     inputQueuePaused: z.boolean(),
     pendingRequests: z.number().int().nonnegative(),
     title: ThreadTitleSchema.optional(),
-    icon: WorkspaceIconNameSchema.nullable().optional(),
+    icon: IconNameSchema.nullable().optional(),
     doneAt: IsoDateTimeSchema.nullable().optional(),
     doneReason: ThreadDoneReasonSchema.nullable().optional(),
   }),
@@ -513,7 +510,6 @@ const eventDataViewSchemas = {
   "run.queued": z.object({ run: ThreadRunQueueEntryViewSchema }),
   "thread.created": z.object({
     thread: ThreadViewSchema,
-    home: z.literal(true).optional(),
     voice: z.literal(true).optional(),
   }),
   "thread.execution-updated": z.object({ thread: ThreadViewSchema }),
@@ -605,7 +601,6 @@ function makeEventVariant<T extends AgentEventType>(type: T) {
     sequence: SequenceSchema,
     threadId: ThreadIdSchema,
     type: z.literal(type),
-    workspaceId: WorkspaceIdSchema,
   });
 }
 
@@ -619,7 +614,6 @@ function makeEventViewVariant<T extends AgentEventType>(type: T) {
     sequence: SequenceSchema,
     threadId: ThreadIdSchema,
     type: z.literal(type),
-    workspaceId: WorkspaceIdSchema,
   });
 }
 
@@ -727,13 +721,6 @@ export const AgentEventViewSchema = z
 
 export type AgentEventView = z.infer<typeof AgentEventViewSchema>;
 
-/**
- * The subagent whose own work an event is: a tool it called, something it
- * thought or something it said. Such an event belongs to that subagent's
- * transcript, which a client reads only once a person opens it; the Thread's
- * own history and Workspace stream carry the subagent's `node.started`,
- * `node.updated` and `node.completed`, and nothing it did in between.
- */
 export function nodeDetailEventNodeId(event: {
   readonly data: unknown;
   readonly type: string;

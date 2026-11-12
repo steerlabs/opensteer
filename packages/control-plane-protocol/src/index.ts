@@ -1,5 +1,6 @@
 import {
   AuthSessionIdSchema,
+  AuthAdmissionIdSchema,
   DeploymentIdSchema,
   HostInstanceIdSchema,
   HostKeyFingerprintSchema,
@@ -760,18 +761,18 @@ export const ConsumeHostAccountAdoptionProofRequestSchema = z
   })
   .strict();
 
+export const HostAccountAdoptionAuthorizerSchema = z.union([
+  z.strictObject({ userId: UserIdSchema, sessionId: AuthSessionIdSchema }),
+  z.strictObject({ admissionId: AuthAdmissionIdSchema }),
+]);
+
 export const ConsumeHostAccountAdoptionProofResponseSchema = z
   .object({
     proofId: HostAccountAdoptionProofIdSchema,
     consumedAt: IsoDateTimeSchema,
     account: HostAccountIdentitySchema,
     authority: HostAccountAdoptionAuthoritySchema,
-    authorizedBy: z
-      .object({
-        userId: UserIdSchema,
-        sessionId: AuthSessionIdSchema,
-      })
-      .strict(),
+    authorizedBy: HostAccountAdoptionAuthorizerSchema,
   })
   .strict();
 export type ConsumeHostAccountAdoptionProofResponse = z.infer<
@@ -805,12 +806,7 @@ export const HostAccountAdoptionCompletionGrantClaimsSchema = z
       .object({
         id: HostAccountAdoptionProofIdSchema,
         consumedAt: IsoDateTimeSchema,
-        authorizedBy: z
-          .object({
-            userId: UserIdSchema,
-            sessionId: AuthSessionIdSchema,
-          })
-          .strict(),
+        authorizedBy: HostAccountAdoptionAuthorizerSchema,
       })
       .strict(),
     account: HostAccountIdentitySchema,

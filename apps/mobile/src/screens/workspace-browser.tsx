@@ -4,7 +4,6 @@ import {
   browserPlaceUnavailableReason,
   canRespondToRequests,
   describeHostConnection,
-  mainWorkspace,
   placeAgents,
   placeAgentState,
   placeDestinationEnded,
@@ -16,7 +15,7 @@ import {
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
-  type WorkspaceSurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import {
   useBrowserAgentFollow,
@@ -96,7 +95,8 @@ import {
   type SurfacesRoute,
 } from "../browser/surface-route.js";
 import { tabSiteLabel } from "../browser/site-label.js";
-import { newTaskDraftBlank, newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { useHereDeviceId } from "../computers/here-device.js";
 import { usePhoneBrowserManager } from "../phone-browser/runtime.js";
 import { usePhoneTabPresentation } from "../phone-browser/presentation.js";
@@ -210,7 +210,7 @@ function SurfacesForUser(props: {
   // new destination on every snapshot.
   const destinationKey = JSON.stringify(routeDestination(route));
   const destination = useMemo(
-    () => JSON.parse(destinationKey) as WorkspaceSurfaceDestination | null,
+    () => JSON.parse(destinationKey) as PersonalSurfaceDestination | null,
     [destinationKey],
   );
   const notices = (
@@ -254,12 +254,8 @@ function SurfacesForUser(props: {
   );
 }
 
-/** What is beside the page: a Thread, or a task being started from it. */
-type Companion =
-  | { readonly kind: "thread"; readonly threadId: string }
-  | { readonly draftId: string; readonly kind: "task" };
-
-const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
+/** What is beside the page: a Thread, or Home's new task being started from it. */
+type Companion = { readonly kind: "thread"; readonly threadId: string } | { readonly kind: "task" };
 
 /**
  * One tab, app or phone with its own bar, and — where a pair fits — a second
@@ -269,7 +265,7 @@ const selectHomeThreadId = (snapshot: HostSnapshot) => snapshot.homeThreadId;
 function Focused(props: {
   readonly active: boolean;
   readonly connected: boolean;
-  readonly destination: WorkspaceSurfaceDestination;
+  readonly destination: PersonalSurfaceDestination;
   readonly hostClient: HostClient;
   readonly notices: ReactNode;
   readonly route: SurfacesRoute;
@@ -312,7 +308,6 @@ function Focused(props: {
     [occupied],
   );
   const agents = useHostSelector(hostClient, selectAgents, samePlaceAgents);
-  const homeThreadId = useHostSelector(hostClient, selectHomeThreadId);
 
   const [chosen, setChosen] = useState<Companion | null>(null);
   const [remembered, setRemembered] = useState<string | null | undefined>(undefined);
@@ -331,24 +326,18 @@ function Focused(props: {
   );
 
   const shownPage = destination.kind === "browser" ? page : null;
-  const latest = useRef({ appThreadId, homeThreadId, shownPage });
-  latest.current = { appThreadId, homeThreadId, shownPage };
+  const latest = useRef({ appThreadId, shownPage });
+  latest.current = { appThreadId, shownPage };
 
   /**
    * An agent's Thread, as its own screen. The screen directly under this one
    * may be that very Thread — the page was opened from it — and then Back is
-   * the way there, not a second copy. Chat is the root under everything, so
-   * it is returned to rather than pushed.
+   * the way there, not a second copy.
    */
   const openThread = useCallback(
     (threadId: string) => {
       const state = navigation.getState();
       const below = state?.routes[state.index - 1];
-      if (threadId === latest.current.homeThreadId) {
-        if (below?.name === "Home") navigation.goBack();
-        else navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-        return;
-      }
       if (
         below?.name === "Thread" &&
         isRecord(below.params) &&
@@ -361,30 +350,18 @@ function Focused(props: {
   );
   const showBeside = useCallback((threadId: string) => setChosen({ kind: "thread", threadId }), []);
   /**
-   * Ask's page goes on the draft it is for — Chat's, or the new task's — and
-   * is this reader's, so it is shown, removed and sent from that draft like
-   * the words with it, and survives leaving it unsent. A page Ask cannot name,
-   * such as a Mac app's, takes any earlier one off rather than leaving it to
-   * stand for what was asked about. Answers whether there is such a draft.
+   * Ask's page goes on the draft it is for — the task's, or Home's new task —
+   * and is this reader's, so it is shown, removed and sent from that draft
+   * like the words with it, and survives leaving it unsent. A page Ask cannot
+   * name, such as a Mac app's, takes any earlier one off rather than leaving
+   * it to stand for what was asked about. Answers whether there is such a draft.
    */
   const putPageOnDraft = useCallback(
-    (target: AskTarget, taskDraftId: string): boolean => {
-      const { appThreadId: origin, homeThreadId: home, shownPage: included } = latest.current;
-      const current = hostClient.getSnapshot();
-      const userId = current.user?.id;
-      const workspaceId = mainWorkspace(current)?.id;
-      const draftKey =
-        target === "thread"
-          ? origin
-          : target === "chat"
-            ? home
-            : workspaceId === undefined
-              ? null
-              : newTaskDraftKey(taskDraftId);
+    (target: AskTarget): boolean => {
+      const { appThreadId: origin, shownPage: included } = latest.current;
+      const userId = hostClient.getSnapshot().user?.id;
+      const draftKey = target === "thread" ? origin : newTaskDraftKey(homeDraftId);
       if (userId === undefined || draftKey === null) return false;
-      if (target === "task" && workspaceId !== undefined) {
-        drafts.placeNewTaskDraft(deploymentId, userId, taskDraftId, workspaceId);
-      }
       void drafts.writeDraftPage(deploymentId, userId, draftKey, included).catch(() => undefined);
       return true;
     },
@@ -393,37 +370,23 @@ function Focused(props: {
   /** Ask, on a phone: that composer's own screen, with the page on its draft. */
   const askAway = useCallback(
     (target: AskTarget) => {
-      const draftId = newTaskDraftId();
-      if (!putPageOnDraft(target, draftId)) return;
+      if (!putPageOnDraft(target)) return;
       const { appThreadId: origin } = latest.current;
-      const workspaceId = mainWorkspace(hostClient.getSnapshot())?.id;
       if (target === "thread") {
         if (origin !== null) openThread(origin);
-      } else if (target === "chat")
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-      else if (workspaceId !== undefined)
-        navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId, workspaceId }));
+      } else navigation.dispatch(StackActions.popToTop());
     },
-    [deploymentId, hostClient, navigation, openThread, putPageOnDraft],
+    [navigation, openThread, putPageOnDraft],
   );
   /** Ask, where a pair fits: the composer opens beside the page, with the page on its draft. */
   const askBeside = useCallback(
     (target: AskTarget) => {
-      const userId = hostClient.getSnapshot().user?.id;
-      // A blank draft already beside the page takes this one; one with words waits in the sidebar.
-      const draftId =
-        chosen?.kind === "task" &&
-        userId !== undefined &&
-        newTaskDraftBlank(drafts, deploymentId, userId, chosen.draftId)
-          ? chosen.draftId
-          : newTaskDraftId();
-      if (!putPageOnDraft(target, draftId)) return;
-      const { appThreadId: origin, homeThreadId: home } = latest.current;
-      const threadId = target === "thread" ? origin : home;
-      if (target === "task") setChosen({ draftId, kind: "task" });
-      else if (threadId !== null) setChosen({ kind: "thread", threadId });
+      if (!putPageOnDraft(target)) return;
+      const { appThreadId: origin } = latest.current;
+      if (target === "task") setChosen({ kind: "task" });
+      else if (origin !== null) setChosen({ kind: "thread", threadId: origin });
     },
-    [chosen, deploymentId, drafts, hostClient, putPageOnDraft],
+    [putPageOnDraft],
   );
   const closeCompanion = useCallback(() => {
     setChosen(null);
@@ -562,15 +525,12 @@ function Focused(props: {
   const onAsk = paired ? askBeside : askAway;
   const onOpenAgent = paired ? showBeside : openThread;
   const verticalBar = useVerticalBar();
-  const mainWorkspaceId = mainWorkspace(snapshot)?.id ?? null;
-  const companionShown =
-    companion !== null && (companion.kind === "thread" || mainWorkspaceId !== null);
+  const companionShown = companion !== null;
   const pairedChrome = paired && companionShown && destination.kind === "browser";
   usePageHeader({
     agents,
     app: appMenu,
     asksThread: appThreadId !== null,
-    chat: homeThreadId !== null,
     noAsk: pairedChrome,
     onAsk,
     onOpenAgent,
@@ -592,15 +552,8 @@ function Focused(props: {
   });
   const hereId = useHereDeviceId(deploymentId);
   const ask = useMemo(
-    () => (
-      <PageAsk
-        agents={agents}
-        chat={homeThreadId !== null}
-        onAsk={onAsk}
-        onOpenAgent={onOpenAgent}
-      />
-    ),
-    [agents, homeThreadId, onAsk, onOpenAgent],
+    () => <PageAsk agents={agents} onAsk={onAsk} onOpenAgent={onOpenAgent} />,
+    [agents, onAsk, onOpenAgent],
   );
   const appPaired = paired && companionShown && appId !== null;
   // Beside its Thread an app has its own row, with Back, wherever the screen is.
@@ -617,19 +570,15 @@ function Focused(props: {
             onBack: goBack,
             sections: appMenuSections(
               appMenu,
-              askChoices({
-                asksThread: appThreadId !== null,
-                chat: homeThreadId !== null,
-                onAsk: askBeside,
-              }),
+              askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
             ),
           }
         : null,
-    [appMenu, appPaired, appThreadId, askBeside, goBack, homeThreadId],
+    [appMenu, appPaired, appThreadId, askBeside, goBack],
   );
   const others = agents.agents.some(({ threadId }) => threadId !== besideId);
   const pairMenu: NativeMenuSection[] = [
-    askChoices({ asksThread: appThreadId !== null, chat: homeThreadId !== null, onAsk: askBeside }),
+    askChoices({ asksThread: appThreadId !== null, onAsk: askBeside }),
     others
       ? agents.agents.map((agent) => ({
           id: `beside:${agent.threadId}`,
@@ -642,9 +591,7 @@ function Focused(props: {
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
   // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
   const following: PageFollowing | null =
-    follow.following && besideId !== null
-      ? { mark: besideId === homeThreadId ? null : threadMark(besideId, snapshot) }
-      : null;
+    follow.following && besideId !== null ? { mark: threadMark(besideId, snapshot) } : null;
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab
@@ -705,19 +652,15 @@ function Focused(props: {
       ? null
       : companion.kind === "task"
         ? {
-            content: () =>
-              mainWorkspaceId === null ? null : (
-                <NewTaskPane
-                  autoFocus
-                  deploymentId={deploymentId}
-                  draftId={companion.draftId}
-                  hostClient={hostClient}
-                  key={companion.draftId}
-                  onStarted={onStarted}
-                  underHeader={false}
-                  workspaceId={mainWorkspaceId}
-                />
-              ),
+            content: () => (
+              <NewTaskPane
+                autoFocus
+                deploymentId={deploymentId}
+                hostClient={hostClient}
+                onStarted={onStarted}
+                underHeader={false}
+              />
+            ),
             floating: false,
             pill: <CompanionCapsule actions={closeOnly} title="New task" />,
           }
@@ -789,7 +732,7 @@ function Focused(props: {
 const companionPillWidth = 320;
 
 /** Whether a place is the one a route names: a tab by its own id, else exactly. */
-function samePlace(place: PlaceItem, destination: WorkspaceSurfaceDestination): boolean {
+function samePlace(place: PlaceItem, destination: PersonalSurfaceDestination): boolean {
   if (destination.kind === "browser")
     return place.destination.kind === "browser" && place.destination.tabId === destination.tabId;
   return sameDestination(place.destination, destination);
@@ -856,7 +799,7 @@ function BrowserTab(props: {
   usePhoneTabPresentation(phoneManager, tabId);
   const local = phoneManager?.localPresentation(props.deploymentId, tabId) ?? null;
   const navigation = useNavigation();
-  const saved = place?.workspaceTab;
+  const saved = place?.personalTab;
   const lineageSession =
     saved?.state === "live" && place?.destination.kind === "browser"
       ? place.destination.sessionId
@@ -913,7 +856,7 @@ function BrowserTab(props: {
     !live &&
     !restorable &&
     place === null &&
-    snapshot.workspaceTabRestoreVersion === 1 &&
+    snapshot.tabRestoreVersion === 1 &&
     !placeDestinationEnded(snapshot, { kind: "browser", sessionId, tabId });
   const lookup = useBoundedLineageRead(hostClient, unknown, sessionId, tabId);
   const onClosed = () => {
@@ -974,9 +917,6 @@ function BrowserTab(props: {
         onViewing={props.onViewing}
         session={session}
         tabId={tabId}
-        workspaceName={
-          snapshot.workspaces.find(({ id }) => id === session.workspaceId)?.name ?? "this workspace"
-        }
       />
     );
   if (local && phoneManager)
@@ -1051,11 +991,11 @@ function useBoundedLineageRead(
     readonly key: string;
     readonly attempt: number;
     readonly hostClient: HostClient;
-    readonly promise: ReturnType<NonNullable<HostClient["readWorkspaceTabs"]>>;
+    readonly promise: ReturnType<NonNullable<HostClient["readPersonalTabs"]>>;
   } | null>(null);
   const key = `${sessionId}:${tabId}`;
   useEffect(() => {
-    if (!unknown || hostClient.readWorkspaceTabs === undefined) return;
+    if (!unknown || hostClient.readPersonalTabs === undefined) return;
     if (
       asked.current?.key !== key ||
       asked.current.attempt !== attempt ||
@@ -1065,7 +1005,7 @@ function useBoundedLineageRead(
         key,
         attempt,
         hostClient,
-        promise: hostClient.readWorkspaceTabs(sessionId),
+        promise: hostClient.readPersonalTabs(sessionId),
       };
     let cancelled = false;
     // A restarted effect observes the same request rather than abandoning it.
@@ -1091,7 +1031,7 @@ function useBoundedLineageRead(
   const retry = useCallback(() => setAttempt((value) => value + 1), []);
   const current = answer?.key === key && answer.attempt === attempt ? answer : null;
   return {
-    closed: hostClient.readWorkspaceTabs === undefined ? false : (current?.closed ?? null),
+    closed: hostClient.readPersonalTabs === undefined ? false : (current?.closed ?? null),
     error: current?.error ?? null,
     retry,
   };
@@ -1099,7 +1039,7 @@ function useBoundedLineageRead(
 
 /**
  * A saved tab, restored on its saved computer through the client's one
- * activation owner (`activateWorkspaceTab`), which waits for the connection
+ * activation owner (`activatePersonalTab`), which waits for the connection
  * and the computer and keeps one attempt per tab. Opening it asks once; a
  * lasting reason asks never. The answer moves the route to the restored
  * session; one that arrives after the person left changes nothing.
@@ -1119,7 +1059,7 @@ function SavedTab(props: {
   );
   const lasting = browserPlaceUnavailableReason(
     place.identity,
-    place.workspaceTab?.unavailableReason,
+    place.personalTab?.unavailableReason,
     placement?.unavailableReason,
   );
   const [failure, setFailure] = useState<string | null>(null);
@@ -1129,7 +1069,7 @@ function SavedTab(props: {
   const [attempt, setAttempt] = useState(0);
   const openingId = useId();
   const opening = `${openingId}:${attempt}`;
-  const activate = hostClient.activateWorkspaceTab;
+  const activate = hostClient.activatePersonalTab;
   useLayoutEffect(() => {
     if (activate === undefined || lasting !== null) return;
     let cancelled = false;
@@ -1154,7 +1094,7 @@ function SavedTab(props: {
     setClosing(true);
     setCloseFailure(null);
     void hostClient
-      .closeWorkspaceTabs([tabId])
+      .closePersonalTabs([tabId])
       .then((result) => {
         if (result.closed.includes(tabId)) props.onClosed();
         else

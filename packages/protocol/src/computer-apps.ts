@@ -441,11 +441,6 @@ export const RunnerIntegrationsMcpMessageSchema = z.strictObject({
 });
 export type RunnerIntegrationsMcpMessage = z.infer<typeof RunnerIntegrationsMcpMessageSchema>;
 
-/**
- * Why a session ended, or null when the Host asked. A message above the
- * stream's bound ends its session without taking down other sessions. Android
- * integrations protocol 4 still uses `unapproved` to refuse MCP execution.
- */
 export const McpSessionCloseCodeSchema = z.enum(["unapproved", "failed", "too-large"]);
 export type McpSessionCloseCode = z.infer<typeof McpSessionCloseCodeSchema>;
 

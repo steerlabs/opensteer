@@ -51,15 +51,18 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
   readonly #identity: Identity;
   readonly #personalRemote: PersonalRemoteSessionAuthenticator | undefined;
   readonly #publicOrigin: string;
+  readonly #onAuthenticatedSession: ((session: AuthenticatedSession) => Promise<void>) | undefined;
 
   constructor(options: {
     readonly identity: Identity;
     readonly personalRemote?: PersonalRemoteSessionAuthenticator | undefined;
     readonly publicUrl: URL;
+    readonly onAuthenticatedSession?: (session: AuthenticatedSession) => Promise<void>;
   }) {
     this.#identity = options.identity;
     this.#personalRemote = options.personalRemote;
     this.#publicOrigin = options.publicUrl.origin;
+    this.#onAuthenticatedSession = options.onAuthenticatedSession;
   }
 
   get identity(): Identity {
@@ -87,6 +90,14 @@ export class HostAuthenticator<Identity extends HostAuthenticatingIdentity = Ide
   async authenticateSessionContext(
     headers: RequestHeaders,
     options: { readonly mutation?: boolean } = {},
+  ): Promise<AuthenticatedHostSession> {
+    const authenticated = await this.#authenticateSessionContext(headers, options);
+    await this.#onAuthenticatedSession?.(authenticated.session);
+    return authenticated;
+  }
+  async #authenticateSessionContext(
+    headers: RequestHeaders,
+    options: { readonly mutation?: boolean },
   ): Promise<AuthenticatedHostSession> {
     // One parse, one decision: a request that presents an Authorization header
     // is answered from that credential's own family or refused. Falling

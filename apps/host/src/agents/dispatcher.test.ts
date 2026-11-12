@@ -11,7 +11,6 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { sealRequestResponse } from "../identity/request-response-vault.js";
 import { HostCommandDispatcher } from "./dispatcher.js";
-
 describe("HostCommandDispatcher Request responses", () => {
   it("decrypts the sealed response only at Runner dispatch", async () => {
     const vault = new AesGcmSecretVault(
@@ -20,10 +19,25 @@ describe("HostCommandDispatcher Request responses", () => {
     const requestId = createId("request");
     const runId = createId("run");
     const threadId = createId("thread");
-    const response = { answers: { token: ["live-secret"] }, kind: "form" as const };
-    const sealed = await sealRequestResponse(vault, response, { requestId, runId, threadId });
+    const response = {
+      answers: {
+        token: ["live-secret"],
+      },
+      kind: "form" as const,
+    };
+    const sealed = await sealRequestResponse(vault, response, {
+      requestId,
+      runId,
+      threadId,
+    });
     const runnersDispatch = vi.fn(
-      async (_command, _signal, options?: { readonly beforeAck?: () => Promise<void> }) => {
+      async (
+        _command,
+        _signal,
+        options?: {
+          readonly beforeAck?: () => Promise<void>;
+        },
+      ) => {
         await options?.beforeAck?.();
       },
     );
@@ -34,25 +48,33 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
-      attachmentRunTokens: { issue: () => "attachment-token" } as never,
-      attachments: { listForRun: async () => [] },
+      attachmentRunTokens: {
+        issue: () => "attachment-token",
+      } as never,
+      attachments: {
+        listForRun: async () => [],
+      },
       requestResponseVault: vault,
       runToolTokens: {} as never,
       browser: {} as never,
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
-      runners: { dispatch: runnersDispatch } as never,
-      store: { dispatchRequestResponse } as never,
+      runners: {
+        dispatch: runnersDispatch,
+      } as never,
+      store: {
+        dispatchRequestResponse,
+      } as never,
       triggerControlTokens: {} as never,
-
       triggers: {} as never,
-      workspaces: {} as never,
-      workspaceAccess: {} as never,
     });
     const command = requestCommand({
       encryptedRequestResponse: sealed.envelope,
@@ -61,18 +83,22 @@ describe("HostCommandDispatcher Request responses", () => {
       runId,
       threadId,
     });
-
     await dispatcher.dispatch(command, new AbortController().signal);
-
     expect(JSON.stringify(command.payload)).not.toContain("live-secret");
     expect(runnersDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ requestId, response, runId, type: "request.resolve" }),
+      expect.objectContaining({
+        requestId,
+        response,
+        runId,
+        type: "request.resolve",
+      }),
       expect.any(AbortSignal),
-      { beforeAck: expect.any(Function) },
+      {
+        beforeAck: expect.any(Function),
+      },
     );
     expect(dispatchRequestResponse).toHaveBeenCalledWith(command.id, expect.any(Function));
   });
-
   it("never opens a response envelope after its Request reservation is cancelled", async () => {
     const open = vi.fn(async () => Buffer.from("unreachable"));
     const runnersDispatch = vi.fn(async () => undefined);
@@ -80,9 +106,17 @@ describe("HostCommandDispatcher Request responses", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
-      attachmentRunTokens: { issue: () => "attachment-token" } as never,
-      attachments: { listForRun: async () => [] },
+      attachmentRunTokens: {
+        issue: () => "attachment-token",
+      } as never,
+      attachments: {
+        listForRun: async () => [],
+      },
       requestResponseVault: {
         fingerprint: vi.fn(),
         open,
@@ -93,10 +127,11 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
-      runners: { dispatch: runnersDispatch } as never,
+      runners: {
+        dispatch: runnersDispatch,
+      } as never,
       store: {
         dispatchRequestResponse: vi.fn(async () => {
           throw new OpensteerError({
@@ -106,12 +141,8 @@ describe("HostCommandDispatcher Request responses", () => {
         }),
       } as never,
       triggerControlTokens: {} as never,
-
       triggers: {} as never,
-      workspaces: {} as never,
-      workspaceAccess: {} as never,
     });
-
     await expect(
       dispatcher.dispatch(
         requestCommand({
@@ -123,12 +154,13 @@ describe("HostCommandDispatcher Request responses", () => {
         }),
         new AbortController().signal,
       ),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     expect(open).not.toHaveBeenCalled();
     expect(runnersDispatch).not.toHaveBeenCalled();
   });
 });
-
 describe("HostCommandDispatcher steering", () => {
   it("does not send an external steer when access was revoked after claim", async () => {
     const runnersDispatch = vi.fn(async () => undefined);
@@ -144,23 +176,29 @@ describe("HostCommandDispatcher steering", () => {
       refuseSteer: vi.fn(async () => []),
       succeedCommand: vi.fn(async () => []),
     });
-    const command = { ...steerCommand(), authoritySource: { kind: "channel-ingress" } };
+    const command = {
+      ...steerCommand(),
+      authoritySource: {
+        kind: "channel-ingress",
+      },
+    };
     await expect(dispatcher.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
       code: "forbidden",
     });
     expect(dispatchChannelCommand).toHaveBeenCalledWith(command.id, expect.any(Function));
     expect(runnersDispatch).not.toHaveBeenCalled();
   });
-
   it.each([undefined, "request-pending"])(
     "compensates through the Thread Inbox when the Runner refuses steering (%s)",
     async (reason) => {
-      const requeuedEvent = { type: "run.queued" } as never;
+      const requeuedEvent = {
+        type: "run.queued",
+      } as never;
       const refuseSteer = vi.fn(async () => [requeuedEvent]);
       const succeedCommand = vi.fn(async () => []);
-      const onWorkspaceEvent = vi.fn();
+      const onDeploymentEvent = vi.fn();
       const dispatcher = steerDispatcher({
-        onWorkspaceEvent,
+        onDeploymentEvent,
         refuseSteer,
         runnersDispatch: vi.fn(async () => {
           throw new CommandDispatchError(
@@ -168,7 +206,12 @@ describe("HostCommandDispatcher steering", () => {
             "failed",
             reason
               ? {
-                  cause: { code: "conflict", message: "Run is stopping", reason, retryable: false },
+                  cause: {
+                    code: "conflict",
+                    message: "Run is stopping",
+                    reason,
+                    retryable: false,
+                  },
                 }
               : undefined,
           );
@@ -176,21 +219,18 @@ describe("HostCommandDispatcher steering", () => {
         succeedCommand,
       });
       const command = steerCommand();
-
       await expect(
         dispatcher.dispatch(command, new AbortController().signal),
       ).resolves.toBeUndefined();
-
       expect(refuseSteer).toHaveBeenCalledWith(
         command.id,
         "Harness does not support steering",
         reason,
       );
-      expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
+      expect(onDeploymentEvent).toHaveBeenCalledWith(requeuedEvent);
       expect(succeedCommand).not.toHaveBeenCalled();
     },
   );
-
   it("leaves a retryable steer to the coordinator", async () => {
     const refuseSteer = vi.fn(async () => []);
     const dispatcher = steerDispatcher({
@@ -200,14 +240,14 @@ describe("HostCommandDispatcher steering", () => {
       }),
       succeedCommand: vi.fn(async () => []),
     });
-
     await expect(
       dispatcher.dispatch(steerCommand(), new AbortController().signal),
-    ).rejects.toMatchObject({ disposition: "uncertain" });
+    ).rejects.toMatchObject({
+      disposition: "uncertain",
+    });
     expect(refuseSteer).not.toHaveBeenCalled();
   });
 });
-
 describe("HostCommandDispatcher specialist admission", () => {
   it.each([
     "Specialist is pending: browser-profile: rebind (Research)",
@@ -218,95 +258,52 @@ describe("HostCommandDispatcher specialist admission", () => {
       .spyOn(SpecialistStore.prototype, "assertRunnable")
       .mockRejectedValue(new Error(message));
     const send = vi.fn();
-    const workspaceId = createId("workspace");
     const requestedBy = createId("user");
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90000,
       publicUrl: new URL("https://host.example"),
-      runners: { dispatch: send },
+      runners: {
+        dispatch: send,
+      },
       store: {
         loadRunDispatchContext: async () => ({
-          run: { requestedBy },
-          thread: { specialistId: "registration" },
-          workspace: { id: workspaceId },
+          providerSessionStateLayout: "session",
+          run: {
+            requestedBy,
+          },
+          thread: {
+            specialistId: "registration",
+          },
         }),
       },
     } as unknown as ConstructorParameters<typeof HostCommandDispatcher>[0]);
     try {
       await expect(
         dispatcher.dispatch(
-          { ...steerCommand(), type: "run.execute", payload: { type: "run.execute" } },
+          {
+            ...steerCommand(),
+            type: "run.execute",
+            payload: {
+              type: "run.execute",
+            },
+          },
           new AbortController().signal,
         ),
-      ).rejects.toMatchObject({ message, disposition: "failed" });
-      expect(admit).toHaveBeenCalledWith("registration", workspaceId, requestedBy);
+      ).rejects.toMatchObject({
+        message,
+        disposition: "failed",
+      });
+      expect(admit).toHaveBeenCalledWith("registration", requestedBy);
       expect(send).not.toHaveBeenCalled();
     } finally {
       admit.mockRestore();
     }
   });
 });
-
-describe("HostCommandDispatcher archived Workspace demand", () => {
-  // A Workspace claimed by the archive sweep is as wakeable as a sealed one:
-  // the Manager's wake cancels a cycle that has not sealed yet.
-  it.each(["archiving", "archived"] as const)(
-    "starts a wake for a %s Workspace and returns a retryable dispatch error",
-    async (status) => {
-      const workspaceId = createId("workspace");
-      const dispatcher = new HostCommandDispatcher({
-        executionLeaseMs: 90_000,
-        attachmentRunTokens: { issue: () => "attachment-token" } as never,
-        attachments: { listForRun: async () => [] },
-        requestResponseVault: {} as never,
-        runToolTokens: {} as never,
-        browser: {} as never,
-        egress: {} as never,
-        pluginVersions: async () => [],
-        pluginsTokens: {} as never,
-
-        onWorkspaceEvent: vi.fn(),
-        publicUrl: new URL("https://host.example"),
-        runners: {
-          identityForEnvironment: () => ({
-            capabilities: [
-              "native-session-continuation-v1",
-              "assignments-v1",
-              "thread-state-v1",
-              "requester-time-zone-v1",
-              "execution-plane-v2",
-              "agent-tools-plan-v1",
-            ],
-            connectionGeneration: 7,
-            name: "Runner",
-          }),
-        } as never,
-        store: {
-          loadRunDispatchContext: async () => ({
-            run: { assignmentId: null },
-            thread: { role: "work" },
-            workspace: { id: workspaceId, status },
-          }),
-        } as never,
-        triggerControlTokens: {} as never,
-
-        triggers: {} as never,
-        workspaceAccess: {} as never,
-        workspaces: {} as never,
-      });
-      const command = {
-        ...steerCommand(),
-        payload: { type: "run.execute" },
-        type: "run.execute" as const,
-      };
-
-      await expect(
-        dispatcher.dispatch(command, new AbortController().signal),
-      ).rejects.toMatchObject({ disposition: "retry" });
-    },
-  );
-});
-
 describe("HostCommandDispatcher model selection", () => {
   const gpt5 = {
     displayName: "GPT-5",
@@ -320,11 +317,16 @@ describe("HostCommandDispatcher model selection", () => {
     label: "Reasoning",
     type: "select",
     values: [
-      { label: "Low", value: "low" },
-      { label: "High", value: "high" },
+      {
+        label: "Low",
+        value: "low",
+      },
+      {
+        label: "High",
+        value: "high",
+      },
     ],
   } as const;
-
   it("runs the selection with the native id the live catalog reports", async () => {
     const { dispatch, run } = dispatchRun({
       models: [
@@ -340,29 +342,32 @@ describe("HostCommandDispatcher model selection", () => {
       modelSelection: {
         modelId: "llama-4-maverick",
         nativeModelId: "meta-llama/llama-4-maverick",
-        options: { effort: "high" },
+        options: {
+          effort: "high",
+        },
         providerId: "meta",
       },
     });
-
     await run();
-
     expect(dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({
           modelSelection: {
             modelId: "llama-4-maverick",
             nativeModelId: "meta-llama/llama-4-maverick-2026",
-            options: { effort: "high" },
+            options: {
+              effort: "high",
+            },
             providerId: "meta",
           },
         }),
       }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
   it("states every default the selection leaves out and carries options the model stopped listing", async () => {
     // A Codex thread keeps the last level and speed it was told, so an unnamed
     // option is stated at the live default; an option the catalog no longer
@@ -375,36 +380,50 @@ describe("HostCommandDispatcher model selection", () => {
           isDefault: true,
           modelId: "gpt-6-astra",
           options: [
-            { ...effort, defaultValue: "high" },
-            { defaultValue: false, id: "fast", label: "Fast mode", type: "toggle" },
+            {
+              ...effort,
+              defaultValue: "high",
+            },
+            {
+              defaultValue: false,
+              id: "fast",
+              label: "Fast mode",
+              type: "toggle",
+            },
           ],
           providerId: "openai",
         },
       ],
       modelSelection: {
         modelId: "gpt-6-astra",
-        options: { fast: true, thinking: true },
+        options: {
+          fast: true,
+          thinking: true,
+        },
         providerId: "openai",
       },
     });
-
     await run();
-
     expect(dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({
           modelSelection: {
             modelId: "gpt-6-astra",
-            options: { effort: "high", fast: true, thinking: true },
+            options: {
+              effort: "high",
+              fast: true,
+              thinking: true,
+            },
             providerId: "openai",
           },
         }),
       }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
   it("fails a Run whose option value the running engine no longer lists", async () => {
     const { dispatch, run } = dispatchRun({
       models: [
@@ -416,16 +435,20 @@ describe("HostCommandDispatcher model selection", () => {
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-5.5", options: { effort: "xhigh" }, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5.5",
+        options: {
+          effort: "xhigh",
+        },
+        providerId: "openai",
+      },
     });
-
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
       message: "Model option effort is not available for GPT-5.5; it takes low, high",
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-
   it("fails a Run whose model the running engine no longer lists", async () => {
     const { dispatch, run } = dispatchRun({
       models: [
@@ -437,19 +460,26 @@ describe("HostCommandDispatcher model selection", () => {
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-5.5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5.5",
+        options: {},
+        providerId: "openai",
+      },
     });
-
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
       message: "The selected model is no longer available in this AI engine.",
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-
   it("fails before dispatch when defaults plus carried legacy options exceed the wire limit", async () => {
     const legacy = Object.fromEntries(
-      Array.from({ length: 16 }, (_, index) => [`legacy${index}`, true]),
+      Array.from(
+        {
+          length: 16,
+        },
+        (_, index) => [`legacy${index}`, true],
+      ),
     );
     const { dispatch, run } = dispatchRun({
       models: [
@@ -457,23 +487,37 @@ describe("HostCommandDispatcher model selection", () => {
           displayName: "GPT-6",
           isDefault: true,
           modelId: "gpt-6",
-          options: [{ defaultValue: false, id: "fast", label: "Fast mode", type: "toggle" }],
+          options: [
+            {
+              defaultValue: false,
+              id: "fast",
+              label: "Fast mode",
+              type: "toggle",
+            },
+          ],
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-6", options: legacy, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-6",
+        options: legacy,
+        providerId: "openai",
+      },
     });
-
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
       message: "The selected model has too many options to run with this saved configuration.",
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-
   it("dispatches when carried options and a current default fit the wire limit exactly", async () => {
     const legacy = Object.fromEntries(
-      Array.from({ length: 15 }, (_, index) => [`legacy${index}`, true]),
+      Array.from(
+        {
+          length: 15,
+        },
+        (_, index) => [`legacy${index}`, true],
+      ),
     );
     const { dispatch, run } = dispatchRun({
       models: [
@@ -481,29 +525,43 @@ describe("HostCommandDispatcher model selection", () => {
           displayName: "GPT-6",
           isDefault: true,
           modelId: "gpt-6",
-          options: [{ defaultValue: false, id: "fast", label: "Fast mode", type: "toggle" }],
+          options: [
+            {
+              defaultValue: false,
+              id: "fast",
+              label: "Fast mode",
+              type: "toggle",
+            },
+          ],
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-6", options: legacy, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-6",
+        options: legacy,
+        providerId: "openai",
+      },
     });
-
     await run();
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({
           modelSelection: {
             modelId: "gpt-6",
-            options: { fast: false, ...legacy },
+            options: {
+              fast: false,
+              ...legacy,
+            },
             providerId: "openai",
           },
         }),
       }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
   it("issues a scoped attachment plan even for a text-only continuation on a capable Runner", async () => {
     const { dispatch, run } = dispatchRun({
       supportsAttachments: true,
@@ -516,7 +574,11 @@ describe("HostCommandDispatcher model selection", () => {
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
     });
     await run();
     expect(dispatch).toHaveBeenLastCalledWith(
@@ -528,10 +590,11 @@ describe("HostCommandDispatcher model selection", () => {
         }),
       }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
   it("keeps text-only commands compatible with Runners without attachment support", async () => {
     const { dispatch, run } = dispatchRun({
       models: [
@@ -543,14 +606,17 @@ describe("HostCommandDispatcher model selection", () => {
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
     });
     await run();
     const sent = dispatch.mock.calls[0]?.[0];
     if (!sent || sent.type !== "run.execute") throw new Error("Expected a Run dispatch");
     expect(sent.context).not.toHaveProperty("attachments");
   });
-
   it("refuses an older Runner when prior admitted files fall outside the history window", async () => {
     const { dispatch, run } = dispatchRun({
       hasHistoricalAttachments: true,
@@ -563,7 +629,11 @@ describe("HostCommandDispatcher model selection", () => {
           providerId: "openai",
         },
       ],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
     });
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
@@ -571,73 +641,52 @@ describe("HostCommandDispatcher model selection", () => {
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-
   it("tells the Run the time zone its requester's client last reported", async () => {
     const { dispatch, requestedBy, run, timeZoneFor } = dispatchRun({
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
       requesterTimeZone: "America/New_York",
     });
-
     await run();
-
     expect(timeZoneFor).toHaveBeenCalledWith(requestedBy);
     expect(dispatch).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        context: expect.objectContaining({ requesterTimeZone: "America/New_York" }),
+        context: expect.objectContaining({
+          requesterTimeZone: "America/New_York",
+        }),
       }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
   it("says plainly that the requester's time zone is unknown when no client reported one", async () => {
     const { dispatch, run } = dispatchRun({
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
     });
-
     await run();
-
     expect(dispatch).toHaveBeenLastCalledWith(
-      expect.objectContaining({ context: expect.objectContaining({ requesterTimeZone: null }) }),
+      expect.objectContaining({
+        context: expect.objectContaining({
+          requesterTimeZone: null,
+        }),
+      }),
       expect.any(AbortSignal),
-      expect.objectContaining({ connectionGeneration: 7 }),
+      expect.objectContaining({
+        connectionGeneration: 7,
+      }),
     );
   });
-
-  it.each([
-    { reach: "user", owner: "requester", advertised: true, offered: true },
-    { reach: "workspace", owner: "requester", advertised: true, offered: false },
-    { reach: "user", owner: "another", advertised: true, offered: false },
-    { reach: "user", owner: "none", advertised: true, offered: false },
-    { reach: "user", owner: "requester", advertised: false, offered: false },
-  ] as const)(
-    "plans knowledge exactly where Main's memory goes, for the owner on a Runner that advertises it: %o",
-    async ({ reach, owner, advertised, offered }) => {
-      const planFor = async (
-        knowledge: NonNullable<Parameters<typeof dispatchRun>[0]["knowledge"]>,
-      ) => {
-        const { dispatch, run } = dispatchRun({
-          models: [gpt5],
-          modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
-          knowledge,
-        });
-        await run();
-        const command = dispatch.mock.lastCall![0];
-        if (command.type !== "run.execute") throw new Error("Expected run.execute");
-        return RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools);
-      };
-      const plan = await planFor({ enabled: true, reach, owner, advertised });
-      expect(plan.skills.includes("opensteer:knowledge")).toBe(offered);
-      expect(plan.tools.includes("sql")).toBe(offered);
-      if (owner === "requester" && advertised)
-        expect(plan.skills.includes("opensteer:memory")).toBe(offered);
-      const off = await planFor({ enabled: false, reach, owner, advertised });
-      expect(plan.toolsRevision === off.toolsRevision).toBe(!offered);
-    },
-  );
-
   it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
     const { dispatch, run } = dispatchRun({
       capabilities: [
@@ -648,7 +697,11 @@ describe("HostCommandDispatcher model selection", () => {
         "execution-plane-v2",
       ],
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
     });
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
@@ -656,7 +709,6 @@ describe("HostCommandDispatcher model selection", () => {
     });
     expect(dispatch).not.toHaveBeenCalled();
   });
-
   it("asks a Runner that cannot carry the requester's time zone to update instead of running", async () => {
     const { dispatch, run, timeZoneFor } = dispatchRun({
       capabilities: [
@@ -667,10 +719,13 @@ describe("HostCommandDispatcher model selection", () => {
         "agent-tools-plan-v1",
       ],
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
       requesterTimeZone: "America/New_York",
     });
-
     await expect(run()).rejects.toMatchObject({
       disposition: "failed",
       message: "Update this Runner so agents know the person's time zone.",
@@ -678,7 +733,6 @@ describe("HostCommandDispatcher model selection", () => {
     expect(dispatch).not.toHaveBeenCalled();
     expect(timeZoneFor).not.toHaveBeenCalled();
   });
-
   it("asks a Runner that may leave a message steered into a conversation unanswered to update", async () => {
     const older = [
       "native-session-continuation-v1",
@@ -691,8 +745,12 @@ describe("HostCommandDispatcher model selection", () => {
     const conversation = dispatchRun({
       capabilities: older,
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
-      role: "conversation",
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
+      purpose: "voice",
     });
     await expect(conversation.run()).rejects.toMatchObject({
       disposition: "failed",
@@ -704,32 +762,45 @@ describe("HostCommandDispatcher model selection", () => {
     const work = dispatchRun({
       capabilities: older,
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
-      role: "work",
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
+      purpose: "task",
     });
     await work.run();
     expect(work.dispatch).toHaveBeenCalledOnce();
-
     const current = dispatchRun({
       capabilities: [...older, "steer-answer-v1"],
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
-      role: "conversation",
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
+      purpose: "voice",
     });
     await current.run();
     expect(current.dispatch).toHaveBeenCalledOnce();
   });
-
   it("refuses policy-bearing Runs on an older Runner and sends policy to a capable Runner", async () => {
     const input = {
       models: [gpt5],
-      modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
-      workspaceSkillPolicy: { revision: 3, disabledFullNames: ["release"] },
+      modelSelection: {
+        modelId: "gpt-5",
+        options: {},
+        providerId: "openai",
+      },
+      skillPolicy: {
+        revision: 3,
+        disabledFullNames: ["release"],
+      },
     };
     const older = dispatchRun(input);
     await expect(older.run()).rejects.toMatchObject({
       disposition: "failed",
-      message: "Update this Runner to enforce Workspace skill settings.",
+      message: "Update this Runner to enforce skill settings.",
     });
     expect(older.dispatch).not.toHaveBeenCalled();
     const current = dispatchRun({
@@ -748,14 +819,15 @@ describe("HostCommandDispatcher model selection", () => {
     expect(current.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         context: expect.objectContaining({
-          plugins: expect.objectContaining({ workspaceSkillPolicy: input.workspaceSkillPolicy }),
+          plugins: expect.objectContaining({
+            skillPolicy: input.skillPolicy,
+          }),
         }),
       }),
       expect.any(AbortSignal),
       expect.any(Object),
     );
   });
-
   it("dispatches a specialist through the Runner wire schema", async () => {
     const admit = vi
       .spyOn(SpecialistStore.prototype, "assertRunnable")
@@ -764,40 +836,36 @@ describe("HostCommandDispatcher model selection", () => {
       const { dispatch, run } = dispatchRun({
         specialistId: "registration",
         models: [gpt5],
-        modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+        modelSelection: {
+          modelId: "gpt-5",
+          options: {},
+          providerId: "openai",
+        },
       });
       await run();
       const command = dispatch.mock.calls[0]![0];
       if (command.type !== "run.execute") throw new Error("Expected run.execute");
       expect(command.context.specialistId).toBe("registration");
-      expect(
-        RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools).instructions,
-      ).toContain("specialist lineage");
+      expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
     } finally {
       admit.mockRestore();
     }
   });
-
   function dispatchRun(input: {
     readonly specialistId?: string;
     readonly capabilities?: readonly string[];
-    readonly workspaceSkillPolicy?: import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"];
-    readonly role?: "conversation" | "work";
+    readonly skillPolicy?: import("@opensteer/protocol").RunPluginsPlan["skillPolicy"];
+    readonly purpose?: "task" | "voice";
     readonly supportsAttachments?: boolean;
     readonly hasHistoricalAttachments?: boolean;
     readonly models: readonly unknown[];
     readonly modelSelection: unknown;
     readonly requesterTimeZone?: string | null;
-    readonly knowledge?: {
-      readonly enabled: boolean;
-      readonly reach: "user" | "workspace";
-      readonly owner: "requester" | "another" | "none";
-      readonly advertised: boolean;
-    };
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
     const environmentId = createId("environment");
+    const computerId = createId("runner");
     const harnessInstanceId = createId("harnessInstance");
     const requestedBy = createId("user");
     const runId = createId("run");
@@ -809,23 +877,44 @@ describe("HostCommandDispatcher model selection", () => {
       innerJoin: () => specialistQuery,
       select: () => specialistQuery,
       where: () => specialistQuery,
-      executeTakeFirst: async () => ({ pluginId: "plugin", name: "proof", digest: "a".repeat(64) }),
+      executeTakeFirst: async () => ({
+        pluginId: "plugin",
+        name: "proof",
+        digest: "a".repeat(64),
+      }),
     };
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
-      attachmentRunTokens: { issue: () => "attachment-token" } as never,
+      attachmentRunTokens: {
+        issue: () => "attachment-token",
+      } as never,
       attachments: {
         listForRun: async () => (input.hasHistoricalAttachments ? [{}] : []),
       } as never,
       requestResponseVault: {} as never,
-      runToolTokens: { issue: () => "agent-token" } as never,
+      runToolTokens: {
+        lifetimeSeconds: 120,
+        issue: () => "agent-token",
+      } as never,
       browser: {} as never,
-      egress: { issue: () => "egress-token" } as never,
-      workspaceSkillPolicy: async () => input.workspaceSkillPolicy,
+      egress: {
+        issue: () => ({
+          relayToken: "egress-token",
+          relayUrl: "https://host.example/internal/v1/egress",
+          maxRequestBytes: 1024,
+          maxResponseBytes: 1024,
+        }),
+      } as never,
+      skillPolicy: async () => input.skillPolicy,
       pluginVersions: async () => [],
-      pluginsTokens: { issue: () => "skills-token" } as never,
-
-      onWorkspaceEvent: vi.fn(),
+      pluginsTokens: {
+        issue: () => "skills-token",
+      } as never,
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         supportsMessageAttachments: () => input.supportsAttachments ?? false,
@@ -843,13 +932,15 @@ describe("HostCommandDispatcher model selection", () => {
             "agent-tools-plan-v1",
           ],
           name: "Run computer",
-          runnerId: createId("runner"),
-          modules: {
-            agents: input.knowledge?.advertised ? { knowledgeSkill: 1 } : {},
-          },
+          runnerId: computerId,
+          modules: { agents: {} },
         }),
         inspectHarnesses: async () => [
-          { continuationIdentity: "continuation-test", models, status: "ready" },
+          {
+            continuationIdentity: "continuation-test",
+            models,
+            status: "ready",
+          },
         ],
       } as never,
       store: {
@@ -857,7 +948,7 @@ describe("HostCommandDispatcher model selection", () => {
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
-          providerSessionId: "provider-session",
+          providerSessionId: createId("providerSession"),
           providerSessionReference: null,
         }),
         assertActiveGrant: async () => undefined,
@@ -870,16 +961,33 @@ describe("HostCommandDispatcher model selection", () => {
           environmentId,
           id: harnessInstanceId,
           name: "Codex",
+          sourceId: "openai",
           runtimeRevision: 1,
           stateKind: "ambient",
         }),
-        loadRunThreadState: async () => ({ previousAssignment: null, previousRun: null }),
+        loadRunThreadState: async () => ({
+          previousAssignment: null,
+          previousRun: null,
+        }),
         loadRunDispatchContext: async () => ({
+          providerSessionStateLayout: "session",
+          personalContext: true,
+          location: {
+            folder: { computerId, path: "/tmp/dispatcher" },
+            agentHome: { computerId, path: "/tmp/dispatcher" },
+          },
           history: [],
-          historyWindow: { byteCount: 0, itemCount: 0, hasEarlier: false },
+          historyWindow: {
+            byteCount: 0,
+            itemCount: 0,
+            hasEarlier: false,
+          },
           inputs: [],
-          reports: { messages: [], omittedCount: 0, throughSequence: null },
-          membershipGeneration: 1,
+          reports: {
+            messages: [],
+            omittedCount: 0,
+            throughSequence: null,
+          },
           run: {
             accessMode: "full-access",
             environmentId,
@@ -889,40 +997,33 @@ describe("HostCommandDispatcher model selection", () => {
             requestedBy,
           },
           thread: {
-            inheritsMain: input.knowledge !== undefined && input.knowledge.reach !== "workspace",
-            ...(input.specialistId ? { specialistId: input.specialistId } : {}),
+            ...(input.specialistId
+              ? {
+                  specialistId: input.specialistId,
+                }
+              : {}),
             id: threadId,
-            role: input.role ?? "work",
+            purpose: input.purpose ?? "task",
+            teamOrigin: null,
+            accessMode: "full-access",
           },
-          workspace: { id: createId("workspace"), kind: "project", status: "ready" },
         }),
-        notificationState: { timeZoneFor },
+        notificationState: {
+          timeZoneFor,
+        },
         recordHarnessCatalogs: async ({
           catalogs,
         }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
       } as never,
       triggerControlTokens: {} as never,
-
       triggers: {} as never,
-      workspaces: { ensureExecutionReady: async () => undefined } as never,
-      workspaceAccess: { plan: async () => ({ kind: "test-plan" }) } as never,
-      ...(input.knowledge?.enabled
-        ? {
-            knowledge: {
-              owner: async () =>
-                input.knowledge?.owner === "requester"
-                  ? requestedBy
-                  : input.knowledge?.owner === "another"
-                    ? createId("user")
-                    : null,
-            },
-          }
-        : {}),
     });
     const command = {
       ...steerCommand(),
       environmentId,
-      payload: { type: "run.execute" },
+      payload: {
+        type: "run.execute",
+      },
       runId,
       threadId,
       type: "run.execute" as const,
@@ -935,8 +1036,7 @@ describe("HostCommandDispatcher model selection", () => {
     };
   }
 });
-
-describe("HostCommandDispatcher Workspace planning", () => {
+describe("HostCommandDispatcher folder admission", () => {
   it.each([null, "native-conversation"])(
     "plans a Run using its proven provider session (%s)",
     async (providerSessionReference) => {
@@ -944,7 +1044,6 @@ describe("HostCommandDispatcher Workspace planning", () => {
       const requestedBy = createId("user");
       const runId = createId("run");
       const threadId = createId("thread");
-      const workspaceId = createId("workspace");
       const harnessInstanceId = createId("harnessInstance");
       const identity = {
         bootId: "boot-run",
@@ -960,30 +1059,54 @@ describe("HostCommandDispatcher Workspace planning", () => {
         name: "Run computer",
         runnerId: createId("runner"),
       };
-      const workspace = { id: workspaceId, kind: "project", status: "ready" };
-      const plan = vi.fn(async () => ({ kind: "test-plan" }));
+      const location = {
+        folder: { computerId: identity.runnerId, path: "/tmp/dispatcher/task" },
+        agentHome: { computerId: identity.runnerId, path: "/tmp/dispatcher/home" },
+      };
+      const assertAvailable = vi.fn(async () => {});
       const dispatch = vi.fn(async () => undefined);
       const command = {
         ...steerCommand(),
         environmentId,
-        payload: { type: "run.execute" },
+        payload: {
+          type: "run.execute",
+        },
         requestedBy,
         runId,
         threadId,
         type: "run.execute" as const,
       };
       const dispatcher = new HostCommandDispatcher({
+        teamRequestContext: async () => {
+          throw new Error("Unexpected team request");
+        },
+        folders: { assertAvailable },
         executionLeaseMs: 90_000,
-        attachmentRunTokens: { issue: () => "attachment-token" } as never,
-        attachments: { listForRun: async () => [] },
+        attachmentRunTokens: {
+          issue: () => "attachment-token",
+        } as never,
+        attachments: {
+          listForRun: async () => [],
+        },
         requestResponseVault: {} as never,
-        runToolTokens: { issue: () => "agent-token" } as never,
+        runToolTokens: {
+          lifetimeSeconds: 120,
+          issue: () => "agent-token",
+        } as never,
         browser: {} as never,
-        egress: { issue: () => "egress-token" } as never,
+        egress: {
+          issue: () => ({
+            relayToken: "egress-token",
+            relayUrl: "https://host.example/internal/v1/egress",
+            maxRequestBytes: 1024,
+            maxResponseBytes: 1024,
+          }),
+        } as never,
         pluginVersions: async () => [],
-        pluginsTokens: { issue: () => "skills-token" } as never,
-
-        onWorkspaceEvent: vi.fn(),
+        pluginsTokens: {
+          issue: () => "skills-token",
+        } as never,
+        onDeploymentEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
           supportsMessageAttachments: () => false,
@@ -1010,7 +1133,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
           acquireExecutionBinding: async () => ({
             bindingGeneration: 2,
             continuationEvent: null,
-            providerSessionId: "provider-session",
+            providerSessionId: createId("providerSession"),
             providerSessionReference,
           }),
           assertActiveGrant: async () => undefined,
@@ -1027,96 +1150,147 @@ describe("HostCommandDispatcher Workspace planning", () => {
             runtimeRevision: 1,
             stateKind: "ambient",
           }),
-          loadRunThreadState: async () => ({ previousAssignment: null, previousRun: null }),
+          loadRunThreadState: async () => ({
+            previousAssignment: null,
+            previousRun: null,
+          }),
           loadRunDispatchContext: async () => ({
+            providerSessionStateLayout: "session",
+            personalContext: true,
+            location,
             history: [
-              { id: "old-failed-input", content: [{ type: "text", text: "Earlier input" }] },
+              {
+                id: "old-failed-input",
+                content: [
+                  {
+                    type: "text",
+                    text: "Earlier input",
+                  },
+                ],
+              },
             ],
-            historyWindow: { byteCount: 100, itemCount: 1, hasEarlier: false },
+            historyWindow: {
+              byteCount: 100,
+              itemCount: 1,
+              hasEarlier: false,
+            },
             inputs: [],
-            reports: { messages: [], omittedCount: 0, throughSequence: null },
-            membershipGeneration: 4,
+            reports: {
+              messages: [],
+              omittedCount: 0,
+              throughSequence: null,
+            },
             run: {
               accessMode: "full",
               environmentId,
               harnessInstanceId,
               id: runId,
-              modelSelection: { modelId: "gpt-5", options: {}, providerId: "openai" },
+              modelSelection: {
+                modelId: "gpt-5",
+                options: {},
+                providerId: "openai",
+              },
               requestedBy,
             },
-            thread: { inheritsMain: false, id: threadId },
-            workspace,
+            thread: {
+              id: threadId,
+              purpose: "task",
+              teamOrigin: null,
+            },
           }),
-          notificationState: { timeZoneFor: async () => null },
+          notificationState: {
+            timeZoneFor: async () => null,
+          },
           recordHarnessCatalogs: async ({
             catalogs,
           }: Parameters<OpensteerStore["recordHarnessCatalogs"]>[0]) => catalogs,
         } as never,
         triggerControlTokens: {} as never,
-
         triggers: {} as never,
-        workspaces: { ensureExecutionReady: async () => undefined } as never,
-        workspaceAccess: { plan } as never,
       });
-
       await dispatcher.dispatch(command, new AbortController().signal);
-
-      expect(plan).toHaveBeenCalledWith({
-        environmentId,
-        membershipGeneration: 4,
-        requestedBy,
-        runnerIdentity: identity,
-        workspace,
-      });
+      expect(assertAvailable).toHaveBeenCalledWith(location.folder);
       expect(dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
           context: expect.objectContaining({
-            machineAccess: { callerMachineName: "Run computer", machines: [], omittedMachines: 0 },
+            machineAccess: {
+              callerMachineName: "Run computer",
+              machines: [],
+              omittedMachines: 0,
+            },
             history: providerSessionReference
-              ? [{ id: "old-failed-input", content: [{ type: "text", text: "Earlier input" }] }]
+              ? [
+                  {
+                    id: "old-failed-input",
+                    content: [
+                      {
+                        type: "text",
+                        text: "Earlier input",
+                      },
+                    ],
+                  },
+                ]
               : [],
             historyWindow: {
               byteCount: providerSessionReference ? 100 : 0,
               itemCount: providerSessionReference ? 1 : 0,
               hasEarlier: false,
             },
-            workspaceAccess: { kind: "test-plan" },
             // One Host credential: the tool plan's.
-            agentTools: expect.objectContaining({ token: "agent-token" }),
-            browserCdp: { url: "https://host.example/internal/v1/browser-cdp" },
+            agentTools: expect.objectContaining({
+              token: "agent-token",
+            }),
+            browserCdp: {
+              url: "https://host.example/internal/v1/browser-cdp",
+            },
           }),
           type: "run.execute",
+          location,
         }),
         expect.any(AbortSignal),
-        expect.objectContaining({ connectionGeneration: 7 }),
+        expect.objectContaining({
+          connectionGeneration: 7,
+        }),
       );
-      const [sent] = dispatch.mock.lastCall as unknown as [{ readonly context: object }];
+      const [sent] = dispatch.mock.lastCall as unknown as [
+        {
+          readonly context: object;
+        },
+      ];
       expect(sent.context).not.toHaveProperty("agentControl");
     },
   );
 });
-
 function steerDispatcher(input: {
-  readonly onWorkspaceEvent?: () => void;
+  readonly onDeploymentEvent?: () => void;
   readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
   readonly refuseSteer: () => Promise<readonly never[]>;
   readonly runnersDispatch: () => Promise<undefined>;
   readonly succeedCommand: () => Promise<readonly never[]>;
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
+    teamRequestContext: async () => {
+      throw new Error("Unexpected team request");
+    },
+    folders: { assertAvailable: async () => {} },
     executionLeaseMs: 90_000,
-    attachmentRunTokens: { issue: () => "attachment-token" } as never,
-    attachments: { listForRun: async () => [] },
+    attachmentRunTokens: {
+      issue: () => "attachment-token",
+    } as never,
+    attachments: {
+      listForRun: async () => [],
+    },
     requestResponseVault: {} as never,
     runToolTokens: {} as never,
     browser: {} as never,
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-
-    onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
+    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
-    runners: { dispatch: input.runnersDispatch } as never,
+    runners: {
+      dispatch: input.runnersDispatch,
+    } as never,
     store: {
       dispatchChannelCommand: input.dispatchChannelCommand,
       loadSteerDispatchInput: async () => ({
@@ -1128,13 +1302,9 @@ function steerDispatcher(input: {
       succeedCommand: input.succeedCommand,
     } as never,
     triggerControlTokens: {} as never,
-
     triggers: {} as never,
-    workspaces: {} as never,
-    workspaceAccess: {} as never,
   });
 }
-
 function steerCommand(): CommandRow {
   const now = new Date();
   const runId = createId("run");
@@ -1143,7 +1313,9 @@ function steerCommand(): CommandRow {
     requestResponseKeyVersion: null,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 1,
-    authoritySource: { kind: "thread-agent" },
+    authoritySource: {
+      kind: "thread-agent",
+    },
     createdAt: now,
     dispatcherId: "test",
     encryptedRequestResponse: null,
@@ -1164,7 +1336,6 @@ function steerCommand(): CommandRow {
     updatedAt: now,
   };
 }
-
 function steerMessage(): Message {
   return {
     author: {
@@ -1172,10 +1343,13 @@ function steerMessage(): Message {
       kind: "agent",
       runId: createId("run"),
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
-      workspaceName: "Client",
     },
-    content: [{ text: "The contract is signed", type: "text" }],
+    content: [
+      {
+        text: "The contract is signed",
+        type: "text",
+      },
+    ],
     createdAt: new Date().toISOString(),
     id: createId("message"),
     kind: "input",
@@ -1184,7 +1358,6 @@ function steerMessage(): Message {
     threadId: createId("thread"),
   };
 }
-
 function requestCommand(input: {
   readonly encryptedRequestResponse: Buffer;
   readonly keyVersion: number;
@@ -1197,7 +1370,9 @@ function requestCommand(input: {
     requestResponseKeyVersion: input.keyVersion,
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 1,
-    authoritySource: { kind: "workspace-membership" },
+    authoritySource: {
+      kind: "user-session",
+    },
     createdAt: now,
     dispatcherId: "test",
     encryptedRequestResponse: input.encryptedRequestResponse,
@@ -1208,7 +1383,12 @@ function requestCommand(input: {
     payload: {
       requestId: input.requestId,
       requestedBy: createId("user"),
-      response: { answers: { token: [] }, kind: "form" },
+      response: {
+        answers: {
+          token: [],
+        },
+        kind: "form",
+      },
       responseFingerprint: "hmac-sha256-v1:1:test",
       runId: input.runId,
       threadId: input.threadId,

@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class PersonSaveTests: BrokerTestCase {
-  private func desktop(_ version: Int64 = 9) async throws -> TestClient {
+  private func desktop(_ version: Int64 = 10) async throws -> TestClient {
     let client = try await harness.client(greet: false)
     same(try await client.hello(version: version).result?["protocolVersion"], .integer(version))
     return client
@@ -50,29 +50,14 @@ final class PersonSaveTests: BrokerTestCase {
     Wire.SaveCommitResult.refused(reason).json
   }
 
-  func testSaveNeedsVersion9AndOnlyVersion9StatusSaysPersonSave() async throws {
-    let old = try await desktop(8)
+  func testStatusReportsPersonSaveAndItsChanges() async throws {
     let current = try await desktop()
     try await harness.ready()
-    let id = UUID().uuidString.lowercased()
-    same(try await old.call("save.begin", params(id)).errorCode, "invalid")
-    for method in ["save.commit", "save.cancel"] {
-      same(try await old.call(method, Fixtures.transaction(id)).errorCode, "invalid")
-    }
-    XCTAssertTrue(broker.heldSaves.isEmpty)
-    let oldStatus = try await old.call("status").result
-    same(oldStatus?["personFill"], .string("on"))
-    same(oldStatus?["personSave"], nil)
     same(try await current.call("status").result?["personSave"], .string("on"))
-    _ = old.takeEvents()
     _ = current.takeEvents()
     try await broker.setPersonSave(false)
     same(try await current.call("status").result?["personSave"], .string("off"))
-    _ = try await old.call("status")
     same(current.takeEvents().last?["personSave"], .string("off"))
-    let oldEvents = old.takeEvents()
-    XCTAssertFalse(oldEvents.isEmpty)
-    XCTAssertTrue(oldEvents.allSatisfy { $0["personSave"] == nil })
   }
 
   func testBeginSkipsWithoutPromptingWritingOrHolding() async throws {
@@ -287,7 +272,6 @@ final class PersonSaveTests: BrokerTestCase {
   func testRefusalsNeverNameAValue() async throws {
     try await harness.ready()
     let client = try await desktop()
-    let old = try await desktop(8)
     let user = "marker-user"
     let secret = "marker-secret"
     let id = UUID().uuidString.lowercased()
@@ -300,7 +284,6 @@ final class PersonSaveTests: BrokerTestCase {
       try await client.call("save.begin", params(id, username: String(repeating: user, count: 100), password: secret)),
       try await client.call("save.begin", params(id, username: user, password: "")),
       try await client.call("save.begin", params("not-a-uuid", username: user, password: secret)),
-      try await old.call("save.begin", params(id, username: user, password: secret)),
     ]
     same(try await begin(client, id, username: user, password: secret)?["decision"], .string("offer"))
     errors.append(try await client.call("save.begin", params(id, username: user, password: secret)))

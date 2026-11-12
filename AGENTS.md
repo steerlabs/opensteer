@@ -10,10 +10,11 @@ It's an early alpha.
 
 ## What we never compromise on
 
-1. **It runs on the person's computer.** Their files, accounts, credentials and
-   agent sessions stay there. Hosted pieces (the Account service and Connect in
-   `apps/control-plane`) only help devices find and reach that computer; they
-   never hold the person's work. There is no cloud-hosted product.
+1. **It runs on the person's computer.** Private files, accounts, credentials and agent
+   sessions stay there. Shared chat and knowledge live on the team's own self-hosted
+   server, which runs no agents and holds no person's credentials. The Account service
+   and Connect help devices find and reach computers. Team membership or administration
+   never gives access to another person's Opensteer or Mac.
 2. **Fast on a phone, even on a weak connection.** People attach over cellular
    data. Watch bytes on the wire, round trips before the first screen, and
    redraws while text streams. `pnpm bench:mobile-network` measures attach on
@@ -41,28 +42,26 @@ of you, say so plainly and get sign-off before breaking it.
 
 ## Words
 
-- **you**: the agent reading this. **Tim**: the founder, who approves the
-  changes listed under [Pull requests](#pull-requests). **person**: someone
-  using Opensteer.
-- **Host**: the server in `apps/host`. **Deployment**: one Host and everything
-  it owns. A **Personal** Deployment is single-user and loopback-only, running
-  on the person's own computer; an Account-attached Deployment is a server.
-- **Runner**: the process that runs agents, browsers, integrations, messaging
-  and shells on a machine. **Computer**: one Runner identity enrolled in a
-  Deployment, with a fixed grant of modules it may offer.
-- **Workspace**: a shared space of Threads and tabs with its own membership.
-  Each person has a Main Workspace.
-- **Thread**: a durable conversation and its native agent history. Its role is
-  `conversation` or `work`; the UI calls a work Thread a **task**. **Chat** is
-  the Main Workspace's home Thread, still named `home` / `homeThreadId` in code
-  and on the wire. **Run**: one turn of an agent on a Thread.
-- **Request**: something a Run needs from a person, such as an approval, an
-  answer or a sign-in. The UI shows it as "Needs you".
-- **Engine**: an agent CLI a Runner drives, through `packages/harness*`.
-- **Agent Phone**: an Android phone that the `apps/agent-phone` app turns into
-  a computer agents can use.
-- **Stable** and **Beta**: update channels of the one desktop app, chosen in
-  its Settings. Beta gets every main build; Stable gets Beta builds Tim promotes.
+- **you**: the agent reading this. **Tim**: the founder. **person**: someone using Opensteer.
+- **personal Opensteer**: one person's private Host, agent and tasks on their computer.
+  A **team server** is a self-hosted Host for shared chat and knowledge; it runs no agents.
+  **Deployment** means one Host identity, with kind `personal` or `team`.
+- **Host**: `apps/host`. **Runner**: a process offering the modules its computer's grant allows.
+  **Computer**: one enrolled Runner identity; tasks run only on the hosting computer.
+- **task**: a private durable agent conversation. Its **folder** is an immutable computer
+  and path; the default **agent home folder** is `~/Opensteer`. A **Run** is one turn.
+  **Voice** is a separate spoken entry. **Needs you** shows pending person decisions.
+- **your agent**: the person's one agent; only that person can wake it in a team.
+  A **channel** is team-only chat; a **thread** is its one-level reply conversation.
+  **people only** excludes agents from that channel or knowledge topic.
+- **link**: the authenticated connection from personal Opensteer to a team server.
+  A **run ticket** is the team's scoped, expiring request, not a portable bearer token.
+- **Messaging bridge**: external messaging that starts or continues a task in a chosen folder.
+- **Request**: an answer, approval or sign-in a Run needs from a person.
+- **Engine**: an agent CLI driven through `packages/harness*`.
+  **Agent Phone**: an Android phone made usable by agents through `apps/agent-phone`.
+- **Stable** and **Beta**: desktop update channels; Beta gets main builds and Stable gets
+  builds Tim promotes.
 
 ## Ways to hurt yourself
 
@@ -97,10 +96,11 @@ which entries applied:
 - **Agents.** If a person can do it, decide whether agents should reach it
   through the [tool catalog](packages/agent-tools/src/tools/index.ts).
   Model-facing text has behavioral evals in `evals/agent-tools`.
-- **Deployments and channels.** Personal and server Deployments; the Stable and
-  Beta update channels ([Releases](docs/releases.md)).
-- **Connections.** Same computer, private network, Connect, and a weak cellular
-  link. Several devices on one Deployment at once
+- **Deployments and versions.** Personal Opensteer and team servers; personal Host
+  epoch and `teamApiVersion` independently. Stable and Beta update channels
+  ([Releases](docs/releases.md)).
+- **Connections.** Same computer, private network, personal Connect, and a weak cellular
+  link; team servers use their own HTTPS origin. Several devices on one Deployment at once
   ([Connections](docs/connections.md)).
 - **Reverse states.** If you added a way in, add the way out and a way to see
   it. A one-way door is a bug.
@@ -232,32 +232,32 @@ Most code changes need no documentation change: agents can read the code.
 
 ## How it works
 
-Clients call the Host over typed RPC (`packages/protocol`) and follow a
-Workspace channel of durable events, resuming from their last position after a
-reconnect. The Host owns application records in PostgreSQL (`packages/database`):
-authentication, Workspaces, Threads, Requests and the Thread Inbox, which
-queues, steers or records messages between Threads. It assigns Runs to Runners.
+Personal clients use typed RPC (`packages/protocol`) and one resumable personal event
+stream. The Host owns private tasks, Runs, Requests and the Inbox in PostgreSQL; agents
+run only on the person's own hosting computer. Other enrolled computers are tool targets.
 Native browser data stays on its owning computer
 ([profile authority](docs/browser-sessions.md#profile-state)).
-A Runner connects to its Host, advertises the modules its grant allows, and runs
-engines through harnesses, plus browser sessions (`apps/browser-runtime`) and
-messaging channels (`apps/channel-runtime`). The desktop app bundles a Personal
-Host with PostgreSQL, Node and cloudflared, a Runner, and signed native helpers
-for macOS app control and Passwords.
+
+The team Host owns the chat engine and shared knowledge. It runs no agents and holds no
+person's credentials. The outbound link carries scoped run requests to each person's
+Opensteer; only posted replies and bounded status return to the team. Private transcripts
+stay local ([Teams](docs/teams.md)). The desktop bundles a personal Host, PostgreSQL,
+Runner, browser and messaging runtimes, cloudflared and signed native helpers.
 
 ## Where code lives
 
-| Area                                           | Entry points                                                    |
-| ---------------------------------------------- | --------------------------------------------------------------- |
-| Deployment server and hosted Account service   | `apps/host`, `apps/control-plane`                               |
-| Web, Electron and Expo clients                 | `apps/web`, `apps/desktop`, `apps/mobile`                       |
-| Agent execution and auxiliary services         | `apps/runner`, `apps/browser-runtime`, `apps/channel-runtime`   |
-| Android app that makes a phone a computer      | `apps/agent-phone` (Kotlin), `packages/agent-phone-setup`       |
-| Domain types, wire contracts and persistence   | `packages/core`, `packages/protocol`, `packages/database`       |
-| Shared client, scheduling and engine contracts | `packages/client`, `packages/orchestration`, `packages/harness` |
-| Agent tool-use behavioral evals                | `evals/agent-tools`                                             |
-| Public landing page and its hero demo          | `apps/marketing`                                                |
-| Repository tooling and cross-package guards    | `scripts`, `tests`                                              |
+| Area                                           | Entry points                                                                               |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Personal/team Host and hosted Account service  | `apps/host`, `apps/control-plane`                                                          |
+| Team chat, link, knowledge and deployment      | `apps/host/src/team`, `apps/host/src/team-links`, `apps/host/src/knowledge`, `deploy/team` |
+| Web, Electron and Expo clients                 | `apps/web`, `apps/desktop`, `apps/mobile`                                                  |
+| Agent execution and auxiliary services         | `apps/runner`, `apps/browser-runtime`, `apps/channel-runtime`                              |
+| Android app that makes a phone a computer      | `apps/agent-phone` (Kotlin), `packages/agent-phone-setup`                                  |
+| Domain types, wire contracts and persistence   | `packages/core`, `packages/protocol`, `packages/database`                                  |
+| Shared client, scheduling and engine contracts | `packages/client`, `packages/orchestration`, `packages/harness`                            |
+| Agent tool-use behavioral evals                | `evals/agent-tools`                                                                        |
+| Public landing page and its hero demo          | `apps/marketing`                                                                           |
+| Repository tooling and cross-package guards    | `scripts`, `tests`                                                                         |
 
 ## Taste
 

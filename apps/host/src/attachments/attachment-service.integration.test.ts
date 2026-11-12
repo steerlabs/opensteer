@@ -1,5 +1,5 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import { createId, type UserId, type WorkspaceId } from "@opensteer/core";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { createId, type UserId } from "@opensteer/core";
 import {
   AttachmentStore,
   createDatabase,
@@ -15,10 +15,8 @@ import { crc32 } from "node:zlib";
 import sharp from "sharp";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AttachmentService, RunAttachmentsTokenService } from "./attachment-service.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-
 integration.sequential("Host attachment originals", () => {
   const database = createDatabase({
     applicationName: "opensteer-attachment-originals-test",
@@ -29,52 +27,33 @@ integration.sequential("Host attachment originals", () => {
   const attachments = new AttachmentStore(database);
   let directory: string;
   let service: AttachmentService;
-
   beforeAll(async () => {
     await migrateToLatest(database);
     directory = await mkdtemp(join(tmpdir(), "opensteer-attachments-"));
     service = new AttachmentService({
       dataDirectory: directory,
       store: attachments,
-      runTokens: new RunAttachmentsTokenService({ authorizer: store, tokens: {} as never }),
+      runTokens: new RunAttachmentsTokenService({
+        authorizer: store,
+        tokens: {} as never,
+      }),
     });
   });
   beforeEach(async () => {
-    await sql`truncate table messages, runs, threads, harness_catalogs, harness_instances,
-      runner_enrollments, workspaces, execution_environments, runners, deployments, users restart identity cascade`.execute(
-      database,
-    );
+    await sql`truncate table deployments, users restart identity cascade`.execute(database);
   });
   afterAll(async () => {
     await database.destroy();
-    await rm(directory, { recursive: true, force: true });
+    await rm(directory, {
+      recursive: true,
+      force: true,
+    });
   });
-
   async function fixture(suffix: string) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-      hostInstanceId: createId("hostInstance"),
-    });
-    const userId = await store.createUser(`Attachment uploader ${suffix}`);
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: userId,
-      idempotencyKey: `attachment-workspace-${suffix}`,
-      name: `Attachments ${suffix}`,
-      status: "ready",
-    });
-    if (workspace.kind !== "main") throw new Error("Expected main workspace");
-    return { userId, workspaceId: workspace.id };
+    const path = join(directory, suffix);
+    await mkdir(path, { recursive: true });
+    return seedPersonalFixture(database, path);
   }
-
   it("stores and verifies exact binary bytes above the former 1 MiB text limit", async () => {
     const f = await fixture("large");
     const bytes = randomBytes(1_200_000);
@@ -84,7 +63,6 @@ integration.sequential("Host attachment originals", () => {
       name: "dataset.bin",
       sizeBytes: bytes.length,
       uploaderId: f.userId,
-      workspaceId: f.workspaceId,
     });
     const uploaded = await service.upload({
       attachmentId: reserved.id,
@@ -109,26 +87,13 @@ integration.sequential("Host attachment originals", () => {
           yield randomBytes(bytes.length);
         })(),
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     expect((await service.contentForUser(reserved.id, f.userId)).bytes).toEqual(bytes);
   });
-
-  it("returns a conflict when concurrent workspaces reuse one uploader's upload key", async () => {
+  it("returns a conflict when concurrent uploads reuse a key with different intent", async () => {
     const first = await fixture("cross-workspace-key");
-    const second = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: first.userId,
-      idempotencyKey: "attachment-workspace-cross-workspace-key-second",
-      name: "Other attachments",
-      status: "ready",
-    });
     const input = {
       idempotencyKey: "same-key",
       mediaType: "text/plain",
@@ -156,8 +121,13 @@ integration.sequential("Host attachment originals", () => {
     let results: PromiseSettledResult<Awaited<ReturnType<AttachmentStore["reserve"]>>>[];
     try {
       results = await Promise.allSettled([
-        attachments.reserve({ ...input, workspaceId: first.workspaceId }),
-        attachments.reserve({ ...input, workspaceId: second.id }),
+        attachments.reserve({
+          ...input,
+        }),
+        attachments.reserve({
+          ...input,
+          name: "different.txt",
+        }),
       ]);
     } finally {
       await sql.raw("drop trigger attachment_review_delay_insert on attachments").execute(database);
@@ -165,9 +135,12 @@ integration.sequential("Host attachment originals", () => {
     }
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
     const rejected = results.find((result) => result.status === "rejected");
-    expect(rejected).toMatchObject({ reason: { code: "conflict" } });
+    expect(rejected).toMatchObject({
+      reason: {
+        code: "conflict",
+      },
+    });
   });
-
   it("rejects invalid image bytes and leaves the reservation unready", async () => {
     const f = await fixture("invalid-image");
     const bytes = Buffer.from("not a PNG image");
@@ -177,7 +150,6 @@ integration.sequential("Host attachment originals", () => {
       name: "fake.png",
       sizeBytes: bytes.length,
       uploaderId: f.userId,
-      workspaceId: f.workspaceId,
     });
     await expect(
       service.upload({
@@ -193,10 +165,11 @@ integration.sequential("Host attachment originals", () => {
     });
     expect((await attachments.get(reserved.id))?.state).toBe("uploading");
   });
-
   describe("image ingestion", () => {
     async function uploadImage(
-      f: { readonly userId: UserId; readonly workspaceId: WorkspaceId },
+      f: {
+        readonly userId: UserId;
+      },
       name: string,
       mediaType: string,
       bytes: Uint8Array,
@@ -207,7 +180,6 @@ integration.sequential("Host attachment originals", () => {
         name,
         sizeBytes: bytes.byteLength,
         uploaderId: f.userId,
-        workspaceId: f.workspaceId,
       });
       return service.upload({
         attachmentId: reserved.id,
@@ -217,22 +189,42 @@ integration.sequential("Host attachment originals", () => {
         })(),
       });
     }
-
     function photo(width: number, height: number): Promise<Buffer> {
       // Smooth content keeps a phone-sized JPEG well inside the byte limit.
       return sharp({
-        create: { width, height, channels: 3, background: { r: 80, g: 120, b: 170 } },
+        create: {
+          width,
+          height,
+          channels: 3,
+          background: {
+            r: 80,
+            g: 120,
+            b: 170,
+          },
+        },
       })
-        .jpeg({ quality: 85 })
+        .jpeg({
+          quality: 85,
+        })
         .toBuffer();
     }
-
     function solidPng(width: number, height: number): Promise<Buffer> {
       return sharp({
-        create: { width, height, channels: 3, background: { r: 245, g: 245, b: 245 } },
+        create: {
+          width,
+          height,
+          channels: 3,
+          background: {
+            r: 245,
+            g: 245,
+            b: 245,
+          },
+        },
         limitInputPixels: false,
       })
-        .png({ compressionLevel: 9 })
+        .png({
+          compressionLevel: 9,
+        })
         .toBuffer();
     }
 
@@ -250,7 +242,6 @@ integration.sequential("Host attachment originals", () => {
       chunk.writeUInt32BE(crc32(Buffer.concat([type, data])), 8 + data.length);
       return Buffer.concat([png.subarray(0, ihdrEnd), chunk, png.subarray(ihdrEnd)]);
     }
-
     it("refuses unsupported image types at reservation, before any bytes move", async () => {
       const f = await fixture("unsupported-types");
       for (const mediaType of [
@@ -269,7 +260,6 @@ integration.sequential("Host attachment originals", () => {
             name: "photo",
             sizeBytes: 1_000,
             uploaderId: f.userId,
-            workspaceId: f.workspaceId,
           }),
         ).rejects.toMatchObject({
           code: "conflict",
@@ -277,7 +267,6 @@ integration.sequential("Host attachment originals", () => {
         });
       }
     });
-
     it("accepts full-resolution photos and stores their upright dimensions", async () => {
       const f = await fixture("photos");
       const cases: readonly {
@@ -307,10 +296,17 @@ integration.sequential("Host attachment originals", () => {
           name: "portrait.jpg",
           mediaType: "image/jpeg",
           bytes: await sharp({
-            create: { width: 300, height: 200, channels: 3, background: "#c33" },
+            create: {
+              width: 300,
+              height: 200,
+              channels: 3,
+              background: "#c33",
+            },
           })
             .jpeg()
-            .withMetadata({ orientation: 6 })
+            .withMetadata({
+              orientation: 6,
+            })
             .toBuffer(),
           width: 200,
           height: 300,
@@ -318,7 +314,14 @@ integration.sequential("Host attachment originals", () => {
         {
           name: "cmyk.jpg",
           mediaType: "image/jpeg",
-          bytes: await sharp({ create: { width: 40, height: 30, channels: 3, background: "#0a0" } })
+          bytes: await sharp({
+            create: {
+              width: 40,
+              height: 30,
+              channels: 3,
+              background: "#0a0",
+            },
+          })
             .toColourspace("cmyk")
             .jpeg()
             .toBuffer(),
@@ -329,7 +332,12 @@ integration.sequential("Host attachment originals", () => {
           name: "deep.png",
           mediaType: "image/png",
           bytes: await sharp({
-            create: { width: 40, height: 30, channels: 4, background: "#08f8" },
+            create: {
+              width: 40,
+              height: 30,
+              channels: 4,
+              background: "#08f8",
+            },
           })
             .toColourspace("rgb16")
             .png()
@@ -340,7 +348,14 @@ integration.sequential("Host attachment originals", () => {
         {
           name: "gray.png",
           mediaType: "image/png",
-          bytes: await sharp({ create: { width: 40, height: 30, channels: 3, background: "#777" } })
+          bytes: await sharp({
+            create: {
+              width: 40,
+              height: 30,
+              channels: 3,
+              background: "#777",
+            },
+          })
             .grayscale()
             .png()
             .toBuffer(),
@@ -350,8 +365,17 @@ integration.sequential("Host attachment originals", () => {
         {
           name: "palette.png",
           mediaType: "image/png",
-          bytes: await sharp({ create: { width: 40, height: 30, channels: 3, background: "#936" } })
-            .png({ palette: true })
+          bytes: await sharp({
+            create: {
+              width: 40,
+              height: 30,
+              channels: 3,
+              background: "#936",
+            },
+          })
+            .png({
+              palette: true,
+            })
             .toBuffer(),
           width: 40,
           height: 30,
@@ -360,9 +384,16 @@ integration.sequential("Host attachment originals", () => {
           name: "alpha.webp",
           mediaType: "image/webp",
           bytes: await sharp({
-            create: { width: 40, height: 30, channels: 4, background: "#f008" },
+            create: {
+              width: 40,
+              height: 30,
+              channels: 4,
+              background: "#f008",
+            },
           })
-            .webp({ lossless: true })
+            .webp({
+              lossless: true,
+            })
             .toBuffer(),
           width: 40,
           height: 30,
@@ -393,7 +424,6 @@ integration.sequential("Host attachment originals", () => {
         });
       }
     });
-
     it("refuses images over the pixel limit from their header, naming the dimensions", async () => {
       const f = await fixture("oversized");
       await expect(
@@ -410,7 +440,6 @@ integration.sequential("Host attachment originals", () => {
         message: "This image is 20000×20000 (400.0 MP). The limit is 100 MP.",
       });
     });
-
     it("refuses bytes whose image format differs from their label", async () => {
       const f = await fixture("mislabeled");
       await expect(
@@ -426,12 +455,16 @@ integration.sequential("Host attachment originals", () => {
         message: "This file is labeled image/webp but contains image/jpeg data.",
       });
     });
-
     it("refuses animated images instead of keeping one frame", async () => {
       const f = await fixture("animated");
       const red = await solidPng(32, 24);
       const blue = await sharp({
-        create: { width: 32, height: 24, channels: 3, background: "#00f" },
+        create: {
+          width: 32,
+          height: 24,
+          channels: 3,
+          background: "#00f",
+        },
       })
         .png()
         .toBuffer();
@@ -441,16 +474,25 @@ integration.sequential("Host attachment originals", () => {
           f,
           "loop.webp",
           "image/webp",
-          await sharp([red, blue], { join: { animated: true } })
+          await sharp([red, blue], {
+            join: {
+              animated: true,
+            },
+          })
             .webp()
             .toBuffer(),
         ),
-      ).rejects.toMatchObject({ code: "conflict", message: animated });
+      ).rejects.toMatchObject({
+        code: "conflict",
+        message: animated,
+      });
       await expect(
         uploadImage(f, "loop.png", "image/png", withAnimationControl(red)),
-      ).rejects.toMatchObject({ code: "conflict", message: animated });
+      ).rejects.toMatchObject({
+        code: "conflict",
+        message: animated,
+      });
     });
-
     it("refuses damaged and empty images", async () => {
       const f = await fixture("damaged");
       const damaged = "This image could not be read. It may be damaged or incomplete.";
@@ -460,7 +502,11 @@ integration.sequential("Host attachment originals", () => {
           height: 600,
           channels: 3,
           background: "#808080",
-          noise: { type: "gaussian", mean: 128, sigma: 30 },
+          noise: {
+            type: "gaussian",
+            mean: 128,
+            sigma: 30,
+          },
         },
       });
       const jpeg = await noisy.clone().jpeg().toBuffer();
@@ -477,7 +523,6 @@ integration.sequential("Host attachment originals", () => {
       }
     });
   });
-
   it("coordinates discard with a competing finalization", async () => {
     const f = await fixture("discard");
     const bytes = Buffer.from("hello");
@@ -487,7 +532,6 @@ integration.sequential("Host attachment originals", () => {
       name: "hello.txt",
       sizeBytes: bytes.length,
       uploaderId: f.userId,
-      workspaceId: f.workspaceId,
     });
     await Promise.allSettled([
       service.upload({
@@ -504,16 +548,20 @@ integration.sequential("Host attachment originals", () => {
     if (row?.state === "ready")
       expect((await service.contentForUser(reserved.id, f.userId)).bytes).toEqual(bytes);
   });
-
-  it("removes aged canonical bytes left after a rolled-back finalize or deleted workspace", async () => {
+  it("removes aged canonical bytes left after a rolled-back finalize", async () => {
+    await fixture("orphan");
     const orphanId = createId("attachment");
     const originalDirectory = join(directory, "attachments", "originals");
-    await mkdir(originalDirectory, { recursive: true });
+    await mkdir(originalDirectory, {
+      recursive: true,
+    });
     const path = join(originalDirectory, orphanId);
     await writeFile(path, "orphan bytes");
     const old = new Date(Date.now() - 25 * 60 * 60 * 1_000);
     await utimes(path, old, old);
     await service.collectGarbage();
-    await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(path)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
   });
 });

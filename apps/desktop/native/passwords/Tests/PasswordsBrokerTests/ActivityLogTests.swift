@@ -22,7 +22,7 @@ final class ActivityLogTests: XCTestCase {
     ActivityEntry(
       at: Date(timeIntervalSince1970: 1_800_000_000 + Double(index)), site: "example.com",
       account: "a•••@example.com",
-      deployment: "Personal", workspace: "Main", thread: "Thread \(index)",
+      deployment: "Personal", thread: "Thread \(index)",
       automatic: index.isMultiple(of: 2),
       outcome: outcome)
   }
@@ -91,7 +91,7 @@ final class ActivityPrivacyTests: BrokerTestCase {
     XCTAssertTrue(text.contains("s•••@example.com"))
     XCTAssertTrue(text.contains(#""automatic":true"#))
     for secret in [
-      "synthetic-secret-value", "secret-person", reason, id, automatic, Fixtures.workspace.0,
+      "synthetic-secret-value", "secret-person", reason, id, automatic, Fixtures.deployment.0,
     ] {
       XCTAssertFalse(text.contains(secret), secret)
     }

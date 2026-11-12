@@ -15,13 +15,11 @@ import {
   resetMachineAccessDatabase,
   runShim,
   shellSessionRows,
-  startMachineAccessScenario,
-  startPersonalMachineAccessScenario,
+  startShellAccessScenario,
   startShim,
   waitForCondition,
-  type MachineAccessScenario,
-  type PersonalMachineAccessScenario,
-} from "./machine-access.test-support.js";
+  type ShellAccessScenario,
+} from "./machine-access-protocol.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 
 /**
@@ -53,8 +51,8 @@ integration("Personal computer membership", () => {
     database = undefined;
   }, 120_000);
 
-  let scenario: PersonalMachineAccessScenario | undefined;
-  let serverScenario: MachineAccessScenario | undefined;
+  let scenario: ShellAccessScenario | undefined;
+  let serverScenario: ShellAccessScenario | undefined;
 
   beforeEach(async () => {
     await resetMachineAccessDatabase(databaseUrl);
@@ -68,12 +66,13 @@ integration("Personal computer membership", () => {
   }, 60_000);
 
   it("ends the reachable computer's sessions and drops it when remote access changes", async () => {
-    scenario = await startPersonalMachineAccessScenario(databaseUrl, { policy: openPolicy });
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
     const { alias, caller, host, launch, target } = scenario;
     const long = startShim(launch, "ssh", [alias, "sleep 60"]);
     const sessionId = await activeSessionId(host, target.runnerId);
 
     const configured = await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "off",
       routeOrigin: null,
     });
@@ -121,6 +120,7 @@ integration("Personal computer membership", () => {
 
     // And it comes back by itself once there is a route again.
     await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "private",
       routeOrigin: "https://personal.machine-access.test",
     });
@@ -135,7 +135,7 @@ integration("Personal computer membership", () => {
   }, 240_000);
 
   it("refuses a computer admitted an instant before remote access changed", async () => {
-    scenario = await startPersonalMachineAccessScenario(databaseUrl, { policy: openPolicy });
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
     const { host, target } = scenario;
     // Out of the way, so the admission below is the only thing holding this
     // computer's connection fence.
@@ -175,6 +175,7 @@ integration("Personal computer membership", () => {
     // nothing to drop, because this connection is not registered yet — that is
     // exactly the window.
     const reconfigured = await configurePersonalRemoteAccess(host, {
+      schemaVersion: 1,
       mode: "off",
       routeOrigin: null,
     });
@@ -198,7 +199,7 @@ integration("Personal computer membership", () => {
   }, 180_000);
 
   it("refuses a computer whose route changed while it was being registered", async () => {
-    scenario = await startPersonalMachineAccessScenario(databaseUrl, { policy: openPolicy });
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
     const { host, target } = scenario;
     await target.disconnect();
     await waitForMachines(host, (rows) =>
@@ -248,7 +249,11 @@ integration("Personal computer membership", () => {
           await authorizeRunnerRegistration(host.store, candidate);
           if (bumped) return;
           bumped = true;
-          await configurePersonalRemoteAccess(host, { mode: "off", routeOrigin: null });
+          await configurePersonalRemoteAccess(host, {
+            schemaVersion: 1,
+            mode: "off",
+            routeOrigin: null,
+          });
         },
         onEvent: async () => undefined,
         onRegistered: async (candidate) => {
@@ -281,7 +286,7 @@ integration("Personal computer membership", () => {
   }, 180_000);
 
   it("issues a Personal enrollment only for a computer that is reachable and nothing else", async () => {
-    scenario = await startPersonalMachineAccessScenario(databaseUrl, { policy: openPolicy });
+    scenario = await startShellAccessScenario(databaseUrl, { policy: openPolicy });
     const { host } = scenario;
 
     const refused = await testRpcRequest(
@@ -312,31 +317,18 @@ integration("Personal computer membership", () => {
       }),
     ).resolves.toEqual(expect.any(String));
   }, 180_000);
-
-  it("leaves a server Deployment free to admit a computer that runs agents", async () => {
-    // The rule is about Personal Deployments, not about grants: the same
-    // command on a server Deployment mints the same agents computer as always.
-    serverScenario = await startMachineAccessScenario(databaseUrl, { policy: openPolicy });
-    await expect(
-      enrollmentToken(serverScenario.host, {
-        allowedModules: ["agents", "browser"],
-        idempotencyKey: "server-agents",
-        name: "Build box",
-      }),
-    ).resolves.toEqual(expect.any(String));
-  }, 180_000);
 });
 
 type MachineRows = Awaited<ReturnType<typeof machineRows>>;
 
-function machineRows(host: MachineAccessScenario["host"]) {
+function machineRows(host: ShellAccessScenario["host"]) {
   return testRpcData(host.origin, "machines.list", {}, { headers: host.ownerHeaders }).then(
     (inventory) => inventory.machines,
   );
 }
 
 async function waitForMachines(
-  host: MachineAccessScenario["host"],
+  host: ShellAccessScenario["host"],
   ready: (machines: MachineRows) => boolean,
 ): Promise<MachineRows> {
   let latest = await machineRows(host);

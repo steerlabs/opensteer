@@ -13,7 +13,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { z } from "zod";
 import {
   HostClientRequestError,
@@ -51,7 +51,7 @@ import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SiteMark } from "../site-mark.js";
 import { useToastToolbar } from "../toast.js";
-import { TaskMark, ChatOrb } from "./task-mark.js";
+import { TaskMark } from "./task-mark.js";
 import { ProfileAvatar } from "./identity.js";
 import {
   destinationPlaceKey,
@@ -172,8 +172,6 @@ function sameStart(left: HostSnapshot, right: HostSnapshot): boolean {
     left.threads === right.threads &&
     left.tasks === right.tasks &&
     left.activeTasks === right.activeTasks &&
-    left.workspaceTasks === right.workspaceTasks &&
-    left.homeThreadId === right.homeThreadId &&
     left.browserSessions === right.browserSessions &&
     left.browserProfiles === right.browserProfiles &&
     left.browserPlacements === right.browserPlacements &&
@@ -182,8 +180,6 @@ function sameStart(left: HostSnapshot, right: HostSnapshot): boolean {
     left.ownerViewWindowsAvailable === right.ownerViewWindowsAvailable &&
     left.connection === right.connection &&
     left.deploymentShape === right.deploymentShape &&
-    left.homeWorkspaceId === right.homeWorkspaceId &&
-    left.workspaces === right.workspaces &&
     left.deploymentId === right.deploymentId &&
     left.user === right.user
   );
@@ -234,7 +230,6 @@ export const StartPage = memo(function StartPage({
   const localMachineId = useHereId();
   const toolbarRef = useToastToolbar();
   const navigate = useNavigate();
-  const location = useLocation();
   const arrived = useRef(false);
   const snapshot = useHostSelector(hostClient, selectStart, sameStart);
   const places = usePlaceList(hostClient);
@@ -475,16 +470,9 @@ export const StartPage = memo(function StartPage({
     if (!result) return;
     // History owns consumption across reload and Back; the ref absorbs StrictMode's second effect.
     arrived.current = true;
-    const state: unknown = location.state;
-    void navigate(
-      { pathname: location.pathname, search: location.search, hash: location.hash },
-      {
-        replace: true,
-        state: { ...(typeof state === "object" && state !== null ? state : {}), startOpen: false },
-      },
-    );
+    nav.mergeEntryState({ startOpen: false });
     void run(result);
-  }, [link, location, navigate, results, run]);
+  }, [link, nav, results, run]);
 
   const typed = query.trim() !== "";
   const onPageKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -1076,11 +1064,7 @@ function AppRow({
                   )}
                   {occupant ? (
                     <span className="start-tile__mark">
-                      {occupant.home ? (
-                        <ChatOrb size={16} />
-                      ) : (
-                        <TaskMark size={16} mark={threadMark(occupant.threadId, snapshot)} />
-                      )}
+                      <TaskMark size={16} mark={threadMark(occupant.threadId, snapshot)} />
                     </span>
                   ) : null}
                 </span>

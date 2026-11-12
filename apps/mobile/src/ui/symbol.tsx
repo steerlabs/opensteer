@@ -21,11 +21,15 @@ import { color } from "../theme.js";
 
 export type SFSymbolName =
   | "123.rectangle"
+  | "archivebox"
   | "arrow.clockwise"
+  | "arrow.down"
   | "arrow.triangle.branch"
   | "arrow.turn.down.right"
   | "arrow.up"
   | "arrow.up.left.and.arrow.down.right"
+  | "at"
+  | "bell"
   | "bolt"
   | "bubble.left"
   | "bubble.left.and.bubble.right"
@@ -64,6 +68,7 @@ export type SFSymbolName =
   | "lightbulb"
   | "line.3.horizontal"
   | "line.3.horizontal.decrease"
+  | "link"
   | "list.bullet"
   | "location.fill"
   | "lock"
@@ -71,19 +76,26 @@ export type SFSymbolName =
   | "mic"
   | "mic.slash"
   | "moon"
+  | "number"
+  | "paperclip"
   | "macmini"
   | "magnifyingglass"
   | "pause"
   | "pencil"
+  | "person"
   | "person.2"
+  | "person.3"
+  | "person.badge.plus"
   | "person.crop.circle"
   | "photo"
+  | "pin"
   | "play"
   | "plus"
   | "powerplug"
   | "puzzlepiece.extension"
   | "qrcode.viewfinder"
   | "rectangle.on.rectangle"
+  | "rectangle.portrait.and.arrow.right"
   | "repeat"
   | "safari"
   | "server.rack"
@@ -98,6 +110,7 @@ export type SFSymbolName =
   | "square.and.pencil"
   | "stop.circle"
   | "stop.fill"
+  | "tablecells"
   | "terminal"
   | "text.append"
   | "trash"
@@ -191,11 +204,15 @@ function accessibility(label: string | undefined): {
  */
 const glyph: Record<SFSymbolName, string> = {
   "123.rectangle": "#",
+  archivebox: "▭",
   "arrow.clockwise": "↻",
+  "arrow.down": "↓",
   "arrow.triangle.branch": "⑂",
   "arrow.turn.down.right": "↳",
   "arrow.up": "↑",
   "arrow.up.left.and.arrow.down.right": "⤢",
+  at: "@",
+  bell: "◔",
   bolt: "ϟ",
   "bubble.left": "✉\uFE0E",
   "bubble.left.and.bubble.right": "◌",
@@ -234,6 +251,7 @@ const glyph: Record<SFSymbolName, string> = {
   lightbulb: "✱",
   "line.3.horizontal": "☰",
   "line.3.horizontal.decrease": "≡",
+  link: "⚭",
   "list.bullet": "≔",
   "location.fill": "➤",
   lock: "⚿",
@@ -241,19 +259,26 @@ const glyph: Record<SFSymbolName, string> = {
   mic: "♩",
   "mic.slash": "⊘",
   moon: "☾",
+  number: "#",
+  paperclip: "⌇",
   macmini: "▬",
   magnifyingglass: "⌕",
   pause: "⏸\uFE0E",
   pencil: "✎",
+  person: "♙",
   "person.2": "☺︎",
+  "person.3": "☷",
+  "person.badge.plus": "⊕",
   "person.crop.circle": "☻",
   photo: "▨",
+  pin: "⚲",
   play: "▶\uFE0E",
   plus: "+",
   powerplug: "⌁",
   "puzzlepiece.extension": "⧉",
   "qrcode.viewfinder": "⌗",
   "rectangle.on.rectangle": "❐",
+  "rectangle.portrait.and.arrow.right": "⇥",
   repeat: "↻",
   safari: "◉",
   "server.rack": "☰",
@@ -268,6 +293,7 @@ const glyph: Record<SFSymbolName, string> = {
   "square.and.pencil": "✎",
   "stop.circle": "◼",
   "stop.fill": "■",
+  tablecells: "⊞",
   terminal: "›",
   "text.append": "≡",
   trash: "⌫",

@@ -9,7 +9,7 @@ import {
 
 const createdAt = "2026-08-23T20:00:00.000Z";
 const environmentId = createId("environment");
-const workspaceId = createId("workspace");
+
 const threadId = createId("thread");
 const runId = createId("run");
 
@@ -23,7 +23,6 @@ function event<T>(type: string, data: T) {
     sequence: "1",
     threadId,
     type,
-    workspaceId,
   };
 }
 
@@ -76,7 +75,7 @@ describe("Agent event contracts", () => {
     const resultMessageId = createId("message");
     const settled = event("delegation.settled", {
       childRunId,
-      childThread: { id: childThreadId, title: "Sales Agent", workspaceId },
+      childThread: { id: childThreadId, title: "Sales Agent" },
       delegationId,
       delivery: { resultMessageId, status: "delivered" },
       failure: null,
@@ -100,7 +99,7 @@ describe("Agent event contracts", () => {
   it("bounds delegation previews by UTF-8 bytes", () => {
     const settled = event("delegation.settled", {
       childRunId: createId("run"),
-      childThread: { id: createId("thread"), title: "Worker", workspaceId },
+      childThread: { id: createId("thread"), title: "Worker" },
       delegationId: createId("delegation"),
       delivery: { reason: "execution-authority-unavailable", status: "undeliverable" },
       failure: null,

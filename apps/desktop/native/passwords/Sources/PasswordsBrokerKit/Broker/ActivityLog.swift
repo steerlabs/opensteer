@@ -29,14 +29,13 @@ public struct ActivityEntry: Equatable, Sendable {
   /// `t•••@example.com`, or nil when no account was used.
   public let account: String?
   public let deployment: String
-  public let workspace: String
   public let thread: String
   /// A grant released the login: nobody was asked.
   public let automatic: Bool
   public let outcome: ActivityOutcome
 
   public init(
-    at: Date, site: String, account: String?, deployment: String, workspace: String, thread: String, automatic: Bool,
+    at: Date, site: String, account: String?, deployment: String, thread: String, automatic: Bool,
     outcome: ActivityOutcome, brand: String? = nil, lastFour: String? = nil
   ) {
     // Whole milliseconds, so an entry reads back exactly as it was written.
@@ -46,7 +45,6 @@ public struct ActivityEntry: Equatable, Sendable {
     self.site = site
     self.account = account
     self.deployment = deployment
-    self.workspace = workspace
     self.thread = thread
     self.automatic = automatic
     self.outcome = outcome
@@ -61,7 +59,6 @@ public struct ActivityEntry: Equatable, Sendable {
       "outcome": .string(outcome.rawValue),
       "site": .string(site),
       "thread": .string(thread),
-      "workspace": .string(workspace),
     ]
     if let brand, let lastFour {
       fields["credential"] = .string("card")
@@ -82,12 +79,11 @@ public struct ActivityEntry: Equatable, Sendable {
     } else { cardKeys = [] }
     guard
       let object = try? StrictObject(
-        value, keys: Set(["account", "at", "automatic", "deployment", "outcome", "site", "thread", "workspace"]).union(cardKeys),
+        value, keys: Set(["account", "at", "automatic", "deployment", "outcome", "site", "thread"]).union(cardKeys),
         context: "activity"),
       let at = (try? object.string("at")).flatMap(WireRules.isoDate),
       let site = try? object.string("site"),
       let deployment = try? object.string("deployment"),
-      let workspace = try? object.string("workspace"),
       let thread = try? object.string("thread"),
       case .bool(let automatic)? = object.fields["automatic"],
       let outcome = (try? object.string("outcome")).flatMap(ActivityOutcome.init(rawValue:))
@@ -100,7 +96,7 @@ public struct ActivityEntry: Equatable, Sendable {
     default: return nil
     }
     self.init(
-      at: at, site: site, account: account, deployment: deployment, workspace: workspace, thread: thread,
+      at: at, site: site, account: account, deployment: deployment, thread: thread,
       automatic: automatic, outcome: outcome, brand: try? object.string("brand"), lastFour: try? object.string("lastFour"))
   }
 }

@@ -1,3 +1,4 @@
+import { registerTeamSetupPortal } from "../adoption/team-setup.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
@@ -340,6 +341,15 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         }
       };
 
+      registerTeamSetupPortal(app, {
+        store,
+        publicOrigin,
+        portalOrigin: origin,
+        fonts,
+        guard,
+        readSession,
+      });
+
       app.get("/mac", async (request, reply) => {
         guard(request);
         return reply.redirect(dependencies.desktopDownloadUrl ?? "/", 302);
@@ -675,8 +685,8 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "self-hosted",
-    kindLabel: deploymentKindLabel(personal ? "personal" : "self-hosted"),
+    kind: personal ? "personal" : "team",
+    kindLabel: deploymentKindLabel(personal ? "personal" : "team"),
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,

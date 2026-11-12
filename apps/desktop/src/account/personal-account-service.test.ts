@@ -61,7 +61,6 @@ describe("DesktopPersonalAccountService", () => {
       // it, not once per rung.
       expect(fixture.host.status).toHaveBeenCalledTimes(2);
       expect(fixture.manifest.name).toBe(fixture.initialManifestName);
-      expect(fixture.manifest.workspaceRoot).toBe("/local/workspaces");
       expect(fixture.privateRoute).toBe("https://studio.tailnet.test");
       expect(fixture.tokens).toEqual(["vault-token-kept"]);
       await expect(fixture.links.load()).resolves.toBeNull();
@@ -376,7 +375,6 @@ function unlinkFixture(boundary: number) {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     },
@@ -411,7 +409,6 @@ function unlinkFixture(boundary: number) {
     name: boundary >= 4 ? "Account-owned label" : "Local last-known label",
     revision: 3,
     updatedAt: "2026-08-20T12:00:00.000Z",
-    workspaceRoot: "/local/workspaces",
   } as PersonalDeploymentManifest;
   const directoryDeployment = AccountDeploymentSchema.parse({
     access: "owner" as const,

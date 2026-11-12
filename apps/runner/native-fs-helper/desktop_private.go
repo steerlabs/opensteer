@@ -83,10 +83,10 @@ func executeDesktopPrivate(input request) (any, error) {
 			return nil, userError("invalid-request", "Desktop private probe does not accept a relative path")
 		}
 		return map[string]any{
-			"binaryIdentity":  helperBinaryIdentity,
-			"binaryVersion":   helperBinaryVersion,
-			"containment":     root.containment,
-			"platform":        runtime.GOOS,
+			"binaryIdentity": helperBinaryIdentity,
+			"binaryVersion":  helperBinaryVersion,
+			"containment":    root.containment,
+			"platform":       runtime.GOOS,
 		}, nil
 	case "desktop-ensure-directory":
 		return executeDesktopEnsureDirectory(root, input)
@@ -107,7 +107,7 @@ func executeDesktopPrivate(input request) (any, error) {
 	}
 }
 
-func executeDesktopFileExists(root *workspaceRoot, input request) (desktopPrivateMutationResult, error) {
+func executeDesktopFileExists(root *filesystemRoot, input request) (desktopPrivateMutationResult, error) {
 	parts, _, err := relativeParts(input.Path, false)
 	if err != nil {
 		return desktopPrivateMutationResult{}, err
@@ -129,7 +129,7 @@ func executeDesktopFileExists(root *workspaceRoot, input request) (desktopPrivat
 	return desktopPrivateMutationResult{Changed: true}, nil
 }
 
-func executeDesktopEnsureDirectory(root *workspaceRoot, input request) (desktopPrivateMutationResult, error) {
+func executeDesktopEnsureDirectory(root *filesystemRoot, input request) (desktopPrivateMutationResult, error) {
 	parts, _, err := relativeParts(input.Path, true)
 	if err != nil {
 		return desktopPrivateMutationResult{}, err
@@ -180,7 +180,7 @@ func executeDesktopEnsureDirectory(root *workspaceRoot, input request) (desktopP
 	return desktopPrivateMutationResult{Changed: changed}, nil
 }
 
-func executeDesktopReadFile(root *workspaceRoot, input request) (desktopPrivateReadResult, error) {
+func executeDesktopReadFile(root *filesystemRoot, input request) (desktopPrivateReadResult, error) {
 	if input.MaxBytes < 1 || input.MaxBytes > maxDesktopPrivateFileBytes {
 		return desktopPrivateReadResult{}, userError("invalid-request", "Desktop private file read bound is invalid")
 	}
@@ -228,7 +228,7 @@ func executeDesktopReadFile(root *workspaceRoot, input request) (desktopPrivateR
 	}, nil
 }
 
-func executeDesktopWriteFile(root *workspaceRoot, input request, exclusive bool) (desktopPrivateMutationResult, error) {
+func executeDesktopWriteFile(root *filesystemRoot, input request, exclusive bool) (desktopPrivateMutationResult, error) {
 	content, err := base64.StdEncoding.DecodeString(input.Content)
 	if err != nil || base64.StdEncoding.EncodeToString(content) != input.Content || len(content) > maxDesktopPrivateFileBytes {
 		return desktopPrivateMutationResult{}, userError("invalid-request", "Desktop private file content is invalid")
@@ -284,7 +284,7 @@ func executeDesktopWriteFile(root *workspaceRoot, input request, exclusive bool)
 	return desktopPrivateMutationResult{Changed: true}, nil
 }
 
-func executeDesktopRemoveFile(root *workspaceRoot, input request) (desktopPrivateMutationResult, error) {
+func executeDesktopRemoveFile(root *filesystemRoot, input request) (desktopPrivateMutationResult, error) {
 	parts, _, err := relativeParts(input.Path, false)
 	if err != nil {
 		return desktopPrivateMutationResult{}, err
@@ -311,7 +311,7 @@ func executeDesktopRemoveFile(root *workspaceRoot, input request) (desktopPrivat
 	return desktopPrivateMutationResult{Changed: removed}, nil
 }
 
-func executeDesktopDirectoryEmpty(root *workspaceRoot, input request) (desktopPrivateDirectoryEmptyResult, error) {
+func executeDesktopDirectoryEmpty(root *filesystemRoot, input request) (desktopPrivateDirectoryEmptyResult, error) {
 	parts, _, err := relativeParts(input.Path, true)
 	if err != nil {
 		return desktopPrivateDirectoryEmptyResult{}, err

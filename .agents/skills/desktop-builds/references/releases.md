@@ -50,7 +50,7 @@ pnpm desktop:public-release prepare --channel stable --app-zip /absolute/rebuilt
 
 ## Previous-release baseline
 
-On each public release, move `previousPublicRelease` in
-[previous-release-reader.test-support.ts](../../../../apps/host/src/agents/previous-release-reader.test-support.ts),
-exercised by `previous-release-compat.integration.test.ts`; CI fetches that commit in shallow
-checkouts.
+Personal epoch 53 started over with a fresh schema, so earlier releases get an upgrade message
+and never attach. Once a public release on the current epoch ships, a change that must keep it
+working adds a released-client journey: build that release's client source and drive it against
+the current Host, and have CI fetch that commit in shallow checkouts.

@@ -21,14 +21,9 @@ const PluginManifestSchema = z.object({
   version: z.string().regex(/^\d+\.\d+\.\d+$/u),
 });
 
-/** Trial skills: a Runner that cannot load one starts without it and does not advertise it. */
-const optionalSkills = new Set(["opensteer:knowledge"] as const);
-type OptionalSkillName = typeof optionalSkills extends Set<infer Name> ? Name : never;
-
 export interface AgentSkillBundle {
   readonly rootPath: string;
-  readonly paths: Readonly<Record<Exclude<OpensteerAgentSkillName, OptionalSkillName>, string>> &
-    Readonly<Partial<Record<OptionalSkillName, string>>>;
+  readonly paths: Readonly<Record<OpensteerAgentSkillName, string>>;
 }
 
 export async function loadAgentSkillBundle(directory: string): Promise<AgentSkillBundle> {
@@ -41,17 +36,10 @@ export async function loadAgentSkillBundle(directory: string): Promise<AgentSkil
   PluginManifestSchema.parse(JSON.parse(await readFile(manifestPath, "utf8")));
 
   const entries = await Promise.all(
-    opensteerAgentSkillNames.map((name) =>
-      loadSkill(rootPath, name).catch((error: unknown) => {
-        if (optionalSkills.has(name as OptionalSkillName)) return null;
-        throw error;
-      }),
-    ),
+    opensteerAgentSkillNames.map((name) => loadSkill(rootPath, name)),
   );
   return Object.freeze({
-    paths: Object.freeze(
-      Object.fromEntries(entries.filter((entry) => entry !== null)),
-    ) as AgentSkillBundle["paths"],
+    paths: Object.freeze(Object.fromEntries(entries)) as AgentSkillBundle["paths"],
     rootPath,
   });
 }

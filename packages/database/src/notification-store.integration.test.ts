@@ -1,14 +1,12 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   AgentEventSchema,
   NotificationIdSchema,
@@ -17,20 +15,17 @@ import {
   MessageAuthorSchema,
   ModelSelectionSchema,
   PendingRequestSchema,
-  ThreadAccessModeSchema,
   createId,
   messageTextPartMaxLength,
   type ContentPart,
   type HarnessInstanceId,
   type MessageAuthor,
   type MessageId,
-  type Request,
   type RequestId,
   type RunId,
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import {
   BrowserSurfaceIdSchema,
@@ -38,23 +33,21 @@ import {
   HarnessInstanceCatalogSchema,
   TaskPageSchema,
   taskLineMaxLength,
-  type RunnerDescriptor,
   type TaskPage,
 } from "@opensteer/protocol";
 import { CompiledQuery, PostgresQueryCompiler, sql, type KyselyPlugin } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AccountDirectoryStore } from "./account-directory-store.js";
-import { createDatabase, withDatabaseTransaction } from "./connection.js";
-
+import { createDatabase } from "./connection.js";
 import {
   NotificationStore,
   type DecidedNotification,
   type NotificationPublication,
 } from "./notification-store.js";
-import { messageFromRow } from "./thread-row-mappers.js";
+import { threadInputFromRow, messageFromRow } from "./thread-row-mappers.js";
 import { NotificationStateStore } from "./notification-state.js";
 import { issueRunGrant } from "./run-grants.js";
-import { encodeWindowCursor, jsonValue } from "./store-primitives.js";
+import { jsonValue } from "./store-primitives.js";
 import { TriggerStore } from "./trigger-store.js";
 import {
   pendingEvent,
@@ -63,17 +56,17 @@ import {
 } from "./store.integration.test-support.js";
 import { requestInsert } from "./request-store.js";
 import { OpensteerStore } from "./store.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const directoryProviderId = "oidc:opensteer-account";
-
 integration("notification decision boundary", () => {
   async function createTestFixture() {
     const clone = await cloneTestDatabase("host");
@@ -84,12 +77,17 @@ integration("notification decision boundary", () => {
         connectionString: databaseUrl,
         maxConnections: 4,
       });
-      return { database, close: () => database.destroy() };
+      return {
+        database,
+        close: () => database.destroy(),
+      };
     });
     const store = new OpensteerStore(database);
     const directory = new AccountDirectoryStore(database);
     let now = new Date();
-    const notifications = new NotificationStore(database, { now: () => now });
+    const notifications = new NotificationStore(database, {
+      now: () => now,
+    });
     const notificationState = new NotificationStateStore(database);
     async function linkAccount(userId: UserId): Promise<string> {
       const accountId = `acct_${randomUUID()}`;
@@ -114,122 +112,53 @@ integration("notification decision boundary", () => {
         .execute();
       return accountId;
     }
-    async function enrollMainRunner(input: {
-      readonly environmentId: ReturnType<typeof createId<"environment">>;
-      readonly suffix: string;
-    }): Promise<RunnerId> {
-      if (!(await store.getDeployment())) {
-        await store.ensureDeployment({
-          canonicalOrigin: "https://notifications-test-host.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-          hostInstanceId: createId("hostInstance"),
-        });
-      }
-      const pair = generateKeyPairSync("ed25519");
-      const enrollmentTokenHash = `sha256:${createHash("sha256")
-        .update(`notification-runner-${input.suffix}`, "utf8")
-        .digest("base64url")}`;
-      const descriptor: RunnerDescriptor = {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: ["filesystem"],
-        modules: {
-          agents: {
-            environmentIds: [input.environmentId],
-            harnessDrivers: [
-              {
-                accessModes: ThreadAccessModeSchema.options,
-                driverKind: HarnessIdSchema.parse("native"),
-                readiness: "configured",
-                steering: true,
-                sources: [
-                  {
-                    fields: [],
-                    kind: "first-party",
-                    label: "Native",
-                    quota: "none",
-                    sourceId: "native",
-                    stateKinds: ["isolated"],
-                  },
-                ],
-              },
-            ],
-            localStorage: null,
-            maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
-          },
-        },
-        name: `Main ${input.suffix}`,
-        runnerId: createId("runner"),
-        runnerKind: "main",
-        runtimeVersion: "test",
-      };
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
-        createdBy: null,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `notification-runner-${input.suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: descriptor.name,
-        requestFingerprint: enrollmentTokenHash,
-        runnerKind: "main",
-        tokenHash: enrollmentTokenHash,
-      });
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256")
-          .update(pair.publicKey.export({ format: "der", type: "spki" }))
-          .digest("base64url")}`,
-        publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      });
-      return descriptor.runnerId;
-    }
-    async function createFixture(suffix: string, home = false): Promise<Fixture> {
-      const ownerId = await store.createUser(`Owner ${suffix}`);
-      const environmentId = createId("environment");
-      const runnerId = await enrollMainRunner({ environmentId, suffix });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
 
-        createdBy: ownerId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
+    async function createFixture(suffix: string, voice = false, worker = false): Promise<Fixture> {
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const { userId: ownerId, environmentId, runnerId } = personal;
       const harnessInstance = await store.createHarnessInstance({
-        config: { model: "test" },
+        config: {
+          model: "test",
+        },
         driverKind: HarnessIdSchema.parse("native"),
         environmentId,
         name: "Native",
         sourceId: "native",
         stateKind: "isolated",
       });
+      const parent = worker
+        ? await store.createThread({
+            createdBy: ownerId,
+            environmentId,
+            harnessInstanceId: harnessInstance.id,
+            idempotencyKey: `parent-${suffix}`,
+            modelSelection,
+            title: `Parent ${suffix}`,
+          })
+        : null;
       const { thread } = await store.createThread({
         createdBy: ownerId,
         environmentId,
         harnessInstanceId: harnessInstance.id,
-        home,
+        ...(parent ? { parentThreadId: parent.thread.id } : {}),
+        purpose: voice ? "voice" : "task",
         idempotencyKey: `thread-${suffix}`,
         modelSelection,
         title: `Thread ${suffix}`,
-        workspaceId: workspace.id,
       });
       const admitted = await store.enqueueThreadInput({
-        content: [{ text: "Start the work", type: "text" }],
+        content: [
+          {
+            text: "Start the work",
+            type: "text",
+          },
+        ],
         idempotencyKey: `${suffix}-turn`,
         policy: "queue",
         requestedBy: ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: thread.id,
       });
       if (!admitted.run) throw new Error("Expected the fixture turn to queue a Run");
@@ -241,64 +170,51 @@ integration("notification decision boundary", () => {
         runId: admitted.run.id,
         runnerId,
         threadId: thread.id,
-        workspaceId: workspace.id,
       };
     }
-    async function addMember(
-      fixture: Fixture,
-      name: string,
-      role: "collaborator" | "owner" = "collaborator",
-    ): Promise<UserId> {
+    async function anotherUser(_fixture: Fixture, name: string): Promise<UserId> {
       const userId = await store.createUser(name);
-      await database
-        .insertInto("workspaceMemberships")
-        .values({
-          generation: 1,
-          id: createId("workspaceMembership"),
-          invitedBy: fixture.ownerId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          role,
-          state: "active",
-          updatedAt: new Date(),
-          userId,
-          workspaceId: fixture.workspaceId,
-        })
-        .executeTakeFirstOrThrow();
       return userId;
     }
     async function addThread(
       base: Fixture,
       input: {
-        readonly home?: boolean;
+        readonly voice?: boolean;
         readonly requestedBy?: UserId;
         readonly suffix: string;
         readonly title?: string;
-        readonly workspaceId?: WorkspaceId;
       },
     ): Promise<Fixture> {
-      const workspaceId = input.workspaceId ?? base.workspaceId;
       const { thread } = await store.createThread({
         createdBy: base.ownerId,
         environmentId: base.environmentId,
         harnessInstanceId: base.harnessInstance.id,
-        home: input.home ?? false,
+        purpose: input.voice ? "voice" : "task",
         idempotencyKey: `thread-${input.suffix}`,
         modelSelection,
         title: input.title ?? `Thread ${input.suffix}`,
-        workspaceId,
       });
       const admitted = await store.enqueueThreadInput({
-        content: [{ text: "Start the work", type: "text" }],
+        content: [
+          {
+            text: "Start the work",
+            type: "text",
+          },
+        ],
         idempotencyKey: `${input.suffix}-turn`,
         policy: "queue",
         requestedBy: input.requestedBy ?? base.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: thread.id,
       });
       if (!admitted.run) throw new Error("Expected the Thread's turn to queue a Run");
-      return { ...base, runId: admitted.run.id, threadId: thread.id, workspaceId };
+      return {
+        ...base,
+        runId: admitted.run.id,
+        threadId: thread.id,
+      };
     }
     async function claimRun(runId: RunId): Promise<void> {
       const command = await database
@@ -337,7 +253,6 @@ integration("notification decision boundary", () => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: fixture.harnessInstance.id,
         leaseTokenHash: `request-${fixture.runId}`,
-        membershipGeneration: 1,
         runnerBootId: "test-boot",
         runnerId: fixture.runnerId,
         runId: fixture.runId,
@@ -362,10 +277,11 @@ integration("notification decision boundary", () => {
           environmentId: fixture.environmentId,
           runId: fixture.runId,
           threadId: fixture.threadId,
-          workspaceId: fixture.workspaceId,
           ordinal: 0,
           type: "run.started",
-          data: { status: "running" },
+          data: {
+            status: "running",
+          },
         }),
       });
       return binding.bindingGeneration;
@@ -385,17 +301,22 @@ integration("notification decision boundary", () => {
           environmentId: fixture.environmentId,
           runId: fixture.runId,
           threadId: fixture.threadId,
-          workspaceId: fixture.workspaceId,
           ordinal: 1,
           type: "run.completed",
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
         }),
       });
     }
     async function markRunning(fixture: Fixture, runId: RunId = fixture.runId): Promise<void> {
       const run = await database
         .updateTable("runs")
-        .set({ bindingGeneration: 1, startedAt: new Date(), status: "running" })
+        .set({
+          bindingGeneration: 1,
+          startedAt: new Date(),
+          status: "running",
+        })
         .where("id", "=", runId)
         .returning("providerSessionId")
         .executeTakeFirstOrThrow();
@@ -411,7 +332,7 @@ integration("notification decision boundary", () => {
         })
         .where("id", "=", run.providerSessionId!)
         .executeTakeFirstOrThrow();
-      await withDatabaseTransaction(database, (transaction) =>
+      await withPersonalTransaction(database, (transaction) =>
         issueRunGrant(transaction, {
           bindingGeneration: 1,
           modelSelection,
@@ -424,19 +345,19 @@ integration("notification decision boundary", () => {
     async function appendReply(
       fixture: Fixture,
       content: readonly ContentPart[],
-      target: { readonly runId: RunId; readonly threadId: ThreadId } = fixture,
-    ): Promise<{ readonly id: MessageId; readonly sequence: string }> {
-      return database.transaction().execute(async (transaction) => {
+      target: {
+        readonly runId: RunId;
+        readonly threadId: ThreadId;
+      } = fixture,
+    ): Promise<{
+      readonly id: MessageId;
+      readonly sequence: string;
+    }> {
+      return withPersonalTransaction(database, async (transaction) => {
         const context = await transaction
           .selectFrom("runs")
           .innerJoin("threads", "threads.id", "runs.threadId")
-          .innerJoin("workspaces", "workspaces.id", "threads.workspaceId")
-          .select([
-            "runs.actorPrincipalId",
-            "threads.nextMessageSequence",
-            "threads.workspaceId",
-            "workspaces.name as workspaceName",
-          ])
+          .select(["runs.actorPrincipalId", "threads.nextMessageSequence"])
           .where("runs.id", "=", target.runId)
           .forNoKeyUpdate("threads")
           .executeTakeFirstOrThrow();
@@ -451,8 +372,6 @@ integration("notification decision boundary", () => {
                 kind: "agent",
                 runId: target.runId,
                 threadId: target.threadId,
-                workspaceId: context.workspaceId,
-                workspaceName: context.workspaceName,
               }),
             ),
             content: jsonValue(content),
@@ -465,10 +384,16 @@ integration("notification decision boundary", () => {
           .executeTakeFirstOrThrow();
         await transaction
           .updateTable("threads")
-          .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+          .set({
+            nextMessageSequence: sql`next_message_sequence + 1`,
+            updatedAt: new Date(),
+          })
           .where("id", "=", target.threadId)
           .executeTakeFirstOrThrow();
-        return { id, sequence: String(context.nextMessageSequence) };
+        return {
+          id,
+          sequence: String(context.nextMessageSequence),
+        };
       });
     }
     async function appendRunnerEvent(
@@ -487,68 +412,45 @@ integration("notification decision boundary", () => {
           },
       target: { readonly runId: RunId; readonly threadId: ThreadId } = fixture,
     ): Promise<void> {
-      await database.transaction().execute(async (transaction) => {
-        const eventId = createId("event");
-        const createdAt = new Date();
-        const workspace = await transaction
-          .updateTable("workspaces")
-          .set({ eventSequence: sql<string>`event_sequence + 1`, updatedAt: createdAt })
-          .where("id", "=", fixture.workspaceId)
-          .returning("eventSequence")
-          .executeTakeFirstOrThrow();
-        const data =
-          event.type === "run.completed" ? { ...event.data, status: "completed" } : event.data;
-        const seed = await transaction
-          .selectFrom("runs")
-          .innerJoin("messages", "messages.id", "runs.seedInputId")
-          .select(["messages.author", "runs.createdAt"])
-          .where("runs.id", "=", target.runId)
-          .executeTakeFirstOrThrow();
-        const parsed = AgentEventSchema.parse({
-          createdAt: createdAt.toISOString(),
-          data: {
-            ...data,
-            startedAt: seed.createdAt.toISOString(),
-            personWaiting: seed.author.kind === "human",
-            startedBy: MessageAuthorSchema.parse(seed.author),
-          },
-          environmentId: fixture.environmentId,
-          eventId,
-          runId: target.runId,
-          sequence: String(workspace.eventSequence),
-          threadId: target.threadId,
-          type: event.type,
-          workspaceId: fixture.workspaceId,
-        });
-        await transaction
-          .insertInto("workspaceEvents")
-          .values({
-            createdAt,
-            data: jsonValue(parsed.data),
-            environmentId: fixture.environmentId,
-            eventId,
-            runId: target.runId,
-            runnerBindingGeneration: null,
-            runnerBootId: null,
-            runnerId: null,
-            runnerOrdinal: null,
-            sequence: workspace.eventSequence,
-            threadId: target.threadId,
-            type: event.type,
-            workspaceId: fixture.workspaceId,
-          })
-          .executeTakeFirstOrThrow();
-      });
+      await withPersonalTransaction(database, (transaction) =>
+        event.type === "run.completed"
+          ? appendHostDeploymentEvent(transaction, {
+              type: "run.completed",
+              environmentId: fixture.environmentId,
+              runId: target.runId,
+              threadId: target.threadId,
+              data: { ...event.data, status: "completed" },
+            })
+          : appendHostDeploymentEvent(transaction, {
+              type: "run.phase",
+              environmentId: fixture.environmentId,
+              runId: target.runId,
+              threadId: target.threadId,
+              data: event.data,
+            }),
+      );
     }
+
     async function appendCompletedReply(
       fixture: Fixture,
       content: readonly ContentPart[],
-      target: { readonly runId: RunId; readonly threadId: ThreadId } = fixture,
-    ): Promise<{ readonly id: MessageId; readonly sequence: string }> {
+      target: {
+        readonly runId: RunId;
+        readonly threadId: ThreadId;
+      } = fixture,
+    ): Promise<{
+      readonly id: MessageId;
+      readonly sequence: string;
+    }> {
       const reply = await appendReply(fixture, content, target);
       await appendRunnerEvent(
         fixture,
-        { data: { replyMessageId: reply.id }, type: "run.completed" },
+        {
+          data: {
+            replyMessageId: reply.id,
+          },
+          type: "run.completed",
+        },
         target,
       );
       return reply;
@@ -556,35 +458,40 @@ integration("notification decision boundary", () => {
     async function appendRunFailed(
       fixture: Fixture,
       message = "Runner unavailable",
-      target: { readonly runId: RunId; readonly threadId: ThreadId } = fixture,
+      target: {
+        readonly runId: RunId;
+        readonly threadId: ThreadId;
+      } = fixture,
     ): Promise<void> {
-      await database.transaction().execute((transaction) =>
-        appendHostWorkspaceEvent(transaction, {
-          data: { code: "runner_execution_error", message, retryable: false, status: "failed" },
+      await withPersonalTransaction(database, (transaction) =>
+        appendHostDeploymentEvent(transaction, {
+          data: {
+            code: "runner_execution_error",
+            message,
+            retryable: false,
+            status: "failed",
+          },
           environmentId: fixture.environmentId,
           runId: target.runId,
           threadId: target.threadId,
           type: "run.failed",
-          workspaceId: fixture.workspaceId,
         }),
       );
     }
     async function appendRunInterrupted(fixture: Fixture): Promise<void> {
-      await database.transaction().execute((transaction) =>
-        appendHostWorkspaceEvent(transaction, {
-          data: { status: "interrupted" },
+      await withPersonalTransaction(database, (transaction) =>
+        appendHostDeploymentEvent(transaction, {
+          data: {
+            status: "interrupted",
+          },
           environmentId: fixture.environmentId,
           runId: fixture.runId,
           threadId: fixture.threadId,
           type: "run.interrupted",
-          workspaceId: fixture.workspaceId,
         }),
       );
     }
-    function pendingRequest(
-      fixture: Fixture,
-      requiredActor: "administrator" | "requester" | "workspace-owner",
-    ) {
+    function pendingRequest(fixture: Fixture, requiredActor: "owner" | "requester") {
       return PendingRequestSchema.parse({
         callId: `call-${randomUUID()}`,
         cancellationReason: null,
@@ -595,11 +502,18 @@ integration("notification decision boundary", () => {
         originatingOccurrenceId: null,
         originatingRunId: fixture.runId,
         originatingThreadId: fixture.threadId,
-        originatingWorkspaceId: fixture.workspaceId,
-        payload: { kind: "harness.approval" },
+        payload: {
+          kind: "harness.approval",
+        },
         presentation: {
           kind: "choice",
-          options: [{ hint: "allow-once", id: "allow", label: "Allow" }],
+          options: [
+            {
+              hint: "allow-once",
+              id: "allow",
+              label: "Allow",
+            },
+          ],
           title: "May I edit this file?",
         },
         requestedBy: fixture.ownerId,
@@ -608,25 +522,28 @@ integration("notification decision boundary", () => {
         resolvedBy: null,
         response: null,
         status: "pending",
-        targetWorkspaceId: fixture.workspaceId,
       });
     }
     async function appendRequestOpened(
       fixture: Fixture,
-      requiredActor: "administrator" | "requester" | "workspace-owner",
+      requiredActor: "owner" | "requester",
     ): Promise<RequestId> {
       return storeOpenedRequest(fixture, pendingRequest(fixture, requiredActor));
     }
-    async function storeOpenedRequest(fixture: Fixture, request: Request): Promise<RequestId> {
-      await database.transaction().execute(async (transaction) => {
+    async function storeOpenedRequest(
+      fixture: Fixture,
+      request: import("@opensteer/core").PendingRequest,
+    ): Promise<RequestId> {
+      await withPersonalTransaction(database, async (transaction) => {
         await transaction.insertInto("requests").values(requestInsert(request)).execute();
-        await appendHostWorkspaceEvent(transaction, {
-          data: { request },
+        await appendHostDeploymentEvent(transaction, {
+          data: {
+            request,
+          },
           environmentId: fixture.environmentId,
           runId: fixture.runId,
           threadId: fixture.threadId,
           type: "request.opened",
-          workspaceId: fixture.workspaceId,
         });
       });
       return request.id;
@@ -638,16 +555,22 @@ integration("notification decision boundary", () => {
         mode: "live",
         originatingRunId: fixture.runId,
         originatingThreadId: fixture.threadId,
-        originatingWorkspaceId: fixture.workspaceId,
-        payload: { kind: "harness.approval" },
+        payload: {
+          kind: "harness.approval",
+        },
         presentation: {
           kind: "choice",
-          options: [{ hint: "allow-once", id: "allow", label: "Allow" }],
+          options: [
+            {
+              hint: "allow-once",
+              id: "allow",
+              label: "Allow",
+            },
+          ],
           title: "May I run the migration?",
         },
         requestedBy: fixture.ownerId,
         requiredActor: "requester",
-        targetWorkspaceId: fixture.workspaceId,
       });
       return created.request.id;
     }
@@ -662,19 +585,24 @@ integration("notification decision boundary", () => {
         originatingOccurrenceId: null,
         originatingRunId: fixture.runId,
         originatingThreadId: fixture.threadId,
-        originatingWorkspaceId: fixture.workspaceId,
         payload: {
           access: "read",
           installationId: null,
           kind: "integration.access",
-          manifest: { digest: "a".repeat(43), kind: "catalog" },
+          manifest: {
+            digest: "a".repeat(43),
+            kind: "catalog",
+          },
           reason: "Read the calendar",
           requestedConnectionId: null,
           requestedServerId: null,
         },
         presentation: {
           kind: "external",
-          subject: { id: "catalog:calendar", kind: "integration-install-manifest" },
+          subject: {
+            id: "catalog:calendar",
+            kind: "integration-install-manifest",
+          },
           title: "Calendar access",
         },
         requestedBy: fixture.ownerId,
@@ -683,22 +611,24 @@ integration("notification decision boundary", () => {
         resolvedBy: null,
         response: null,
         status: "pending",
-        targetWorkspaceId: fixture.workspaceId,
       });
       return storeOpenedRequest(fixture, request);
     }
     async function setRunSeedAuthor(fixture: Fixture, kind: MessageAuthor["kind"]): Promise<void> {
       const author = MessageAuthorSchema.parse(
         kind === "human"
-          ? { displayName: "Owner", kind, principalId: "test-principal", userId: fixture.ownerId }
+          ? {
+              displayName: "Owner",
+              kind,
+              principalId: "test-principal",
+              userId: fixture.ownerId,
+            }
           : kind === "agent"
             ? {
                 displayName: "Specialist",
                 kind,
                 runId: createId("run"),
                 threadId: createId("thread"),
-                workspaceId: fixture.workspaceId,
-                workspaceName: "Specialist",
               }
             : kind === "trigger"
               ? {
@@ -716,11 +646,16 @@ integration("notification decision boundary", () => {
                     revisionId: createId("triggerRevision"),
                     triggerId: createId("trigger"),
                   }
-                : { cause: "request-answered", kind },
+                : {
+                    cause: "request-answered",
+                    kind,
+                  },
       );
       await database
         .updateTable("runs")
-        .set({ personWaited: kind === "human" })
+        .set({
+          personWaited: kind === "human",
+        })
         .where("id", "=", fixture.runId)
         .execute();
       const seed = await database
@@ -730,7 +665,10 @@ integration("notification decision boundary", () => {
         .executeTakeFirstOrThrow();
       await database
         .updateTable("messages")
-        .set({ author: jsonValue(author), kind: kind === "platform" ? "continuation" : "input" })
+        .set({
+          author: jsonValue(author),
+          kind: kind === "platform" ? "continuation" : "input",
+        })
         .where("id", "=", seed.seedInputId)
         .executeTakeFirstOrThrow();
     }
@@ -738,7 +676,7 @@ integration("notification decision boundary", () => {
       await sql`
       update public.deployments
       set deployment_shape = jsonb_build_object(
-        'defaultWorkspaceBacking', 'local-directory', 'kind', 'personal'
+        'kind', 'personal'
       )
       where singleton_key = 'primary'
     `.execute(database);
@@ -762,11 +700,10 @@ integration("notification decision boundary", () => {
     const observed = new Map<string, DecidedNotification>();
     const publications = new Map<string, NotificationPublication>();
     const readEvents = new Set<string>();
-    async function decideCommitted(fixture: Fixture) {
+    async function decideCommitted(_fixture: Fixture) {
       const rows = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
-        .where("workspaceId", "=", fixture.workspaceId)
         .orderBy("sequence", "asc")
         .execute();
       const decided: DecidedNotification[] = [];
@@ -791,24 +728,32 @@ integration("notification decision boundary", () => {
           });
         }
       }
-      return { decided };
+      return {
+        decided,
+      };
     }
     async function observedViews() {
       return [...observed.values()].map(
-        ({
+        ({ userId, view: { id: _id, occurredAt: _occurredAt, ...view } }) => ({
+          ...view,
           userId,
-          view: { id: _id, occurredAt: _occurredAt, workspaceId: _workspaceId, ...view },
-        }) => ({ ...view, userId }),
+        }),
       );
     }
     async function publicationEntries(): Promise<readonly NotificationPublication[]> {
       return [...publications.values()];
     }
-    const text = (value: string): ContentPart[] => [{ text: value, type: "text" }];
+    const text = (value: string): ContentPart[] => [
+      {
+        text: value,
+        type: "text",
+      },
+    ];
     now = new Date();
     observed.clear();
     publications.clear();
     readEvents.clear();
+    await personalFixtureOwner(database, databaseUrl);
     await directory.configureProvider({
       issuer: "https://accounts.opensteer.invalid",
       providerId: directoryProviderId,
@@ -820,9 +765,8 @@ integration("notification decision boundary", () => {
       notifications,
       notificationState,
       linkAccount,
-      enrollMainRunner,
       createFixture,
-      addMember,
+      anotherUser,
       addThread,
       claimRun,
       personSession,
@@ -860,7 +804,9 @@ integration("notification decision boundary", () => {
     });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
+  const it = baseIt.extend<{
+    storeFixture: StoreFixture;
+  }>({
     storeFixture: async ({ task }, use) => {
       const started = performance.now();
       const fixture = await createTestFixture();
@@ -883,14 +829,13 @@ integration("notification decision boundary", () => {
     readonly runId: RunId;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
   }
 
   /** The one enrolled machine a Thread needs before it may hold a Run. */
 
   /**
    * One person's first Workspace — their Main one — with a Thread and a queued
-   * Run they asked for. `home` makes that Thread their Chat.
+   * Run they asked for. `voice` makes that Thread their Voice.
    */
 
   /**
@@ -919,7 +864,7 @@ integration("notification decision boundary", () => {
 
   /**
    * Rewrites what seeded the fixture's Run. The projection must not care: a
-   * reply in Chat answers the person whoever or whatever woke the agent.
+   * reply in Voice answers the person whoever or whatever woke the agent.
    */
 
   /**
@@ -937,10 +882,9 @@ integration("notification decision boundary", () => {
       expect((await decideCommitted(fixture)).decided).toEqual([]);
     });
   });
-
   describe("replies", () => {
     it.for(["human", "trigger", "watch", "agent", "platform"] as const)(
-      "alerts the person for a Chat reply to a %s-seeded Run",
+      "alerts the person for a Voice reply to a %s-seeded Run",
       async (seed, { storeFixture }) => {
         const {
           createFixture,
@@ -953,9 +897,7 @@ integration("notification decision boundary", () => {
         const fixture = await createFixture(`seed-${seed}`, true);
         await setRunSeedAuthor(fixture, seed);
         const reply = await appendCompletedReply(fixture, text("Here is what I found."));
-
         await decideCommitted(fixture);
-
         expect(await observedViews()).toEqual([
           {
             body: "Here is what I found.",
@@ -970,19 +912,17 @@ integration("notification decision boundary", () => {
         ]);
       },
     );
-
     it.for(["trigger", "watch", "agent", "human"] as const)(
       "notifies for a work reply only when the person asked (%s)",
       async (seed, { storeFixture }) => {
         const { createFixture, setRunSeedAuthor, appendCompletedReply, text, decideCommitted } =
           storeFixture;
-        const fixture = await createFixture(`worker-${seed}`);
+        const fixture = await createFixture(`worker-${seed}`, false, true);
         await setRunSeedAuthor(fixture, seed);
         await appendCompletedReply(fixture, text("Done."));
         expect((await decideCommitted(fixture)).decided).toHaveLength(seed === "human" ? 1 : 0);
       },
     );
-
     it.for(["reply", "failure", "system"] as const)(
       "notifies after a person answers a durable Request (%s)",
       async (outcome, { storeFixture }) => {
@@ -998,7 +938,7 @@ integration("notification decision boundary", () => {
           observedViews,
           decideCommitted,
         } = storeFixture;
-        const fixture = await createFixture(`request-continuation-${outcome}`);
+        const fixture = await createFixture(`request-continuation-${outcome}`, false, true);
         await startRequestRun(fixture);
         const opened =
           outcome === "system"
@@ -1008,8 +948,6 @@ integration("notification decision boundary", () => {
                 mode: "durable",
                 originatingRunId: fixture.runId,
                 originatingThreadId: fixture.threadId,
-                originatingWorkspaceId: fixture.workspaceId,
-                targetWorkspaceId: fixture.workspaceId,
                 requestedBy: fixture.ownerId,
                 requiredActor: "requester",
                 payload: {
@@ -1021,7 +959,10 @@ integration("notification decision boundary", () => {
                 presentation: {
                   kind: "external",
                   title: "Full Disk Access",
-                  subject: { kind: "machine", id: fixture.runnerId },
+                  subject: {
+                    kind: "machine",
+                    id: fixture.runnerId,
+                  },
                 },
               })
             : await store.requests.openPasswordSignIn({
@@ -1030,15 +971,13 @@ integration("notification decision boundary", () => {
                 mode: "durable",
                 originatingRunId: fixture.runId,
                 originatingThreadId: fixture.threadId,
-                originatingWorkspaceId: fixture.workspaceId,
-                targetWorkspaceId: fixture.workspaceId,
                 requestedBy: fixture.ownerId,
                 requiredActor: "requester",
                 payload: {
                   kind: "browser.password-sign-in",
                   operationId: randomUUID(),
-                  scope: "workspace",
-                  permissionVersion: 5,
+                  scope: "personal",
+                  permissionVersion: 6,
                   runnerId: fixture.runnerId,
                   computerName: "Test Mac",
                   reason: "Sign in",
@@ -1048,7 +987,10 @@ integration("notification decision boundary", () => {
                 presentation: {
                   kind: "external",
                   title: "Sign in",
-                  subject: { kind: "browser-site", id: "https://example.com" },
+                  subject: {
+                    kind: "browser-site",
+                    id: "https://example.com",
+                  },
                 },
               });
         if (outcome === "system")
@@ -1058,7 +1000,9 @@ integration("notification decision boundary", () => {
             ownerId: fixture.ownerId,
             requestId: opened.request.id,
             settlementSessionId: await personSession(fixture),
-            settlement: { status: "declined" },
+            settlement: {
+              status: "declined",
+            },
           });
         await finishRequestRun(fixture);
         const admitted = await store.enqueueThreadInput({
@@ -1075,7 +1019,10 @@ integration("notification decision boundary", () => {
           },
         });
         expect(admitted.run, JSON.stringify(admitted)).not.toBeNull();
-        const next = { ...fixture, runId: admitted.run!.id };
+        const next = {
+          ...fixture,
+          runId: admitted.run!.id,
+        };
         await startRequestRun(next);
         if (outcome !== "failure") await appendCompletedReply(next, text("Continued."));
         else await appendRunFailed(next);
@@ -1088,7 +1035,6 @@ integration("notification decision boundary", () => {
         ).toHaveLength(outcome === "system" ? 0 : 1);
       },
     );
-
     it.for([true, false])(
       "a live Request answer joins an automatic Run (person: %s)",
       async (person, { storeFixture }) => {
@@ -1104,7 +1050,7 @@ integration("notification decision boundary", () => {
           observedViews,
           decideCommitted,
         } = storeFixture;
-        const fixture = await createFixture(`live-answer-${person}`);
+        const fixture = await createFixture(`live-answer-${person}`, false, true);
         // End the fixture's initial human turn before the scheduled work begins.
         await startRequestRun(fixture);
         await finishRequestRun(fixture);
@@ -1122,7 +1068,11 @@ integration("notification decision boundary", () => {
           },
           source: {
             kind: "schedule",
-            schedule: { kind: "cron", expression: "0 9 * * *", timezone: "UTC" },
+            schedule: {
+              kind: "cron",
+              expression: "0 9 * * *",
+              timezone: "UTC",
+            },
           },
         });
         const occurrence = await triggers.enqueueManual({
@@ -1142,10 +1092,16 @@ integration("notification decision boundary", () => {
           requestedBy: fixture.ownerId,
           idempotencyKey: randomUUID(),
           threadId: fixture.threadId,
-          source: { kind: "trigger", occurrenceId: occurrence.id },
+          source: {
+            kind: "trigger",
+            occurrenceId: occurrence.id,
+          },
         });
         expect(admitted.run, JSON.stringify(admitted)).not.toBeNull();
-        const automatic = { ...fixture, runId: admitted.run!.id };
+        const automatic = {
+          ...fixture,
+          runId: admitted.run!.id,
+        };
         const automaticBinding = await startRequestRun(automatic);
         const requestId = createId("request");
         const request = PendingRequestSchema.parse({
@@ -1161,17 +1117,21 @@ integration("notification decision boundary", () => {
             environmentId: automatic.environmentId,
             runId: automatic.runId,
             threadId: automatic.threadId,
-            workspaceId: automatic.workspaceId,
             ordinal: 1,
             type: "request.opened",
-            data: { request },
+            data: {
+              request,
+            },
           }),
         });
         if (person) {
           const command = await store.enqueueRunnerControl({
             type: "request.respond",
             requestId,
-            response: { kind: "choice", optionId: "allow" },
+            response: {
+              kind: "choice",
+              optionId: "allow",
+            },
             settlementSessionId: await personSession(fixture),
             sealedResponse: sealedTestRequestResponse(),
             requestedBy: fixture.ownerId,
@@ -1188,7 +1148,6 @@ integration("notification decision boundary", () => {
         expect(decisions.filter((d) => d.kind === "reply-published")).toHaveLength(person ? 1 : 0);
       },
     );
-
     it("notifies when a person's input joins an automatic worker Run", async ({ storeFixture }) => {
       const {
         createFixture,
@@ -1199,7 +1158,7 @@ integration("notification decision boundary", () => {
         decideCommitted,
         database,
       } = storeFixture;
-      const fixture = await createFixture("worker-human-join");
+      const fixture = await createFixture("worker-human-join", false, true);
       await setRunSeedAuthor(fixture, "trigger");
       const joined = await appendReply(fixture, text("Please check this too."));
       await database
@@ -1218,16 +1177,14 @@ integration("notification decision boundary", () => {
       await appendCompletedReply(fixture, text("Checked."));
       expect((await decideCommitted(fixture)).decided).toHaveLength(1);
     });
-
     it("does not notify for a failed Trigger-woken worker", async ({ storeFixture }) => {
       const { createFixture, setRunSeedAuthor, appendRunFailed, decideCommitted } = storeFixture;
-      const fixture = await createFixture("worker-failed");
+      const fixture = await createFixture("worker-failed", false, true);
       await setRunSeedAuthor(fixture, "trigger");
       await appendRunFailed(fixture, "Something failed.");
       expect((await decideCommitted(fixture)).decided).toEqual([]);
     });
-
-    it("alerts only for the Chat relay of delegated work, never the task's own reply or failure", async ({
+    it("alerts only for the Voice relay of delegated work, never the task's own reply or failure", async ({
       storeFixture,
     }) => {
       const {
@@ -1276,24 +1233,35 @@ integration("notification decision boundary", () => {
         harnessInstanceId: fixture.harnessInstance.id,
         idempotencyKey: "delegated-task",
         modelSelection,
-        origin: { kind: "run", parentRunId: fixture.runId, parentThreadId: fixture.threadId },
+        origin: {
+          kind: "run",
+          parentRunId: fixture.runId,
+          parentThreadId: fixture.threadId,
+        },
         task: text("Research the vendors"),
         title: "Vendor research",
-        workspaceId: fixture.workspaceId,
       });
-      const task = { runId: delegated.run.id, threadId: delegated.thread.id };
+      const task = {
+        runId: delegated.run.id,
+        threadId: delegated.thread.id,
+      };
       expect(delegated.run.requestedBy).toBe(fixture.ownerId);
 
       // Model the dispatcher consuming the queued seed before completing its Run.
       await database
         .updateTable("threadInputs")
-        .set({ state: "claimed", runId: task.runId })
+        .set({
+          state: "claimed",
+          runId: task.runId,
+        })
         .where("messageId", "=", delegated.run.seedInputId)
         .execute();
       // A person addressing a worker joins its open Assignment too.
       await database
         .updateTable("runs")
-        .set({ status: "completed" })
+        .set({
+          status: "completed",
+        })
         .where("id", "=", task.runId)
         .execute();
       const bound = await store.enqueueThreadInput({
@@ -1301,7 +1269,9 @@ integration("notification decision boundary", () => {
         idempotencyKey: "person-open-assignment",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: task.threadId,
       });
       expect(bound.run?.assignmentId).toBe(delegated.assignment.id);
@@ -1317,13 +1287,12 @@ integration("notification decision boundary", () => {
         open: true,
       });
 
-      // The task's reply returns to Chat's agent, and its failure is that
+      // The task's reply returns to Voice's agent, and its failure is that
       // agent's to report: neither is the person's news yet.
       await appendCompletedReply(fixture, text("Vendor A is cheapest."), task);
       await appendRunFailed(fixture, "The vendor site timed out", task);
       await decideCommitted(fixture);
       expect(await observedViews()).toEqual([]);
-
       const relay = await appendCompletedReply(fixture, text("Vendor A is the cheapest option."));
       await decideCommitted(fixture);
       expect(await observedViews()).toEqual([
@@ -1337,12 +1306,17 @@ integration("notification decision boundary", () => {
       ]);
       await database
         .updateTable("threadInputs")
-        .set({ state: "claimed", runId: bound.run.id })
+        .set({
+          state: "claimed",
+          runId: bound.run.id,
+        })
         .where("messageId", "=", bound.run.seedInputId)
         .execute();
       await database
         .updateTable("runs")
-        .set({ status: "completed" })
+        .set({
+          status: "completed",
+        })
         .where("id", "=", bound.run.id)
         .execute();
       await store.cancelAssignment({
@@ -1359,7 +1333,9 @@ integration("notification decision boundary", () => {
         idempotencyKey: "person-closed-assignment",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: task.threadId,
       });
       expect(unbound.run?.assignmentId).toBeNull();
@@ -1377,8 +1353,7 @@ integration("notification decision boundary", () => {
         }),
       );
     });
-
-    it("never alerts for a report, in Chat or anywhere else", async ({ storeFixture }) => {
+    it("never alerts for a report, in Voice or anywhere else", async ({ storeFixture }) => {
       const {
         createFixture,
         markRunning,
@@ -1392,30 +1367,32 @@ integration("notification decision boundary", () => {
       await markRunning(fixture);
       await store.enqueueThreadInput({
         content: text("Specialist update: the build is green."),
-        idempotencyKey: "report-to-chat",
+        idempotencyKey: "report-to-voice",
         policy: "report",
         requestedBy: fixture.ownerId,
-        source: { kind: "agent", runId: fixture.runId },
+        source: {
+          kind: "agent",
+          runId: fixture.runId,
+        },
         threadId: fixture.threadId,
       });
-
       await decideCommitted(fixture);
-
       expect(
         await notificationState.getReadState({
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         }),
-      ).toMatchObject({ unreadSequence: null });
+      ).toMatchObject({
+        unreadSequence: null,
+      });
       expect(await observedViews()).toEqual([]);
     });
-
     it("never tells a person about their own messages, and tells only the person a Run answers", async ({
       storeFixture,
     }) => {
       const {
         createFixture,
-        addMember,
+        anotherUser,
         linkAccount,
         markRunning,
         store,
@@ -1425,7 +1402,7 @@ integration("notification decision boundary", () => {
         appendCompletedReply,
       } = storeFixture;
       const fixture = await createFixture("own-message", true);
-      const colleague = await addMember(fixture, "Colleague");
+      const colleague = await anotherUser(fixture, "Colleague");
       await linkAccount(colleague);
       await markRunning(fixture);
       await store.enqueueThreadInput({
@@ -1433,7 +1410,9 @@ integration("notification decision boundary", () => {
         idempotencyKey: "own-steer",
         policy: "steer",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.threadId,
       });
       await store.enqueueThreadInput({
@@ -1441,17 +1420,17 @@ integration("notification decision boundary", () => {
         idempotencyKey: "own-queue",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.threadId,
       });
       await decideCommitted(fixture);
       expect(await observedViews()).toEqual([]);
-
       await appendCompletedReply(fixture, text("Calendar checked."));
       await decideCommitted(fixture);
       expect((await observedViews()).map(({ userId }) => userId)).toEqual([fixture.ownerId]);
     });
-
     it("does not alert for a channel conversation's Run, which answers where it was asked", async ({
       storeFixture,
     }) => {
@@ -1467,17 +1446,19 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("channel", true);
       await database
         .updateTable("runs")
-        .set({ replyTarget: jsonValue({ conversationId: "C024BE91L", kind: "channel" }) })
+        .set({
+          replyTarget: jsonValue({
+            conversationId: "C024BE91L",
+            kind: "channel",
+          }),
+        })
         .where("id", "=", fixture.runId)
         .executeTakeFirstOrThrow();
-
       await appendCompletedReply(fixture, text("Posted in Slack."));
       await appendRunFailed(fixture);
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
-
     it("uses the same id for a reply named first by a background turn and then by the completion", async ({
       storeFixture,
     }) => {
@@ -1492,20 +1473,32 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("background", true);
       const reply = await appendReply(fixture, text("Started the export; I'll report back."));
-      await appendRunnerEvent(fixture, { data: { phase: "turn" }, type: "run.phase" });
       await appendRunnerEvent(fixture, {
-        data: { phase: "background", replyMessageId: null },
+        data: {
+          phase: "turn",
+        },
         type: "run.phase",
       });
       await appendRunnerEvent(fixture, {
-        data: { phase: "background", replyMessageId: reply.id },
+        data: {
+          phase: "background",
+          replyMessageId: null,
+        },
         type: "run.phase",
       });
-
+      await appendRunnerEvent(fixture, {
+        data: {
+          phase: "background",
+          replyMessageId: reply.id,
+        },
+        type: "run.phase",
+      });
       const first = (await decideCommitted(fixture)).decided;
       expect(first).toHaveLength(1);
       await appendRunnerEvent(fixture, {
-        data: { replyMessageId: reply.id },
+        data: {
+          replyMessageId: reply.id,
+        },
         type: "run.completed",
       });
       const repeated = (await decideCommitted(fixture)).decided;
@@ -1523,7 +1516,10 @@ integration("notification decision boundary", () => {
         digest.subarray(0, 16).toString("hex"),
       );
       expect(await observedViews()).toEqual([
-        expect.objectContaining({ kind: "reply-published", messageId: reply.id }),
+        expect.objectContaining({
+          kind: "reply-published",
+          messageId: reply.id,
+        }),
       ]);
 
       // The same Run ending later with a reply of its own is news again.
@@ -1534,7 +1530,6 @@ integration("notification decision boundary", () => {
         finished.id,
       ]);
     });
-
     it("does not project a reply the person already read", async ({ storeFixture }) => {
       const {
         createFixture,
@@ -1551,12 +1546,9 @@ integration("notification decision boundary", () => {
         throughSequence: reply.sequence,
         userId: fixture.ownerId,
       });
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
-
     it("rechecks the read marker before publishing a decided reply", async ({ storeFixture }) => {
       const {
         createFixture,
@@ -1573,21 +1565,28 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("grace", true);
       const read = await appendCompletedReply(fixture, text("You saw this one."));
       const unread = await appendCompletedReply(fixture, text("You did not see this one."));
-      const active = await addThread(fixture, { suffix: "addressed-grace" });
+      const active = await addThread(fixture, {
+        suffix: "addressed-grace",
+      });
       const intermediate = await appendReply(active, text("Still working."));
       const addressed = await appendReply(active, text("Milestone ready."));
       const row = await database
         .updateTable("messages")
-        .set({ addressedToUserId: active.ownerId })
+        .set({
+          addressedToUserId: active.ownerId,
+        })
         .where("id", "=", addressed.id)
         .returningAll()
         .executeTakeFirstOrThrow();
-      const addressedEvent = await database.transaction().execute((transaction) =>
-        appendHostWorkspaceEvent(transaction, {
+      const addressedEvent = await withPersonalTransaction(database, (transaction) =>
+        appendHostDeploymentEvent(transaction, {
           type: "message.created",
-          data: { input: null, message: messageFromRow(row), addressedToUserId: active.ownerId },
+          data: {
+            input: null,
+            message: messageFromRow(row),
+            addressedToUserId: active.ownerId,
+          },
           environmentId: active.environmentId,
-          workspaceId: active.workspaceId,
           threadId: active.threadId,
           runId: active.runId,
         }),
@@ -1595,13 +1594,11 @@ integration("notification decision boundary", () => {
       await decideCommitted(fixture);
       await decideCommitted(active);
       expect(BigInt(addressed.sequence)).toBe(BigInt(intermediate.sequence) + 1n);
-
       await notificationState.markRead({
         threadId: fixture.threadId,
         throughSequence: read.sequence,
         userId: fixture.ownerId,
       });
-
       await notificationState.markRead({
         threadId: active.threadId,
         throughSequence: addressed.sequence,
@@ -1624,27 +1621,21 @@ integration("notification decision boundary", () => {
       expect(reasons.get(unread.id)).toBeNull();
       expect(reasons.get(addressed.id)).toBe("Reply was read before publication");
     });
-
     it("skips a reply that has no words or files to show", async ({ storeFixture }) => {
       const { createFixture, appendCompletedReply, text, decideCommitted, observedViews } =
         storeFixture;
       const fixture = await createFixture("blank", true);
       await appendCompletedReply(fixture, text(" \n\t "));
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
   });
-
   describe("failures", () => {
     it("alerts the person when their Run fails", async ({ storeFixture }) => {
       const { createFixture, appendRunFailed, decideCommitted, observedViews } = storeFixture;
       const fixture = await createFixture("failed", true);
       await appendRunFailed(fixture);
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([
         {
           body: "Opensteer couldn't finish: Runner unavailable",
@@ -1658,7 +1649,6 @@ integration("notification decision boundary", () => {
         },
       ]);
     });
-
     it("says nothing when somebody stopped the Run", async ({ storeFixture }) => {
       const {
         createFixture,
@@ -1678,12 +1668,9 @@ integration("notification decision boundary", () => {
         type: "run.interrupt",
       });
       await appendRunInterrupted(fixture);
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
-
     it("treats an interruption nobody asked for, after the Run started, as a failure", async ({
       storeFixture,
     }) => {
@@ -1692,9 +1679,7 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("runner-lost", true);
       await markRunning(fixture);
       await appendRunInterrupted(fixture);
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([
         expect.objectContaining({
           body: "Opensteer stopped before it finished.",
@@ -1704,7 +1689,6 @@ integration("notification decision boundary", () => {
         }),
       ]);
     });
-
     it("says nothing about a Run interrupted before it started", async ({ storeFixture }) => {
       const {
         createFixture,
@@ -1716,7 +1700,9 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("never-started", true);
       await appendRunInterrupted(fixture);
-      const queued = await addThread(fixture, { suffix: "stopped-while-queued" });
+      const queued = await addThread(fixture, {
+        suffix: "stopped-while-queued",
+      });
       // Stopping a queued Run ends it here, with its own `run.interrupted`.
       await store.enqueueRunnerControl({
         idempotencyKey: "stop-queued",
@@ -1725,19 +1711,14 @@ integration("notification decision boundary", () => {
         threadId: queued.threadId,
         type: "run.interrupt",
       });
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
-
     it("keeps a long failure message within the body limit", async ({ storeFixture }) => {
       const { createFixture, appendRunFailed, decideCommitted, observedViews } = storeFixture;
       const fixture = await createFixture("long-failure", true);
       await appendRunFailed(fixture, `The engine said: ${"overloaded ".repeat(40)}`);
-
       await decideCommitted(fixture);
-
       const [row] = await observedViews();
       expect(row?.body.startsWith("Opensteer couldn't finish: The engine said: overloaded")).toBe(
         true,
@@ -1746,15 +1727,12 @@ integration("notification decision boundary", () => {
       expect(row?.body.endsWith("…")).toBe(true);
     });
   });
-
   describe("requests", () => {
     it("tells the requester, with the Request's own title", async ({ storeFixture }) => {
       const { createFixture, appendRequestOpened, decideCommitted, observedViews } = storeFixture;
       const fixture = await createFixture("request", true);
       const requestId = await appendRequestOpened(fixture, "requester");
-
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([
         {
           body: "May I edit this file?",
@@ -1768,7 +1746,6 @@ integration("notification decision boundary", () => {
         },
       ]);
     });
-
     it("never tells anyone about a Request answered before it was read", async ({
       storeFixture,
     }) => {
@@ -1786,79 +1763,8 @@ integration("notification decision boundary", () => {
         })
         .where("id", "=", requestId)
         .execute();
-
       expect((await decideCommitted(fixture)).decided).toEqual([]);
       expect(await observedViews()).toEqual([]);
-    });
-
-    it("notifies the requester and Workspace administrators about preinstall access", async ({
-      storeFixture,
-    }) => {
-      const {
-        createFixture,
-        addMember,
-        database,
-        appendPreinstallAccessOpened,
-        decideCommitted,
-        observedViews,
-      } = storeFixture;
-      const fixture = await createFixture("preinstall-access");
-      const administratorId = await addMember(fixture, "Installation administrator");
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", administratorId)
-        .executeTakeFirstOrThrow();
-      const requestId = await appendPreinstallAccessOpened(fixture);
-
-      await decideCommitted(fixture);
-
-      const rows = await observedViews();
-      expect(rows.map(({ requestId: id }) => id)).toEqual([requestId, requestId]);
-      expect(new Set(rows.map(({ userId }) => userId))).toEqual(
-        new Set([fixture.ownerId, administratorId]),
-      );
-    });
-
-    it("tells every active owner about a Workspace-owner Request", async ({ storeFixture }) => {
-      const { createFixture, addMember, appendRequestOpened, decideCommitted, observedViews } =
-        storeFixture;
-      const fixture = await createFixture("owner-request");
-      const coOwner = await addMember(fixture, "Co-owner", "owner");
-      await addMember(fixture, "Collaborator");
-
-      await appendRequestOpened(fixture, "workspace-owner");
-      await decideCommitted(fixture);
-
-      expect(new Set((await observedViews()).map(({ userId }) => userId))).toEqual(
-        new Set([fixture.ownerId, coOwner]),
-      );
-    });
-
-    it("drops an administrator Request nobody in the Workspace may answer", async ({
-      storeFixture,
-    }) => {
-      const {
-        createFixture,
-        appendRequestOpened,
-        decideCommitted,
-        observedViews,
-        database,
-        readEvents,
-      } = storeFixture;
-      const fixture = await createFixture("administrator");
-      await appendRequestOpened(fixture, "administrator");
-      await decideCommitted(fixture);
-      expect(await observedViews()).toEqual([]);
-
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", fixture.ownerId)
-        .execute();
-      readEvents.clear();
-      await decideCommitted(fixture);
-      expect((await observedViews()).map(({ kind }) => kind)).toEqual(["request-opened"]);
     });
 
     it("pushes a Request at once and skips it once answered", async ({ storeFixture }) => {
@@ -1875,17 +1781,17 @@ integration("notification decision boundary", () => {
       await markRunning(fixture);
       const requestId = await openRequest(fixture);
       await decideCommitted(fixture);
-
       const [entry] = await publicationEntries();
-      expect(entry).toMatchObject({ kind: "request-opened", requestId });
+      expect(entry).toMatchObject({
+        kind: "request-opened",
+        requestId,
+      });
       await expect(notifications.publicationSkipReason(entry!)).resolves.toBeNull();
-
       await store.requests.cancelForRun(fixture.runId, "run-ended");
       await expect(notifications.publicationSkipReason(entry!)).resolves.toBe(
         "Request was answered before the notification was published",
       );
     });
-
     it("skips any notification once its fifteen-minute window has closed", async ({
       storeFixture,
     }) => {
@@ -1903,7 +1809,6 @@ integration("notification decision boundary", () => {
       await decideCommitted(fixture);
       const [entry] = await publicationEntries();
       expect(entry!.expiresAt.getTime() - entry!.occurredAt.getTime()).toBe(15 * 60_000);
-
       storeFixture.state.now = new Date(entry!.expiresAt.getTime() - 1);
       await expect(notifications.publicationSkipReason(entry!)).resolves.toBeNull();
       storeFixture.state.now = new Date(entry!.expiresAt.getTime());
@@ -1912,131 +1817,11 @@ integration("notification decision boundary", () => {
       );
     });
   });
-
   describe("audience", () => {
-    it("silences a muted Workspace's replies and failures but never its Requests", async ({
-      storeFixture,
-    }) => {
+    it("does not notify a disabled personal owner", async ({ storeFixture }) => {
       const {
         createFixture,
-        notificationState,
-        appendCompletedReply,
-        text,
-        appendRunFailed,
-        appendRequestOpened,
-        decideCommitted,
-        observedViews,
-      } = storeFixture;
-      const fixture = await createFixture("muted", true);
-      await notificationState.setAgentNotificationMute({
-        muted: true,
-        userId: fixture.ownerId,
-        workspaceId: fixture.workspaceId,
-      });
-      await appendCompletedReply(fixture, text("Quiet reply."));
-      await appendRunFailed(fixture);
-      const requestId = await appendRequestOpened(fixture, "requester");
 
-      await decideCommitted(fixture);
-
-      expect(await observedViews()).toEqual([
-        expect.objectContaining({ kind: "request-opened", requestId }),
-      ]);
-    });
-
-    it("keys mute to the Thread's own Workspace", async ({ storeFixture }) => {
-      const {
-        createFixture,
-        store,
-        notificationState,
-        appendCompletedReply,
-        text,
-        decideCommitted,
-        observedViews,
-      } = storeFixture;
-      const fixture = await createFixture("mute-elsewhere", true);
-      const other = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: fixture.ownerId,
-        idempotencyKey: "workspace-mute-elsewhere-other",
-        name: "Other specialist",
-        status: "ready",
-      });
-      await notificationState.setAgentNotificationMute({
-        muted: true,
-        userId: fixture.ownerId,
-        workspaceId: other.id,
-      });
-
-      await appendCompletedReply(fixture, text("Still audible."));
-      await decideCommitted(fixture);
-
-      expect((await observedViews()).map(({ kind }) => kind)).toEqual(["reply-published"]);
-    });
-
-    it("skips a reply or failure muted after it was decided, but not a Request", async ({
-      storeFixture,
-    }) => {
-      const {
-        createFixture,
-        markRunning,
-        openRequest,
-        appendCompletedReply,
-        text,
-        appendRunFailed,
-        decideCommitted,
-        publicationEntries,
-        notificationState,
-        notifications,
-      } = storeFixture;
-      const fixture = await createFixture("muted-later", true);
-      await markRunning(fixture);
-      await openRequest(fixture);
-      await appendCompletedReply(fixture, text("Decided before the mute."));
-      await appendRunFailed(fixture);
-      await decideCommitted(fixture);
-      const claimed = await publicationEntries();
-      expect(claimed.map(({ kind }) => kind).sort()).toEqual([
-        "reply-published",
-        "request-opened",
-        "run-failed",
-      ]);
-
-      await notificationState.setAgentNotificationMute({
-        muted: true,
-        userId: fixture.ownerId,
-        workspaceId: fixture.workspaceId,
-      });
-
-      const reasons = Object.fromEntries(
-        await Promise.all(
-          claimed.map(
-            async (entry) =>
-              [entry.kind, await notifications.publicationSkipReason(entry)] as const,
-          ),
-        ),
-      );
-      expect(reasons).toEqual({
-        "reply-published": "Workspace was muted before publication",
-        "request-opened": null,
-        "run-failed": "Workspace was muted before publication",
-      });
-    });
-
-    it("tells nobody who is disabled or no longer a member", async ({ storeFixture }) => {
-      const {
-        createFixture,
-        addMember,
-        addThread,
         database,
         appendCompletedReply,
         text,
@@ -2046,31 +1831,17 @@ integration("notification decision boundary", () => {
         observedViews,
       } = storeFixture;
       const fixture = await createFixture("gone", true);
-      const colleague = await addMember(fixture, "Departing colleague");
-      const colleagueTurn = await addThread(fixture, {
-        requestedBy: colleague,
-        suffix: "colleague",
-      });
       await database
         .updateTable("users")
         .set({ disabledAt: new Date() })
         .where("id", "=", fixture.ownerId)
         .execute();
-      await database
-        .updateTable("workspaceMemberships")
-        .set({ revokedAt: new Date(), revokedBy: fixture.ownerId, state: "revoked" })
-        .where("userId", "=", colleague)
-        .execute();
-
       await appendCompletedReply(fixture, text("For a disabled owner."));
       await appendRunFailed(fixture);
       await appendRequestOpened(fixture, "requester");
-      await appendCompletedReply(colleagueTurn, text("For a former member."), colleagueTurn);
       await decideCommitted(fixture);
-
       expect(await observedViews()).toEqual([]);
     });
-
     it("skips a decided notification once its recipient can no longer open the Thread", async ({
       storeFixture,
     }) => {
@@ -2087,71 +1858,52 @@ integration("notification decision boundary", () => {
       await decideCommitted(fixture);
       const [entry] = await publicationEntries();
       await expect(notifications.publicationSkipReason(entry!)).resolves.toBeNull();
-
       await database
         .updateTable("users")
-        .set({ disabledAt: new Date() })
+        .set({
+          disabledAt: new Date(),
+        })
         .where("id", "=", fixture.ownerId)
         .execute();
-
       await expect(notifications.publicationSkipReason(entry!)).resolves.toBe(
         "Recipient can no longer open this Thread",
       );
     });
   });
-
   describe("presentation", () => {
-    it("titles a reply by its Thread outside Chat, and Chat as Opensteer", async ({
+    it("titles a reply by its Thread outside Voice, and Voice as Opensteer", async ({
       storeFixture,
     }) => {
       const {
         createFixture,
         addThread,
-        store,
+
         appendCompletedReply,
         text,
         decideCommitted,
         observedViews,
       } = storeFixture;
-      const chat = await createFixture("title-chat", true);
-      const work = await addThread(chat, { suffix: "title-work" });
-      const project = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: chat.ownerId,
-        idempotencyKey: "workspace-title-project",
-        name: "Research",
-        status: "ready",
+      const voice = await createFixture("title-voice", true);
+      const work = await addThread(voice, {
+        suffix: "title-work",
       });
-      const specialist = await addThread(chat, {
+      const specialist = await addThread(voice, {
         suffix: "title-project",
         title: "Research desk",
-        workspaceId: project.id,
       });
-
-      await appendCompletedReply(chat, text("From Chat."));
+      await appendCompletedReply(voice, text("From Voice."));
       await appendCompletedReply(work, text("From a work Thread."));
       await appendCompletedReply(specialist, text("From a specialist."));
-      for (const fixture of [chat, work, specialist]) await decideCommitted(fixture);
-
+      for (const fixture of [voice, work, specialist]) await decideCommitted(fixture);
       const titles = Object.fromEntries(
         (await observedViews()).map((row) => [row.body, row.title]),
       );
       expect(titles).toEqual({
-        "From Chat.": "Opensteer",
+        "From Voice.": "Opensteer",
         "From a specialist.": "Research desk",
         "From a work Thread.": "Thread title-work",
       });
     });
-
     it("summarizes historical place parts in notifications and quotes without addresses", async ({
       storeFixture,
     }) => {
@@ -2169,27 +1921,42 @@ integration("notification decision boundary", () => {
         {
           type: "computer-app",
           machineId: fixture.runnerId,
-          app: { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null },
+          app: {
+            bundleId: "com.apple.Notes",
+            displayName: "Notes",
+            teamId: null,
+          },
           name: "Notes on Studio Mac",
         },
-        { type: "phone", machineId: fixture.runnerId, display: "main", name: "Pixel" },
+        {
+          type: "phone",
+          machineId: fixture.runnerId,
+          display: "main",
+          name: "Pixel",
+        },
       ]);
       const projected = await decideCommitted(fixture);
       expect(projected.decided[0]?.view.body).toBe("Browser page, Notes on Studio Mac, Pixel");
       const quoted = await store.enqueueThreadInput({
-        content: [{ type: "text", text: "About these places" }],
+        content: [
+          {
+            type: "text",
+            text: "About these places",
+          },
+        ],
         quotedMessageId: reply.id,
         idempotencyKey: "place-label-quote",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.threadId,
       });
       expect(quoted.message.quote?.excerpt).toBe("Browser page\nNotes on Studio Mac\nPixel");
       expect(quoted.message.quote?.excerpt).not.toContain("https:");
       expect(quoted.message.quote?.excerpt).not.toContain("private/path");
     });
-
     it("shows a reply as one plain line of its own words", async ({ storeFixture }) => {
       const { createFixture, appendCompletedReply, decideCommitted, observedViews } = storeFixture;
       const fixture = await createFixture("markdown", true);
@@ -2209,14 +1976,11 @@ integration("notification decision boundary", () => {
           type: "text",
         },
       ]);
-
       await decideCommitted(fixture);
-
       expect((await observedViews())[0]?.body).toBe(
         "Results Revenue is up See the report const x = 1; inline",
       );
     });
-
     it("names the files a reply carries when it has no words", async ({ storeFixture }) => {
       const { createFixture, appendCompletedReply, decideCommitted, observedViews } = storeFixture;
       const fixture = await createFixture("files", true);
@@ -2228,19 +1992,19 @@ integration("notification decision boundary", () => {
       });
       await appendCompletedReply(fixture, [file("invoice.pdf")]);
       await appendCompletedReply(fixture, [
-        { text: "  ", type: "text" },
+        {
+          text: "  ",
+          type: "text",
+        },
         file("a.pdf"),
         file("b.pdf"),
       ]);
-
       await decideCommitted(fixture);
-
       expect((await observedViews()).map(({ body }) => body)).toEqual([
         "Sent a file",
         "Sent 2 files",
       ]);
     });
-
     it("keeps a long reply within 180 characters, ending in an ellipsis", async ({
       storeFixture,
     }) => {
@@ -2248,16 +2012,13 @@ integration("notification decision boundary", () => {
         storeFixture;
       const fixture = await createFixture("long-reply", true);
       await appendCompletedReply(fixture, text(`Summary: ${"lorem ipsum dolor ".repeat(30)}`));
-
       await decideCommitted(fixture);
-
       const body = (await observedViews())[0]?.body ?? "";
       expect(body.length).toBeLessThanOrEqual(180);
       expect(body.length).toBeGreaterThan(170);
       expect(body.startsWith("Summary: lorem ipsum dolor")).toBe(true);
       expect(body.endsWith("…")).toBe(true);
     });
-
     it("cuts a long reply at a whole emoji, counting UTF-16 units as clients do", async ({
       storeFixture,
     }) => {
@@ -2267,50 +2028,14 @@ integration("notification decision boundary", () => {
       // 177 units, then emoji of two units each: the first fits before the
       // ellipsis at exactly 180 units, the next would split or overflow.
       await appendCompletedReply(fixture, text(`${"a".repeat(177)}${"😀".repeat(5)}`));
-
       await decideCommitted(fixture);
-
       const body = (await observedViews())[0]?.body ?? "";
       expect(body).toBe(`${"a".repeat(177)}😀…`);
       expect(body.length).toBe(180);
       expect(body).not.toMatch(/[\uD800-\uDFFF]/u);
     });
   });
-
   describe("Account subjects", () => {
-    it("reaches a server Host's user through their Account sign-in only", async ({
-      storeFixture,
-    }) => {
-      const { createFixture, linkAccount, database, addMember, notifications } = storeFixture;
-      const fixture = await createFixture("server-subjects");
-      const second = await linkAccount(fixture.ownerId);
-      // A password sign-in or another provider's identity is not an Account.
-      await database
-        .insertInto("authAccounts")
-        .values({
-          accessToken: null,
-          accessTokenExpiresAt: null,
-          accountId: `local_${randomUUID()}`,
-          createdAt: new Date(),
-          id: createId("authAccount"),
-          idToken: null,
-          password: "hashed",
-          providerId: "credential",
-          refreshToken: null,
-          refreshTokenExpiresAt: null,
-          scope: null,
-          updatedAt: new Date(),
-          userId: fixture.ownerId,
-        })
-        .execute();
-      const unlinked = await addMember(fixture, "No Account");
-
-      expect(new Set(await notifications.accountSubjects(fixture.ownerId))).toEqual(
-        new Set([fixture.ownerAccountId, second]),
-      );
-      await expect(notifications.accountSubjects(unlinked)).resolves.toEqual([]);
-    });
-
     it("reaches a Personal Host's owner through the Account they linked", async ({
       storeFixture,
     }) => {
@@ -2320,46 +2045,32 @@ integration("notification decision boundary", () => {
       // A Personal Host holds no Account OIDC provider at all: its owner is the
       // one administrator, and the link row is the only place that subject lives.
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", fixture.ownerId)
-        .execute();
       await makePersonalDeployment(subject);
-
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([subject]);
     });
-
-    it("never lends a Personal link to a member who is not the owner", async ({ storeFixture }) => {
+    it("never lends a Personal link to another user", async ({ storeFixture }) => {
       const { createFixture, database, makePersonalDeployment, notifications } = storeFixture;
       const fixture = await createFixture("personal-member");
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
       await makePersonalDeployment(`acct_${randomUUID()}`);
 
-      // The Workspace creator is an ordinary user here, so the owner's Account
-      // link does not make this Deployment reachable by that member.
-      await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
+      const other = await storeFixture.store.createUser("Another user");
+      await expect(notifications.accountSubjects(other)).resolves.toEqual([]);
     });
-
     it("drops a Personal owner whose Account link is not active", async ({ storeFixture }) => {
       const { createFixture, database, makePersonalDeployment, notifications } = storeFixture;
       const fixture = await createFixture("personal-inactive");
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", fixture.ownerId)
-        .execute();
       await makePersonalDeployment(`acct_${randomUUID()}`);
       await database
         .updateTable("personalRemoteAccountLink")
-        .set({ state: "activating" })
+        .set({
+          state: "activating",
+        })
         .where("singletonKey", "=", "opensteer-account")
         .execute();
-
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
-
     it("decides notifications for a person with no Account, whose own clients still show them", async ({
       storeFixture,
     }) => {
@@ -2368,65 +2079,81 @@ integration("notification decision boundary", () => {
       const fixture = await createFixture("no-account", true);
       await database.deleteFrom("authAccounts").where("userId", "=", fixture.ownerId).execute();
       await appendRunFailed(fixture);
-
       expect((await decideCommitted(fixture)).decided).toHaveLength(1);
       await expect(notifications.accountSubjects(fixture.ownerId)).resolves.toEqual([]);
     });
   });
-
   describe("viewer state", () => {
     it("records the time zone a person's client reports", async ({ storeFixture }) => {
       const { createFixture, notificationState, database } = storeFixture;
       const fixture = await createFixture("time-zone");
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBeNull();
-
       await expect(
-        notificationState.setTimeZone({ timeZone: "America/Los_Angeles", userId: fixture.ownerId }),
+        notificationState.setTimeZone({
+          timeZone: "America/Los_Angeles",
+          userId: fixture.ownerId,
+        }),
       ).resolves.toBe("America/Los_Angeles");
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
         "America/Los_Angeles",
       );
       await expect(
-        notificationState.setTimeZone({ timeZone: "Mars/Olympus_Mons", userId: fixture.ownerId }),
+        notificationState.setTimeZone({
+          timeZone: "Mars/Olympus_Mons",
+          userId: fixture.ownerId,
+        }),
       ).rejects.toThrow();
       await database
         .updateTable("users")
-        .set({ disabledAt: new Date() })
+        .set({
+          disabledAt: new Date(),
+        })
         .where("id", "=", fixture.ownerId)
         .execute();
       await expect(
-        notificationState.setTimeZone({ timeZone: "Europe/Paris", userId: fixture.ownerId }),
-      ).rejects.toMatchObject({ code: "not_found" });
+        notificationState.setTimeZone({
+          timeZone: "Europe/Paris",
+          userId: fixture.ownerId,
+        }),
+      ).rejects.toMatchObject({
+        code: "forbidden",
+      });
       await expect(notificationState.timeZoneFor(fixture.ownerId)).resolves.toBe(
         "America/Los_Angeles",
       );
     });
-
     it.for(
       (["watch", "trigger", "agent"] as const).flatMap((kind) =>
-        [true, false].map((home) => ({ kind, home })),
+        [true, false].map((voice) => ({
+          kind,
+          voice,
+        })),
       ),
     )(
-      "preserves unread and legacy read positions for $kind inputs (Chat: $home)",
-      async ({ kind, home }, { storeFixture }) => {
+      "preserves unread and legacy read positions for $kind inputs (Voice: $voice)",
+      async ({ kind, voice }, { storeFixture }) => {
         const {
           createFixture,
           markRunning,
           setRunSeedAuthor,
           notificationState,
           database,
-          addMember,
+
           appendCompletedReply,
           text,
           decideCommitted,
           observedViews,
         } = storeFixture;
-        const fixture = await createFixture(`automatic-${kind}-${home}`, home);
+        const fixture = await createFixture(`automatic-${kind}-${voice}`, voice);
         await setRunSeedAuthor(fixture, kind);
         await markRunning(fixture);
         await database
           .updateTable("threadInputs")
-          .set({ state: "delivered", deliveredAt: new Date(), runId: fixture.runId })
+          .set({
+            state: "delivered",
+            deliveredAt: new Date(),
+            runId: fixture.runId,
+          })
           .where("threadId", "=", fixture.threadId)
           .execute();
         const seed = await database
@@ -2439,8 +2166,8 @@ integration("notification decision boundary", () => {
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         });
-        expect(state.unreadSequence).toBe(home ? null : seed.sequence);
-        if (home) {
+        expect(state.unreadSequence).toBe(voice ? null : seed.sequence);
+        if (voice) {
           await decideCommitted(fixture);
           expect(await observedViews()).toEqual([]);
         }
@@ -2450,8 +2177,11 @@ integration("notification decision boundary", () => {
             userId: fixture.ownerId,
             throughSequence: seed.sequence,
           }),
-        ).toMatchObject({ readSequence: seed.sequence, unreadSequence: null });
-        if (home && kind === "watch") {
+        ).toMatchObject({
+          readSequence: seed.sequence,
+          unreadSequence: null,
+        });
+        if (voice && kind === "watch") {
           await sql`
             insert into public.messages (id, thread_id, run_id, content, actor_principal_id,
               sequence, kind, author)
@@ -2473,8 +2203,14 @@ integration("notification decision boundary", () => {
           };
           const measured = new NotificationStateStore(database.withPlugin(capture));
           expect(
-            await measured.getReadState({ threadId: fixture.threadId, userId: fixture.ownerId }),
-          ).toMatchObject({ readSequence: seed.sequence, unreadSequence: null });
+            await measured.getReadState({
+              threadId: fixture.threadId,
+              userId: fixture.ownerId,
+            }),
+          ).toMatchObject({
+            readSequence: seed.sequence,
+            unreadSequence: null,
+          });
           if (process.env.OPENSTEER_UNREAD_PLAN_BENCH === "1") {
             for (const query of captured) {
               const plan = await database.executeQuery(
@@ -2489,34 +2225,48 @@ integration("notification decision boundary", () => {
             .where("sequence", ">", seed.sequence)
             .execute();
         }
-        const other = await addMember(fixture, "Other reader");
         const reply = await appendCompletedReply(fixture, text("Visible reply"));
         expect(
-          await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
-        ).toMatchObject({ unreadSequence: reply.sequence });
+          await notificationState.getReadState({
+            threadId: fixture.threadId,
+            userId: fixture.ownerId,
+          }),
+        ).toMatchObject({
+          unreadSequence: reply.sequence,
+        });
         await database
           .updateTable("messages")
-          .set({ kind: "run-result" })
+          .set({
+            kind: "run-result",
+          })
           .where("id", "=", reply.id)
           .executeTakeFirstOrThrow();
         expect(
-          await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
-        ).toMatchObject({ unreadSequence: reply.sequence });
+          await notificationState.getReadState({
+            threadId: fixture.threadId,
+            userId: fixture.ownerId,
+          }),
+        ).toMatchObject({
+          unreadSequence: reply.sequence,
+        });
       },
     );
-
-    it("retains the channel sender fallback to the requesting viewer in Chat", async ({
+    it("retains the legacy human sender fallback and rejects an unrelated reader", async ({
       storeFixture,
     }) => {
-      const { createFixture, markRunning, addMember, notificationState, database } = storeFixture;
+      const { createFixture, markRunning, anotherUser, notificationState, database } = storeFixture;
       const fixture = await createFixture("channel-viewer-fallback", true);
       await markRunning(fixture);
       await database
         .updateTable("threadInputs")
-        .set({ state: "delivered", deliveredAt: new Date(), runId: fixture.runId })
+        .set({
+          state: "delivered",
+          deliveredAt: new Date(),
+          runId: fixture.runId,
+        })
         .where("threadId", "=", fixture.threadId)
         .execute();
-      const other = await addMember(fixture, "Other viewer");
+      const other = await anotherUser(fixture, "Other viewer");
       const seed = await database
         .selectFrom("runs")
         .innerJoin("messages", "messages.id", "runs.seedInputId")
@@ -2542,10 +2292,12 @@ integration("notification decision boundary", () => {
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         }),
-      ).toMatchObject({ unreadSequence: null });
-      expect(
-        await notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
-      ).toMatchObject({ unreadSequence: seed.sequence });
+      ).toMatchObject({
+        unreadSequence: null,
+      });
+      await expect(
+        notificationState.getReadState({ threadId: fixture.threadId, userId: other }),
+      ).rejects.toMatchObject({ code: "not_found" });
       await database
         .updateTable("messages")
         .set({
@@ -2565,23 +2317,33 @@ integration("notification decision boundary", () => {
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         }),
-      ).toMatchObject({ unreadSequence: seed.sequence });
+      ).toMatchObject({
+        unreadSequence: seed.sequence,
+      });
     });
-
     it("keeps unread candidates private, ordered, and scoped to published incoming content", async ({
       storeFixture,
     }) => {
-      const { createFixture, markRunning, addMember, store, text, notificationState, database } =
-        storeFixture;
+      const {
+        createFixture,
+        markRunning,
+
+        store,
+        text,
+        notificationState,
+        database,
+      } = storeFixture;
       const fixture = await createFixture("viewer-candidates");
       await markRunning(fixture);
-      const secondUserId = await addMember(fixture, "Second viewer");
+      const secondUserId = fixture.ownerId;
       const queued = await store.enqueueThreadInput({
         content: text("Still queued"),
         idempotencyKey: "viewer-candidates-queued",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.threadId,
       });
       const before = await notificationState.getReadState({
@@ -2594,7 +2356,10 @@ integration("notification decision boundary", () => {
         idempotencyKey: "viewer-candidates-report",
         policy: "report",
         requestedBy: fixture.ownerId,
-        source: { kind: "agent", runId: fixture.runId },
+        source: {
+          kind: "agent",
+          runId: fixture.runId,
+        },
         threadId: fixture.threadId,
       });
       const published = await notificationState.getReadState({
@@ -2625,10 +2390,6 @@ integration("notification decision boundary", () => {
           })
         ).unreadSequence,
       ).toBeNull();
-      expect(
-        (await notificationState.getReadState({ threadId: fixture.threadId, userId: secondUserId }))
-          .unreadSequence,
-      ).toBe(report.message.sequence);
       await Promise.all([
         notificationState.markRead({
           threadId: fixture.threadId,
@@ -2644,15 +2405,22 @@ integration("notification decision boundary", () => {
           .catch(() => undefined),
       ]);
       expect(
-        (await notificationState.getReadState({ threadId: fixture.threadId, userId: secondUserId }))
-          .readSequence,
+        (
+          await notificationState.getReadState({
+            threadId: fixture.threadId,
+            userId: secondUserId,
+          })
+        ).readSequence,
       ).toBe(report.message.sequence);
       const withdrawn = await store.enqueueThreadInput({
         content: text("Withdrawn report"),
         idempotencyKey: "viewer-candidates-withdrawn",
         policy: "report",
         requestedBy: fixture.ownerId,
-        source: { kind: "agent", runId: fixture.runId },
+        source: {
+          kind: "agent",
+          runId: fixture.runId,
+        },
         threadId: fixture.threadId,
       });
       const beforeWithdrawal = await notificationState.getReadState({
@@ -2660,119 +2428,27 @@ integration("notification decision boundary", () => {
         userId: fixture.ownerId,
       });
       expect(beforeWithdrawal.unreadSequence).toBe(withdrawn.message.sequence);
-      await database
-        .updateTable("threadInputs")
-        .set({ state: "cancelled", cancelReason: "report-withdrawn", updatedAt: new Date() })
-        .where("messageId", "=", withdrawn.message.id)
-        .executeTakeFirstOrThrow();
-      await database
-        .updateTable("workspaces")
-        .set({ eventSequence: sql<string>`event_sequence + 1` })
-        .where("id", "=", fixture.workspaceId)
-        .executeTakeFirstOrThrow();
+      await withPersonalTransaction(database, async (transaction) => {
+        const row = await transaction
+          .updateTable("threadInputs")
+          .set({ state: "cancelled", cancelReason: "report-withdrawn", updatedAt: new Date() })
+          .where("messageId", "=", withdrawn.message.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+        await appendHostDeploymentEvent(transaction, {
+          type: "thread-input.updated",
+          environmentId: fixture.environmentId,
+          runId: row.runId,
+          threadId: fixture.threadId,
+          data: { input: threadInputFromRow(row) },
+        });
+      });
       const cancelled = await notificationState.getReadState({
         threadId: fixture.threadId,
         userId: fixture.ownerId,
       });
       expect(cancelled.unreadSequence).toBeNull();
       expect(BigInt(cancelled.asOfSequence)).toBeGreaterThan(BigInt(beforeWithdrawal.asOfSequence));
-    });
-
-    it("pages persisted read markers and versions mute choices for one member", async ({
-      storeFixture,
-    }) => {
-      const { createFixture, markRunning, notificationState, store, text } = storeFixture;
-      const fixture = await createFixture("viewer-marker-page");
-      await markRunning(fixture);
-      const initial = await notificationState.listWorkspacePreferences({
-        workspaceIds: [fixture.workspaceId],
-        userId: fixture.ownerId,
-      });
-      expect(initial).toEqual([{ workspaceId: fixture.workspaceId, muted: false, revision: "0" }]);
-      const muted = await notificationState.setAgentNotificationMute({
-        muted: true,
-        workspaceId: fixture.workspaceId,
-        userId: fixture.ownerId,
-      });
-      const unmuted = await notificationState.setAgentNotificationMute({
-        muted: false,
-        workspaceId: fixture.workspaceId,
-        userId: fixture.ownerId,
-      });
-      expect(muted).toMatchObject({ muted: true, revision: "1" });
-      expect(unmuted).toMatchObject({ muted: false, revision: "2" });
-      const otherWorkspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: fixture.ownerId,
-        idempotencyKey: "workspace-viewer-marker-page-other",
-        name: "Other preference",
-        status: "ready",
-      });
-      await notificationState.setAgentNotificationMute({
-        muted: true,
-        workspaceId: otherWorkspace.id,
-        userId: fixture.ownerId,
-      });
-      const firstPreferencePage = await notificationState.workspacePreferencePage({
-        userId: fixture.ownerId,
-        limit: 1,
-      });
-      expect(firstPreferencePage.preferences).toHaveLength(1);
-      expect(firstPreferencePage.nextAfterWorkspaceId).not.toBeNull();
-      const secondPreferencePage = await notificationState.workspacePreferencePage({
-        userId: fixture.ownerId,
-        afterWorkspaceId: firstPreferencePage.nextAfterWorkspaceId,
-        limit: 1,
-      });
-      expect(secondPreferencePage.preferences).toHaveLength(1);
-      expect(secondPreferencePage.nextAfterWorkspaceId).toBeNull();
-      expect([...firstPreferencePage.preferences, ...secondPreferencePage.preferences]).toEqual(
-        expect.arrayContaining([
-          unmuted,
-          { workspaceId: otherWorkspace.id, muted: true, revision: "1" },
-        ]),
-      );
-      const report = await store.enqueueThreadInput({
-        content: text("Read me"),
-        idempotencyKey: "viewer-marker-page-report",
-        policy: "report",
-        requestedBy: fixture.ownerId,
-        source: { kind: "agent", runId: fixture.runId },
-        threadId: fixture.threadId,
-      });
-      await notificationState.markRead({
-        threadId: fixture.threadId,
-        throughSequence: report.message.sequence,
-        userId: fixture.ownerId,
-      });
-      const page = await notificationState.readMarkerPage({
-        workspaceId: fixture.workspaceId,
-        userId: fixture.ownerId,
-        limit: 1,
-      });
-      expect(page.markers).toEqual([
-        { threadId: fixture.threadId, readSequence: report.message.sequence },
-      ]);
-      expect(page.nextAfterThreadId).toBeNull();
-      expect(
-        (
-          await notificationState.readMarkerPage({
-            workspaceId: fixture.workspaceId,
-            userId: fixture.ownerId,
-            afterThreadId: fixture.threadId,
-            limit: 1,
-          })
-        ).markers,
-      ).toEqual([]);
     });
 
     it("keeps the greatest read position under concurrent marks", async ({ storeFixture }) => {
@@ -2797,95 +2473,19 @@ integration("notification decision boundary", () => {
           threadId: fixture.threadId,
           userId: fixture.ownerId,
         }),
-      ).toMatchObject({ readSequence: second.sequence, unreadSequence: null });
+      ).toMatchObject({
+        readSequence: second.sequence,
+        unreadSequence: null,
+      });
     });
   });
-
   describe("task list", () => {
     /** A Thread as a person creates it before sending anything: no Run, no message. */
-    async function emptyThread(
-      storeFixture: StoreFixture,
-      base: Fixture,
-      input: { readonly suffix: string; readonly workspaceId?: WorkspaceId },
-    ): Promise<ThreadId> {
-      const { store } = storeFixture;
-      const { thread } = await store.createThread({
-        createdBy: base.ownerId,
-        environmentId: base.environmentId,
-        harnessInstanceId: base.harnessInstance.id,
-        home: false,
-        idempotencyKey: `thread-${input.suffix}`,
-        modelSelection,
-        title: `Thread ${input.suffix}`,
-        workspaceId: input.workspaceId ?? base.workspaceId,
-      });
-      return thread.id;
-    }
-
-    async function anotherWorkspace(
-      storeFixture: StoreFixture,
-      base: Fixture,
-      suffix: string,
-    ): Promise<WorkspaceId> {
-      const { store } = storeFixture;
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: base.ownerId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
-      return workspace.id;
-    }
 
     /**
      * Someone else entirely: their own Workspace and a Thread in it, on the
      * fixture's one Main machine.
      */
-    async function someoneElse(
-      storeFixture: StoreFixture,
-      base: Fixture,
-      suffix: string,
-    ): Promise<{ readonly threadId: ThreadId; readonly userId: UserId }> {
-      const { store } = storeFixture;
-      const userId = await store.createUser(`Stranger ${suffix}`);
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: userId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
-      const { thread } = await store.createThread({
-        createdBy: userId,
-        environmentId: base.environmentId,
-        harnessInstanceId: base.harnessInstance.id,
-        home: false,
-        idempotencyKey: `thread-${suffix}`,
-        modelSelection,
-        title: `Thread ${suffix}`,
-        workspaceId: workspace.id,
-      });
-      return { threadId: thread.id, userId };
-    }
 
     /** The Thread's next Run, made the way a later turn would be numbered. */
     async function laterRun(storeFixture: StoreFixture, runId: RunId): Promise<RunId> {
@@ -2902,22 +2502,17 @@ integration("notification decision boundary", () => {
       return id;
     }
 
-    async function setAskedAt(
-      storeFixture: StoreFixture,
-      threadId: ThreadId,
-      askedAt: string,
-    ): Promise<void> {
-      const { database } = storeFixture;
-      await sql`
-        update public.threads set asked_at = ${askedAt}::timestamptz where id = ${threadId}
-      `.execute(database);
-    }
-
     async function endRun(
       storeFixture: StoreFixture,
       runId: RunId,
       outcome:
-        { readonly status: "completed" } | { readonly failure: string; readonly status: "failed" },
+        | {
+            readonly status: "completed";
+          }
+        | {
+            readonly failure: string;
+            readonly status: "failed";
+          },
     ): Promise<void> {
       const { database } = storeFixture;
       await database
@@ -2946,290 +2541,21 @@ integration("notification decision boundary", () => {
         readonly before?: string;
         readonly maxBytes?: number;
         readonly maxItems?: number;
-        readonly workspaceId?: WorkspaceId;
       } = {},
     ): Promise<TaskPage> {
       const { store } = storeFixture;
-      return TaskPageSchema.parse(await store.taskPageForUser({ userId, ...input }));
+      return TaskPageSchema.parse(
+        await store.taskPageForUser({
+          userId,
+          ...input,
+        }),
+      );
     }
-
     function entryOf(page: TaskPage, threadId: ThreadId) {
       const entry = page.tasks.find(({ thread }) => thread.id === threadId);
       if (!entry) throw new Error(`Thread ${threadId} is not on the page`);
       return entry;
     }
-
-    it("lists the reader's listed, unarchived Threads in every Workspace they actively belong to", async ({
-      storeFixture,
-    }) => {
-      const { createFixture, addThread, addMember, database } = storeFixture;
-      const owner = await createFixture("tasks-owner");
-      const second = await addThread(owner, {
-        suffix: "tasks-second",
-        workspaceId: await anotherWorkspace(storeFixture, owner, "tasks-second"),
-      });
-      const stranger = await someoneElse(storeFixture, owner, "tasks-stranger");
-      const colleague = await addMember(owner, "Colleague");
-      const helper = await emptyThread(storeFixture, owner, { suffix: "tasks-helper" });
-      await database
-        .updateTable("threads")
-        .set({ listed: false })
-        .where("id", "=", helper)
-        .executeTakeFirstOrThrow();
-      const archived = await emptyThread(storeFixture, owner, { suffix: "tasks-archived" });
-      await database
-        .updateTable("threads")
-        .set({ status: "archived" })
-        .where("id", "=", archived)
-        .executeTakeFirstOrThrow();
-      const deletedWorkspace = await anotherWorkspace(storeFixture, owner, "tasks-deleted");
-      const inDeleted = await emptyThread(storeFixture, owner, {
-        suffix: "tasks-in-deleted",
-        workspaceId: deletedWorkspace,
-      });
-      await database
-        .updateTable("workspaces")
-        .set({ deletedAt: new Date(), status: "deleted" })
-        .where("id", "=", deletedWorkspace)
-        .executeTakeFirstOrThrow();
-
-      const ownerPage = await tasksOf(storeFixture, owner.ownerId);
-      expect(new Set(ownerPage.tasks.map(({ thread }) => thread.id))).toEqual(
-        new Set([owner.threadId, second.threadId]),
-      );
-      expect(ownerPage.window).toMatchObject({ hasMore: false, itemCount: 2, totalItems: 2 });
-      expect(ownerPage.tasks.map(({ thread }) => thread.id)).not.toContain(stranger.threadId);
-      expect(ownerPage.tasks.map(({ thread }) => thread.id)).not.toContain(helper);
-      expect(ownerPage.tasks.map(({ thread }) => thread.id)).not.toContain(archived);
-      expect(ownerPage.tasks.map(({ thread }) => thread.id)).not.toContain(inDeleted);
-      // The colleague belongs to the owner's first Workspace only.
-      expect((await tasksOf(storeFixture, colleague)).tasks.map(({ thread }) => thread.id)).toEqual(
-        [owner.threadId],
-      );
-      expect(
-        (await tasksOf(storeFixture, stranger.userId)).tasks.map(({ thread }) => thread.id),
-      ).toEqual([stranger.threadId]);
-
-      await database
-        .updateTable("workspaceMemberships")
-        .set({ revokedAt: new Date(), revokedBy: owner.ownerId, state: "revoked" })
-        .where("userId", "=", colleague)
-        .execute();
-      expect(await tasksOf(storeFixture, colleague)).toMatchObject({
-        readStates: [],
-        tasks: [],
-        window: { hasMore: false, itemCount: 0, totalItems: 0 },
-      });
-
-      await database
-        .updateTable("users")
-        .set({ disabledAt: new Date() })
-        .where("id", "=", owner.ownerId)
-        .execute();
-      expect(await tasksOf(storeFixture, owner.ownerId)).toMatchObject({
-        tasks: [],
-        window: { totalItems: 0 },
-      });
-    });
-
-    it("pages across Workspaces newest first without skipping or repeating a Thread", async ({
-      storeFixture,
-    }) => {
-      const { createFixture, store } = storeFixture;
-      const owner = await createFixture("tasks-order");
-      const elsewhere = await anotherWorkspace(storeFixture, owner, "tasks-order-elsewhere");
-      const threads = [
-        owner.threadId,
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-1" }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-2", workspaceId: elsewhere }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-3" }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-4", workspaceId: elsewhere }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-5", workspaceId: elsewhere }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-order-6" }),
-      ];
-      // Two exact ties in different Workspaces, two asks a few microseconds
-      // apart within one millisecond, and distinct times around them.
-      const times = [
-        "2026-01-01T00:00:06.000Z",
-        "2026-01-01T00:00:05.000Z",
-        "2026-01-01T00:00:05.000Z",
-        "2026-01-01T00:00:04.000100Z",
-        "2026-01-01T00:00:04.000900Z",
-        "2026-01-01T00:00:03.000Z",
-        "2026-01-01T00:00:02.000Z",
-      ];
-      for (const [index, threadId] of threads.entries()) {
-        await setAskedAt(storeFixture, threadId, times[index]!);
-      }
-
-      const whole = await tasksOf(storeFixture, owner.ownerId);
-      const order = whole.tasks.map(({ thread }) => thread.id);
-      expect(new Set(order)).toEqual(new Set(threads));
-      expect(order[0]).toBe(owner.threadId);
-      const stamps = whole.tasks.map(({ thread }) => Date.parse(thread.askedAt!));
-      expect(stamps).toEqual([...stamps].sort((left, right) => right - left));
-
-      for (const maxItems of [1, 2, 3]) {
-        const seen: ThreadId[] = [];
-        let before: string | undefined;
-        for (let pages = 0; pages < threads.length + 1; pages += 1) {
-          const page = await tasksOf(storeFixture, owner.ownerId, {
-            maxItems,
-            ...(before ? { before } : {}),
-          });
-          seen.push(...page.tasks.map(({ thread }) => thread.id));
-          expect(page.window.totalItems).toBe(threads.length);
-          expect(page.readStates.map(({ threadId }) => threadId)).toEqual(
-            page.tasks.map(({ thread }) => thread.id),
-          );
-          if (!page.window.hasMore) break;
-          expect(page.window.nextBefore).not.toBeNull();
-          before = page.window.nextBefore ?? undefined;
-        }
-        expect(seen).toEqual(order);
-      }
-
-      // A page cut by bytes says so and continues from where it was cut.
-      const firstBytes = Buffer.byteLength(JSON.stringify(whole.tasks[0]), "utf8") + 2;
-      const cut = await tasksOf(storeFixture, owner.ownerId, { maxBytes: firstBytes });
-      expect(cut.tasks.map(({ thread }) => thread.id)).toEqual([order[0]]);
-      expect(cut.window).toMatchObject({ byteCount: firstBytes, hasMore: true, itemCount: 1 });
-      if (!cut.window.nextBefore) throw new Error("Expected a cursor after a cut page");
-      const next = await tasksOf(storeFixture, owner.ownerId, {
-        before: cut.window.nextBefore,
-        maxItems: 1,
-      });
-      expect(next.tasks.map(({ thread }) => thread.id)).toEqual([order[1]]);
-
-      await expect(
-        store.taskPageForUser({
-          before: encodeWindowCursor(
-            "task",
-            owner.ownerId,
-            whole.tasks[0]!.thread.updatedAt,
-            order[0]!,
-          ),
-          userId: owner.ownerId,
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-
-      // A cursor is the reader's own, and only for this list.
-      const stranger = await store.createUser("Stranger");
-      await expect(
-        store.taskPageForUser({ before: cut.window.nextBefore, userId: stranger }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-      await expect(
-        store.taskPageForUser({
-          before: encodeWindowCursor(
-            "thread",
-            owner.workspaceId,
-            whole.tasks[0]!.thread.updatedAt,
-            order[0]!,
-          ),
-          userId: owner.ownerId,
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-    });
-
-    it("lists one Workspace's tasks for a member, paged within it", async ({ storeFixture }) => {
-      const { createFixture, database, store, addMember } = storeFixture;
-      const owner = await createFixture("tasks-scope");
-      const research = await anotherWorkspace(storeFixture, owner, "tasks-scope-research");
-      const inResearch = [
-        await emptyThread(storeFixture, owner, { suffix: "tasks-scope-1", workspaceId: research }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-scope-2", workspaceId: research }),
-        await emptyThread(storeFixture, owner, { suffix: "tasks-scope-3", workspaceId: research }),
-      ];
-      const archived = await emptyThread(storeFixture, owner, {
-        suffix: "tasks-scope-archived",
-        workspaceId: research,
-      });
-      await database
-        .updateTable("threads")
-        .set({ status: "archived" })
-        .where("id", "=", archived)
-        .executeTakeFirstOrThrow();
-
-      const whole = await tasksOf(storeFixture, owner.ownerId, { workspaceId: research });
-      expect(new Set(whole.tasks.map(({ thread }) => thread.id))).toEqual(new Set(inResearch));
-      expect(whole.tasks.every(({ thread }) => thread.workspaceId === research)).toBe(true);
-      expect(whole.window).toMatchObject({ hasMore: false, totalItems: 3 });
-      expect(whole.readStates.map(({ threadId }) => threadId)).toEqual(
-        whole.tasks.map(({ thread }) => thread.id),
-      );
-
-      const first = await tasksOf(storeFixture, owner.ownerId, {
-        maxItems: 2,
-        workspaceId: research,
-      });
-      if (!first.window.nextBefore) throw new Error("Expected a cursor within the Workspace");
-      const second = await tasksOf(storeFixture, owner.ownerId, {
-        before: first.window.nextBefore,
-        maxItems: 2,
-        workspaceId: research,
-      });
-      expect([...first.tasks, ...second.tasks].map(({ thread }) => thread.id)).toEqual(
-        whole.tasks.map(({ thread }) => thread.id),
-      );
-      expect(second.window.hasMore).toBe(false);
-
-      // A cursor continues only the list it came from.
-      const global = await tasksOf(storeFixture, owner.ownerId, { maxItems: 1 });
-      if (!global.window.nextBefore) throw new Error("Expected a cursor across Workspaces");
-      await expect(
-        store.taskPageForUser({
-          before: global.window.nextBefore,
-          userId: owner.ownerId,
-          workspaceId: research,
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-      await expect(
-        store.taskPageForUser({ before: first.window.nextBefore, userId: owner.ownerId }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-      await expect(
-        store.taskPageForUser({
-          before: first.window.nextBefore,
-          userId: owner.ownerId,
-          workspaceId: owner.workspaceId,
-        }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-
-      // Only an active, enabled member of a Workspace that still exists may read it.
-      const stranger = await someoneElse(storeFixture, owner, "tasks-scope-stranger");
-      await expect(
-        store.taskPageForUser({ userId: stranger.userId, workspaceId: research }),
-      ).rejects.toMatchObject({ code: "not_found" });
-      const colleague = await addMember(owner, "Colleague");
-      expect(
-        (await tasksOf(storeFixture, colleague, { workspaceId: owner.workspaceId })).tasks.map(
-          ({ thread }) => thread.id,
-        ),
-      ).toEqual([owner.threadId]);
-      await database
-        .updateTable("workspaceMemberships")
-        .set({ revokedAt: new Date(), revokedBy: owner.ownerId, state: "revoked" })
-        .where("userId", "=", colleague)
-        .execute();
-      await expect(
-        store.taskPageForUser({ userId: colleague, workspaceId: owner.workspaceId }),
-      ).rejects.toMatchObject({ code: "not_found" });
-      await database
-        .updateTable("workspaces")
-        .set({ deletedAt: new Date(), status: "deleted" })
-        .where("id", "=", research)
-        .executeTakeFirstOrThrow();
-      await expect(
-        store.taskPageForUser({ userId: owner.ownerId, workspaceId: research }),
-      ).rejects.toMatchObject({ code: "not_found" });
-      await database
-        .updateTable("users")
-        .set({ disabledAt: new Date() })
-        .where("id", "=", owner.ownerId)
-        .execute();
-      await expect(
-        store.taskPageForUser({ userId: owner.ownerId, workspaceId: owner.workspaceId }),
-      ).rejects.toMatchObject({ code: "not_found" });
-    });
 
     it("reads the last reply from the newest published assistant message, as one plain line", async ({
       storeFixture,
@@ -3239,7 +2565,6 @@ integration("notification decision boundary", () => {
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).lastReply,
       ).toBeNull();
-
       await appendReply(
         fixture,
         text(
@@ -3256,12 +2581,18 @@ integration("notification decision boundary", () => {
         idempotencyKey: "tasks-reply-follow-up",
         policy: "queue",
         requestedBy: fixture.ownerId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: fixture.threadId,
       });
       await database
         .updateTable("threadInputs")
-        .set({ deliveredAt: new Date(), runId: fixture.runId, state: "delivered" })
+        .set({
+          deliveredAt: new Date(),
+          runId: fixture.runId,
+          state: "delivered",
+        })
         .where("messageId", "=", followUp.message.id)
         .executeTakeFirstOrThrow();
       // Nor is an assistant message that says nothing, or one taken back before
@@ -3271,10 +2602,10 @@ integration("notification decision boundary", () => {
       await sql`
         insert into public.thread_inputs (
           actor_principal_id, authority_source, cancel_reason, causal_chain_id, delivered_at,
-          idempotency_key, membership_generation, message_id, policy, queue_rank, reply_target,
+          idempotency_key, message_id, policy, queue_rank, reply_target,
           request_fingerprint, requested_by, run_id, state, steer_command_id, thread_id, updated_at)
         select actor_principal_id, authority_source, 'withdrawn', causal_chain_id, null,
-          ${`withdrawn-${withdrawn.id}`}, membership_generation, ${withdrawn.id}, 'queue',
+          ${`withdrawn-${withdrawn.id}`}, ${withdrawn.id}, 'queue',
           queue_rank + 1000, reply_target, request_fingerprint, requested_by, null, 'cancelled',
           null, thread_id, now()
         from public.thread_inputs
@@ -3286,7 +2617,12 @@ integration("notification decision boundary", () => {
 
       // A reply that is only a file is the latest reply: it has no words to show.
       await appendReply(fixture, [
-        { artifactId: "report", mediaType: "text/markdown", name: "report.md", type: "artifact" },
+        {
+          artifactId: "report",
+          mediaType: "text/markdown",
+          name: "report.md",
+          type: "artifact",
+        },
       ]);
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).lastReply,
@@ -3294,16 +2630,29 @@ integration("notification decision boundary", () => {
 
       // Its first words, when it has several parts.
       await appendReply(fixture, [
-        { artifactId: "chart", mediaType: "image/png", name: "chart.png", type: "artifact" },
-        { text: "  ", type: "text" },
-        { text: "Here is the chart.", type: "text" },
-        { text: "And a second part.", type: "text" },
+        {
+          artifactId: "chart",
+          mediaType: "image/png",
+          name: "chart.png",
+          type: "artifact",
+        },
+        {
+          text: "  ",
+          type: "text",
+        },
+        {
+          text: "Here is the chart.",
+          type: "text",
+        },
+        {
+          text: "And a second part.",
+          type: "text",
+        },
       ]);
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).lastReply,
       ).toBe("Here is the chart.");
     });
-
     it("cuts a huge reply in the database and never splits a character", async ({
       storeFixture,
     }) => {
@@ -3316,7 +2665,6 @@ integration("notification decision boundary", () => {
       ).lastReply;
       expect(words?.length).toBeLessThanOrEqual(taskLineMaxLength);
       expect(words).toMatch(/^word word .*…$/u);
-
       await appendReply(fixture, text("😀".repeat(1_000)));
       const emoji =
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).lastReply ?? "";
@@ -3337,7 +2685,6 @@ integration("notification decision boundary", () => {
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).lastReply,
       ).toBe("Before");
     });
-
     it("says why only while the latest Run failed", async ({ storeFixture }) => {
       const { createFixture } = storeFixture;
       const fixture = await createFixture("tasks-failure");
@@ -3351,56 +2698,32 @@ integration("notification decision boundary", () => {
       expect(entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).failure).toBe(
         "Runner unavailable. Try again later.",
       );
-
       const retry = await laterRun(storeFixture, fixture.runId);
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).failure,
       ).toBeNull();
-      await endRun(storeFixture, retry, { status: "completed" });
+      await endRun(storeFixture, retry, {
+        status: "completed",
+      });
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).failure,
       ).toBeNull();
-
       const again = await laterRun(storeFixture, retry);
-      await endRun(storeFixture, again, { failure: "x".repeat(20_000), status: "failed" });
+      await endRun(storeFixture, again, {
+        failure: "x".repeat(20_000),
+        status: "failed",
+      });
       const long = entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).failure;
       expect(long?.length).toBeLessThanOrEqual(taskLineMaxLength);
       expect(long?.endsWith("…")).toBe(true);
-
       const blank = await laterRun(storeFixture, again);
-      await endRun(storeFixture, blank, { failure: "", status: "failed" });
+      await endRun(storeFixture, blank, {
+        failure: "",
+        status: "failed",
+      });
       expect(
         entryOf(await tasksOf(storeFixture, fixture.ownerId), fixture.threadId).failure,
       ).toBeNull();
     });
-  });
-
-  it("shared Done leaves each member's read position untouched", async ({ storeFixture }) => {
-    const { createFixture, appendReply, text, notificationState, store } = storeFixture;
-    const fixture = await createFixture("shared-done-read-state");
-    const reply = await appendReply(fixture, text("Finished"));
-    const before = await notificationState.getReadState({
-      threadId: fixture.threadId,
-      userId: fixture.ownerId,
-    });
-    await store.setThreadDone({
-      done: true,
-      threadId: fixture.threadId,
-      requestedBy: fixture.ownerId,
-      idempotencyKey: "shared-done-read-state",
-    });
-    const after = await notificationState.getReadState({
-      threadId: fixture.threadId,
-      userId: fixture.ownerId,
-    });
-    expect(after.readSequence).toBe(before.readSequence);
-    expect(after.unreadSequence).toBe(reply.sequence);
-    expect(after.placement).toEqual(
-      after.readSequence === null ? null : { done: false, sequence: after.readSequence },
-    );
-    expect(after.placementRevision).toBe(after.asOfSequence);
-    expect(
-      (await store.getThreadForOwner(fixture.threadId, fixture.ownerId))?.doneAt,
-    ).not.toBeNull();
   });
 });

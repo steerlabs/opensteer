@@ -3,19 +3,22 @@ import { Migrator } from "kysely/migration";
 import { Client, Pool } from "pg";
 import * as checker from "./lock-order-checker.test-support.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
 integration("PostgreSQL global lock order checker", () => {
-  const client = new Client({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL });
+  const client = new Client({
+    connectionString: process.env.OPENSTEER_TEST_DATABASE_URL,
+  });
   const inheritedMode = process.env.OPENSTEER_LOCK_ORDER_MODE;
   beforeAll(async () => {
     process.env.OPENSTEER_LOCK_ORDER_MODE = "enforce";
     await client.connect();
-    await client.query("create temporary table workspaces (id text primary key, name text)");
+    await client.query(
+      "create temporary table deployment_event_state (id text primary key, name text)",
+    );
     await client.query("create temporary table threads (id text primary key, name text)");
     await client.query("create temporary table commands (id text primary key, name text)");
     await client.query("insert into commands values ('a', 'A')");
-    await client.query("insert into workspaces values ('a', 'A'), ('b', 'B')");
+    await client.query("insert into deployment_event_state values ('a', 'A'), ('b', 'B')");
     await client.query("insert into threads values ('a', 'A'), ('b', 'B')");
   });
   afterAll(async () => {
@@ -23,26 +26,26 @@ integration("PostgreSQL global lock order checker", () => {
     if (inheritedMode === undefined) delete process.env.OPENSTEER_LOCK_ORDER_MODE;
     else process.env.OPENSTEER_LOCK_ORDER_MODE = inheritedMode;
   });
-
   it.each([
-    "select * from workspaces for update",
-    "select * from workspaces for no key update",
-    "select * from workspaces order by id for share",
-    "select w.id from workspaces as w join threads as t on w.id=t.id for share of w",
-    "update workspaces set name = 'changed' where id = 'a'",
-    "delete from workspaces where id = 'a'",
-    "insert into workspaces values ('a', 'changed') on conflict (id) do update set name=excluded.name",
-    "select * from workspaces FOR /* a fence */ UPDATE",
-  ])("rejects Thread then Workspace: %s", async (statement) => {
+    "select * from deployment_event_state for update",
+    "select * from deployment_event_state for no key update",
+    "select * from deployment_event_state order by id for share",
+    "select w.id from deployment_event_state as w join threads as t on w.id=t.id for share of w",
+    "update deployment_event_state set name = 'changed' where id = 'a'",
+    "delete from deployment_event_state where id = 'a'",
+    "insert into deployment_event_state values ('a', 'changed') on conflict (id) do update set name=excluded.name",
+    "select * from deployment_event_state FOR /* a fence */ UPDATE",
+  ])("rejects Thread then Deployment: %s", async (statement) => {
     await client.query("begin");
     try {
       await client.query("select * from threads where id='a' for no key update");
-      await expect(client.query(statement)).rejects.toThrow(/lock order.*threads.*workspaces/is);
+      await expect(client.query(statement)).rejects.toThrow(
+        /lock order.*threads.*deployment_event_state/is,
+      );
     } finally {
       await client.query("rollback");
     }
   });
-
   it.each([
     ["KEY SHARE", "KEY SHARE", false],
     ["KEY SHARE", "SHARE", false],
@@ -66,48 +69,54 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("begin");
       try {
         await client.query(`select * from threads where id='a' for ${held}`);
-        const acquisition = client.query(`select * from workspaces where id='a' for ${requested}`);
+        const acquisition = client.query(
+          `select * from deployment_event_state where id='a' for ${requested}`,
+        );
         if (conflicts)
-          await expect(acquisition).rejects.toThrow(/lock order.*threads.*workspaces/is);
-        else await expect(acquisition).resolves.toMatchObject({ rowCount: 1 });
+          await expect(acquisition).rejects.toThrow(
+            /lock order.*threads.*deployment_event_state/is,
+          );
+        else
+          await expect(acquisition).resolves.toMatchObject({
+            rowCount: 1,
+          });
       } finally {
         await client.query("rollback");
       }
     },
   );
-
   it.each([
     {
       name: "compatible readers",
       expected: false,
       paths: [
-        ["workspaces", "threads", "SHARE", "SHARE"],
-        ["threads", "workspaces", "SHARE", "SHARE"],
+        ["deployment_event_state", "threads", "SHARE", "SHARE"],
+        ["threads", "deployment_event_state", "SHARE", "SHARE"],
       ],
     },
     {
       name: "opposite readers and writers",
       expected: true,
       paths: [
-        ["workspaces", "threads", "SHARE", "SHARE"],
-        ["threads", "workspaces", "UPDATE", "UPDATE"],
+        ["deployment_event_state", "threads", "SHARE", "SHARE"],
+        ["threads", "deployment_event_state", "UPDATE", "UPDATE"],
       ],
     },
     {
       name: "three transaction cycle",
       expected: true,
       paths: [
-        ["workspaces", "threads", "NO KEY UPDATE", "SHARE"],
+        ["deployment_event_state", "threads", "NO KEY UPDATE", "SHARE"],
         ["threads", "commands", "NO KEY UPDATE", "SHARE"],
-        ["commands", "workspaces", "NO KEY UPDATE", "SHARE"],
+        ["commands", "deployment_event_state", "NO KEY UPDATE", "SHARE"],
       ],
     },
     {
       name: "compatible junction",
       expected: false,
       paths: [
-        ["workspaces", "threads", "UPDATE", "KEY SHARE"],
-        ["threads", "workspaces", "KEY SHARE", "UPDATE"],
+        ["deployment_event_state", "threads", "UPDATE", "KEY SHARE"],
+        ["threads", "deployment_event_state", "KEY SHARE", "UPDATE"],
       ],
     },
     {
@@ -115,17 +124,17 @@ integration("PostgreSQL global lock order checker", () => {
       expected: false,
       separateDatabases: true,
       paths: [
-        ["workspaces", "threads", "UPDATE", "UPDATE"],
-        ["threads", "workspaces", "UPDATE", "UPDATE"],
+        ["deployment_event_state", "threads", "UPDATE", "UPDATE"],
+        ["threads", "deployment_event_state", "UPDATE", "UPDATE"],
       ],
     },
     {
       name: "mixed three transaction cycle",
       expected: true,
       paths: [
-        ["workspaces", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
+        ["deployment_event_state", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
         ["threads", "commands", "SHARE", "KEY SHARE"],
-        ["commands", "workspaces", "UPDATE", "SHARE"],
+        ["commands", "deployment_event_state", "UPDATE", "SHARE"],
       ],
     },
     {
@@ -134,8 +143,8 @@ integration("PostgreSQL global lock order checker", () => {
       separateDatabases: true,
       applicationGraph: true,
       paths: [
-        ["workspaces", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
-        ["threads", "workspaces", "SHARE", "SHARE"],
+        ["deployment_event_state", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
+        ["threads", "deployment_event_state", "SHARE", "SHARE"],
       ],
     },
     {
@@ -145,8 +154,8 @@ integration("PostgreSQL global lock order checker", () => {
       applicationGraph: true,
       accountSchema: true,
       paths: [
-        ["workspaces", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
-        ["threads", "workspaces", "SHARE", "SHARE"],
+        ["deployment_event_state", "threads", "NO KEY UPDATE", "NO KEY UPDATE"],
+        ["threads", "deployment_event_state", "SHARE", "SHARE"],
       ],
     },
   ])(
@@ -170,7 +179,11 @@ integration("PostgreSQL global lock order checker", () => {
             analyze(
               checker.recordedLockOrderEdges.slice(start).map((edge, index) => ({
                 ...edge,
-                ...(separateDatabases ? { database: `database-${index}` } : {}),
+                ...(separateDatabases
+                  ? {
+                      database: `database-${index}`,
+                    }
+                  : {}),
                 ...(accountSchema && index === 1
                   ? {
                       from: `control-plane:${edge.from}`,
@@ -186,54 +199,54 @@ integration("PostgreSQL global lock order checker", () => {
       });
     },
   );
-
   it("checks deferred trigger acquisitions before COMMIT releases their locks", async () => {
     await client.query(
-      "create function pg_temp.phase3m_deferred_workspace() returns trigger language plpgsql as $$ begin perform id from pg_temp.workspaces where id='a' for share; return new; end $$",
+      "create function pg_temp.phase3m_deferred_deployment() returns trigger language plpgsql as $$ begin perform id from pg_temp.deployment_event_state where id='a' for share; return new; end $$",
     );
     await client.query(
-      "create constraint trigger phase3m_deferred_workspace after update on threads deferrable initially deferred for each row execute function pg_temp.phase3m_deferred_workspace()",
+      "create constraint trigger phase3m_deferred_deployment after update on threads deferrable initially deferred for each row execute function pg_temp.phase3m_deferred_deployment()",
     );
     try {
       await client.query("begin");
       await client.query("update threads set name='deferred' where id='a'");
-      await expect(client.query("commit")).rejects.toThrow(/lock order.*threads.*workspaces/is);
+      await expect(client.query("commit")).rejects.toThrow(
+        /lock order.*threads.*deployment_event_state/is,
+      );
     } finally {
       await client.query("rollback");
-      await client.query("drop trigger phase3m_deferred_workspace on threads");
-      await client.query("drop function pg_temp.phase3m_deferred_workspace()");
+      await client.query("drop trigger phase3m_deferred_deployment on threads");
+      await client.query("drop function pg_temp.phase3m_deferred_deployment()");
     }
   });
-
   it("accepts ordered acquisition and already held rows", async () => {
     await client.query("begin");
     try {
-      await client.query("select * from workspaces where id='a' for no key update");
+      await client.query("select * from deployment_event_state where id='a' for no key update");
       await client.query("select * from threads where id='a' for no key update");
-      await client.query("update workspaces set name='changed' where id='a'");
+      await client.query("update deployment_event_state set name='changed' where id='a'");
     } finally {
       await client.query("rollback");
     }
   });
-
   it("records one edge per statement and mode, without a row-pair cross product", async () => {
     const start = checker.recordedLockOrderEdges.length;
     await client.query("begin");
     try {
-      await client.query("select * from workspaces order by id for no key update");
+      await client.query("select * from deployment_event_state order by id for no key update");
       await client.query("select * from threads order by id for no key update");
       expect(checker.recordedLockOrderEdges.slice(start)).toHaveLength(1);
     } finally {
       await client.query("rollback");
     }
   });
-
   it("retains separate acquisitions with identical SQL and different bound row IDs", async () => {
     const start = checker.recordedLockOrderEdges.length;
     await client.query("begin");
     try {
       for (const id of ["a", "b"])
-        await client.query("select * from workspaces where id=$1 for no key update", [id]);
+        await client.query("select * from deployment_event_state where id=$1 for no key update", [
+          id,
+        ]);
       await client.query("select * from threads order by id for no key update");
       const edges = checker.recordedLockOrderEdges.slice(start);
       expect(edges).toHaveLength(2);
@@ -242,78 +255,72 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-
   it("does not mistake a previously held table for a previously held row", async () => {
     await client.query("begin");
     try {
-      await client.query("select * from workspaces where id='a' for no key update");
+      await client.query("select * from deployment_event_state where id='a' for no key update");
       await client.query("select * from threads where id='a' for no key update");
       await expect(
-        client.query("select * from workspaces where id='b' for no key update"),
+        client.query("select * from deployment_event_state where id='b' for no key update"),
       ).rejects.toThrow(/lock order/is);
     } finally {
       await client.query("rollback");
     }
   });
-
   it("isolates successive transactions and ignores empty locks and new private rows", async () => {
     await client.query("begin");
     await client.query("select * from threads order by id for share");
     await client.query("commit");
     await client.query("begin");
     try {
-      await client.query("select * from workspaces order by id for share");
+      await client.query("select * from deployment_event_state order by id for share");
       await client.query("select * from threads order by id for share");
-      await client.query("update workspaces set name='empty' where id='missing'");
-      await client.query("insert into workspaces values ('private', 'new')");
-      await client.query("update workspaces set name='private' where id='private'");
+      await client.query("update deployment_event_state set name='empty' where id='missing'");
+      await client.query("insert into deployment_event_state values ('private', 'new')");
+      await client.query("update deployment_event_state set name='private' where id='private'");
     } finally {
       await client.query("rollback");
     }
   });
-
   it("does not treat a subquery ORDER BY as ordering a multi-row UPDATE", async () => {
     await client.query("begin");
     try {
       await expect(
         client.query(
-          "update workspaces set name='changed' where id in (select id from workspaces order by id)",
+          "update deployment_event_state set name='changed' where id in (select id from deployment_event_state order by id)",
         ),
       ).rejects.toThrow(/unordered multi-row/is);
     } finally {
       await client.query("rollback");
     }
   });
-
   it("accepts a multi-row UPDATE of rows an ordered read already fenced", async () => {
     await client.query("begin");
     try {
-      await client.query("select * from workspaces order by id for no key update");
-      await client.query("update workspaces set name='changed' where id in ('a', 'b')");
+      await client.query("select * from deployment_event_state order by id for no key update");
+      await client.query("update deployment_event_state set name='changed' where id in ('a', 'b')");
     } finally {
       await client.query("rollback");
     }
   });
-
   it("refuses data-modifying statements whose row locks it cannot see", async () => {
     await client.query("begin");
     try {
       await expect(
         client.query(
-          "with changed as (update workspaces set name='changed' where id='a' returning id) select * from changed",
+          "with changed as (update deployment_event_state set name='changed' where id='a' returning id) select * from changed",
         ),
       ).rejects.toThrow(/cannot classify/is);
     } finally {
       await client.query("rollback");
     }
   });
-
   it("rejects descending new row IDs in a table", async () => {
     await client.query("begin");
     try {
-      await client.query("select * from workspaces where id='b' for no key update");
+      await client.query("select * from deployment_event_state where id='b' for no key update");
       await expect(
-        client.query("select * from workspaces where id='a' for no key update"),
+        client.query("select * from deployment_event_state where id='a' for no key update"),
       ).rejects.toThrow(/lock order/is);
     } finally {
       await client.query("rollback");
@@ -321,40 +328,39 @@ integration("PostgreSQL global lock order checker", () => {
   });
   it("checks row locks acquired inside installed functions and triggers", async () => {
     await client.query(
-      "create function pg_temp.phase3m_lock_workspace() returns void language plpgsql as $$ begin perform id from pg_temp.workspaces where id='a' for share; end $$",
+      "create function pg_temp.phase3m_lock_deployment() returns void language plpgsql as $$ begin perform id from pg_temp.deployment_event_state where id='a' for share; end $$",
     );
     await client.query(
-      "create function pg_temp.phase3m_lock_workspace_trigger() returns trigger language plpgsql as $$ begin perform pg_temp.phase3m_lock_workspace(); return new; end $$",
+      "create function pg_temp.phase3m_lock_deployment_trigger() returns trigger language plpgsql as $$ begin perform pg_temp.phase3m_lock_deployment(); return new; end $$",
     );
     await client.query(
-      "create trigger phase3m_lock_workspace before update on threads for each row execute function pg_temp.phase3m_lock_workspace_trigger()",
+      "create trigger phase3m_lock_deployment before update on threads for each row execute function pg_temp.phase3m_lock_deployment_trigger()",
     );
     try {
       for (const statement of [
-        "select pg_temp.phase3m_lock_workspace()",
+        "select pg_temp.phase3m_lock_deployment()",
         "update threads set name='trigger' where id='a'",
       ]) {
         await client.query("begin");
         try {
           await client.query("select * from threads where id='a' for no key update");
           await expect(client.query(statement)).rejects.toThrow(
-            /lock order.*threads.*workspaces/is,
+            /lock order.*threads.*deployment_event_state/is,
           );
         } finally {
           await client.query("rollback");
         }
       }
     } finally {
-      await client.query("drop trigger phase3m_lock_workspace on threads");
-      await client.query("drop function pg_temp.phase3m_lock_workspace_trigger()");
-      await client.query("drop function pg_temp.phase3m_lock_workspace()");
+      await client.query("drop trigger phase3m_lock_deployment on threads");
+      await client.query("drop function pg_temp.phase3m_lock_deployment_trigger()");
+      await client.query("drop function pg_temp.phase3m_lock_deployment()");
     }
   });
-
   it("checks a trigger's remaining targets after another target is dropped mid-transaction", async () => {
     await client.query("create temporary table parity_gone (id text primary key)");
     await client.query(
-      "create function pg_temp.parity_two_targets() returns trigger language plpgsql as $$ begin if false then perform id from pg_temp.parity_gone; end if; perform id from pg_temp.workspaces where id='a' for share; return new; end $$",
+      "create function pg_temp.parity_two_targets() returns trigger language plpgsql as $$ begin if false then perform id from pg_temp.parity_gone; end if; perform id from pg_temp.deployment_event_state where id='a' for share; return new; end $$",
     );
     await client.query(
       "create trigger parity_two_targets after update on threads for each row execute function pg_temp.parity_two_targets()",
@@ -364,7 +370,7 @@ integration("PostgreSQL global lock order checker", () => {
       try {
         await client.query("drop table pg_temp.parity_gone");
         await expect(client.query("update threads set name='gone' where id='a'")).rejects.toThrow(
-          /lock order.*threads.*workspaces/is,
+          /lock order.*threads.*deployment_event_state/is,
         );
       } finally {
         await client.query("rollback");
@@ -375,33 +381,29 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("drop table if exists pg_temp.parity_gone");
     }
   });
-
-  it("orders a membership trigger's Workspace before the membership row", async () => {
+  it("rejects a trigger that takes the Deployment fence after writing settings", async () => {
+    await client.query("create temporary table personal_settings (id text primary key, name text)");
+    await client.query("insert into personal_settings values ('a', 'A')");
     await client.query(
-      "create temporary table workspace_memberships (id text primary key, name text)",
-    );
-    await client.query("insert into workspace_memberships values ('a', 'A')");
-    await client.query(
-      "create function pg_temp.parity_membership_workspace() returns trigger language plpgsql as $$ begin perform id from pg_temp.workspaces where id='a' for share; return new; end $$",
+      "create function pg_temp.parity_settings_deployment() returns trigger language plpgsql as $$ begin perform id from pg_temp.deployment_event_state where id='a' for share; return new; end $$",
     );
     await client.query(
-      "create trigger parity_membership_workspace after update on workspace_memberships for each row execute function pg_temp.parity_membership_workspace()",
+      "create trigger parity_settings_deployment after update on personal_settings for each row execute function pg_temp.parity_settings_deployment()",
     );
     try {
       await client.query("begin");
       try {
         await expect(
-          client.query("update workspace_memberships set name='changed' where id='a'"),
-        ).resolves.toMatchObject({ rowCount: 1 });
+          client.query("update personal_settings set name='changed' where id='a'"),
+        ).rejects.toThrow(/lock order.*personal_settings.*deployment_event_state/is);
       } finally {
         await client.query("rollback");
       }
     } finally {
-      await client.query("drop table pg_temp.workspace_memberships");
-      await client.query("drop function pg_temp.parity_membership_workspace()");
+      await client.query("drop table pg_temp.personal_settings");
+      await client.query("drop function pg_temp.parity_settings_deployment()");
     }
   });
-
   it("keys rows of a table without a primary key by their position", async () => {
     await client.query("create temporary table messages (name text)");
     await client.query("insert into messages values ('a'), ('b')");
@@ -419,23 +421,42 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("drop table pg_temp.messages");
     }
   });
-
   it("attributes each locked row to its own table when one statement locks several", async () => {
     const start = checker.recordedLockOrderEdges.length;
     await client.query("begin");
     try {
-      await client.query("select * from workspaces where id='b' for no key update");
+      await client.query("select * from deployment_event_state where id='b' for no key update");
       await client.query(
         "select t.id from threads t join commands c on c.id='a' where t.id='b' for share of t, c",
       );
       const edges = checker.recordedLockOrderEdges
         .slice(start)
-        .map(({ from, to, heldKey, requestedKey }) => ({ from, to, heldKey, requestedKey }));
+        .map(({ from, to, heldKey, requestedKey }) => ({
+          from,
+          to,
+          heldKey,
+          requestedKey,
+        }));
       expect(edges).toEqual(
         expect.arrayContaining([
-          { from: "workspaces", to: "threads", heldKey: '["b"]', requestedKey: '["b"]' },
-          { from: "workspaces", to: "commands", heldKey: '["b"]', requestedKey: '["a"]' },
-          { from: "threads", to: "commands", heldKey: '["b"]', requestedKey: '["a"]' },
+          {
+            from: "deployment_event_state",
+            to: "threads",
+            heldKey: '["b"]',
+            requestedKey: '["b"]',
+          },
+          {
+            from: "deployment_event_state",
+            to: "commands",
+            heldKey: '["b"]',
+            requestedKey: '["a"]',
+          },
+          {
+            from: "threads",
+            to: "commands",
+            heldKey: '["b"]',
+            requestedKey: '["a"]',
+          },
         ]),
       );
       expect(edges).toHaveLength(3);
@@ -443,17 +464,16 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-
   it("rereads a function whose body was replaced between transactions", async () => {
     await client.query(
-      "create function pg_temp.parity_replaced() returns void language plpgsql as $$ begin perform id from pg_temp.workspaces where id='a' for share; end $$",
+      "create function pg_temp.parity_replaced() returns void language plpgsql as $$ begin perform id from pg_temp.deployment_event_state where id='a' for share; end $$",
     );
     try {
       await client.query("begin");
       try {
         await client.query("select * from threads where id='a' for no key update");
         await expect(client.query("select pg_temp.parity_replaced()")).rejects.toThrow(
-          /lock order.*threads.*workspaces/is,
+          /lock order.*threads.*deployment_event_state/is,
         );
       } finally {
         await client.query("rollback");
@@ -481,12 +501,14 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("drop function pg_temp.parity_replaced()");
     }
   });
-
   it("leaves a migration's batches unchecked and checks the next transaction", async () => {
     // One connection, so the migration's temporary tables are the ones checked afterwards.
     const database = new Kysely<unknown>({
       dialect: new PostgresDialect({
-        pool: new Pool({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL, max: 1 }),
+        pool: new Pool({
+          connectionString: process.env.OPENSTEER_TEST_DATABASE_URL,
+          max: 1,
+        }),
       }),
     });
     const schema = "lock_order_checker_migration";
@@ -500,7 +522,7 @@ integration("PostgreSQL global lock order checker", () => {
               up: async (transaction) => {
                 await sql
                   .raw(
-                    "create temporary table workspaces (id text primary key, name text); create temporary table threads (id text primary key, name text); insert into workspaces values ('a', 'A'), ('b', 'B'); insert into threads values ('a', 'A'); select id from threads where id='a' for no key update; update workspaces set name='migrated' where id in ('a', 'b')",
+                    "create temporary table deployment_event_state (id text primary key, name text); create temporary table threads (id text primary key, name text); insert into deployment_event_state values ('a', 'A'), ('b', 'B'); insert into threads values ('a', 'A'); select id from threads where id='a' for no key update; update deployment_event_state set name='migrated' where id in ('a', 'b')",
                   )
                   .execute(transaction);
               },
@@ -510,47 +532,52 @@ integration("PostgreSQL global lock order checker", () => {
       });
       const { error, results } = await migrator.migrateToLatest();
       expect(error).toBeUndefined();
-      expect(results).toEqual([expect.objectContaining({ status: "Success" })]);
+      expect(results).toEqual([
+        expect.objectContaining({
+          status: "Success",
+        }),
+      ]);
       await expect(
         database.transaction().execute(async (transaction) => {
           await sql`select * from threads where id='a' for no key update`.execute(transaction);
-          await sql`select * from workspaces where id='a' for share`.execute(transaction);
+          await sql`select * from deployment_event_state where id='a' for share`.execute(
+            transaction,
+          );
         }),
-      ).rejects.toThrow(/lock order.*threads.*workspaces/is);
+      ).rejects.toThrow(/lock order.*threads.*deployment_event_state/is);
     } finally {
       await sql`drop schema if exists ${sql.id(schema)} cascade`.execute(database);
       await database.destroy();
     }
   });
-
   it("checks every OF target, including the second alias", async () => {
     await client.query("begin");
     try {
       await client.query("select * from threads where id='a' for no key update");
       await expect(
         client.query(
-          "select t.id from threads t join workspaces w using(id) where t.id='a' for share of t, w",
+          "select t.id from threads t join deployment_event_state w using(id) where t.id='a' for share of t, w",
         ),
-      ).rejects.toThrow(/lock order.*threads.*workspaces/is);
+      ).rejects.toThrow(/lock order.*threads.*deployment_event_state/is);
     } finally {
       await client.query("rollback");
     }
   });
-
   it.each([
-    "select t.id from threads t, workspaces w where t.id='a' and w.id='a' for share of t, w",
-    "select t.id from threads as t, pg_temp.workspaces as w where t.id='a' and w.id='a' for share",
-    "select t.id from threads t join commands c on c.id='a', workspaces w where t.id='a' and w.id='a' for share of w",
+    "select t.id from threads t, deployment_event_state w where t.id='a' and w.id='a' for share of t, w",
+    "select t.id from threads as t, pg_temp.deployment_event_state as w where t.id='a' and w.id='a' for share",
+    "select t.id from threads t join commands c on c.id='a', deployment_event_state w where t.id='a' and w.id='a' for share of w",
   ])("checks a comma-separated FROM relation: %s", async (statement) => {
     await client.query("begin");
     try {
       await client.query("select * from threads where id='a' for no key update");
-      await expect(client.query(statement)).rejects.toThrow(/lock order.*threads.*workspaces/is);
+      await expect(client.query(statement)).rejects.toThrow(
+        /lock order.*threads.*deployment_event_state/is,
+      );
     } finally {
       await client.query("rollback");
     }
   });
-
   it.each([
     "select t.id from threads t, unnest(array['a']) as u(id) where t.id=u.id for share of t",
     "select t.id from threads t, lateral (select t.id as id) x where t.id='a' for share of t",
@@ -568,13 +595,12 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-
   it("does not let an ordered batch extend backwards from a held row", async () => {
     await client.query("begin");
     try {
-      await client.query("select * from workspaces where id='b' for no key update");
+      await client.query("select * from deployment_event_state where id='b' for no key update");
       await expect(
-        client.query("select * from workspaces order by id for no key update"),
+        client.query("select * from deployment_event_state order by id for no key update"),
       ).rejects.toThrow(/lock order/is);
     } finally {
       await client.query("rollback");
@@ -593,7 +619,6 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-
   it("rejects Main Runner admission after enrollment idempotency", async () => {
     await client.query("begin");
     try {
@@ -609,7 +634,6 @@ integration("PostgreSQL global lock order checker", () => {
       await client.query("rollback");
     }
   });
-
   it("resolves advisory key expressions rather than treating parameters as the key", async () => {
     await client.query("begin");
     try {
@@ -629,26 +653,26 @@ integration("PostgreSQL global lock order checker", () => {
       try {
         await client.query("begin");
         await client.query("select * from threads where id='a' for share");
-        await client.query("update workspaces set name='mode' where id='a'");
-        await client.query("select * from workspaces where id='b' for key share");
+        await client.query("update deployment_event_state set name='mode' where id='a'");
+        await client.query("select * from deployment_event_state where id='b' for key share");
         await client.query("delete from threads where id='b'");
         const edges = Reflect.get(checker, "recordedLockOrderEdges");
         expect(edges).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               from: "threads",
-              to: "workspaces",
+              to: "deployment_event_state",
               heldMode: "SHARE",
               requestedMode: "NO KEY UPDATE",
             }),
             expect.objectContaining({
               from: "threads",
-              to: "workspaces",
+              to: "deployment_event_state",
               heldMode: "SHARE",
               requestedMode: "KEY SHARE",
             }),
             expect.objectContaining({
-              from: "workspaces",
+              from: "deployment_event_state",
               to: "threads",
               heldMode: "NO KEY UPDATE",
               requestedMode: "UPDATE",
@@ -660,19 +684,18 @@ integration("PostgreSQL global lock order checker", () => {
       }
     });
   });
-
   it("records an upgrade of an already held row instead of silently reusing its old mode", async () => {
     await checker.withLockOrderMode("record", async () => {
       try {
         await client.query("begin");
-        await client.query("select * from workspaces where id='a' for share");
+        await client.query("select * from deployment_event_state where id='a' for share");
         await client.query("select * from threads where id='a' for no key update");
-        await client.query("update workspaces set name='upgrade' where id='a'");
+        await client.query("update deployment_event_state set name='upgrade' where id='a'");
         expect(Reflect.get(checker, "recordedLockOrderEdges")).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               from: "threads",
-              to: "workspaces",
+              to: "deployment_event_state",
               heldMode: "NO KEY UPDATE",
               requestedMode: "NO KEY UPDATE",
             }),
@@ -683,9 +706,11 @@ integration("PostgreSQL global lock order checker", () => {
       }
     });
   });
-
   it("records no lock order in off mode but still every deadlock and serialization failure", async () => {
-    const pool = new Pool({ connectionString: process.env.OPENSTEER_TEST_DATABASE_URL, max: 2 });
+    const pool = new Pool({
+      connectionString: process.env.OPENSTEER_TEST_DATABASE_URL,
+      max: 2,
+    });
     try {
       await checker.withLockOrderMode("off", async () => {
         const edges = checker.recordedLockOrderEdges.length;
@@ -694,14 +719,15 @@ integration("PostgreSQL global lock order checker", () => {
         try {
           await client.query("select * from threads where id='a' for no key update");
           await expect(
-            client.query("select * from workspaces where id='a' for no key update"),
-          ).resolves.toMatchObject({ rowCount: 1 });
+            client.query("select * from deployment_event_state where id='a' for no key update"),
+          ).resolves.toMatchObject({
+            rowCount: 1,
+          });
         } finally {
           await client.query("rollback");
         }
         expect(checker.recordedLockOrderEdges.slice(edges)).toEqual([]);
         expect(checker.recordedLockOrderViolations.slice(violations)).toEqual([]);
-
         checker.takeTransactionConflicts();
         await pool.query("create table lock_order_off_conflicts (id text primary key, n int)");
         const [first, second] = [await pool.connect(), await pool.connect()];
@@ -712,9 +738,10 @@ integration("PostgreSQL global lock order checker", () => {
           await second.query("update lock_order_off_conflicts set n = 1 where id = 'a'");
           await expect(
             first.query("update lock_order_off_conflicts set n = 2 where id = 'a'"),
-          ).rejects.toMatchObject({ code: "40001" });
+          ).rejects.toMatchObject({
+            code: "40001",
+          });
           await first.query("rollback");
-
           for (const connection of [first, second]) await connection.query("begin");
           await first.query("update lock_order_off_conflicts set n = 3 where id = 'a'");
           await second.query("update lock_order_off_conflicts set n = 3 where id = 'b'");
@@ -740,14 +767,13 @@ integration("PostgreSQL global lock order checker", () => {
       await pool.end();
     }
   });
-
   it("observes a scope opened before its transaction, under any inherited mode", async () => {
     const start = checker.recordedLockOrderEdges.length;
     await checker.withLockOrderMode("off", () =>
       checker.withLockOrderMode("enforce", async () => {
         await client.query("begin");
         try {
-          await client.query("select * from workspaces where id='a' for no key update");
+          await client.query("select * from deployment_event_state where id='a' for no key update");
           await client.query("select * from threads where id='a' for no key update");
         } finally {
           await client.query("rollback");
@@ -755,10 +781,12 @@ integration("PostgreSQL global lock order checker", () => {
       }),
     );
     expect(checker.recordedLockOrderEdges.slice(start)).toEqual([
-      expect.objectContaining({ from: "workspaces", to: "threads" }),
+      expect.objectContaining({
+        from: "deployment_event_state",
+        to: "threads",
+      }),
     ]);
   });
-
   it("repairs pgrowlocks after schema recreation on the same client", async () => {
     await client.query("begin");
     await client.query("rollback");
@@ -768,8 +796,10 @@ integration("PostgreSQL global lock order checker", () => {
     try {
       await client.query("begin");
       await expect(
-        client.query("select * from workspaces where id='a' for share"),
-      ).resolves.toMatchObject({ rowCount: 1 });
+        client.query("select * from deployment_event_state where id='a' for share"),
+      ).resolves.toMatchObject({
+        rowCount: 1,
+      });
     } finally {
       await client.query("rollback");
       await client.query("create extension if not exists pgrowlocks");
@@ -817,13 +847,23 @@ integration("PostgreSQL global lock order checker", () => {
         await client.query("begin");
         await expect(
           client.query(
-            "insert into threads values ('batch', 'new'); update workspaces set name='batch' where id='a'; update threads set name='batch' where id='a';",
+            "insert into threads values ('batch', 'new'); update deployment_event_state set name='batch' where id='a'; update threads set name='batch' where id='a';",
           ),
-        ).resolves.toMatchObject([{ rowCount: 1 }, { rowCount: 1 }, { rowCount: 1 }]);
+        ).resolves.toMatchObject([
+          {
+            rowCount: 1,
+          },
+          {
+            rowCount: 1,
+          },
+          {
+            rowCount: 1,
+          },
+        ]);
         expect(Reflect.get(checker, "recordedLockOrderEdges")).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
-              from: "workspaces",
+              from: "deployment_event_state",
               to: "threads",
               heldMode: "NO KEY UPDATE",
               requestedMode: "NO KEY UPDATE",
@@ -835,7 +875,6 @@ integration("PostgreSQL global lock order checker", () => {
       }
     });
   });
-
   it("tracks a pinned session advisory across transaction boundaries until unlock", async () => {
     await checker.withLockOrderMode("record", async () => {
       try {
@@ -843,13 +882,13 @@ integration("PostgreSQL global lock order checker", () => {
           "select pg_advisory_lock(hashtextextended('opensteer-connect:dep_checker', 0))",
         );
         await client.query("begin");
-        await client.query("select * from workspaces where id='a' for no key update");
+        await client.query("select * from deployment_event_state where id='a' for no key update");
         await client.query("commit");
         expect(Reflect.get(checker, "recordedLockOrderEdges")).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               from: "advisory:connect",
-              to: "workspaces",
+              to: "deployment_event_state",
               heldMode: "UPDATE",
               requestedMode: "NO KEY UPDATE",
             }),
@@ -860,7 +899,7 @@ integration("PostgreSQL global lock order checker", () => {
         );
         checker.recordedLockOrderEdges.splice(0);
         await client.query("begin");
-        await client.query("select * from workspaces where id='a' for no key update");
+        await client.query("select * from deployment_event_state where id='a' for no key update");
         expect(checker.recordedLockOrderEdges).toEqual([]);
       } finally {
         await client.query("rollback");

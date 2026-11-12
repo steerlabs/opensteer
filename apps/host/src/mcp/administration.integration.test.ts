@@ -1,3 +1,7 @@
+import {
+  enrollTestRunner,
+  personalBrowserRepository,
+} from "@opensteer/database/test-support/store";
 import { createId, SpecialistManifestSchema, type UserId } from "@opensteer/core";
 import {
   IntegrationPlatformStore,
@@ -24,24 +28,21 @@ import {
 } from "../administration/administration-service.js";
 import { BrowserService } from "../browser/browser-service.js";
 import { ChannelService } from "../channels/channel-service.js";
-import { WorkspaceService } from "../workspace/workspace-service.js";
-import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
 import {
   AdministrationToolHandlers,
   administrationToolHandlers,
 } from "./handlers/administration.js";
-import type { AgentToolHandlers } from "./handlers/index.js";
+import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
 function mcp(dependencies: AdministrationDependencies, userId: UserId) {
-  let caller: AgentCaller = {
+  const caller: AgentCaller = {
     kind: "connection",
     connectionId: "administration-test",
     key: "connection:administration-test",
     userId,
     accessMode: "full-access",
-    reach: { kind: "user" },
   };
   const handlers = administrationToolHandlers(
     new AdministrationToolHandlers(
@@ -61,9 +62,6 @@ function mcp(dependencies: AdministrationDependencies, userId: UserId) {
       const result = await service.callTool("token", name, input, { operationKey: randomUUID() });
       if (typeof result === "string") throw new Error(`${name} returned text, not a record`);
       return result;
-    },
-    scope: (workspaceId: Parameters<typeof dependencies.store.getWorkspaceForOwner>[0]) => {
-      caller = { ...caller, reach: { kind: "workspace", workspaceId } };
     },
   };
 }
@@ -108,21 +106,12 @@ describeStore("MCP administration", (it) => {
     "configure_model",
     "remember_execution",
     "set_time_zone",
-    "set_notifications",
-    "set_icon",
-    "set_color",
     "computer_rename",
   ] as const) {
     it(`replays ${action} after a person changes it and refuses changed input`, async ({
       storeFixture: f,
     }) => {
       const run = await f.createRunFixture(`retry-${action}`);
-      await f.database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", run.userId)
-        .execute();
-      const project = await f.createProjectWorkspace(run.userId, `retry-target-${action}`);
       const other = await f.store.createHarnessInstance({
         config: {},
         driverKind: run.harnessInstance.driverKind,
@@ -134,8 +123,6 @@ describeStore("MCP administration", (it) => {
         {
           store: f.store,
           realtime: { broadcast: vi.fn(), publishNotificationPreference: vi.fn() },
-          workspaces: { setIcon: f.store.setWorkspaceIcon.bind(f.store) },
-          commands: { setWorkspaceColor: f.store.setWorkspaceColor.bind(f.store) },
           runners: {
             identityForEnvironment: () => ({
               modules: {
@@ -223,46 +210,6 @@ describeStore("MCP administration", (it) => {
           };
           observe = () => f.store.notificationState.timeZoneFor(run.userId);
           break;
-        case "set_notifications":
-          name = "project_write";
-          input = { action, workspaceId: project.id, muted: true };
-          different = { muted: false };
-          person = {
-            type: "workspace.notifications.update",
-            workspaceId: project.id,
-            muted: false,
-            idempotencyKey: randomUUID(),
-          };
-          observe = () =>
-            f.store.notificationState.listWorkspacePreferences({
-              userId: run.userId,
-              workspaceIds: [project.id],
-            });
-          break;
-        case "set_icon":
-          name = "project_write";
-          input = { action, workspaceId: project.id, icon: "folder" };
-          different = { icon: "code" };
-          person = {
-            type: "workspace.icon.set",
-            workspaceId: project.id,
-            icon: "code",
-            idempotencyKey: randomUUID(),
-          };
-          observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-          break;
-        case "set_color":
-          name = "project_write";
-          input = { action, workspaceId: project.id, color: "blue" };
-          different = { color: "green" };
-          person = {
-            type: "workspace.color.set",
-            workspaceId: project.id,
-            color: "green",
-            idempotencyKey: randomUUID(),
-          };
-          observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-          break;
         case "computer_rename":
           name = "computer_write";
           input = { action: "rename", machineId: run.runnerId, name: "A" };
@@ -286,8 +233,7 @@ describeStore("MCP administration", (it) => {
           agent,
           name,
           input,
-          () =>
-            service.execute({ kind: "person", userId: run.userId, isAdministrator: true }, person),
+          () => service.execute({ kind: "person", userId: run.userId }, person),
           observe,
           different,
         );
@@ -296,85 +242,6 @@ describeStore("MCP administration", (it) => {
       }
     });
   }
-
-  it("replays Project deletion, recovery and storage retry after intervening person commands", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("project-retry");
-    const project = await f.createProjectWorkspace(run.userId, "project-retry-target");
-    await f.database
-      .updateTable("workspaces")
-      .set({
-        backing: {
-          ...project.backing,
-          ...(run.workspace.backing.kind === "local-directory"
-            ? {
-                storageAuthorityId: run.workspace.backing.storageAuthorityId,
-                ownerEnvironmentId: run.workspace.backing.ownerEnvironmentId,
-              }
-            : {}),
-        },
-      })
-      .where("id", "=", project.id)
-      .execute();
-    const workspaces = new WorkspaceService({
-      store: f.store,
-      shape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
-      resolveOwnerEnvironmentId: async () => run.environmentId,
-      drivers: { local: { inspect: async () => ({ status: "ready", issue: null }) } as never },
-    });
-    const deletion = new WorkspaceDeletionService({
-      store: f.store,
-      drivers: { local: { destroy: vi.fn() } },
-      retentionDays: 7,
-      terminateRuns: async () => {},
-      onWorkspaceEvent: vi.fn(),
-      onError: (error) => {
-        throw error;
-      },
-    });
-    const agent = mcp(
-      {
-        store: f.store,
-        workspaces,
-        workspaceDeletion: deletion,
-        apps: { stopWorkspace: vi.fn() },
-        realtime: { broadcast: vi.fn(), sendToUsers: vi.fn() },
-        integrations: { platform: { store: new IntegrationPlatformStore(f.database) } },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    const observe = () => f.store.getWorkspaceForOwner(project.id, run.userId);
-    try {
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "retry_storage", workspaceId: project.id },
-        () => deletion.requestDeletion(project.id, run.userId),
-        observe,
-        { action: "recover" },
-      );
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "recover", workspaceId: project.id },
-        () => deletion.requestDeletion(project.id, run.userId),
-        observe,
-        { action: "delete" },
-      );
-      await deletion.recover(project.id, run.userId);
-      await retryAfterPersonChange(
-        agent,
-        "project_write",
-        { action: "delete", workspaceId: project.id },
-        () => deletion.recover(project.id, run.userId),
-        observe,
-        { action: "recover" },
-      );
-    } finally {
-      await agent.service.close();
-    }
-  });
 
   it("rolls back the domain write with its result and serializes concurrent command keys", async ({
     storeFixture: f,
@@ -427,113 +294,15 @@ describeStore("MCP administration", (it) => {
     });
   });
 
-  it("refuses Main deletion, deletes and recovers a Project, and notifies another device", async ({
-    storeFixture: f,
-  }) => {
-    const run = await f.createRunFixture("admin-project");
-    const project = await f.createProjectWorkspace(run.userId, "admin-project-target");
-    const other = await f.createProjectWorkspace(run.userId, "admin-other");
-    const rt = realtime(f.store, run.userId);
-    const deletion = new WorkspaceDeletionService({
-      drivers: { local: { destroy: vi.fn() } },
-      store: f.store,
-      retentionDays: 7,
-      onError: (error) => {
-        throw error;
-      },
-      onWorkspaceEvent: (event) => rt.hub.publish(event),
-      terminateRuns: async () => {},
-    });
-    const agent = mcp(
-      {
-        store: f.store,
-        realtime: rt.hub,
-        workspaces: { setIcon: f.store.setWorkspaceIcon.bind(f.store) },
-        workspaceDeletion: deletion,
-        apps: { stopWorkspace: vi.fn() },
-        integrations: { platform: { store: new IntegrationPlatformStore(f.database) } },
-      } as unknown as AdministrationDependencies,
-      run.userId,
-    );
-    try {
-      await expect(
-        agent.call("project_write", { action: "delete", workspaceId: run.workspace.id }),
-      ).rejects.toThrow("Main cannot be deleted");
-      const markInput = {
-        action: "set_icon",
-        workspaceId: project.id,
-        icon: "folder",
-        operationKey: "mark-once",
-      };
-      const marked = await agent.call("project_write", markInput);
-      expect(await agent.call("project_write", markInput)).toEqual(marked);
-      await expect(
-        agent.call("project_write", { ...markInput, icon: "code" }),
-      ).rejects.toMatchObject({ code: "conflict" });
-      expect(
-        await f.database
-          .selectFrom("commands")
-          .select("id")
-          .where("type", "=", "workspace.icon.set")
-          .execute(),
-      ).toHaveLength(1);
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        icon: "folder",
-      });
-      const mark = await f.database
-        .selectFrom("commands")
-        .select("authoritySource")
-        .where("type", "=", "workspace.icon.set")
-        .executeTakeFirstOrThrow();
-      expect(mark.authoritySource).toMatchObject({ kind: "mcp", callerKind: "connection" });
-      await agent.call("project_write", { action: "delete", workspaceId: project.id });
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        status: "deleting",
-      });
-      await agent.call("project_write", { action: "recover", workspaceId: project.id });
-      expect(await f.store.getWorkspaceForOwner(project.id, run.userId)).toMatchObject({
-        status: "unavailable",
-      });
-      await vi.waitFor(
-        () =>
-          expect(
-            rt.messages.filter((message) => message.type === "host.machines.changed"),
-            "another device never received the administration change",
-          ).toHaveLength(3),
-        { timeout: 2000 },
-      );
-      expect(
-        rt.messages.filter((message) => message.type === "host.plugins-changed"),
-        "Settings on another device was never told the Project's plugin places changed",
-      ).toHaveLength(1);
-      agent.scope(project.id);
-      await expect(
-        agent.call("project_write", { action: "delete", workspaceId: other.id }),
-      ).rejects.toThrow("outside the caller's reach");
-      expect(await f.store.getWorkspaceForOwner(other.id, run.userId)).toMatchObject({
-        status: "ready",
-      });
-    } finally {
-      rt.release();
-      await agent.service.close();
-    }
-  });
-  it("erases history, revokes a profile grant and preserves the scoped connection's boundary", async ({
+  it("erases personal browser history with replay and notifies other devices", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-browser");
     const browserRunnerId = await f.enrollBrowserRunner(run.userId, "Browser");
-    const project = await f.createProjectWorkspace(run.userId, "admin-browser-target");
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Private",
       idempotencyKey: "private-profile",
-    });
-    const grant = await f.store.createBrowserProfileGrant({
-      access: "read-write",
-      createdBy: run.userId,
-      profileId: profile.id,
-      workspaceId: project.id,
     });
     await f.store.browserHistory.recordVisit({
       ownerId: run.userId,
@@ -544,13 +313,14 @@ describeStore("MCP administration", (it) => {
     });
     const rt = realtime(f.store, run.userId);
     const browser = new BrowserService({
+      deploymentId: run.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
-      repository: f.store,
+      repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: () => {},
-      onWorkspaceEvent: (event) => rt.hub.publish(event),
-      onProfilesChanged: (ownerId, workspaceId) =>
-        rt.hub.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
+      onDeploymentEvent: (event) => rt.hub.publish(event),
+      onProfilesChanged: (ownerId) =>
+        rt.hub.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
       onHistoryChanged: (ownerId, profileId) =>
         rt.hub.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
     });
@@ -615,35 +385,6 @@ describeStore("MCP administration", (it) => {
             .execute(),
         ),
       ).not.toContain("https://example.test/history");
-      agent.scope(run.workspace.id);
-      await expect(
-        agent.call("browser_profile_write", { action: "revoke_grant", grantId: grant.grantId }),
-      ).rejects.toThrow("outside the caller's reach");
-      agent.scope(project.id);
-      await expect(
-        agent.call("browser_profile_write", {
-          action: "rename",
-          profileId: profile.id,
-          name: "Other",
-        }),
-      ).rejects.toThrow("user-wide reach");
-      await retryAfterPersonChange(
-        agent,
-        "browser_profile_write",
-        { action: "revoke_grant", grantId: grant.grantId },
-        () =>
-          f.store.createBrowserProfileGrant({
-            access: "read-write",
-            createdBy: run.userId,
-            profileId: profile.id,
-            workspaceId: project.id,
-          }),
-        () => f.store.listActiveBrowserProfileGrants(run.userId),
-        { action: "remove_site", workspaceId: project.id, site: "https://example.test" },
-      );
-      // Deletion remains a user-wide operation.
-      agent.scope(project.id);
-
       await vi.waitFor(
         () =>
           expect(
@@ -669,11 +410,12 @@ describeStore("MCP administration", (it) => {
       idempotencyKey: "old-profile",
     });
     const browser = new BrowserService({
+      deploymentId: run.deploymentId,
       hostOrigin: new URL("http://127.0.0.1"),
-      repository: f.store,
+      repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: vi.fn(),
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       onProfilesChanged: vi.fn(),
     });
     const sources = new BrowserSourceStore(f.database);
@@ -691,7 +433,7 @@ describeStore("MCP administration", (it) => {
       .execute();
     const site = {
       ownerId: run.userId,
-      workspaceId: run.workspace.id,
+      deploymentId: run.deploymentId,
       site: "https://example.test",
       preferredSourceId: sourceId,
     };
@@ -722,7 +464,7 @@ describeStore("MCP administration", (it) => {
       await retryAfterPersonChange(
         agent,
         "browser_profile_write",
-        { action: "remove_site", workspaceId: run.workspace.id, site: site.site },
+        { action: "remove_site", site: site.site },
         () => sources.upsertGrant(site),
         () =>
           f.database
@@ -786,21 +528,31 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-computer");
+    const targetRunnerId = createId("runner");
     await f.database
-      .updateTable("runners")
-      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
-      .where("id", "=", run.runnerId)
+      .updateTable("personalRemoteAccess")
+      .set({ mode: "private", routeOrigin: "https://personal.mcp.test", generation: 1 })
       .execute();
+    await enrollTestRunner(f.store, {
+      createdBy: run.userId,
+      environmentId: run.environmentId,
+      runnerId: targetRunnerId,
+      runnerKind: "local",
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
+      name: "Removed computer",
+      tokenSuffix: targetRunnerId,
+    });
     const profile = await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Removed browser",
-      homeRunnerId: run.runnerId,
+      homeRunnerId: targetRunnerId,
       idempotencyKey: "removed-profile",
     });
     await f.store.bindBrowserProfile({
       version: 1,
       deploymentId: (await f.store.getDeployment())!.id,
-      runnerId: run.runnerId,
+      runnerId: targetRunnerId,
       profileId: profile.id,
       bindingId: randomUUID(),
       storageInstanceId: randomUUID(),
@@ -808,34 +560,30 @@ describeStore("MCP administration", (it) => {
     });
     const session = await f.store.createBrowserSession({
       id: `bsn_${randomUUID()}` as import("@opensteer/protocol").BrowserSessionId,
-      runnerId: run.runnerId,
+      runnerId: targetRunnerId,
       profileId: profile.id,
-      workspaceId: run.workspace.id,
-      placementKey: `runner:${run.runnerId}:browser`,
-      origin: "workspace",
+      placementKey: `runner:${targetRunnerId}:browser`,
+      origin: "agent",
+      ownerId: run.userId,
       runtimeId: "browser",
     });
     const rt = realtime(f.store, run.userId);
     const browser = new BrowserService({
+      deploymentId: run.deploymentId,
       hostOrigin: new URL("https://host.test"),
-      repository: f.store,
+      repository: personalBrowserRepository(f.store),
       signer: {} as never,
       onSessionsChanged: () => undefined,
-      onWorkspaceEvent: () => undefined,
-      onProfilesChanged: (ownerId, workspaceId) =>
-        rt.hub.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
+      onDeploymentEvent: () => undefined,
+      onProfilesChanged: (ownerId) =>
+        rt.hub.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
     });
     const abandonSession = vi.spyOn(browser, "abandonSession");
-    await f.database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", run.userId)
-      .execute();
     const revoked = vi.fn(async () => {
       const runner = await f.database
         .selectFrom("runners")
         .select("revokedAt")
-        .where("id", "=", run.runnerId)
+        .where("id", "=", targetRunnerId)
         .executeTakeFirstOrThrow();
       expect(runner.revokedAt).toBeInstanceOf(Date);
     });
@@ -860,13 +608,13 @@ describeStore("MCP administration", (it) => {
       await retryAfterPersonChange(
         agent,
         "computer_write",
-        { action: "revoke", machineId: run.runnerId },
+        { action: "revoke", machineId: targetRunnerId },
         () => f.store.rememberExecutionChoice(run.userId, { accessMode: "approval-required" }),
         () =>
           f.database
             .selectFrom("runners")
             .select(["revokedAt", "connectionGeneration"])
-            .where("id", "=", run.runnerId)
+            .where("id", "=", targetRunnerId)
             .executeTakeFirstOrThrow(),
         { machineId: createId("runner") },
       );
@@ -875,10 +623,9 @@ describeStore("MCP administration", (it) => {
       expect(await f.store.getBrowserProfile(profile.id, run.userId)).toBeNull();
       expect(rt.messages).toContainEqual({
         type: "host.browser-sessions-changed",
-        workspaceId: run.workspace.id,
       });
       expect(rt.messages).toContainEqual({ type: "host.machines.changed" });
-      expect(await f.store.effectiveMachineOwner(run.runnerId)).toBeNull();
+      expect(await f.store.effectiveMachineOwner(targetRunnerId)).toBeNull();
     } finally {
       await agent.service.close();
       await browser.close();
@@ -902,7 +649,7 @@ describeStore("MCP administration", (it) => {
       relay: { connectedRunnerIds: () => [], supports: () => true } as never,
       runners: {} as never,
       onExecutionQueued: () => {},
-      onWorkspaceEvent: () => {},
+      onDeploymentEvent: () => {},
       onChanged: changed,
     });
     const agent = mcp(
@@ -962,11 +709,10 @@ describeStore("MCP administration", (it) => {
       await channels.close();
     }
   });
-  it("lists ready specialist summaries and reverses plugin activation", async ({
+  it("lists ready specialist summaries and reverses the personal plugin switch", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("admin-plugin");
-    const project = await f.createProjectWorkspace(run.userId, "admin-plugin-target");
     const platform = new IntegrationPlatformStore(f.database);
     const pluginId = randomUUID();
     await platform.plugins.install({
@@ -983,21 +729,14 @@ describeStore("MCP administration", (it) => {
       }),
     });
     const specialist = await platform.specialists.add({
-      workspaceId: project.id,
       pluginId,
       actorUserId: run.userId,
     });
     await f.enrollBrowserRunner(run.userId, "Browser");
-    const profile = await f.store.createBrowserProfile({
+    await f.store.createBrowserProfile({
       ownerId: run.userId,
       name: "Research",
       idempotencyKey: "admin-research",
-    });
-    await f.store.createBrowserProfileGrant({
-      access: "read-write",
-      createdBy: run.userId,
-      profileId: profile.id,
-      workspaceId: project.id,
     });
     const agent = mcp(
       {
@@ -1008,7 +747,7 @@ describeStore("MCP administration", (it) => {
       run.userId,
     );
     try {
-      await agent.call("plugin_manage", { action: "list", workspaceId: project.id });
+      await agent.call("plugin_manage", { action: "list" });
       expect(
         (
           await f.database
@@ -1021,30 +760,18 @@ describeStore("MCP administration", (it) => {
       await retryAfterPersonChange(
         agent,
         "plugin_manage",
-        { action: "deactivate", workspaceId: project.id, pluginId },
-        () =>
-          platform.plugins.setActivation({
-            workspaceId: project.id,
-            pluginId,
-            active: true,
-            actorUserId: run.userId,
-          }),
-        () => platform.plugins.current(project.id),
-        { action: "activate" },
+        { action: "disable", pluginId },
+        () => setPluginEnabled(platform, run.userId, pluginId, true),
+        () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
+        { action: "enable" },
       );
       await retryAfterPersonChange(
         agent,
         "plugin_manage",
-        { action: "activate", workspaceId: project.id, pluginId },
-        () =>
-          platform.plugins.setActivation({
-            workspaceId: project.id,
-            pluginId,
-            active: false,
-            actorUserId: run.userId,
-          }),
-        () => platform.plugins.current(project.id),
-        { action: "deactivate" },
+        { action: "enable", pluginId },
+        () => setPluginEnabled(platform, run.userId, pluginId, false),
+        () => platform.settings.detail(run.userId, { kind: "plugin", pluginId }),
+        { action: "disable" },
       );
     } finally {
       await agent.service.close();
@@ -1054,11 +781,6 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("plugin-retries");
-    await f.database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", run.userId)
-      .execute();
     const store = new IntegrationPlatformStore(f.database);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-admin-plugin-"));
     const source = join(directory, "source");
@@ -1075,7 +797,7 @@ describeStore("MCP administration", (it) => {
       mcpOauth: {},
       secretVault: {},
       isRunnerConnected: () => false,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
     } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
@@ -1135,7 +857,6 @@ describeStore("MCP administration", (it) => {
         specialistManifest,
       });
       const specialist = await store.specialists.add({
-        workspaceId: run.workspace.id,
         pluginId,
         actorUserId: run.userId,
       });
@@ -1143,14 +864,13 @@ describeStore("MCP administration", (it) => {
       await retryAfterPersonChange(
         agent,
         "plugin_manage",
-        { action: "remove_specialist", workspaceId: run.workspace.id, specialistId: specialist.id },
+        { action: "remove_specialist", specialistId: specialist.id },
         () =>
           store.specialists.add({
-            workspaceId: run.workspace.id,
             pluginId,
             actorUserId: run.userId,
           }),
-        () => store.specialists.summaries(run.workspace.id, run.userId),
+        () => store.specialists.summaries(run.userId),
         { specialistId: randomUUID() },
       );
       await retryAfterPersonChange(
@@ -1251,11 +971,6 @@ describeStore("MCP administration", (it) => {
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("integration-uninstall-retry");
-    await f.database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", run.userId)
-      .execute();
     const store = new IntegrationPlatformStore(f.database);
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
@@ -1334,7 +1049,7 @@ describeStore("MCP administration", (it) => {
       mcpOauth: {},
       secretVault: {},
       isRunnerConnected: () => false,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
     } as unknown as ConstructorParameters<typeof IntegrationPlatformService>[0]);
@@ -1403,7 +1118,6 @@ describeStore("MCP administration", (it) => {
       .insertInto("integrationGrants")
       .values({
         id: grantId,
-        workspaceId: run.workspace.id,
         ownerUserId: run.userId,
         installationId,
         connectionId: null,
@@ -1429,13 +1143,12 @@ describeStore("MCP administration", (it) => {
       await retryAfterPersonChange(
         agent,
         "integration_manage",
-        { action: "revoke_grant", workspaceId: run.workspace.id, grantId },
+        { action: "revoke_grant", grantId },
         async () => {
           await f.database
             .insertInto("integrationGrants")
             .values({
               id: createIntegrationId("grant"),
-              workspaceId: run.workspace.id,
               ownerUserId: run.userId,
               installationId,
               connectionId: null,
@@ -1447,12 +1160,10 @@ describeStore("MCP administration", (it) => {
             })
             .execute();
         },
-        () => platform.listGrants({ ownerUserId: run.userId, workspaceId: run.workspace.id }),
+        () => platform.listGrants({ ownerUserId: run.userId }),
         { grantId: createIntegrationId("grant") },
       );
-      expect(
-        await platform.listGrants({ ownerUserId: run.userId, workspaceId: run.workspace.id }),
-      ).toHaveLength(1);
+      expect(await platform.listGrants({ ownerUserId: run.userId })).toHaveLength(1);
       expect(
         await f.database
           .selectFrom("integrationGrants")
@@ -1468,3 +1179,20 @@ describeStore("MCP administration", (it) => {
     }
   });
 });
+
+async function setPluginEnabled(
+  platform: IntegrationPlatformStore,
+  owner: UserId,
+  pluginId: string,
+  enabled: boolean,
+) {
+  const target = { kind: "plugin" as const, pluginId };
+  const detail = await platform.settings.detail(owner, target);
+  return platform.settings.setEnabled(owner, {
+    type: "settings.plugin.enabled.set",
+    idempotencyKey: randomUUID(),
+    target,
+    enabled,
+    expectedRevision: detail.row.placement.revision,
+  });
+}

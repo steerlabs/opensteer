@@ -130,7 +130,7 @@ const selectAttention = (snapshot: HostSnapshot): number =>
  *
  * It carries the number of questions waiting on the reader, in the amber the
  * sidebar marks each of their tasks with: a question asked in some task is
- * otherwise invisible from Chat until the sidebar happens to be opened.
+ * otherwise invisible from Home until the sidebar happens to be opened.
  * Docked, the sidebar is in view with those marks on its rows, so the slot is
  * empty: there is nothing to open, and the destination has no Back.
  */
@@ -150,7 +150,7 @@ export function useSidebarMenu(hostClient: HostClient | null): void {
       return;
     }
     const menu: HeaderActionSpec = {
-      accessibilityHint: "Shows Chat, your tasks, Tabs, Automations, Projects and Settings",
+      accessibilityHint: "Shows your tasks, teams, Tabs, Automations and Settings",
       accessibilityLabel: attention === 0 ? "Menu" : `Menu, ${attentionPhrase(attention)}`,
       ...(attention === 0 ? {} : { badge: attentionBadge(attention) }),
       icon: "line.3.horizontal",

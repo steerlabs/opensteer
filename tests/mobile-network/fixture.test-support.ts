@@ -1,13 +1,51 @@
 import {
   connectCallerMachine,
+  createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  type MachineAccessHost,
-} from "../../apps/host/src/runtime/machine-access.test-support.js";
+  startPrivateMachineHost,
+} from "../../apps/host/src/integrations/personal-machine.test-support.js";
+import { HarnessInstanceIdSchema } from "../../packages/core/src/index.js";
+import { createBrowserSessionId } from "../../packages/protocol/src/index.js";
+
+import type { MachineAccessHost } from "../../apps/host/src/runtime/machine-access.test-support.js";
+import type { createDatabase } from "../../packages/database/src/connection.js";
+import type { PendingAgentEvent } from "../../packages/protocol/src/index.js";
+import type {
+  EnvironmentId,
+  HarnessInstanceId,
+  RunnerId,
+  RunId,
+} from "../../packages/core/src/index.js";
+
+export interface BenchmarkRun {
+  readonly runId: RunId;
+  readonly attempt: { readonly nextOrdinal: number; readonly bindingGeneration: number };
+  complete(): Promise<void>;
+  openLiveRequest(): Promise<void>;
+}
+export interface BenchmarkCaller {
+  readonly runnerId: RunnerId;
+  readonly environmentId: EnvironmentId;
+  readonly harnessInstanceId: HarnessInstanceId;
+  startRun(input: {
+    readonly key: string;
+    readonly title: string;
+    readonly threadId: ThreadId;
+  }): Promise<BenchmarkRun>;
+  commitEvent(event: PendingAgentEvent): Promise<void>;
+  close(): Promise<void>;
+}
+export interface MobileNetworkHost extends MachineAccessHost {
+  readonly database: ReturnType<typeof createDatabase>;
+  readonly ownerHeaders: Readonly<Record<string, string>>;
+  connectHostingCaller(): Promise<BenchmarkCaller>;
+  seedSuspendedTabs(caller: BenchmarkCaller, count: number): Promise<void>;
+}
+export type MobileNetworkHostFactory = (databaseUrl: string) => Promise<MobileNetworkHost>;
+
 import {
   AgentEventSchema,
   createId,
-  HarnessInstanceIdSchema,
   MessageSchema,
   ModelSelectionSchema,
   type AgentEvent,
@@ -16,58 +54,145 @@ import {
 } from "../../packages/core/src/index.js";
 import { PendingAgentEventSchema } from "../../packages/protocol/src/index.js";
 import { eventFromRow, jsonValue } from "../../packages/database/src/store-primitives.js";
-import { WorkspaceTabStore } from "../../packages/database/src/workspace-tab-store.js";
-import {
-  BrowserSurfaceIdSchema,
-  createBrowserSessionId,
-} from "../../packages/protocol/src/index.js";
+
+export async function startMobileNetworkHost(databaseUrl: string): Promise<MobileNetworkHost> {
+  const clone = await createMachineAccessDatabase(databaseUrl);
+  let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
+  try {
+    host = await startPrivateMachineHost(clone.url, { remoteAccess: true });
+    const active = host;
+    return {
+      ...active,
+      database: active.store.database,
+      connectHostingCaller: async () => {
+        const caller = await connectCallerMachine(active, {
+          name: "Benchmark computer",
+          maxConcurrentRuns: 8,
+          token: active.hostingRunnerEnrollmentToken,
+        });
+        return {
+          runnerId: caller.runnerId,
+          environmentId: caller.environmentId,
+          harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
+          startRun: async (input) => {
+            const run = await dispatchCallerRun(active, caller, input);
+            return {
+              ...run,
+              openLiveRequest: async () => {
+                await run.openLiveRequest();
+              },
+            };
+          },
+          commitEvent: async (event) => {
+            await active.store.commitRunnerEvent({
+              environmentId: caller.environmentId,
+              event,
+              runnerId: caller.runnerId,
+              runnerBootId: caller.primary.bootId,
+            });
+          },
+          close: () => caller.close(),
+        };
+      },
+      seedSuspendedTabs: async (caller, count) => {
+        const createdAt = new Date();
+        for (let index = 0; index < count; index++) {
+          const id = createBrowserSessionId();
+          await active.store.database.transaction().execute(async (transaction) => {
+            await transaction
+              .insertInto("browserSessions")
+              .values({
+                id,
+                tabGroupId: id,
+                tabRevision: 1,
+                origin: "person",
+                opener: null,
+                placementKey: `runner:${caller.runnerId}:browser`,
+                profileId: null,
+                runnerId: caller.runnerId,
+                runtimeId: "benchmark-browser",
+                state: "closed",
+                createdAt,
+                updatedAt: createdAt,
+                closedAt: null,
+              })
+              .execute();
+            await transaction
+              .insertInto("personalTabs")
+              .values({
+                id: `benchmark-${index}`,
+                groupId: id,
+                sessionId: id,
+                title: `Saved tab ${index}`,
+                url: `https://example.test/${index}`,
+                order: 0,
+                openerId: null,
+                state: "suspended",
+                createdAt,
+                closedAt: null,
+              })
+              .execute();
+          });
+        }
+      },
+      close: async () => {
+        try {
+          await active.close();
+        } finally {
+          await clone.drop();
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      await host?.close();
+    } finally {
+      await clone.drop();
+    }
+    throw error;
+  }
+}
 
 export type SeedName = "light" | "heavy" | "busy-subagents";
 
 /** Real store commands establish authority; bulk history uses the integration fixtures' DB path. */
-export async function seedWorkspace(
-  host: MachineAccessHost,
+export async function seedPersonal(
+  host: MobileNetworkHost,
   seed: SeedName,
   cleanup: (() => Promise<unknown>)[],
 ) {
-  const caller = await connectCallerMachine(host, {
-    name: "Benchmark computer",
-    token: await enrollmentToken(host, {
-      allowedModules: ["agents"],
-      idempotencyKey: "bench-runner",
-      name: "Benchmark computer",
-    }),
-  });
+  const caller = await host.connectHostingCaller();
   cleanup.push(() => caller.close());
-  const main = await host.store.findMainWorkspaceForOwner(host.ownerId);
-  if (!main) throw new Error("Owner bootstrap did not create Main");
-  const workspace = main;
-  const createThread = async (key: string, home = false) =>
-    (
-      await host.store.createThread({
-        createdBy: host.ownerId,
-        environmentId: caller.environmentId,
-        harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
-        home,
-        idempotencyKey: key,
-        modelSelection: ModelSelectionSchema.parse({
-          modelId: "gpt-5.6-sol",
-          providerId: "openai",
-          options: { effort: "low" },
-        }),
-        title: home ? "Chat" : `Benchmark task ${key}`,
-        workspaceId: workspace.id,
-      })
-    ).thread.id;
-  const homeThreadId = workspace.homeThreadId ?? (await createThread("home", true));
-  const historyRun = await dispatchCallerRun(host, caller, {
+  const boot = await host.api["bootstrap.get"]({});
+  if (!boot.ok) throw new Error(boot.error.message);
+  const deploymentId = boot.data.deploymentId;
+  const createThread = async (key: string) => {
+    const result = await host.api["commands.dispatch"]({
+      type: "thread.create",
+      environmentId: caller.environmentId,
+      harnessInstanceId: caller.harnessInstanceId,
+      folder: host.agentHome,
+      idempotencyKey: `benchmark:${key}`,
+      title: `Benchmark task ${key}`,
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "gpt-5.6-sol",
+        providerId: "openai",
+        options: { effort: "low" },
+      }),
+    });
+    if (!result.ok) throw new Error(result.error.message);
+    if (result.data.type !== "thread.create")
+      throw new Error("Benchmark task creation result mismatch.");
+    return result.data.thread.id;
+  };
+  const historyThreadId = await createThread("history");
+  const historyRun = await caller.startRun({
     key: "history",
-    title: "Chat",
-    workspaceId: workspace.id,
-    threadId: homeThreadId,
+    title: "Task history",
+    threadId: historyThreadId,
   });
   await historyRun.complete();
-  const database = host.store.database;
+  const database = host.database;
   const template = await database
     .selectFrom("runs")
     .selectAll()
@@ -84,12 +209,11 @@ export async function seedWorkspace(
     runId: typeof historyRun.runId,
   ) {
     await database.transaction().execute(async (transaction) => {
-      // The repository's lock order takes the Workspace before its Thread.
       const head = await transaction
-        .updateTable("workspaces")
-        .set({ updatedAt: new Date() })
-        .where("id", "=", workspace.id)
-        .returning("eventSequence")
+        .selectFrom("deploymentEventState")
+        .select("sequence")
+        .where("deploymentId", "=", deploymentId)
+        .forUpdate()
         .executeTakeFirstOrThrow();
       const thread = await transaction
         .selectFrom("threads")
@@ -97,8 +221,10 @@ export async function seedWorkspace(
         .where("id", "=", threadId)
         .forUpdate()
         .executeTakeFirstOrThrow();
-      let sequence = BigInt(head.eventSequence);
+      let sequence = BigInt(head.sequence);
       const events: (Omit<AgentEvent, "createdAt" | "data"> & {
+        deploymentId: typeof deploymentId;
+        nodeDetailId: ReturnType<typeof nodeDetailEventNodeId>;
         createdAt: Date;
         data: ReturnType<typeof jsonValue>;
         runnerId: null;
@@ -124,8 +250,6 @@ export async function seedWorkspace(
                 displayName: "Assistant",
                 runId: runId,
                 threadId,
-                workspaceId: workspace.id,
-                workspaceName: workspace.name,
               }
             : {
                 kind: "human",
@@ -159,12 +283,13 @@ export async function seedWorkspace(
             runId: runId,
             sequence: String(++sequence),
             threadId,
-            workspaceId: workspace.id,
             type,
             data,
           });
           events.push({
             ...event,
+            deploymentId,
+            nodeDetailId: nodeDetailEventNodeId(event),
             createdAt,
             data: jsonValue(event.data),
             runnerId: null,
@@ -197,7 +322,7 @@ export async function seedWorkspace(
           .execute();
       for (let start = 0; start < events.length; start += 100)
         await transaction
-          .insertInto("workspaceEvents")
+          .insertInto("deploymentEvents")
           .values(events.slice(start, start + 100))
           .execute();
       await transaction
@@ -206,24 +331,28 @@ export async function seedWorkspace(
         .where("id", "=", threadId)
         .execute();
       await transaction
-        .updateTable("workspaces")
-        .set({ eventSequence: String(sequence) })
-        .where("id", "=", workspace.id)
+        .updateTable("deploymentEventState")
+        .set({ sequence: String(sequence) })
+        .where("deploymentId", "=", deploymentId)
         .execute();
     });
   }
   const existing = await database
     .selectFrom("messages")
     .select("id")
-    .where("threadId", "=", homeThreadId)
+    .where("threadId", "=", historyThreadId)
     .execute();
-  await history(homeThreadId, messageCount - existing.length, seed === "heavy", historyRun.runId);
+  await history(
+    historyThreadId,
+    messageCount - existing.length,
+    seed === "heavy",
+    historyRun.runId,
+  );
   // Real admission creates each Run's seed input, ProviderSession and execution binding.
   for (const [index, id] of taskIds.slice(-5).entries()) {
-    const run = await dispatchCallerRun(host, caller, {
+    const run = await caller.startRun({
       key: `task-history-${index}`,
       title: "Task history",
-      workspaceId: workspace.id,
       threadId: id,
     });
     await run.complete();
@@ -238,19 +367,15 @@ export async function seedWorkspace(
   } | null = null;
   if (seed === "busy-subagents") {
     const threadId = await createThread("busy-subagents");
-    const run = await dispatchCallerRun(host, caller, {
+    const run = await caller.startRun({
       key: "busy-subagents",
       title: "Investigate with three subagents",
-      workspaceId: workspace.id,
       threadId,
     });
     let ordinal = run.attempt.nextOrdinal;
     const emit = async (type: string, data: unknown) => {
-      await host.store.commitRunnerEvent({
-        environmentId: caller.environmentId,
-        runnerId: caller.runnerId,
-        runnerBootId: caller.primary.bootId,
-        event: PendingAgentEventSchema.parse({
+      await caller.commitEvent(
+        PendingAgentEventSchema.parse({
           type,
           data,
           ordinal: ordinal++,
@@ -259,9 +384,8 @@ export async function seedWorkspace(
           environmentId: caller.environmentId,
           runId: run.runId,
           threadId,
-          workspaceId: workspace.id,
         }),
-      });
+      );
     };
     const reply = (text: string) =>
       emit("assistant.message", {
@@ -336,7 +460,7 @@ export async function seedWorkspace(
     await reply("All three investigations finished. The findings agree and the checks passed.");
     await emit("run.completed", { status: "completed" });
     const rows = await database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("threadId", "=", threadId)
       .execute();
@@ -354,15 +478,14 @@ export async function seedWorkspace(
   }
   const pendingRequests = seed === "heavy" ? 3 : 1;
   for (let index = 0; index < pendingRequests; index++) {
-    const run = await dispatchCallerRun(host, caller, {
+    const run = await caller.startRun({
       key: `pending-${index}`,
       title: "Needs approval",
-      workspaceId: workspace.id,
       threadId: taskIds[index]!,
     });
     await run.openLiveRequest();
   }
-  // The same cheap projection setup used by home-viewer-sync.integration.test.ts.
+
   for (let index = pendingRequests; index < taskIds.length; index++) {
     await database
       .updateTable("threads")
@@ -374,39 +497,16 @@ export async function seedWorkspace(
       .execute();
   }
   const tabCount = seed === "heavy" ? 20 : 2;
-  const sessionId = createBrowserSessionId();
-  await host.store.createBrowserSession({
-    id: sessionId,
-    runnerId: caller.runnerId,
-    origin: "workspace",
-    placementKey: "benchmark",
-    profileId: null,
-    runtimeId: "benchmark",
-    workspaceId: workspace.id,
-  });
-  await new WorkspaceTabStore(database).recordChanges(
-    sessionId,
-    Array.from({ length: tabCount }, (_, index) => ({
-      id: BrowserSurfaceIdSchema.parse(`surface_bench-${index}`),
-      title: `Reference ${index}`,
-      url: `https://example.test/reference/${index}`,
-      order: index,
-      openerId: null,
-    })),
-    [],
-  );
-  // Persisted places are intentionally suspended: no browser process is needed to measure their catalog.
-  await host.store.transitionBrowserSession({ sessionId, state: "closed" });
+  await host.seedSuspendedTabs(caller, tabCount);
   return {
-    homeThreadId,
+    historyThreadId,
     busySubagents,
     taskIds,
-    workspaceId: workspace.id,
     manifest: {
       seed,
       busySubagents,
-      tasks: taskCount + (busySubagents ? 1 : 0),
-      homeMessages: messageCount,
+      tasks: taskCount + 1 + (busySubagents ? 1 : 0),
+      historyMessages: messageCount,
       historyTasks: Math.min(5, taskCount),
       addedMessagesPerHistoryTask: seed === "heavy" ? 12 : 4,
       pendingRequests,

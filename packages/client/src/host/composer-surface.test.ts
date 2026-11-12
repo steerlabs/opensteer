@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { deriveSurface } from "./composer-surface.js";
 
 const requester = createId("user");
-const viewer = { id: requester, instanceRole: "user" as const };
+const viewer = { id: requester };
 
 function pendingRequest(
   overrides: Partial<Extract<Request, { status: "pending" }>> = {},
@@ -18,7 +18,7 @@ function pendingRequest(
     originatingOccurrenceId: null,
     originatingRunId: createId("run"),
     originatingThreadId: createId("thread"),
-    originatingWorkspaceId: createId("workspace"),
+
     payload: { kind: "harness.approval" },
     presentation: {
       kind: "choice",
@@ -35,7 +35,7 @@ function pendingRequest(
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: createId("workspace"),
+
     ...overrides,
   };
 }
@@ -141,15 +141,15 @@ describe("deriveSurface", () => {
   it("says who may answer when the viewer cannot", () => {
     const surface = deriveSurface([pendingRequest()], {
       id: createId("user"),
-      instanceRole: "user",
     });
     expect(surface?.denied).toBe("requester");
     expect(surface?.textRole).toBe("message");
   });
 
-  it("lets an administrator install for another requester but not grant installed access", () => {
-    const administrator = { id: createId("user"), instanceRole: "administrator" as const };
+  it("uses the Host required actor for installation and requester grants", () => {
+    const administrator = { id: createId("user") };
     const preinstall = pendingRequest({
+      requiredActor: "owner",
       kind: "integration.access",
       mode: "durable",
       payload: {
@@ -170,6 +170,7 @@ describe("deriveSurface", () => {
         [
           {
             ...preinstall,
+            requiredActor: "requester",
             payload: integrationAccessPayload(),
           },
         ],

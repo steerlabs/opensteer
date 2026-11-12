@@ -9,6 +9,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import {
@@ -36,7 +37,28 @@ import {
   touchTarget,
   deploymentPaint,
 } from "../theme.js";
-import { useMobileClient, useMobileState } from "../ui/mobile-client-context.js";
+import {
+  sameTaskListSource,
+  taskList,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
+import { useHostSelector } from "@opensteer/client/react";
+import { UnreadDot } from "../threads/task-row.js";
+import {
+  attentionReads,
+  computerBadge,
+  type AttentionBadge,
+  type ComputerAttention,
+} from "./computer-signals.js";
+import type { TeamSessionClient } from "@opensteer/client/team";
+import { MentionCount, TeamTile } from "../team/team-marks.js";
+import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
+import {
+  useMobileClient,
+  useMobileState,
+  useSelectedHostClient,
+} from "../ui/mobile-client-context.js";
 import { AppText, Notice, RowGroup, SecondaryButton, StatusDot } from "../ui/primitives.js";
 import { Screen, useListContentInsets, useReadingColumn } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
@@ -66,6 +88,8 @@ const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus
 ]);
 
 const DeploymentListRow = memo(function DeploymentListRow(props: {
+  /** This computer's one read when the list opened; undefined until it answers. */
+  readonly attention: ComputerAttention | null | undefined;
   readonly current: boolean;
   readonly onDetails: (row: DeploymentRow) => void;
   readonly onOpen: (row: DeploymentRow) => void;
@@ -132,6 +156,11 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
               {detail}
             </AppText>
           )}
+          <ComputerSignals
+            computerId={row.deploymentId}
+            current={props.current}
+            read={props.attention}
+          />
         </View>
       </Pressable>
       {row.signIn === "pairing-code" ? (
@@ -173,6 +202,146 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
 });
 
 /**
+ * What a computer has waiting: its own Needs you count or unread dot, and each
+ * team it is in with that team's mentions of the reader. The shown computer
+ * speaks from its live snapshot; another from the one read made when the list
+ * opened. Personal and work computers read alike, so the other is a glance away.
+ */
+function ComputerSignals(props: {
+  readonly computerId: string;
+  readonly current: boolean;
+  readonly read: ComputerAttention | null | undefined;
+}): ReactNode {
+  const teams = useMobileTeams();
+  useTeamsSnapshot();
+  const joined = teams.teamsOn(props.computerId);
+  const host = useSelectedHostClient();
+  const shown = props.current && host !== null;
+  const read = computerBadge({ current: false, shown: null, read: props.read });
+  if (joined.length === 0 && !shown && read === null) return null;
+  return (
+    <View style={styles.signals}>
+      {shown ? <ShownBadge host={host} /> : <Badge badge={read} />}
+      {joined.map(({ team, session }) => (
+        <TeamSignal key={team.teamId} name={team.teamName} session={session} teamId={team.teamId} />
+      ))}
+    </View>
+  );
+}
+
+/** The shown computer's own attention, from the list it already holds: no request. */
+function ShownBadge(props: { readonly host: HostClient }): ReactNode {
+  const shown = useHostSelector(props.host, shownAttention, sameAttention);
+  return <Badge badge={computerBadge({ current: true, shown, read: undefined })} />;
+}
+
+let shownHeld: { readonly source: HostSnapshot; readonly value: ComputerAttention } | null = null;
+function shownAttention(snapshot: HostSnapshot): ComputerAttention {
+  if (shownHeld !== null && sameTaskListSource(shownHeld.source, snapshot)) {
+    const needsYou = snapshot.needsYou?.count ?? 0;
+    if (needsYou === shownHeld.value.needsYou) return shownHeld.value;
+  }
+  const value = {
+    needsYou: snapshot.needsYou?.count ?? 0,
+    unread: taskList(snapshot).ready.some((row) => row.unread),
+  };
+  shownHeld = { source: snapshot, value };
+  return value;
+}
+
+const sameAttention = (left: ComputerAttention, right: ComputerAttention): boolean =>
+  left.needsYou === right.needsYou && left.unread === right.unread;
+
+function Badge(props: { readonly badge: AttentionBadge }): ReactNode {
+  const { badge } = props;
+  if (badge === null) return null;
+  if (badge.kind === "unread")
+    return (
+      <View accessibilityLabel="Unread results" style={styles.unreadMark}>
+        <UnreadDot />
+      </View>
+    );
+  return (
+    <View
+      accessibilityLabel={badge.count === 1 ? "1 task needs you" : `${badge.count} tasks need you`}
+      style={styles.needsYou}
+    >
+      <Symbol name="exclamationmark.circle" size={11} tint={color.inkOnAmber} weight="bold" />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        role="caption"
+        style={styles.needsYouCount}
+      >
+        {String(badge.count)}
+      </AppText>
+    </View>
+  );
+}
+
+/**
+ * Each other computer's attention, asked once when the list opens (and again
+ * only if the set of computers changes): one request each, in parallel, with a
+ * short deadline and no retry.
+ */
+function useOtherComputersAttention(
+  rows: readonly DeploymentRow[],
+  shown: string | null,
+): ReadonlyMap<string, ComputerAttention | null> {
+  const client = useMobileClient();
+  const [reads, setReads] = useState<ReadonlyMap<string, ComputerAttention | null>>(
+    () => new Map(),
+  );
+  const asked = attentionReads(rows, shown).join(" ");
+  useEffect(() => {
+    let current = true;
+    for (const id of asked === "" ? [] : asked.split(" "))
+      void client.readAttention(id).then((attention) => {
+        if (current) setReads((held) => new Map(held).set(id, attention));
+      });
+    return () => {
+      current = false;
+    };
+  }, [asked, client]);
+  return reads;
+}
+
+const TeamSignal = memo(function TeamSignal(props: {
+  readonly name: string;
+  readonly session: TeamSessionClient | null;
+  readonly teamId: string;
+}): ReactNode {
+  const { session } = props;
+  const mentions = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+      [session],
+    ),
+    useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]),
+  );
+  return (
+    <View
+      accessibilityLabel={
+        mentions > 0
+          ? `${props.name}, ${mentions} ${mentions === 1 ? "mention" : "mentions"}`
+          : props.name
+      }
+      style={styles.teamSignal}
+    >
+      <TeamTile size={16} team={{ id: props.teamId, name: props.name, imageUri: null }} />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="caption"
+        tone="soft"
+      >
+        {props.name}
+      </AppText>
+      <MentionCount count={mentions} />
+    </View>
+  );
+});
+
+/**
  * The catalog: every place this phone knows about, and what state it is in.
  *
  * The one memorable thing on the screen is the question on an empty list. With
@@ -190,6 +359,7 @@ export function DeploymentsScreen(): ReactNode {
   const navigation = useNavigation();
   const route = useRoute();
   const { account, directory, rows, selection } = useMobileState();
+  const attention = useOtherComputersAttention(rows, selection.deploymentId);
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
@@ -505,6 +675,7 @@ export function DeploymentsScreen(): ReactNode {
         <RowGroup>
           {visibleRows.map((row) => (
             <DeploymentListRow
+              attention={attention.get(row.deploymentId)}
               current={selection.deploymentId === row.deploymentId}
               key={row.deploymentId}
               onDetails={showDetails}
@@ -645,6 +816,25 @@ const styles = StyleSheet.create({
     paddingRight: space[4],
   },
   statusLine: { alignItems: "center", flexDirection: "row", gap: space[6], minWidth: 0 },
+  needsYou: {
+    alignItems: "center",
+    backgroundColor: color.amber,
+    borderRadius: radius.full,
+    flexDirection: "row",
+    gap: space[2],
+    paddingHorizontal: space[6],
+    paddingVertical: 1,
+  },
+  needsYouCount: { color: color.inkOnAmber, fontVariant: ["tabular-nums"], fontWeight: "700" },
+  unreadMark: { alignItems: "center", height: 16, justifyContent: "center" },
+  signals: {
+    alignItems: "center",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: space[8],
+    marginTop: space[2],
+  },
+  teamSignal: { alignItems: "center", flexDirection: "row", gap: space[4], maxWidth: "100%" },
   unavailable: {
     backgroundColor: color.surface,
     borderColor: color.line,

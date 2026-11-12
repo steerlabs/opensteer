@@ -12,12 +12,7 @@ if (process.env.OPENSTEER_WATCH === "1") {
 const opensteer = Object.freeze({
   callTool: (name, input = {}) => callTool(capabilities().mcp, name, input),
   capabilities,
-  // Not in the program contract, but saved programs call it and capabilities.integrationMcp.
-  integrations: Object.freeze({
-    callTool: (name, input = {}) => callTool(capabilities().mcp, name, input),
-    mcp: initialCapabilities.mcp,
-  }),
-  mcp: initialCapabilities.mcp,
+
 });
 
 try {

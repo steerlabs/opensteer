@@ -1,5 +1,4 @@
 import {
-  CHAT_THREAD_TITLE,
   requestTitleText,
   type AssignmentStatus,
   type AssignmentSummary,
@@ -11,16 +10,8 @@ import { accountGettingReady, threadAccountPreparing } from "./thread-placement.
 import { taskMark, type TaskMark } from "./task-marks.js";
 import { requestWaitingOnAssignment } from "./waiting-requests.js";
 
-/**
- * Who does a task, when it says something: the reader's own Opensteer or a
- * project. Null while the Workspace is not loaded, rather than a guess.
- */
-export function taskOwner(
-  assignment: Pick<AssignmentSummary, "workerThread">,
-  reader: Pick<HostSnapshot, "workspaces">,
-): string | null {
-  const workspace = reader.workspaces.find(({ id }) => id === assignment.workerThread.workspaceId);
-  return workspace ? (workspace.kind === "main" ? "Opensteer" : workspace.name) : null;
+export function taskOwner(_assignment: Pick<AssignmentSummary, "workerThread">): string {
+  return "Your agent";
 }
 
 /**
@@ -80,7 +71,6 @@ export type AssignmentReader = Pick<
   HostSnapshot,
   | "connection"
   | "environments"
-  | "homeThreadId"
   | "network"
   | "requests"
   | "threads"
@@ -220,10 +210,9 @@ export function assignmentStatusLine(
 /** What the reader calls the conversation a task reports back to. */
 export function assignmentRequester(
   assignment: AssignmentSummary,
-  reader: Pick<HostSnapshot, "homeThreadId" | "threads">,
+  reader: Pick<HostSnapshot, "threads">,
 ): string {
   const parent = assignment.parentThreadId;
-  if (parent === reader.homeThreadId) return CHAT_THREAD_TITLE;
   return (
     reader.threads.find(({ id }) => id === parent)?.title ??
     (assignment.origin === "run" ? "the conversation that asked for it" : "its automation")

@@ -39,13 +39,14 @@ function scene() {
   });
   const onError = vi.fn();
   const service = new BrowserSourceService({
+    deploymentId: createId("deployment"),
     browser: {} as ServiceOptions["browser"],
     canonicalOrigin: "https://opensteer.test",
     currentRoute: async () => null,
     onError,
     onLoginSaved,
     onRequestResolved: () => {},
-    onWorkspaceEvent: () => {},
+    onDeploymentEvent: () => {},
     passwords: passwords as unknown as ServiceOptions["passwords"],
     requests: requests as unknown as ServiceOptions["requests"],
     sign: () => "unused",
@@ -59,7 +60,7 @@ function scene() {
     runId: createId("run"),
     site,
     threadId: createId("thread"),
-    workspaceId: createId("workspace"),
+    deploymentId: createId("deployment"),
   };
   return { input, onError, onLoginSaved, passwords, requests, service, state };
 }

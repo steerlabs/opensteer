@@ -77,20 +77,6 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
           ))}
         </RowGroup>
       </Section>
-      <Section label="What it can reach">
-        <RowGroup>
-          {props.reaches.map((reach) => (
-            <Choice
-              key={reach.id}
-              detail={null}
-              disabled={busy}
-              selected={reach.id === props.reach}
-              title={reach.name}
-              onPress={() => props.onReach(reach.id)}
-            />
-          ))}
-        </RowGroup>
-      </Section>
       <Field
         hint={agentAuthorizationFinePrint}
         input={{

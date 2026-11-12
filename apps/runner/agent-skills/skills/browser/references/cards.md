@@ -7,7 +7,7 @@ needs a fresh request if the purchase is still wanted. For no-saved-card, passwo
 on their Mac, add a card or enable agent use, then ask again. Never ask for card values in chat.
 
 Approval is not permission to buy: the person's request must cover the purchase. Cards are browser
-only, in the Personal main computer's browser; refuse native apps and other devices.
+only, in the hosting computer's browser; refuse native apps and other devices.
 `main-browser-required` names this restriction, not an update the person needs.
 
 With a ready `crd_` reference, focus each checkout field, then call

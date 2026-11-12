@@ -1,26 +1,23 @@
-# Knowledge
+# Team knowledge
 
-Agents read and append structured facts with one `sql` tool. It is a trial: off unless
-`OPENSTEER_KNOWLEDGE` is set, refused by [configuration](../packages/config/src/config.ts) on
-anything but a Personal Deployment, and advertised as `knowledge-sql-v1`. Facts live in the Host's
-own database, in the `knowledge` schema ([schema](../packages/database/src/knowledge-schema.ts)).
+Knowledge exists only on team servers. Each channel has its own topic with the channel's
+access; shared topics have independent read/write/manage lists. A channel's shared memory is
+its topic and searchable chat, with no channel memory files. Personal memory remains files in
+`~/Opensteer`.
 
-Schema changes use new versioned ensure steps; never edit a shipped step. Enabling the trial needs
-a superuser Host connection to create roles and pin restricted-login settings. Turning it off
-leaves existing facts in place. The [authority lease](../packages/database/src/deployment-authority.ts)
-prevents two Hosts sharing the database.
+Attaching a shared topic to a channel grants no access. Agent SQL is scoped to the current
+run ticket's channel topic and attached topics its owner may use. Either people-only switch
+excludes the agent. A task's earlier team Runs confer no authority on a private follow-up.
 
-## Who holds the tool
+Schema changes use new versioned ensure steps; never edit a shipped step. Each start gives the
+restricted login a new password, so the
+[authority lease](../packages/database/src/deployment-authority.ts) must keep two Hosts off one
+database.
 
-Knowledge follows the boundary personal memory follows: a conversation other people can start never
-holds the person's private things, and the Host already expresses that as Main inheritance.
-[One rule](../apps/host/src/knowledge/knowledge-eligibility.ts) decides the Run's skill and tool
-plan, what MCP lists and what dispatch accepts: a Run that inherits Main (reach `user`), requested by
-the Personal owner, on a Runner that advertises `knowledgeSkill`. So the owner's own tasks and
-chats, their direct message to their bot and a task a connected agent with user reach starts in Main
-hold it, exactly where they hold memory. A shared channel conversation, a workspace- or
-lineage-reach Run, and a connection or Program calling directly never do. A Runner that cannot load
-the skill still starts and plans its Runs exactly as with the trial off.
+Knowledge writes hold the team access share lock and recheck authority while the restricted
+executor writes and commits. Only then may the main-pool fence release. Buffered answers
+recheck the access revision at handoff and discard the whole result on access loss, rather than
+returning partial rows. See [Teams](teams.md#access-and-removal).
 
 ## The boundary
 
@@ -31,7 +28,7 @@ Three layers, each covering what the others cannot:
   settings, catalogs and functions such as `set_config`.
 - Grants keep the restricted login out of every application table. Each start revokes PUBLIC from
   everything in the `knowledge` schema, so default privileges the Host's user set cannot reach it.
-- Row security hides fact rows outside the caller's topics.
+- Forced row-level security hides fact rows outside the server-set topic arrays.
 
 The login alone does not hide PostgreSQL's public catalogs: through PUBLIC grants, which cannot be
 revoked for one role, it can read `pg_class`, `pg_proc`, `pg_settings` and call `set_config`. That
@@ -46,11 +43,17 @@ Agent SQL runs as its own non-superuser LOGIN role with its own two-connection p
 superuser and a shell through `COPY … TO PROGRAM`. The pool reaches the server and database that pg
 resolves for the Host's own connection, environment included, but its startup carries only the
 login, database and name: no options, replication or timeouts from the query string, `PGOPTIONS` or
-other `PG*` variables. It refuses any connection whose session is not the restricted login. It does
-not support TLS yet, so a Host whose connection uses TLS cannot turn the trial on. The Host gives
+other `PG*` variables. It refuses any connection whose session is not the restricted login. It refuses TLS; the restricted login uses the recipe's private database network, which must have no published PostgreSQL port. The Host gives
 the role a fresh random password at each start and keeps it only in memory.
 
-## Limits
+## Resource limits and availability
+
+The Host allows two restricted connections, eight waiting callers, a two-second statement
+timeout and a 250 ms lock timeout; excess callers get `knowledge-busy`. The
+[Compose recipe](../deploy/team/compose.yaml) caps PostgreSQL at 2 GiB including swap and two
+CPUs, on a private database network without a published port. The Host database user must be a
+superuser to prepare the restricted role; role preparation or restricted-login verification
+failure refuses team startup. Personal Hosts never initialize this executor.
 
 A small query can produce a huge row or an error quoting its input. pg-protocol buffers backend
 messages before application code can catch an error, so SQL result limits alone cannot protect the
@@ -58,19 +61,19 @@ Host: the socket must reject oversized messages before the driver buffers them. 
 server and encoded-result bounds, reject overdeep JSON, and suppress query-bearing database logs.
 [The manager](../apps/host/src/knowledge/knowledge-manager.ts) owns the bounds.
 
-Backend time and memory remain unbounded. PostgreSQL checks statement timeouts only at interrupt
-points, and `work_mem` does not cap memory allocated by one expression. Allowed expressions have
-exceeded the timeout and consumed gigabytes. This limitation is accepted for the Personal trial
-and must be resolved or explicitly accepted before knowledge reaches a server.
+Backend time and memory per query remain unbounded. PostgreSQL checks statement timeouts only at
+interrupt points, and `work_mem` does not cap memory allocated by one expression, so one hostile
+query can exhaust the container cap, restart PostgreSQL and briefly interrupt chat. The container
+cap bounds that damage; v1 promises neither per-query isolation nor uninterrupted availability.
+Managed or TLS PostgreSQL and native unbounded PostgreSQL are outside the v1 recipe.
 
-Parameters arrive as JSON. Array queries must read a JSON array, not cast a parameter to a
-PostgreSQL array.
+Parameters arrive as JSON. Array queries must read a JSON array
+(`jsonb_array_elements_text($n::jsonb)`), not cast a parameter to a PostgreSQL array.
 
 ## Parser and PostgreSQL versions
 
-The parser is `libpg-query` pinned to PostgreSQL 17's grammar, because the desktop bundles
-PostgreSQL 17. Self-hosted and development databases run 18, so newer syntax is refused there and
-the reviewed functions were checked against 17. The
+The parser is `libpg-query` pinned to PostgreSQL 17's grammar. The team recipe runs PostgreSQL 18,
+so newer syntax stays refused until reviewed. The
 [corpus integration test](../apps/host/src/knowledge/sql-gate-corpus.integration.test.ts) runs
 every admitted statement through the real schema; rerun it against every major the Host runs before
 widening either. The parser loads its WASM relative to its own module, so builds leave it unbundled

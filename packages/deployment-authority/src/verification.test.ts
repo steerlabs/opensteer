@@ -28,7 +28,6 @@ const authorityDocument = PersonalHostAccessAuthoritySchema.parse({
   hostInstanceId: "hst_77777777-7777-4777-8777-777777777777",
   hostKey: { algorithm: "Ed25519" },
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
     kind: "personal" as const,
   },
 });

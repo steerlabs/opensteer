@@ -12,7 +12,7 @@ import {
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type DeploymentId,
 } from "@opensteer/core";
 import {
   browserSiteDomain,
@@ -83,7 +83,7 @@ type AgentSignInInput = {
   readonly ownerId: UserId;
   readonly runId: RunId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
+  readonly deploymentId: DeploymentId;
   readonly callId: string;
   readonly loginFill?: boolean;
   readonly sessionId?: string;
@@ -158,11 +158,12 @@ type SignInRequests = Pick<
 
 /**
  * Chrome sign-ins: the connected Chrome profiles (sources), the sites each
- * Workspace may use, and delivering one site's sign-in into a live Browser
+ * person may use, and delivering one site's sign-in into a live Browser
  * Session. The Host is the only party that imports: it exports from Chrome,
  * checks the site scope, re-checks authority, and sends `state.import` itself.
  */
 export class BrowserSourceService {
+  readonly #deploymentId: DeploymentId;
   readonly #store: BrowserSourceStore;
   readonly #requests: SignInRequests;
   readonly #browser: Pick<BrowserService, "applySiteCookies" | "signInTarget">;
@@ -170,7 +171,7 @@ export class BrowserSourceService {
   readonly #sign: (bytes: Uint8Array) => string;
   readonly #canonicalOrigin: string;
   readonly #currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onRequestResolved: () => void;
   readonly #onError: (error: unknown) => void;
   readonly #now: () => number;
@@ -191,24 +192,26 @@ export class BrowserSourceService {
   #closed = false;
 
   constructor(options: {
+    readonly deploymentId: DeploymentId;
     readonly store: BrowserSourceStore;
     readonly requests: SignInRequests;
     readonly browser: Pick<BrowserService, "applySiteCookies" | "signInTarget">;
     readonly sign: (bytes: Uint8Array) => string;
     readonly canonicalOrigin: string;
     readonly currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
-    readonly onWorkspaceEvent: (event: AgentEvent) => void;
+    readonly onDeploymentEvent: (event: AgentEvent) => void;
     /** A sign-in Request was fulfilled or declined, so its continuation can be sent. */
     readonly onRequestResolved: () => void;
     readonly onError?: (error: unknown) => void;
     readonly now?: () => number;
-    /** Workspace-scoped saved logins from the Personal vault authority. */
+    /** Personal saved logins from the Personal vault authority. */
     readonly passwords: PasswordSignInEntry;
     /** Tells a Thread the login its agent was missing now exists. */
     readonly onLoginSaved: (offer: PasswordsOffer) => Promise<void>;
     /** Whether the person stopped the Thread's newest Run themselves. */
     readonly stoppedByPerson: (threadId: ThreadId) => Promise<boolean>;
   }) {
+    this.#deploymentId = options.deploymentId;
     this.#passwords = options.passwords;
     this.#onLoginSaved = options.onLoginSaved;
     this.#stoppedByPerson = options.stoppedByPerson;
@@ -218,7 +221,7 @@ export class BrowserSourceService {
     this.#sign = options.sign;
     this.#canonicalOrigin = options.canonicalOrigin;
     this.#currentRoute = options.currentRoute;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onRequestResolved = options.onRequestResolved;
     this.#onError = options.onError ?? (() => {});
     this.#now = options.now ?? Date.now;
@@ -466,7 +469,7 @@ export class BrowserSourceService {
             ? grant.preferredSourceId
             : null,
         site: grant.site,
-        workspaceId: grant.workspaceId,
+        deploymentId: grant.deploymentId,
       })),
     };
   }
@@ -517,7 +520,7 @@ export class BrowserSourceService {
   async removeSite(input: {
     readonly administration?: AdministrationCommandIdentity | undefined;
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly site: string;
   }): Promise<void> {
     await this.#store.removeGrant({ ...input, site: parseSite(input.site) });
@@ -525,7 +528,7 @@ export class BrowserSourceService {
 
   /**
    * The owner signs the site of `url` in, in a session they control, and the
-   * site is remembered for the session's Workspace. The click is the consent.
+   * site is remembered for the personal deployment. The click is the consent.
    */
   async sessionSignIn(input: {
     readonly ownerId: UserId;
@@ -552,7 +555,7 @@ export class BrowserSourceService {
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     const choice = await this.#chooseForOwner(
       input.ownerId,
-      target.workspaceId,
+      target.deploymentId,
       site,
       input.sourceId,
     );
@@ -576,8 +579,8 @@ export class BrowserSourceService {
   }
 
   /**
-   * An agent asks for one site in one live session. The session's Workspace is
-   * authoritative, whichever Workspace the Run belongs to. Standing grants sign
+   * An agent asks for one site in one live session. The personal deployment is
+   * authoritative, whichever folder the task uses. Standing grants sign
    * in immediately; anything that needs the owner opens one Request, which
    * completes by itself once a connected Chrome can supply the sign-in.
    */
@@ -602,7 +605,6 @@ export class BrowserSourceService {
     if (await this.#refusesSite(site)) return unavailable("not-allowed");
     const check = () =>
       this.#browser.signInTarget({
-        agentWorkspaceId: input.workspaceId,
         agentBindingId: `run:${input.runId}`,
         ownerId: input.ownerId,
         sessionId: parseSessionId(input.sessionId),
@@ -631,7 +633,7 @@ export class BrowserSourceService {
       ...input,
       site,
       cardRunnerId: target.computer.runnerId,
-      admitStart: () => this.#admitCall(input.runId, input.workspaceId, site),
+      admitStart: () => this.#admitCall(input.runId, input.deploymentId, site),
     });
     const after = await check();
     if (!after?.live || !after.cardFill || after.computer?.runnerId !== target.computer.runnerId)
@@ -684,7 +686,7 @@ export class BrowserSourceService {
       if (prior) {
         if (
           prior.payload.kind !== "browser.password-sign-in" ||
-          prior.payload.scope !== "workspace" ||
+          prior.payload.scope !== "personal" ||
           prior.payload.site !== site
         )
           throw new OpensteerError({
@@ -711,12 +713,11 @@ export class BrowserSourceService {
         ...input,
         arrivedAt,
         site,
-        admitStart: () => this.#admitCall(input.runId, input.workspaceId, site),
+        admitStart: () => this.#admitCall(input.runId, input.deploymentId, site),
       });
     }
     const sessionId = parseSessionId(input.sessionId);
     const liveTarget = await this.#browser.signInTarget({
-      agentWorkspaceId: input.workspaceId,
       agentBindingId: `run:${input.runId}`,
       ownerId: input.ownerId,
       sessionId,
@@ -739,7 +740,7 @@ export class BrowserSourceService {
       if (!input.loginFill) return { status: "unavailable", reason: "runtime-outdated", site };
       if (
         prior.payload.kind !== "browser.password-sign-in" ||
-        (prior.payload.scope !== "workspace" && prior.payload.sessionId !== sessionId) ||
+        prior.payload.scope !== "personal" ||
         prior.payload.site !== site
       ) {
         throw new OpensteerError({
@@ -755,7 +756,7 @@ export class BrowserSourceService {
     const grant = await this.#store.getGrant({
       ownerId: input.ownerId,
       site,
-      workspaceId: target.workspaceId,
+      deploymentId: target.deploymentId,
     });
     // A Runner that cannot fill logins never starts Passwords; Chrome still
     // serves it exactly as before.
@@ -791,7 +792,6 @@ export class BrowserSourceService {
       originatingRunId: input.runId,
       ownerId: input.ownerId,
       site,
-      workspaceId: target.workspaceId,
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
     const ask = async (): Promise<AgentBrowserSignInResult> => {
@@ -896,7 +896,7 @@ export class BrowserSourceService {
       (await this.#store.getGrant({
         ownerId: offer.ownerId,
         site: offer.site,
-        workspaceId: waiting.targetWorkspaceId,
+        deploymentId: this.#deploymentId,
       }))
     ) {
       return "ended";
@@ -908,7 +908,7 @@ export class BrowserSourceService {
         threadId: offer.threadId,
         withdrawnBy: offer.ownerId,
       });
-      for (const event of withdrawn.events) this.#onWorkspaceEvent(event);
+      for (const event of withdrawn.events) this.#onDeploymentEvent(event);
     }
     return "ended";
   }
@@ -922,7 +922,7 @@ export class BrowserSourceService {
 
   /**
    * The owner's answer to a sign-in Request. Allow remembers the site for the
-   * session's Workspace, then signs in; a problem leaves the Request pending
+   * personal deployment, then signs in; a problem leaves the Request pending
    * and is returned so the card can show how to fix it.
    */
   async respond(input: {
@@ -950,7 +950,7 @@ export class BrowserSourceService {
           ...(input.settlementSessionId ? { settlementSessionId: input.settlementSessionId } : {}),
         }),
       );
-      for (const event of declined.events) this.#onWorkspaceEvent(event);
+      for (const event of declined.events) this.#onDeploymentEvent(event);
       this.#onRequestResolved();
       return null;
     }
@@ -989,7 +989,7 @@ export class BrowserSourceService {
       ownerId: input.ownerId,
       preferredSourceId: source.id,
       site,
-      workspaceId: request.targetWorkspaceId,
+      deploymentId: this.#deploymentId,
     });
     const delivered = await this.#deliverRequest(request, source, input.settlementSessionId);
     if (delivered.status === "request-closed") {
@@ -1050,7 +1050,7 @@ export class BrowserSourceService {
         const grant = await this.#store.getGrant({
           ownerId,
           site: request.payload.site,
-          workspaceId: request.targetWorkspaceId,
+          deploymentId: this.#deploymentId,
         });
         if (!grant) continue;
         const chosen = await this.#standingSource(grant, sources, request.payload.site);
@@ -1116,7 +1116,7 @@ export class BrowserSourceService {
       const grant = await this.#store.getGrant({
         ownerId,
         site,
-        workspaceId: request.targetWorkspaceId,
+        deploymentId: this.#deploymentId,
       });
       if (grant) return;
       const settled = await this.#requests.fulfilBrowserSignInRequest({
@@ -1125,7 +1125,7 @@ export class BrowserSourceService {
         response,
       });
       if (!settled) return;
-      for (const event of settled.events) this.#onWorkspaceEvent(event);
+      for (const event of settled.events) this.#onDeploymentEvent(event);
       this.#onRequestResolved();
     });
   }
@@ -1214,11 +1214,11 @@ export class BrowserSourceService {
         response: { outcome: "session-closed" },
       });
       if (!settled) return { status: "request-closed" };
-      for (const event of settled.events) this.#onWorkspaceEvent(event);
+      for (const event of settled.events) this.#onDeploymentEvent(event);
       this.#onRequestResolved();
       return problem("session-closed", site, null);
     };
-    if (!target?.live || target.workspaceId !== request.targetWorkspaceId) return closed();
+    if (!target?.live || target.deploymentId !== this.#deploymentId) return closed();
     if (!target.stateImport) return problem(stateImportRefusal(target), site, null);
     if (!this.#isConnected(source.id)) return problem("chrome-offline", site, source.name);
     const delivered = await this.#deliver({
@@ -1242,7 +1242,7 @@ export class BrowserSourceService {
     readonly ownerId: UserId;
     readonly runId: RunId;
     readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
+    readonly deploymentId: DeploymentId;
     readonly callId: string;
     readonly reason: string;
     readonly site: string;
@@ -1255,7 +1255,6 @@ export class BrowserSourceService {
         mode: "durable",
         originatingRunId: input.runId,
         originatingThreadId: input.threadId,
-        originatingWorkspaceId: input.workspaceId,
         payload: {
           kind: "browser.sign-in",
           ...(input.target.tabId ? { tabId: input.target.tabId } : {}),
@@ -1271,7 +1270,6 @@ export class BrowserSourceService {
         },
         requestedBy: input.ownerId,
         requiredActor: "requester",
-        targetWorkspaceId: input.target.workspaceId,
       })
       .catch((error: unknown) => {
         // Method selection used a snapshot; the session can end before the
@@ -1282,7 +1280,7 @@ export class BrowserSourceService {
         throw error;
       });
     if (!created) return { reason: "session-closed", site: input.site, status: "unavailable" };
-    for (const event of created.events) this.#onWorkspaceEvent(event);
+    for (const event of created.events) this.#onDeploymentEvent(event);
     return this.#requestResult(
       created.request,
       input.target.sessionId,
@@ -1342,7 +1340,7 @@ export class BrowserSourceService {
 
   async #chooseForOwner(
     ownerId: UserId,
-    workspaceId: WorkspaceId,
+    deploymentId: DeploymentId,
     site: string,
     sourceId: BrowserSourceId | null,
   ): Promise<SourceChoice> {
@@ -1359,7 +1357,7 @@ export class BrowserSourceService {
         : { problem: "chrome-offline", sourceName: source.name };
     }
     const [grant, sources] = await Promise.all([
-      this.#store.getGrant({ ownerId, site, workspaceId }),
+      this.#store.getGrant({ ownerId, site, deploymentId }),
       this.#store.list(ownerId),
     ]);
     const preferred = sources.find((source) => source.id === grant?.preferredSourceId);
@@ -1438,7 +1436,7 @@ export class BrowserSourceService {
       ownerId: input.ownerId,
       sessionId: target.sessionId,
     });
-    if (!current?.live || current.workspaceId !== target.workspaceId) {
+    if (!current?.live || current.deploymentId !== target.deploymentId) {
       return problem("session-closed", site, null);
     }
     const fence = await this.#store.fence({
@@ -1450,15 +1448,18 @@ export class BrowserSourceService {
       site,
       sourceGeneration: peer.generation,
       sourceId: source.id,
-      workspaceId: target.workspaceId,
+      deploymentId: target.deploymentId,
     });
     if (fence === "source-changed" || this.#connections.get(source.id) !== peer) {
       return problem("chrome-offline", site, source.name);
     }
     if (fence === "grant-removed") return { status: "grant-removed" };
     if (fence === "request-closed") return { status: "request-closed" };
-    if (fence === "workspace-unavailable") {
-      throw new OpensteerError({ code: "forbidden", message: "Workspace is unavailable" });
+    if (fence === "deployment-unavailable") {
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Personal deployment is unavailable",
+      });
     }
     const applied = await this.#browser.applySiteCookies(target.sessionId, site, cookies);
     if (applied !== "applied") return problem(applied, site, null);
@@ -1474,10 +1475,10 @@ export class BrowserSourceService {
       site,
       sourceId: source.id,
       sourceName: source.name,
-      workspaceId: target.workspaceId,
+      deploymentId: target.deploymentId,
     });
     if (committed.events.length > 0) {
-      for (const event of committed.events) this.#onWorkspaceEvent(event);
+      for (const event of committed.events) this.#onDeploymentEvent(event);
       this.#onRequestResolved();
     }
     return appliedOutcome(committed.receipt);
@@ -1510,7 +1511,7 @@ export class BrowserSourceService {
   }
 
   /** In-memory, so a restart forgets it; the admission ledger still bounds each Run. */
-  #admitCall(runId: RunId, sessionId: BrowserSessionId | WorkspaceId, site: string): boolean {
+  #admitCall(runId: RunId, sessionId: BrowserSessionId | DeploymentId, site: string): boolean {
     return admitWithin(this.#calls, this.#now(), rateWindowMs, [
       [`site\0${sessionId}\0${site}`, maxCallsPerSessionSite],
       [`run\0${runId}`, maxCallsPerRun],

@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { LocalProfileBindingSchema } from "@opensteer/protocol";
+import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import { nativeProfileReadyClient } from "./native-profile-ready.js";
 const binding = LocalProfileBindingSchema.parse({
   version: 1,
@@ -22,7 +23,10 @@ it("sends only signed authority over trusted HTTP or HTTPS and forwards cancella
   );
   expect(fetch).toHaveBeenCalledWith(new URL("http://127.0.0.1:4000/ready"), {
     method: "POST",
-    headers: { authorization: "Bearer signed-ticket" },
+    headers: {
+      authorization: "Bearer signed-ticket",
+      [hostApiVersionHeader]: String(hostApiVersion),
+    },
     redirect: "error",
     signal,
   });

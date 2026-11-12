@@ -1,4 +1,3 @@
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import {
   AgentPhoneEnrollments,
   agentPhoneSetupHost,
@@ -71,7 +70,6 @@ interface SetupAttempt {
 
 export function AddPhoneDialog({
   client,
-  deploymentPolicy,
   deploymentName,
   desktopBridge,
   homeName,
@@ -79,7 +77,6 @@ export function AddPhoneDialog({
   phoneName,
 }: {
   readonly client: HostClient;
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly desktopBridge: OpensteerDesktopBridge | null;
   /** The Mac a Personal Opensteer runs on, which the phone must be able to reach. */
@@ -357,7 +354,6 @@ export function AddPhoneDialog({
         return { title: "Getting Agent Phone ready", tone: "working" };
       case "ready":
         return readyStage({
-          deploymentPolicy,
           desktop,
           homeName,
           note: phase.note,
@@ -562,14 +558,12 @@ function runningStage(
 }
 
 function readyStage({
-  deploymentPolicy,
   desktop,
   homeName,
   note,
   onConnect,
   phoneName,
 }: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly desktop: boolean;
   readonly homeName: string;
   readonly note: ConnectNote | null;
@@ -592,12 +586,10 @@ function readyStage({
             → USB debugging.
           </p>
         </details>
-        {deploymentPolicy?.personalRemoteAccess === true ? (
-          <p>
-            Needs remote access on for {homeName}.{" "}
-            <Link to="/settings/account/remote-access">Open Remote access</Link>
-          </p>
-        ) : null}
+        <p>
+          Needs remote access on for {homeName}.{" "}
+          <Link to="/settings/account/remote-access">Open Remote access</Link>
+        </p>
       </div>
     ),
     detail:

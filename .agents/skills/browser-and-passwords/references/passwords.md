@@ -19,7 +19,7 @@ The failure inventory is the test code in `Tests/PasswordsCoreTests` and
 `Tests/PasswordsBrokerTests`. Keep coverage of rollback and checkpoint ordering, credential-byte
 preservation, peer verification, current consent and revision checks, cancellation after waits,
 secret-free output, import isolation and cross-version scope; `PasswordsAnywhereTests` covers
-protocol 4 and 5 consent.
+protocol 10 per-person consent; older broker protocols must refuse without downgrade.
 
 Regenerate the wire fixture only for an intentional contract change, then review
 `apps/desktop/native/passwords/Tests/Fixtures/passwords-wire.json` and keep legacy entries readable:

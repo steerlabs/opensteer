@@ -1,7 +1,7 @@
 import type { DeploymentId } from "@opensteer/core";
 import { bootstrapDiagnosticHeader } from "@opensteer/shared/bootstrapDiagnostics";
 import { HostTransportError } from "@opensteer/client/connections";
-import { hostApiVersionHeader } from "@opensteer/protocol";
+import { hostApiVersionHeader, teamApiVersionHeader } from "@opensteer/protocol";
 import type {
   DesktopCloseHostWebSocketInput,
   DesktopHostWebSocketEvent,
@@ -188,6 +188,7 @@ async function hostBridgeResult<Data>(
 export function createDesktopHostWebSocketFactory(
   bridge: OpensteerDesktopBridge,
   canonicalOrigin: string,
+  expectedDeploymentId?: DeploymentId,
 ): (url: string) => WebSocketClient {
   const registry = desktopHostSocketRegistry(bridge);
   const origin = new URL(canonicalOrigin).origin;
@@ -198,7 +199,7 @@ export function createDesktopHostWebSocketFactory(
     if ((url.protocol !== "ws:" && url.protocol !== "wss:") || httpEquivalent.origin !== origin) {
       throw new Error("The bundled UI cannot open a socket to another Deployment.");
     }
-    return registry.create(`${url.pathname}${url.search}`);
+    return registry.create(`${url.pathname}${url.search}`, expectedDeploymentId);
   };
 }
 
@@ -234,13 +235,13 @@ class DesktopHostSocketRegistry {
     });
   }
 
-  create(path: string): DesktopHostWebSocket {
+  create(path: string, expectedDeploymentId?: DeploymentId): DesktopHostWebSocket {
     const socket = new DesktopHostWebSocket(this.#bridge, (connectionId) => {
       if (this.#sockets.get(connectionId) === socket) this.#sockets.delete(connectionId);
     });
     this.#opening += 1;
     void this.#bridge
-      .openHostWebSocket({ path })
+      .openHostWebSocket({ path, ...(expectedDeploymentId ? { expectedDeploymentId } : {}) })
       .then(({ connectionId }) => {
         this.#sockets.set(connectionId, socket);
         const pending = this.#pending.get(connectionId) ?? [];
@@ -457,7 +458,9 @@ function hostRequestHeaders(headers: Headers): {
   for (const [name, value] of headers) {
     if (name === "accept") output.accept = value;
     else if (name === bootstrapDiagnosticHeader) output.bootstrapDiagnostics = value;
-    else if (name === hostApiVersionHeader) output.apiVersion = value;
+    // The main process names the header by the Host's signed kind.
+    else if (name === hostApiVersionHeader || name === teamApiVersionHeader)
+      output.apiVersion = value;
     else if (
       name === "content-type" &&
       (value === "application/json" || value === "application/octet-stream")

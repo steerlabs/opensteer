@@ -2,7 +2,7 @@
 
 Prefer an intended saved profile that is already signed in.
 
-Saved passwords fill websites only in the main computer's browser. `main-browser-required` means this tab runs elsewhere, not that its browser needs an update. Do not move the profile or switch to Guest. Chrome sign-in import needs that browser's state-import support; `unsupported-operation` means it cannot do it.
+Saved passwords fill websites only in the hosting computer's browser. `main-browser-required` means this tab runs elsewhere, not that its browser needs an update. Do not move the profile or switch to Guest. Chrome sign-in import needs that browser's state-import support; `unsupported-operation` means it cannot do it.
 
 When a page you need shows the user signed out, open its sign-in form in the Browser Session of the profile that should keep the sign-in, then call `sign_in` with `sessionId`, `site`, and a short task reason. It covers the whole site (`github.com` covers `gist.github.com`). An identity provider such as Google or Microsoft may need its own authorization. Saved logins work in fresh and profile-backed sessions; a profile can keep the signed-in state.
 

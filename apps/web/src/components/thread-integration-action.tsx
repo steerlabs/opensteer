@@ -26,6 +26,7 @@ import { ActionNote } from "./action-rows.js";
 import { Icon } from "./icon.js";
 import { IntegrationInstallReview } from "./integration-install-review.js";
 import { useShell } from "./app-shell.js";
+import { useDeploymentName } from "./deployment-name.js";
 import { ApiKeyForm } from "./integrations/api-key-form.js";
 import { RepositoryAccessSetup } from "./integrations/connect-flow.js";
 import { IntegrationIcon } from "./integrations/integration-icon.js";
@@ -68,6 +69,7 @@ export function ThreadIntegrationAction({
   readonly threadId: string;
 }) {
   const { hostClient, snapshot } = useShell();
+  const deploymentName = useDeploymentName();
   const [loaded, setLoaded] = useState<LoadedAccessRequest | null>(null);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
   const [selectedAccess, setSelectedAccess] = useState<IntegrationAccess | null>(null);
@@ -115,29 +117,6 @@ export function ThreadIntegrationAction({
   const shownReturn = useRef<string | null>(null);
   const [searchParams] = useSearchParams();
   const requestPayload = request.payload.kind === "integration.access" ? request.payload : null;
-  const targetWorkspace = snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId);
-  const targetWorkspaceKind = targetWorkspace?.kind;
-
-  useEffect(() => {
-    if (!requestPayload || targetWorkspace || !snapshot.workspaceWindow.hasMore) return;
-    // A newer snapshot can bring the target while this page is out, and its
-    // failure is then no longer this card's.
-    let cancelled = false;
-    void hostClient.loadEarlierWorkspaces().catch((reason: unknown) => {
-      if (!cancelled) setError(errorMessage(reason));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    hostClient,
-    reload,
-    requestPayload,
-    snapshot.workspaceWindow.hasMore,
-    snapshot.workspaceWindow.itemCount,
-    targetWorkspace,
-  ]);
-
   useEffect(() => {
     if (connectOpen || authorization) return;
     const returned = searchParams.get("integrationAttempt");
@@ -309,7 +288,7 @@ export function ThreadIntegrationAction({
 
   useEffect(() => {
     let cancelled = false;
-    if (!requestPayload || !targetWorkspaceKind) return;
+    if (!requestPayload) return;
     Promise.all([
       hostClient.rpc["integrations.get"]({}).then(unwrapRpcResult),
       hostClient.rpc["integration.platform.get"]({}).then(unwrapRpcResult),
@@ -335,7 +314,7 @@ export function ThreadIntegrationAction({
     return () => {
       cancelled = true;
     };
-  }, [hostClient, reload, request.targetWorkspaceId, requestPayload, targetWorkspaceKind]);
+  }, [hostClient, reload, requestPayload]);
 
   const plan = useMemo(
     () => (loaded ? accessPlan(loaded, selectedAccountId) : null),
@@ -377,7 +356,6 @@ export function ThreadIntegrationAction({
   useEffect(() => {
     if (
       !loaded ||
-      !targetWorkspace ||
       !plan ||
       repositorySetup ||
       authorization ||
@@ -408,8 +386,7 @@ export function ThreadIntegrationAction({
     answerAfterConnect.current = null;
     void run(async () => {
       if (
-        targetWorkspace.kind === "project" ||
-        (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
+        await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id)
       ) {
         await resolveIntegrationAccess(hostClient, {
           access: effectiveIntegrationAccess(plan.requestedAccess, selectedAccess === "read-write"),
@@ -417,7 +394,6 @@ export function ThreadIntegrationAction({
           installationTitle: plan.installationTitle,
           requestId: request.id,
           selectedAccount: selected,
-          targetKind: targetWorkspace.kind,
         });
       }
       if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
@@ -427,7 +403,6 @@ export function ThreadIntegrationAction({
   }, [
     loaded,
     plan,
-    targetWorkspace,
     repositorySetup,
     authorization,
     pending,
@@ -519,19 +494,12 @@ export function ThreadIntegrationAction({
         <ActionNote alert>This integration access Request is invalid.</ActionNote>
       </>
     );
-  if (!targetWorkspace || !loaded)
+  if (!loaded)
     return (
       <>
         <RequestNameHead request={request} />
-        <ActionNote alert={Boolean(error)}>
-          {error ??
-            (!targetWorkspace
-              ? snapshot.workspaceWindow.hasMore
-                ? "Checking target Workspace…"
-                : "The target Workspace is no longer available."
-              : "Checking account access…")}
-        </ActionNote>
-        {error || (!targetWorkspace && !snapshot.workspaceWindow.hasMore) ? (
+        <ActionNote alert={Boolean(error)}>{error ?? "Checking account access…"}</ActionNote>
+        {error ? (
           <button className="btn" disabled={disabled || pending} onClick={decline} type="button">
             Not now
           </button>
@@ -551,7 +519,7 @@ export function ThreadIntegrationAction({
     );
   const card = connectCard({
     loaded,
-    workspace: targetWorkspace,
+    deploymentName,
     selectedAccountId,
     allowChanges: selectedAccess === "read-write",
     agentProposed: request.presentation.agentProposed === true,
@@ -616,7 +584,6 @@ export function ThreadIntegrationAction({
             installationTitle: nextPlan.installationTitle,
             requestId: request.id,
             selectedAccount: null,
-            targetKind: targetWorkspace.kind,
           });
           if (
             await integrationRequestStillPending(
@@ -634,12 +601,12 @@ export function ThreadIntegrationAction({
         bridge: desktopBridge(),
         client: hostClient,
         onStarted: tracking.started,
-        returnPath: `/threads/${encodeURIComponent(threadId)}`,
+        returnPath: `/tasks/${encodeURIComponent(threadId)}`,
         begin: async (returnPath, finish) => {
           const next = await prepare();
           const nextCard = connectCard({
             loaded: next,
-            workspace: targetWorkspace,
+            deploymentName,
             allowChanges: selectedAccess === "read-write",
           });
           if (!nextCard.plan?.definition || !nextCard.source)
@@ -790,7 +757,7 @@ export function ThreadIntegrationAction({
     plan.requestedAccess,
     selectedAccess === "read-write",
   );
-  // A Workspace cannot receive access above the selected computer's ceiling.
+  // Access never goes above the selected computer's ceiling.
   // This uses the access the person is about to grant, including an optional
   // expansion of a read Request, rather than only the Request's original floor.
   const sendUpgrade = computerAccessUpgrade(plan, effectiveAccess);
@@ -944,7 +911,7 @@ export function ThreadIntegrationAction({
         const started = await connectOperations.beginAuthorization({
           applicationSource: source,
           definitionId: plan.definition!.id,
-          returnPath: `/threads/${encodeURIComponent(threadId)}`,
+          returnPath: `/tasks/${encodeURIComponent(threadId)}`,
           ...(returnRoute ? { returnRoute } : {}),
         });
         await handOffAuthorization(started);
@@ -957,7 +924,7 @@ export function ThreadIntegrationAction({
           bridge,
           client: hostClient,
           onStarted: tracking.started,
-          returnPath: `/threads/${encodeURIComponent(threadId)}`,
+          returnPath: `/tasks/${encodeURIComponent(threadId)}`,
           ...(returnRoute ? { returnRoute } : {}),
           begin: async (returnPath, finish) => {
             const result = await hostClient.dispatch({
@@ -994,7 +961,6 @@ export function ThreadIntegrationAction({
         installationTitle: plan.installationTitle,
         requestId: request.id,
         selectedAccount: plan.selectedAccount,
-        targetKind: targetWorkspace.kind,
       });
       if (await integrationRequestStillPending(hostClient, request.originatingThreadId, request.id))
         throw new Error("This request is still waiting. Try again.");

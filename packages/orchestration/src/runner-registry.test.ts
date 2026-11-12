@@ -1,8 +1,4 @@
 import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
-import {
   HarnessIdSchema,
   ModelSelectionSchema,
   ThreadAccessModeSchema,
@@ -30,11 +26,13 @@ import {
   type RunnerPeer,
   type RunnerRegistryHooks,
 } from "./index.js";
-
 describe("Runner connection registry", () => {
   it("accepts background text only once from its live issuing connection and rejects foreign attempts", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+      hooks: {
+        authorize: async () => undefined,
+        onEvent: async () => undefined,
+      },
     });
     const environmentId = createId("environment");
     const identity = {
@@ -68,22 +66,49 @@ describe("Runner connection registry", () => {
       const report = {
         type: "runner.background-text-result" as const,
         attemptId: "opaque",
-        result: { ok: true as const, text: "Valid" },
+        result: {
+          ok: true as const,
+          text: "Valid",
+        },
       };
       await registry.handle(foreign, {
         ...fenceOf(foreign),
         ...report,
-        result: { ok: true, text: "Foreign" },
+        result: {
+          ok: true,
+          text: "Foreign",
+        },
       });
-      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "superseded" });
-      await registry.handle(peer, { ...fenceOf(peer), ...report });
-      await expect(pending).resolves.toEqual({ ok: true, text: "Valid" });
-      await registry.handle(peer, { ...fenceOf(peer), ...report });
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        ...report,
+        attemptId: "superseded",
+      });
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        ...report,
+      });
+      await expect(pending).resolves.toEqual({
+        ok: true,
+        text: "Valid",
+      });
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        ...report,
+      });
       const expired = registry.backgroundText(
-        { ...request, attemptId: "expired", deadline: new Date(Date.now() - 1).toISOString() },
+        {
+          ...request,
+          attemptId: "expired",
+          deadline: new Date(Date.now() - 1).toISOString(),
+        },
         AbortSignal.timeout(1000),
       );
-      await registry.handle(peer, { ...fenceOf(peer), ...report, attemptId: "expired" });
+      await registry.handle(peer, {
+        ...fenceOf(peer),
+        ...report,
+        attemptId: "expired",
+      });
       await expect(expired).rejects.toThrow();
       // A superseded connection ends its attempts at once, not at their deadline,
       // so naming moves to its next candidate while the Runner reconnects.
@@ -116,66 +141,6 @@ describe("Runner connection registry", () => {
     }
   });
 
-  it("settles specialist folder removal when its owning Runner replies", async () => {
-    const registry = new RunnerRegistry({
-      hooks: { authorize: async () => undefined, onEvent: async () => undefined },
-    });
-    const environmentId = createId("environment");
-    const identity = hello(createId("runner"), environmentId, "boot-1");
-    const authority = createId("storageAuthority");
-    const peer = new MemoryRunnerPeer("specialist-storage");
-    await registerAttached(
-      registry,
-      {
-        ...identity,
-        modules: {
-          ...identity.modules,
-          agents: {
-            ...identity.modules.agents!,
-            localStorage: {
-              storageAuthorityId: authority,
-              bindings: [],
-              truncated: false,
-            },
-          },
-        },
-      },
-      peer,
-    );
-    const request = {
-      type: "host.workspace.local.specialist.remove" as const,
-      requestId: crypto.randomUUID(),
-      operationId: "specialist-removal-test",
-      specialistId: crypto.randomUUID(),
-      binding: {
-        workspaceId: createId("workspace"),
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: authority,
-      },
-    };
-    const pending = registry.requestWorkspaceLocal(
-      environmentId,
-      request,
-      AbortSignal.timeout(1000),
-    );
-    const settled = expect(pending).resolves.toMatchObject({
-      type: "runner.workspace.local.specialist.removed",
-    });
-    const sent = peer.messages.findLast((message) => message.type === request.type);
-    if (!sent || sent.type !== request.type)
-      throw new Error("Specialist removal never reached Runner");
-    await registry.handle(peer, {
-      type: "runner.workspace.local.specialist.removed",
-      requestId: request.requestId,
-      operationId: request.operationId,
-      binding: request.binding,
-      fence: sent.fence,
-    });
-    await settled;
-  });
-
   it("updates the macOS shell fact without changing the connection fence", async () => {
     const hook = vi.fn(async () => undefined);
     const registry = new RunnerRegistry({
@@ -193,7 +158,11 @@ describe("Runner connection registry", () => {
         ...original,
         modules: {
           ...original.modules,
-          shell: { hostPublicKey: "ssh-ed25519 AAAA", platform: "darwin", fullDiskAccess: false },
+          shell: {
+            hostPublicKey: "ssh-ed25519 AAAA",
+            platform: "darwin",
+            fullDiskAccess: false,
+          },
         },
       },
       peer,
@@ -207,7 +176,13 @@ describe("Runner connection registry", () => {
     const identity = registry.identityForRunner(original.runnerId);
     expect(identity).toEqual({
       ...before,
-      modules: { ...before?.modules, shell: { ...before?.modules.shell, fullDiskAccess: true } },
+      modules: {
+        ...before?.modules,
+        shell: {
+          ...before?.modules.shell,
+          fullDiskAccess: true,
+        },
+      },
     });
     expect(identity?.fence).toBe(before?.fence);
     expect(hook).toHaveBeenCalledWith(identity, true);
@@ -218,7 +193,6 @@ describe("Runner connection registry", () => {
     });
     expect(hook).toHaveBeenLastCalledWith(registry.identityForRunner(original.runnerId), false);
   });
-
   it.each(["missing", "linux"] as const)(
     "refuses full access reports from a %s shell",
     async (platform) => {
@@ -239,7 +213,12 @@ describe("Runner connection registry", () => {
           modules: {
             ...original.modules,
             ...(platform === "linux"
-              ? { shell: { hostPublicKey: "ssh-ed25519 AAAA", platform } }
+              ? {
+                  shell: {
+                    hostPublicKey: "ssh-ed25519 AAAA",
+                    platform,
+                  },
+                }
               : {}),
           },
         },
@@ -258,7 +237,6 @@ describe("Runner connection registry", () => {
       expect(hook).not.toHaveBeenCalled();
     },
   );
-
   it("replaces a prior boot and fences the old peer", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -267,34 +245,45 @@ describe("Runner connection registry", () => {
       ),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const first = new MemoryRunnerPeer("first");
     const second = new MemoryRunnerPeer("second");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), first);
     await registerAttached(registry, hello(runnerId, environmentId, "boot-2"), second);
-    expect(first.closed).toMatchObject({ code: 4001 });
+    expect(first.closed).toMatchObject({
+      code: 4001,
+    });
     expect(hooks.onDisconnect).toHaveBeenCalledWith(
-      expect.objectContaining({ bootId: "boot-1", runnerId }),
-      { reason: "replaced", runIds: [], triggerOccurrenceIds: [] },
+      expect.objectContaining({
+        bootId: "boot-1",
+        runnerId,
+      }),
+      {
+        reason: "replaced",
+        runIds: [],
+        triggerOccurrenceIds: [],
+      },
     );
     expect(registry.identityForEnvironment(environmentId)?.bootId).toBe("boot-2");
     expect(registry.identityForRunner(runnerId)?.bootId).toBe("boot-2");
   });
-
   it("fences a revoked Runner and rejects every later registration", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const first = new MemoryRunnerPeer("first");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), first);
-
     await registry.revoke(runnerId);
 
     // The one terminal code, distinct from every refusal a Runner should
@@ -307,9 +296,10 @@ describe("Runner connection registry", () => {
     expect(registry.isAvailable(environmentId)).toBe(false);
     await expect(
       registry.register(hello(runnerId, environmentId, "boot-2"), new MemoryRunnerPeer("second")),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it("rejects registration when revocation races the durable authorization hook", async () => {
     let releaseAuthorization!: () => void;
     const authorization = new Promise<void>((resolve) => {
@@ -319,7 +309,9 @@ describe("Runner connection registry", () => {
       authorize: vi.fn(async () => authorization),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const registering = registry.register(
@@ -327,22 +319,23 @@ describe("Runner connection registry", () => {
       new MemoryRunnerPeer("runner"),
     );
     await waitFor(() => hooks.authorize.mock.calls.length === 1);
-
     await registry.revoke(runnerId);
-    const rejected = expect(registering).rejects.toMatchObject({ code: "forbidden" });
+    const rejected = expect(registering).rejects.toMatchObject({
+      code: "forbidden",
+    });
     releaseAuthorization();
-
     await rejected;
     expect(registry.isRunnerConnected(runnerId)).toBe(false);
   });
-
   it("fails a steer for an offline environment instead of retrying it forever", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const commandId = createId("command");
-
     await expect(
       registry.dispatch(
         RunnerCommandSchema.parse({
@@ -355,10 +348,13 @@ describe("Runner connection registry", () => {
               kind: "agent",
               runId: createId("run"),
               threadId: createId("thread"),
-              workspaceId: createId("workspace"),
-              workspaceName: "Research",
             },
-            content: [{ text: "Deliver into the active turn", type: "text" }],
+            content: [
+              {
+                text: "Deliver into the active turn",
+                type: "text",
+              },
+            ],
             createdAt: new Date().toISOString(),
             kind: "input",
             messageId: createId("message"),
@@ -369,16 +365,21 @@ describe("Runner connection registry", () => {
         }),
         new AbortController().signal,
       ),
-    ).rejects.toMatchObject({ disposition: "failed", message: "Runner is offline" });
+    ).rejects.toMatchObject({
+      disposition: "failed",
+      message: "Runner is offline",
+    });
   });
-
   it("holds a command receipt behind its response-specific durable commit hook", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onCommandAccepted: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
@@ -398,12 +399,13 @@ describe("Runner connection registry", () => {
     const beforeAck = vi.fn(async () => commit);
     let dispatchFinished = false;
     const dispatch = registry
-      .dispatch(command, new AbortController().signal, { beforeAck })
+      .dispatch(command, new AbortController().signal, {
+        beforeAck,
+      })
       .then(() => {
         dispatchFinished = true;
       });
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     const handled = registry.handle(peer, {
       ...fenceOf(peer),
       commandId,
@@ -413,13 +415,11 @@ describe("Runner connection registry", () => {
     await waitFor(() => beforeAck.mock.calls.length === 1);
     expect(dispatchFinished).toBe(false);
     expect(hooks.onCommandAccepted).not.toHaveBeenCalled();
-
     releaseCommit();
     await handled;
     await dispatch;
     expect(dispatchFinished).toBe(true);
   });
-
   it("finishes watch reconciliation when the Runner accepts the desired set", async () => {
     const onCommandAccepted = vi.fn(async () => undefined);
     const registry = new RunnerRegistry({
@@ -453,17 +453,17 @@ describe("Runner connection registry", () => {
       correlationId: sent.command.correlationId,
       type: "runner.command-accepted",
     });
-
     await expect(reconciliation).resolves.toBeUndefined();
     expect(onCommandAccepted).not.toHaveBeenCalled();
   });
-
   it("survives its Runner disconnecting during an execute's last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
@@ -485,13 +485,14 @@ describe("Runner connection registry", () => {
       ),
     ).toBe(false);
   });
-
   it("never sends an execute whose Run was stopped during its last authority check", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
@@ -526,7 +527,6 @@ describe("Runner connection registry", () => {
         await interrupting;
       },
     });
-
     await expect(dispatched).rejects.toMatchObject({
       disposition: "retry",
       message: "Run execution authority was revoked",
@@ -537,13 +537,14 @@ describe("Runner connection registry", () => {
       ),
     ).toBe(false);
   });
-
   it("fences only a concurrent execute while an inactive interrupt is being delivered", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
@@ -551,7 +552,6 @@ describe("Runner connection registry", () => {
     const trigger = triggerCommand(environmentId);
     const runInterruptId = createId("command");
     const triggerInterruptId = createId("command");
-
     const runInterrupt = RunnerCommandSchema.parse({
       commandId: runInterruptId,
       correlationId: CorrelationIdSchema.parse(runInterruptId),
@@ -578,7 +578,6 @@ describe("Runner connection registry", () => {
       type: "runner.command-accepted",
     });
     await interruptingRun;
-
     const triggerInterrupt = RunnerCommandSchema.parse({
       commandId: triggerInterruptId,
       correlationId: CorrelationIdSchema.parse(triggerInterruptId),
@@ -619,20 +618,21 @@ describe("Runner connection registry", () => {
       message: "Runner is offline",
     });
   });
-
   it("releases repeated active cancellation fences at terminal events and disconnect", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
       onTriggerResult: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
     const completedRuns: RunnerCommand[] = [];
     const completedTriggers: RunnerCommand[] = [];
-
     for (let index = 0; index < 3; index += 1) {
       const command = executeCommand(environmentId);
       completedRuns.push(command);
@@ -675,20 +675,20 @@ describe("Runner connection registry", () => {
         ...fenceOf(peer),
         event: {
           bindingGeneration: 1,
-          data: { status: "interrupted" },
+          data: {
+            status: "interrupted",
+          },
           emittedAt: new Date().toISOString(),
           environmentId,
           ordinal: 1,
           runId: command.context.runId,
           threadId: command.context.threadId,
           type: "run.interrupted",
-          workspaceId: command.context.workspaceId,
         },
         type: "runner.event",
       });
       await executing;
     }
-
     for (let index = 0; index < 3; index += 1) {
       const command = triggerCommand(environmentId);
       completedTriggers.push(command);
@@ -744,7 +744,6 @@ describe("Runner connection registry", () => {
       });
       await executing;
     }
-
     registry.disconnect(peer);
     await waitFor(() => !registry.isAvailable(environmentId));
     for (const command of completedRuns) {
@@ -758,7 +757,10 @@ describe("Runner connection registry", () => {
           },
           new AbortController().signal,
         ),
-      ).rejects.toMatchObject({ disposition: "retry", message: "Runner is offline" });
+      ).rejects.toMatchObject({
+        disposition: "retry",
+        message: "Runner is offline",
+      });
     }
     for (const command of completedTriggers) {
       const commandId = createId("command");
@@ -771,10 +773,12 @@ describe("Runner connection registry", () => {
           },
           new AbortController().signal,
         ),
-      ).rejects.toMatchObject({ disposition: "retry", message: "Runner is offline" });
+      ).rejects.toMatchObject({
+        disposition: "retry",
+        message: "Runner is offline",
+      });
     }
   });
-
   it("resolves execution only after the terminal event hook commits", async () => {
     let releaseCommit!: () => void;
     const commit = new Promise<void>((resolve) => {
@@ -784,7 +788,10 @@ describe("Runner connection registry", () => {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => commit),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -807,14 +814,15 @@ describe("Runner connection registry", () => {
       ...fenceOf(peer),
       event: {
         bindingGeneration: 1,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         emittedAt: new Date().toISOString(),
         environmentId,
         ordinal: 1,
         runId: command.context.runId,
         threadId: command.context.threadId,
         type: "run.completed",
-        workspaceId: command.context.workspaceId,
       },
       type: "runner.event",
     });
@@ -825,7 +833,6 @@ describe("Runner connection registry", () => {
     await dispatched;
     expect(finished).toBe(true);
   });
-
   it("resolves Trigger dispatch only after its result is durably committed", async () => {
     let releaseCommit!: () => void;
     const commit = new Promise<void>((resolve) => {
@@ -836,7 +843,10 @@ describe("Runner connection registry", () => {
       onEvent: vi.fn(async () => undefined),
       onTriggerResult: vi.fn(async () => commit),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -863,7 +873,9 @@ describe("Runner connection registry", () => {
         error: null,
         exitCode: 0,
         occurrenceId: command.context.occurrenceId,
-        result: { delivered: true },
+        result: {
+          delivered: true,
+        },
         status: "succeeded",
         stderr: "",
         stdout: "",
@@ -878,13 +890,14 @@ describe("Runner connection registry", () => {
     expect(hooks.onTriggerResult).toHaveBeenCalledTimes(1);
     expect(finished).toBe(true);
   });
-
   it("fails closed without sending when the Runner cannot run the command harness", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -902,18 +915,25 @@ describe("Runner connection registry", () => {
     expect(registry.canRunHarness(environmentId, HarnessIdSchema.parse("native"))).toBe(false);
     await expect(
       registry.dispatch(executeCommand(environmentId), new AbortController().signal),
-    ).rejects.toMatchObject({ disposition: "failed" });
+    ).rejects.toMatchObject({
+      disposition: "failed",
+    });
     expect(peer.messages).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "host.command" })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: "host.command",
+        }),
+      ]),
     );
   });
-
   it("returns a retry disposition when Runner capacity rejects a command temporarily", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -921,24 +941,28 @@ describe("Runner connection registry", () => {
     const command = triggerCommand(environmentId);
     const dispatched = registry.dispatch(command, new AbortController().signal);
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       commandId: command.commandId,
       correlationId: command.correlationId,
-      error: { code: "conflict", message: "Runner is at its concurrency limit", retryable: true },
+      error: {
+        code: "conflict",
+        message: "Runner is at its concurrency limit",
+        retryable: true,
+      },
       type: "runner.command-rejected",
     });
-
     await expect(dispatched).rejects.toMatchObject({
       disposition: "retry",
       message: "Runner is at its concurrency limit",
     });
   });
-
   it("preserves an uncertain steer acknowledgement as unknown delivery", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -947,7 +971,6 @@ describe("Runner connection registry", () => {
     const command = steerCommand(environmentId);
     const dispatched = registry.dispatch(command, new AbortController().signal);
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       commandId: command.commandId,
@@ -955,16 +978,17 @@ describe("Runner connection registry", () => {
       message: "Provider acknowledgement was lost",
       type: "runner.command-uncertain",
     });
-
     await expect(dispatched).rejects.toMatchObject({
       disposition: "uncertain",
       message: "Provider acknowledgement was lost",
     });
   });
-
   it("rejects an uncertain receipt for a command that is not a steer", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -972,7 +996,6 @@ describe("Runner connection registry", () => {
     const command = triggerCommand(environmentId);
     const dispatched = registry.dispatch(command, new AbortController().signal);
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     await expect(
       registry.handle(peer, {
         ...fenceOf(peer),
@@ -987,10 +1010,12 @@ describe("Runner connection registry", () => {
       message: "Runner reported uncertain delivery for trigger.execute",
     });
   });
-
   it("preserves a proven steer refusal reason", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
@@ -998,15 +1023,17 @@ describe("Runner connection registry", () => {
     const command = steerCommand(environmentId);
     const dispatched = registry.dispatch(command, new AbortController().signal);
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       commandId: command.commandId,
       correlationId: command.correlationId,
-      error: { code: "conflict", message: "The active turn already ended", retryable: false },
+      error: {
+        code: "conflict",
+        message: "The active turn already ended",
+        retryable: false,
+      },
       type: "runner.command-rejected",
     });
-
     await expect(dispatched).rejects.toMatchObject({
       disposition: "failed",
       message: "The active turn already ended",
@@ -1031,21 +1058,28 @@ describe("Runner connection registry", () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onAttach: vi.fn(async () => [
-        { nextOrdinal: 1, runId: resumed.context.runId, status: "attached" as const },
+        {
+          nextOrdinal: 1,
+          runId: resumed.context.runId,
+          status: "attached" as const,
+        },
       ]),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, executionLeaseMs: 60_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      executionLeaseMs: 60_000,
+    });
     const peer = new MemoryRunnerPeer("runner");
     await registry.register(hello(runnerId, environmentId, "boot-1"), peer);
-
     await expect(
       registry.dispatch(executeCommand(environmentId), new AbortController().signal),
-    ).rejects.toMatchObject({ disposition: "retry" });
+    ).rejects.toMatchObject({
+      disposition: "retry",
+    });
     expect(peer.messages.some((message) => message.type === "host.command")).toBe(false);
     expect(registry.isAttached(environmentId)).toBe(false);
-
     const announced = {
       bindingGeneration: resumed.context.bindingGeneration,
       environmentId,
@@ -1053,7 +1087,6 @@ describe("Runner connection registry", () => {
       runId: resumed.context.runId,
       terminal: false,
       threadId: resumed.context.threadId,
-      workspaceId: resumed.context.workspaceId,
     };
     await registry.handle(peer, {
       ...fenceOf(peer),
@@ -1064,7 +1097,13 @@ describe("Runner connection registry", () => {
     expect(peer.messages.find((message) => message.type === "host.executions.attached")).toEqual(
       expect.objectContaining({
         leaseMs: 60_000,
-        results: [{ nextOrdinal: 1, runId: resumed.context.runId, status: "attached" }],
+        results: [
+          {
+            nextOrdinal: 1,
+            runId: resumed.context.runId,
+            status: "attached",
+          },
+        ],
       }),
     );
     expect(registry.isAttached(environmentId)).toBe(true);
@@ -1072,30 +1111,35 @@ describe("Runner connection registry", () => {
     // way fills it.
     expect(registry.hasRunCapacity(environmentId)).toBe(true);
     expect(registry.hasRunCapacity(environmentId, 1)).toBe(false);
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       event: {
         bindingGeneration: resumed.context.bindingGeneration,
-        data: { status: "completed" },
+        data: {
+          status: "completed",
+        },
         emittedAt: new Date().toISOString(),
         environmentId,
         ordinal: 1,
         runId: resumed.context.runId,
         threadId: resumed.context.threadId,
         type: "run.completed",
-        workspaceId: resumed.context.workspaceId,
       },
       type: "runner.event",
     });
     await waitFor(() => peer.messages.some((message) => message.type === "host.events.acked"));
     expect(peer.messages.find((message) => message.type === "host.events.acked")).toEqual(
       expect.objectContaining({
-        acks: [{ runId: resumed.context.runId, sessionBound: false, throughOrdinal: 1 }],
+        acks: [
+          {
+            runId: resumed.context.runId,
+            sessionBound: false,
+            throughOrdinal: 1,
+          },
+        ],
       }),
     );
     expect(registry.hasRunCapacity(environmentId, 1)).toBe(true);
-
     await expect(
       registry.handle(peer, {
         ...fenceOf(peer),
@@ -1103,9 +1147,10 @@ describe("Runner connection registry", () => {
         executions: [],
         type: "runner.executions.attach",
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
-
   it("refuses a Run announced for an environment the Runner does not serve", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -1113,12 +1158,13 @@ describe("Runner connection registry", () => {
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const environmentId = createId("environment");
     const foreign = executeCommand(createId("environment"));
     const peer = new MemoryRunnerPeer("runner");
     await registry.register(hello(createId("runner"), environmentId, "boot-1"), peer);
-
     await expect(
       registry.handle(peer, {
         ...fenceOf(peer),
@@ -1131,42 +1177,49 @@ describe("Runner connection registry", () => {
             runId: foreign.context.runId,
             terminal: false,
             threadId: foreign.context.threadId,
-            workspaceId: foreign.context.workspaceId,
           },
         ],
         type: "runner.executions.attach",
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     expect(hooks.onAttach).not.toHaveBeenCalled();
     expect(registry.isAttached(environmentId)).toBe(false);
   });
-
   it("retains execution ownership when the acknowledgement is lost", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 5 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 5,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), peer);
     const command = executeCommand(environmentId);
-
     await expect(registry.dispatch(command, new AbortController().signal)).rejects.toMatchObject({
       disposition: "uncertain",
     });
-
     await waitFor(() => hooks.onDisconnect.mock.calls.length === 1);
-    expect(peer.closed).toMatchObject({ code: 1011 });
-    expect(hooks.onDisconnect).toHaveBeenCalledWith(expect.objectContaining({ runnerId }), {
-      reason: "lost",
-      runIds: [command.context.runId],
-      triggerOccurrenceIds: [],
+    expect(peer.closed).toMatchObject({
+      code: 1011,
     });
+    expect(hooks.onDisconnect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runnerId,
+      }),
+      {
+        reason: "lost",
+        runIds: [command.context.runId],
+        triggerOccurrenceIds: [],
+      },
+    );
   });
-
   it("forwards live progress only for a Run this connection was dispatched, under its binding", async () => {
     const onLive = vi.fn();
     const registry = new RunnerRegistry({
@@ -1193,12 +1246,22 @@ describe("Runner connection registry", () => {
       correlationId: command.correlationId,
       type: "runner.command-accepted",
     });
-    const { runId, threadId, workspaceId } = command.context;
-    const progress = (overrides: { threadId?: typeof threadId } = {}) => ({
-      items: [{ at: 0, op: "append" as const, stream: "assistant" as const, text: "Hello" }],
+    const { runId, threadId } = command.context;
+    const progress = (
+      overrides: {
+        threadId?: typeof threadId;
+      } = {},
+    ) => ({
+      items: [
+        {
+          at: 0,
+          op: "append" as const,
+          stream: "assistant" as const,
+          text: "Hello",
+        },
+      ],
       runId,
       threadId: overrides.threadId ?? threadId,
-      workspaceId,
     });
 
     // Another Runner cannot claim the Run by reporting it in a heartbeat.
@@ -1236,11 +1299,12 @@ describe("Runner connection registry", () => {
       ...fenceOf(owner),
       bindingGeneration: 1,
       environmentId: ownerEnvironment,
-      progress: progress({ threadId: createId("thread") }),
+      progress: progress({
+        threadId: createId("thread"),
+      }),
       type: "runner.live",
     });
     expect(onLive).not.toHaveBeenCalled();
-
     await registry.handle(owner, {
       ...fenceOf(owner),
       bindingGeneration: 1,
@@ -1250,7 +1314,6 @@ describe("Runner connection registry", () => {
     });
     expect(onLive).toHaveBeenCalledTimes(1);
   });
-
   it("replaces heartbeat observations without erasing Host-dispatched ownership", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -1259,17 +1322,21 @@ describe("Runner connection registry", () => {
       ),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
     const dispatched = executeCommand(environmentId);
     const dispatch = registry.dispatch(dispatched, new AbortController().signal);
-    const rejected = expect(dispatch).rejects.toMatchObject({ disposition: "uncertain" });
+    const rejected = expect(dispatch).rejects.toMatchObject({
+      disposition: "uncertain",
+    });
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
     const firstObserved = createId("run");
     const latestObserved = createId("run");
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       activeRunIds: [firstObserved],
@@ -1289,7 +1356,6 @@ describe("Runner connection registry", () => {
       type: "runner.heartbeat",
     });
     registry.disconnect(peer);
-
     await waitFor(() => hooks.onDisconnect.mock.calls.length === 1);
     expect(hooks.onDisconnect.mock.calls[0]?.[1]).toEqual({
       reason: "lost",
@@ -1299,7 +1365,6 @@ describe("Runner connection registry", () => {
     expect(hooks.onDisconnect.mock.calls[0]?.[1]?.runIds).not.toContain(firstObserved);
     await rejected;
   });
-
   it("retries disconnect recovery without losing the exact ownership scope", async () => {
     const environmentId = createId("environment");
     const command = executeCommand(environmentId);
@@ -1311,15 +1376,21 @@ describe("Runner connection registry", () => {
         .mockResolvedValue(undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(createId("runner"), environmentId, "boot-1"), peer);
     const dispatch = registry.dispatch(command, new AbortController().signal);
-    const rejected = expect(dispatch).rejects.toMatchObject({ disposition: "uncertain" });
+    const rejected = expect(dispatch).rejects.toMatchObject({
+      disposition: "uncertain",
+    });
     await waitFor(() => peer.messages.some((message) => message.type === "host.command"));
-
     registry.disconnect(peer);
-    await vi.waitFor(() => expect(hooks.onDisconnect).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    await vi.waitFor(() => expect(hooks.onDisconnect).toHaveBeenCalledTimes(2), {
+      timeout: 2_000,
+    });
     expect(hooks.onDisconnect.mock.calls[0]?.[1]).toEqual({
       reason: "lost",
       runIds: [command.context.runId],
@@ -1328,7 +1399,6 @@ describe("Runner connection registry", () => {
     expect(hooks.onDisconnect.mock.calls[1]?.[1]).toEqual(hooks.onDisconnect.mock.calls[0]?.[1]);
     await rejected;
   });
-
   it("drains a disconnect hook already running when close begins", async () => {
     let finishRecovery!: () => void;
     const hook = new Promise<void>((resolve) => {
@@ -1342,14 +1412,17 @@ describe("Runner connection registry", () => {
         .mockImplementation(async () => hook),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), peer);
-
     registry.disconnect(peer);
-    await vi.waitFor(() => expect(hooks.onDisconnect).toHaveBeenCalledTimes(2), { timeout: 1_000 });
+    await vi.waitFor(() => expect(hooks.onDisconnect).toHaveBeenCalledTimes(2), {
+      timeout: 1_000,
+    });
     const closing = registry.close();
     let closed = false;
     void closing.then(() => {
@@ -1364,7 +1437,6 @@ describe("Runner connection registry", () => {
     await Promise.resolve();
     expect(hooks.onDisconnect).toHaveBeenCalledTimes(2);
   });
-
   it("scopes delayed disconnect recovery to work owned by the old connection", async () => {
     let releaseFirstDisconnect!: () => void;
     const firstDisconnect = new Promise<void>((resolve) => {
@@ -1379,20 +1451,23 @@ describe("Runner connection registry", () => {
       }),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks, commandAckTimeoutMs: 1_000 });
+    const registry = new RunnerRegistry({
+      hooks,
+      commandAckTimeoutMs: 1_000,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const firstPeer = new MemoryRunnerPeer("first");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), firstPeer);
-
     const firstCommand = executeCommand(environmentId);
     const firstDispatch = registry.dispatch(firstCommand, new AbortController().signal);
-    const firstRejected = expect(firstDispatch).rejects.toMatchObject({ disposition: "uncertain" });
+    const firstRejected = expect(firstDispatch).rejects.toMatchObject({
+      disposition: "uncertain",
+    });
     await waitFor(() => firstPeer.messages.some((message) => message.type === "host.command"));
     registry.disconnect(firstPeer);
     await waitFor(() => hooks.onDisconnect.mock.calls.length === 1);
     await firstRejected;
-
     const secondPeer = new MemoryRunnerPeer("second");
     const secondIdentity = {
       ...hello(runnerId, environmentId, "boot-1"),
@@ -1407,60 +1482,66 @@ describe("Runner connection registry", () => {
       disposition: "uncertain",
     });
     await waitFor(() => secondPeer.messages.some((message) => message.type === "host.command"));
-
     expect(hooks.onDisconnect.mock.calls[0]).toEqual([
-      expect.objectContaining({ connectionGeneration: 1, runnerId }),
-      { reason: "lost", runIds: [firstCommand.context.runId], triggerOccurrenceIds: [] },
+      expect.objectContaining({
+        connectionGeneration: 1,
+        runnerId,
+      }),
+      {
+        reason: "lost",
+        runIds: [firstCommand.context.runId],
+        triggerOccurrenceIds: [],
+      },
     ]);
     expect(hooks.onDisconnect.mock.calls[0]?.[1]?.runIds).not.toContain(
       secondCommand.context.runId,
     );
-
     secondController.abort(new Error("test complete"));
     await secondRejected;
     releaseFirstDisconnect();
     await registry.close();
   });
-
   it("rolls registration back when the welcome cannot be delivered", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new RejectingRunnerPeer("runner");
-
     await expect(registry.register(hello(runnerId, environmentId, "boot-1"), peer)).rejects.toThrow(
       "welcome failed",
     );
     expect(registry.isAvailable(environmentId)).toBe(false);
     expect(registry.identityForEnvironment(environmentId)).toBeUndefined();
-    expect(peer.closed).toMatchObject({ code: 1011 });
+    expect(peer.closed).toMatchObject({
+      code: 1011,
+    });
     expect(hooks.onDisconnect).toHaveBeenCalledTimes(1);
   });
-
   it("does not complete registration after the peer disconnects during welcome", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
       onDisconnect: vi.fn(async () => undefined),
       onEvent: vi.fn(async () => undefined),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     let peer!: MemoryRunnerPeer;
     peer = new MemoryRunnerPeer("runner", () => registry.disconnect(peer));
-
     await expect(registry.register(hello(runnerId, environmentId, "boot-1"), peer)).rejects.toThrow(
       "disconnected before registration completed",
     );
     expect(registry.isAvailable(environmentId)).toBe(false);
     expect(hooks.onDisconnect).toHaveBeenCalledTimes(1);
   });
-
   it("announces a registration only once the Runner is reachable", async () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -1478,19 +1559,24 @@ describe("Runner connection registry", () => {
         welcomed = peer.messages.some((message) => message.type === "host.welcome");
       }),
     };
-    registry = new RunnerRegistry({ hooks });
-
+    registry = new RunnerRegistry({
+      hooks,
+    });
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), peer);
     await waitFor(() => hooks.onRegistered.mock.calls.length === 1);
-
-    expect(available).toEqual({ authorize: false, registered: true });
+    expect(available).toEqual({
+      authorize: false,
+      registered: true,
+    });
     expect(welcomed).toBe(true);
     expect(hooks.onRegistered).toHaveBeenCalledWith(
-      expect.objectContaining({ bootId: "boot-1", runnerId }),
+      expect.objectContaining({
+        bootId: "boot-1",
+        runnerId,
+      }),
     );
     await registry.close();
   });
-
   it("keeps a Runner connected when its registration hook fails", async () => {
     const hooks = {
       authorize: vi.fn(async () => undefined),
@@ -1499,21 +1585,22 @@ describe("Runner connection registry", () => {
         throw new Error("Harness catalog capture failed");
       }),
     };
-    const registry = new RunnerRegistry({ hooks });
+    const registry = new RunnerRegistry({
+      hooks,
+    });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
-
     await expect(
       registry.register(hello(runnerId, environmentId, "boot-1"), peer),
-    ).resolves.toMatchObject({ bootId: "boot-1" });
+    ).resolves.toMatchObject({
+      bootId: "boot-1",
+    });
     await waitFor(() => hooks.onRegistered.mock.calls.length === 1);
-
     expect(registry.isAvailable(environmentId)).toBe(true);
     expect(peer.closed).toBeUndefined();
     await registry.close();
   });
-
   describe("harness catalogs", () => {
     /** One profile definition, shaped exactly as both catalog messages carry it. */
     function definition(id: ReturnType<typeof createId<"harnessInstance">>) {
@@ -1527,7 +1614,6 @@ describe("Runner connection registry", () => {
         stateKind: "isolated",
       } as const;
     }
-
     async function attached(
       onHarnessCatalogInvalidated?: RunnerRegistryHooks["onHarnessCatalogInvalidated"],
       targetedInspection = false,
@@ -1535,9 +1621,15 @@ describe("Runner connection registry", () => {
       const hooks = {
         authorize: vi.fn(async () => undefined),
         onEvent: vi.fn(async () => undefined),
-        ...(onHarnessCatalogInvalidated ? { onHarnessCatalogInvalidated } : {}),
+        ...(onHarnessCatalogInvalidated
+          ? {
+              onHarnessCatalogInvalidated,
+            }
+          : {}),
       };
-      const registry = new RunnerRegistry({ hooks });
+      const registry = new RunnerRegistry({
+        hooks,
+      });
       const environmentId = createId("environment");
       const peer = new MemoryRunnerPeer("runner");
       const identity = hello(createId("runner"), environmentId, "boot-1");
@@ -1607,9 +1699,14 @@ describe("Runner connection registry", () => {
           type: "runner.harness-catalog",
         });
       };
-      return { answer, catalogs, environmentId, peer, registry };
+      return {
+        answer,
+        catalogs,
+        environmentId,
+        peer,
+        registry,
+      };
     }
-
     it.each([true, false])(
       "gates targeted reconcile inspections on Runner support (%s)",
       async (supported) => {
@@ -1622,9 +1719,17 @@ describe("Runner connection registry", () => {
             second.id,
           ]);
           await vi.waitFor(() => expect(catalogs()).toHaveLength(1));
-          expect(catalogs()[0]).toMatchObject({ harnesses: [first, second] });
+          expect(catalogs()[0]).toMatchObject({
+            harnesses: [first, second],
+          });
           expect(catalogs()[0]).toEqual(
-            expect.objectContaining(supported ? { inspect: [second.id] } : {}),
+            expect.objectContaining(
+              supported
+                ? {
+                    inspect: [second.id],
+                  }
+                : {},
+            ),
           );
           if (!supported) expect(catalogs()[0]).not.toHaveProperty("inspect");
           const inspection = registry.inspectHarnesses(environmentId, [first], signal);
@@ -1652,7 +1757,6 @@ describe("Runner connection registry", () => {
         }
       },
     );
-
     it.each(["ready", "preparing"] as const)(
       "does not let an older full catalog overwrite a newer %s observation",
       async (status) => {
@@ -1676,24 +1780,25 @@ describe("Runner connection registry", () => {
             const recapture = registry.inspectHarnesses(environmentId, [first], signal);
             await vi.waitFor(() => expect(catalogs()).toHaveLength(3));
             await answer(2);
-            await expect(recapture).resolves.toMatchObject([{ status: "ready" }]);
+            await expect(recapture).resolves.toMatchObject([
+              {
+                status: "ready",
+              },
+            ]);
           }
         } finally {
           await registry.close();
         }
       },
     );
-
     it("collapses concurrent identical inspections into one round trip", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [definition(createId("harnessInstance"))];
       const signal = new AbortController().signal;
-
       const first = registry.inspectHarnesses(environmentId, harnesses, signal);
       const second = registry.inspectHarnesses(environmentId, harnesses, signal);
       await waitFor(() => catalogs().length === 1);
       expect(catalogs()[0]?.type).toBe("host.inspect-harnesses");
-
       await answer(0);
       expect(await first).toEqual(await second);
       // And the cached answer is served without entering any queue at all.
@@ -1701,7 +1806,6 @@ describe("Runner connection registry", () => {
       expect(catalogs()).toHaveLength(1);
       await registry.close();
     });
-
     it("keeps sign-in required across cache expiry but refreshes on request and profile changes", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harness = definition(createId("harnessInstance"));
@@ -1715,7 +1819,11 @@ describe("Runner connection registry", () => {
         try {
           await expect(
             registry.inspectHarnesses(environmentId, [harness], signal),
-          ).resolves.toMatchObject([{ status: "authentication-required" }]);
+          ).resolves.toMatchObject([
+            {
+              status: "authentication-required",
+            },
+          ]);
           expect(catalogs()).toHaveLength(1);
         } finally {
           clock.mockRestore();
@@ -1728,17 +1836,25 @@ describe("Runner connection registry", () => {
         await refresh;
         const changed = registry.inspectHarnesses(
           environmentId,
-          [{ ...harness, runtimeRevision: 2 }],
+          [
+            {
+              ...harness,
+              runtimeRevision: 2,
+            },
+          ],
           signal,
         );
         await waitFor(() => catalogs().length === 3);
         await answer(2);
-        await expect(changed).resolves.toMatchObject([{ status: "ready" }]);
+        await expect(changed).resolves.toMatchObject([
+          {
+            status: "ready",
+          },
+        ]);
       } finally {
         await registry.close();
       }
     });
-
     it("fans a multi-profile inspection into bounded per-profile requests", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [
@@ -1763,7 +1879,6 @@ describe("Runner connection registry", () => {
       ]);
       await registry.close();
     });
-
     it("does not let an older batch response overwrite a newer profile result", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const first = definition(createId("harnessInstance"));
@@ -1771,12 +1886,19 @@ describe("Runner connection registry", () => {
       const signal = new AbortController().signal;
       const reconciliation = registry.reconcileHarnesses(environmentId, [first, second], signal);
       await waitFor(() => catalogs().length === 1);
-      const refresh = registry.inspectHarnesses(environmentId, [first], signal, { fresh: true });
+      const refresh = registry.inspectHarnesses(environmentId, [first], signal, {
+        fresh: true,
+      });
       await waitFor(() => catalogs().length === 2);
-
       await answer(1, "ready", "new-model");
       await expect(refresh).resolves.toMatchObject([
-        { models: [expect.objectContaining({ modelId: "new-model" })] },
+        {
+          models: [
+            expect.objectContaining({
+              modelId: "new-model",
+            }),
+          ],
+        },
       ]);
       await answer(0, "ready", "old-model");
       const reconciled = await reconciliation;
@@ -1787,7 +1909,6 @@ describe("Runner connection registry", () => {
       );
       await registry.close();
     });
-
     it("does not reuse a cached catalog after the profile definition changes", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harness = definition(createId("harnessInstance"));
@@ -1796,17 +1917,24 @@ describe("Runner connection registry", () => {
       await waitFor(() => catalogs().length === 1);
       await answer(0);
       await initial;
-
-      const changed = { ...harness, sourceId: "another-source" };
+      const changed = {
+        ...harness,
+        sourceId: "another-source",
+      };
       const refreshed = registry.inspectHarnesses(environmentId, [changed], signal);
       await waitFor(() => catalogs().length === 2);
       await answer(1, "ready", "changed-model");
       await expect(refreshed).resolves.toMatchObject([
-        { models: [expect.objectContaining({ modelId: "changed-model" })] },
+        {
+          models: [
+            expect.objectContaining({
+              modelId: "changed-model",
+            }),
+          ],
+        },
       ]);
       await registry.close();
     });
-
     it("bypasses a cached catalog for explicit refresh while coalescing concurrent refreshes", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [definition(createId("harnessInstance"))];
@@ -1816,8 +1944,12 @@ describe("Runner connection registry", () => {
         await waitFor(() => catalogs().length === 1);
         await answer(0);
         await initial;
-        const first = registry.inspectHarnesses(environmentId, harnesses, signal, { fresh: true });
-        const second = registry.inspectHarnesses(environmentId, harnesses, signal, { fresh: true });
+        const first = registry.inspectHarnesses(environmentId, harnesses, signal, {
+          fresh: true,
+        });
+        const second = registry.inspectHarnesses(environmentId, harnesses, signal, {
+          fresh: true,
+        });
         await waitFor(() => catalogs().length === 2);
         await answer(1);
         expect(await first).toEqual(await second);
@@ -1826,7 +1958,6 @@ describe("Runner connection registry", () => {
         await registry.close();
       }
     });
-
     it("starts an independent recapture when native preparation invalidates an older answer", async () => {
       let registry!: RunnerRegistry;
       let environmentId!: ReturnType<typeof createId<"environment">>;
@@ -1845,7 +1976,6 @@ describe("Runner connection registry", () => {
       environmentId = connection.environmentId;
       const harnessInstanceId = createId("harnessInstance");
       harnesses = [definition(harnessInstanceId)];
-
       const initial = registry.inspectHarnesses(
         environmentId,
         harnesses,
@@ -1857,37 +1987,50 @@ describe("Runner connection registry", () => {
         harnessInstanceId,
         type: "runner.harness-catalog-invalidated",
       });
-
       await waitFor(() => connection.catalogs().length === 2);
       expect(invalidated).toHaveBeenCalledWith(
-        expect.objectContaining({ environmentIds: [environmentId] }),
-        expect.objectContaining({ harnessInstanceId, type: "runner.harness-catalog-invalidated" }),
+        expect.objectContaining({
+          environmentIds: [environmentId],
+        }),
+        expect.objectContaining({
+          harnessInstanceId,
+          type: "runner.harness-catalog-invalidated",
+        }),
       );
       expect(connection.catalogs()[1]?.type).toBe("host.inspect-harnesses");
 
       // The request sent before invalidation may still settle afterward, but
       // its obsolete answer must not reach a caller that could persist it.
       await connection.answer(0, "preparing");
-      await expect(initial).rejects.toMatchObject({ code: "conflict", retryable: true });
+      await expect(initial).rejects.toMatchObject({
+        code: "conflict",
+        retryable: true,
+      });
       await connection.answer(1, "ready");
-      await expect(recapture).resolves.toMatchObject([{ status: "ready" }]);
+      await expect(recapture).resolves.toMatchObject([
+        {
+          status: "ready",
+        },
+      ]);
       expect(registry.catalogForHarness(environmentId, harnessInstanceId)).toMatchObject({
         status: "ready",
       });
       await expect(
         registry.inspectHarnesses(environmentId, harnesses, new AbortController().signal),
-      ).resolves.toMatchObject([{ status: "ready" }]);
+      ).resolves.toMatchObject([
+        {
+          status: "ready",
+        },
+      ]);
       expect(connection.catalogs()).toHaveLength(2);
       await registry.close();
     });
-
     it("cancels one catalog waiter without canceling connection-owned startup", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const harnesses = [definition(createId("harnessInstance"))];
       const abandoned = new AbortController();
       const first = registry.inspectHarnesses(environmentId, harnesses, abandoned.signal);
       await waitFor(() => catalogs().length === 1);
-
       abandoned.abort(new Error("Settings view closed"));
       await expect(first).rejects.toThrow("Settings view closed");
       const joined = registry.inspectHarnesses(
@@ -1896,12 +2039,10 @@ describe("Runner connection registry", () => {
         new AbortController().signal,
       );
       expect(catalogs()).toHaveLength(1);
-
       await answer(0);
       await expect(joined).resolves.toHaveLength(1);
       await registry.close();
     });
-
     it("settles connection-owned catalog startup when the registry closes", async () => {
       const { catalogs, environmentId, registry } = await attached();
       const inspecting = registry.inspectHarnesses(
@@ -1910,12 +2051,10 @@ describe("Runner connection registry", () => {
         new AbortController().signal,
       );
       await waitFor(() => catalogs().length === 1);
-
       const closing = registry.close();
       await expect(inspecting).rejects.toThrow(/shutting down|closing/u);
       await closing;
     });
-
     it("lets an inspection overtake a reconciliation that is still in flight", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const signal = new AbortController().signal;
@@ -1936,14 +2075,12 @@ describe("Runner connection registry", () => {
       );
       await waitFor(() => catalogs().length === 2);
       expect(catalogs()[1]?.type).toBe("host.inspect-harnesses");
-
       await answer(1);
       await expect(inspecting).resolves.toHaveLength(1);
       await answer(0);
       await expect(reconciling).resolves.toHaveLength(1);
       await registry.close();
     });
-
     it("orders reconciliations and releases the queue when a waiter gives up", async () => {
       const { answer, catalogs, environmentId, registry } = await attached();
       const first = registry.reconcileHarnesses(
@@ -1965,10 +2102,8 @@ describe("Runner connection registry", () => {
       abandoned.abort(new Error("Caller gave up"));
       await expect(second).rejects.toThrow(/gave up/u);
       expect(catalogs()).toHaveLength(1);
-
       await answer(0);
       await expect(first).resolves.toHaveLength(1);
-
       const third = registry.reconcileHarnesses(
         environmentId,
         [definition(createId("harnessInstance"))],
@@ -1981,42 +2116,52 @@ describe("Runner connection registry", () => {
     });
   });
 });
-
 class MemoryRunnerPeer implements RunnerPeer {
   readonly id: string;
   readonly messages: HostToRunnerMessage[] = [];
-  closed: { code: number; reason: string } | undefined;
+  closed:
+    | {
+        code: number;
+        reason: string;
+      }
+    | undefined;
   readonly #onSend: (() => void) | undefined;
   constructor(id: string, onSend?: () => void) {
     this.id = id;
     this.#onSend = onSend;
   }
   close(code: number, reason: string): void {
-    this.closed = { code, reason };
+    this.closed = {
+      code,
+      reason,
+    };
   }
   async send(message: HostToRunnerMessage): Promise<void> {
     this.messages.push(message);
     this.#onSend?.();
   }
 }
-
 class RejectingRunnerPeer implements RunnerPeer {
   readonly id: string;
-  closed: { code: number; reason: string } | undefined;
-
+  closed:
+    | {
+        code: number;
+        reason: string;
+      }
+    | undefined;
   constructor(id: string) {
     this.id = id;
   }
-
   close(code: number, reason: string): void {
-    this.closed = { code, reason };
+    this.closed = {
+      code,
+      reason,
+    };
   }
-
   send(_message: HostToRunnerMessage): Promise<void> {
     return Promise.reject(new Error("welcome failed"));
   }
 }
-
 type AgentHarnessDrivers = NonNullable<RunnerIdentity["modules"]["agents"]>["harnessDrivers"];
 
 /** One minimal first-party source, shaped exactly as a driver declares it. */
@@ -2032,7 +2177,6 @@ function harnessSources(sourceId: string, label: string): HarnessSourceDescripto
     },
   ];
 }
-
 function hello(
   runnerId: ReturnType<typeof createId<"runner">>,
   environmentId: ReturnType<typeof createId<"environment">>,
@@ -2068,10 +2212,9 @@ function hello(
       agents: {
         environmentIds: [environmentId],
         harnessDrivers,
-        localStorage: null,
+
         maxConcurrentRuns: 2,
         providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
       },
     },
     name: "Runner",
@@ -2099,7 +2242,6 @@ async function registerAttached(
   });
   return registered;
 }
-
 function fenceOf(peer: MemoryRunnerPeer): RunnerConnectionFence {
   const welcome = peer.messages.find((message) => message.type === "host.welcome");
   if (!welcome) throw new Error("The peer was never welcomed");
@@ -2111,17 +2253,22 @@ function fenceOf(peer: MemoryRunnerPeer): RunnerConnectionFence {
     runnerId: welcome.runnerId,
   };
 }
-
 function executeCommand(
   environmentId: ReturnType<typeof createId<"environment">>,
 ): RunnerCommand & {
   type: "run.execute";
 } {
   const commandId = createId("command");
-  const workspaceId = createId("workspace");
+
   return {
     commandId,
+    location: {
+      folder: { computerId: createId("runner"), path: "/tmp/task" },
+      agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
+    },
     context: {
+      personalContext: true,
+      taskPurpose: "task",
       accessMode: "full-access",
       assignment: null,
       agentTools: {
@@ -2132,8 +2279,9 @@ function executeCommand(
         token: "agent-tools-token",
         url: "https://host.example.test/internal/v1/mcp",
       },
-      browserCdp: { url: "https://host.example.test/internal/v1/browser-cdp" },
-
+      browserCdp: {
+        url: "https://host.example.test/internal/v1/browser-cdp",
+      },
       plugins: {
         versions: [],
         token: "plugin-cache-token",
@@ -2141,7 +2289,6 @@ function executeCommand(
       },
       bindingGeneration: 1,
       executionLeaseMs: 90_000,
-      membershipGeneration: 1,
       egress: {
         maxRequestBytes: 1_024,
         maxResponseBytes: 2_048,
@@ -2150,7 +2297,9 @@ function executeCommand(
       },
       environmentId,
       harness: {
-        config: { model: "test" },
+        config: {
+          model: "test",
+        },
         driverKind: HarnessIdSchema.parse("native"),
         name: "Native",
         runtimeRevision: 1,
@@ -2159,12 +2308,18 @@ function executeCommand(
       },
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
-        options: { effort: "low" },
+        options: {
+          effort: "low",
+        },
         providerId: "openai",
       }),
       harnessInstanceId: createId("harnessInstance"),
       history: [],
-      historyWindow: { byteCount: 2, hasEarlier: false, itemCount: 0 },
+      historyWindow: {
+        byteCount: 2,
+        hasEarlier: false,
+        itemCount: 0,
+      },
       initialContext: null,
       providerSessionId: createId("providerSession"),
       providerSessionReference: null,
@@ -2173,22 +2328,16 @@ function executeCommand(
       requesterTimeZone: null,
       runId: createId("run"),
       threadId: createId("thread"),
-      threadRole: "work",
-      threadState: { previousAssignment: null, previousRun: null },
-      workspaceId,
-      workspaceKind: "project",
-      machineAccess: { callerMachineName: "Alex's Mac", machines: [], omittedMachines: 0 },
-      workspaceInstructionsPath: "AGENTS.md",
-      workspaceAccess: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
 
-        workspaceId,
+      threadState: {
+        previousAssignment: null,
+        previousRun: null,
+      },
+
+      machineAccess: {
+        callerMachineName: "Alex's Mac",
+        machines: [],
+        omittedMachines: 0,
       },
     },
     correlationId: CorrelationIdSchema.parse(commandId),
@@ -2201,28 +2350,45 @@ function executeCommand(
           principalId: "pri_00000000-0000-4000-8000-000000000099",
           userId: createId("user"),
         },
-        content: [{ text: "hello", type: "text" }],
+        content: [
+          {
+            text: "hello",
+            type: "text",
+          },
+        ],
         createdAt: new Date().toISOString(),
         kind: "input",
         messageId: createId("message"),
       },
     ],
-    reports: { messages: [], omittedCount: 0, throughSequence: null },
+    reports: {
+      messages: [],
+      omittedCount: 0,
+      throughSequence: null,
+    },
     type: "run.execute",
   };
 }
-
-function steerCommand(
-  environmentId: ReturnType<typeof createId<"environment">>,
-): RunnerCommand & { type: "run.steer" } {
+function steerCommand(environmentId: ReturnType<typeof createId<"environment">>): RunnerCommand & {
+  type: "run.steer";
+} {
   const commandId = createId("command");
   return RunnerCommandSchema.parse({
     commandId,
     correlationId: CorrelationIdSchema.parse(commandId),
     environmentId,
     input: {
-      author: { displayName: "User", kind: "human", principalId: "principal:test" },
-      content: [{ text: "Steer this run", type: "text" }],
+      author: {
+        displayName: "User",
+        kind: "human",
+        principalId: "principal:test",
+      },
+      content: [
+        {
+          text: "Steer this run",
+          type: "text",
+        },
+      ],
       createdAt: new Date().toISOString(),
       kind: "input",
       messageId: createId("message"),
@@ -2230,17 +2396,21 @@ function steerCommand(
     runId: createId("run"),
     threadId: createId("thread"),
     type: "run.steer",
-  }) as RunnerCommand & { type: "run.steer" };
+  }) as RunnerCommand & {
+    type: "run.steer";
+  };
 }
-
-function triggerCommand(
-  environmentId: ReturnType<typeof createId<"environment">>,
-): Extract<RunnerCommand, { type: "trigger.execute" }> {
+function triggerCommand(environmentId: ReturnType<typeof createId<"environment">>): Extract<
+  RunnerCommand,
+  {
+    type: "trigger.execute";
+  }
+> {
   const anchorThreadId = createId("thread");
   const occurrenceId = createId("triggerOccurrence");
   const revisionId = createId("triggerRevision");
   const triggerId = createId("trigger");
-  const workspaceId = createId("workspace");
+
   return RunnerCommandSchema.parse({
     commandId: createId("command"),
     context: {
@@ -2250,47 +2420,49 @@ function triggerCommand(
         id: occurrenceId,
         payload: null,
         receivedAt: new Date().toISOString(),
-        source: { kind: "manual" },
-        trigger: { anchorThreadId, id: triggerId, revisionId, workspaceId },
+        source: {
+          kind: "manual",
+        },
+        trigger: {
+          anchorThreadId,
+          id: triggerId,
+          revisionId,
+        },
       },
       executionGeneration: 1,
-
-      mcp: { token: "mcp-token", url: "https://host.example.test/internal/v1/mcp" },
+      mcp: {
+        token: "mcp-token",
+        url: "https://host.example.test/internal/v1/mcp",
+      },
       occurrenceId,
       program: {
-        toolContractVersion: 2,
+        toolContractVersion: 3,
         language: "javascript",
         source: "export default async () => null",
       },
       revisionId,
       triggerId,
-      workspaceId,
-      workspaceAccess: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-
-        workspaceId,
-      },
     },
     correlationId: CorrelationIdSchema.parse("trigger-dispatch-test"),
     environmentId,
+    location: {
+      folder: { computerId: createId("runner"), path: "/tmp/task" },
+      agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
+    },
     type: "trigger.execute",
-  }) as Extract<RunnerCommand, { type: "trigger.execute" }>;
+  }) as Extract<
+    RunnerCommand,
+    {
+      type: "trigger.execute";
+    }
+  >;
 }
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error("Condition was not reached");
+  await vi.waitFor(
+    () => expect(predicate(), "The Runner never reached the expected state").toBe(true),
+    { timeout: 1000 },
+  );
 }
-
 describe("MCP image rendering", () => {
   const selection = ModelSelectionSchema.parse({
     modelId: "gpt-5.6-sol",
@@ -2308,7 +2480,10 @@ describe("MCP image rendering", () => {
     readonly report?: boolean;
   }) {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const driverKind = HarnessIdSchema.parse("native");
@@ -2321,7 +2496,9 @@ describe("MCP image rendering", () => {
           driverKind,
           ...(options.mcpImageContent === undefined
             ? {}
-            : { mcpImageContent: options.mcpImageContent }),
+            : {
+                mcpImageContent: options.mcpImageContent,
+              }),
           readiness: "configured",
           sources: harnessSources("native", "Native"),
           steering: false,
@@ -2366,7 +2543,9 @@ describe("MCP image rendering", () => {
               {
                 ...(options.acceptsImages === undefined
                   ? {}
-                  : { acceptsImages: options.acceptsImages }),
+                  : {
+                      acceptsImages: options.acceptsImages,
+                    }),
                 displayName: "GPT-5.6 Sol",
                 isDefault: true,
                 modelId: selection.modelId,
@@ -2393,41 +2572,70 @@ describe("MCP image rendering", () => {
     await registry.close();
     return renders;
   }
-
   it("sends the picture only when the engine renders it and the model reads it", async () => {
-    await expect(reported({ acceptsImages: true, mcpImageContent: true })).resolves.toBe(true);
-  });
-
-  it("holds the picture back when the model does not read images", async () => {
-    await expect(reported({ acceptsImages: false, mcpImageContent: true })).resolves.toBe(false);
-  });
-
-  it("holds the picture back when the engine does not render one", async () => {
-    await expect(reported({ acceptsImages: true, mcpImageContent: false })).resolves.toBe(false);
-    await expect(reported({ acceptsImages: false, mcpImageContent: false })).resolves.toBe(false);
-    // An older Runner says nothing about the capability at all.
-    await expect(reported({ acceptsImages: true })).resolves.toBe(false);
-  });
-
-  it("treats a model that says nothing, and an account with no catalog, as no images", async () => {
-    await expect(reported({ mcpImageContent: true })).resolves.toBe(false);
     await expect(
-      reported({ acceptsImages: true, mcpImageContent: true, report: false }),
+      reported({
+        acceptsImages: true,
+        mcpImageContent: true,
+      }),
+    ).resolves.toBe(true);
+  });
+  it("holds the picture back when the model does not read images", async () => {
+    await expect(
+      reported({
+        acceptsImages: false,
+        mcpImageContent: true,
+      }),
+    ).resolves.toBe(false);
+  });
+  it("holds the picture back when the engine does not render one", async () => {
+    await expect(
+      reported({
+        acceptsImages: true,
+        mcpImageContent: false,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      reported({
+        acceptsImages: false,
+        mcpImageContent: false,
+      }),
+    ).resolves.toBe(false);
+    // An older Runner says nothing about the capability at all.
+    await expect(
+      reported({
+        acceptsImages: true,
+      }),
+    ).resolves.toBe(false);
+  });
+  it("treats a model that says nothing, and an account with no catalog, as no images", async () => {
+    await expect(
+      reported({
+        mcpImageContent: true,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      reported({
+        acceptsImages: true,
+        mcpImageContent: true,
+        report: false,
+      }),
     ).resolves.toBe(false);
   });
 });
-
 describe("Runner connection fences and leases", () => {
   it("refuses a frame written for a superseded connection", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(runnerId, environmentId, "boot-1"), peer);
     const current = fenceOf(peer);
-
     await expect(
       registry.handle(peer, {
         ...current,
@@ -2438,9 +2646,10 @@ describe("Runner connection fences and leases", () => {
         sentAt: new Date().toISOString(),
         type: "runner.heartbeat",
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
   });
-
   it("closes a socket that stops answering even while it stays open", async () => {
     let now = 1_000;
     const hooks = {
@@ -2457,17 +2666,19 @@ describe("Runner connection fences and leases", () => {
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, hello(runnerId, createId("environment"), "boot-1"), peer);
     expect(registry.isRunnerConnected(runnerId)).toBe(true);
-
     now += 51;
     await new Promise((resolve) => setTimeout(resolve, 60));
-
-    expect(peer.closed).toMatchObject({ code: 4003 });
+    expect(peer.closed).toMatchObject({
+      code: 4003,
+    });
     expect(registry.isRunnerConnected(runnerId)).toBe(false);
   });
-
   it("keeps a module unroutable until it reports readiness for itself", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const runnerId = createId("runner");
     const environmentId = createId("environment");
@@ -2485,7 +2696,6 @@ describe("Runner connection fences and leases", () => {
       type: "runner.heartbeat",
     });
     expect(registry.runnersForModule("browser")).toEqual([]);
-
     await registry.handle(peer, {
       ...fenceOf(peer),
       modules: [
@@ -2521,14 +2731,15 @@ describe("Runner connection fences and leases", () => {
     expect(registry.moduleReadiness(runnerId, "browser")).toBe("unavailable");
     expect(environmentId).toBeDefined();
   });
-
   it("refuses readiness for a module the Runner never advertised", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, browserRunner(createId("runner"), "boot-1"), peer);
-
     await expect(
       registry.handle(peer, {
         ...fenceOf(peer),
@@ -2542,14 +2753,18 @@ describe("Runner connection fences and leases", () => {
         ],
         type: "runner.modules.report",
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
 });
-
 describe("Runner auxiliary streams", () => {
   it("refuses a ticket minted for a primary connection that has been replaced", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const runnerId = createId("runner");
     const first = new MemoryRunnerPeer("first");
@@ -2560,7 +2775,6 @@ describe("Runner auxiliary streams", () => {
       browserRunner(runnerId, "boot-2"),
       new MemoryRunnerPeer("second"),
     );
-
     expect(() =>
       registry.admitAuxiliary({
         claims: stale,
@@ -2569,14 +2783,15 @@ describe("Runner auxiliary streams", () => {
       }),
     ).toThrow(/superseded primary connection/u);
   });
-
   it("refuses a ticket presented on the wrong module's route", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const peer = new MemoryRunnerPeer("runner");
     await registerAttached(registry, browserRunner(createId("runner"), "boot-1"), peer);
-
     expect(() =>
       registry.admitAuxiliary({
         claims: ticket(fenceOf(peer)),
@@ -2585,7 +2800,6 @@ describe("Runner auxiliary streams", () => {
       }),
     ).toThrow(/issued for another module/u);
   });
-
   it("fences every auxiliary frame and closes the stream when the primary goes", async () => {
     const lost: string[] = [];
     const registry = new RunnerRegistry({
@@ -2604,7 +2818,6 @@ describe("Runner auxiliary streams", () => {
       module: "browser",
       peer: auxiliary,
     });
-
     expect(registry.assertAuxiliaryFence(auxiliary, stream.fence)).toMatchObject({
       auxiliaryStreamId: stream.auxiliaryStreamId,
     });
@@ -2614,12 +2827,12 @@ describe("Runner auxiliary streams", () => {
         connectionGeneration: stream.fence.connectionGeneration + 1,
       }),
     ).toThrow(/stale/u);
-
     await registry.revoke(runnerId);
-    expect(auxiliary.closed).toMatchObject({ code: runnerIdentityRevokedCloseCode });
+    expect(auxiliary.closed).toMatchObject({
+      code: runnerIdentityRevokedCloseCode,
+    });
     expect(lost).toEqual(["revoked"]);
   });
-
   it("loses a stream to an expired lease as a disconnection, never as a revocation", async () => {
     let now = 1_000;
     const lost: string[] = [];
@@ -2642,19 +2855,19 @@ describe("Runner auxiliary streams", () => {
       module: "browser",
       peer: auxiliary,
     });
-
     now += 51;
     await new Promise((resolve) => setTimeout(resolve, 60));
 
     // A machine whose lease ran out is away, not removed. Its sessions have to
     // say so: `revoked` here would end them as `machine-revoked` and tell a
     // person their computer was taken off the Deployment.
-    expect(primary.closed).toMatchObject({ code: 4003 });
+    expect(primary.closed).toMatchObject({
+      code: 4003,
+    });
     expect(primary.closed?.code).not.toBe(runnerIdentityRevokedCloseCode);
     expect(lost).toEqual(["primary-lost"]);
   });
 });
-
 describe("disconnecting one named connection", () => {
   it("drops the connection it names and leaves a newer one alone", async () => {
     const registry = new RunnerRegistry({
@@ -2675,21 +2888,27 @@ describe("disconnecting one named connection", () => {
     const second = new MemoryRunnerPeer("second");
     const secondIdentity = hello(runnerId, environmentId, "boot-2");
     await registerAttached(registry, secondIdentity, second);
-
     await expect(
-      registry.disconnectConnection(firstIdentity, { code: 1001, reason: "no route" }),
+      registry.disconnectConnection(firstIdentity, {
+        code: 1001,
+        reason: "no route",
+      }),
     ).resolves.toBe(false);
     expect(registry.isRunnerConnected(runnerId)).toBe(true);
     expect(second.closed).toBeUndefined();
-
     await expect(
-      registry.disconnectConnection(secondIdentity, { code: 1001, reason: "no route" }),
+      registry.disconnectConnection(secondIdentity, {
+        code: 1001,
+        reason: "no route",
+      }),
     ).resolves.toBe(true);
-    expect(second.closed).toMatchObject({ code: 1001, reason: "no route" });
+    expect(second.closed).toMatchObject({
+      code: 1001,
+      reason: "no route",
+    });
     expect(registry.isRunnerConnected(runnerId)).toBe(false);
   });
 });
-
 describe("disconnecting the computers that arrived over the route", () => {
   it("drops them as a disconnection, keeps what needed no route, and remembers nothing", async () => {
     const lost: string[] = [];
@@ -2735,7 +2954,6 @@ describe("disconnecting the computers that arrived over the route", () => {
       module: "browser",
       peer: auxiliary,
     });
-
     await registry.disconnectRouteAdmittedRunners("Remote access was reconfigured");
 
     // The Main Runner is the machine the change was made on, and the service
@@ -2747,8 +2965,12 @@ describe("disconnecting the computers that arrived over the route", () => {
     expect(registry.isRunnerConnected(reachableId)).toBe(false);
     // Not 4003, and so not "revoked": every session riding this stream ends as
     // the disconnection this is.
-    expect(reachablePeer.closed).toMatchObject({ code: 1001 });
-    expect(auxiliary.closed).toMatchObject({ code: 1001 });
+    expect(reachablePeer.closed).toMatchObject({
+      code: 1001,
+    });
+    expect(auxiliary.closed).toMatchObject({
+      code: 1001,
+    });
     expect(lost).toEqual(["primary-lost"]);
 
     // Nothing was retired, so the same identity reconnects unaided.
@@ -2761,23 +2983,29 @@ describe("disconnecting the computers that arrived over the route", () => {
         },
         new MemoryRunnerPeer("reachable-again"),
       ),
-    ).resolves.toMatchObject({ runnerId: reachableId });
+    ).resolves.toMatchObject({
+      runnerId: reachableId,
+    });
   });
 });
-
 class MemoryAuxiliaryPeer {
   readonly id: string;
-  closed: { code: number; reason: string } | undefined;
-
+  closed:
+    | {
+        code: number;
+        reason: string;
+      }
+    | undefined;
   constructor(id: string) {
     this.id = id;
   }
-
   close(code: number, reason: string): void {
-    this.closed = { code, reason };
+    this.closed = {
+      code,
+      reason,
+    };
   }
 }
-
 function browserRunner(
   runnerId: ReturnType<typeof createId<"runner">>,
   bootId: string,
@@ -2787,10 +3015,14 @@ function browserRunner(
     ...base,
     allowedModules: ["browser"],
     environmentIds: [],
-    modules: { browser: { wireVersion: 2, runtimeId: "chromium" } },
+    modules: {
+      browser: {
+        wireVersion: 2,
+        runtimeId: "chromium",
+      },
+    },
   };
 }
-
 function ticket(fence: RunnerConnectionFence): RunnerAuxiliaryTicketClaims {
   return {
     audience: "opensteer-runner-auxiliary",
@@ -2804,7 +3036,6 @@ function ticket(fence: RunnerConnectionFence): RunnerAuxiliaryTicketClaims {
     runnerId: fence.runnerId,
   };
 }
-
 describe("Runner voice relay", () => {
   const sessionId = "00000000-0000-4000-8000-000000000001";
   const userId = createId("user"),
@@ -2817,7 +3048,10 @@ describe("Runner voice relay", () => {
   };
   async function fixture(voice = true) {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("voice");
@@ -2830,7 +3064,11 @@ describe("Runner voice relay", () => {
       },
       peer,
     );
-    return { registry, environmentId, peer };
+    return {
+      registry,
+      environmentId,
+      peer,
+    };
   }
   it("correlates fenced answers and refusals, ignoring late replies", async () => {
     const f = await fixture();
@@ -2852,14 +3090,24 @@ describe("Runner voice relay", () => {
         ...fenceOf(f.peer),
         type: "runner.voice",
         requestId: sent.requestId,
-        result: { ok: true, answer: "answer" },
+        result: {
+          ok: true,
+          answer: "answer",
+        },
       });
-      expect(await request).toEqual({ ok: true, answer: "answer" });
+      expect(await request).toEqual({
+        ok: true,
+        answer: "answer",
+      });
       await f.registry.handle(f.peer, {
         ...fenceOf(f.peer),
         type: "runner.voice",
         requestId: sent.requestId,
-        result: { ok: false, reason: "voice-ended", message: "Ended." },
+        result: {
+          ok: false,
+          reason: "voice-ended",
+          message: "Ended.",
+        },
       });
       const next = f.registry.voice(f.environmentId, userId, command, new AbortController().signal);
       const nextSent = f.peer.messages.at(-1);
@@ -2868,9 +3116,16 @@ describe("Runner voice relay", () => {
         ...fenceOf(f.peer),
         type: "runner.voice",
         requestId: nextSent.requestId,
-        result: { ok: false, reason: "voice-refused", message: "Refused." },
+        result: {
+          ok: false,
+          reason: "voice-refused",
+          message: "Refused.",
+        },
       });
-      expect(await next).toMatchObject({ ok: false, reason: "voice-refused" });
+      expect(await next).toMatchObject({
+        ok: false,
+        reason: "voice-refused",
+      });
     } finally {
       await f.registry.close();
     }
@@ -2879,11 +3134,15 @@ describe("Runner voice relay", () => {
     const f = await fixture(false);
     await expect(
       f.registry.voice(f.environmentId, userId, command, new AbortController().signal),
-    ).rejects.toMatchObject({ reason: "voice-runner-unsupported" });
+    ).rejects.toMatchObject({
+      reason: "voice-runner-unsupported",
+    });
     await f.registry.close();
     await expect(
       f.registry.voice(f.environmentId, userId, command, new AbortController().signal),
-    ).rejects.toMatchObject({ code: "runner_offline" });
+    ).rejects.toMatchObject({
+      code: "runner_offline",
+    });
     const live = await fixture();
     const pending = live.registry.voice(
       live.environmentId,
@@ -2932,10 +3191,18 @@ describe("Runner voice relay", () => {
       const pending = f.registry.voice(
         f.environmentId,
         userId,
-        action === "start" ? command : { action, sessionId, runId },
+        action === "start"
+          ? command
+          : {
+              action,
+              sessionId,
+              runId,
+            },
         new AbortController().signal,
       );
-      const rejected = expect(pending).rejects.toMatchObject({ code: "timeout" });
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: "timeout",
+      });
       await vi.advanceTimersByTimeAsync(action === "start" ? 30_000 : 10_000);
       await rejected;
     } finally {
@@ -2944,27 +3211,21 @@ describe("Runner voice relay", () => {
     }
   });
 });
-
-it("routes correlated app requests only to the owning storage connection and cancels pending starts", async () => {
+it("routes correlated app requests only to the folder computer and cancels pending starts", async () => {
   const registry = new RunnerRegistry({
-    hooks: { authorize: async () => undefined, onEvent: async () => undefined },
+    hooks: {
+      authorize: async () => undefined,
+      onEvent: async () => undefined,
+    },
   });
   const environmentId = createId("environment");
   const identity = hello(createId("runner"), environmentId, `rbt_${crypto.randomUUID()}`);
-  const authority = createId("storageAuthority");
   const peer = new MemoryRunnerPeer("app-runner");
   const spec = {
-    appId: `app_${crypto.randomUUID()}`,
+    appId: "app_" + crypto.randomUUID(),
     version: 1,
-    folder: ".",
+    folder: { computerId: identity.runnerId, path: "/tmp/test-app" },
     command: "node server.js",
-    binding: {
-      workspaceId: createId("workspace"),
-      bindingId: createId("workspaceBinding"),
-      generation: 1,
-      ownerEnvironmentId: environmentId,
-      storageAuthorityId: authority,
-    },
   };
   try {
     await registerAttached(
@@ -2975,7 +3236,6 @@ it("routes correlated app requests only to the owning storage connection and can
           ...identity.modules,
           agents: {
             ...identity.modules.agents!,
-            localStorage: { storageAuthorityId: authority, bindings: [], truncated: false },
           },
         },
       },
@@ -2984,14 +3244,22 @@ it("routes correlated app requests only to the owning storage connection and can
     const requestId = crypto.randomUUID();
     const pending = registry.requestApp(
       environmentId,
-      { type: "host.app.start", spec, requestId },
+      {
+        type: "host.app.start",
+        spec,
+        requestId,
+      },
       AbortSignal.timeout(2_000),
     );
     const sent = peer.messages.findLast((message) => message.type === "host.app.start");
     expect(sent).toMatchObject({
       requestId,
       spec,
-      fence: { ...fenceOf(peer), environmentId, storageAuthorityId: authority },
+      fence: {
+        ...fenceOf(peer),
+        environmentId,
+        bindingGeneration: spec.version,
+      },
     });
     if (!sent || sent.type !== "host.app.start") throw new Error("App start never reached Runner");
     await registry.handle(peer, {
@@ -3002,7 +3270,9 @@ it("routes correlated app requests only to the owning storage connection and can
       ok: true,
       port: 12345,
     });
-    await expect(pending).resolves.toMatchObject({ ok: true });
+    await expect(pending).resolves.toMatchObject({
+      ok: true,
+    });
     await expect(
       registry.requestApp(
         environmentId,
@@ -3010,25 +3280,35 @@ it("routes correlated app requests only to the owning storage connection and can
           type: "host.app.start",
           spec: {
             ...spec,
-            binding: { ...spec.binding, storageAuthorityId: createId("storageAuthority") },
+            folder: { ...spec.folder, computerId: createId("runner") },
           },
           requestId: crypto.randomUUID(),
         },
         AbortSignal.timeout(2_000),
       ),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "folder_unavailable",
+    });
     const abort = new AbortController();
     const canceledId = crypto.randomUUID();
     const canceled = registry.requestApp(
       environmentId,
-      { type: "host.app.connect", spec, requestId: canceledId, ticket: "one-use" },
+      {
+        type: "host.app.connect",
+        spec,
+        requestId: canceledId,
+        ticket: "one-use",
+      },
       abort.signal,
     );
     const rejection = expect(canceled).rejects.toThrow();
     abort.abort();
     await rejection;
     expect(peer.messages).toContainEqual(
-      expect.objectContaining({ type: "host.app.cancel", requestId: canceledId }),
+      expect.objectContaining({
+        type: "host.app.cancel",
+        requestId: canceledId,
+      }),
     );
     const cancelMessage = peer.messages.findLast((message) => message.type === "host.app.cancel");
     expect(HostAppRequestSchema.parse(cancelMessage).type).toBe("host.app.cancel");
@@ -3038,7 +3318,12 @@ it("routes correlated app requests only to the owning storage connection and can
     );
     const closed = registry.requestApp(
       environmentId,
-      { type: "host.app.connect", spec, requestId: crypto.randomUUID(), ticket: "one-use" },
+      {
+        type: "host.app.connect",
+        spec,
+        requestId: crypto.randomUUID(),
+        ticket: "one-use",
+      },
       AbortSignal.timeout(2_000),
     );
     const failed = expect(closed).rejects.toThrow();
@@ -3049,11 +3334,13 @@ it("routes correlated app requests only to the owning storage connection and can
     await registry.close();
   }
 });
-
 describe("long Request holds", () => {
   it("uses the advertised driver on the Run's environment and treats older Runners as short holds", async () => {
     const registry = new RunnerRegistry({
-      hooks: { authorize: vi.fn(async () => undefined), onEvent: vi.fn(async () => undefined) },
+      hooks: {
+        authorize: vi.fn(async () => undefined),
+        onEvent: vi.fn(async () => undefined),
+      },
     });
     const environmentId = createId("environment");
     const peer = new MemoryRunnerPeer("holds");

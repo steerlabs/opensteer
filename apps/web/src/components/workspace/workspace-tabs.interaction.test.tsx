@@ -15,7 +15,7 @@ import {
 } from "@opensteer/client/host";
 import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
-import type { DesktopWorkspaceTabCommand } from "@opensteer/protocol/desktop";
+import type { DesktopPersonalTabCommand } from "@opensteer/protocol/desktop";
 
 import { tabOrder } from "./tab-order.js";
 import { placeSuccessor } from "./place-succession.js";
@@ -86,7 +86,7 @@ describe("workspace tab commands", () => {
     expect(new URLSearchParams(history.at(-1)!.search).has("browserTab")).toBe(false);
   });
 
-  let receive: ((command: DesktopWorkspaceTabCommand) => void) | null = null;
+  let receive: ((command: DesktopPersonalTabCommand) => void) | null = null;
   function nativeMenu() {
     const unsubscribe = vi.fn(() => {
       receive = null;
@@ -95,14 +95,14 @@ describe("workspace tab commands", () => {
       getLocalVisibility: async () => true,
       onLocalVisibilityChanged: () => () => undefined,
       setBadgeCount: vi.fn(async () => undefined),
-      onWorkspaceTabCommand: (listener: typeof receive) => {
+      onPersonalTabCommand: (listener: typeof receive) => {
         receive = listener;
         return unsubscribe;
       },
     });
     return unsubscribe;
   }
-  async function command(value: DesktopWorkspaceTabCommand) {
+  async function command(value: DesktopPersonalTabCommand) {
     expect(receive).not.toBeNull();
     // act flushes the command's React updates; the following assertions observe its result.
     await act(async () => receive?.(value));
@@ -823,10 +823,10 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       setBadgeCount: vi.fn(async () => undefined),
     });
     const threadId = "thr_00000000-0000-4000-8000-000000000903";
-    await mount(`/threads/${threadId}`);
+    await mount(`/tasks/${threadId}`);
     await click(main(tab("Launch brief").key));
     const path = history.at(-1)!.path;
-    expect(path).toBe(`/threads/${threadId}`);
+    expect(path).toBe(`/tasks/${threadId}`);
     /** × with the keyboard on it: focus goes where the middle goes. */
     const closeButton = async (place: Place) => {
       const close = element<HTMLButtonElement>(".side-tab__close", row(place.key)!);
@@ -839,17 +839,17 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       ["Launch brief", "Coffee shortlist", closeButton],
       [
         "Coffee shortlist",
-        "Weekend ideas",
+        "Q4 roadmap – Linear",
         (place) =>
           dispatch(
             main(place.key),
             new MouseEvent("auxclick", { bubbles: true, button: 1, cancelable: true }),
           ),
       ],
-      // Held by live work: asked first, then the same.
+      // From the tab menu, asked first when live work holds it, then the same.
       [
-        "Weekend ideas",
-        "Flight award alerts",
+        "Q4 roadmap – Linear",
+        "Running shoes – Allbirds",
         async (place) => {
           await dispatch(
             main(place.key),
@@ -868,18 +868,26 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
         },
       ],
       [
+        "Running shoes – Allbirds",
         "Flight award alerts",
-        "Q4 roadmap – Linear",
         () =>
           dispatch(
             window,
             new KeyboardEvent("keydown", { bubbles: true, key: "w", metaKey: true }),
           ),
       ],
-      // One list across devices: the phone's tab after it is its neighbour.
-      ["Q4 roadmap – Linear", "Running shoes – Allbirds", closeButton],
       // The last web tab: the Mac apps past the hairline are not its neighbours; the tab before it is.
-      ["Running shoes – Allbirds", "storage documentation", closeButton],
+      [
+        "Flight award alerts",
+        "storage documentation",
+        async () => {
+          await dispatch(
+            window,
+            new KeyboardEvent("keydown", { bubbles: true, key: "w", metaKey: true }),
+          );
+          await confirmIfAsked();
+        },
+      ],
     ];
     for (const [closing, next, close] of closes) {
       const place = tab(closing);
@@ -1012,8 +1020,8 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     let closing = "";
     await mount((source) => {
       const read = source.getSnapshot;
-      closing = tabOrder(placeList(read())).find((item) => item.title === "Weekend ideas")!.browser!
-        .sessionId;
+      closing = tabOrder(placeList(read())).find((item) => item.title === "Q4 roadmap – Linear")!
+        .browser!.sessionId;
       // One browser is closing and its saved tabs cannot open: they stay listed, dimmed.
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
         const snapshot = read();
@@ -1041,14 +1049,14 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       });
       return "/";
     });
-    expect(tab("Weekend ideas").availability).toBe("unavailable");
+    expect(tab("Q4 roadmap – Linear").availability).toBe("unavailable");
     await click(main(tab("Coffee shortlist").key));
     let before = history.length;
     await click(element(".side-tab__close", row(tab("Coffee shortlist").key)!));
     await settle(60);
-    expectSucceeded(before, "/", tab("Flight award alerts").key);
+    expectSucceeded(before, "/", tab("Running shoes – Allbirds").key);
     // Every other browser ends elsewhere; the middle stays.
-    const flight = session(tab("Flight award alerts")).sessionId;
+    const flight = session(tab("Running shoes – Allbirds")).sessionId;
     before = history.length;
     await act(async () => {
       for (const value of client.getSnapshot().browserSessions)
@@ -1059,12 +1067,12 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       order()
         .filter((place) => place.kind === "browser")
         .map((place) => place.title),
-    ).toEqual(["Weekend ideas", "Flight award alerts"]);
-    expect(shown()).toBe(tab("Flight award alerts").key);
+    ).toEqual(["Q4 roadmap – Linear", "Running shoes – Allbirds"]);
+    expect(shown()).toBe(tab("Running shoes – Allbirds").key);
     expect(history.length).toBe(before);
     // The last tab that can be shown: the start page, though Mac apps are still listed.
     before = history.length;
-    await click(element(".side-tab__close", row(tab("Flight award alerts").key)!));
+    await click(element(".side-tab__close", row(tab("Running shoes – Allbirds").key)!));
     await settle(80);
     expect(order().some((place) => place.kind === "app")).toBe(true);
     expectSucceeded(before, "/", null);
@@ -1086,7 +1094,8 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       )!;
       if (place.destination.kind !== "browser") throw new Error("Not a browser tab");
       void endBrowser(source, place.destination.sessionId);
-      return `/?panel=browser&browser=${place.destination.sessionId}&browserTab=${place.destination.tabId}`;
+      const task = source.getSnapshot().threads[0]!.id;
+      return `/tasks/${task}?panel=browser&browser=${place.destination.sessionId}&browserTab=${place.destination.tabId}`;
     });
     await settle(100);
     expect(history).toHaveLength(1);
@@ -1094,7 +1103,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     // Back to a tab closed while another was shown: the same honest state.
     const coffee = tab("Coffee shortlist");
     await click(main(coffee.key));
-    await click(main(tab("Flight award alerts").key));
+    await click(main(tab("Q4 roadmap – Linear").key));
     await click(element(".side-tab__close", row(coffee.key)!));
     await settle(60);
     const before = history.length;
@@ -1188,20 +1197,18 @@ describe("an app tab", () => {
     document.querySelector<HTMLIFrameElement>(`.place--opensteer-app iframe[title="${title}"]`);
   const row = (appId: string) => `.side-tab[data-place-key="opensteer-app:${appId}"]`;
 
-  /** Two open apps from Chat on a Host whose connection and versions the test moves. */
+  /** Two open apps from a task on a Host whose connection and versions the test moves. */
   function withApps(source: MockHostClient) {
     const base = source.getSnapshot;
     const baseSubscribe = source.subscribe;
     const listeners = new Set<() => void>();
-    const home = base().homeThreadId!;
-    const workspaceId = base().threads.find((thread) => thread.id === home)!.workspaceId;
+    const home = base().threads[0]!.id;
     const tab = (appId: string, title: string, openedAt: string): AppTab => ({
       appId,
       latestVersion: 1,
       openedAt,
       threadId: home as AppTab["threadId"],
       title,
-      workspaceId: workspaceId as AppTab["workspaceId"],
     });
     const held = {
       appTabs: [
@@ -1272,8 +1279,8 @@ describe("an app tab", () => {
     expect(document.querySelector(".workspace--talk")).not.toBeNull();
     expect(frame("First")).toBe(running);
 
-    const task = client.getSnapshot().threads.find((thread) => thread.role === "work")!;
-    await act(async () => goTo!(`/threads/${task.id}${address(first).slice(1)}`));
+    const task = client.getSnapshot().threads.find((thread) => thread.purpose === "task")!;
+    await act(async () => goTo!(`/tasks/${task.id}${address(first).slice(1)}`));
     await settle();
     expect(frame("First")).toBe(running);
     expect(running.closest<HTMLElement>(".place")?.hidden).toBe(false);
@@ -1326,16 +1333,18 @@ describe("an app tab", () => {
 
   it("on a phone, choosing a place puts the conversation sheet away", async () => {
     stubFrames();
+    let task = "";
     await mount(
       (source) => {
         withApps(source);
-        return address(first);
+        task = `/tasks/${source.getSnapshot().threads[0]!.id}`;
+        return `${task}${address(first).slice(1)}`;
       },
       { width: 390 },
     );
     await click(element(".thread__sheet-handle"));
     expect(document.querySelector(".thread--sheet-open")).not.toBeNull();
-    await act(async () => goTo!(address(second)));
+    await act(async () => goTo!(`${task}${address(second).slice(1)}`));
     await settle();
     expect(document.querySelector(".thread--sheet-open")).toBeNull();
   });

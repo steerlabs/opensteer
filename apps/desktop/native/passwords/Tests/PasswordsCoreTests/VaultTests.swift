@@ -283,16 +283,16 @@ final class VaultTests: XCTestCase {
 // MARK: Grants
 
 extension VaultTests {
-  fileprivate static func key(_ workspace: Int, site: String = "https://example.com") -> GrantKey {
+  fileprivate static func key(_ deployment: Int, site: String = "https://example.com") -> GrantKey {
     GrantKey(
-      deploymentId: "dep_personal", workspaceId: String(format: "wsp_00000000-0000-4000-8000-%012d", workspace), site: site)
+      deploymentId: String(format: "dep_00000000-0000-4000-8000-%012d", deployment), site: site)
   }
 
-  fileprivate static func grant(_ workspace: Int, _ login: GrantChange.Login, site: String = "https://example.com")
+  fileprivate static func grant(_ deployment: Int, _ login: GrantChange.Login, site: String = "https://example.com")
     -> GrantChange
   {
     GrantChange(
-      key: key(workspace, site: site), login: login, deploymentName: "Personal", workspaceName: "Workspace \(workspace)")
+      key: key(deployment, site: site), login: login, deploymentName: "Personal")
   }
 
   /// V25: what a grant may name, how many there may be, and one per key.
@@ -322,14 +322,14 @@ extension VaultTests {
       refused(
         names,
         VaultChanges(grant: [
-          GrantChange(key: Self.key(1), login: .saved(id: com), deploymentName: "Personal", workspaceName: name)
+          GrantChange(key: Self.key(1), login: .saved(id: com), deploymentName: name)
         ]))
       refused(
         names,
         VaultChanges(grant: [
           GrantChange(
-            key: GrantKey(deploymentId: name, workspaceId: "wsp_1", site: "https://example.com"), login: .saved(id: com),
-            deploymentName: "Personal", workspaceName: "Main")
+            key: GrantKey(deploymentId: name, site: "https://example.com"), login: .saved(id: com),
+            deploymentName: "Personal")
         ]))
     }
     refused(.tooManyGrants, VaultChanges(grant: (0...VaultLimits.maxGrants).map { Self.grant($0, .saved(id: com)) }))
@@ -347,8 +347,7 @@ extension VaultTests {
     try fixture.withUnlocked { _ = try $0.commit(VaultChanges(grant: [Self.grant(1, .saved(id: second))])) }
     let grants = try fixture.withUnlocked { $0.grants }
     XCTAssertEqual(grants.map(\.loginId), [second, com], "the new Allow replaced the first for its key")
-    XCTAssertTrue(grants.allSatisfy { $0.permissionVersion == 4 && $0.revision == 1 })
-    XCTAssertEqual(grants.first?.workspaceName, "Workspace 1")
+    XCTAssertTrue(grants.allSatisfy { $0.permissionVersion == 6 && $0.revision == 1 })
     XCTAssertEqual(grants.first?.deploymentName, "Personal")
     XCTAssertEqual(try fixture.withUnlocked { try $0.grant(for: Self.key(2))?.loginId }, com)
 

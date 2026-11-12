@@ -16,7 +16,7 @@ import (
 
 type nodeHandle = int
 
-type workspaceRoot struct {
+type filesystemRoot struct {
 	containment string
 	device      uint64
 	fd          int
@@ -24,9 +24,9 @@ type workspaceRoot struct {
 
 var fsyncDirectory = unix.Fsync
 
-func openWorkspaceRoot(path string, requireMountBoundary bool) (*workspaceRoot, error) {
+func openTaskFolderRoot(path string, requireMountBoundary bool) (*filesystemRoot, error) {
 	if path == "" || !filepath.IsAbs(path) || strings.ContainsRune(path, 0) || len(path) > 16*1024 {
-		return nil, userError("invalid-root", "Native filesystem Workspace root is invalid")
+		return nil, userError("invalid-root", "Native filesystem task folder root is invalid")
 	}
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -53,57 +53,13 @@ func openWorkspaceRoot(path string, requireMountBoundary bool) (*workspaceRoot, 
 		}
 		if uint64(parentStat.Dev) == uint64(stat.Dev) {
 			unix.Close(fd)
-			return nil, userError("root-not-mount", "Native filesystem Workspace root is not an isolated mount boundary")
+			return nil, userError("root-not-mount", "Native filesystem task folder root is not an isolated mount boundary")
 		}
 	}
-	return &workspaceRoot{containment: platformContainment, device: uint64(stat.Dev), fd: fd}, nil
+	return &filesystemRoot{containment: platformContainment, device: uint64(stat.Dev), fd: fd}, nil
 }
 
-func ensureWorkspaceRoot(rootPath string) (ensureRootResult, error) {
-	if rootPath == "" || !filepath.IsAbs(rootPath) || strings.ContainsRune(rootPath, 0) || len(rootPath) > 16*1024 {
-		return ensureRootResult{}, userError("invalid-root", "Native filesystem Workspace root is invalid")
-	}
-	cleaned := filepath.Clean(rootPath)
-	current, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return ensureRootResult{}, err
-	}
-	created := false
-	if cleaned != "/" {
-		components := strings.Split(strings.TrimPrefix(cleaned, "/"), "/")
-		for index, component := range components {
-			if component == "" || component == "." || component == ".." || len(component) > 255 {
-				unix.Close(current)
-				return ensureRootResult{}, userError("invalid-root", "Native filesystem Workspace root contains an invalid component")
-			}
-			next, openErr := unix.Openat(current, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			if errors.Is(openErr, unix.ENOENT) {
-				mkdirErr := unix.Mkdirat(current, component, 0700)
-				if mkdirErr == nil {
-					created = index == len(components)-1
-				} else if !errors.Is(mkdirErr, unix.EEXIST) {
-					unix.Close(current)
-					return ensureRootResult{}, mkdirErr
-				}
-				next, openErr = unix.Openat(current, component, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-			}
-			if openErr != nil {
-				unix.Close(current)
-				return ensureRootResult{}, openErr
-			}
-			unix.Close(current)
-			current = next
-		}
-	}
-	defer unix.Close(current)
-	var stat unix.Stat_t
-	if err := unix.Fstat(current, &stat); err != nil {
-		return ensureRootResult{}, err
-	}
-	return ensureRootResult{Created: created, Identity: directoryIdentityFromStat(nodeStatFromUnix(stat))}, nil
-}
-
-func (root *workspaceRoot) close() { _ = unix.Close(root.fd) }
+func (root *filesystemRoot) close() { _ = unix.Close(root.fd) }
 
 func closeNode(handle nodeHandle) { _ = unix.Close(int(handle)) }
 
@@ -137,7 +93,7 @@ func directoryIdentityFromStat(stat nodeStat) directoryIdentityResult {
 	}
 }
 
-func (root *workspaceRoot) probe() error {
+func (root *filesystemRoot) probe() error {
 	fd, err := root.openDirectoryAt(nodeHandle(root.fd), ".")
 	if err == nil {
 		closeNode(fd)
@@ -150,21 +106,21 @@ func relativeParts(value string, allowRoot bool) ([]string, string, error) {
 		return nil, ".", nil
 	}
 	if value == "" || strings.HasPrefix(value, "/") || strings.ContainsRune(value, 0) || len(value) > 4096 {
-		return nil, "", userError("invalid-path", "Path must be relative to the workspace")
+		return nil, "", userError("invalid-path", "Path must be relative to the task folder")
 	}
 	parts := strings.Split(value, "/")
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, "", userError("outside-workspace", "Path escapes the workspace")
+			return nil, "", userError("outside-workspace", "Path escapes the task folder")
 		}
 		if len(part) > 255 {
-			return nil, "", userError("invalid-path", "Workspace path component is too long")
+			return nil, "", userError("invalid-path", "Task folder path component is too long")
 		}
 	}
 	return parts, strings.Join(parts, "/"), nil
 }
 
-func (root *workspaceRoot) openNode(parts []string) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openNode(parts []string) (nodeHandle, nodeStat, error) {
 	if len(parts) == 0 {
 		fd, err := unix.Dup(root.fd)
 		if err != nil {
@@ -189,7 +145,7 @@ func (root *workspaceRoot) openNode(parts []string) (nodeHandle, nodeStat, error
 	return root.openNodeAt(parentFD, name)
 }
 
-func (root *workspaceRoot) openNodeAt(parentFD nodeHandle, name string) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openNodeAt(parentFD nodeHandle, name string) (nodeHandle, nodeStat, error) {
 	fd, err := strictOpenAt(int(parentFD), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, nodeStat{}, err
@@ -206,7 +162,7 @@ func (root *workspaceRoot) openNodeAt(parentFD nodeHandle, name string) (nodeHan
 	return nodeHandle(fd), nodeStatFromUnix(stat), nil
 }
 
-func (root *workspaceRoot) openDirectoryAt(parentFD nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) openDirectoryAt(parentFD nodeHandle, name string) (nodeHandle, error) {
 	fd, err := strictOpenAt(int(parentFD), name, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, err
@@ -223,7 +179,7 @@ func (root *workspaceRoot) openDirectoryAt(parentFD nodeHandle, name string) (no
 	return nodeHandle(fd), nil
 }
 
-func (root *workspaceRoot) createDirectoryAt(parentFD nodeHandle, name string) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) createDirectoryAt(parentFD nodeHandle, name string) (nodeHandle, nodeStat, error) {
 	if err := unix.Mkdirat(int(parentFD), name, 0700); err != nil {
 		return -1, nodeStat{}, err
 	}
@@ -241,7 +197,7 @@ func (root *workspaceRoot) createDirectoryAt(parentFD nodeHandle, name string) (
 
 func isAlreadyExists(err error) bool { return errors.Is(err, unix.EEXIST) }
 
-func (root *workspaceRoot) statNodeAt(parentFD nodeHandle, name string) (nodeStat, error) {
+func (root *filesystemRoot) statNodeAt(parentFD nodeHandle, name string) (nodeStat, error) {
 	var stat unix.Stat_t
 	if err := unix.Fstatat(int(parentFD), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
 		return nodeStat{}, err
@@ -252,16 +208,16 @@ func (root *workspaceRoot) statNodeAt(parentFD nodeHandle, name string) (nodeSta
 	return nodeStatFromUnix(stat), nil
 }
 
-func (root *workspaceRoot) assertSameDevice(stat unix.Stat_t) error {
+func (root *filesystemRoot) assertSameDevice(stat unix.Stat_t) error {
 	if uint64(stat.Dev) != root.device {
 		return userError("cross-device", "Nested filesystem mounts are unavailable to Native tools")
 	}
 	return nil
 }
 
-func (root *workspaceRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
+func (root *filesystemRoot) openParent(parts []string, create bool) (nodeHandle, string, error) {
 	if len(parts) == 0 {
-		return -1, "", userError("invalid-path", "Path must name a file inside the Workspace")
+		return -1, "", userError("invalid-path", "Path must name a file inside the task folder")
 	}
 	duplicated, err := unix.Dup(root.fd)
 	if err != nil {
@@ -292,19 +248,19 @@ func (root *workspaceRoot) openParent(parts []string, create bool) (nodeHandle, 
 	return current, parts[len(parts)-1], nil
 }
 
-func (root *workspaceRoot) atomicWrite(parentFD nodeHandle, name string, content []byte, expected *fileIdentity) (string, error) {
+func (root *filesystemRoot) atomicWrite(parentFD nodeHandle, name string, content []byte, expected *fileIdentity) (string, error) {
 	var target unix.Stat_t
 	if err := unix.Fstatat(int(parentFD), name, &target, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if fileType(uint32(target.Mode)) != "file" {
-			return "", userError("not-regular", "Workspace write target must be a regular file or a new path")
+			return "", userError("not-regular", "Task folder write target must be a regular file or a new path")
 		}
 		if expected != nil && fileIdentityFromStat(target) != *expected {
-			return "", userError("concurrent-modification", "Workspace file changed while replace_text was running")
+			return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
 		}
 	} else if !errors.Is(err, unix.ENOENT) {
 		return "", err
 	} else if expected != nil {
-		return "", userError("concurrent-modification", "Workspace file changed while replace_text was running")
+		return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
 	}
 
 	random := make([]byte, 16)
@@ -345,15 +301,15 @@ func (root *workspaceRoot) atomicWrite(parentFD nodeHandle, name string, content
 
 	if err := unix.Fstatat(int(parentFD), name, &target, unix.AT_SYMLINK_NOFOLLOW); err == nil {
 		if fileType(uint32(target.Mode)) != "file" {
-			return "", userError("not-regular", "Workspace write target must be a regular file or a new path")
+			return "", userError("not-regular", "Task folder write target must be a regular file or a new path")
 		}
 		if expected != nil && fileIdentityFromStat(target) != *expected {
-			return "", userError("concurrent-modification", "Workspace file changed while replace_text was running")
+			return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
 		}
 	} else if !errors.Is(err, unix.ENOENT) {
 		return "", err
 	} else if expected != nil {
-		return "", userError("concurrent-modification", "Workspace file changed while replace_text was running")
+		return "", userError("concurrent-modification", "Task folder file changed while replace_text was running")
 	}
 	if err := unix.Renameat(int(parentFD), temporary, int(parentFD), name); err != nil {
 		return "", err
@@ -418,15 +374,15 @@ func unlockDirectory(fd nodeHandle) { _ = unix.Flock(int(fd), unix.LOCK_UN) }
 func platformPublicError(err error) (string, string, bool) {
 	switch {
 	case errors.Is(err, unix.ENOENT):
-		return "not-found", "Workspace path does not exist", true
+		return "not-found", "Task folder path does not exist", true
 	case errors.Is(err, unix.ELOOP):
-		return "symlink-denied", "Workspace paths containing symlinks are not available to Native tools", true
+		return "symlink-denied", "Task folder paths containing symlinks are not available to Native tools", true
 	case errors.Is(err, unix.ENOTDIR):
-		return "unsafe-parent", "Workspace path contains a symlink or non-directory parent; paths containing symlinks are unavailable", true
+		return "unsafe-parent", "Task folder path contains a symlink or non-directory parent; paths containing symlinks are unavailable", true
 	case errors.Is(err, unix.EXDEV):
 		return "cross-device", "Nested filesystem mounts are unavailable to Native tools", true
 	case errors.Is(err, unix.EACCES), errors.Is(err, unix.EPERM):
-		return "permission-denied", "Workspace path is not accessible", true
+		return "permission-denied", "Task folder path is not accessible", true
 	case errors.Is(err, unix.ENOSYS), errors.Is(err, unix.EINVAL):
 		return "helper-unavailable", "Native filesystem containment is unavailable on this system", true
 	default:

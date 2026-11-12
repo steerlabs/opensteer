@@ -25,7 +25,6 @@ const authenticatedSession: AuthenticatedSession = {
     emailVerified: true,
     id: UserIdSchema.parse("usr_0192f4a1-5555-4000-8000-000000000005"),
     image: null,
-    instanceRole: "administrator",
   },
 };
 

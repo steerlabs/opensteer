@@ -1,5 +1,5 @@
-import type { WorkspaceIconName } from "@opensteer/core";
-import { WorkspaceIconGlyph } from "../workspace-orb.js";
+import type { IconName } from "@opensteer/core";
+import { IconGlyph } from "../icon-glyph.js";
 import { memo, useCallback, type CSSProperties } from "react";
 
 /**
@@ -395,7 +395,7 @@ export const CursorMark = memo(function CursorMark({
   title,
 }: {
   readonly color: string;
-  readonly icon: WorkspaceIconName | null;
+  readonly icon: IconName | null;
   readonly id: string;
   readonly motion: CursorMotion;
   readonly title: string;
@@ -421,7 +421,7 @@ export const CursorMark = memo(function CursorMark({
         />
       </svg>
       <span className="acur__name">
-        {icon ? <WorkspaceIconGlyph icon={icon} /> : null}
+        {icon ? <IconGlyph icon={icon} /> : null}
         <span>{title}</span>
       </span>
     </div>

@@ -26,3 +26,4 @@ Lending a computer, connecting integrations and wiring messaging.
 - [Computers](references/computers.md): enrollment, app access, agent SSH.
 - [Integration OAuth](references/integration-oauth.md): managed and custom apps, checks.
 - [Messaging](references/messaging.md): Slack, new providers, checks.
+- [Team server](../team-server/SKILL.md): Docker testing and first-owner setup renewal.

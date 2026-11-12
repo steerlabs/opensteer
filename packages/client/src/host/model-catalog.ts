@@ -1,5 +1,5 @@
 import type { EnvironmentSummary } from "./client.js";
-import { catalogDefaultModelSelection, rankedChatModelSelection } from "@opensteer/core";
+import { catalogDefaultModelSelection } from "@opensteer/core";
 import { canonicalJson } from "@opensteer/shared/canonicalJson";
 import {
   harnessDisplayRank,
@@ -14,11 +14,7 @@ import {
   type UsageModelScope,
 } from "./connection-usage.js";
 import type { ExecutionSelection } from "./execution-preferences.js";
-import {
-  automaticallyRunnable,
-  selectionForModel,
-  type ThreadPlacementOption,
-} from "./thread-placement.js";
+import { selectionForModel, type ThreadPlacementOption } from "./thread-placement.js";
 
 /**
  * The composer's picker reads the way a choice is stored: an engine, one of its
@@ -397,62 +393,6 @@ export function composerExecutionSelection(options: {
         modelSelection,
       }
     : null;
-}
-
-/** The highest-ranked Chat model that any currently runnable placement serves. */
-export function rankedChatExecutionSelection(
-  placements: readonly ThreadPlacementOption[],
-): ExecutionSelection | null {
-  const ranked = rankedChatModelSelection(placements.filter(automaticallyRunnable));
-  return ranked
-    ? {
-        environmentId: ranked.placement.environmentId,
-        harnessInstanceId: ranked.placement.harnessInstanceId,
-        modelSelection: ranked.modelSelection,
-      }
-    : null;
-}
-
-/**
- * Chat's one selection rule on every surface. A choice made in this visit, an
- * existing Chat's saved route and the AI the person last picked are decisions,
- * so an unavailable one blocks instead of falling through. Only a Chat nobody
- * has chosen anything for takes the ranked default.
- */
-export function chatExecutionSelection(options: {
-  readonly chosen: ExecutionSelection | null;
-  readonly existing: ExecutionSelection | null;
-  readonly placements: readonly ThreadPlacementOption[];
-  readonly remembered?: ExecutionSelection | null;
-}): ExecutionSelection | null {
-  const decision = chatExecutionDecision(options);
-  if (decision) return resolveExecutionSelection(decision, options.placements);
-  const ranked = rankedChatExecutionSelection(options.placements);
-  if (ranked) return ranked;
-  const runnable = options.placements.filter(automaticallyRunnable);
-  const placement = runnable.length === 1 ? runnable[0] : null;
-  const modelSelection = placement
-    ? catalogDefaultModelSelection({ status: "ready", models: placement.models })
-    : null;
-  return placement && modelSelection
-    ? {
-        environmentId: placement.environmentId,
-        harnessInstanceId: placement.harnessInstanceId,
-        modelSelection,
-      }
-    : null;
-}
-
-/**
- * The decision Chat runs, or null when nothing was decided and the ranked
- * default applies. A surface that names a blocked choice names this one.
- */
-export function chatExecutionDecision(options: {
-  readonly chosen: ExecutionSelection | null;
-  readonly existing: ExecutionSelection | null;
-  readonly remembered?: ExecutionSelection | null;
-}): ExecutionSelection | null {
-  return options.chosen ?? options.existing ?? options.remembered ?? null;
 }
 
 /** Everything about a Thread that decides what sending into it will do. */

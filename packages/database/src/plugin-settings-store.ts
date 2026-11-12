@@ -1,15 +1,27 @@
-import { deploymentPolicy } from "@opensteer/core";
-import { pluginDeviceFromManifest } from "@opensteer/integration-core";
-import { lockPluginOwnerConsent } from "./plugin-settings-locks.js";
-import { SpecialistStore } from "./specialist-store.js";
-import { listWorkspaceSkillInventory } from "./workspace-skill-inventory-store.js";
-import { PluginStore, canRemovePlugin } from "./plugin-store.js";
 import {
-  writeIntegrationGrantInTransaction,
-  validateIntegrationGrantInTransaction,
-} from "./integration-grant-write.js";
-import type { IntegrationProviderAuthorization } from "@opensteer/integration-core";
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
+import {
+  listPersonalSkillInventory,
+  type PersonalSkillInventory,
+} from "./folder-skill-inventory-store.js";
+import { createId, OpensteerError, type UserId, RunnerIdSchema } from "@opensteer/core";
+import { pluginDeviceFromManifest } from "@opensteer/integration-core";
+import {
+  PluginTargetSchema,
+  PluginsOverviewViewSchema,
+  PluginDetailViewSchema,
+  SettingsPluginEnableCommandSchema,
+  PluginPlacementSummarySchema,
+  type PluginTarget,
+  type PluginRow,
+} from "@opensteer/protocol";
+import { sql, type Kysely } from "kysely";
 import { isDeepStrictEqual } from "node:util";
+import type { DatabaseSchema } from "./schema.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   findCommandByIdempotency,
   lockCommandIdempotency,
@@ -17,21 +29,6 @@ import {
   idempotencyConflict,
   jsonValue,
 } from "./store-primitives.js";
-import {
-  SettingsPluginEnableCommandSchema,
-  SettingsPluginPlacementCommandSchema,
-  PluginPlacementSummarySchema,
-} from "@opensteer/protocol";
-import { createId, OpensteerError, type UserId, RunnerIdSchema } from "@opensteer/core";
-import {
-  PluginTargetSchema,
-  PluginsOverviewViewSchema,
-  PluginDetailViewSchema,
-  type PluginTarget,
-  type PluginRow,
-} from "@opensteer/protocol";
-import { sql, type Kysely } from "kysely";
-import type { DatabaseSchema } from "./schema.js";
 
 export function pluginTargetKey(input: PluginTarget): string {
   const target = PluginTargetSchema.parse(input);
@@ -44,90 +41,63 @@ export function pluginTargetKey(input: PluginTarget): string {
     case "specialist":
       return JSON.stringify([target.kind, target.pluginId, target.ownerUserId]);
     case "skill":
-      return JSON.stringify([target.kind, target.workspaceId, target.fullName]);
+      return JSON.stringify([target.kind, target.fullName]);
   }
 }
 
-/** Owner settings are admission ceilings, never a replacement for grants. */
 export async function pluginPolicyAllows(
   database: Kysely<DatabaseSchema>,
   owner: UserId,
   target: PluginTarget,
-  main: boolean,
-) {
+): Promise<boolean> {
   const setting = await database
     .selectFrom("pluginOwnerSettings")
-    .select(["enabled", "mainIncluded"])
+    .select("enabled")
     .where("ownerUserId", "=", owner)
     .where("targetKey", "=", pluginTargetKey(target))
     .executeTakeFirst();
-  return !setting || (setting.enabled && (!main || setting.mainIncluded));
+  return setting?.enabled ?? true;
 }
+
+export type { PersonalSkillInventory } from "./folder-skill-inventory-store.js";
 
 export class PluginSettingsStore {
   private readonly database: Kysely<DatabaseSchema>;
-  constructor(database: Kysely<DatabaseSchema>) {
+  private readonly inventory:
+    ((owner: UserId) => Promise<readonly PersonalSkillInventory[]>) | undefined;
+  constructor(
+    database: Kysely<DatabaseSchema>,
+    inventory?: (owner: UserId) => Promise<readonly PersonalSkillInventory[]>,
+  ) {
     this.database = database;
+    this.inventory = inventory ?? ((owner) => listPersonalSkillInventory(database, owner));
   }
 
-  async affectedViewers(input: {
-    workspaceId?: import("@opensteer/core").WorkspaceId;
+  async affectedViewers(_input: {
     runnerId?: string;
     installationId?: string;
     pluginId?: string;
     requestId?: string;
   }): Promise<UserId[]> {
-    const result = await sql<{ userId: UserId }>`
-      select distinct m.user_id from workspace_memberships m
-      join workspaces w on w.id = m.workspace_id
-      left join execution_environments e on e.id = w.owner_environment_id
-      where m.state = 'active' and (
-        w.id = ${input.workspaceId ?? null}
-        or e.runner_id = ${input.runnerId ?? null}
-        or exists(select 1 from plugin_activations a where a.workspace_id = w.id and a.plugin_id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null})))
-        or exists(select 1 from specialists s where s.workspace_id = w.id and s.plugin_id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null}))))
-      union select p.installed_by from plugins p where p.scope = 'deployment' and p.id = coalesce(${input.pluginId ?? null}, (select i.plugin_id from integration_installations i where i.id = ${input.installationId ?? null}))
-      union select c.owner_user_id from integration_connections c where c.runner_id = ${input.runnerId ?? null}
-        or exists(select 1 from integration_installations i where i.id = ${input.installationId ?? null} and coalesce(i.manifest->'definition'->>'id',i.name) = c.integration_definition_id)
-      union select m.user_id from requests q
-        join workspace_memberships m on m.workspace_id = q.originating_workspace_id and m.state = 'active'
-        join users u on u.id = m.user_id
-        where q.id = ${input.requestId ?? null} and (
-          (q.required_actor = 'requester' and (q.requested_by = m.user_id or (u.instance_role = 'administrator' and q.kind = 'integration.access' and q.payload->>'installationId' is null)))
-          or (q.required_actor = 'workspace-owner' and m.role = 'owner')
-          or (q.required_actor = 'administrator' and u.instance_role = 'administrator'))
-      union select s.owner_user_id from plugin_owner_settings s
-        join integration_installations i on i.id = ${input.installationId ?? null}
-        where s.target->>'kind' in ('service', 'device-app')
-          and s.target->>'definitionId' = coalesce(i.manifest->'definition'->>'id', i.name)
-      union select g.owner_user_id from integration_grants g where g.installation_id = ${input.installationId ?? null}
-    `.execute(this.database);
-    return result.rows.map((r) => r.userId);
+    return (await this.database.selectFrom("personalSettings").select("ownerId").execute()).map(
+      (row) => row.ownerId,
+    );
   }
 
-  async workspaceSkillPolicy(workspaceId: import("@opensteer/core").WorkspaceId, owner: UserId) {
+  async skillPolicy(owner: UserId) {
+    await requirePersonalOwner(this.database, owner);
     const settings = await this.database
       .selectFrom("pluginOwnerSettings")
       .selectAll()
       .where("ownerUserId", "=", owner)
       .execute();
-    const overrides = settings.filter(
-      (s) => s.target.kind === "skill" && s.target.workspaceId === workspaceId,
-    );
-    if (!overrides.length) return undefined;
-    const workspace = await this.database
-      .selectFrom("workspaces")
-      .select("kind")
-      .where("id", "=", workspaceId)
-      .executeTakeFirstOrThrow();
+    const skills = settings.filter((setting) => setting.target.kind === "skill");
+    if (!skills.length) return undefined;
     return {
-      revision: overrides.reduce((total, s) => total + s.revision, 0),
-      disabledFullNames: overrides
-        .flatMap((s) =>
-          s.target.kind === "skill" &&
-          (!s.enabled || (workspace.kind === "main" && !s.mainIncluded))
-            ? [s.target.fullName]
-            : [],
+      revision: skills.reduce((sum, setting) => sum + setting.revision, 0),
+      disabledFullNames: skills
+        .flatMap((setting) =>
+          setting.target.kind === "skill" && !setting.enabled ? [setting.target.fullName] : [],
         )
         .sort(),
     };
@@ -138,182 +108,73 @@ export class PluginSettingsStore {
     availableRunnerIds?: ReadonlySet<string>,
     opening?: PluginTarget,
   ) {
-    const memberWorkspaces = this.database
-      .selectFrom("workspaceMemberships")
-      .select("workspaceId")
-      .where("userId", "=", owner)
-      .where("state", "=", "active");
-    const [
-      viewer,
-      places,
-      settings,
-      connections,
-      installations,
-      grants,
-      packages,
-      activations,
-      specialists,
-      tools,
-    ] = await Promise.all([
-      this.database
-        .selectFrom("users")
-        .select("instanceRole")
-        .where("id", "=", owner)
-        .executeTakeFirstOrThrow(),
-      this.database
-        .selectFrom("workspaces")
-        .select(["id", "name", "kind", "createdBy"])
-        .where("id", "in", memberWorkspaces)
-        .execute(),
-      this.database
-        .selectFrom("pluginOwnerSettings")
-        .selectAll()
-        .where("ownerUserId", "=", owner)
-        .execute(),
-      this.database
-        .selectFrom("integrationConnections")
-        .select([
-          "id",
-          "integrationDefinitionId",
-          "connectionKind",
-          "displayName",
-          "status",
-          "statusReason",
-          "runnerId",
-          "computerAccess",
-          "computerBlockedAt",
-          "grantedScopes",
-        ])
-        .where("ownerUserId", "=", owner)
-        .where("status", "!=", "revoked")
-        .execute(),
-      this.database
-        .selectFrom("integrationInstallations")
-        .select([
-          "id",
-          "name",
-          "title",
-          "description",
-          "version",
-          "sourceKind",
-          "status",
-          "manifest",
-          "pluginId",
-        ])
-        .execute(),
-      this.database
-        .selectFrom("integrationGrants")
-        .selectAll()
-        .where("ownerUserId", "=", owner)
-        .where("workspaceId", "in", memberWorkspaces)
-        .where("revokedAt", "is", null)
-        .execute(),
-      this.database
-        .selectFrom("plugins")
-        .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
-        .select([
-          "plugins.id",
-          "plugins.name",
-          "plugins.scope",
-          "plugins.workspaceId",
-          "plugins.installedBy",
-          "plugins.setupThreadId",
-          "plugins.source",
-          "pluginVersions.manifest",
-          "pluginVersions.specialistManifest",
-        ])
-        .where((eb) =>
-          eb.or([
-            eb.and([eb("plugins.installedBy", "=", owner), eb("plugins.scope", "=", "deployment")]),
-            eb("plugins.workspaceId", "in", memberWorkspaces),
-            eb.exists(
-              eb
-                .selectFrom("pluginActivations")
-                .select("pluginId")
-                .whereRef("pluginActivations.pluginId", "=", "plugins.id")
-                .where("pluginActivations.workspaceId", "in", memberWorkspaces),
-            ),
-          ]),
-        )
-        .execute(),
-      this.database
-        .selectFrom("pluginActivations")
-        .selectAll()
-        .where("workspaceId", "in", memberWorkspaces)
-        .execute(),
-      this.database
-        .selectFrom("specialists")
-        .select(["id", "workspaceId", "pluginId", "ownerUserId", "status"])
-        .where("workspaceId", "in", memberWorkspaces)
-        .where("removedAt", "is", null)
-        .execute(),
-      this.database
-        .selectFrom("integrationTools")
-        .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
-        .select(["integrationTools.name", "integrationServers.installationId"])
-        .where((eb) =>
-          eb.or([
-            eb("integrationTools.connectionId", "is", null),
-            eb(
-              "integrationTools.connectionId",
-              "in",
-              eb
-                .selectFrom("integrationConnections")
-                .select("integrationConnections.id")
-                .where("integrationConnections.ownerUserId", "=", owner)
-                .where("integrationConnections.status", "!=", "revoked"),
-            ),
-          ]),
-        )
-        .execute(),
-    ]);
-    const rows: PluginRow[] = [];
-    const placement = (target: PluginTarget, selected: readonly string[]) => {
-      const setting = settings.find((s) => s.targetKey === pluginTargetKey(target));
-      return {
-        enabled: setting?.enabled ?? true,
-        mainIncluded:
-          (setting?.mainIncluded ?? true) &&
-          (target.kind !== "plugin" ||
-            places.some((p) => p.kind === "main" && selected.includes(p.id))),
-        projectCount: places.filter((p) => p.kind === "project" && selected.includes(p.id)).length,
-        personalEverywhere:
-          setting?.personalEverywhereAccounts !== null &&
-          setting?.personalEverywhereAccounts !== undefined,
-        revision: setting?.revision ?? 0,
-      };
+    await requirePersonalOwner(this.database, owner);
+    const [settings, connections, installations, grants, packages, specialists, tools, inventory] =
+      await Promise.all([
+        this.database
+          .selectFrom("pluginOwnerSettings")
+          .selectAll()
+          .where("ownerUserId", "=", owner)
+          .execute(),
+        this.database
+          .selectFrom("integrationConnections")
+          .selectAll()
+          .where("ownerUserId", "=", owner)
+          .where("status", "!=", "revoked")
+          .execute(),
+        this.database.selectFrom("integrationInstallations").selectAll().execute(),
+        this.database
+          .selectFrom("integrationGrants")
+          .selectAll()
+          .where("ownerUserId", "=", owner)
+          .where("revokedAt", "is", null)
+          .execute(),
+        this.database
+          .selectFrom("plugins")
+          .innerJoin("pluginVersions", "pluginVersions.id", "plugins.currentVersionId")
+          .selectAll("plugins")
+          .select(["pluginVersions.manifest", "pluginVersions.specialistManifest"])
+          .execute(),
+        this.database
+          .selectFrom("specialists")
+          .selectAll()
+          .where("ownerUserId", "=", owner)
+          .where("removedAt", "is", null)
+          .execute(),
+        this.database
+          .selectFrom("integrationTools")
+          .innerJoin("integrationServers", "integrationServers.id", "integrationTools.serverId")
+          .select(["integrationTools.name", "integrationServers.installationId"])
+          .execute(),
+        this.inventory?.(owner) ?? Promise.resolve([]),
+      ]);
+    const placement = (target: PluginTarget) => {
+      const setting = settings.find((row) => row.targetKey === pluginTargetKey(target));
+      return { enabled: setting?.enabled ?? true, revision: setting?.revision ?? 0 };
     };
+    const rows: PluginRow[] = [];
     for (const installation of installations) {
       if (installation.pluginId) continue;
-      const definition = installation.manifest.definition;
-      const definitionId =
-        typeof definition === "object" &&
-        definition !== null &&
-        "id" in definition &&
-        typeof definition.id === "string"
-          ? definition.id
-          : installation.name;
-      const accounts = connections.filter((c) => c.integrationDefinitionId === definitionId);
-      const ownGrants = grants.filter((g) => g.installationId === installation.id);
+      const definition =
+        installation.manifest.definition && typeof installation.manifest.definition === "object"
+          ? (installation.manifest.definition as Readonly<Record<string, unknown>>)
+          : {};
+      const definitionId = typeof definition.id === "string" ? definition.id : installation.name;
+      const accounts = connections.filter((row) => row.integrationDefinitionId === definitionId);
+      const ownGrants = grants.filter((row) => row.installationId === installation.id);
       const saved = settings.find(
-        (s) =>
-          (s.target.kind === "service" || s.target.kind === "device-app") &&
-          s.target.definitionId === definitionId,
+        (row) =>
+          (row.target.kind === "service" || row.target.kind === "device-app") &&
+          row.target.definitionId === definitionId,
       );
-      // The explicit Add command may admit catalog setup before any account exists.
-      // Ordinary reads still require the viewer’s own account, grant, or saved choice.
       const adding =
-        installation.sourceKind === "built-in" &&
         (opening?.kind === "service" || opening?.kind === "device-app") &&
         opening.definitionId === definitionId;
       if (!accounts.length && !ownGrants.length && !saved && !adding) continue;
       const device =
-        accounts.some((c) => c.connectionKind === "computer") ||
+        accounts.some((row) => row.connectionKind === "computer") ||
         saved?.target.kind === "device-app" ||
-        (typeof definition === "object" &&
-          definition !== null &&
-          "computerApp" in definition &&
-          !!definition.computerApp);
+        Boolean(definition?.computerApp);
       const target: PluginTarget = { kind: device ? "device-app" : "service", definitionId };
       rows.push({
         target,
@@ -321,488 +182,248 @@ export class PluginSettingsStore {
         description: installation.description.slice(0, 320) || null,
         source: { kind: installation.sourceKind, version: installation.version },
         tags: [device ? "devices" : "accounts"],
-        placement: placement(
-          target,
-          ownGrants.map((g) => g.workspaceId),
-        ),
+        placement: placement(target),
         accountCount: accounts.length,
         issues: [
-          ...((!accounts.length &&
-            typeof definition === "object" &&
-            definition !== null &&
-            "authMethods" in definition &&
-            Array.isArray(definition.authMethods) &&
-            definition.authMethods.length > 0) ||
-          accounts.some((c) => c.status === "needs-attention") ||
-          saved?.personalEverywhereAccounts?.some(
-            (a) => !accounts.some((c) => c.id === a.connectionId),
-          )
+          ...(accounts.some((row) => row.status === "needs-attention")
             ? ["needs-sign-in" as const]
             : []),
           ...(installation.status !== "active" ? ["invalid-installation" as const] : []),
           ...(device &&
-          availableRunnerIds !== undefined &&
-          accounts.some((c) => c.runnerId && !availableRunnerIds.has(c.runnerId))
+          availableRunnerIds &&
+          accounts.some((row) => row.runnerId && !availableRunnerIds.has(row.runnerId))
             ? ["waiting-device" as const]
             : []),
         ],
         contents: {
           skills: 0,
-          tools: tools.filter((t) => t.installationId === installation.id).length,
+          tools: tools.filter((row) => row.installationId === installation.id).length,
           specialists: 0,
         },
-        permissions: { canEnable: true, canPlace: true, canRemove: true, canUpdate: false },
+        permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
       });
     }
     for (const plugin of packages) {
-      const own = plugin.installedBy === owner;
-      const manage = own || viewer.instanceRole === "administrator";
       const target: PluginTarget = { kind: "plugin", pluginId: plugin.id };
       const skills = Array.isArray(plugin.manifest.skills) ? plugin.manifest.skills.length : 0;
-      rows.push({
+      const row: PluginRow = {
         target,
-        device: pluginDeviceFromManifest(plugin.manifest),
-        title: (pluginDeviceFromManifest(plugin.manifest)?.name ?? plugin.name).slice(0, 120),
+        title: plugin.name,
         description:
           typeof plugin.manifest.description === "string"
             ? plugin.manifest.description.slice(0, 320)
             : null,
         source: {
-          kind: plugin.scope === "workspace" ? "workspace" : "plugin",
+          kind: "plugin",
           version: typeof plugin.manifest.version === "string" ? plugin.manifest.version : null,
         },
         tags: ["skills"],
-        placement: placement(
-          target,
-          activations.filter((a) => a.pluginId === plugin.id).map((a) => a.workspaceId),
-        ),
+        placement: placement(target),
         accountCount: 0,
         issues: [],
         contents: {
           skills,
-          tools: tools.filter((t) =>
-            installations.some((i) => i.pluginId === plugin.id && i.id === t.installationId),
+          tools: tools.filter((tool) =>
+            installations.some(
+              (installation) =>
+                installation.pluginId === plugin.id && tool.installationId === installation.id,
+            ),
           ).length,
           specialists: plugin.specialistManifest ? 1 : 0,
         },
         permissions: {
           canEnable: true,
-          canPlace: manage,
-          canRemove: canRemovePlugin(
-            plugin,
-            { userId: owner, isAdministrator: viewer.instanceRole === "administrator" },
-            places.some((place) => place.id === plugin.workspaceId),
-          ),
-          // Agent-made plugins update when an agent installs their folder again.
-          canUpdate:
-            manage && plugin.scope === "deployment" && typeof plugin.source.directory === "string",
+          canPlace: false,
+          canRemove: true,
+          canUpdate: typeof plugin.source.directory === "string",
         },
-      });
-      const packageRow = rows[rows.length - 1]!;
-      const owners = new Set([
-        ...specialists.filter((s) => s.pluginId === plugin.id).map((s) => s.ownerUserId),
-        ...settings.flatMap((s) =>
-          s.target.kind === "specialist" && s.target.pluginId === plugin.id
-            ? [s.target.ownerUserId]
-            : [],
-        ),
-      ]);
-      for (const registrationOwner of owners) {
-        const target: PluginTarget = {
+        device: pluginDeviceFromManifest(plugin.manifest),
+      };
+      rows.push(row);
+      if (specialists.some((registration) => registration.pluginId === plugin.id)) {
+        const recipe: PluginTarget = {
           kind: "specialist",
           pluginId: plugin.id,
-          ownerUserId: registrationOwner,
+          ownerUserId: owner,
         };
-        const registrations = specialists.filter(
-          (s) => s.pluginId === plugin.id && s.ownerUserId === registrationOwner,
-        );
-        const canManage = registrationOwner === owner;
         rows.push({
-          ...packageRow,
-          target,
+          ...row,
+          target: recipe,
           tags: ["specialists"],
-          placement: placement(
-            target,
-            registrations.map((s) => s.workspaceId),
-          ),
-          permissions: {
-            canEnable: canManage,
-            canPlace: canManage,
-            canRemove: canManage,
-            canUpdate: false,
-          },
-          issues: [],
+          placement: placement(recipe),
+          permissions: { canEnable: true, canPlace: false, canRemove: true, canUpdate: false },
         });
       }
     }
-    const inventory = await listWorkspaceSkillInventory(
-      this.database,
-      owner,
-      places.map((p) => p.id),
-    );
-    rows.push(
-      ...projectLooseSkillRows(
-        inventory.map((scan) => ({
-          ...scan,
-          workspaceKind: places.find((p) => p.id === scan.workspaceId)?.kind,
-          stale:
-            scan.stale ||
-            (availableRunnerIds !== undefined &&
-              (!scan.ownerRunnerId || !availableRunnerIds.has(scan.ownerRunnerId))),
-        })),
-        settings,
-      ),
-    );
-    return {
-      inventory,
-      rows,
-      places,
-      settings,
-      connections,
-      installations,
-      grants,
-      packages,
-      activations,
-      specialists,
-      tools,
-      viewer,
-    };
+    rows.push(...projectLooseSkillRows(inventory, settings));
+    return { rows, settings, connections, installations, grants, packages, specialists, tools };
   }
 
   async setEnabled(
     owner: UserId,
     input: import("zod").infer<typeof SettingsPluginEnableCommandSchema>,
+    administration?: AdministrationCommandIdentity,
   ) {
-    return this.mutate(owner, SettingsPluginEnableCommandSchema.parse(input), {});
-  }
-
-  async setPlacement(
-    owner: UserId,
-    input: import("zod").infer<typeof SettingsPluginPlacementCommandSchema>,
-    authorizations: Readonly<Record<string, IntegrationProviderAuthorization>>,
-  ) {
-    return this.mutate(owner, SettingsPluginPlacementCommandSchema.parse(input), authorizations);
-  }
-
-  private async mutate(
-    owner: UserId,
-    command:
-      | import("zod").infer<typeof SettingsPluginEnableCommandSchema>
-      | import("zod").infer<typeof SettingsPluginPlacementCommandSchema>,
-    authorizations: Readonly<Record<string, IntegrationProviderAuthorization>>,
-  ) {
-    return this.database.transaction().execute(async (tx) => {
-      await lockCommandIdempotency(tx, owner, command.idempotencyKey);
-      // Project creation holds this same owner lock before reading consent.
-      await lockPluginOwnerConsent(tx, owner);
-      await tx.selectFrom("users").select("id").where("id", "=", owner).executeTakeFirstOrThrow();
-      const store = new PluginSettingsStore(tx);
-      const detail = await store.detail(
-        owner,
-        command.target,
-        undefined,
-        command.type === "settings.plugin.enabled.set" && command.enabled,
-      );
-      if (!detail.row.permissions.canEnable)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "Only the consent owner may change this setting",
-        });
-      const receipt = await findCommandByIdempotency(tx, owner, command.idempotencyKey);
-      if (receipt) {
-        const payload = receipt.payload;
-        if (
-          receipt.type !== command.type ||
-          typeof payload !== "object" ||
-          payload === null ||
-          !("request" in payload) ||
-          !isDeepStrictEqual(payload.request, command) ||
-          !("placement" in payload)
-        )
-          throw idempotencyConflict(command.idempotencyKey);
-        return {
-          type: command.type,
-          placement: PluginPlacementSummarySchema.parse(payload.placement),
-        };
-      }
-      if (detail.row.placement.revision !== command.expectedRevision)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Plugin placement changed; read it again",
-        });
-      const key = pluginTargetKey(command.target);
-      let placement = { ...detail.row.placement, revision: command.expectedRevision + 1 };
-      let template = detail.personalEverywhere?.accounts ?? null;
-      if (command.type === "settings.plugin.enabled.set") placement.enabled = command.enabled;
-      else {
-        if (!detail.row.permissions.canPlace || command.target.kind === "skill")
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Placement cannot be changed for this target",
-          });
-        const deployment = await tx
-          .selectFrom("deployments")
-          .select("deploymentShape")
-          .executeTakeFirstOrThrow();
-        if (
-          command.personalEverywhere &&
-          deploymentPolicy(deployment.deploymentShape).projectConsent !== "owner-wide"
-        )
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Server Projects require explicit consent",
-          });
-        if (
-          command.personalEverywhere &&
-          (!command.mainIncluded ||
-            detail.places
-              .filter((p) => p.kind === "project" && p.canSelect)
-              .some((p) => !command.projects.some((s) => s.workspaceId === p.workspaceId)))
-        )
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Everywhere must include Main and every current Project",
-          });
-        if (new Set(command.projects.map((p) => p.workspaceId)).size !== command.projects.length)
-          throw new OpensteerError({ code: "bad_request", message: "Duplicate Project selection" });
-        for (const project of command.projects) {
-          const place = detail.places.find((p) => p.workspaceId === project.workspaceId);
-          if (!place || place.kind !== "project" || !place.canSelect)
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Project selection is unavailable",
-            });
-          if (
-            new Set(project.accounts.map((a) => a.connectionId)).size !== project.accounts.length ||
-            project.accounts.some(
-              (a) => !detail.accounts.some((c) => c.connectionId === a.connectionId),
-            )
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "Select only your exact accounts",
-            });
-        }
-        if (
-          (command.target.kind === "service" || command.target.kind === "device-app") &&
-          command.projects.some((p) => p.accounts.length === 0)
-        )
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Each selected Project needs an exact account grant",
-          });
-        if (
-          command.target.kind === "plugin" &&
-          (command.projects.some((p) => p.accounts.length > 0) ||
-            command.personalEverywhere?.accounts.length)
-        )
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Package placement does not grant accounts",
-          });
-        const target = command.target;
-        if (target.kind === "specialist") {
-          const source = await tx
-            .selectFrom("plugins")
-            .select(["scope", "workspaceId"])
-            .where("id", "=", target.pluginId)
-            .executeTakeFirstOrThrow();
-          if (
-            source.scope === "workspace" &&
-            (command.personalEverywhere ||
-              command.projects.some((p) => p.workspaceId !== source.workspaceId))
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "This specialist belongs to its source Workspace",
-            });
-          if (
-            command.projects.some((p) => p.accounts.length) ||
-            command.personalEverywhere?.accounts.length
-          )
-            throw new OpensteerError({
-              code: "bad_request",
-              message: "Specialist placement does not grant accounts",
-            });
-          for (const place of detail.places.filter((p) => p.canSelect)) {
-            const selected =
-              place.kind === "main"
-                ? command.mainIncluded
-                : command.projects.some((p) => p.workspaceId === place.workspaceId);
-            const registration = detail.registrations.find(
-              (r) => r.workspaceId === place.workspaceId,
-            );
-            if (selected && !registration)
-              await new SpecialistStore(tx).addIn(tx, {
-                workspaceId: place.workspaceId,
-                pluginId: target.pluginId,
-                actorUserId: owner,
-              });
-            else if (!selected && registration && place.kind !== "main")
-              await tx
-                .updateTable("specialists")
-                .set({ removedAt: new Date(), status: "removing" })
-                .where("id", "=", registration.id)
-                .where("ownerUserId", "=", owner)
-                .execute();
-          }
-        } else if (target.kind === "plugin") {
-          const plugin = await tx
-            .selectFrom("plugins")
-            .select(["scope", "workspaceId"])
-            .where("id", "=", target.pluginId)
-            .executeTakeFirstOrThrow();
-          if (
-            plugin.scope === "workspace" &&
-            (command.personalEverywhere ||
-              command.projects.some((p) => p.workspaceId !== plugin.workspaceId))
-          )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "This package belongs to its source Workspace",
-            });
-          for (const place of detail.places.filter((p) => p.canSelect)) {
-            const selected =
-              place.kind === "main"
-                ? command.mainIncluded
-                : command.projects.some((p) => p.workspaceId === place.workspaceId);
-            if (selected)
-              await new PluginStore(tx).activateIn(tx, target.pluginId, place.workspaceId, owner);
-            else if (place.kind !== "main")
-              await tx
-                .deleteFrom("pluginActivations")
-                .where("pluginId", "=", target.pluginId)
-                .where("workspaceId", "=", place.workspaceId)
-                .execute();
-          }
-        } else {
-          if (command.personalEverywhere) {
-            const accounts = command.personalEverywhere.accounts;
+    const command = SettingsPluginEnableCommandSchema.parse(input);
+    return withPersonalTransaction(this.database, async (tx) => {
+      await requirePersonalOwner(tx, owner);
+      return administrationCommand(tx, administration, async () => {
+        if (!administration) {
+          await lockCommandIdempotency(tx, owner, command.idempotencyKey);
+          const receipt = await findCommandByIdempotency(tx, owner, command.idempotencyKey);
+          if (receipt) {
+            const payload = receipt.payload;
             if (
-              !accounts.length ||
-              new Set(accounts.map((a) => a.connectionId)).size !== accounts.length ||
-              accounts.some((a) => !detail.accounts.some((c) => c.connectionId === a.connectionId))
+              receipt.type !== command.type ||
+              typeof payload !== "object" ||
+              payload === null ||
+              !("request" in payload) ||
+              !isDeepStrictEqual(payload.request, command) ||
+              !("placement" in payload)
             )
-              throw new OpensteerError({
-                code: "forbidden",
-                message: "Future consent needs exact owned accounts",
-              });
-          }
-          const installationId = detail.installationIds[0];
-          if (!installationId)
-            throw new OpensteerError({ code: "conflict", message: "Installation is unavailable" });
-          const main = detail.places.find((p) => p.kind === "main");
-          if (command.personalEverywhere) {
-            if (!main)
-              throw new OpensteerError({
-                code: "forbidden",
-                message: "Main membership is required for future consent",
-              });
-            for (const account of command.personalEverywhere.accounts)
-              await validateIntegrationGrantInTransaction(tx, {
-                ...account,
-                installationId,
-                ownerUserId: owner,
-                createdBy: owner,
-                workspaceId: main.workspaceId,
-                alias: account.connectionId,
-                isDefault: false,
-                providerAuthorizations: authorizations,
-              });
-          }
-          for (const place of detail.places.filter((p) => p.kind === "project" && p.canSelect)) {
-            const selection = command.projects.find((p) => p.workspaceId === place.workspaceId);
-            for (const grant of detail.grants.filter((g) => g.workspaceId === place.workspaceId)) {
-              if (!selection?.accounts.some((a) => a.connectionId === grant.connectionId))
-                await tx
-                  .updateTable("integrationGrants")
-                  .set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date() })
-                  .where("id", "=", grant.id)
-                  .where("ownerUserId", "=", owner)
-                  .execute();
-            }
-            for (const account of selection?.accounts ?? [])
-              await writeIntegrationGrantInTransaction(tx, {
-                ...account,
-                installationId,
-                ownerUserId: owner,
-                createdBy: owner,
-                workspaceId: place.workspaceId,
-                alias: account.connectionId,
-                isDefault: false,
-                providerAuthorizations: authorizations,
-              });
+              throw idempotencyConflict(command.idempotencyKey);
+            return {
+              type: command.type,
+              placement: PluginPlacementSummarySchema.parse(payload.placement),
+            };
           }
         }
-        template = command.personalEverywhere?.accounts ?? null;
-        placement = {
-          ...placement,
-          mainIncluded: command.mainIncluded,
-          projectCount: command.projects.length,
-          personalEverywhere: template !== null,
-        };
-      }
-      await sql`select opensteer_flush_plugin_settings_revisions()`.execute(tx);
-      const savedSetting = await tx
-        .insertInto("pluginOwnerSettings")
-        .values({
-          ownerUserId: owner,
-          targetKey: key,
-          target: jsonValue(command.target),
-          enabled: placement.enabled,
-          mainIncluded: placement.mainIncluded,
-          revision: placement.revision,
-          personalEverywhereAccounts: template ? jsonValue(template) : null,
-        })
-        .onConflict((c) =>
-          c.columns(["ownerUserId", "targetKey"]).doUpdateSet({
-            enabled: placement.enabled,
-            mainIncluded: placement.mainIncluded,
-            revision: sql<number>`greatest(plugin_owner_settings.revision + 1, ${placement.revision})`,
-            personalEverywhereAccounts: template ? jsonValue(template) : null,
-          }),
-        )
-        .returning("revision")
-        .executeTakeFirstOrThrow();
-      placement = { ...placement, revision: savedSetting.revision };
-      await tx
-        .insertInto("commands")
-        .values({
-          id: createId("command"),
-          actorPrincipalId: await principalIdForUser(tx, owner),
-          authoritySource: jsonValue({ kind: "user-session", userId: owner }),
-          requestedBy: owner,
-          idempotencyKey: command.idempotencyKey,
-          type: command.type,
-          payload: jsonValue({ request: command, placement }),
-          status: "succeeded",
-          environmentId: null,
-          threadId: null,
-          runId: null,
-          dispatcherId: null,
-          lastError: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .execute();
-      return { type: command.type, placement };
+        const detail = await new PluginSettingsStore(tx, this.inventory).detail(
+          owner,
+          command.target,
+          undefined,
+          command.enabled,
+        );
+        if (detail.row.placement.revision !== command.expectedRevision)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Plugin setting changed; read it again",
+          });
+        const saved = await tx
+          .insertInto("pluginOwnerSettings")
+          .values({
+            ownerUserId: owner,
+            targetKey: pluginTargetKey(command.target),
+            target: command.target,
+            enabled: command.enabled,
+            revision: command.expectedRevision + 1,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["ownerUserId", "targetKey"]).doUpdateSet({
+              enabled: command.enabled,
+              revision: sql<number>`plugin_owner_settings.revision + 1`,
+            }),
+          )
+          .returning(["enabled", "revision"])
+          .executeTakeFirstOrThrow();
+        if (!administration)
+          await tx
+            .insertInto("commands")
+            .values({
+              id: createId("command"),
+              actorPrincipalId: await principalIdForUser(tx, owner),
+              authoritySource: jsonValue({ kind: "user-session", userId: owner }),
+              requestedBy: owner,
+              idempotencyKey: command.idempotencyKey,
+              type: command.type,
+              payload: jsonValue({ request: command, placement: saved }),
+              status: "succeeded",
+              environmentId: null,
+              threadId: null,
+              runId: null,
+              dispatcherId: null,
+              lastError: null,
+            })
+            .execute();
+        return { type: command.type, placement: saved };
+      });
     });
   }
 
-  private async visibleSetupThread(
+  async overview(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
+    return PluginsOverviewViewSchema.parse({
+      rows: (await this.snapshot(owner, availableRunnerIds)).rows,
+    });
+  }
+
+  async detail(
     owner: UserId,
-    threadId: import("@opensteer/core").ThreadId | null,
+    target: PluginTarget,
+    availableRunnerIds?: ReadonlySet<string>,
+    adding = false,
   ) {
-    if (!threadId) return null;
-    const thread = await this.database
-      .selectFrom("threads")
-      .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
-      .select("threads.id")
-      .where("threads.id", "=", threadId)
-      .where("workspaceMemberships.userId", "=", owner)
-      .where("workspaceMemberships.state", "=", "active")
-      .executeTakeFirst();
-    return thread?.id ?? null;
+    const snapshot = await this.snapshot(owner, availableRunnerIds, adding ? target : undefined);
+    const row = snapshot.rows.find(
+      (row) => pluginTargetKey(row.target) === pluginTargetKey(target),
+    );
+    if (!row) throw new OpensteerError({ code: "not_found", message: "Plugin is unavailable" });
+    const service = target.kind === "service" || target.kind === "device-app";
+    const plugin =
+      target.kind === "plugin" || target.kind === "specialist"
+        ? snapshot.packages.find((row) => row.id === target.pluginId)
+        : undefined;
+    const installations = snapshot.installations.filter((installation) =>
+      plugin
+        ? installation.pluginId === plugin.id
+        : service &&
+          (installation.manifest.definition &&
+          typeof installation.manifest.definition === "object" &&
+          "id" in installation.manifest.definition
+            ? installation.manifest.definition.id
+            : installation.name) === target.definitionId,
+    );
+    const ids = new Set(installations.map((row) => row.id));
+    const accounts = service
+      ? snapshot.connections.filter((row) => row.integrationDefinitionId === target.definitionId)
+      : [];
+    const grants = snapshot.grants.filter((row) => ids.has(row.installationId));
+    const contents: { name: string; kind: "skill" | "tool" | "specialist" }[] = snapshot.tools
+      .filter((row) => ids.has(row.installationId))
+      .map((row) => ({ name: row.name.slice(0, 120), kind: "tool" }));
+    for (const skill of Array.isArray(plugin?.manifest.skills) ? plugin.manifest.skills : []) {
+      const name =
+        typeof skill === "string"
+          ? skill
+          : typeof skill === "object" &&
+              skill !== null &&
+              "name" in skill &&
+              typeof skill.name === "string"
+            ? skill.name
+            : null;
+      if (name) contents.push({ name: name.slice(0, 120), kind: "skill" });
+    }
+    if (plugin?.specialistManifest) contents.push({ name: plugin.name, kind: "specialist" });
+    if (target.kind === "skill") contents.push({ name: target.fullName, kind: "skill" });
+    return PluginDetailViewSchema.parse({
+      row,
+      installationIds: [...ids],
+      grants: grants.map((row) => ({
+        ...row,
+        createdAt: row.createdAt.toISOString(),
+        updatedAt: row.updatedAt.toISOString(),
+        revokedAt: row.revokedAt?.toISOString() ?? null,
+      })),
+      registrations: snapshot.specialists
+        .filter((row) => target.kind === "specialist" && row.pluginId === target.pluginId)
+        .map((row) => ({ id: row.id, ownerUserId: row.ownerUserId })),
+      accounts: accounts.map((row) => ({
+        connectionId: row.id,
+        displayName: row.displayName,
+        status: row.status,
+        statusReason: row.statusReason,
+        access: row.computerAccess,
+        runnerId: row.runnerId,
+      })),
+      devices: [],
+      permissions: grants.map((row) => ({
+        label: row.access,
+        layer: "personal-grant",
+        state: "allowed",
+      })),
+      contents,
+      setupThreadId: plugin?.setupThreadId ?? null,
+      sourceFolder: typeof plugin?.source.directory === "string" ? plugin.source.directory : null,
+    });
   }
 
   async otherDevices(
@@ -813,11 +434,8 @@ export class PluginSettingsStore {
       status: import("@opensteer/protocol").MachineSummary["status"];
     }[],
   ) {
-    const snapshot = await this.snapshot(
-      owner,
-      new Set(machines.filter((m) => m.status === "online").map((m) => m.id)),
-    );
-    const devices = snapshot.packages.filter((p) => pluginDeviceFromManifest(p.manifest));
+    const snapshot = await this.snapshot(owner);
+    const devices = snapshot.packages.filter((plugin) => pluginDeviceFromManifest(plugin.manifest));
     if (!devices.length) return [];
     const servers = await this.database
       .selectFrom("integrationServers")
@@ -837,313 +455,68 @@ export class PluginSettingsStore {
       .where(
         "integrationInstallations.pluginId",
         "in",
-        devices.map((p) => p.id),
+        devices.map((plugin) => plugin.id),
       )
-      .orderBy("integrationServers.id")
       .execute();
-    return Promise.all(
-      devices.map(async (plugin) => {
-        const device = pluginDeviceFromManifest(plugin.manifest)!;
-        // Reinstall retires omitted servers at its timestamp; a later decline is still current.
-        const ownServers = servers.filter(
-          (s) =>
-            s.pluginId === plugin.id &&
-            (s.status !== "disabled" || s.updatedAt > s.installationUpdatedAt),
-        );
-        const runner = ownServers.find((s) => s.transport.type === "runner")?.transport.runnerId;
-        const machine = machines.find((m) => m.id === runner);
-        return {
-          pluginId: plugin.id,
-          ...device,
-          computer: machine
-            ? {
-                id: RunnerIdSchema.parse(machine.id),
-                name: machine.name.slice(0, 120),
-                status: machine.status,
-              }
-            : null,
-          issue:
-            ownServers.find((s) => s.status !== "active")?.statusDetail?.slice(0, 1000) ?? null,
-          setupThreadId: await this.visibleSetupThread(owner, plugin.setupThreadId),
-        };
-      }),
-    );
-  }
-
-  async overview(owner: UserId, availableRunnerIds?: ReadonlySet<string>) {
-    return PluginsOverviewViewSchema.parse({
-      rows: (await this.snapshot(owner, availableRunnerIds)).rows,
-    });
-  }
-
-  async detail(
-    owner: UserId,
-    target: PluginTarget,
-    availableRunnerIds?: ReadonlySet<string>,
-    adding = false,
-  ) {
-    const snapshot = await this.snapshot(owner, availableRunnerIds, adding ? target : undefined);
-    const {
-      rows,
-      places,
-      settings,
-      connections,
-      installations,
-      grants,
-      packages,
-      activations,
-      specialists,
-      tools,
-      viewer,
-    } = snapshot;
-    const key = pluginTargetKey(target);
-    const row = rows.find((r) => pluginTargetKey(r.target) === key);
-    if (!row)
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "Plugin is unavailable to this viewer",
-      });
-    const service = target.kind === "service" || target.kind === "device-app";
-    const accounts = service
-      ? connections.filter((c) => c.integrationDefinitionId === target.definitionId)
-      : [];
-    const accountIds = new Set(accounts.map((c) => c.id));
-    const serviceInstallationIds = new Set(
-      service
-        ? installations
-            .filter((i) => {
-              const definition = i.manifest.definition;
-              return (
-                i.name === target.definitionId ||
-                (typeof definition === "object" &&
-                  definition !== null &&
-                  "id" in definition &&
-                  definition.id === target.definitionId)
-              );
-            })
-            .map((i) => i.id)
-        : [],
-    );
-    const publicGrants = grants.filter(
-      (g) =>
-        serviceInstallationIds.has(g.installationId) &&
-        (!g.connectionId || accountIds.has(g.connectionId)),
-    );
-    const plugin =
-      target.kind === "plugin" || target.kind === "specialist"
-        ? packages.find((p) => p.id === target.pluginId)
-        : undefined;
-    const registrations =
-      target.kind === "specialist"
-        ? specialists.filter(
-            (s) => s.pluginId === target.pluginId && s.ownerUserId === target.ownerUserId,
-          )
-        : [];
-    const setting = settings.find((s) => s.targetKey === key);
-    const contents: { name: string; kind: "skill" | "tool" | "specialist" }[] = [];
-    for (const skill of Array.isArray(plugin?.manifest.skills) ? plugin.manifest.skills : []) {
-      const name =
-        typeof skill === "string"
-          ? skill
-          : typeof skill === "object" &&
-              skill !== null &&
-              "name" in skill &&
-              typeof skill.name === "string"
-            ? skill.name
-            : null;
-      if (name) contents.push({ name: name.slice(0, 120), kind: "skill" });
-    }
-    if (plugin?.specialistManifest)
-      contents.push({ name: plugin.name.slice(0, 120), kind: "specialist" });
-    const installationIds = installations
-      .filter((i) =>
-        plugin
-          ? i.pluginId === plugin.id
-          : service &&
-            (i.name === target.definitionId ||
-              accounts.some((c) => {
-                const definition = i.manifest.definition;
-                return (
-                  typeof definition === "object" &&
-                  definition !== null &&
-                  "id" in definition &&
-                  definition.id === c.integrationDefinitionId
-                );
-              })),
-      )
-      .map((i) => i.id);
-    for (const tool of tools.filter((t) => installationIds.includes(t.installationId)))
-      contents.push({ name: tool.name.slice(0, 120), kind: "tool" });
-    return PluginDetailViewSchema.parse({
-      row,
-      installationIds: service
-        ? installations
-            .filter((i) => {
-              const d = i.manifest.definition;
-              return (
-                publicGrants.some((g) => g.installationId === i.id) ||
-                i.name === target.definitionId ||
-                (typeof d === "object" && d !== null && "id" in d && d.id === target.definitionId)
-              );
-            })
-            .map((i) => i.id)
-        : installationIds,
-      grants: publicGrants.map((g) => ({
-        ...g,
-        createdAt: g.createdAt.toISOString(),
-        updatedAt: g.updatedAt.toISOString(),
-        revokedAt: g.revokedAt?.toISOString() ?? null,
-      })),
-      registrations: registrations.map(({ id, workspaceId, ownerUserId }) => ({
-        id,
-        workspaceId,
-        ownerUserId,
-      })),
-      accounts: accounts.map((c) => ({
-        connectionId: c.id,
-        displayName: c.displayName,
-        status: c.status,
-        statusReason: c.statusReason,
-        access: c.computerAccess,
-        runnerId: c.runnerId,
-      })),
-      places: places
-        .filter((p) => target.kind !== "skill" || p.id === target.workspaceId)
-        .map((p) => ({
-          workspaceId: p.id,
-          name: p.name,
-          kind: p.kind,
-          selected:
-            target.kind === "skill"
-              ? p.id === target.workspaceId
-              : p.kind === "main"
-                ? row.placement.mainIncluded
-                : service
-                  ? publicGrants.some((g) => g.workspaceId === p.id)
-                  : target.kind === "specialist"
-                    ? registrations.some((r) => r.workspaceId === p.id)
-                    : activations.some((a) => a.pluginId === plugin?.id && a.workspaceId === p.id),
-          canSelect:
-            target.kind !== "skill" &&
-            (!plugin || plugin.scope !== "workspace" || plugin.workspaceId === p.id) &&
-            (target.kind !== "specialist" || target.ownerUserId === owner) &&
-            (service ||
-              p.createdBy === owner ||
-              (p.kind !== "main" && viewer.instanceRole === "administrator")),
-          accounts: publicGrants
-            .filter((g) => g.workspaceId === p.id && g.connectionId)
-            .map((g) => ({ connectionId: g.connectionId!, access: g.access })),
-        })),
-      personalEverywhere: setting?.personalEverywhereAccounts
-        ? { accounts: setting.personalEverywhereAccounts }
-        : null,
-      devices:
-        target.kind === "skill"
-          ? await this.database
-              .selectFrom("runners")
-              .select(["id as runnerId", "name"])
-              .where(
-                "id",
-                "in",
-                snapshot.inventory
-                  .filter((scan) => scan.workspaceId === target.workspaceId)
-                  .flatMap((scan) =>
-                    scan.ownerRunnerId ? [RunnerIdSchema.parse(scan.ownerRunnerId)] : [],
-                  ),
-              )
-              .execute()
-              .then((devices) =>
-                devices.map((device) => ({
-                  ...device,
-                  name: device.name.slice(0, 120),
-                  status: availableRunnerIds?.has(device.runnerId) ? "online" : "offline",
-                })),
-              )
-          : [],
-      permissions: [
-        ...accounts.flatMap((c) =>
-          c.grantedScopes.map((scope) => ({
-            label: `${c.displayName}: ${scope}`.slice(0, 120),
-            layer: "account-scope",
-            state: "allowed",
-          })),
-        ),
-        ...accounts
-          .filter((c) => c.connectionKind === "computer")
-          .map((c) => ({
-            label: c.displayName.slice(0, 120),
-            layer: "app-policy",
-            state: c.computerBlockedAt ? "denied" : c.computerAccess ? "allowed" : "unknown",
-          })),
-        ...publicGrants.map((g) => ({
-          label:
-            `${places.find((p) => p.id === g.workspaceId)?.name ?? "Workspace"}: ${g.access}`.slice(
-              0,
-              120,
-            ),
-          layer: "workspace-grant",
-          state: g.status === "active" ? "allowed" : "denied",
-        })),
-      ],
-      contents: target.kind === "skill" ? [{ name: target.fullName, kind: "skill" }] : contents,
-      setupThreadId: plugin ? await this.visibleSetupThread(owner, plugin.setupThreadId) : null,
-      sourceFolder:
-        plugin?.installedBy === owner &&
-        plugin.scope === "deployment" &&
-        typeof plugin.source.directory === "string"
-          ? plugin.source.directory
+    return devices.map((plugin) => {
+      const own = servers.filter(
+        (row) =>
+          row.pluginId === plugin.id &&
+          (row.status !== "disabled" || row.updatedAt > row.installationUpdatedAt),
+      );
+      const runner = own.find((row) => row.transport.type === "runner")?.transport.runnerId;
+      const machine = machines.find((row) => row.id === runner);
+      return {
+        pluginId: plugin.id,
+        ...pluginDeviceFromManifest(plugin.manifest)!,
+        computer: machine
+          ? {
+              id: RunnerIdSchema.parse(machine.id),
+              name: machine.name.slice(0, 120),
+              status: machine.status,
+            }
           : null,
+        issue: own.find((row) => row.status !== "active")?.statusDetail?.slice(0, 1000) ?? null,
+        setupThreadId: plugin.setupThreadId,
+      };
     });
   }
 }
 
-/** Join seam for A3's already membership-authorized metadata inventory. */
 export function projectLooseSkillRows(
-  inventory: readonly {
-    workspaceId: import("@opensteer/core").WorkspaceId;
-    stale: boolean;
-    scanStatus?: "complete" | "failed";
-    workspaceKind?: "main" | "project" | undefined;
-    skills: readonly { fullName: string; description: string; digest: string }[];
-  }[],
+  inventory: readonly PersonalSkillInventory[],
   settings: readonly {
-    target: PluginTarget;
-    enabled: boolean;
-    mainIncluded: boolean;
-    revision: number;
+    readonly target: PluginTarget;
+    readonly enabled: boolean;
+    readonly revision: number;
   }[],
 ): PluginRow[] {
-  return inventory.flatMap((scan) =>
-    scan.skills.map((skill) => {
-      const target: PluginTarget = {
-        kind: "skill",
-        workspaceId: scan.workspaceId,
-        fullName: skill.fullName,
-      };
-      const setting = settings.find((s) => pluginTargetKey(s.target) === pluginTargetKey(target));
-      return {
-        target,
-        title: skill.fullName,
-        description: skill.description || null,
-        source: { kind: "workspace" as const, version: null },
-        tags: ["skills" as const],
-        placement: {
-          enabled: setting?.enabled ?? true,
-          mainIncluded: setting?.mainIncluded ?? true,
-          revision: setting?.revision ?? 0,
-          projectCount: scan.workspaceKind === "main" ? 0 : 1,
-          personalEverywhere: false,
-        },
-        accountCount: 0,
-        issues:
-          scan.scanStatus === "failed"
-            ? ["waiting-setup" as const]
-            : scan.stale
-              ? ["waiting-device" as const]
-              : [],
-        contents: { skills: 1, tools: 0, specialists: 0 },
-        permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
-      };
-    }),
+  const ordered = [...inventory].sort(
+    (a, b) => Number(b.stale) - Number(a.stale) || a.observedAt.localeCompare(b.observedAt),
   );
+  const skills = new Map(
+    ordered.flatMap((scan) =>
+      scan.skills.map(
+        (skill) =>
+          [skill.fullName, { ...skill, stale: scan.stale, scanStatus: scan.scanStatus }] as const,
+      ),
+    ),
+  );
+  return [...skills.values()].map((skill) => {
+    const target: PluginTarget = { kind: "skill", fullName: skill.fullName };
+    const setting = settings.find((row) => pluginTargetKey(row.target) === pluginTargetKey(target));
+    return {
+      target,
+      title: skill.fullName,
+      description: skill.description || null,
+      source: { kind: "folder", version: null },
+      tags: ["skills"],
+      placement: { enabled: setting?.enabled ?? true, revision: setting?.revision ?? 0 },
+      accountCount: 0,
+      issues:
+        skill.scanStatus === "failed" ? ["waiting-setup"] : skill.stale ? ["waiting-device"] : [],
+      contents: { skills: 1, tools: 0, specialists: 0 },
+      permissions: { canEnable: true, canPlace: false, canRemove: false, canUpdate: false },
+    };
+  });
 }

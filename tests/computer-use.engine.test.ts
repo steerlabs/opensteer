@@ -93,16 +93,14 @@ describe("real-engine computer use", () => {
           },
         ),
         harnessRuntimeBoundary: nativeUserHarnessRuntimeBoundary,
-        personal: {
-          integrations: () => {
-            const prepared = prepareIntegrationsModule({
-              computerUseBridge: bridge,
-              dataDirectory,
-              platform: "darwin",
-            });
-            if (!prepared) throw new Error("No scripted Mac integrations module");
-            return prepared;
-          },
+        integrations: () => {
+          const prepared = prepareIntegrationsModule({
+            computerUseBridge: bridge,
+            dataDirectory,
+            platform: "darwin",
+          });
+          if (!prepared) throw new Error("No scripted Mac integrations module");
+          return prepared;
         },
       });
       evidence.catalog = stack.catalog;
@@ -138,7 +136,7 @@ describe("real-engine computer use", () => {
       evidence.model = model;
       const threadId = await stack.createThread({
         title: "Save a recipe in Notes",
-        workspaceId: stack.mainWorkspaceId,
+
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           providerId: model.providerId,
@@ -150,7 +148,7 @@ describe("real-engine computer use", () => {
       const turn = await stack.sendMessage({
         text: prompt,
         threadId,
-        workspaceId: stack.mainWorkspaceId,
+
         onQueued: async (id) => {
           runId = id;
           evidence.runId = id;
@@ -275,7 +273,7 @@ describe("real-engine computer use", () => {
 async function readTranscript(stack: VerticalStack, runId: RunId) {
   return (
     await stack.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", runId)
       .orderBy("sequence")

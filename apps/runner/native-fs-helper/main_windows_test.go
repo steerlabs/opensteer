@@ -84,20 +84,6 @@ func TestWindowsWorkspaceOperationsAndIdentity(t *testing.T) {
 	}
 	restoreACL()
 
-	created, err := executeWindowsTest(request{Operation: "ensure-directory", Path: "nested/work", Root: workspace})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.(directoryIdentityResult).Kind != "windows" {
-		t.Fatalf("unexpected created directory identity: %#v", created)
-	}
-	if _, err := executeWindowsTest(request{Operation: "ensure-directory", Path: "nested/work", Root: workspace}); !hasHelperCode(err, "already-exists") {
-		t.Fatalf("exclusive directory creation adopted an existing path: %v", err)
-	}
-	if _, err := executeWindowsTest(request{Operation: "ensure-directory", Path: "nested/work", Resume: true, Root: workspace}); err != nil {
-		t.Fatalf("durable provisioning resume failed: %v", err)
-	}
-
 	if _, err := executeWindowsTest(request{Content: "created", Operation: "write", Path: "nested/work/new.txt", Root: workspace}); err != nil {
 		t.Fatal(err)
 	}
@@ -264,26 +250,6 @@ func denyDeleteForCurrentUser(t *testing.T, path string) func() {
 		}
 		runtime.KeepAlive(descriptor)
 		pinner.Unpin()
-	}
-}
-
-func TestWindowsCreatesTheManagedRootThroughNativeHandles(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "missing", "workspaces")
-	first, err := executeWindowsTest(request{Operation: "ensure-root", Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	created := first.(ensureRootResult)
-	if !created.Created || created.Identity.Kind != "windows" {
-		t.Fatalf("unexpected first root result: %#v", created)
-	}
-	second, err := executeWindowsTest(request{Operation: "ensure-root", Root: root})
-	if err != nil {
-		t.Fatal(err)
-	}
-	replayed := second.(ensureRootResult)
-	if replayed.Created || replayed.Identity != created.Identity {
-		t.Fatalf("unexpected root replay result: %#v", replayed)
 	}
 }
 

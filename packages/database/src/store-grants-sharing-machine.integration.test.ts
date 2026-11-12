@@ -1,39 +1,25 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
 import { NotificationStore } from "./notification-store.js";
 import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
-import { jsonValue } from "./store-primitives.js";
+
 import { createHash, randomUUID } from "node:crypto";
-import { createChannelId } from "@opensteer/channel-core";
+
 import { createIntegrationId } from "@opensteer/integration-core";
-import {
-  HarnessIdSchema,
-  type WorkspaceId,
-  createId,
-  type RunId,
-  type RunnerId,
-} from "@opensteer/core";
+import { createId, type RunId, type RunnerId } from "@opensteer/core";
 import { ShellSessionIdSchema } from "@opensteer/protocol";
-import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
-import { Pool } from "pg";
-import type { DatabaseSchema } from "./schema.js";
-import { ownTestDatabaseProducer } from "./test-database.test-support.js";
+import { sql } from "kysely";
+
 import { describe, expect } from "vitest";
 import { runToolMaxDelegationDepth, IntegrationPlatformStore, OpensteerStore } from "./index.js";
 import {
   describeStore,
   testModelSelection,
   testContinuationIdentity,
-  testWorkspaceProfile,
   enrollTestRunner,
   pendingEvent,
   testOpenApiAdapterContract,
 } from "./store.integration.test-support.js";
-
 describeStore("PostgreSQL store", (it) => {
   it("publishes addressed messages atomically with exact replay and no Run completion", async ({
     storeFixture,
@@ -42,7 +28,12 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture;
     const fixture = await createRunFixture("person-message");
     const source = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Work" }],
+      content: [
+        {
+          type: "text",
+          text: "Work",
+        },
+      ],
       idempotencyKey: "person-message-seed",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -58,15 +49,25 @@ describeStore("PostgreSQL store", (it) => {
       sourceThreadId: fixture.thread.id,
     };
     const results = await Promise.all(
-      Array.from({ length: 4 }, () =>
-        store.publishPersonMessage({ admission, message: "Milestone passed." }),
+      Array.from(
+        {
+          length: 4,
+        },
+        () =>
+          store.publishPersonMessage({
+            admission,
+            message: "Milestone passed.",
+          }),
       ),
     );
     expect(new Set(results.map((result) => result.message.id)).size).toBe(1);
     expect(results.flatMap((result) => result.events)).toHaveLength(1);
     expect(results.flatMap((result) => result.events)[0]).toMatchObject({
       type: "message.created",
-      data: { addressedToUserId: fixture.userId, input: null },
+      data: {
+        addressedToUserId: fixture.userId,
+        input: null,
+      },
     });
     const row = await database
       .selectFrom("messages")
@@ -75,11 +76,12 @@ describeStore("PostgreSQL store", (it) => {
       .executeTakeFirstOrThrow();
     expect(row.addressedToUserId).toBe(fixture.userId);
     expect(
-      await database
-        .transaction()
-        .execute((transaction) =>
-          runReply(transaction, { id: source.run.id, threadId: fixture.thread.id }),
-        ),
+      await database.transaction().execute((transaction) =>
+        runReply(transaction, {
+          id: source.run.id,
+          threadId: fixture.thread.id,
+        }),
+      ),
     ).toBeNull();
     const notifications = await new NotificationStore(database).decide(
       results.flatMap((result) => result.events)[0]!,
@@ -87,7 +89,11 @@ describeStore("PostgreSQL store", (it) => {
     expect(notifications).toMatchObject([
       {
         userId: fixture.userId,
-        view: { kind: "reply-published", messageId: row.id, body: "Milestone passed." },
+        view: {
+          kind: "reply-published",
+          messageId: row.id,
+          body: "Milestone passed.",
+        },
       },
     ]);
     const history = await store.threadMessagePageForOwner({
@@ -113,13 +119,20 @@ describeStore("PostgreSQL store", (it) => {
         },
         message: "Changed",
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     await expect(
       store.publishPersonMessage({
-        admission: { ...admission, requestedBy: createId("user") },
+        admission: {
+          ...admission,
+          requestedBy: createId("user"),
+        },
         message: "Milestone passed.",
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     for (let index = 1; index < 40; index += 1) {
       await store.admitRunToolCall({
         ...admission,
@@ -130,29 +143,54 @@ describeStore("PostgreSQL store", (it) => {
     }
     await expect(
       store.publishPersonMessage({
-        admission: { ...admission, requestId: randomUUID() },
+        admission: {
+          ...admission,
+          requestId: randomUUID(),
+        },
         message: "Milestone passed.",
       }),
-    ).resolves.toMatchObject({ wasDuplicate: false });
+    ).resolves.toMatchObject({
+      wasDuplicate: false,
+    });
     await expect(
-      store.publishPersonMessage({ admission, message: "Milestone passed." }),
-    ).resolves.toMatchObject({ wasDuplicate: true, message: { id: row.id }, events: [] });
+      store.publishPersonMessage({
+        admission,
+        message: "Milestone passed.",
+      }),
+    ).resolves.toMatchObject({
+      wasDuplicate: true,
+      message: {
+        id: row.id,
+      },
+      events: [],
+    });
     await database
       .updateTable("runs")
-      .set({ status: "completed" })
+      .set({
+        status: "completed",
+      })
       .where("id", "=", source.run.id)
       .execute();
     await expect(
-      store.publishPersonMessage({ admission, message: "Milestone passed." }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+      store.publishPersonMessage({
+        admission,
+        message: "Milestone passed.",
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it("serializes durable per-Run receipts without an action quota", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("agent-admission-run");
     const sourceTurn = await enqueueHumanTrigger({
-      content: [{ text: "Start agent-control work", type: "text" }],
+      content: [
+        {
+          text: "Start agent-control work",
+          type: "text",
+        },
+      ],
       idempotencyKey: "agent-admission-source-turn",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -172,13 +210,16 @@ describeStore("PostgreSQL store", (it) => {
       runId: sourceTurn.run.id,
       sourceThreadId: fixture.thread.id,
     };
-
     const exactRetries = await Promise.all(
-      Array.from({ length: 8 }, async () => store.admitRunToolCall(exactInput)),
+      Array.from(
+        {
+          length: 8,
+        },
+        async () => store.admitRunToolCall(exactInput),
+      ),
     );
     expect(exactRetries.filter(({ wasDuplicate }) => !wasDuplicate)).toHaveLength(1);
     expect(exactRetries.filter(({ wasDuplicate }) => wasDuplicate)).toHaveLength(7);
-
     const restartedStore = new OpensteerStore(database);
     await expect(restartedStore.admitRunToolCall(exactInput)).resolves.toMatchObject({
       actionClass: "thread.message",
@@ -189,19 +230,24 @@ describeStore("PostgreSQL store", (it) => {
         ...exactInput,
         requestFingerprint: createHash("sha256").update("changed-message").digest("hex"),
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     const remaining = 40;
     await Promise.all(
-      Array.from({ length: remaining }, async (_, index) =>
-        store.admitRunToolCall({
-          ...agentControlBinding,
-          action: "thread.message",
-          requestFingerprint: createHash("sha256").update(`message-${index}`).digest("hex"),
-          requestId: randomUUID(),
-          runId: sourceTurn.run.id,
-          sourceThreadId: fixture.thread.id,
-        }),
+      Array.from(
+        {
+          length: remaining,
+        },
+        async (_, index) =>
+          store.admitRunToolCall({
+            ...agentControlBinding,
+            action: "thread.message",
+            requestFingerprint: createHash("sha256").update(`message-${index}`).digest("hex"),
+            requestId: randomUUID(),
+            runId: sourceTurn.run.id,
+            sourceThreadId: fixture.thread.id,
+          }),
       ),
     );
     await expect(
@@ -213,7 +259,9 @@ describeStore("PostgreSQL store", (it) => {
         runId: sourceTurn.run.id,
         sourceThreadId: fixture.thread.id,
       }),
-    ).resolves.toMatchObject({ wasDuplicate: false });
+    ).resolves.toMatchObject({
+      wasDuplicate: false,
+    });
     const count = await database
       .selectFrom("agentControlRequests")
       .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -221,17 +269,20 @@ describeStore("PostgreSQL store", (it) => {
       .where("actionClass", "=", "thread.message")
       .executeTakeFirstOrThrow();
     expect(Number(count.count)).toBe(remaining + 2);
-
     await Promise.all(
-      Array.from({ length: 65 }, async (_, index) =>
-        store.admitRunToolCall({
-          ...agentControlBinding,
-          action: "thread.list",
-          requestFingerprint: createHash("sha256").update(`list-${index}`).digest("hex"),
-          requestId: randomUUID(),
-          runId: sourceTurn.run.id,
-          sourceThreadId: fixture.thread.id,
-        }),
+      Array.from(
+        {
+          length: 65,
+        },
+        async (_, index) =>
+          store.admitRunToolCall({
+            ...agentControlBinding,
+            action: "thread.list",
+            requestFingerprint: createHash("sha256").update(`list-${index}`).digest("hex"),
+            requestId: randomUUID(),
+            runId: sourceTurn.run.id,
+            sourceThreadId: fixture.thread.id,
+          }),
       ),
     );
     await expect(
@@ -243,7 +294,9 @@ describeStore("PostgreSQL store", (it) => {
         runId: sourceTurn.run.id,
         sourceThreadId: fixture.thread.id,
       }),
-    ).resolves.toMatchObject({ wasDuplicate: false });
+    ).resolves.toMatchObject({
+      wasDuplicate: false,
+    });
     await expect(
       store.admitRunToolCall({
         ...agentControlBinding,
@@ -253,9 +306,11 @@ describeStore("PostgreSQL store", (it) => {
         runId: sourceTurn.run.id,
         sourceThreadId: fixture.thread.id,
       }),
-    ).resolves.toMatchObject({ actionClass: "thread.read", wasDuplicate: false });
+    ).resolves.toMatchObject({
+      actionClass: "thread.read",
+      wasDuplicate: false,
+    });
   });
-
   it("commits thread.message admission and effect atomically and rejects terminal retries", async ({
     storeFixture,
   }) => {
@@ -268,14 +323,12 @@ describeStore("PostgreSQL store", (it) => {
       idempotencyKey: "agent-message-atomic-receipt-target",
       modelSelection: testModelSelection,
       title: "Atomic message target",
-      workspaceId: source.workspace.id,
     });
     const requestId = randomUUID();
     const admissionRequest = {
       action: "thread.message" as const,
       bindingGeneration: source.bindingGeneration,
       environmentId: source.environmentId,
-      membershipGeneration: 1,
       requestedBy: source.userId,
       requestFingerprint: createHash("sha256").update("atomic-message").digest("hex"),
       requestId,
@@ -283,22 +336,34 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: source.runnerBootId,
       runnerId: source.runnerId,
       sourceThreadId: source.thread.id,
-      workspaceId: source.workspace.id,
     };
     const idempotencyKey = `agent:${source.run.id}:${requestId}:message`;
     await expect(
       store.enqueueAdmittedThreadInput({
-        admission: { kind: "agent", request: admissionRequest },
+        admission: {
+          kind: "agent",
+          request: admissionRequest,
+        },
         input: {
-          content: [{ text: "This transaction must roll back", type: "text" }],
+          content: [
+            {
+              text: "This transaction must roll back",
+              type: "text",
+            },
+          ],
           idempotencyKey,
           policy: "queue",
           requestedBy: source.userId,
-          source: { kind: "agent", runId: source.run.id },
+          source: {
+            kind: "agent",
+            runId: source.run.id,
+          },
           threadId: createId("thread"),
         },
       }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).rejects.toMatchObject({
+      code: "not_found",
+    });
     await expect(
       database
         .selectFrom("agentControlRequests")
@@ -306,47 +371,76 @@ describeStore("PostgreSQL store", (it) => {
         .where("runId", "=", source.run.id)
         .where("requestId", "=", requestId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "0" });
-
+    ).resolves.toEqual({
+      count: "0",
+    });
     const committed = await store.enqueueAdmittedThreadInput({
-      admission: { kind: "agent", request: admissionRequest },
+      admission: {
+        kind: "agent",
+        request: admissionRequest,
+      },
       input: {
-        content: [{ text: "Commit the receipt with its Message", type: "text" }],
+        content: [
+          {
+            text: "Commit the receipt with its Message",
+            type: "text",
+          },
+        ],
         idempotencyKey,
         policy: "queue",
         requestedBy: source.userId,
-        source: { kind: "agent", runId: source.run.id },
+        source: {
+          kind: "agent",
+          runId: source.run.id,
+        },
         threadId: target.id,
       },
     });
     expect(committed.wasDuplicate).toBe(false);
     await database
       .updateTable("runs")
-      .set({ completedAt: new Date(), status: "completed" })
+      .set({
+        completedAt: new Date(),
+        status: "completed",
+      })
       .where("id", "=", source.run.id)
       .executeTakeFirstOrThrow();
     await expect(
       store.enqueueAdmittedThreadInput({
-        admission: { kind: "agent", request: admissionRequest },
+        admission: {
+          kind: "agent",
+          request: admissionRequest,
+        },
         input: {
-          content: [{ text: "Commit the receipt with its Message", type: "text" }],
+          content: [
+            {
+              text: "Commit the receipt with its Message",
+              type: "text",
+            },
+          ],
           idempotencyKey,
           policy: "queue",
           requestedBy: source.userId,
-          source: { kind: "agent", runId: source.run.id },
+          source: {
+            kind: "agent",
+            runId: source.run.id,
+          },
           threadId: target.id,
         },
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await expect(
       database
         .selectFrom("messages")
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("threadId", "=", target.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
+    ).resolves.toEqual({
+      count: "1",
+    });
   });
-
   it("commits thread.delegate admission and child creation atomically", async ({
     storeFixture,
   }) => {
@@ -357,7 +451,6 @@ describeStore("PostgreSQL store", (it) => {
       action: "thread.delegate" as const,
       bindingGeneration: source.bindingGeneration,
       environmentId: source.environmentId,
-      membershipGeneration: 1,
       requestedBy: source.userId,
       requestFingerprint: createHash("sha256").update("atomic-delegation").digest("hex"),
       requestId,
@@ -365,7 +458,6 @@ describeStore("PostgreSQL store", (it) => {
       runnerBootId: source.runnerBootId,
       runnerId: source.runnerId,
       sourceThreadId: source.thread.id,
-      workspaceId: source.workspace.id,
     };
     const baseInput = {
       accessMode: "auto" as const,
@@ -379,15 +471,28 @@ describeStore("PostgreSQL store", (it) => {
         parentRunId: source.run.id,
         parentThreadId: source.thread.id,
       },
-      task: [{ text: "Create the child exactly once", type: "text" as const }],
+      task: [
+        {
+          text: "Create the child exactly once",
+          type: "text" as const,
+        },
+      ],
       title: "Atomic child",
     };
     await expect(
       store.delegateAdmittedThread({
-        admission: { kind: "agent", request: admissionRequest },
-        input: { ...baseInput, workspaceId: createId("workspace") },
+        admission: {
+          kind: "agent",
+          request: admissionRequest,
+        },
+        input: {
+          ...baseInput,
+          threadId: createId("thread"),
+        },
       }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).rejects.toMatchObject({
+      code: "not_found",
+    });
     await expect(
       database
         .selectFrom("agentControlRequests")
@@ -395,31 +500,49 @@ describeStore("PostgreSQL store", (it) => {
         .where("runId", "=", source.run.id)
         .where("requestId", "=", requestId)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "0" });
-
+    ).resolves.toEqual({
+      count: "0",
+    });
     const delegated = await store.delegateAdmittedThread({
-      admission: { kind: "agent", request: admissionRequest },
-      input: { ...baseInput, workspaceId: source.workspace.id },
+      admission: {
+        kind: "agent",
+        request: admissionRequest,
+      },
+      input: {
+        ...baseInput,
+      },
     });
     expect(delegated.wasDuplicate).toBe(false);
     await database
       .updateTable("runs")
-      .set({ completedAt: new Date(), status: "completed" })
+      .set({
+        completedAt: new Date(),
+        status: "completed",
+      })
       .where("id", "=", source.run.id)
       .executeTakeFirstOrThrow();
     await expect(
       store.delegateAdmittedThread({
-        admission: { kind: "agent", request: admissionRequest },
-        input: { ...baseInput, workspaceId: source.workspace.id },
+        admission: {
+          kind: "agent",
+          request: admissionRequest,
+        },
+        input: {
+          ...baseInput,
+        },
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await expect(
       database
         .selectFrom("delegations")
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("parentRunId", "=", source.run.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
+    ).resolves.toEqual({
+      count: "1",
+    });
   });
 
   /*
@@ -437,13 +560,11 @@ describeStore("PostgreSQL store", (it) => {
     const capability = (started: Started) => ({
       bindingGeneration: started.bindingGeneration,
       environmentId: started.environmentId,
-      membershipGeneration: 1,
       requestedBy: started.userId,
       runId: started.run.id,
       runnerBootId: started.runnerBootId,
       runnerId: started.runnerId,
       threadId: started.thread.id,
-      workspaceId: started.workspace.id,
     });
     const grantsOf = (storeFixture: StoreFixture, runId: RunId) =>
       storeFixture.database
@@ -452,7 +573,6 @@ describeStore("PostgreSQL store", (it) => {
         .where("runId", "=", runId)
         .orderBy("createdAt", "asc")
         .execute();
-
     it("issues attempt 1 and one active grant with the execution binding", async ({
       storeFixture,
     }) => {
@@ -464,7 +584,11 @@ describeStore("PostgreSQL store", (it) => {
         .where("runId", "=", started.run.id)
         .execute();
       expect(attempts).toEqual([
-        expect.objectContaining({ ordinal: 1, reason: "initial", status: "current" }),
+        expect.objectContaining({
+          ordinal: 1,
+          reason: "initial",
+          status: "current",
+        }),
       ]);
       expect(await grantsOf(storeFixture, started.run.id)).toEqual([
         {
@@ -476,7 +600,6 @@ describeStore("PostgreSQL store", (it) => {
       ]);
       await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
     });
-
     it("cuts tool authority on Stop while the Runner can still report the Run's end", async ({
       storeFixture,
     }) => {
@@ -490,7 +613,10 @@ describeStore("PostgreSQL store", (it) => {
         type: "run.interrupt",
       });
       expect(await grantsOf(storeFixture, started.run.id)).toEqual([
-        expect.objectContaining({ revokedReason: "stopped", status: "revoked" }),
+        expect.objectContaining({
+          revokedReason: "stopped",
+          status: "revoked",
+        }),
       ]);
       await expect(store.assertActiveGrant(capability(started))).rejects.toMatchObject({
         code: "forbidden",
@@ -502,13 +628,14 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: started.environmentId,
         event: pendingEvent({
           bindingGeneration: started.bindingGeneration,
-          data: { status: "interrupted" },
+          data: {
+            status: "interrupted",
+          },
           environmentId: started.environmentId,
           ordinal: 1,
           runId: started.run.id,
           threadId: started.thread.id,
           type: "run.interrupted",
-          workspaceId: started.workspace.id,
         }),
         runnerBootId: started.runnerBootId,
         runnerId: started.runnerId,
@@ -519,9 +646,10 @@ describeStore("PostgreSQL store", (it) => {
           .select("status")
           .where("id", "=", started.run.id)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ status: "interrupted" });
+      ).toEqual({
+        status: "interrupted",
+      });
     });
-
     it("ends tool authority with the Run", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
       const completed = await startRunFixture("grant-run-ended");
@@ -529,13 +657,14 @@ describeStore("PostgreSQL store", (it) => {
         environmentId: completed.environmentId,
         event: pendingEvent({
           bindingGeneration: completed.bindingGeneration,
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
           environmentId: completed.environmentId,
           ordinal: 1,
           runId: completed.run.id,
           threadId: completed.thread.id,
           type: "run.completed",
-          workspaceId: completed.workspace.id,
         }),
         runnerBootId: completed.runnerBootId,
         runnerId: completed.runnerId,
@@ -544,16 +673,16 @@ describeStore("PostgreSQL store", (it) => {
         code: "forbidden",
       });
     });
-
-    it("ends tool authority with its Runner", async ({ storeFixture }) => {
+    it("protects the hosting computer while preserving its Run authority", async ({
+      storeFixture,
+    }) => {
       const { startRunFixture, store } = storeFixture;
-      const revoked = await startRunFixture("grant-runner-revoked");
-      await store.revokeRunner(revoked.runnerId, revoked.userId, { allowDeployment: true });
-      await expect(store.assertActiveGrant(capability(revoked))).rejects.toMatchObject({
-        code: "forbidden",
-      });
+      const started = await startRunFixture("hosting-computer-removal");
+      await expect(
+        store.revokeRunner(started.runnerId, started.userId, { allowDeployment: true }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
     });
-
     it("revokes a worker's grant when its Assignment is cancelled", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
       const started = await startRunFixture("grant-assignment");
@@ -564,10 +693,18 @@ describeStore("PostgreSQL store", (it) => {
         harnessInstanceId: started.harnessInstance.id,
         idempotencyKey: "grant-assignment-child",
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: started.run.id, parentThreadId: started.thread.id },
-        task: [{ text: "Child", type: "text" }],
+        origin: {
+          kind: "run",
+          parentRunId: started.run.id,
+          parentThreadId: started.thread.id,
+        },
+        task: [
+          {
+            text: "Child",
+            type: "text",
+          },
+        ],
         title: "Child",
-        workspaceId: started.workspace.id,
       });
       await store.claimCommand(delegated.command.id, "grant-assignment-dispatcher");
       await store.acquireExecutionBinding({
@@ -575,7 +712,6 @@ describeStore("PostgreSQL store", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: started.harnessInstance.id,
         leaseTokenHash: "grant-assignment-child-lease",
-        membershipGeneration: 1,
         runnerBootId: started.runnerBootId,
         runnerId: started.runnerId,
         runId: delegated.run.id,
@@ -588,35 +724,23 @@ describeStore("PostgreSQL store", (it) => {
         requestedBy: started.userId,
       });
       expect(await grantsOf(storeFixture, delegated.run.id)).toEqual([
-        expect.objectContaining({ revokedReason: "assignment-cancelled", status: "revoked" }),
+        expect.objectContaining({
+          revokedReason: "assignment-cancelled",
+          status: "revoked",
+        }),
       ]);
-    });
-
-    it("refuses tools in a Workspace being deleted", async ({ storeFixture }) => {
-      const { startRunFixture, store, database } = storeFixture;
-      const started = await startRunFixture("grant-workspace-deleting");
-      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
-      // The state a deletion request leaves, before its Runs are failed.
-      await database
-        .updateTable("workspaces")
-        .set({
-          deletionRequestedAt: new Date(),
-          deletionRequestedBy: started.userId,
-          purgeAfter: new Date(Date.now() + 86_400_000),
-          status: "deleting",
-        })
-        .where("id", "=", started.workspace.id)
-        .execute();
-      await expect(store.assertActiveGrant(capability(started))).rejects.toMatchObject({
-        code: "forbidden",
-      });
     });
 
     it("replaces the grant when a starting Run rebinds", async ({ storeFixture }) => {
       const { createRunFixture, enqueueHumanTrigger, store } = storeFixture;
       const fixture = await createRunFixture("grant-rebind");
       const turn = await enqueueHumanTrigger({
-        content: [{ text: "Start", type: "text" }],
+        content: [
+          {
+            text: "Start",
+            type: "text",
+          },
+        ],
         idempotencyKey: "grant-rebind-turn",
         requestedBy: fixture.userId,
         threadId: fixture.thread.id,
@@ -628,7 +752,6 @@ describeStore("PostgreSQL store", (it) => {
           continuationIdentity: testContinuationIdentity,
           harnessInstanceId: fixture.harnessInstance.id,
           leaseTokenHash: `grant-rebind-${boot}`,
-          membershipGeneration: 1,
           runnerBootId: boot,
           runnerId: fixture.runnerId,
           runId: turn.run.id,
@@ -639,12 +762,17 @@ describeStore("PostgreSQL store", (it) => {
       expect(second.grantId).not.toBe(first.grantId);
       const grants = await grantsOf(storeFixture, turn.run.id);
       expect(grants).toEqual([
-        expect.objectContaining({ revokedReason: "binding-replaced", status: "revoked" }),
-        expect.objectContaining({ revokedReason: null, status: "active" }),
+        expect.objectContaining({
+          revokedReason: "binding-replaced",
+          status: "revoked",
+        }),
+        expect.objectContaining({
+          revokedReason: null,
+          status: "active",
+        }),
       ]);
       expect(grants[0]!.attemptId).toBe(grants[1]!.attemptId);
     });
-
     it("refuses a stopped Run's Requests and tool calls", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
       const started = await startRunFixture("grant-stopped-mutations");
@@ -663,7 +791,9 @@ describeStore("PostgreSQL store", (it) => {
           requestId: randomUUID(),
           sourceThreadId: started.thread.id,
         }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      ).rejects.toMatchObject({
+        code: "forbidden",
+      });
       await expect(
         store.requests.create({
           callId: "after-stop",
@@ -671,31 +801,38 @@ describeStore("PostgreSQL store", (it) => {
           mode: "durable",
           originatingRunId: started.run.id,
           originatingThreadId: started.thread.id,
-          originatingWorkspaceId: started.workspace.id,
           payload: {
             kind: "browser.access",
             reason: "Choose a profile",
-            suggestion: { kind: "user_choice" },
+            suggestion: {
+              kind: "user_choice",
+            },
           },
           presentation: {
             kind: "external",
-            subject: { id: started.workspace.id, kind: "workspace" },
+            subject: {
+              id: started.threadId,
+              kind: "thread",
+            },
             title: "Browser",
           },
           requestedBy: started.userId,
           requiredActor: "requester",
-          targetWorkspaceId: started.workspace.id,
         }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      ).rejects.toMatchObject({
+        code: "forbidden",
+      });
     });
   });
-
   it("refuses an ended Run's mutation before attempting its work", async ({ storeFixture }) => {
     const { startRunFixture, database, store } = storeFixture;
     const source = await startRunFixture("agent-admission-before-work");
     await database
       .updateTable("runs")
-      .set({ completedAt: new Date(), status: "completed" })
+      .set({
+        completedAt: new Date(),
+        status: "completed",
+      })
       .where("id", "=", source.run.id)
       .executeTakeFirstOrThrow();
     const admission = (action: "thread.delegate" | "thread.message") => ({
@@ -704,7 +841,6 @@ describeStore("PostgreSQL store", (it) => {
         action,
         bindingGeneration: source.bindingGeneration,
         environmentId: source.environmentId,
-        membershipGeneration: 1,
         requestedBy: source.userId,
         requestFingerprint: createHash("sha256").update(action).digest("hex"),
         requestId: randomUUID(),
@@ -712,7 +848,6 @@ describeStore("PostgreSQL store", (it) => {
         runnerBootId: source.runnerBootId,
         runnerId: source.runnerId,
         sourceThreadId: source.thread.id,
-        workspaceId: source.workspace.id,
       },
     });
     // The work alone would fail with not_found; the caller's authority is the answer.
@@ -726,10 +861,18 @@ describeStore("PostgreSQL store", (it) => {
           harnessInstanceId: source.harnessInstance.id,
           idempotencyKey: "agent-admission-before-work-delegate",
           modelSelection: testModelSelection,
-          origin: { kind: "run", parentRunId: source.run.id, parentThreadId: source.thread.id },
-          task: [{ text: "Never started", type: "text" }],
+          origin: {
+            kind: "run",
+            parentRunId: source.run.id,
+            parentThreadId: source.thread.id,
+          },
+          task: [
+            {
+              text: "Never started",
+              type: "text",
+            },
+          ],
           title: "Never started",
-          workspaceId: createId("workspace"),
         },
       }),
     ).rejects.toMatchObject({
@@ -740,11 +883,19 @@ describeStore("PostgreSQL store", (it) => {
       store.enqueueAdmittedThreadInput({
         admission: admission("thread.message"),
         input: {
-          content: [{ text: "Never sent", type: "text" }],
+          content: [
+            {
+              text: "Never sent",
+              type: "text",
+            },
+          ],
           idempotencyKey: "agent-admission-before-work-message",
           policy: "queue",
           requestedBy: source.userId,
-          source: { kind: "agent", runId: source.run.id },
+          source: {
+            kind: "agent",
+            runId: source.run.id,
+          },
           threadId: createId("thread"),
         },
       }),
@@ -753,13 +904,17 @@ describeStore("PostgreSQL store", (it) => {
       message: "The calling Run is no longer active",
     });
   });
-
   it("rejects every tool call after its execution terminates", async ({ storeFixture }) => {
     const { createRunFixture, enqueueHumanTrigger, store, bindAgentControlRun, database } =
       storeFixture;
     const fixture = await createRunFixture("agent-admission-authority-fence");
     const turn = await enqueueHumanTrigger({
-      content: [{ text: "Exercise agent authority", type: "text" }],
+      content: [
+        {
+          text: "Exercise agent authority",
+          type: "text",
+        },
+      ],
       idempotencyKey: "agent-admission-authority-fence-turn",
       requestedBy: fixture.userId,
       threadId: fixture.thread.id,
@@ -767,11 +922,9 @@ describeStore("PostgreSQL store", (it) => {
     const expectedBinding = {
       bindingGeneration: 1,
       environmentId: fixture.environmentId,
-      membershipGeneration: 1,
       requestedBy: fixture.userId,
-      runnerBootId: "boot-agent-control-agent-admission-authority-fence",
+      runnerBootId: "agent-admission-authority-fence",
       runnerId: fixture.runnerId,
-      workspaceId: fixture.workspace.id,
     };
     const admitted = {
       ...expectedBinding,
@@ -781,7 +934,6 @@ describeStore("PostgreSQL store", (it) => {
       runId: turn.run.id,
       sourceThreadId: fixture.thread.id,
     };
-
     await expect(store.admitRunToolCall(admitted)).rejects.toMatchObject({
       code: "forbidden",
     });
@@ -794,10 +946,12 @@ describeStore("PostgreSQL store", (it) => {
     });
     await database
       .updateTable("runs")
-      .set({ completedAt: new Date(), status: "completed" })
+      .set({
+        completedAt: new Date(),
+        status: "completed",
+      })
       .where("id", "=", turn.run.id)
       .executeTakeFirstOrThrow();
-
     await expect(store.admitRunToolCall(admitted)).rejects.toMatchObject({
       code: "forbidden",
     });
@@ -807,9 +961,10 @@ describeStore("PostgreSQL store", (it) => {
         requestFingerprint: createHash("sha256").update("new-after-terminal").digest("hex"),
         requestId: randomUUID(),
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it("rejects delegation below the durable maximum lineage depth", async ({ storeFixture }) => {
     const { createRunFixture, store, enqueueHumanTrigger, database } = storeFixture;
     const fixture = await createRunFixture("agent-admission-depth");
@@ -824,7 +979,6 @@ describeStore("PostgreSQL store", (it) => {
         modelSelection: testModelSelection,
         parentThreadId: parent.id,
         title: `Depth ${depth}`,
-        workspaceId: fixture.workspace.id,
       });
       parent = created.thread;
       lineage.push(parent);
@@ -833,7 +987,12 @@ describeStore("PostgreSQL store", (it) => {
     const blockedSource = lineage[runToolMaxDelegationDepth];
     if (!allowedSource || !blockedSource) throw new Error("Depth fixture is incomplete");
     const allowedTurn = await enqueueHumanTrigger({
-      content: [{ text: "Delegate to depth four", type: "text" }],
+      content: [
+        {
+          text: "Delegate to depth four",
+          type: "text",
+        },
+      ],
       idempotencyKey: "agent-depth-allowed-turn",
       requestedBy: fixture.userId,
       threadId: allowedSource.id,
@@ -841,7 +1000,9 @@ describeStore("PostgreSQL store", (it) => {
     await store.claimCommand(allowedTurn.command.id, "agent-depth-allowed-dispatcher");
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", allowedTurn.run.id)
       .executeTakeFirstOrThrow();
     const allowedInput = {
@@ -856,20 +1017,30 @@ describeStore("PostgreSQL store", (it) => {
         parentRunId: allowedTurn.run.id,
         parentThreadId: allowedSource.id,
       },
-      task: [{ text: "Create the deepest allowed child", type: "text" as const }],
+      task: [
+        {
+          text: "Create the deepest allowed child",
+          type: "text" as const,
+        },
+      ],
       title: "Depth four child",
-      workspaceId: fixture.workspace.id,
     };
     await expect(store.delegateThread(allowedInput)).resolves.toMatchObject({
-      thread: { parentThreadId: allowedSource.id },
+      thread: {
+        parentThreadId: allowedSource.id,
+      },
       wasDuplicate: false,
     });
     await expect(new OpensteerStore(database).delegateThread(allowedInput)).resolves.toMatchObject({
       wasDuplicate: true,
     });
-
     const blockedTurn = await enqueueHumanTrigger({
-      content: [{ text: "Attempt depth five", type: "text" }],
+      content: [
+        {
+          text: "Attempt depth five",
+          type: "text",
+        },
+      ],
       idempotencyKey: "agent-depth-blocked-turn",
       requestedBy: fixture.userId,
       threadId: blockedSource.id,
@@ -877,7 +1048,9 @@ describeStore("PostgreSQL store", (it) => {
     await store.claimCommand(blockedTurn.command.id, "agent-depth-blocked-dispatcher");
     await database
       .updateTable("runs")
-      .set({ status: "running" })
+      .set({
+        status: "running",
+      })
       .where("id", "=", blockedTurn.run.id)
       .executeTakeFirstOrThrow();
     await expect(
@@ -893,209 +1066,17 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ).rejects.toMatchObject({
       code: "conflict",
-      details: { maxDelegationDepth: runToolMaxDelegationDepth },
-    });
-  });
-
-  it("shares one complete Workspace and orders revocation before rejoining", async ({
-    storeFixture,
-  }) => {
-    const { store } = storeFixture;
-    await store.ensureDeployment({
-      canonicalOrigin: "https://sharing.test",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: testWorkspaceProfile,
-    });
-    const ownerId = await store.createUser("Workspace owner");
-    const clientId = await store.createUser("Client");
-    const strangerId = await store.createUser("Stranger");
-    const mainRunnerId = createId("runner");
-    const mainEnvironmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: ownerId,
-      environmentId: mainEnvironmentId,
-      name: "Shared Main runner",
-      runnerId: mainRunnerId,
-      tokenSuffix: "workspace-sharing-main",
-    });
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
+      details: {
+        maxDelegationDepth: runToolMaxDelegationDepth,
       },
-
-      createdBy: ownerId,
-      idempotencyKey: "workspace-sharing-workspace",
-      name: "Client delivery",
-      status: "ready",
-    });
-    const harness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: mainEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const { thread } = await store.createThread({
-      createdBy: ownerId,
-      environmentId: mainEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "workspace-sharing-thread",
-      modelSelection: testModelSelection,
-      title: "Shared thread",
-      workspaceId: workspace.id,
-    });
-
-    expect(await store.listWorkspacesForOwner(clientId)).toEqual([]);
-    const firstInvitation = await store.createWorkspaceInvitation({
-      createdBy: ownerId,
-      expiresAt: new Date(Date.now() + 60_000),
-      idempotencyKey: "workspace-sharing-invite-1",
-      intendedEmail: null,
-      requestFingerprint: "sha256:workspace-sharing-invite-1",
-      role: "collaborator",
-      selector: "workspace-sharing-selector-000001",
-      tokenHash: "sha256:workspace-sharing-verifier-1",
-      type: "link",
-      workspaceId: workspace.id,
-    });
-    expect(await store.listActiveWorkspaceInvitations(workspace.id, ownerId)).toEqual([
-      firstInvitation,
-    ]);
-    await expect(
-      store.listActiveWorkspaceInvitations(workspace.id, clientId),
-    ).rejects.toMatchObject({ code: "forbidden" });
-
-    const membership = await store.acceptWorkspaceInvitation({
-      selector: firstInvitation.selector,
-      tokenHash: "sha256:workspace-sharing-verifier-1",
-      userEmail: `${clientId}@test.invalid`,
-      userEmailVerified: true,
-      userId: clientId,
-    });
-    expect(membership).toMatchObject({ generation: 1, role: "collaborator", state: "active" });
-    expect((await store.listWorkspacesForOwner(clientId)).map((item) => item.id)).toEqual([
-      workspace.id,
-    ]);
-    expect((await store.listThreadsForOwner(clientId)).map((item) => item.id)).toEqual([thread.id]);
-    const clientThread = await store.createThread({
-      createdBy: clientId,
-      environmentId: mainEnvironmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: "workspace-sharing-client-thread",
-      modelSelection: testModelSelection,
-      title: "Client-created thread",
-      workspaceId: workspace.id,
-    });
-    expect(clientThread.thread).toMatchObject({
-      inheritsMain: false,
-      workspaceId: workspace.id,
-    });
-    await expect(
-      store.createThread({
-        createdBy: clientId,
-        environmentId: mainEnvironmentId,
-        harnessInstanceId: harness.id,
-        idempotencyKey: "workspace-sharing-client-thread",
-        modelSelection: testModelSelection,
-        title: "Client-created thread",
-        workspaceId: workspace.id,
-      }),
-    ).resolves.toMatchObject({
-      thread: { inheritsMain: false, workspaceId: workspace.id },
-    });
-    expect(await store.listWorkspacesForOwner(strangerId)).toEqual([]);
-
-    await expect(
-      store.changeWorkspaceMembership({
-        actorId: ownerId,
-        role: "collaborator",
-        targetUserId: ownerId,
-        workspaceId: workspace.id,
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    await store.changeWorkspaceMembership({
-      actorId: ownerId,
-      role: "owner",
-      targetUserId: clientId,
-      workspaceId: workspace.id,
-    });
-    await expect(
-      store.createThread({
-        createdBy: clientId,
-        environmentId: mainEnvironmentId,
-        harnessInstanceId: harness.id,
-        idempotencyKey: "workspace-sharing-client-owner-thread",
-        modelSelection: testModelSelection,
-        title: "Client owner thread",
-        workspaceId: workspace.id,
-      }),
-    ).resolves.toMatchObject({ thread: { inheritsMain: false } });
-    await store.changeWorkspaceMembership({
-      actorId: ownerId,
-      role: "collaborator",
-      targetUserId: clientId,
-      workspaceId: workspace.id,
-    });
-    const revoked = await store.changeWorkspaceMembership({
-      actorId: ownerId,
-      state: "revoked",
-      targetUserId: clientId,
-      workspaceId: workspace.id,
-    });
-    expect(revoked.membership.state).toBe("revoked");
-    expect(await store.listWorkspacesForOwner(clientId)).toEqual([]);
-
-    const secondInvitation = await store.createWorkspaceInvitation({
-      createdBy: ownerId,
-      expiresAt: new Date(Date.now() + 60_000),
-      idempotencyKey: "workspace-sharing-invite-2",
-      intendedEmail: null,
-      requestFingerprint: "sha256:workspace-sharing-invite-2",
-      role: "collaborator",
-      selector: "workspace-sharing-selector-000002",
-      tokenHash: "sha256:workspace-sharing-verifier-2",
-      type: "link",
-      workspaceId: workspace.id,
-    });
-    const reaccept = () =>
-      store.acceptWorkspaceInvitation({
-        selector: secondInvitation.selector,
-        tokenHash: "sha256:workspace-sharing-verifier-2",
-        userEmail: `${clientId}@test.invalid`,
-        userEmailVerified: true,
-        userId: clientId,
-      });
-    await expect(reaccept()).rejects.toMatchObject({ code: "conflict" });
-    const effects = await store.claimSecurityEffects({
-      leaseUntil: new Date(Date.now() + 60_000),
-      limit: 10,
-      now: new Date(),
-    });
-    expect(effects.map((effect) => effect.kind).sort()).toEqual([
-      "close-realtime",
-      "revoke-browser",
-      "revoke-credentials",
-      "revoke-mounts",
-      "revoke-triggers",
-      "stop-runs",
-    ]);
-    for (const effect of effects) await store.completeSecurityEffect(effect.id);
-    await expect(reaccept()).resolves.toMatchObject({
-      generation: revoked.membership.generation + 1,
-      state: "active",
     });
   });
 
   it("stores only coherent adapter definitions, runtime snapshots, and server authority", async ({
     storeFixture,
   }) => {
-    const { database } = storeFixture;
+    const { database, createRunFixture } = storeFixture;
+    await createRunFixture("adapter-boundary");
     const platform = new IntegrationPlatformStore(database);
     const installationId = createIntegrationId("installation");
     const contract = testOpenApiAdapterContract({
@@ -1107,7 +1088,9 @@ describeStore("PostgreSQL store", (it) => {
       id: installationId,
       manifest: contract.manifest,
       name: "test-adapter-boundary",
-      provenance: { maintainedBy: "test" },
+      provenance: {
+        maintainedBy: "test",
+      },
       sourceKind: "built-in" as const,
       status: "active" as const,
       title: "Adapter boundary",
@@ -1125,14 +1108,16 @@ describeStore("PostgreSQL store", (it) => {
       name: "default",
       status: "active" as const,
       statusDetail: null,
-      catalog: { definitions: {}, tools: [] },
+      catalog: {
+        definitions: {},
+        tools: [],
+      },
       transport: {
         adapter: "openapi" as const,
         definitionId: "test-adapter-boundary",
         type: "adapter" as const,
       },
     };
-
     await expect(
       platform.install({
         adapterSnapshot: null,
@@ -1141,16 +1126,23 @@ describeStore("PostgreSQL store", (it) => {
         requestId: "missing-adapter-snapshot",
         servers: [activeServer],
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     await expect(
       platform.install({
-        adapterSnapshot: { ...contract.adapterSnapshot, definitionId: "different-definition" },
+        adapterSnapshot: {
+          ...contract.adapterSnapshot,
+          definitionId: "different-definition",
+        },
         actorUserId: null,
         installation,
         requestId: "mismatched-adapter-snapshot",
         servers: [activeServer],
       }),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toMatchObject({
+      code: "bad_request",
+    });
     await expect(
       platform.install({
         adapterSnapshot: contract.adapterSnapshot,
@@ -1160,293 +1152,42 @@ describeStore("PostgreSQL store", (it) => {
         servers: [activeServer],
       }),
     ).resolves.toMatchObject({
-      installation: { id: installationId, status: "active" },
+      installation: {
+        id: installationId,
+        status: "active",
+      },
       requestEvents: [],
     });
-  });
-
-  it("avoids a deadlock when integration resolution discovers a new origin during withdrawal", async ({
-    storeFixture,
-  }) => {
-    const { startRunFixture, store, database, createProjectWorkspace, enqueueHumanTrigger } =
-      storeFixture;
-    const fixture = await startRunFixture("integration-access-widening");
-    const project = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-project",
-      kind: "project",
-      name: "Integration access widening",
-      status: "ready",
-    });
-    const { database: resolutionDatabase } = await ownTestDatabaseProducer(
-      storeFixture.databaseUrl,
-      async () => {
-        // A transaction retry may acquire another backend. Force that ordinary
-        // pool behavior so lock-wait observations cannot rely on PID reuse.
-        const database = new Kysely<DatabaseSchema>({
-          dialect: new PostgresDialect({
-            pool: new Pool({
-              connectionString: storeFixture.databaseUrl,
-              application_name: "opensteer-integration-test",
-              maxUses: 1,
-            }),
-          }),
-          plugins: [new CamelCasePlugin({ maintainNestedObjectKeys: true })],
-        });
-        return { database, close: () => database.destroy() };
-      },
-    );
-    const platform = new IntegrationPlatformStore(resolutionDatabase);
-    const installationId = createIntegrationId("installation");
-    const serverId = createIntegrationId("server");
-    const makeTool = (name: "create" | "get" | "list") => {
-      const inputSchema = { properties: {}, type: "object" };
-      return {
-        annotations: { readOnlyHint: name !== "create" },
-        connectionId: null,
-        description: `${name} records`,
-        id: createIntegrationId("tool"),
-        inputSchema,
-        name,
-        outputSchema: null,
-
-        status: "active" as const,
-        title: `${name} records`,
-      };
-    };
-    const tools = [makeTool("list"), makeTool("get"), makeTool("create")];
-    await platform.install({
-      adapterSnapshot: null,
-      actorUserId: fixture.userId,
-      installation: {
-        description: "Record operations",
-        id: installationId,
-        manifest: {},
-        name: "records-access-widening",
-        provenance: { maintainedBy: "test" },
-        sourceKind: "remote-mcp",
-        status: "active",
-        title: "Records",
-        trust: "administrator-approved",
-        version: "1",
-      },
-      requestId: "install-records-access-widening",
-      servers: [
-        {
-          connectionRequirement: { kind: "none" },
-          id: serverId,
-          name: "default",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: tools },
-          transport: {
-            headers: {},
-            type: "streamable-http",
-            url: "https://records-access-widening.example.test/mcp",
-          },
-        },
-      ],
-    });
-    const request = (access: "read" | "read-write", callId: string) =>
-      platform.requests.createIntegrationAccessRequest({
-        access,
-        callId,
-        installationId,
-        originatingRunId: fixture.run.id,
-        originatingThreadId: fixture.thread.id,
-        originatingWorkspaceId: fixture.workspace.id,
-        reason: `Need ${access} records access`,
-        requestedBy: fixture.userId,
-        requestedServerId: serverId,
-        targetWorkspaceId: project.id,
-      });
-    const resolve = (
-      requestId: ReturnType<typeof createId<"request">>,
-      access: "read" | "read-write",
-    ) =>
-      platform.requests.resolveIntegrationAccessRequest({
-        providerAuthorizations: {},
-        requestId,
-        resolvedBy: fixture.userId,
-        response: {
-          kind: "external",
-          value: {
-            access,
-            alias: "Records",
-            connectionId: null,
-            decision: "fulfilled",
-            isDefault: true,
-          },
-        },
-      });
-
-    const newWorkspace = await createProjectWorkspace(fixture.userId, "new-request-origin");
-    const { thread: newThread } = await store.createThread({
-      createdBy: fixture.userId,
-      environmentId: fixture.environmentId,
-      harnessInstanceId: fixture.harnessInstance.id,
-      idempotencyKey: "new-request-origin",
-      modelSelection: testModelSelection,
-      title: "New origin",
-      workspaceId: newWorkspace.id,
-    });
-    const turn = await enqueueHumanTrigger({
-      content: [{ type: "text", text: "Start" }],
-      idempotencyKey: "new-request-origin",
-      requestedBy: fixture.userId,
-      threadId: newThread.id,
-    });
-    const writing = await request("read-write", "origin-race-write");
-    const template = await database
-      .selectFrom("requests")
-      .selectAll()
-      .where("id", "=", writing.request.id)
-      .executeTakeFirstOrThrow();
-    const detail = await database
-      .selectFrom("integrationRequestDetails")
-      .selectAll()
-      .where("requestId", "=", writing.request.id)
-      .executeTakeFirstOrThrow();
-    const hold = async (workspaceId: WorkspaceId) => {
-      const held = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const done = database.transaction().execute(async (transaction) => {
-        await transaction
-          .selectFrom("workspaces")
-          .select("id")
-          .where("id", "=", workspaceId)
-          .forNoKeyUpdate()
-          .execute();
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      return async () => {
-        release.resolve();
-        await done;
-      };
-    };
-    const waitingQueries = async () =>
-      (
-        await sql<{
-          pid: number;
-          query: string;
-        }>`select pid, query from pg_stat_activity where datname = current_database() and application_name = 'opensteer-integration-test' and wait_event_type = 'Lock'`.execute(
-          database,
-        )
-      ).rows;
-    const releaseTarget = await hold(project.id);
-    const resolving = resolve(writing.request.id, "read-write");
-    void resolving.catch(() => undefined);
-    let releaseOrigin: (() => Promise<void>) | undefined;
-    let withdrawing: Promise<unknown> | undefined;
-    try {
-      await expect.poll(async () => (await waitingQueries()).length).toBe(1);
-      const initialWaiter = (await waitingQueries())[0]!;
-      const newId = createId("request");
-      await database.transaction().execute(async (transaction) => {
-        await transaction
-          .insertInto("requests")
-          .values({
-            ...template,
-            id: newId,
-            callId: "new-origin-read",
-            originatingRunId: turn.run.id,
-            originatingThreadId: newThread.id,
-            originatingWorkspaceId: newWorkspace.id,
-            payload: jsonValue({ ...writing.request.payload, access: "read" }),
-          })
-          .execute();
-        await transaction
-          .insertInto("integrationRequestDetails")
-          .values({ ...detail, requestId: newId, access: "read" })
-          .execute();
-      });
-      releaseOrigin = await hold(newWorkspace.id);
-      withdrawing = store.requests.withdraw({
-        requestId: newId,
-        threadId: newThread.id,
-        withdrawnBy: fixture.userId,
-      });
-      void withdrawing.catch(() => undefined);
-      await expect.poll(async () => (await waitingQueries()).length).toBe(2);
-      const expandedLockQuery = database
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "in", [fixture.workspace.id, project.id, newWorkspace.id])
-        .orderBy("id", "asc")
-        .forNoKeyUpdate()
-        .compile().sql;
-      await releaseTarget();
-      // Growth rolls back the original transaction. The retry must wait on its
-      // complete lock set, but it need not reacquire the same pooled backend.
-      await expect
-        .poll(
-          async () =>
-            (await waitingQueries()).filter(({ query }) => query === expandedLockQuery).length,
-        )
-        .toBe(1);
-      const expandedWaiter = (await waitingQueries()).find(
-        ({ query }) => query === expandedLockQuery,
-      )!;
-      expect(expandedWaiter.pid).not.toBe(initialWaiter.pid);
-    } finally {
-      await releaseTarget();
-      await releaseOrigin?.();
-      await Promise.allSettled([resolving, ...(withdrawing ? [withdrawing] : [])]);
-    }
-    const results = await Promise.allSettled([resolving, withdrawing!]);
-    expect(results[0]).toMatchObject({ status: "fulfilled" });
-    for (const result of results)
-      if (result.status === "rejected") expect(result.reason).toMatchObject({ code: "conflict" });
   });
 
   it("grants read operations and widens the same grant while satisfying a pending read ask", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store, database } = storeFixture;
-    const fixture = await startRunFixture("integration-access-widening");
-    const project = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
+    const {
+      startRunFixture,
 
-      createdBy: fixture.userId,
-      idempotencyKey: "workspace-integration-access-widening-project",
-      kind: "project",
-      name: "Integration access widening",
-      status: "ready",
-    });
+      database,
+    } = storeFixture;
+    const fixture = await startRunFixture("integration-access-widening");
+
     const platform = new IntegrationPlatformStore(database);
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const makeTool = (name: "create" | "get" | "list") => {
-      const inputSchema = { properties: {}, type: "object" };
+      const inputSchema = {
+        properties: {},
+        type: "object",
+      };
       return {
-        annotations: { readOnlyHint: name !== "create" },
+        annotations: {
+          readOnlyHint: name !== "create",
+        },
         connectionId: null,
         description: `${name} records`,
         id: createIntegrationId("tool"),
         inputSchema,
         name,
         outputSchema: null,
-
         status: "active" as const,
         title: `${name} records`,
       };
@@ -1460,7 +1201,9 @@ describeStore("PostgreSQL store", (it) => {
         id: installationId,
         manifest: {},
         name: "records-access-widening",
-        provenance: { maintainedBy: "test" },
+        provenance: {
+          maintainedBy: "test",
+        },
         sourceKind: "remote-mcp",
         status: "active",
         title: "Records",
@@ -1470,12 +1213,17 @@ describeStore("PostgreSQL store", (it) => {
       requestId: "install-records-access-widening",
       servers: [
         {
-          connectionRequirement: { kind: "none" },
+          connectionRequirement: {
+            kind: "none",
+          },
           id: serverId,
           name: "default",
           status: "active",
           statusDetail: null,
-          catalog: { definitions: {}, tools: tools },
+          catalog: {
+            definitions: {},
+            tools: tools,
+          },
           transport: {
             headers: {},
             type: "streamable-http",
@@ -1491,11 +1239,9 @@ describeStore("PostgreSQL store", (it) => {
         installationId,
         originatingRunId: fixture.run.id,
         originatingThreadId: fixture.thread.id,
-        originatingWorkspaceId: fixture.workspace.id,
         reason: `Need ${access} records access`,
         requestedBy: fixture.userId,
         requestedServerId: serverId,
-        targetWorkspaceId: project.id,
       });
     const resolve = (
       requestId: ReturnType<typeof createId<"request">>,
@@ -1516,22 +1262,29 @@ describeStore("PostgreSQL store", (it) => {
           },
         },
       });
-
     const initial = await request("read", "records-read-initial");
     const readResolution = await resolve(initial.request.id, "read");
-    expect(readResolution.grant).toMatchObject({ access: "read" });
+    expect(readResolution.grant).toMatchObject({
+      access: "read",
+    });
     await expect(
       platform.listCallableTools({
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: project.id,
       }),
     ).resolves.toEqual([
-      expect.objectContaining({ tool: expect.objectContaining({ name: "get" }) }),
-      expect.objectContaining({ tool: expect.objectContaining({ name: "list" }) }),
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          name: "get",
+        }),
+      }),
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          name: "list",
+        }),
+      }),
     ]);
-
     const pendingRead = await request("read", "records-read-pending");
     const widening = await request("read-write", "records-write-widening");
     const widened = await resolve(widening.request.id, "read-write");
@@ -1547,312 +1300,24 @@ describeStore("PostgreSQL store", (it) => {
         ownerUserId: fixture.userId,
         threadId: fixture.thread.id,
         providerAuthorizations: {},
-        workspaceId: project.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({ tool: expect.objectContaining({ name: "create" }) }),
-      expect.objectContaining({ tool: expect.objectContaining({ name: "get" }) }),
-      expect.objectContaining({ tool: expect.objectContaining({ name: "list" }) }),
-    ]);
-  });
-
-  it("derives all user-scoped integration access in Main and keeps project access explicit", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("integration-main-inheritance");
-    const project = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: fixture.userId,
-      idempotencyKey: "integration-main-inheritance-project",
-      kind: "project",
-      name: "Mail specialist",
-      status: "ready",
-    });
-    const platform = new IntegrationPlatformStore(database);
-    const installationId = createIntegrationId("installation");
-    const gmailServerId = createIntegrationId("server");
-    const localServerId = createIntegrationId("server");
-    const readToolId = createIntegrationId("tool");
-    const sendToolId = createIntegrationId("tool");
-    const localToolId = createIntegrationId("tool");
-    const tool = (id: typeof readToolId, name: string) => {
-      const inputSchema = { properties: {}, type: "object" };
-      return {
-        annotations: { readOnlyHint: name === "search" || name === "format" },
-        connectionId: null,
-        description: name,
-        id,
-        inputSchema,
-        name,
-        outputSchema: null,
-
-        status: "active" as const,
-        title: name,
-      };
-    };
-    const readTool = tool(readToolId, "search");
-    const sendTool = tool(sendToolId, "send");
-    const localTool = tool(localToolId, "format");
-    const adapterContract = testOpenApiAdapterContract({
-      definitionId: "test-mail",
-      provider: "google",
-    });
-    await platform.install({
-      adapterSnapshot: adapterContract.adapterSnapshot,
-      actorUserId: fixture.userId,
-      installation: {
-        description: "Mail tools",
-        id: installationId,
-        manifest: adapterContract.manifest,
-        name: "test-main-mail",
-        provenance: { maintainedBy: "test" },
-        sourceKind: "built-in",
-        status: "active",
-        title: "Mail",
-        trust: "built-in",
-        version: "1",
-      },
-      requestId: "install-test-main-mail",
-      servers: [
-        {
-          connectionRequirement: {
-            definitionId: "test-mail",
-            kind: "provider",
-            provider: "google",
-            providerApplicationRequired: true,
-          },
-          id: gmailServerId,
-          name: "gmail",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [readTool, sendTool] },
-          transport: { adapter: "openapi", definitionId: "test-mail", type: "adapter" },
-        },
-        {
-          connectionRequirement: { kind: "none" },
-          id: localServerId,
-          name: "local",
-          status: "active",
-          statusDetail: null,
-          catalog: { definitions: {}, tools: [localTool] },
-          transport: { adapter: "openapi", definitionId: "test-mail", type: "adapter" },
-        },
-      ],
-    });
-    const providerApplicationId = createIntegrationId("providerApplication");
-    await database
-      .insertInto("integrationProviderApplications")
-      .values({
-        clientId: "test-google-client",
-        createdBy: fixture.userId,
-        displayName: "Test Google",
-        encryptedSecrets: Buffer.from("test-encrypted-provider-secret"),
-        encryptionKeyVersion: 1,
-        id: providerApplicationId,
-        provider: "google",
-        revision: 1,
-        status: "active",
-        updatedBy: fixture.userId,
-      })
-      .executeTakeFirstOrThrow();
-    const providerAuthorizations = {
-      google: {
-        availableSources: [
-          {
-            callbackUrl: "https://host.example.test/v1/integrations/oauth/callback/google",
-            kind: "deployment-oauth" as const,
-            providerApplicationId,
-            providerApplicationRevision: 1,
-          },
-        ],
-        code: "READY" as const,
-        detail: "Using the deployment OAuth application.",
-        hostedOAuthStatus: "unsupported" as const,
-        selectedSource: {
-          callbackUrl: "https://host.example.test/v1/integrations/oauth/callback/google",
-          kind: "deployment-oauth" as const,
-          providerApplicationId,
-          providerApplicationRevision: 1,
-        },
-        selectedSourceKind: "deployment-oauth" as const,
-      },
-    };
-
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: fixture.workspace.id,
       }),
     ).resolves.toEqual([
       expect.objectContaining({
-        grant: expect.objectContaining({ source: "main-inherited" }),
-        tool: expect.objectContaining({ id: localToolId }),
-      }),
-    ]);
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: project.id,
-      }),
-    ).resolves.toEqual([]);
-
-    const personalConnectionId = createChannelId("connection");
-    const workConnectionId = createChannelId("connection");
-    for (const connection of [
-      {
-        displayName: "Personal Gmail",
-        externalIdentityId: "google-personal",
-        id: personalConnectionId,
-      },
-      {
-        displayName: "Work Gmail",
-        externalIdentityId: "google-work",
-        id: workConnectionId,
-      },
-    ] as const) {
-      await database
-        .insertInto("integrationConnections")
-        .values({
-          accountIdentifier: null,
-          applicationSource: sql`${JSON.stringify({
-            callbackUrl: "https://host.example.test/v1/integrations/oauth/callback/google",
-            kind: "deployment-oauth",
-            providerApplicationId,
-            providerApplicationRevision: 1,
-          })}::jsonb`,
-          authMethodId: "oauth",
-          authorizationDigest: "a".repeat(43),
-          capabilities: sql`'[]'::jsonb`,
-          runnerId: null,
-          connectionKind: "provider-account",
-          connectionMethod: "managed-oauth",
-          credentialId: null,
-          displayName: connection.displayName,
-          externalIdentityId: connection.externalIdentityId,
-          externalTenantId: null,
-          grantedScopes: sql`'[]'::jsonb`,
-          id: connection.id,
-          integrationDefinitionId: "test-mail",
-          integrationServerId: null,
-          ownerUserId: fixture.userId,
-          provider: "google",
-          providerApplicationId,
-          status: "connected",
-          statusDetail: null,
-          transportKind: null,
-          updatedAt: new Date(),
-        })
-        .executeTakeFirstOrThrow();
-    }
-    const firstMainTools = await platform.listCallableTools({
-      ownerUserId: fixture.userId,
-      threadId: fixture.thread.id,
-      providerAuthorizations,
-      workspaceId: fixture.workspace.id,
-    });
-    expect(
-      firstMainTools.map(({ grant, tool: candidate }) => ({
-        alias: grant.alias,
-        id: grant.id,
-        tool: candidate.name,
-      })),
-    ).toEqual([
-      expect.objectContaining({ alias: "Personal Gmail", tool: "search" }),
-      expect.objectContaining({ alias: "Work Gmail", tool: "search" }),
-      expect.objectContaining({ alias: "Personal Gmail", tool: "send" }),
-      expect.objectContaining({ alias: "Work Gmail", tool: "send" }),
-      expect.objectContaining({ alias: "Mail", tool: "format" }),
-    ]);
-    expect(
-      (
-        await platform.listCallableTools({
-          ownerUserId: fixture.userId,
-          threadId: fixture.thread.id,
-          providerAuthorizations,
-          workspaceId: fixture.workspace.id,
-        })
-      ).map(({ grant }) => grant.id),
-    ).toEqual(firstMainTools.map(({ grant }) => grant.id));
-
-    const projectGrant = await platform.createGrant({
-      access: "read",
-      alias: "Personal only",
-      connectionId: personalConnectionId,
-      createdBy: fixture.userId,
-      installationId,
-      isDefault: true,
-      ownerUserId: fixture.userId,
-      providerAuthorizations,
-      workspaceId: project.id,
-    });
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: project.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        grant: expect.objectContaining({
-          alias: "Personal only",
-          connectionId: personalConnectionId,
+        tool: expect.objectContaining({
+          name: "create",
         }),
-        tool: expect.objectContaining({ id: readToolId }),
+      }),
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          name: "get",
+        }),
+      }),
+      expect.objectContaining({
+        tool: expect.objectContaining({
+          name: "list",
+        }),
       }),
     ]);
-    await platform.revokeGrant({
-      grantId: projectGrant.id,
-      ownerUserId: fixture.userId,
-      requestId: "revoke-project-main-inheritance-grant",
-      workspaceId: project.id,
-    });
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: project.id,
-      }),
-    ).resolves.toEqual([]);
-
-    await database
-      .updateTable("integrationProviderApplications")
-      .set({ status: "disabled", updatedAt: new Date() })
-      .where("id", "=", providerApplicationId)
-      .executeTakeFirstOrThrow();
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: fixture.workspace.id,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({ tool: expect.objectContaining({ id: localToolId }) }),
-    ]);
-    await expect(
-      platform.listCallableTools({
-        ownerUserId: fixture.userId,
-        threadId: fixture.thread.id,
-        providerAuthorizations,
-        workspaceId: project.id,
-      }),
-    ).resolves.toEqual([]);
   });
 
   describe("machine access", () => {
@@ -1865,11 +1330,14 @@ describeStore("PostgreSQL store", (it) => {
         readonly tokenSuffix: string;
       },
     ): Promise<RunnerId> {
-      const { store, database } = storeFixture;
+      const { store, database, enablePersonalRemoteAccess } = storeFixture;
+      await enablePersonalRemoteAccess();
       const runnerId = createId("runner");
       const environmentId = createId("environment");
       await enrollTestRunner(store, {
         createdBy: input.ownerId,
+        allowedModules: personalReachableGrant,
+        modules: {},
         environmentId,
         name: input.name,
         runnerId,
@@ -1882,21 +1350,27 @@ describeStore("PostgreSQL store", (it) => {
         .updateTable("runners")
         .set({
           moduleDescriptors: sql`module_descriptors || ${JSON.stringify({
-            shell: { hostPublicKey: `ssh-ed25519 ${"A".repeat(68)}`, platform: "linux" },
+            shell: {
+              hostPublicKey: `ssh-ed25519 ${"A".repeat(68)}`,
+              platform: "linux",
+            },
           })}::jsonb`,
         })
         .where("id", "=", runnerId)
         .executeTakeFirstOrThrow();
       return runnerId;
     }
-
     const openPolicy = {
       commands: true,
       forwarding: false,
       reach: "owner" as const,
-      shares: [{ mode: "read" as const, path: "/srv/data" }],
+      shares: [
+        {
+          mode: "read" as const,
+          path: "/srv/data",
+        },
+      ],
     };
-
     async function reserve(
       storeFixture: StoreFixture,
       input: {
@@ -1922,10 +1396,9 @@ describeStore("PostgreSQL store", (it) => {
       });
       return sessionId;
     }
-
     it("updates full access only on a non-revoked shell descriptor", async ({ storeFixture }) => {
       const { store, database } = storeFixture;
-      const ownerId = await store.createUser("Full access owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Mac",
@@ -1943,30 +1416,38 @@ describeStore("PostgreSQL store", (it) => {
       expect(await store.setRunnerShellFullDiskAccess(runnerId, false)).toBe(true);
       await database
         .updateTable("runners")
-        .set({ revokedAt: new Date() })
+        .set({
+          revokedAt: new Date(),
+        })
         .where("id", "=", runnerId)
         .execute();
       expect(await store.setRunnerShellFullDiskAccess(runnerId, true)).toBe(false);
       await database
         .updateTable("runners")
-        .set({ revokedAt: null, moduleDescriptors: sql`module_descriptors - 'shell'` })
+        .set({
+          revokedAt: null,
+          moduleDescriptors: sql`module_descriptors - 'shell'`,
+        })
         .where("id", "=", runnerId)
         .execute();
       expect(await store.setRunnerShellFullDiskAccess(runnerId, true)).toBe(false);
       expect(await store.setRunnerShellFullDiskAccess(createId("runner"), true)).toBe(false);
     });
-
     it("writes a policy only over the revision the editor read", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
         tokenSuffix: "cas",
       });
-
       await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({
-        policy: { commands: false, forwarding: false, reach: "nobody", shares: [] },
+        policy: {
+          commands: false,
+          forwarding: false,
+          reach: "nobody",
+          shares: [],
+        },
         revision: 1,
       });
       await expect(
@@ -1977,17 +1458,27 @@ describeStore("PostgreSQL store", (it) => {
           policy: openPolicy,
           runnerId,
         }),
-      ).resolves.toEqual({ outcome: "updated", replayed: false, revision: 2 });
+      ).resolves.toEqual({
+        outcome: "updated",
+        replayed: false,
+        revision: 2,
+      });
       // A second editor still holding revision 1 changes nothing at all.
       await expect(
         store.updateMachineAccessPolicy({
           allowDeployment: false,
           expectedRevision: 1,
           ownerId,
-          policy: { ...openPolicy, commands: false },
+          policy: {
+            ...openPolicy,
+            commands: false,
+          },
           runnerId,
         }),
-      ).resolves.toEqual({ outcome: "conflict", replayed: false });
+      ).resolves.toEqual({
+        outcome: "conflict",
+        replayed: false,
+      });
       await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({
         policy: openPolicy,
         revision: 2,
@@ -2001,14 +1492,17 @@ describeStore("PostgreSQL store", (it) => {
           policy: openPolicy,
           runnerId,
         }),
-      ).resolves.toEqual({ outcome: "updated", replayed: false, revision: 3 });
+      ).resolves.toEqual({
+        outcome: "updated",
+        replayed: false,
+        revision: 3,
+      });
     });
-
     it("replays a recorded policy write instead of bumping a second revision", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
@@ -2017,12 +1511,14 @@ describeStore("PostgreSQL store", (it) => {
       const write = {
         allowDeployment: false,
         expectedRevision: 1,
-        idempotency: { key: "save-access-1", requestedBy: ownerId },
+        idempotency: {
+          key: "save-access-1",
+          requestedBy: ownerId,
+        },
         ownerId,
         policy: openPolicy,
         runnerId,
       };
-
       await expect(store.updateMachineAccessPolicy(write)).resolves.toEqual({
         outcome: "updated",
         replayed: false,
@@ -2043,8 +1539,14 @@ describeStore("PostgreSQL store", (it) => {
       // A recorded conflict replays as a conflict, not as a late success.
       const stale = {
         ...write,
-        idempotency: { key: "save-access-2", requestedBy: ownerId },
-        policy: { ...openPolicy, commands: false },
+        idempotency: {
+          key: "save-access-2",
+          requestedBy: ownerId,
+        },
+        policy: {
+          ...openPolicy,
+          commands: false,
+        },
       };
       await expect(store.updateMachineAccessPolicy(stale)).resolves.toEqual({
         outcome: "conflict",
@@ -2057,15 +1559,19 @@ describeStore("PostgreSQL store", (it) => {
       // One person's key never answers another's, and never answers a
       // different request of their own.
       await expect(
-        store.updateMachineAccessPolicy({ ...write, expectedRevision: 2 }),
-      ).rejects.toMatchObject({ code: "conflict" });
+        store.updateMachineAccessPolicy({
+          ...write,
+          expectedRevision: 2,
+        }),
+      ).rejects.toMatchObject({
+        code: "conflict",
+      });
     });
-
     it("replays a recorded Stop rather than reporting that nothing ended", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2082,105 +1588,80 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: target,
       });
       const stop = {
-        idempotency: { key: "stop-1", requestedBy: ownerId },
+        idempotency: {
+          key: "stop-1",
+          requestedBy: ownerId,
+        },
         reason: "stopped-by-owner" as const,
         sessionId,
       };
-
-      await expect(store.endShellSession({ ...stop, bytesIn: 9, bytesOut: 3 })).resolves.toEqual({
+      await expect(
+        store.endShellSession({
+          ...stop,
+          bytesIn: 9,
+          bytesOut: 3,
+        }),
+      ).resolves.toEqual({
         ended: true,
       });
-      await expect(store.endShellSession(stop)).resolves.toEqual({ ended: true });
+      await expect(store.endShellSession(stop)).resolves.toEqual({
+        ended: true,
+      });
       // The replay wrote nothing: the reason and the counters are the first
       // call's, not a second ending's zeroes.
       const [row] = await store
-        .listShellHistory({ limit: 1, runnerId: target })
+        .listShellHistory({
+          limit: 1,
+          runnerId: target,
+        })
         .then((page) => page.sessions);
-      expect(row).toMatchObject({ bytesIn: 9, bytesOut: 3, endReason: "stopped-by-owner" });
+      expect(row).toMatchObject({
+        bytesIn: 9,
+        bytesOut: 3,
+        endReason: "stopped-by-owner",
+      });
       // A key that named a different session is a mistake, not an answer.
       await expect(
         store.endShellSession({
           ...stop,
           sessionId: ShellSessionIdSchema.parse(`shs_${randomUUID()}`),
         }),
-      ).rejects.toMatchObject({ code: "conflict" });
-    });
-
-    it("refuses owner reach on a computer that has no owner", async ({ storeFixture }) => {
-      const { store, database } = storeFixture;
-      const adminId = await store.createUser("Administrator");
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", adminId)
-        .executeTakeFirstOrThrow();
-      // A server Deployment's own main computer: the Deployment owns it and
-      // nobody in particular does, so "My agents" would name nobody.
-      const runnerId = await shellMachine(storeFixture, {
-        name: "Build box",
-        ownerId: adminId,
-        runnerKind: "main",
-        tokenSuffix: "owner-reach-none",
-      });
-
-      await expect(store.effectiveMachineOwner(runnerId)).resolves.toEqual({
-        effectiveOwner: null,
-        ownerKind: "deployment",
-      });
-      await expect(
-        store.updateMachineAccessPolicy({
-          allowDeployment: true,
-          expectedRevision: 1,
-          ownerId: adminId,
-          policy: { ...openPolicy, reach: "owner" },
-          runnerId,
-        }),
       ).rejects.toMatchObject({
-        code: "bad_request",
-        message:
-          "This computer belongs to the Deployment rather than to a person, so it cannot be limited to its owner's agents.",
+        code: "conflict",
       });
-      // Nothing was written, so the revision did not move either.
-      await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({
-        revision: 1,
-      });
-      await expect(
-        store.updateMachineAccessPolicy({
-          allowDeployment: true,
-          expectedRevision: 1,
-          ownerId: adminId,
-          policy: { ...openPolicy, reach: "deployment" },
-          runnerId,
-        }),
-      ).resolves.toMatchObject({ outcome: "updated" });
     });
 
     it("reports effective owners for a page of computers in one read", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const mine = await shellMachine(storeFixture, {
         ownerId,
         name: "Mine",
         tokenSuffix: "owners-mine",
       });
       const theirs = createId("runner");
-
       await expect(store.effectiveMachineOwners([mine, theirs])).resolves.toEqual(
-        new Map([[mine, { effectiveOwner: ownerId, ownerKind: "user" }]]),
+        new Map([
+          [
+            mine,
+            {
+              effectiveOwner: ownerId,
+              ownerKind: "user",
+            },
+          ],
+        ]),
       );
       await expect(store.effectiveMachineOwners([])).resolves.toEqual(new Map());
     });
-
     it("refuses a policy write from somebody else's account", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const strangerId = await store.createUser("Stranger");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
         tokenSuffix: "cas-owner",
       });
-
       await expect(
         store.updateMachineAccessPolicy({
           allowDeployment: false,
@@ -2189,44 +1670,24 @@ describeStore("PostgreSQL store", (it) => {
           policy: openPolicy,
           runnerId,
         }),
-      ).rejects.toMatchObject({ code: "not_found" });
+      ).rejects.toMatchObject({
+        code: "not_found",
+      });
     });
-
-    it("names the Personal Deployment owner as the Main machine's owner", async ({
-      storeFixture,
-    }) => {
-      const { store, database } = storeFixture;
-      const ownerId = await store.createUser("Personal owner");
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", ownerId)
-        .executeTakeFirstOrThrow();
-      await store.ensureDeployment({
-        canonicalOrigin: "http://127.0.0.1:4310",
-        deploymentId: createId("deployment"),
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
-        hostInstanceId: createId("hostInstance"),
-      });
-      const mainId = await shellMachine(storeFixture, {
-        name: "This Mac",
-        ownerId,
-        runnerKind: "main",
-        tokenSuffix: "personal-main",
-      });
-
-      await expect(store.effectiveMachineOwner(mainId)).resolves.toEqual({
-        effectiveOwner: ownerId,
+    it("names the personal owner as the hosting computer's owner", async ({ storeFixture }) => {
+      const { store, createRunFixture } = storeFixture;
+      const f = await createRunFixture("machine-owner");
+      await expect(store.effectiveMachineOwner(f.runnerId)).resolves.toEqual({
+        effectiveOwner: f.userId,
         ownerKind: "deployment",
       });
       await expect(store.effectiveMachineOwner(createId("runner"))).resolves.toBeNull();
     });
-
     it("lists only the machines whose reach admits the caller, never itself", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const strangerId = await store.createUser("Stranger");
       const closed = await shellMachine(storeFixture, {
         ownerId,
@@ -2252,6 +1713,8 @@ describeStore("PostgreSQL store", (it) => {
       const noModule = createId("runner");
       await enrollTestRunner(store, {
         createdBy: ownerId,
+        allowedModules: personalReachableGrant,
+        modules: {},
         environmentId: createId("environment"),
         name: "No shell",
         runnerId: noModule,
@@ -2269,12 +1732,16 @@ describeStore("PostgreSQL store", (it) => {
             allowDeployment: false,
             expectedRevision: 1,
             ownerId,
-            policy: { ...openPolicy, reach },
+            policy: {
+              ...openPolicy,
+              reach,
+            },
             runnerId,
           }),
-        ).resolves.toMatchObject({ outcome: "updated" });
+        ).resolves.toMatchObject({
+          outcome: "updated",
+        });
       }
-
       const reachable = await store.listReachableMachines(ownerId, self);
       expect(reachable.map((machine) => machine.runnerId).sort()).toEqual([mine, shared].sort());
       expect(reachable.some((machine) => machine.runnerId === self)).toBe(false);
@@ -2283,23 +1750,28 @@ describeStore("PostgreSQL store", (it) => {
         forwarding: false,
         name: "Mine",
         platform: "linux",
-        shares: [{ mode: "read", path: "/srv/data" }],
+        shares: [
+          {
+            mode: "read",
+            path: "/srv/data",
+          },
+        ],
       });
       // A stranger reaches the Deployment-wide machines it is not one of.
       await expect(store.listReachableMachines(strangerId, self)).resolves.toMatchObject([
-        { runnerId: shared },
+        {
+          runnerId: shared,
+        },
       ]);
       expect(reachable.some((machine) => machine.runnerId === closed)).toBe(false);
-
       await store.revokeRunner(shared, ownerId);
       await expect(store.listReachableMachines(strangerId, self)).resolves.toEqual([]);
     });
-
     it("lists reachable machines by name so the budget keeps a predictable set", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const self = await shellMachine(storeFixture, {
         ownerId,
         name: "Caller",
@@ -2317,23 +1789,24 @@ describeStore("PostgreSQL store", (it) => {
           allowDeployment: false,
           expectedRevision: 1,
           ownerId,
-          policy: { ...openPolicy, reach: "owner" },
+          policy: {
+            ...openPolicy,
+            reach: "owner",
+          },
           runnerId,
         });
       }
-
       await expect(
         store
           .listReachableMachines(ownerId, self)
           .then((machines) => machines.map((machine) => machine.name)),
       ).resolves.toEqual(["Alpha", "Mike", "Zulu"]);
     });
-
     it("resolves a connect target whatever its reach says, and forgets a revoked one", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
@@ -2344,6 +1817,8 @@ describeStore("PostgreSQL store", (it) => {
         createdBy: ownerId,
         environmentId: createId("environment"),
         name: "Old computer",
+        allowedModules: personalReachableGrant,
+        modules: {},
         runnerId: noModule,
         runnerKind: "local",
         tokenSuffix: "connect-no-module",
@@ -2353,15 +1828,21 @@ describeStore("PostgreSQL store", (it) => {
       // descriptor to say so in a sentence.
       await expect(store.getMachineAccessTarget(target)).resolves.toMatchObject({
         name: "Laptop",
-        policy: { commands: false, forwarding: false, reach: "nobody", shares: [] },
+        policy: {
+          commands: false,
+          forwarding: false,
+          reach: "nobody",
+          shares: [],
+        },
         revision: 1,
-        shell: { platform: "linux" },
+        shell: {
+          platform: "linux",
+        },
       });
       await expect(store.getMachineAccessTarget(noModule)).resolves.toMatchObject({
         name: "Old computer",
         shell: null,
       });
-
       await store.updateMachineAccessPolicy({
         allowDeployment: false,
         expectedRevision: 1,
@@ -2369,18 +1850,18 @@ describeStore("PostgreSQL store", (it) => {
         policy: openPolicy,
         runnerId: target,
       });
-      await expect(store.getMachineAccessTarget(target)).resolves.toMatchObject({ revision: 2 });
-
+      await expect(store.getMachineAccessTarget(target)).resolves.toMatchObject({
+        revision: 2,
+      });
       await store.revokeRunner(target, ownerId);
       await expect(store.getMachineAccessTarget(target)).resolves.toBeNull();
       await expect(store.getMachineAccessTarget(createId("runner"))).resolves.toBeNull();
     });
-
     it("ends a session once, writing final counters and keeping the first reason", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2396,7 +1877,6 @@ describeStore("PostgreSQL store", (it) => {
         ownerId,
         runnerId: target,
       });
-
       await expect(store.activateShellSession(sessionId)).resolves.toBe(true);
       await expect(store.activateShellSession(sessionId)).resolves.toBe(false);
       await expect(
@@ -2406,13 +1886,24 @@ describeStore("PostgreSQL store", (it) => {
           reason: "client-closed",
           sessionId,
         }),
-      ).resolves.toEqual({ ended: true });
+      ).resolves.toEqual({
+        ended: true,
+      });
       // A duplicate call transitions nothing and changes neither reason nor counters.
       await expect(
-        store.endShellSession({ bytesIn: 5, bytesOut: 1, reason: "host-shutdown", sessionId }),
-      ).resolves.toEqual({ ended: false });
-
-      const page = await store.listShellHistory({ limit: 10, runnerId: target });
+        store.endShellSession({
+          bytesIn: 5,
+          bytesOut: 1,
+          reason: "host-shutdown",
+          sessionId,
+        }),
+      ).resolves.toEqual({
+        ended: false,
+      });
+      const page = await store.listShellHistory({
+        limit: 10,
+        runnerId: target,
+      });
       expect(page.sessions).toMatchObject([
         {
           bytesIn: 10,
@@ -2428,12 +1919,13 @@ describeStore("PostgreSQL store", (it) => {
           reason: "run-ended",
           sessionId: ShellSessionIdSchema.parse(`shs_${randomUUID()}`),
         }),
-      ).resolves.toEqual({ ended: false });
+      ).resolves.toEqual({
+        ended: false,
+      });
     });
-
     it("ends every open session at Host startup", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2460,11 +1952,16 @@ describeStore("PostgreSQL store", (it) => {
         ownerId,
         runnerId: target,
       });
-      await store.endShellSession({ reason: "client-closed", sessionId: closed });
-
+      await store.endShellSession({
+        reason: "client-closed",
+        sessionId: closed,
+      });
       await expect(store.endAllOpenShellSessions("host-shutdown")).resolves.toBe(2);
       await expect(store.listActiveShellSessions(target)).resolves.toEqual([]);
-      const page = await store.listShellHistory({ limit: 10, runnerId: target });
+      const page = await store.listShellHistory({
+        limit: 10,
+        runnerId: target,
+      });
       expect(Object.fromEntries(page.sessions.map((entry) => [entry.id, entry.endReason]))).toEqual(
         {
           [pending]: "host-shutdown",
@@ -2474,12 +1971,11 @@ describeStore("PostgreSQL store", (it) => {
       );
       await expect(store.endAllOpenShellSessions("host-shutdown")).resolves.toBe(0);
     });
-
     it("caps a session's audit at a thousand requests plus one marker", async ({
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2497,33 +1993,52 @@ describeStore("PostgreSQL store", (it) => {
       });
       const at = new Date();
       const exec = (channel: number) =>
-        ({ at, event: { channel, command: "echo", kind: "exec" } }) as const;
-
+        ({
+          at,
+          event: {
+            channel,
+            command: "echo",
+            kind: "exec",
+          },
+        }) as const;
       await expect(
         store.appendShellEvents(
           sessionId,
-          Array.from({ length: 990 }, (_, index) => exec(index)),
+          Array.from(
+            {
+              length: 990,
+            },
+            (_, index) => exec(index),
+          ),
         ),
       ).resolves.toBe(990);
       await expect(
         store.appendShellEvents(
           sessionId,
-          Array.from({ length: 20 }, (_, index) => exec(1_000 + index)),
+          Array.from(
+            {
+              length: 20,
+            },
+            (_, index) => exec(1_000 + index),
+          ),
         ),
       ).resolves.toBe(10);
       // Everything after the marker is dropped rather than stored.
       await expect(store.appendShellEvents(sessionId, [exec(9_999)])).resolves.toBe(0);
-
-      const page = await store.listShellHistory({ limit: 10, runnerId: target });
+      const page = await store.listShellHistory({
+        limit: 10,
+        runnerId: target,
+      });
       const events = page.sessions[0]?.events ?? [];
       expect(events).toHaveLength(1_001);
-      expect(events.at(-1)).toEqual({ kind: "truncated" });
+      expect(events.at(-1)).toEqual({
+        kind: "truncated",
+      });
       expect(events.filter((event) => event.kind === "truncated")).toHaveLength(1);
     });
-
     it("pages history newest first and stops at the last row", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2546,8 +2061,10 @@ describeStore("PostgreSQL store", (it) => {
           }),
         );
       }
-
-      const first = await store.listShellHistory({ limit: 2, runnerId: target });
+      const first = await store.listShellHistory({
+        limit: 2,
+        runnerId: target,
+      });
       expect(first.sessions.map((entry) => entry.id)).toEqual([sessions[4], sessions[3]]);
       expect(first.nextCursor).not.toBeNull();
       const second = await store.listShellHistory({
@@ -2564,16 +2081,26 @@ describeStore("PostgreSQL store", (it) => {
       expect(last.sessions.map((entry) => entry.id)).toEqual([sessions[0]]);
       expect(last.nextCursor).toBeNull();
       await expect(
-        store.listShellHistory({ before: "not-a-cursor", limit: 2, runnerId: target }),
-      ).rejects.toMatchObject({ code: "bad_request" });
-      await expect(store.listShellHistory({ limit: 51, runnerId: target })).rejects.toMatchObject({
+        store.listShellHistory({
+          before: "not-a-cursor",
+          limit: 2,
+          runnerId: target,
+        }),
+      ).rejects.toMatchObject({
+        code: "bad_request",
+      });
+      await expect(
+        store.listShellHistory({
+          limit: 51,
+          runnerId: target,
+        }),
+      ).rejects.toMatchObject({
         code: "bad_request",
       });
     });
-
     it("shows the sessions open on a machine right now", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2590,16 +2117,23 @@ describeStore("PostgreSQL store", (it) => {
         runnerId: target,
       });
       await store.activateShellSession(sessionId);
-
       await expect(store.listActiveShellSessions(target)).resolves.toMatchObject([
-        { bytesIn: 0, bytesOut: 0, callerMachineName: "Caller", id: sessionId },
+        {
+          bytesIn: 0,
+          bytesOut: 0,
+          callerMachineName: "Caller",
+          id: sessionId,
+        },
       ]);
       // The full row resolves the session's machine and stays readable once ended.
       await expect(store.getShellSession(sessionId)).resolves.toMatchObject({
         runnerId: target,
         state: "active",
       });
-      await store.endShellSession({ reason: "stopped-by-owner", sessionId });
+      await store.endShellSession({
+        reason: "stopped-by-owner",
+        sessionId,
+      });
       await expect(store.listActiveShellSessions(target)).resolves.toEqual([]);
       await expect(store.getShellSession(sessionId)).resolves.toMatchObject({
         endedAt: expect.any(Date),
@@ -2610,12 +2144,11 @@ describeStore("PostgreSQL store", (it) => {
         store.getShellSession(ShellSessionIdSchema.parse(`shs_${randomUUID()}`)),
       ).resolves.toBeNull();
     });
-
     it("stores and replays exactly the requested enrollment grant", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const request = {
-        allowedModules: ["agents"] as const,
+        allowedModules: personalReachableGrant,
         createdBy: ownerId,
         expiresAt: new Date(Date.now() + 60_000),
         id: `ren_${randomUUID()}`,
@@ -2626,19 +2159,20 @@ describeStore("PostgreSQL store", (it) => {
         tokenHash: "sha256:replay-with-shell-token",
       };
       const created = await store.createRunnerEnrollment(request);
-      expect(created.allowedModules).toEqual(["agents"]);
-
+      expect(created.allowedModules).toEqual(personalReachableGrant);
       await expect(store.createRunnerEnrollment(request)).resolves.toMatchObject({
-        allowedModules: ["agents"],
+        allowedModules: personalReachableGrant,
         id: created.id,
       });
       await expect(
         store.createRunnerEnrollment({
           ...request,
-          allowedModules: ["agents", "browser"],
+          allowedModules: phoneRunnerGrant,
           id: `ren_${randomUUID()}`,
         }),
-      ).rejects.toMatchObject({ code: "conflict" });
+      ).rejects.toMatchObject({
+        code: "conflict",
+      });
     });
   });
 });

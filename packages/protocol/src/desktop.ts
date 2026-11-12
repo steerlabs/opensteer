@@ -29,7 +29,8 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   MarkColorSchema,
-  WorkspaceIconNameSchema,
+  IconNameSchema,
+  parseTeamPageLink,
   isBareOrigin,
   isSecureOrLoopbackOrigin,
 } from "@opensteer/core";
@@ -155,7 +156,7 @@ export const DesktopPersonalDeploymentStepSchema = z.enum([
   "checking-computer",
   "preparing-database",
   "starting-host",
-  "creating-main",
+  "preparing-agent-home",
   "starting-local-agents",
   "connecting-computer",
   "ready",
@@ -865,7 +866,7 @@ export const DesktopConnectPrivateDeploymentInputSchema = z.discriminatedUnion("
     pairingCode: PersonalPairingCodeSchema,
   }),
   z.strictObject({
-    kind: z.literal("self-hosted"),
+    kind: z.literal("team"),
     origin: DesktopAccessOriginSchema,
   }),
 ]);
@@ -1129,13 +1130,18 @@ const DesktopHostBinaryChunkSchema = z
   .refine((bytes) => bytes.byteLength <= 256 * 1_024);
 
 /** A bounded byte stream over IPC, scoped to the renderer that opened it. */
+const teamFileReadPath = /^\/v1\/team\/files\/[A-Za-z0-9_-]{1,128}\/(?:preview|original)$/u;
+const teamFileUploadPath = /^\/v1\/team\/files\/upload\/[A-Za-z0-9_-]{1,128}$/u;
 export const DesktopHostBinaryOpenInputSchema = z
   .strictObject({
+    /** A joined team's own Host, pinned; absent, the selected Deployment. */
+    expectedDeploymentId: DeploymentIdSchema.optional(),
     body: boundedUtf8String(0, 1 * 1_024 * 1_024).optional(),
     headers: z.strictObject({
       accept: DesktopAcceptHeaderSchema.optional(),
       apiVersion: DesktopApiVersionSchema.optional(),
       contentType: z.enum(["application/json", "application/octet-stream"]).optional(),
+      teamUpload: z.string().min(1).max(2048).optional(),
     }),
     method: z.enum(["GET", "POST"]),
     path: DesktopHostPathSchema,
@@ -1143,14 +1149,18 @@ export const DesktopHostBinaryOpenInputSchema = z
   })
   .refine(
     (input) =>
-      input.method === "GET"
-        ? input.body === undefined && input.path.startsWith("/v1/rpc/attachment.content?input=")
-        : input.path.startsWith("/v1/rpc/attachment.upload?input=")
+      (input.headers.teamUpload === undefined || teamFileUploadPath.test(input.path)) &&
+      (input.method === "GET"
+        ? input.body === undefined &&
+          (input.path.startsWith("/v1/rpc/attachment.content?input=") ||
+            teamFileReadPath.test(input.path))
+        : input.path.startsWith("/v1/rpc/attachment.upload?input=") ||
+            teamFileUploadPath.test(input.path)
           ? input.body === undefined && input.headers.contentType === "application/octet-stream"
-          : input.path === "/v1/rpc/workspace.files.preview" &&
+          : input.path === "/v1/rpc/folder.files.preview" &&
             input.body !== undefined &&
-            input.headers.contentType === "application/json",
-    "Binary Host transfer must use an attachment or file preview route",
+            input.headers.contentType === "application/json"),
+    "Binary Host transfer must use an attachment, file preview or team file route",
   );
 export type DesktopHostBinaryOpenInput = z.infer<typeof DesktopHostBinaryOpenInputSchema>;
 export const DesktopHostBinaryOpenResultSchema = z.strictObject({
@@ -1178,7 +1188,7 @@ export const DesktopHostBinaryReadResultSchema = z.strictObject({
     .number()
     .int()
     .nonnegative()
-    .max(25 * 1_024 * 1_024)
+    .max(100 * 1_024 * 1_024 + 64 * 1_024)
     .nullable(),
   status: z.number().int().min(100).max(599),
 });
@@ -1192,6 +1202,8 @@ export const DesktopHostBinaryReadResponseSchema = desktopHostResultSchema(
 );
 
 export const DesktopOpenHostWebSocketInputSchema = z.strictObject({
+  /** A joined team's own Host, pinned; absent, the selected Deployment. */
+  expectedDeploymentId: DeploymentIdSchema.optional(),
   path: DesktopHostPathSchema,
 });
 export type DesktopOpenHostWebSocketInput = z.infer<typeof DesktopOpenHostWebSocketInputSchema>;
@@ -1394,6 +1406,31 @@ export const DesktopWebUrlSchema = z
       return false;
     }
   }, "A web link must be a valid HTTP or HTTPS URL.");
+export const DesktopPersonalOldDataStateSchema = z.strictObject({
+  kind: z.literal("old-data"),
+  deploymentId: DeploymentIdSchema,
+  entries: z
+    .array(
+      z.strictObject({
+        source: z.string().min(1).max(4096),
+        destination: z.string().min(1).max(4096),
+      }),
+    )
+    .length(5),
+});
+export type DesktopPersonalOldDataState = z.infer<typeof DesktopPersonalOldDataStateSchema>;
+
+export const DesktopTeamLinkSchema = z.strictObject({
+  id: z.uuid(),
+  url: DesktopWebUrlSchema.refine((value) => parseTeamPageLink(value) !== null),
+});
+export type DesktopTeamLink = z.infer<typeof DesktopTeamLinkSchema>;
+export const DesktopTeamLinkDeliverySchema = z.strictObject({
+  ready: z.boolean(),
+  acknowledgedId: z.uuid().optional(),
+});
+export type DesktopTeamLinkDelivery = z.infer<typeof DesktopTeamLinkDeliverySchema>;
+
 export const DesktopWebLinkRequestSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   userId: UserIdSchema,
@@ -1421,14 +1458,14 @@ export const DesktopWebLinkDeliverySchema = z.strictObject({
 });
 export type DesktopWebLinkDelivery = z.infer<typeof DesktopWebLinkDeliverySchema>;
 
-export const DesktopWorkspaceTabCommandSchema = z.union([
+export const DesktopPersonalTabCommandSchema = z.union([
   DesktopWebLinkSchema,
   z.strictObject({
     type: z.enum(["new-tab", "close-tab", "reopen-closed-tab", "next-tab", "previous-tab"]),
   }),
   z.strictObject({ type: z.literal("select-tab"), index: z.number().int().min(1).max(9) }),
 ]);
-export type DesktopWorkspaceTabCommand = z.infer<typeof DesktopWorkspaceTabCommandSchema>;
+export type DesktopPersonalTabCommand = z.infer<typeof DesktopPersonalTabCommandSchema>;
 
 const windowCoordinate = z.number().finite().min(-32_768).max(32_768);
 const windowExtent = z.number().finite().min(0).max(32_768);
@@ -1590,16 +1627,10 @@ export const DesktopBrowserFindInputSchema = z.strictObject({
 });
 export type DesktopBrowserFindInput = z.infer<typeof DesktopBrowserFindInputSchema>;
 
-/**
- * One agent's cursor on a native page, in the page's CSS pixels. The glass
- * page holds no Host snapshot, so the renderer resolves the task's mark and
- * sends it: `icon` and `color` are null while unknown, and for `home`, which
- * is Opensteer's own cursor: Chat's, or Voice's and the tasks Voice started.
- */
 export const DesktopGlassCursorSchema = z.strictObject({
   color: MarkColorSchema.nullable(),
   home: z.boolean(),
-  icon: WorkspaceIconNameSchema.nullable(),
+  icon: IconNameSchema.nullable(),
   leaving: z.boolean(),
   threadId: ThreadIdSchema,
   title: z.string().max(200),
@@ -1745,10 +1776,16 @@ export interface OpensteerDesktopBridge {
   deploymentUpdates?: DesktopDeploymentUpdatesBridge;
   /** On-device dictation on this Mac. Present only in the desktop app. */
   dictation?: DictationPort;
+  personalDataReset?: {
+    oldData(): Promise<DesktopPersonalOldDataState | null>;
+    startFresh(): Promise<void>;
+  };
+  teamLinkDelivery?(input: DesktopTeamLinkDelivery): Promise<void>;
+  onTeamLink?(listener: (link: DesktopTeamLink) => void): () => void;
   webLinkDelivery?(input: DesktopWebLinkDelivery): Promise<DesktopWebLink | null>;
   dismissMcpAuthorization?(requestId: string): Promise<void>;
   onMcpAuthorization?(listener: (target: AgentConnectionAuthorizationTarget) => void): () => void;
-  onWorkspaceTabCommand(listener: (command: DesktopWorkspaceTabCommand) => void): () => void;
+  onPersonalTabCommand(listener: (command: DesktopPersonalTabCommand) => void): () => void;
   reportDisplayDiagnostic?(record: DisplayClientDiagnostic): Promise<void>;
   reportRealtimeDiagnostic?(record: RealtimeFrameDiagnostic): Promise<void>;
   reportRendererFailure?(record: RendererFailureDiagnostic): Promise<void>;

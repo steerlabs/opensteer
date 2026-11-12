@@ -9,7 +9,7 @@ Use Browser Sessions for website interaction and saved pages. For account/API wo
 
 Choose the identity yourself, then observe the exact page: Guest for signed-out work, a listed profile that fits for anything done as the person, and `browser_profile_request` only when none fits. Only the person creates or grants profiles. Profile names do not prove a website account. Never substitute Guest when a profile fails to open, or sign in there for work the person expects to keep.
 
-A profile opens only on its home device, chosen when the person creates it. If that device is offline, name it and stop; another computer or Guest cannot replace it. Saved passwords and cards fill websites only in the main computer's browser. Downloads stay on the device running the browser.
+A profile opens only on its home device, chosen when the person creates it. If that device is offline, name it and stop; another computer or Guest cannot replace it. Saved passwords and cards fill websites only in the hosting computer's browser. Downloads stay on the device running the browser.
 
 With full access, `browser_profile_write` lists profiles and grants, renames or deletes profiles, clears history or remembered sites, and revokes grants directly. Request sign-in with `sign_in`; never manage sign-in sessions or retrieve saved credentials yourself. SMS/email codes for a sign-in the person asked for may come from an already-granted integration; follow the sign-in reference.
 

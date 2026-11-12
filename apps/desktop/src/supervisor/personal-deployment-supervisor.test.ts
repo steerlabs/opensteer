@@ -1,3 +1,8 @@
+import { parseHostConfig } from "@opensteer/config";
+import { PersonalDataReset, PersonalOldDatabaseError } from "./personal-data-reset.js";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId, type RunnerId } from "@opensteer/core";
@@ -18,6 +23,7 @@ import type {
 } from "../secrets/personal-deployment-store.js";
 import {
   defaultPersonalDeploymentName,
+  NativePersonalDeploymentFilesystem,
   PersonalRuntimeTransitionError,
 } from "../secrets/personal-deployment-store.js";
 import {
@@ -42,6 +48,118 @@ import type {
 } from "./personal-process-port.js";
 
 describe("PersonalDeploymentSupervisor", () => {
+  it.each([2, 3])(
+    "offers Start fresh for a pre-reset v%s manifest without changing old files",
+    async (schemaVersion) => {
+      const root = await mkdtemp(path.join(tmpdir(), "supervisor-obsolete-manifest-"));
+      const files = new NativePersonalDeploymentFilesystem({
+        dataDirectory: root,
+        minimumFreeBytes: 0,
+      });
+      const dataReset = new PersonalDataReset({
+        dataDirectory: root,
+        cryptography: {
+          isAsyncEncryptionAvailable: async () => true,
+          getSelectedStorageBackend: () => "keychain",
+          encryptStringAsync: async (value) => Buffer.from(value),
+          decryptStringAsync: async (value) => ({
+            result: value.toString(),
+            shouldReEncrypt: false,
+          }),
+        },
+      });
+      // The manifest fields from 19aefb63b include the removed absolute workspaceRoot.
+      const prior = {
+        ...deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+        schemaVersion,
+        ...(schemaVersion === 2 ? { authorityEpoch: 37 } : {}),
+        workspaceRoot: path.join(root, "old-workspaces"),
+      };
+      const serialized = `${JSON.stringify(prior)}\n`;
+      await writeFile(files.manifestPath, serialized, { mode: 0o600 });
+      const plan = await dataReset.plan(prior.deploymentId);
+      for (const entry of plan.entries.slice(0, 2)) {
+        await mkdir(entry.source, { recursive: true });
+        await writeFile(path.join(entry.source, "old-data"), "retained");
+      }
+      const fixture = supervisorFixture(null, undefined, undefined, undefined, {
+        dataReset,
+        files,
+      });
+      try {
+        await expect(fixture.supervisor.resumeIfConfigured()).rejects.toThrow("Start fresh");
+        expect(fixture.supervisor.status.state).toBe("repair-required");
+        await expect(fixture.supervisor.start()).rejects.toThrow("Start fresh");
+        const old = fixture.supervisor.oldData!;
+        expect(old.deploymentId).toBe(prior.deploymentId);
+        expect(old.entries).toHaveLength(5);
+        expect(fixture.processes.specs).toHaveLength(0);
+        expect(fixture.credentials.ensure).not.toHaveBeenCalled();
+        expect(await readFile(files.manifestPath, "utf8")).toBe(serialized);
+        for (const entry of old.entries.slice(0, 2)) {
+          expect(await readFile(path.join(entry.source, "old-data"), "utf8")).toBe("retained");
+          await expect(readFile(path.join(entry.destination, "old-data"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        }
+        await fixture.supervisor.startFresh({ restart: false });
+        expect(fixture.supervisor.oldData).toBeNull();
+        await expect(files.load()).resolves.toBeNull();
+        expect(await readFile(old.entries[4]!.destination, "utf8")).toBe(serialized);
+        for (const entry of old.entries.slice(0, 2))
+          expect(await readFile(path.join(entry.destination, "old-data"), "utf8")).toBe("retained");
+      } finally {
+        await fixture.supervisor.stop();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("exposes old lineage data and stops before setting aside fixture paths for a desktop relaunch", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "supervisor-reset-"));
+    const dataReset = new PersonalDataReset({
+      dataDirectory: root,
+      cryptography: {
+        isAsyncEncryptionAvailable: async () => true,
+        getSelectedStorageBackend: () => "keychain",
+        encryptStringAsync: async (value) => Buffer.from(value),
+        decryptStringAsync: async (value) => ({ result: value.toString(), shouldReEncrypt: false }),
+      },
+    });
+    const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
+    const fixture = supervisorFixture(configured, undefined, undefined, undefined, { dataReset });
+    try {
+      fixture.host.waitForHost.mockRejectedValueOnce(new PersonalOldDatabaseError());
+      await expect(fixture.supervisor.resumeIfConfigured()).rejects.toThrow(
+        "earlier Opensteer lineage",
+      );
+      expect(fixture.supervisor.status.state).toBe("repair-required");
+      const old = fixture.supervisor.oldData!;
+      expect(old.deploymentId).toBe(configured.deploymentId);
+      expect(old.entries).toHaveLength(5);
+      for (const [index, entry] of old.entries.entries()) {
+        expect(entry.source.startsWith(root + path.sep)).toBe(true);
+        if (index < 2) {
+          await mkdir(entry.source, { recursive: true });
+          await writeFile(path.join(entry.source, "old-data"), "retained");
+        }
+      }
+      await fixture.supervisor.startFresh({ restart: false });
+      expect(fixture.supervisor.oldData).toBeNull();
+      expect(fixture.supervisor.status.state).toBe("stopped");
+      expect(fixture.release).toHaveBeenCalledOnce();
+      expect(await readFile(path.join(old.entries[0]!.destination, "old-data"), "utf8")).toBe(
+        "retained",
+      );
+      expect(await readFile(path.join(old.entries[1]!.destination, "old-data"), "utf8")).toBe(
+        "retained",
+      );
+    } finally {
+      await fixture.supervisor.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does nothing on launch until This Computer was chosen", async () => {
     const fixture = supervisorFixture(null);
     expect(fixture.supervisor.status).toMatchObject({
@@ -96,22 +214,25 @@ describe("PersonalDeploymentSupervisor", () => {
     ]);
     const host = fixture.processes.specs[3]!;
     const runner = fixture.processes.specs[4]!;
+    const config = parseHostConfig({ ...host.environment, ...host.secretEnvironment });
+    expect(config.mode).toBe("production");
+    expect(config.personal).toMatchObject({
+      environmentId: runner.environment.OPENSTEER_ENVIRONMENT_ID,
+      nativeFsHelperPath: fixture.releaseValue.entrypoints.nativeFsHelper,
+    });
     expect(host.environment).toMatchObject({
       OPENSTEER_DEPLOYMENT_NAME: defaultPersonalDeploymentName(),
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
     });
-    // The Host names the machine, the Runner owns the disk.
     expect(host.environment).not.toHaveProperty("OPENSTEER_HOST_NATIVE_FS_HELPER");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_ROOT");
     expect(host.environment).not.toHaveProperty("OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH");
-    expect(runner.environment.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH).toContain("runner");
     expect(host.secretEnvironment?.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toMatch(
       /^[A-Za-z0-9_-]{43}$/u,
     );
     expect(runner.environment.OPENSTEER_ENVIRONMENT_ID).toBe(
-      host.environment.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID,
+      host.environment.OPENSTEER_HOSTING_ENVIRONMENT_ID,
     );
     expect(runner.environment).toMatchObject({
       OPENSTEER_BROWSER_HARNESS: fixture.releaseValue.entrypoints.browserHarness,
@@ -119,7 +240,6 @@ describe("PersonalDeploymentSupervisor", () => {
       OPENSTEER_NATIVE_FS_HELPER: fixture.releaseValue.entrypoints.nativeFsHelper,
       OPENSTEER_NODE_EXECUTABLE: fixture.releaseValue.entrypoints.node,
       OPENSTEER_RUNNER_NAME: defaultPersonalDeploymentName(),
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
     });
     expect(fixture.processes.specs.some(({ executable }) => /docker/iu.test(executable))).toBe(
       false,
@@ -139,14 +259,14 @@ describe("PersonalDeploymentSupervisor", () => {
         "browser.start",
         "runner.spawn",
         "host.waitForRunner",
-        "host.ensureMain",
+        "host.ensureAgentHome",
       ]),
     );
     expect(fixture.lifecycle.indexOf("host.bootstrap")).toBeLessThan(
       fixture.lifecycle.indexOf("runner.spawn"),
     );
     expect(fixture.lifecycle.indexOf("host.waitForRunner")).toBeLessThan(
-      fixture.lifecycle.indexOf("host.ensureMain"),
+      fixture.lifecycle.indexOf("host.ensureAgentHome"),
     );
     expect(fixture.catalog.upsertAndSelect).toHaveBeenCalledOnce();
     expect(fixture.supervisor.status.components).toMatchObject({
@@ -207,9 +327,9 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.resumeIfConfigured();
 
     expect(fixture.lifecycle.indexOf("host.waitForRunner")).toBeLessThan(
-      fixture.lifecycle.indexOf("host.ensureMain"),
+      fixture.lifecycle.indexOf("host.ensureAgentHome"),
     );
-    expect(fixture.host.ensureMain).toHaveBeenCalledWith(
+    expect(fixture.host.ensureAgentHome).toHaveBeenCalledWith(
       expect.any(String),
       configured.deploymentId,
       expect.any(AbortSignal),
@@ -1279,6 +1399,8 @@ function supervisorFixture(
   restarts: {
     readonly restartBackoffMs?: number;
     readonly passkeys?: boolean;
+    readonly dataReset?: PersonalDataReset;
+    readonly files?: PersonalDeploymentFilesystemPort;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1294,7 +1416,6 @@ function supervisorFixture(
       hostInstanceId: existing?.hostInstanceId ?? createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory" as const,
         kind: "personal" as const,
       },
     },
@@ -1310,8 +1431,8 @@ function supervisorFixture(
       return { runnerEnrollmentToken: "runner-enrollment-token-12345" };
     }),
     claimOwner: vi.fn(async () => undefined),
-    ensureMain: vi.fn(async () => {
-      lifecycle.push("host.ensureMain");
+    ensureAgentHome: vi.fn(async () => {
+      lifecycle.push("host.ensureAgentHome");
     }),
     waitForHost: vi.fn<PersonalHostControlPort["waitForHost"]>(async () => {
       const discovery = {
@@ -1360,6 +1481,7 @@ function supervisorFixture(
   let nextPort = 4310;
   const logs: Record<string, unknown>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
+    ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),
@@ -1367,7 +1489,7 @@ function supervisorFixture(
     catalog,
     computerUse,
     credentials,
-    files,
+    files: restarts.files ?? files,
     host,
     localRuntimes,
     loopbackPorts,
@@ -1378,7 +1500,6 @@ function supervisorFixture(
     shutdownTimeoutMs: 500,
     startupTimeoutMs: 500,
     ...(userEnvironment ? { userEnvironment } : {}),
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
   });
   return {
     browsers,
@@ -1462,8 +1583,6 @@ class MemoryPersonalFiles implements PersonalDeploymentFilesystemPort {
     runnerDataDirectory: "/data/runner",
     runtimeDirectory: "/data/runtime",
     temporaryDirectory: "/data/tmp",
-    workspaceRegistryPath: "/data/runner/workspace-bindings.v1.json",
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
   };
 
   constructor(manifest: PersonalDeploymentManifest | null) {
@@ -1634,7 +1753,6 @@ function deploymentManifest(
     schemaVersion: 3,
     setupIntentId: "019ff6c2-309a-7380-9093-e126eb2bda4b",
     updatedAt: "2026-08-12T12:00:00.000Z",
-    workspaceRoot: "/Users/test/Opensteer/Workspaces",
     ...overrides,
   };
 }

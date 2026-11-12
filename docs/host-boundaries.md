@@ -13,9 +13,8 @@ Development must configure local origins explicitly.
 
 [Config validation](../packages/config/src/config.ts) owns which combinations of shape, exposure,
 Account attachment and external Runner admission are valid, with the reason for each. Loopback
-exposure needs both a loopback hostname and bind address. Native OAuth is server-only, since on a
-Personal Host it would bypass the loopback tenancy check. `acceptsExternalRunners` (the `agents`
-module, not SSH-only computers) requires `runtimeOrigin` to equal `canonicalOrigin`.
+exposure needs both a loopback hostname and bind address. Native Account OAuth belongs to team sign-in; personal Opensteer uses its owner-session paths.
+A team server exposes no personal resource or execution admission.
 
 ## Credentials and session authority
 
@@ -26,7 +25,7 @@ through to a browser cookie.
 
 Authority comes from the authenticated user and the existing ownership, membership and role checks,
 never from the device or route. Every Personal owner session can administer remote access and see
-the linked Account identity. Server administration needs an administrator. People can remove only
+the linked Account identity. Team administration needs the appropriate team role. People can remove only
 their own sessions, including the current one.
 
 Cookie mutations need one exact Origin: the configured origin for a canonical cookie, or the stored
@@ -50,10 +49,10 @@ shared by Host and Account registration. Add a signed build there, never a per-D
 
 ### Connected agents (MCP OAuth)
 
-External MCP OAuth is separate from Host-native OAuth and works on Personal loopback without an
-Account. Discovery, consent and exchange bind the exact resource origin; an app handoff link carries
-no authority. Only a signed-in owner approves the access ceiling and reach, and losing Workspace
-ownership ends Workspace-scoped consent. See [the issuer](../apps/host/src/mcp/connections).
+External MCP OAuth is separate from team Host-native OAuth and works on Personal loopback without
+an Account. Discovery, consent and exchange bind the exact resource origin; an app handoff link
+carries no authority. Only a signed-in owner approves the access ceiling, and team membership never
+authorizes personal resources. See [the issuer](../apps/host/src/mcp/connections).
 
 Client names are self-reported labels, never verified product identity. Settings must offer an
 origin the external agent can reach without treating reachability as consent.
@@ -90,16 +89,18 @@ consumed ticket reusable ([DisplayStreamHub](../apps/host/src/computer-use/displ
 
 ## Compatibility
 
-[`hostApiVersion`](../packages/deployment-authority/src/authority.ts) is the client protocol epoch;
-its comments record each change. Bump it only when an older counterpart would misstate a meaning or
+A personal Host checks only [`hostApiVersion`](../packages/deployment-authority/src/authority.ts).
+A team Host checks only `teamApiVersion`, including auth/bootstrap, binary routes and the link,
+before authentication or parsing; discovery advertises kind and its API version. See
+[Teams](teams.md#transport-and-versions). The personal epoch's
+comments record each change. Bump it only when an older counterpart would misstate a meaning or
 act unsafely, because a mismatch stops every app on the other epoch. Clients check the raw discovery
 epoch before parsing identity, so an old Host gets an upgrade message, not a parse error; RPC and
 `client.subscribe` refuse a missing or mismatched epoch before dispatch. The epoch and optional
 capabilities live outside the signed Host identity.
 
-Within an epoch, compatibility targets the previous public release.
-[The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
-runs that frozen client; move its baseline when a release goes public.
+[Version verification](../packages/deployment-authority/src/verification.test.ts) proves the update
+boundary. Older personal database lineages require Start fresh. Within an epoch:
 
 - Readers tolerate added response fields and skip unknown union members and enum values instead of
   refusing a whole list or frame. The [tolerance guard](../tests/host-response-tolerance.test.ts)

@@ -1,6 +1,10 @@
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import { useMobileNotifications } from "../ui/notifications-context.js";
-import { provisionalThreadTitle, type BrowserPageContentPart } from "@opensteer/core";
+import {
+  provisionalThreadTitle,
+  type BrowserPageContentPart,
+  type TaskFolder,
+} from "@opensteer/core";
 import {
   canRespondToRequests,
   accessModeConflict,
@@ -14,8 +18,7 @@ import {
   type ExecutionSelection,
 } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
-import { useHeaderHeight } from "@react-navigation/elements";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation } from "@react-navigation/native";
 import {
   useCallback,
   useEffect,
@@ -26,13 +29,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import {
-  ActivityIndicator,
-  Keyboard,
-  StyleSheet,
-  View,
-  type TextInputInstance,
-} from "react-native";
+import { ActivityIndicator, StyleSheet, View, type TextInputInstance } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
@@ -57,23 +54,14 @@ import {
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice } from "../ui/primitives.js";
-import { Screen } from "../ui/screen.js";
-import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { useThreadHeader } from "./thread-header.js";
+import { FolderChip } from "../home/folder-chip.js";
+import { homeDraftId } from "../home/home-draft.js";
 
-export type NewTaskScreenProps = StaticScreenProps<{
-  readonly deploymentId: string;
-  /** Which draft this is. One nothing is saved under simply opens blank. */
-  readonly draftId: string;
-  /** Main for a task from Tasks; a project's own Workspace from its page. */
-  readonly workspaceId: string;
-}>;
-
-/** Two ways to begin a task, each a sentence the reader can send or edit. */
+/** Ways to begin, each a sentence the reader can send or edit. */
 const examples = [
   {
-    label: "Research something and write it up",
-    text: "Research the best options for this and write up what you find:\n",
+    label: "Find and compare something",
+    text: "Find and compare the best options for this, then write up what you find:\n",
   },
   {
     label: "Plan before changing anything",
@@ -81,73 +69,18 @@ const examples = [
   },
 ] as const;
 
-/**
- * A new task, before it exists.
- *
- * The task is made by its first message, as on the web: nothing is created by
- * opening this screen, so looking and leaving leaves nothing behind, and the
- * task is named from what it was asked to do. Once the Host has made it, the
- * task's own screen takes this one's place — Back still returns to where New
- * task was opened from.
- */
-export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
-  const navigation = useNavigation();
-  const headerHeight = useHeaderHeight();
-  const { deploymentId, draftId, workspaceId } = props.route.params;
-  const hostClient = useAttachedHost(deploymentId);
-  useThreadHeader({
-    deploymentId,
-    fallbackTitle: "New task",
-    header: null,
-    hostClient,
-    threadId: null,
-  });
-  const onStarted = useCallback(
-    (threadId: string): boolean => {
-      // Left while the task was being made: there is no screen to replace.
-      if (!navigation.isFocused()) return false;
-      // The keyboard goes down with the screen it was typed on; the task
-      // appears in its place with the message on its way.
-      Keyboard.dismiss();
-      navigation.dispatch(
-        StackActions.replace("Thread", { deploymentId, started: true, threadId }),
-      );
-      return true;
-    },
-    [deploymentId, navigation],
-  );
-
-  if (hostClient === null) {
-    return <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />;
-  }
-  return (
-    <Screen edgeToEdge>
-      <NewTaskPane
-        autoFocus
-        deploymentId={deploymentId}
-        draftId={draftId}
-        hostClient={hostClient}
-        key={`${deploymentId}:${draftId}`}
-        onStarted={onStarted}
-        underHeader
-        workspaceId={workspaceId}
-      />
-    </Screen>
-  );
-}
-
 const selectUserId = (snapshot: { readonly user: { readonly id: string } | null }) =>
   snapshot.user?.id ?? null;
 
 /**
- * The new task itself, wherever it is drawn: its own screen on a phone, the
- * detail beside Tasks on a wider window. It mounts only once the signed-in
- * person is known, keyed by them, because its draft is theirs.
+ * A new task, before it exists: made by its first message, so looking and
+ * leaving leaves nothing behind. Drawn as Home, or beside a page on a wider
+ * window; both are views of the one Home draft. It mounts only once the
+ * signed-in person is known, keyed by them, because its draft is theirs.
  */
 export function NewTaskPane(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
-  readonly draftId: string;
   readonly hostClient: HostClient;
   /**
    * The Host has made the task. Answers whether the reader is now looking at
@@ -156,7 +89,15 @@ export function NewTaskPane(props: {
   readonly onStarted: (threadId: string) => boolean;
   /** Set where a transparent navigation bar lies over the top of the pane. */
   readonly underHeader: boolean;
-  readonly workspaceId: string;
+  /**
+   * Home: the folder this task will work in, chosen on its chip. Elsewhere the
+   * draft's own folder, else Agent home.
+   */
+  readonly home?: {
+    readonly folder: TaskFolder | null;
+    readonly onChooseFolder: () => void;
+    readonly folderLabel: string;
+  };
 }): ReactNode {
   const userId = useHostSelector(props.hostClient, selectUserId);
   if (userId === null) {
@@ -172,26 +113,38 @@ export function NewTaskPane(props: {
 function NewTask(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
-  readonly draftId: string;
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
   readonly underHeader: boolean;
   readonly userId: string;
-  readonly workspaceId: string;
+  readonly home?: {
+    readonly folder: TaskFolder | null;
+    readonly onChooseFolder: () => void;
+    readonly folderLabel: string;
+  };
 }): ReactNode {
   const navigation = useNavigation();
   const notifications = useMobileNotifications();
   const client = useMobileClient();
   const drafts = client.drafts;
   const { snapshot } = useHostSnapshot(props.hostClient, sameNewTaskSnapshot);
-  const { deploymentId, draftId, hostClient, onStarted, userId, workspaceId } = props;
+  const { deploymentId, hostClient, onStarted, userId } = props;
+  const draftId = homeDraftId;
   const draftKey = newTaskDraftKey(draftId);
-  useLayoutEffect(
-    () => drafts.placeNewTaskDraft(deploymentId, userId, draftId, workspaceId),
-    [deploymentId, draftId, drafts, userId, workspaceId],
-  );
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, draftKey);
+  const folder =
+    props.home !== undefined
+      ? props.home.folder
+      : (draft?.folder ?? snapshot.personalSettings?.agentHome ?? null);
+  useLayoutEffect(() => {
+    if (folder !== null)
+      void drafts
+        .placeNewTaskDraft(deploymentId, userId, draftId, folder)
+        .catch((error: unknown) =>
+          setDraftFailure(operationDetail(error, "This draft could not be saved on this phone.")),
+        );
+  }, [deploymentId, draftId, drafts, folder, userId]);
   const text = draft?.text ?? "";
   const held = drafts.readPending(deploymentId, userId, draftKey);
   const input = useRef<TextInputInstance>(null);
@@ -212,23 +165,20 @@ function NewTask(props: {
     },
     [],
   );
-  const staged = useDraftAttachments({ client: hostClient, draftKey, drafts, files, workspaceId });
+  const staged = useDraftAttachments({ client: hostClient, draftKey, drafts, files });
   // The page Ask put on this draft, kept with the words until it is sent or removed.
   const includedPage = draft?.page ?? null;
 
-  const workspace = snapshot.workspaces.find(({ id }) => id === workspaceId) ?? null;
   const execution = useMemo(
-    () => firstMessageExecution("task", snapshot),
+    () => firstMessageExecution(snapshot),
     [snapshot.environments, snapshot.executionPreferences, snapshot.harnesses],
   );
   const { placements, selection } = execution;
   const blocker = firstMessageBlocker({
     attachmentsReady: staged.items.every((item) => draftAttachmentPart(item) !== null),
     connected: canRespondToRequests(snapshot),
-    conflict: null,
     execution,
-    target: "task",
-    workspace,
+    folder,
   });
 
   const changeText = (next: string): void => {
@@ -268,7 +218,8 @@ function NewTask(props: {
       try {
         if (claimed === null) {
           const live = hostClient.getSnapshot();
-          const liveExecution = firstMessageExecution("task", live);
+          const liveExecution = firstMessageExecution(live);
+          if (folder === null) throw new Error("Your agent's folder isn't ready yet.");
           const chosen =
             requestedSelection === null
               ? liveExecution.selection
@@ -297,7 +248,7 @@ function NewTask(props: {
               idempotencyKey: mutationIdempotencyKey("thread"),
               generateTitle: true,
               title: provisionalThreadTitle(words || (staged.items[0]?.name ?? "")),
-              workspaceId,
+              folder,
             },
             text: words,
             userId,
@@ -402,17 +353,24 @@ function NewTask(props: {
       staged,
       text,
       userId,
-      workspaceId,
+      folder,
     ],
   );
 
-  const project = workspace !== null && workspace.kind === "project" ? workspace : null;
   const empty = text.trim() === "" && held === null && staged.items.length === 0;
 
   return (
     <FirstMessageComposer
       autoFocus={props.autoFocus}
       blocker={blocker}
+      {...(props.home === undefined
+        ? {}
+        : {
+            folder: (
+              <FolderChip label={props.home.folderLabel} onPress={props.home.onChooseFolder} />
+            ),
+            voice: true,
+          })}
       held={held !== null}
       execution={execution}
       inputRef={input}
@@ -427,7 +385,7 @@ function NewTask(props: {
       onRemoveQuote={noop}
       onSend={(selection) => void send(null, selection)}
       page={includedPage === null ? null : { onRemove: () => changePage(null), part: includedPage }}
-      placeholder="Describe the task…"
+      placeholder="Ask your agent to…"
       usageScope={{ deploymentId, userId }}
       quote={null}
       savedAttachmentKeys={draft?.attachments?.map(attachmentKey) ?? []}
@@ -442,16 +400,8 @@ function NewTask(props: {
       underHeader={props.underHeader}
     >
       <FirstMessageInvitation
-        detail={
-          project === null
-            ? "It runs as its own task, apart from Chat, and you can follow it in Tasks."
-            : "It works with this project’s own files, instructions and access."
-        }
-        title={
-          project === null
-            ? "What should this task take care of?"
-            : `What should ${project.name} take care of?`
-        }
+        detail="Your agent works on this computer, in folders you choose."
+        title="What should your agent do?"
       />
       {empty ? (
         <FirstMessageExamples
@@ -487,13 +437,14 @@ function NewTask(props: {
 function noop(): void {}
 
 /**
- * What a new task reads — its Workspace, the AI it would start on and whether
+ * What a new task reads — Agent home, the AI it would start on and whether
  * the Host can take it — and nothing a streamed token elsewhere changes.
  */
 function sameNewTaskSnapshot(previous: HostSnapshot, next: HostSnapshot): boolean {
   return (
     sameStableHostSnapshot(previous, next) &&
-    previous.executionPreferences === next.executionPreferences
+    previous.executionPreferences === next.executionPreferences &&
+    previous.personalSettings === next.personalSettings
   );
 }
 

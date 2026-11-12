@@ -2,7 +2,6 @@ import { createId, ModelSelectionSchema, type Thread } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import type { ConnectionCaller } from "../mcp/agent-caller.js";
 import { ThreadService } from "./thread-service.js";
-
 describe("new Thread access ceilings", () => {
   it("permits narrower work and forwards the caller's live authority", async () => {
     const actor: ConnectionCaller = {
@@ -11,21 +10,28 @@ describe("new Thread access ceilings", () => {
       connectionId: "test",
       userId: createId("user"),
       accessMode: "auto",
-      reach: { kind: "user" },
     };
-    const thread = { id: createId("thread"), accessMode: "approval-required" } as Thread;
-    const result = { thread, wasDuplicate: true, asOfSequence: "0" };
+    const thread = {
+      id: createId("thread"),
+      accessMode: "approval-required",
+    } as Thread;
+    const result = {
+      thread,
+      wasDuplicate: true,
+      asOfSequence: "0",
+    };
     const createThread = vi.fn(async () => result);
     const service = new ThreadService({
       store: {
         getWorkspaceForOwner: async () => ({}),
         findThreadCreationByIdempotency: async () => result,
       },
-      commands: { createThread },
+      commands: {
+        createThread,
+      },
     } as unknown as ThreadService["options"]);
     const command = {
       type: "thread.create" as const,
-      workspaceId: createId("workspace"),
       environmentId: createId("environment"),
       harnessInstanceId: createId("harnessInstance"),
       modelSelection: ModelSelectionSchema.parse({
@@ -34,6 +40,7 @@ describe("new Thread access ceilings", () => {
         options: {},
       }),
       title: "Narrow work",
+      folder: { computerId: createId("runner"), path: "/chosen-folder" },
       idempotencyKey: "narrow",
       accessMode: "approval-required" as const,
     };
@@ -49,8 +56,13 @@ describe("new Thread access ceilings", () => {
       }),
     );
     await expect(
-      service.create(actor, { ...command, accessMode: "full-access" }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+      service.create(actor, {
+        ...command,
+        accessMode: "full-access",
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
     expect(createThread).toHaveBeenCalledOnce();
   });
 });

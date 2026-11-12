@@ -30,7 +30,7 @@ export async function startPersonalPasswordsBridge() {
   if (!address || typeof address === "string") throw new Error("No authority bridge port");
   const commands: PasswordSignInAuthorityCommand[] = [];
   const protocolErrors: string[] = [];
-  const approvals: { operationId: string; workspaceId: string; permissionVersion: 5 }[] = [];
+  const approvals: { operationId: string; deploymentId: string; permissionVersion: 6 }[] = [];
   const operations = new Map<
     string,
     { command: Authorization; socket: WebSocket; approved: boolean }
@@ -134,10 +134,10 @@ export async function startPersonalPasswordsBridge() {
     commands,
     approvals,
     protocolErrors,
-    /** A person chooses Allow on the observed, Workspace-scoped v5 sign-in card. */
+    /** A person chooses Allow on the observed, Personal v6 sign-in card. */
     approve(card: {
       operationId: string;
-      workspaceId: string;
+      deploymentId: string;
       site: string;
       scope: string;
       permissionVersion: number;
@@ -147,17 +147,18 @@ export async function startPersonalPasswordsBridge() {
         !operation ||
         operation.approved ||
         Date.parse(operation.command.expiresAt) <= Date.now() ||
-        card.workspaceId !== operation.command.workspaceId ||
+        card.deploymentId !== operation.command.deploymentId ||
         card.site !== operation.command.site ||
-        card.scope !== "workspace" ||
-        card.permissionVersion !== 5
+        card.scope !== "personal" ||
+        card.permissionVersion !== 6
       )
         throw new Error("That sign-in card cannot be approved");
       operation.approved = true;
       approvals.push({
         operationId: card.operationId,
-        workspaceId: card.workspaceId,
-        permissionVersion: 5,
+        deploymentId: card.deploymentId,
+
+        permissionVersion: 6,
       });
       emit(operation.socket, {
         type: "login.result",

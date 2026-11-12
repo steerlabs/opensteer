@@ -1,4 +1,9 @@
-import { BrowserSiteSchema, RunIdSchema, RunnerIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import {
+  BrowserSiteSchema,
+  RunIdSchema,
+  RunnerIdSchema,
+  DeploymentIdSchema,
+} from "@opensteer/core";
 import { z } from "zod";
 import {
   PasswordsBrokerAccountsSchema,
@@ -29,14 +34,9 @@ export const passwordSignInAgentWaitMs = 45_000;
 export const PasswordSignInMethodSchema = z.enum(["saved-password", "person"]);
 export type PasswordSignInMethod = z.infer<typeof PasswordSignInMethodSchema>;
 
-/**
- * Read-only historical wait states. New login authorizations wait only for
- * approval; person/code states remain readable in earlier tool results.
- */
 export const PasswordSignInNeedSchema = z.enum(["approval", "person", "code"]);
 export type PasswordSignInNeed = z.infer<typeof PasswordSignInNeedSchema>;
 
-/** Legacy request field, accepted only so older Runners can still be parsed. */
 export const PasswordSignInCodeSchema = z.string().regex(/^[0-9A-Za-z-]{4,12}$/u);
 
 /**
@@ -60,10 +60,9 @@ export type PasswordSignInAvailability = z.infer<typeof PasswordSignInAvailabili
  */
 export const PasswordSignInRequesterSchema = z.strictObject({
   deploymentId: z.string().min(1).max(128),
-  deploymentName: z.string().trim().min(1).max(120),
   reason: z.string().trim().min(1).max(500),
   threadTitle: z.string().trim().min(1).max(200),
-  workspaceName: z.string().trim().min(1).max(120),
+  deploymentName: z.string().trim().min(1).max(120),
 });
 export type PasswordSignInRequester = z.infer<typeof PasswordSignInRequesterSchema>;
 
@@ -106,11 +105,6 @@ export const PasswordSignInUnavailableReasonSchema = z.enum([
 ]);
 export type PasswordSignInUnavailableReason = z.infer<typeof PasswordSignInUnavailableReasonSchema>;
 
-/**
- * Read-only historical sign-in outcomes. `signed-in` means the sign-in was
- * handed to the session's browser, not that a heuristic proved the account;
- * the agent reloads and checks.
- */
 export const PasswordSignInOutcomeSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("signed-in"),
@@ -282,7 +276,7 @@ export const PasswordSignInCardSchema = z.discriminatedUnion("stage", [
   z.strictObject({
     stage: z.literal("approval"),
     accounts: PasswordsBrokerAccountsSchema,
-    permissionVersion: z.literal(5),
+    permissionVersion: z.literal(6),
   }),
   z.strictObject({ stage: z.literal("authorized") }),
   z.strictObject({ stage: z.literal("gone") }),
@@ -303,7 +297,7 @@ export const PasswordSignInApprovalSchema = z.strictObject({
   loginId: z.uuid(),
   revision: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   remember: z.boolean(),
-  permissionVersion: z.literal(5),
+  permissionVersion: z.literal(6),
 });
 /** Session-independent Host commands, carried by the Personal Runner/desktop bridge. */
 export const PasswordSignInAuthorityCommandSchema = z.union([
@@ -314,7 +308,7 @@ export const PasswordSignInAuthorityCommandSchema = z.union([
     operationId: z.uuid(),
     cardRef: CardRefSchema,
     site: BrowserSiteSchema,
-    workspaceId: WorkspaceIdSchema,
+    deploymentId: DeploymentIdSchema,
     requester: PasswordSignInRequesterSchema,
     expiresAt: z.iso.datetime({ offset: true }),
   }),
@@ -337,7 +331,7 @@ export const PasswordSignInAuthorityCommandSchema = z.union([
     operationId: z.uuid(),
     loginRef: LoginRefSchema,
     site: BrowserSiteSchema,
-    workspaceId: WorkspaceIdSchema,
+    deploymentId: DeploymentIdSchema,
     requester: PasswordSignInRequesterSchema,
     expiresAt: z.iso.datetime({ offset: true }),
   }),
@@ -407,12 +401,11 @@ export const PasswordSignInAuthorityEventSchema = z.discriminatedUnion("type", [
 ]);
 export type PasswordSignInAuthorityEvent = z.infer<typeof PasswordSignInAuthorityEventSchema>;
 
-/** A sign-in approved for a Workspace rather than one Browser Session; see docs/passwords.md. */
 export const SessionlessPasswordSignInRequestPayloadSchema = z.strictObject({
   kind: z.literal("browser.password-sign-in"),
-  scope: z.literal("workspace"),
+  scope: z.literal("personal"),
   // Older readers require 5; credential names the consent.
-  permissionVersion: z.literal(5),
+  permissionVersion: z.literal(6),
   credential: z.literal("card").optional(),
   computerName: z.string().trim().min(1).max(160),
   expiresAt: z.iso.datetime({ offset: true }),

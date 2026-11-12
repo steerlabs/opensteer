@@ -4,7 +4,7 @@ import {
   keyedStreamBytes,
 } from "@opensteer/protocol/keyed-stream";
 import {
-  browserWorkspaceTabUrlMaxLength,
+  browserPersonalTabUrlMaxLength,
   type BrowserTabRecord,
   type BrowserTabStreamMeta,
 } from "@opensteer/protocol/browser-tabs";
@@ -1104,7 +1104,7 @@ export class PhoneBrowserManager {
           throw new PhoneBrowserError("forbidden", "This is a Host-only operation.");
         if (method === browserHostMethods.openTab) {
           const parsed = openParametersSchema.parse(parameters);
-          if (parsed.surfaceId && session.claims.workspaceTabRestoreVersion !== 1)
+          if (parsed.surfaceId && session.claims.tabRestoreVersion !== 1)
             throw new PhoneBrowserError("forbidden", "Tab restore was not negotiated.");
           let allocationPermit = session.allocationPermit;
           if (authorityHandle) {
@@ -1155,7 +1155,7 @@ export class PhoneBrowserManager {
           await this.#publish(session);
         } else if (method === browserHostMethods.closeTab) {
           const parsed = closeParametersSchema.parse(parameters);
-          const durable = parsed.durable && session.claims.workspaceTabRestoreVersion === 1;
+          const durable = parsed.durable && session.claims.tabRestoreVersion === 1;
           if (!durable && parsed.inventoryRevision !== session.revision)
             throw new PhoneBrowserError("stale-document", "The browser inventory changed.");
           const tab = session.tabs.get(parsed.surfaceId);
@@ -2017,7 +2017,7 @@ export class PhoneBrowserManager {
               state: isLive(tab) ? "live" : "suspended",
               title: metadata.title.slice(0, 256),
               url:
-                metadata.url.length <= browserWorkspaceTabUrlMaxLength
+                metadata.url.length <= browserPersonalTabUrlMaxLength
                   ? metadata.url
                   : "opensteer:unavailable-url",
               icon: null,

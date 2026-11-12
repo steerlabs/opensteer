@@ -33,7 +33,7 @@ export class PasswordsPersonFillAuthority {
     this.#session = broker;
   }
 
-  /** Only a protocol 8 connection offers person fill, and a reconnect can change that. */
+  /** The broker must provide person fill before a consumer may offer it. */
   get #broker(): Broker | undefined {
     const session = this.#session;
     return typeof session.fillAccounts === "function" && typeof session.fillBegin === "function"

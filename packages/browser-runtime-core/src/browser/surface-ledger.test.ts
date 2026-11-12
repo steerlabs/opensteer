@@ -1,5 +1,5 @@
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { browserWorkspaceTabUrlMaxLength } from "@opensteer/protocol/browser";
+import { browserPersonalTabUrlMaxLength } from "@opensteer/protocol/browser";
 import { describe, expect, it, vi } from "vitest";
 import {
   FakeContext,
@@ -723,7 +723,7 @@ describe("SurfaceLedger", () => {
           id: "main",
           loaderId: "error",
           url: "chrome-error://chromewebdata/",
-          unreachableUrl: `https://offline.test/${"a".repeat(browserWorkspaceTabUrlMaxLength)}`,
+          unreachableUrl: `https://offline.test/${"a".repeat(browserPersonalTabUrlMaxLength)}`,
         },
       });
       expect(ledger.toRecord(ledger.snapshot()[0]!.id)).toMatchObject({

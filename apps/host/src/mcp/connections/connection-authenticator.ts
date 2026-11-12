@@ -1,9 +1,4 @@
-import {
-  OpensteerError,
-  type ThreadAccessMode,
-  type ThreadReachScope,
-  type UserId,
-} from "@opensteer/core";
+import { OpensteerError, type ThreadAccessMode, type UserId } from "@opensteer/core";
 import type { AgentConnectionStore } from "@opensteer/database";
 import { createHash } from "node:crypto";
 
@@ -15,7 +10,6 @@ export interface AuthenticatedConnection {
   readonly connectionId: string;
   readonly userId: UserId;
   readonly accessMode: ThreadAccessMode;
-  readonly reach: ThreadReachScope;
 }
 
 /** No session cache: an MCP session ID never substitutes for a live bearer check. */
@@ -33,7 +27,6 @@ export class ConnectionAuthenticator {
       connectionId: connection.id,
       userId: connection.userId,
       accessMode: connection.accessMode,
-      reach: connection.reach,
     };
   }
 }

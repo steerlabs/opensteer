@@ -36,7 +36,7 @@ const liveCard = () => document.querySelector(".conv-header .viewfinder");
 it("follows the docked task's agent in place, stops for the person's tab and follows again from its live card", async () => {
   await mount(() => {
     const { session, threadId, acting } = taskBrowser();
-    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+    return `/tasks/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
   });
   const { session, threadId, reading, acting, confirm, placeKey } = taskBrowser();
   expect(following(), "The agent's own tab never started following").not.toBeNull();
@@ -96,7 +96,7 @@ it("follows the docked task's agent in place, stops for the person's tab and fol
 it("leaves the stage alone with the conversation put away", async () => {
   await mount(() => {
     const { session, threadId, acting } = taskBrowser();
-    return `/threads/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
+    return `/tasks/${threadId}?panel=browser&browser=${session.id}&browserTab=${acting.id}`;
   });
   const { threadId, reading, acting, placeKey } = taskBrowser();
   await click(element('button[aria-label="Hide the conversation"]'));

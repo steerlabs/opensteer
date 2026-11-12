@@ -46,7 +46,7 @@ import { AgentCallerResolver, type AgentCaller, type RunCaller } from "./agent-c
 import { toolAccess } from "./tool-access.js";
 import { toolOperationKey } from "./operations.js";
 import type { RealtimeHub } from "@opensteer/orchestration";
-import type { AgentToolHandlers, ToolCall } from "./handlers/index.js";
+import type { AgentToolHandlers, ToolCall } from "./handlers/types.js";
 
 const requestTools = new Set<string>(requestToolNames);
 const maximumSessions = 256;
@@ -74,14 +74,12 @@ export class OpensteerMcpService {
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+    readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
     };
     readonly publicUrl: URL;
     /** A failure the caller was told only that something went wrong. */
     readonly onToolError?: (error: unknown, tool: string) => void;
-    /** Whether this caller may hold the knowledge trial's `sql` tool; absent, nobody may. */
-    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
   };
   constructor(options: {
     readonly callers: Pick<AgentCallerResolver, "authenticate">;
@@ -89,12 +87,11 @@ export class OpensteerMcpService {
     readonly requestHold?: Pick<RequestHold, "admit" | "wait">;
     readonly longRequestHold?: (caller: RunCaller) => Promise<boolean>;
     readonly realtime?: Pick<RealtimeHub, "observe">;
-    readonly store: Pick<OpensteerStore, "getThreadForOwner" | "findMainWorkspaceForOwner"> & {
+    readonly store: Pick<OpensteerStore, "getThreadForOwner"> & {
       readonly requests: Pick<OpensteerStore["requests"], "get">;
     };
     readonly publicUrl: URL;
     readonly onToolError?: (error: unknown, tool: string) => void;
-    readonly knowledgeFor?: (caller: AgentCaller) => Promise<boolean>;
   }) {
     this.options = options;
     this.#runtimeOrigin = options.publicUrl;
@@ -527,22 +524,17 @@ export class OpensteerMcpService {
   }
 
   async #toolsFor(caller: AgentCaller) {
-    const knowledge = (await this.options.knowledgeFor?.(caller)) === true;
-    return toolsFor({ ...caller, knowledge });
+    return toolsFor({
+      ...caller,
+      teamBound: caller.kind === "run" && caller.thread.teamOrigin !== null,
+    });
   }
   async #targets(caller: AgentCaller, tool: AgentTool, input: object): Promise<Thread[]> {
     const ids: Thread["id"][] = [];
     const record = input as Record<string, unknown>;
     const add = async (value: unknown) => {
-      if (value === "home") {
-        const home = await this.options.store.findMainWorkspaceForOwner(caller.userId);
-        if (!home?.homeThreadId)
-          throw new OpensteerError({ code: "conflict", message: "Chat has not been started yet" });
-        ids.push(home.homeThreadId);
-      } else {
-        const id = ThreadIdSchema.safeParse(value);
-        if (id.success) ids.push(id.data);
-      }
+      const id = ThreadIdSchema.safeParse(value);
+      if (id.success) ids.push(id.data);
     };
     for (const field of tool.targetFields ?? []) await add(record[field]);
     const targets = this.options.handlers[tool.name].targets as

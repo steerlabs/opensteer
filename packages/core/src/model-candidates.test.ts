@@ -24,7 +24,7 @@ import {
   ModelPolicyEntryViewSchema,
 } from "./background-models.js";
 import { catalogDefaultCandidate, catalogDefaultModelSelection } from "./model-candidates.js";
-import { rankedChatModelSelection } from "./chat-models.js";
+import { selectionForModelEffort } from "./voice-models.js";
 const selection = (modelId = "gpt-6-luna", options = {}) =>
   ModelSelectionSchema.parse({
     modelId,
@@ -313,7 +313,7 @@ describe("automatic model resolver", () => {
     expect(catalogDefaultModelSelection(a.catalog)?.options).toEqual({});
     expect(catalogDefaultModelSelection(null)).toBeNull();
     const preferred = { ...a.catalog!.models[0]!, modelId: selection("gpt-6.1-terra").modelId };
-    expect(rankedChatModelSelection([{ models: [preferred] }])?.modelSelection.options).toEqual({
+    expect(selectionForModelEffort(preferred, "high").options).toEqual({
       effort: "high",
     });
   });
@@ -391,7 +391,6 @@ it("reads newer Host responses tolerantly while executable input stays strict", 
 it("keeps role-only and unknown entries in the registration presentation", () => {
   const view = {
     id: "s",
-    workspaceId: "w",
     pluginId: "p",
     pluginVersionId: "v",
     ownerUserId: "u",

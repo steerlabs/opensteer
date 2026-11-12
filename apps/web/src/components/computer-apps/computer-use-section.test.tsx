@@ -424,7 +424,7 @@ describe("ComputerUseBlock", () => {
     const pendingRow = container.querySelector(".computer-use__app--pending");
     expect(pendingRow?.textContent).toContain("Asked in Plan the week");
     expect(pendingRow?.querySelector("a")?.getAttribute("href")).toBe(
-      "/threads/thr_00000000-0000-4000-8000-000000000001",
+      "/tasks/thr_00000000-0000-4000-8000-000000000001",
     );
     expect(button(container, "Cancel Preview")).toBeNull();
 

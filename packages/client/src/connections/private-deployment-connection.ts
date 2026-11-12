@@ -17,7 +17,7 @@ import type { HostSessionExchange } from "../auth/host-session-exchange.js";
  * Establishes first trust in a private Host without sending a cookie, OAuth
  * token, or caller-provided identity metadata. The caller explicitly chooses
  * one of two non-interchangeable trust paths: a Personal Host's separately
- * signed HTTPS route and one-use pairing code, or a self-hosted Host's signed
+ * signed HTTPS route and one-use pairing code, or a team Host's signed
  * canonical discovery followed by that Host's configured native sign-in.
  */
 export class PrivateDeploymentConnectionService {
@@ -37,7 +37,7 @@ export class PrivateDeploymentConnectionService {
 
   async connect(input: DesktopConnectPrivateDeploymentInput | unknown): Promise<void> {
     const parsed = DesktopConnectPrivateDeploymentInputSchema.parse(input);
-    if (parsed.kind === "self-hosted") {
+    if (parsed.kind === "team") {
       const verified = await verifyAccessEndpoint({
         fetch: this.#fetch,
         kind: "canonical",
@@ -52,8 +52,8 @@ export class PrivateDeploymentConnectionService {
         deploymentConnectionFromVerifiedEndpoints({
           accountAccess: null,
           endpoints: [verified],
-          kind: "self-hosted",
-          name: selfHostedDeploymentName(parsed.origin),
+          kind: "team",
+          name: teamDeploymentName(parsed.origin),
           source: { kind: "manual" },
         }),
       );
@@ -91,7 +91,7 @@ function computerName(origin: string): string {
   return hostname.length <= 120 ? hostname : "Computer";
 }
 
-function selfHostedDeploymentName(origin: string): string {
+function teamDeploymentName(origin: string): string {
   const hostname = new URL(origin).hostname;
   return hostname.length <= 120 ? hostname : "Server";
 }

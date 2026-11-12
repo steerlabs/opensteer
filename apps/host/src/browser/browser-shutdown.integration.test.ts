@@ -21,9 +21,10 @@ describeStore("Browser shutdown reconciliation", (it) => {
     let restartedDatabase: ReturnType<typeof createDatabase> | undefined;
     const service = (repository: OpensteerStore) => {
       const browser = new BrowserService({
+        deploymentId: f.deploymentId,
         hostOrigin: new URL("http://127.0.0.1:4310"),
         onSessionsChanged: () => undefined,
-        onWorkspaceEvent: () => undefined,
+        onDeploymentEvent: () => undefined,
         repository,
         signer,
       });
@@ -34,18 +35,18 @@ describeStore("Browser shutdown reconciliation", (it) => {
       for (const browser of services) await browser.close();
       await restartedDatabase?.destroy();
     });
+    const f = await startRunFixture("late-browser-detach");
     const browser = service(store);
     await browser.initialize();
-    const f = await startRunFixture("late-browser-detach");
     const sessionId = createBrowserSessionId();
     await store.createBrowserSession({
+      ownerId: f.userId,
       id: sessionId,
       origin: "agent",
       placementKey: `runner:${f.runnerId}:browser`,
       profileId: null,
       runnerId: f.runnerId,
       runtimeId: "browser",
-      workspaceId: f.workspace.id,
     });
     const bindingId = `run:${f.run.id}`;
     expect(
@@ -53,7 +54,6 @@ describeStore("Browser shutdown reconciliation", (it) => {
         agentBindingId: bindingId,
         ownerId: f.userId,
         sessionId,
-        workspaceId: f.workspace.id,
       }),
     ).toBe(true);
 
@@ -69,7 +69,6 @@ describeStore("Browser shutdown reconciliation", (it) => {
         runId: f.run.id,
         threadId: f.thread.id,
         type: "run.completed",
-        workspaceId: f.workspace.id,
       }),
       runnerBootId: f.runnerBootId,
       runnerId: f.runnerId,
@@ -99,9 +98,7 @@ describeStore("Browser shutdown reconciliation", (it) => {
     expect(await restartedStore.listActiveBrowserSessionsForAgentBinding(bindingId)).toEqual([]);
     expect(
       await restartedStore.listActiveBrowserSessionsForAgent({
-        allOwnerWorkspaces: true,
         ownerId: f.userId,
-        workspaceId: f.workspace.id,
       }),
     ).toEqual([]);
     expect(await restartedStore.listBrowserPlaceHoldings(sessionId)).toEqual([]);

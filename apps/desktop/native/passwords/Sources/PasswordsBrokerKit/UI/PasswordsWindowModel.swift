@@ -299,7 +299,7 @@ public final class PasswordsWindowModel: ObservableObject {
     }
   }
 
-  /// Remove on one of the login's "Allowed for agents in" lines.
+  /// Remove on one of the login's "Allowed for your agent in" lines.
   public func removeGrant(_ grant: Grant) async {
     if case .stays(let problem) = await perform({ try await self.broker.removeGrant(grant) }) {
       message = problem

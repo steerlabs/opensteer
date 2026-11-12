@@ -4,8 +4,6 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
-  WorkspaceKindSchema,
   utf8ByteLength,
 } from "@opensteer/core";
 import {
@@ -29,7 +27,7 @@ export const PluginTargetSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("service"), definitionId: z.string().min(1).max(64) }),
   z.strictObject({ kind: z.literal("device-app"), definitionId: z.string().min(1).max(64) }),
   z.strictObject({ kind: z.literal("plugin"), pluginId: name }),
-  z.strictObject({ kind: z.literal("skill"), workspaceId: WorkspaceIdSchema, fullName: name }),
+  z.strictObject({ kind: z.literal("skill"), fullName: name }),
   z.strictObject({ kind: z.literal("specialist"), pluginId: name, ownerUserId: UserIdSchema }),
 ]);
 export const PluginTargetViewSchema = z.discriminatedUnion("kind", [
@@ -55,9 +53,6 @@ export const PluginIssueCodeSchema = z.enum([
 ]);
 export const PluginPlacementSummarySchema = z.object({
   enabled: z.boolean(),
-  mainIncluded: z.boolean(),
-  projectCount: z.number().int().nonnegative(),
-  personalEverywhere: z.boolean(),
   revision,
 });
 export const PluginRowSchema = z.object({
@@ -65,7 +60,7 @@ export const PluginRowSchema = z.object({
   title: name,
   description: z.string().max(320).nullable(),
   source: z.object({
-    kind: z.enum(["built-in", "plugin", "proposed", "remote-mcp", "workspace"]),
+    kind: z.enum(["built-in", "plugin", "proposed", "remote-mcp", "folder"]),
     version: name.nullable(),
   }),
   tags: z.array(z.enum(["accounts", "devices", "skills", "specialists"])).max(4),
@@ -105,45 +100,12 @@ export const PluginAccountViewSchema = z.object({
   access: IntegrationAccessSchema.nullable(),
   runnerId: RunnerIdSchema.nullable(),
 });
-const accountSelection = z.strictObject({
-  connectionId: IntegrationConnectionIdSchema,
-  access: IntegrationAccessSchema,
-});
-export const PluginProjectSelectionSchema = z.strictObject({
-  workspaceId: WorkspaceIdSchema,
-  accounts: z.array(accountSelection).max(100),
-});
-export const PluginPlacementInputSchema = z.strictObject({
-  target: PluginTargetSchema,
-  expectedRevision: revision,
-  mainIncluded: z.boolean(),
-  projects: z.array(PluginProjectSelectionSchema).max(1000),
-  // Personal only. The account/access ceiling is explicit consent for future Projects.
-  personalEverywhere: z.strictObject({ accounts: z.array(accountSelection).max(100) }).nullable(),
-});
 export const PluginDetailViewSchema = z.object({
   row: PluginRowSchema,
   installationIds: z.array(IntegrationInstallationIdSchema).max(100),
   grants: z.array(IntegrationGrantViewSchema).max(1000),
-  registrations: z
-    .array(z.object({ id: name, workspaceId: WorkspaceIdSchema, ownerUserId: UserIdSchema }))
-    .max(1000),
+  registrations: z.array(z.object({ id: name, ownerUserId: UserIdSchema })).max(1000),
   accounts: z.array(PluginAccountViewSchema).max(100),
-  places: z
-    .array(
-      z.object({
-        workspaceId: WorkspaceIdSchema,
-        name,
-        kind: WorkspaceKindSchema,
-        selected: z.boolean(),
-        canSelect: z.boolean(),
-        accounts: z.array(z.object(accountSelection.shape)).max(100),
-      }),
-    )
-    .max(1000),
-  personalEverywhere: z
-    .object({ accounts: z.array(z.object(accountSelection.shape)).max(100) })
-    .nullable(),
   devices: z
     .array(z.object({ runnerId: RunnerIdSchema, name, status: MachineSummarySchema.shape.status }))
     .max(400),
@@ -151,7 +113,7 @@ export const PluginDetailViewSchema = z.object({
     .array(
       z.object({
         label: name,
-        layer: z.enum(["app-policy", "os-permission", "account-scope", "workspace-grant"]),
+        layer: z.enum(["app-policy", "os-permission", "account-scope", "personal-grant"]),
         state: z.enum(["allowed", "ask", "denied", "unknown"]),
       }),
     )
@@ -188,9 +150,7 @@ export const PluginsDirectoryViewSchema = z.object({
       }),
     )
     .max(1000),
-  requests: z
-    .array(z.object({ requestId: RequestIdSchema, title: name, workspaceId: WorkspaceIdSchema }))
-    .max(100),
+  requests: z.array(z.object({ requestId: RequestIdSchema, title: name })).max(100),
 });
 export type PluginsDirectoryView = z.infer<typeof PluginsDirectoryViewSchema>;
 /**
@@ -216,7 +176,6 @@ export const DevicesOverviewViewSchema = z.object({
         name: true,
         device: true,
         ownership: true,
-        ownerName: true,
         status: true,
         allowedModules: true,
         revocable: true,
@@ -236,15 +195,8 @@ export const SettingsPluginEnableCommandSchema = z.strictObject({
   expectedRevision: revision,
   enabled: z.boolean(),
 });
-export const SettingsPluginPlacementCommandSchema = PluginPlacementInputSchema.extend({
-  type: z.literal("settings.plugin.placement.set"),
-  idempotencyKey: z.string().trim().min(1).max(255),
-});
+
 export const SettingsPluginEnableResultSchema = z.object({
   type: z.literal("settings.plugin.enabled.set"),
-  placement: PluginPlacementSummarySchema,
-});
-export const SettingsPluginPlacementResultSchema = z.object({
-  type: z.literal("settings.plugin.placement.set"),
   placement: PluginPlacementSummarySchema,
 });

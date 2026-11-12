@@ -7,7 +7,7 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type DeploymentId,
 } from "@opensteer/core";
 import { getIntegrationDefinition } from "@opensteer/integration-catalog";
 import {
@@ -316,6 +316,7 @@ export interface ComputerUseStopLedger {
 type ComputerUseAdmission = <Result>(send: () => Promise<Result>) => Promise<Result>;
 
 export interface ComputerUseServiceOptions {
+  readonly deploymentId: DeploymentId;
   readonly passwords?: Pick<PasswordSignInService, "seal" | "validateLease">;
   readonly loginReceiver?: (runnerId: RunnerId) => LoginReceiverKey | null;
   readonly onSessionEnded?: (sessionId: ComputerUseSessionId) => void;
@@ -330,7 +331,6 @@ export interface ComputerUseServiceOptions {
   readonly onPlaceActivity?: (input: {
     ownerId: UserId;
     threadId: ThreadId;
-    home: boolean;
     runId: RunId;
     generation: number;
     place: PlaceIdentity;
@@ -374,10 +374,7 @@ export interface ComputerUseServiceOptions {
     }[],
   ) => void;
   readonly actingWindowMs?: number;
-  readonly resolveActor?: (
-    runId: RunId,
-    ownerId: UserId,
-  ) => Promise<{ threadId: ThreadId; home: boolean } | null>;
+  readonly resolveActor?: (runId: RunId, ownerId: UserId) => Promise<{ threadId: ThreadId } | null>;
   /**
    * The Thread's own name, for the card and for the sentence a second Run gets
    * when this Mac is in use. It is read as the person running the task, who is
@@ -404,7 +401,7 @@ export interface ComputerUseServiceOptions {
 interface Session {
   readonly cancellation: AbortController;
   readonly pending: Map<string, ComputerUseTarget>;
-  actor: { threadId: ThreadId; home: boolean } | null;
+  actor: { threadId: ThreadId } | null;
   readonly authority: ComputerUseContext;
   actionCount: number;
   /** When the session's agent last observed or acted in each app, by app key. */
@@ -457,7 +454,6 @@ interface Session {
   threadTitle: string | null;
   /** Settles once the Thread's name has been read, which the first call waits for. */
   readonly titleReady: Promise<void>;
-  readonly workspaceId: WorkspaceId;
 }
 
 function sessionKey(runId: RunId, bindingGeneration: number, runnerId: RunnerId): string {
@@ -494,6 +490,7 @@ function stopReportKey(stop: Pick<HeldStop, "runId" | "runnerId" | "sessionId">)
  * reaching a phone that is busy.
  */
 export class ComputerUseService {
+  readonly #deploymentId: DeploymentId;
   readonly #activityNotifyIntervalMs: number;
   readonly #hub: ComputerUseServiceOptions["hub"];
   readonly #idleMs: { readonly app: number; readonly display: number };
@@ -542,6 +539,7 @@ export class ComputerUseService {
   #closed = false;
 
   constructor(options: ComputerUseServiceOptions) {
+    this.#deploymentId = options.deploymentId;
     this.#onAuthorityRevoked = options.onAuthorityRevoked;
     this.#passwords = options.passwords;
     this.#loginReceiver = options.loginReceiver;
@@ -840,10 +838,10 @@ export class ComputerUseService {
               "The saved-login receiver changed. Update or reconnect Opensteer and observe again. Nothing was performed.",
             );
           for (const text of saved.values())
-            if (!passwords.validateLease({ ...text, workspaceId: session.workspaceId }))
+            if (!passwords.validateLease({ ...text, deploymentId: this.#deploymentId }))
               throw new ComputerUseError(
                 "failed",
-                "This saved login ended or belongs to another Workspace. Call sign_in again. Nothing was performed.",
+                "This saved login ended or belongs to another personal deployment. Call sign_in again. Nothing was performed.",
               );
         };
         check();
@@ -869,7 +867,7 @@ export class ComputerUseService {
             result = await withTimeout(
               passwords.seal({
                 ...text,
-                workspaceId: session.workspaceId,
+                deploymentId: this.#deploymentId,
                 receiver,
                 binding,
               }),
@@ -1201,12 +1199,11 @@ export class ComputerUseService {
           async (title) => {
             session.threadTitle = title;
             const actor = await this.#resolveActor?.(context.runId, machine.ownerUserId);
-            session.actor = actor ? { threadId: actor.threadId, home: actor.home } : null;
+            session.actor = actor ? { threadId: actor.threadId } : null;
           },
           () => undefined,
         )
         .catch(() => undefined),
-      workspaceId: context.workspaceId,
     };
     this.#sessions.set(key, session);
     return session;
@@ -1576,14 +1573,9 @@ export class ComputerUseService {
    * back, and every session using it ends now rather than running on
    * authority nobody has any more.
    */
-  closeForConnection(
-    runnerId: RunnerId,
-    holding: ComputerUseHolding,
-    workspaceId?: WorkspaceId,
-  ): void {
+  closeForConnection(runnerId: RunnerId, holding: ComputerUseHolding): void {
     for (const session of this.#snapshot()) {
       if (session.runnerId !== runnerId) continue;
-      if (workspaceId !== undefined && session.workspaceId !== workspaceId) continue;
       const holds =
         holding.kind === "app"
           ? session.apps.some((app) => computerAppIdentityKey(app) === holding.appKey)

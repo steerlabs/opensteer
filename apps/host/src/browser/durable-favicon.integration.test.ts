@@ -12,11 +12,10 @@ import {
   connectCallerMachine,
   dispatchCallerRun,
   enrollmentToken,
-  signUpUser,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   waitForMessage,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
@@ -64,7 +63,7 @@ async function until<Value>(
 }
 
 /** The owner's realtime socket, following the Workspace so catalog notices arrive. */
-async function listen(host: MachineAccessHost, workspaceId: string, headers = host.ownerHeaders) {
+async function listen(host: MachineAccessHost, headers = host.ownerHeaders) {
   const socket = new WebSocket(`ws://127.0.0.1:${host.hostPort}/v1/realtime`, {
     headers,
   });
@@ -80,16 +79,19 @@ async function listen(host: MachineAccessHost, workspaceId: string, headers = ho
     messages.push(message);
     const latest = message.events?.at(-1);
     if (message.type === "host.events" && latest?.sequence)
-      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack", workspaceId }));
+      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack" }));
   });
   const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
   socket.send(
     JSON.stringify({
-      afterSequence: zeroSequence,
+      cursor: {
+        deploymentId: (await host.store.getDeployment())!.id,
+        apiVersion: hostApiVersion,
+        afterSequence: zeroSequence,
+      },
       apiVersion: hostApiVersion,
       threadId: null,
       type: "client.subscribe",
-      workspaceId,
     }),
   );
   await synchronized;
@@ -111,7 +113,7 @@ integration("Durable tab icons", () => {
   it("records committed person visits per profile and keeps their icons after tab closure", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const runtime = await startBrowserRuntime(
       host.hostPort,
@@ -125,18 +127,14 @@ integration("Durable tab icons", () => {
         targetedStreaming: true,
         navigation: true,
         navigationAttribution: true,
-        workspaceTabs: true,
+        personalTabs: true,
       },
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5_000 });
     const caller = await connectCallerMachine(host, {
       name: "History caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "history-caller",
-        name: "History caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
@@ -147,30 +145,8 @@ integration("Durable tab icons", () => {
       idempotencyKey: "history-profile",
     });
     const profileId = profile.id;
-    const workspace = await host.store.findMainWorkspaceForOwner(host.ownerId);
-    if (!workspace) throw new Error("Main Workspace missing");
-    const stranger = await signUpUser(host, {
-      email: "history-stranger@example.com",
-      password: "history-stranger-password",
-    });
-    const strangerHost = { ...host, ownerId: stranger.userId, ownerHeaders: stranger.headers };
-    const strangerCaller = await connectCallerMachine(strangerHost, {
-      name: "Stranger caller",
-      token: await enrollmentToken(strangerHost, {
-        allowedModules: ["agents"],
-        idempotencyKey: "stranger-caller",
-        name: "Stranger caller",
-      }),
-    });
-    cleanups.push(() => strangerCaller.close());
-    await testRpcData(host.origin, "bootstrap.get", {}, { headers: stranger.headers });
-    const strangerWorkspace = await host.store.findMainWorkspaceForOwner(stranger.userId);
-    if (!strangerWorkspace) throw new Error("Stranger Workspace missing");
-    const devices = await Promise.all([
-      listen(host, workspace.id),
-      listen(host, workspace.id),
-      listen(host, strangerWorkspace.id, stranger.headers),
-    ]);
+    const stranger = { headers: { origin: host.origin.origin } };
+    const devices = await Promise.all([listen(host), listen(host)]);
     for (const device of devices) cleanups.push(() => device.close());
     const notices = (device: (typeof devices)[number]) =>
       device.messages.filter((message) => message.type === "host.browser-history-changed");
@@ -189,7 +165,6 @@ integration("Durable tab icons", () => {
         },
         { timeout: 5_000 },
       );
-      expect(notices(devices[2]!)).toEqual([]);
     };
     const read = () =>
       testRpcData(
@@ -509,7 +484,7 @@ integration("Durable tab icons", () => {
               { profileId, iconRefs: [iconRef] },
               { headers: stranger.headers },
             );
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(401);
     }
     for (const command of [
       {
@@ -523,7 +498,7 @@ integration("Durable tab icons", () => {
       const response = await testRpcRequest(host.origin, "commands.dispatch", command, {
         headers: stranger.headers,
       });
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(401);
     }
     await mutate("browser.history.remove", "history-remove", "https://www.second.example/");
     expect((await read()).icons.some((icon) => icon.origin === "https://www.second.example")).toBe(
@@ -577,8 +552,9 @@ integration("Durable tab icons", () => {
     expect(await read()).toEqual({ entries: [], icons: [] });
     // Guest navigation never writes a profile's history or icon rows.
     const guest = await host.runtime.browser.start({
+      placement: { kind: "runner", runnerId: runtime.runnerId },
       ownerId: host.ownerId,
-      workspaceId: workspace.id,
+
       fresh: true,
     });
     const guestViewer = new WebSocket(
@@ -662,24 +638,19 @@ integration("Durable tab icons", () => {
       },
       { timeout: 5_000 },
     );
-    expect(notices(devices[2]!)).toEqual([]);
   }, 60_000);
 
   it("stores live icons, survives Runtime end and Host restart, and serves them lazily to the owner", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Icon caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "icon-caller",
-        name: "Icon caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    const run = await dispatchCallerRun(host, caller, { key: "icons", title: "Icons" });
+    await dispatchCallerRun(host, caller, { key: "icons", title: "Icons" });
     const runtime = await startBrowserRuntime(
       host.hostPort,
       await enrollmentToken(host, {
@@ -687,7 +658,7 @@ integration("Durable tab icons", () => {
         idempotencyKey: "icon-browser",
         name: "Icon browser",
       }),
-      { agentReady: true, targetedStreaming: true, workspaceTabs: true },
+      { agentReady: true, targetedStreaming: true, personalTabs: true },
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
@@ -696,9 +667,9 @@ integration("Durable tab icons", () => {
       "commands.dispatch",
       {
         type: "browser.session.start",
-        workspaceId: run.workspaceId,
+
         idempotencyKey: "icon-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );
@@ -706,7 +677,7 @@ integration("Durable tab icons", () => {
     const sessionId = opened.session.id;
     let db = host.store.database;
     const row = (id: string) =>
-      db.selectFrom("workspaceTabs").selectAll().where("id", "=", id).executeTakeFirst();
+      db.selectFrom("personalTabs").selectAll().where("id", "=", id).executeTakeFirst();
     const revision = async () =>
       (
         await db
@@ -888,6 +859,10 @@ integration("Durable tab icons", () => {
     // The Host restarts against the same database; the Runtime does not return.
     await host.runtime.close();
     const restarted = await createHostRuntime(host.config);
+    if (restarted.kind !== "personal") {
+      await restarted.close();
+      throw new Error("Expected Personal Host");
+    }
     db = restarted.store.database;
     cleanups.push(() => restarted.close());
     await restarted.listen();
@@ -901,12 +876,9 @@ integration("Durable tab icons", () => {
     const restartedIcon = await fetchIcon(host.ownerHeaders);
     expect(restartedIcon.status).toBe(200);
     expect(await restartedIcon.json()).toMatchObject({ data: { favicon: iconA } });
-    const stranger = await signUpUser(restartedHost, {
-      email: "icon-stranger@example.com",
-      password: "icon-stranger-password",
-    });
+    const stranger = { headers: { origin: host.origin.origin } };
     const strangerIcon = await fetchIcon(stranger.headers);
-    expect(strangerIcon.status).toBe(404);
+    expect(strangerIcon.status).toBe(401);
     expect(await strangerIcon.text()).not.toContain("data:image");
     const wrongRef = await fetchIcon(host.ownerHeaders, "A".repeat(43));
     expect(await wrongRef.text()).not.toContain("data:image");
@@ -922,10 +894,10 @@ integration("Durable tab icons", () => {
     const closedTab = await testRpcData(
       host.origin,
       "commands.dispatch",
-      { type: "workspace.tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
+      { type: "tab.close", tabId: "page-a", idempotencyKey: "icon-close" },
       { headers: host.ownerHeaders },
     );
-    expect(closedTab.type).toBe("workspace.tab.close");
+    expect(closedTab.type).toBe("tab.close");
     const revoked = await fetchIcon(host.ownerHeaders);
     const revokedBody = await revoked.text();
     expect(revokedBody).not.toContain("data:image");

@@ -11,7 +11,6 @@ export const SpecialistManifestSchema = z.strictObject({
 export type SpecialistManifest = z.infer<typeof SpecialistManifestSchema>;
 export const SpecialistRegistrationViewSchema = z.object({
   id: z.string().min(1),
-  workspaceId: z.string().min(1),
   pluginId: z.string().min(1),
   pluginVersionId: z.string().min(1),
   ownerUserId: z.string().min(1),

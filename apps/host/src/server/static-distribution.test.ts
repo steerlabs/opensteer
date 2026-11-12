@@ -39,6 +39,14 @@ describe("Host static Web distribution", () => {
 
     const fallback = await app.inject({ method: "GET", url: "/settings/account" });
     expect(fallback.body).toContain("fixture app");
+    for (const url of [
+      "/c/tch_example",
+      "/c/tch_example/m/tms_example",
+      "/teams/join",
+      "/settings/teams/example",
+    ]) {
+      expect((await app.inject({ method: "GET", url })).body).toContain("fixture app");
+    }
     expect((await app.inject({ method: "GET", url: "/assets/missing.js" })).statusCode).toBe(404);
     expect((await app.inject({ method: "GET", url: "/..%2fsecret" })).statusCode).toBe(404);
     await app.close();

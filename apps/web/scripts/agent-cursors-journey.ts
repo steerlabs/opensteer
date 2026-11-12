@@ -59,7 +59,10 @@
  * (`playwright-core install chromium`) unless OPENSTEER_CHROMIUM_EXECUTABLE
  * names another.
  */
-import { homeCursorPaint, markColorPaint } from "@opensteer/client/host";
+import { markColorPaint } from "@opensteer/client/host";
+
+/** Opensteer's own cursor (Voice and what it starts), as `taskCursorPaint` draws it. */
+const ownCursorPaint = "#a46149";
 import type { MockHostClient } from "@opensteer/client/mock";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -142,7 +145,7 @@ const { browser, origin } = web;
 
 const palette = Object.fromEntries(
   Object.entries({
-    home: homeCursorPaint,
+    own: ownCursorPaint,
     ...Object.fromEntries(
       Object.entries(markColorPaint).map(([name, paint]) => [name, paint.cursor]),
     ),
@@ -178,7 +181,6 @@ try {
     mock.scriptPlaces();
     const snapshot = mock.getSnapshot();
     return {
-      homeThreadId: snapshot.homeThreadId,
       runs: snapshot.runQueue
         .filter((run) => run.status === "running" || run.status === "waiting")
         .map(({ id, status, threadId }) => ({ id, status, threadId })),
@@ -202,9 +204,10 @@ try {
   };
   const here = tab("Launch brief");
   const there = tab("Coffee shortlist");
-  const homeRun = fixture.runs.find((run) => run.threadId === fixture.homeThreadId);
-  const main = fixture.runs.find(
-    (run) => run.status === "running" && run.threadId !== fixture.homeThreadId,
+  const main = fixture.runs.find((run) => run.status === "running");
+  // A second working task: its cursor beside the first, each in its own task's colour.
+  const homeRun = fixture.runs.find(
+    (run) => run.status === "running" && run.threadId !== main?.threadId,
   );
   // An unlisted delegated Run carries its ancestor's thread id; any other live Run stands in.
   const delegated = fixture.runs.find(
@@ -221,7 +224,7 @@ try {
     run: RunRef,
     target: TabRef,
     pointer: Point | null,
-    options: { readonly order?: number; readonly threadId?: string; readonly home?: boolean } = {},
+    options: { readonly order?: number; readonly threadId?: string } = {},
   ) => {
     const geometryRevision = await page.evaluate(
       ({ sessionId, surfaceId }) =>
@@ -237,7 +240,6 @@ try {
       activity: {
         place: { kind: "browser", sessionId: target.sessionId, surfaceId: target.id },
         threadId: options.threadId ?? run.threadId,
-        home: options.home ?? false,
         runId: run.id,
         generation: 1,
         seq: ++seq,
@@ -533,7 +535,7 @@ try {
     "15 · 9 · a second thread appears at its known point, in its own colour and name",
     async () => {
       const homePoint = { x: 0.25, y: 0.35 };
-      await apply(await activity(homeRun, here, homePoint, { home: true }));
+      await apply(await activity(homeRun, here, homePoint));
       const samples = [await readLayer(page), ...(await frames(10))];
       const target = at(samples[0]!.picture, homePoint);
       const track = samples.map((sample) => cursorOf(sample, homeRun.threadId));
@@ -542,7 +544,7 @@ try {
       const agent = cursorOf(last, main.threadId)!;
       const expectedColours = {
         agent: markColorPaint[fixture.marks[main.threadId]!.color!].cursor,
-        home: homeCursorPaint,
+        home: markColorPaint[fixture.marks[homeRun.threadId]!.color!].cursor,
       };
       const observed = {
         agent,
@@ -559,7 +561,9 @@ try {
       );
       expectThat(
         observed,
-        last.cursors.length === 2 && home.name === "Opensteer" && agent.name === mainTitle,
+        last.cursors.length === 2 &&
+          home.name === (fixture.titles[homeRun.threadId] ?? "") &&
+          agent.name === mainTitle,
         "the two cursors do not carry their own names",
       );
       expectThat(
@@ -963,7 +967,7 @@ try {
       );
       const header = await pictureHeader(pictured);
       const pointer = { x: 0.1, y: 0.1 };
-      await apply(await activity(homeRun, pictured, pointer, { home: true }));
+      await apply(await activity(homeRun, pictured, pointer));
       let middle: LayerView | undefined;
       let finder: LayerView | undefined;
       for (let index = 0; index < 120; index++) {

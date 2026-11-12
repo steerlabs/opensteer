@@ -19,7 +19,6 @@ import {
   type HarnessCatalogConvergenceStore,
   type HarnessCatalogInspector,
 } from "./harness-catalogs.js";
-
 const harnessInstanceId = createId("harnessInstance");
 const harnessEnvironmentId = createId("environment");
 const harness: HarnessInstanceRecord = {
@@ -35,7 +34,6 @@ const harness: HarnessInstanceRecord = {
   sourceId: "openai",
   stateKind: "isolated",
 };
-
 function readyCatalog(): HarnessInstanceCatalog {
   return HarnessInstanceCatalogSchema.parse({
     continuationIdentity: {
@@ -57,7 +55,6 @@ function readyCatalog(): HarnessInstanceCatalog {
     steering: false,
   });
 }
-
 function errorCatalog(): HarnessInstanceCatalog {
   return HarnessInstanceCatalogSchema.parse({
     detail: "The AI engine could not be inspected",
@@ -67,7 +64,6 @@ function errorCatalog(): HarnessInstanceCatalog {
     status: "error",
   });
 }
-
 function convergence(options: {
   readonly capturedAt?: Date;
   readonly harnesses?: readonly HarnessInstanceRecord[];
@@ -99,54 +95,63 @@ function convergence(options: {
       return captured;
     },
   };
-  return { catalogs, inspectHarnesses, recorded, revisions };
+  return {
+    catalogs,
+    inspectHarnesses,
+    recorded,
+    revisions,
+  };
 }
-
 describe("harness catalog convergence", () => {
   it("observes only the subset the recorder actually persisted", async () => {
-    const { catalogs, inspectHarnesses } = convergence({ stored: null });
+    const { catalogs, inspectHarnesses } = convergence({
+      stored: null,
+    });
     catalogs.recordHarnessCatalogs = async () => [];
     const onCommitted = vi.fn();
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
       onCommitted,
     });
     expect(onCommitted).toHaveBeenCalledExactlyOnceWith(harnessEnvironmentId, []);
   });
-
   it("captures the catalog an attached work location never managed to report", async () => {
     const environmentId = harnessEnvironmentId;
-    const { catalogs, inspectHarnesses, recorded, revisions } = convergence({ stored: null });
-
+    const { catalogs, inspectHarnesses, recorded, revisions } = convergence({
+      stored: null,
+    });
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [environmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
-
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
     expect(inspectHarnesses.mock.calls[0]?.[0]).toBe(environmentId);
     expect(recorded).toEqual([[readyCatalog()]]);
     expect(revisions).toEqual([new Map([[harnessInstanceId, harness.runtimeRevision]])]);
   });
-
   it("re-inspects a stored error, because that is the answer looking again can change", async () => {
-    const { catalogs, inspectHarnesses } = convergence({ stored: errorCatalog() });
-
+    const { catalogs, inspectHarnesses } = convergence({
+      stored: errorCatalog(),
+    });
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
-
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
   });
-
   it.each([0, 40_000, harnessCatalogMaxAgeMs * 2])(
     "keeps sign-in required stable after %i milliseconds",
     async (age) => {
@@ -163,57 +168,68 @@ describe("harness catalog convergence", () => {
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId],
         now,
-        runners: { inspectHarnesses },
+        runners: {
+          inspectHarnesses,
+        },
         signal: AbortSignal.timeout(1_000),
       });
       expect(inspectHarnesses).not.toHaveBeenCalled();
       expect(recorded).toEqual([]);
     },
   );
-
   it("converges a preparing catalog to the Runner's completed result", async () => {
     const { catalogs, inspectHarnesses, recorded } = convergence({
-      stored: { ...errorCatalog(), status: "preparing", detail: "Preparing Codex…" },
+      stored: {
+        ...errorCatalog(),
+        status: "preparing",
+        detail: "Preparing Codex…",
+      },
     });
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
     expect(recorded).toEqual([[readyCatalog()]]);
   });
-
   it("does not re-inspect a fresh ready catalog", async () => {
-    const { catalogs, inspectHarnesses } = convergence({ stored: readyCatalog() });
-
+    const { catalogs, inspectHarnesses } = convergence({
+      stored: readyCatalog(),
+    });
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
-
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
-
   it("ignores an AI engine that is turned off", async () => {
     const { catalogs, inspectHarnesses } = convergence({
-      harnesses: [{ ...harness, enabled: false }],
+      harnesses: [
+        {
+          ...harness,
+          enabled: false,
+        },
+      ],
       stored: null,
     });
-
     await reconcileHarnessCatalogs({
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
-
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
-
   it.each([harnessCatalogMaxAgeMs, harnessCatalogMaxAgeMs + 1, -1])(
     "refreshes ready catalogs whose capture age is %i milliseconds",
     async (age) => {
@@ -226,14 +242,15 @@ describe("harness catalog convergence", () => {
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId],
         now,
-        runners: { inspectHarnesses },
+        runners: {
+          inspectHarnesses,
+        },
         signal: AbortSignal.timeout(1_000),
       });
       expect(inspectHarnesses).toHaveBeenCalledTimes(1);
       expect(recorded).toEqual([[readyCatalog()]]);
     },
   );
-
   it("keeps a catalog just inside its freshness window", async () => {
     const now = Date.now();
     const { catalogs, inspectHarnesses } = convergence({
@@ -244,16 +261,24 @@ describe("harness catalog convergence", () => {
       catalogs,
       connectedEnvironmentIds: [harnessEnvironmentId],
       now,
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
-
   it("refreshes other computers even if one inspection fails", async () => {
     const other = createId("environment");
     const { catalogs, inspectHarnesses } = convergence({
-      harnesses: [harness, { ...harness, environmentId: other, id: createId("harnessInstance") }],
+      harnesses: [
+        harness,
+        {
+          ...harness,
+          environmentId: other,
+          id: createId("harnessInstance"),
+        },
+      ],
     });
     inspectHarnesses.mockImplementation(async (environmentId) => {
       if (environmentId === harnessEnvironmentId) throw new Error("Computer disconnected");
@@ -263,18 +288,23 @@ describe("harness catalog convergence", () => {
       reconcileHarnessCatalogs({
         catalogs,
         connectedEnvironmentIds: [harnessEnvironmentId, other],
-        runners: { inspectHarnesses },
+        runners: {
+          inspectHarnesses,
+        },
         signal: AbortSignal.timeout(1_000),
       }),
     ).rejects.toThrow("AI model catalog refresh failed");
     expect(inspectHarnesses).toHaveBeenCalledTimes(2);
   });
 });
-
 describe("mutation-owned harness catalog reconciliation", () => {
   it("retains A's inspection when adding B discards the in-flight desired set", async () => {
     const first = Promise.withResolvers<readonly HarnessInstanceCatalog[]>();
-    const secondHarness = { ...harness, id: createId("harnessInstance"), name: "B" };
+    const secondHarness = {
+      ...harness,
+      id: createId("harnessInstance"),
+      name: "B",
+    };
     let current = [harness];
     const stored = new Map<HarnessInstanceId, HarnessInstanceCatalog>();
     const reconcileHarnesses = vi.fn(
@@ -285,7 +315,10 @@ describe("mutation-owned harness catalog reconciliation", () => {
         inspect?: readonly HarnessInstanceId[],
       ) => {
         if (reconcileHarnesses.mock.calls.length === 1) return await first.promise;
-        return (inspect ?? []).map((id) => ({ ...readyCatalog(), harnessInstanceId: id }));
+        return (inspect ?? []).map((id) => ({
+          ...readyCatalog(),
+          harnessInstanceId: id,
+        }));
       },
     );
     const owner = new HarnessCatalogReconciliationOwner({
@@ -299,7 +332,10 @@ describe("mutation-owned harness catalog reconciliation", () => {
       onError: (environmentId, error) => {
         throw new Error(`${environmentId}: ${String(error)}`);
       },
-      runners: { isAvailable: () => true, reconcileHarnesses },
+      runners: {
+        isAvailable: () => true,
+        reconcileHarnesses,
+      },
     });
     try {
       owner.schedule(harnessEnvironmentId, [harness.id]);
@@ -315,7 +351,6 @@ describe("mutation-owned harness catalog reconciliation", () => {
       await owner.close();
     }
   });
-
   it("coalesces changes behind an active pass and rereads the complete desired set", async () => {
     const first = Promise.withResolvers<readonly HarnessInstanceCatalog[]>();
     let current = [harness];
@@ -332,19 +367,29 @@ describe("mutation-owned harness catalog reconciliation", () => {
         recordHarnessCatalogs,
       },
       onError: () => undefined,
-      runners: { isAvailable: () => true, reconcileHarnesses },
+      runners: {
+        isAvailable: () => true,
+        reconcileHarnesses,
+      },
     });
-
     owner.schedule(harnessEnvironmentId);
     await vi.waitFor(() => expect(reconcileHarnesses).toHaveBeenCalledTimes(1));
-    current = [{ ...harness, enabled: false }];
+    current = [
+      {
+        ...harness,
+        enabled: false,
+      },
+    ];
     owner.schedule(harnessEnvironmentId, []);
     owner.schedule(harnessEnvironmentId, [harness.id]);
     first.resolve([readyCatalog()]);
     await vi.waitFor(() => expect(reconcileHarnesses).toHaveBeenCalledTimes(2));
-
     expect(reconcileHarnesses.mock.calls.map(([, desired]) => desired)).toEqual([
-      [expect.objectContaining({ id: harnessInstanceId })],
+      [
+        expect.objectContaining({
+          id: harnessInstanceId,
+        }),
+      ],
       [],
     ]);
     expect(recordHarnessCatalogs).toHaveBeenCalledTimes(1);
@@ -356,7 +401,6 @@ describe("mutation-owned harness catalog reconciliation", () => {
     });
     await owner.close();
   });
-
   it("cancels an active pass when its Host closes", async () => {
     let operationSignal: AbortSignal | undefined;
     const reconcileHarnesses = vi.fn(
@@ -367,7 +411,9 @@ describe("mutation-owned harness catalog reconciliation", () => {
       ) => {
         operationSignal = signal;
         await new Promise<void>((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          signal.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
         });
         return [];
       },
@@ -378,16 +424,16 @@ describe("mutation-owned harness catalog reconciliation", () => {
         recordHarnessCatalogs: async ({ catalogs }) => catalogs,
       },
       onError: () => undefined,
-      runners: { isAvailable: () => true, reconcileHarnesses },
+      runners: {
+        isAvailable: () => true,
+        reconcileHarnesses,
+      },
     });
-
     owner.schedule(harnessEnvironmentId);
     await vi.waitFor(() => expect(reconcileHarnesses).toHaveBeenCalledTimes(1));
     await owner.close();
-
     expect(operationSignal?.aborted).toBe(true);
   });
-
   it("does not dispatch after shutdown begins during the durable inventory read", async () => {
     const inventory = Promise.withResolvers<readonly HarnessInstanceRecord[]>();
     const listHarnessInstances = vi.fn(async () => await inventory.promise);
@@ -398,19 +444,19 @@ describe("mutation-owned harness catalog reconciliation", () => {
         recordHarnessCatalogs: async ({ catalogs }) => catalogs,
       },
       onError: () => undefined,
-      runners: { isAvailable: () => true, reconcileHarnesses },
+      runners: {
+        isAvailable: () => true,
+        reconcileHarnesses,
+      },
     });
-
     owner.schedule(harnessEnvironmentId);
     await vi.waitFor(() => expect(listHarnessInstances).toHaveBeenCalledTimes(1));
     const closing = owner.close();
     inventory.resolve([harness]);
     await closing;
-
     expect(reconcileHarnesses).not.toHaveBeenCalled();
   });
 });
-
 describe("catalog commit notifications", () => {
   it("publishes only committed catalogs, without an observer, and skips empty records", async () => {
     const commit = Promise.withResolvers<void>();
@@ -429,7 +475,9 @@ describe("catalog commit notifications", () => {
           return stored;
         },
       },
-      { broadcast },
+      {
+        broadcast,
+      },
     );
     const input = {
       catalogs: [readyCatalog()],
@@ -440,18 +488,28 @@ describe("catalog commit notifications", () => {
     expect(broadcast).not.toHaveBeenCalled();
     commit.resolve();
     await recording;
-    expect(broadcast).toHaveBeenCalledWith({ type: "host.machines.changed" }, "harness.catalog");
+    expect(broadcast).toHaveBeenCalledWith(
+      {
+        type: "host.machines.changed",
+      },
+      "harness.catalog",
+    );
     expect(rereads).toEqual([[readyCatalog()]]);
-    await recorder.recordHarnessCatalogs({ ...input, catalogs: [] });
+    await recorder.recordHarnessCatalogs({
+      ...input,
+      catalogs: [],
+    });
     accept = false;
     await recorder.recordHarnessCatalogs(input);
     expect(broadcast).toHaveBeenCalledTimes(1);
   });
 });
-
 function runEvent(
   environmentId: EnvironmentId,
-  outcome: { readonly data: object; readonly type: "run.completed" | "run.failed" },
+  outcome: {
+    readonly data: object;
+    readonly type: "run.completed" | "run.failed";
+  },
 ): AgentEvent {
   return AgentEventSchema.parse({
     createdAt: "2026-09-05T00:00:00.000Z",
@@ -472,52 +530,60 @@ function runEvent(
     sequence: "1",
     threadId: createId("thread"),
     type: outcome.type,
-    workspaceId: createId("workspace"),
   });
 }
-
 function runFailure(environmentId: EnvironmentId, code: string): AgentEvent {
   return runEvent(environmentId, {
-    data: { code, message: "You've hit your usage limit.", retryable: false, status: "failed" },
+    data: {
+      code,
+      message: "You've hit your usage limit.",
+      retryable: false,
+      status: "failed",
+    },
     type: "run.failed",
   });
 }
-
 describe("harness catalog re-inspection after a usage limit", () => {
   it("re-reads the failing work location, because the Run just proved the stored answer wrong", async () => {
-    const { catalogs, inspectHarnesses, recorded } = convergence({ stored: readyCatalog() });
-
+    const { catalogs, inspectHarnesses, recorded } = convergence({
+      stored: readyCatalog(),
+    });
     await inspectHarnessCatalogsAfterUsageLimit({
       catalogs,
       event: runFailure(harnessEnvironmentId, harnessUsageLimitFailureCode),
-      runners: { inspectHarnesses },
+      runners: {
+        inspectHarnesses,
+      },
       signal: AbortSignal.timeout(1_000),
     });
-
     expect(inspectHarnesses).toHaveBeenCalledTimes(1);
     expect(inspectHarnesses.mock.calls[0]?.[0]).toBe(harnessEnvironmentId);
     expect(inspectHarnesses.mock.calls[0]?.[1].map(({ id }) => id)).toEqual([harnessInstanceId]);
     expect(recorded).toEqual([[readyCatalog()]]);
   });
-
   it("leaves every other failure alone", async () => {
-    const { catalogs, inspectHarnesses } = convergence({ stored: readyCatalog() });
-
+    const { catalogs, inspectHarnesses } = convergence({
+      stored: readyCatalog(),
+    });
     for (const event of [
       runFailure(harnessEnvironmentId, "codex_harness_error"),
       runEvent(harnessEnvironmentId, {
-        data: { replyMessageId: null, status: "completed" },
+        data: {
+          replyMessageId: null,
+          status: "completed",
+        },
         type: "run.completed",
       }),
     ]) {
       await inspectHarnessCatalogsAfterUsageLimit({
         catalogs,
         event,
-        runners: { inspectHarnesses },
+        runners: {
+          inspectHarnesses,
+        },
         signal: AbortSignal.timeout(1_000),
       });
     }
-
     expect(inspectHarnesses).not.toHaveBeenCalled();
   });
 });

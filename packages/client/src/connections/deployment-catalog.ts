@@ -581,7 +581,7 @@ const deploymentCatalogFields = {
  * Bumped whenever the shape below changes: this file is a rebuildable routing
  * cache, so another version is discarded empty rather than migrated.
  */
-const deploymentCatalogSchemaVersion = 4;
+const deploymentCatalogSchemaVersion = 5;
 
 /** Stored exactly as it is held in memory — there is no second shape on disk. */
 export const DeploymentCatalogSchema = z

@@ -273,7 +273,7 @@ public final class UnlockedVault {
       guard Origins.isSite(change.key.site), login.origins.contains(where: { Origins.isWithinSite($0, site: change.key.site) })
       else { throw VaultError.invalidGrant("a grant's login has no website within its site") }
       let grant = Grant(
-        key: change.key, loginId: loginId, deploymentName: change.deploymentName, workspaceName: change.workspaceName, revision: next[loginId]!.revision, permissionVersion: change.permissionVersion)
+        key: change.key, loginId: loginId, deploymentName: change.deploymentName, revision: next[loginId]!.revision, permissionVersion: change.permissionVersion)
       try grant.validateStored()
       nextGrants[change.key] = grant
     }

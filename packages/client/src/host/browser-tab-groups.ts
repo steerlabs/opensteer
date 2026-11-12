@@ -123,12 +123,12 @@ export class BrowserTabGroupClient {
       async () => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "workspace.tabs.move",
+            type: "tabs.move",
             ...move,
             idempotencyKey: mutationIdempotencyKey("tab-move"),
           }),
         );
-        if (result.type !== "workspace.tabs.move") throw new Error("Unexpected tab move result.");
+        if (result.type !== "tabs.move") throw new Error("Unexpected tab move result.");
         return result;
       },
     );
@@ -157,7 +157,7 @@ export class BrowserTabGroupClient {
       async () => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "workspace.tabs.group",
+            type: "tabs.group",
             tabIds: ids,
             ...target,
             ...("groupId" in target
@@ -166,7 +166,7 @@ export class BrowserTabGroupClient {
             idempotencyKey: mutationIdempotencyKey("tab-group"),
           }),
         );
-        if (result.type !== "workspace.tabs.group") throw new Error("Unexpected tab group result.");
+        if (result.type !== "tabs.group") throw new Error("Unexpected tab group result.");
         return result;
       },
     );
@@ -184,12 +184,12 @@ export class BrowserTabGroupClient {
       async () => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "workspace.tabs.ungroup",
+            type: "tabs.ungroup",
             tabIds: tabIds.map((id) => BrowserSurfaceIdSchema.parse(id)),
             idempotencyKey: mutationIdempotencyKey("tab-group"),
           }),
         );
-        if (result.type !== "workspace.tabs.ungroup") throw new Error("Unexpected ungroup result.");
+        if (result.type !== "tabs.ungroup") throw new Error("Unexpected ungroup result.");
         return result;
       },
     );
@@ -205,13 +205,13 @@ export class BrowserTabGroupClient {
       async () => {
         const result = unwrapRpcResult(
           await this.rpc["commands.dispatch"]({
-            type: "workspace.tabGroup.update",
+            type: "tabGroup.update",
             groupId: BrowserTabGroupIdSchema.parse(groupId),
             ...update,
             idempotencyKey: mutationIdempotencyKey("tab-group"),
           }),
         );
-        if (result.type !== "workspace.tabGroup.update")
+        if (result.type !== "tabGroup.update")
           throw new Error("Unexpected tab group update result.");
         return result;
       },

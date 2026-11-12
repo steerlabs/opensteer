@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { BrowserSessionId, UserId } from "@opensteer/core";
-import type { BrowserGroupFacts, WorkspaceTabStreamRow } from "@opensteer/database";
+import type { BrowserGroupFacts, PersonalTabStreamRow } from "@opensteer/database";
 import {
   browserPageSite,
   type BrowserGroupRow,
@@ -42,7 +42,7 @@ export interface BrowserRowPorts {
     userId: UserId,
     groupIds: readonly BrowserSessionId[],
   ): Promise<readonly BrowserGroupFacts[]>;
-  readTabs(groupIds: readonly BrowserSessionId[]): Promise<readonly WorkspaceTabStreamRow[]>;
+  readTabs(groupIds: readonly BrowserSessionId[]): Promise<readonly PersonalTabStreamRow[]>;
   groupId(sessionId: BrowserSessionId): Promise<BrowserSessionId | null>;
   live(sessionId: BrowserSessionId): BrowserLiveRows | undefined;
   occupants(userId: UserId, sessionId: BrowserSessionId, tabId: string): BrowserTabRow["occupants"];
@@ -92,7 +92,7 @@ function prefix<Row extends { id: string }>(
 
 export class BrowserRowSource {
   readonly #projections = new Map<UserId, Projection>();
-  readonly #durable = new Map<BrowserSessionId, Map<string, WorkspaceTabStreamRow>>();
+  readonly #durable = new Map<BrowserSessionId, Map<string, PersonalTabStreamRow>>();
   readonly #tabReads = new Map<BrowserSessionId, Promise<void>>();
   readonly #readingGroups = new Map<BrowserSessionId, number>();
   readonly #tabVersions = new Map<BrowserSessionId, number>();
@@ -191,7 +191,7 @@ export class BrowserRowSource {
         const versions = new Map(ids.map((id) => [id, this.#tabVersions.get(id) ?? 0]));
         const rows = await this.ports.readTabs(ids);
         if (this.#closed) return;
-        const maps = new Map(ids.map((id) => [id, new Map<string, WorkspaceTabStreamRow>()]));
+        const maps = new Map(ids.map((id) => [id, new Map<string, PersonalTabStreamRow>()]));
         for (const row of rows) maps.get(row.groupId)?.set(row.id, row);
         for (const [id, tabs] of maps)
           if (versions.get(id) === (this.#tabVersions.get(id) ?? 0)) this.#durable.set(id, tabs);
@@ -346,7 +346,7 @@ export class BrowserRowSource {
   }
   tabsWritten(
     groupId: BrowserSessionId,
-    rows: readonly WorkspaceTabStreamRow[],
+    rows: readonly PersonalTabStreamRow[],
     closedIds: readonly string[],
   ): void {
     if (!rows.length && !closedIds.length) return;
@@ -445,10 +445,12 @@ export class BrowserRowSource {
   }
   async bootstrap(
     userId: UserId,
+    maxBytes = 128 * 1024,
   ): Promise<Pick<HostedBrowserBootstrap, "groups" | "tabs" | "continuation">> {
     if (this.#closed) return { groups: { rows: [], complete: true }, tabs: [] };
     const authority = this.ports.authorityGeneration();
-    const budget = 64 * 1024;
+    const budget = Math.max(512, Math.floor(maxBytes / 2) - 1024);
+    const readBatchSize = 32;
     const cached = this.#projections.get(userId);
     const groups = new Map<BrowserSessionId, BrowserGroupRow>();
     const facts = new Map<BrowserSessionId, BrowserGroupFacts>();
@@ -456,40 +458,61 @@ export class BrowserRowSource {
       cached && !cached.held ? [...cached.groups.keys()] : await this.ports.groupIds(userId);
     let bytes = 0;
     let exhausted = true;
-    for (const id of ids) {
-      const row = cached && !cached.held ? cached.groups.get(id) : undefined;
-      let group = row;
-      if (!group) {
-        const read = (await this.ports.readGroups(userId, [id]))[0];
-        if (!read || (!current(read) && !read.tabCount)) continue;
-        facts.set(id, read);
-        const live = this.#live(read);
-        group = {
-          ...read,
-          tabCount: Math.max(read.tabCount, live?.records.size ?? 0),
-          inventoryRevision: live?.inventoryRevision ?? 0,
-          navigation: live?.navigation ?? false,
-          acting: live?.acting ?? false,
-          page: live?.page ?? null,
-        };
-      }
-      groups.set(id, group);
-      bytes += keyedStreamBytes(group) + 1;
-      if (bytes >= budget) {
-        exhausted = false;
-        break;
+    for (let offset = 0; offset < ids.length && exhausted; offset += readBatchSize) {
+      const batch = ids.slice(offset, offset + readBatchSize);
+      const missing = batch.filter((id) => !cached || cached.held || !cached.groups.has(id));
+      if (missing.length)
+        for (const read of await this.ports.readGroups(userId, missing)) facts.set(read.id, read);
+      for (const id of batch) {
+        let group = cached && !cached.held ? cached.groups.get(id) : undefined;
+        if (!group) {
+          const read = facts.get(id);
+          if (!read || (!current(read) && !read.tabCount)) continue;
+          const live = this.#live(read);
+          group = {
+            ...read,
+            tabCount: Math.max(read.tabCount, live?.records.size ?? 0),
+            inventoryRevision: live?.inventoryRevision ?? 0,
+            navigation: live?.navigation ?? false,
+            acting: live?.acting ?? false,
+            page: live?.page ?? null,
+          };
+        }
+        groups.set(id, group);
+        bytes += keyedStreamBytes(group) + 1;
+        if (bytes >= budget) {
+          exhausted = false;
+          break;
+        }
       }
     }
     const packedGroups = prefix(groups, budget, { complete: false });
     packedGroups.complete &&= exhausted;
     const tabs: Required<HostedBrowserBootstrap>["tabs"] = [];
+    const tabBatch = new Map<BrowserSessionId, Map<string, PersonalTabStreamRow>>();
     let used = 2;
-    for (const group of packedGroups.rows) {
+    for (const [index, group] of packedGroups.rows.entries()) {
       let rows = cached && !cached.held ? cached.tabs.get(group.id) : undefined;
       if (!rows) {
-        const durable = new Map(
-          (await this.ports.readTabs([group.id])).map((row) => [row.id, row]),
-        );
+        let durable = tabBatch.get(group.id);
+        if (!durable) {
+          tabBatch.clear();
+          let tabCount = 0;
+          for (const candidate of packedGroups.rows.slice(index)) {
+            if (cached && !cached.held && cached.tabs.has(candidate.id)) continue;
+            // A large group can fill the byte budget on its own.
+            if (
+              tabBatch.size >= readBatchSize ||
+              (tabBatch.size > 0 && tabCount + candidate.tabCount > readBatchSize)
+            )
+              break;
+            tabBatch.set(candidate.id, new Map());
+            tabCount += candidate.tabCount;
+          }
+          for (const row of await this.ports.readTabs([...tabBatch.keys()]))
+            tabBatch.get(row.groupId)?.set(row.id, row);
+          durable = tabBatch.get(group.id)!;
+        }
         const read = facts.get(group.id)!;
         rows = new Map();
         for (const id of new Set([
@@ -509,7 +532,7 @@ export class BrowserRowSource {
       used += keyedStreamBytes(entry) + (tabs.length > 1 ? 1 : 0);
       if (!packed.complete) break;
     }
-    if (authority !== this.ports.authorityGeneration()) return this.bootstrap(userId);
+    if (authority !== this.ports.authorityGeneration()) return this.bootstrap(userId, maxBytes);
     const finalGroups = prefix(groups, budget, { complete: false });
     finalGroups.complete &&= exhausted;
     const included = new Set(finalGroups.rows.map((row) => row.id));

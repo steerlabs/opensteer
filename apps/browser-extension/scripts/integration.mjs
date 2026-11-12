@@ -130,7 +130,7 @@ function discoveryDocument() {
     deploymentId: "dep_11111111-1111-4111-8111-111111111111",
     hostInstanceId: "hst_22222222-2222-4222-8222-222222222222",
     hostKey: { algorithm: "Ed25519" },
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+    deploymentShape: { kind: "personal" },
   };
 }
 
@@ -221,6 +221,7 @@ function hostRequest(origin, request, response) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({
+        kind: "personal",
         apiVersion: hostApiVersion,
         authority: authority(keysAt(origin).discovery),
         bootstrapMethods: ["pairing-code"],

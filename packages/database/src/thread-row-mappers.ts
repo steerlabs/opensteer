@@ -27,7 +27,6 @@ import {
   type ThreadInput,
   type ThreadRunQueueEntry,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { sql, type Selectable } from "kysely";
 import type {
@@ -37,21 +36,17 @@ import type {
   RunAttemptTable,
   ThreadInputTable,
 } from "./schema.js";
-
 export const threadPendingRequestsSelection = sql<number>`threads.pending_request_count`.as(
   "pendingRequests",
 );
-
 export const threadProviderSessionSelection = sql<ProviderSessionId | null>`(
   select id from provider_sessions
   where thread_id = threads.id and active
 )`.as("providerSessionId");
-
 export const threadContinuationIdentitySelection = sql<Thread["continuationIdentity"]>`(
   select continuation_identity from provider_sessions
   where thread_id = threads.id and active
 )`.as("continuationIdentity");
-
 type ThreadReadRow = {
   readonly askedAt: Date;
   readonly doneAt: Date | null;
@@ -59,13 +54,16 @@ type ThreadReadRow = {
   readonly inputQueuePaused: boolean;
   readonly accessMode: ThreadAccessMode;
   readonly specialistId?: string | null;
-  readonly inheritsMain: boolean;
-  readonly role: Thread["role"];
+  readonly purpose: Thread["purpose"];
+  readonly folderComputerId: import("@opensteer/core").RunnerId;
+  readonly folderPath: string;
+  readonly teamId: import("@opensteer/core").DeploymentId | null;
+  readonly channelId: import("@opensteer/core").TeamChannelId | null;
+  readonly threadRootId: import("@opensteer/core").TeamMessageId | null;
   readonly continuationIdentity: Thread["continuationIdentity"];
   readonly providerSessionId: ProviderSessionId | null;
   readonly id: ThreadId;
   readonly lineageRootThreadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
   readonly parentThreadId: ThreadId | null;
   readonly listed: boolean;
   readonly title: string;
@@ -80,18 +78,27 @@ type ThreadReadRow = {
   readonly createdAt: Date;
   readonly updatedAt: Date;
 };
-
 export function threadFromRow(row: ThreadReadRow): Thread {
   return ThreadSchema.parse(threadValueFromRow(row));
 }
-
 export function threadsFromRows(rows: readonly ThreadReadRow[]): Thread[] {
   return ThreadSchema.array().parse(rows.map(threadValueFromRow));
 }
-
 function threadValueFromRow(row: ThreadReadRow) {
   return {
     ...row,
+    folder: {
+      computerId: row.folderComputerId,
+      path: row.folderPath,
+    },
+    teamOrigin:
+      row.teamId && row.channelId && row.threadRootId
+        ? {
+            teamId: row.teamId,
+            channelId: row.channelId,
+            threadRootId: row.threadRootId,
+          }
+        : null,
     askedAt: row.askedAt.toISOString(),
     createdAt: row.createdAt.toISOString(),
     doneAt: row.doneAt?.toISOString() ?? null,
@@ -100,18 +107,19 @@ function threadValueFromRow(row: ThreadReadRow) {
     updatedAt: row.updatedAt.toISOString(),
   };
 }
-
 export function messageFromRow(row: Selectable<MessageTable>): Message {
   return MessageSchema.parse(messageValueFromRow(row));
 }
-
 export function messagesFromRows(rows: readonly Selectable<MessageTable>[]): Message[] {
   return MessageSchema.array().parse(rows.map(messageValueFromRow));
 }
-
 function messageValueFromRow(row: Selectable<MessageTable>) {
   return {
-    ...(row.quote ? { quote: row.quote } : {}),
+    ...(row.quote
+      ? {
+          quote: row.quote,
+        }
+      : {}),
     author: row.author,
     content: row.content,
     createdAt: row.createdAt.toISOString(),
@@ -122,9 +130,10 @@ function messageValueFromRow(row: Selectable<MessageTable>) {
     threadId: row.threadId,
   };
 }
-
 export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInput {
   return ThreadInputSchema.parse({
+    teamRequestId: row.teamRequestId,
+    teamSource: row.teamSource,
     assignmentId: row.assignmentId,
     cancelReason: row.cancelReason,
     causalChainId: row.causalChainId,
@@ -139,7 +148,6 @@ export function threadInputFromRow(row: Selectable<ThreadInputTable>): ThreadInp
     updatedAt: row.updatedAt.toISOString(),
   });
 }
-
 export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment {
   return AssignmentSchema.parse({
     createdAt: row.createdAt.toISOString(),
@@ -161,14 +169,14 @@ export function assignmentFromRow(row: Selectable<DelegationTable>): Assignment 
     returnMessageId: row.resultMessageId,
     returnReason: row.resultReason,
     returnStatus: row.resultStatus,
-    revision: row.revision,
+    revision: Number(row.revision),
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     workerThreadId: row.childThreadId,
   });
 }
-
 export function runFromRow(row: {
+  readonly teamRequestId: import("@opensteer/core").TeamAgentRequestId | null;
   readonly accessMode: ThreadAccessMode;
   readonly activationInputId: MessageId;
   readonly assignmentId: AssignmentId | null;
@@ -197,6 +205,7 @@ export function runFromRow(row: {
 }): Run {
   const usage = runUsageFromRow(row);
   return RunSchema.parse({
+    teamRequestId: row.teamRequestId,
     accessMode: row.accessMode,
     activationInputId: row.activationInputId,
     assignmentId: row.assignmentId,
@@ -216,7 +225,11 @@ export function runFromRow(row: {
     status: row.status,
     threadId: row.threadId,
     seedInputId: row.seedInputId,
-    ...(usage ? { usage } : {}),
+    ...(usage
+      ? {
+          usage,
+        }
+      : {}),
   });
 }
 
@@ -247,7 +260,6 @@ export function executionNodeFromRow(row: Selectable<ExecutionNodeTable>): Execu
     usage: runUsageFromRow(row),
   };
 }
-
 export function runAttemptFromRow(row: Selectable<RunAttemptTable>): RunAttempt {
   return {
     createdAt: row.startedAt.toISOString(),
@@ -266,7 +278,6 @@ export function runAttemptFromRow(row: Selectable<RunAttemptTable>): RunAttempt 
     usage: runUsageFromRow(row),
   };
 }
-
 export function runUsageFromRow(row: {
   readonly inputTokens: string | null;
   readonly outputTokens: string | null;
@@ -292,7 +303,6 @@ export function runUsageFromRow(row: {
     ),
   };
 }
-
 type ThreadRunQueueReadRow = {
   readonly createdAt: Date;
   readonly id: RunId;
@@ -300,17 +310,14 @@ type ThreadRunQueueReadRow = {
   readonly threadId: ThreadId;
   readonly runOrdinal: number;
 };
-
 export function threadRunQueueEntryFromRow(row: ThreadRunQueueReadRow): ThreadRunQueueEntry {
   return ThreadRunQueueEntrySchema.parse(threadRunQueueValueFromRow(row));
 }
-
 export function threadRunQueueEntriesFromRows(
   rows: readonly ThreadRunQueueReadRow[],
 ): ThreadRunQueueEntry[] {
   return ThreadRunQueueEntrySchema.array().parse(rows.map(threadRunQueueValueFromRow));
 }
-
 function threadRunQueueValueFromRow(row: ThreadRunQueueReadRow) {
   return {
     createdAt: row.createdAt.toISOString(),

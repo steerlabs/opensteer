@@ -1,6 +1,8 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
+import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -10,7 +12,6 @@ import {
   OpensteerError,
   provisionalThreadTitle,
   SequenceSchema,
-  ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
   type Run,
@@ -22,7 +23,7 @@ import {
   createDatabase,
   migrateToLatest,
   OpensteerStore,
-  WorkspaceTabStore,
+  PersonalTabStore,
 } from "@opensteer/database";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
@@ -31,10 +32,9 @@ import {
   createBrowserSessionId,
   HarnessInputSchema,
   mintComputerUseSessionId,
-  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,31 +44,36 @@ import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js"
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
-
+import { readPersonalResources } from "../browser/personal-snapshot.js";
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const testModelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
-
 integration("agent-to-agent messaging round trip", () => {
   const database = createDatabase({
     applicationName: "opensteer-agent-messaging-integration-test",
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 4,
   });
-  const store = new OpensteerStore(database);
-  const realtime = new RealtimeHub({ store });
+  const store = new OpensteerStore(database, {
+    readPersonalResources: (input) => readPersonalResources(input, () => []),
+  });
+  const realtime = new RealtimeHub({
+    store,
+  });
   const browserTabs = new BrowserTabGroupService({
     groups: new BrowserTabGroupStore(database),
     browser: {
       flushPendingTabDescriptors: async () => undefined,
       agentReachableSavedSession: BrowserService.prototype.agentReachableSavedSession,
       agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
-      listGrantedProfiles: async () => [],
+      listAgentProfiles: async () => [],
       tabOccupants: () => [],
       tabStateOf: () => undefined,
     } as unknown as BrowserService,
@@ -83,7 +88,7 @@ integration("agent-to-agent messaging round trip", () => {
   const commands = new CommandService({
     admission,
     onExecutionQueued: vi.fn(),
-    onWorkspaceEvent: vi.fn(),
+    onDeploymentEvent: vi.fn(),
     store,
   });
   const computerUse = {
@@ -96,6 +101,7 @@ integration("agent-to-agent messaging round trip", () => {
       >(),
   };
   const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
+  let folders: ReturnType<typeof personalTestFolders>;
   const service = new ProductToolsTestClient({
     computerUse,
     browserTabs,
@@ -119,14 +125,13 @@ integration("agent-to-agent messaging round trip", () => {
       createProfile: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
-      listGrantedProfiles: unexpected,
+      listAgentProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
     },
     canRunHarness: () => true,
     commands,
     isEnvironmentConnected: () => true,
-    onWorkspaceEvent: vi.fn(),
     store,
     tokens: {
       authenticate: async (token: string) => {
@@ -135,76 +140,29 @@ integration("agent-to-agent messaging round trip", () => {
         return claims;
       },
     } as unknown as RunToolTokenService,
-    defaultWorkspaceBacking: "local-directory",
-    environmentWorkspaceBackings: () => ["local-directory"],
-    workspaceMounts: {
-      mount: async ({ workspace }) => ({ path: `/Main/Projects/${workspace.slug}` }),
-    },
-    workspaces: {
-      create: async (input) => {
-        const main = await store.findMainWorkspaceForOwner(input.createdBy);
-        if (!main) throw new Error("Owner Main is missing");
-        return createTestWorkspace(store, {
-          ...input,
-          backing: { ...main.backing, bindingId: createId("workspaceBinding") },
-          status: "ready",
-        });
-      },
+    folders: {
+      resolve: (...args) => folders.resolve(...args),
+      canExecute: (id) => folders.canExecute(id),
     },
   });
-
   beforeAll(async () => {
     await migrateToLatest(database);
   });
-
   beforeEach(async () => {
     claimsByToken.clear();
-    await sql`
-      truncate table
-        workspace_events,
-        agent_control_requests,
-        commands,
-        thread_inputs,
-        causal_chains,
-        delegations,
-        messages,
-        runs,
-        threads,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
+    await sql`truncate table deployments, users restart identity cascade`.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
       values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
       on conflict (id) do nothing
     `.execute(database);
   });
-
   afterAll(async () => {
     await database.destroy();
   });
-
   it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
     const f = await createMessagingFixture();
     const strangerId = await store.createUser("Other person");
-    const otherWorkspace = await createTestWorkspace(store, {
-      createdBy: strangerId,
-      idempotencyKey: randomUUID(),
-      name: "Private",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
     const otherThreadId = createId("thread");
     const original = await database
       .selectFrom("threads")
@@ -217,7 +175,6 @@ integration("agent-to-agent messaging round trip", () => {
         ...original,
         id: otherThreadId,
         lineageRootThreadId: otherThreadId,
-        workspaceId: otherWorkspace.id,
         createdBy: strangerId,
       })
       .execute();
@@ -225,14 +182,14 @@ integration("agent-to-agent messaging round trip", () => {
     await store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "test",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.threadA.workspaceId,
     });
     const tabId = BrowserSurfaceIdSchema.parse("saved-gmail");
-    const tabs = new WorkspaceTabStore(database);
+    const tabs = new PersonalTabStore(database);
     await tabs.recordChanges(
       sessionId,
       [
@@ -249,51 +206,69 @@ integration("agent-to-agent messaging round trip", () => {
     await tabs.suspend(sessionId);
     const show = (
       token: string,
-      target: { tabId: string } | { threadId: string } | { current: true },
-    ) => service.handle(token, { type: "person.show", requestId: randomUUID(), target });
-    await expect(show(f.tokenA, { tabId })).resolves.toMatchObject({
+      target:
+        | {
+            tabId: string;
+          }
+        | {
+            threadId: string;
+          }
+        | {
+            current: true;
+          },
+    ) =>
+      service.handle(token, {
+        type: "person.show",
+        requestId: randomUUID(),
+        target,
+      });
+    await expect(
+      show(f.tokenA, {
+        tabId,
+      }),
+    ).resolves.toMatchObject({
       type: "person.show.result",
       status: "no-device-connected",
       connectedDevices: 0,
     });
-    const otherSession = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: otherSession,
-      runnerId: f.runnerId,
-      origin: "workspace",
-      placementKey: "other",
-      profileId: null,
-      runtimeId: "test",
-      workspaceId: otherWorkspace.id,
-    });
-    await tabs.recordChanges(
-      otherSession,
-      [
-        {
-          id: BrowserSurfaceIdSchema.parse("private-tab"),
-          title: "Private",
-          url: "https://private.test",
-          order: 0,
-          openerId: null,
-        },
-      ],
-      [],
-    );
-    await expect(show(f.tokenA, { tabId: "private-tab" })).rejects.toMatchObject({
+    await expect(
+      store.createBrowserSession({
+        id: createBrowserSessionId(),
+        runnerId: f.runnerId,
+        origin: "agent",
+        ownerId: strangerId,
+        placementKey: "other",
+        profileId: null,
+        runtimeId: "test",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      show(f.tokenA, {
+        tabId: "private-tab",
+      }),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(show(f.tokenA, { threadId: otherThreadId })).rejects.toMatchObject({
+    await expect(
+      show(f.tokenA, {
+        threadId: otherThreadId,
+      }),
+    ).rejects.toMatchObject({
       code: "forbidden",
     });
-    await expect(show(f.tokenA, { threadId: f.threadB.id })).resolves.toMatchObject({
+    await expect(
+      show(f.tokenA, {
+        threadId: f.threadB.id,
+      }),
+    ).resolves.toMatchObject({
       status: "no-device-connected",
     });
     const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
     const legacyFrames: import("@opensteer/protocol").HostToClientMessage[] = [];
     const subscription = {
       afterSequence: SequenceSchema.parse("0"),
+      deploymentId: f.deploymentId,
       userId: f.userId,
-      workspaceId: f.threadA.workspaceId,
     };
     const opted = () =>
       realtime.subscribe({
@@ -318,7 +293,13 @@ integration("agent-to-agent messaging round trip", () => {
         close: vi.fn(),
       },
     });
-    const request = { type: "person.show", requestId: randomUUID(), target: { tabId } };
+    const request = {
+      type: "person.show",
+      requestId: randomUUID(),
+      target: {
+        tabId,
+      },
+    };
     try {
       await expect(service.handle(f.tokenA, request)).resolves.toMatchObject({
         status: "sent-unconfirmed",
@@ -327,10 +308,11 @@ integration("agent-to-agent messaging round trip", () => {
       expect(frames.filter((message) => message.type === "host.show")).toEqual([
         {
           type: "host.show",
-          workspaceId: f.threadA.workspaceId,
           threadId: f.threadA.id,
           runId: f.runA.id,
-          target: { tabId },
+          target: {
+            tabId,
+          },
         },
       ]);
       expect(legacyFrames.some((message) => message.type === "host.show")).toBe(false);
@@ -339,25 +321,44 @@ integration("agent-to-agent messaging round trip", () => {
         connectedDevices: 0,
       });
       expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
-      await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({
+      await expect(
+        show(f.tokenA, {
+          current: true,
+        }),
+      ).rejects.toMatchObject({
         code: "bad_request",
         message: "This Run has not worked in a place yet.",
       });
-      const place = { kind: "browser" as const, sessionId, surfaceId: tabId };
+      const place = {
+        kind: "browser" as const,
+        sessionId,
+        surfaceId: tabId,
+      };
       drainRunPlaces.mockImplementationOnce(async () => {
         await store.recordRunPlace({
           runId: f.runA.id,
           bindingGeneration: 1,
-          data: { place, title: "Gmail", site: "https://mail.google.com" },
+          data: {
+            place,
+            title: "Gmail",
+            site: "https://mail.google.com",
+          },
         });
       });
-      await expect(show(f.tokenA, { current: true })).resolves.toMatchObject({
+      await expect(
+        show(f.tokenA, {
+          current: true,
+        }),
+      ).resolves.toMatchObject({
         status: "sent-unconfirmed",
       });
       expect(frames.at(-1)).toMatchObject({
         type: "host.show",
         runId: f.runA.id,
-        target: { place, runId: f.runA.id },
+        target: {
+          place,
+          runId: f.runA.id,
+        },
       });
       release();
       frames.length = 0;
@@ -368,11 +369,24 @@ integration("agent-to-agent messaging round trip", () => {
       releaseLegacy();
     }
     await tabs.close(f.userId, tabId);
-    await expect(service.handle(f.tokenA, request)).rejects.toMatchObject({ code: "forbidden" });
-    await expect(show(f.tokenA, { tabId })).rejects.toMatchObject({ code: "forbidden" });
-    await expect(show(f.tokenA, { current: true })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(service.handle(f.tokenA, request)).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(
+      show(f.tokenA, {
+        tabId,
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
+    await expect(
+      show(f.tokenA, {
+        current: true,
+      }),
+    ).rejects.toMatchObject({
+      code: "forbidden",
+    });
   });
-
   it.each([
     ["app", false],
     ["phone", false],
@@ -382,7 +396,11 @@ integration("agent-to-agent messaging round trip", () => {
     "shows the Run's newest %s place through its authority (voice: %s)",
     async (kind, voice) => {
       const f = await createMessagingFixture(voice);
-      const app = { bundleId: "com.apple.Notes", displayName: "Notes", teamId: null };
+      const app = {
+        bundleId: "com.apple.Notes",
+        displayName: "Notes",
+        teamId: null,
+      };
       const session = ComputerUseSessionSummarySchema.parse({
         sessionId: mintComputerUseSessionId(),
         runId: f.runA.id,
@@ -397,13 +415,25 @@ integration("agent-to-agent messaging round trip", () => {
       computerUse.authorizeDisplay.mockResolvedValue(f.runnerId);
       const place =
         kind === "app"
-          ? { kind, machineId: f.runnerId, appKey: "com.apple.notes" }
-          : { kind, machineId: f.runnerId, display: "main" };
+          ? {
+              kind,
+              machineId: f.runnerId,
+              appKey: "com.apple.notes",
+            }
+          : {
+              kind,
+              machineId: f.runnerId,
+              display: "main",
+            };
       await store.recordRunPlace({
         runId: f.runA.id,
         bindingGeneration: 1,
         data: {
-          place: { kind: "app", machineId: f.runnerId, appKey: "earlier-app" },
+          place: {
+            kind: "app",
+            machineId: f.runnerId,
+            appKey: "earlier-app",
+          },
           title: "Earlier",
           site: null,
         },
@@ -411,13 +441,17 @@ integration("agent-to-agent messaging round trip", () => {
       await store.recordRunPlace({
         runId: f.runA.id,
         bindingGeneration: 1,
-        data: { place, title: kind, site: null },
+        data: {
+          place,
+          title: kind,
+          site: null,
+        },
       });
       const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
       const release = await realtime.subscribe({
         afterSequence: SequenceSchema.parse("0"),
+        deploymentId: f.deploymentId,
         userId: f.userId,
-        workspaceId: f.threadA.workspaceId,
         personShow: "accept",
         sink: {
           id: randomUUID(),
@@ -431,10 +465,20 @@ integration("agent-to-agent messaging round trip", () => {
         service.handle(f.tokenA, {
           type: "person.show",
           requestId: randomUUID(),
-          target: { current: true },
+          target: {
+            current: true,
+          },
         });
       const ownedBy = (effectiveOwner: typeof f.userId) =>
-        new Map([[f.runnerId, { effectiveOwner, ownerKind: "user" as const }]]);
+        new Map([
+          [
+            f.runnerId,
+            {
+              effectiveOwner,
+              ownerKind: "user" as const,
+            },
+          ],
+        ]);
       const owners = vi.spyOn(store, "effectiveMachineOwners").mockResolvedValue(ownedBy(f.userId));
       try {
         await expect(show()).resolves.toMatchObject({
@@ -444,19 +488,25 @@ integration("agent-to-agent messaging round trip", () => {
         expect(frames.filter((message) => message.type === "host.show")).toEqual([
           {
             type: "host.show",
-            workspaceId: f.threadA.workspaceId,
             threadId: f.threadA.id,
             runId: f.runA.id,
-            target: { place, runId: f.runA.id },
+            target: {
+              place,
+              runId: f.runA.id,
+            },
           },
         ]);
         if (kind === "phone") {
           // Agents release a phone before they reply, and its tab stays.
           computerUse.sessionsForRunner.mockReturnValue([]);
-          await expect(show()).resolves.toMatchObject({ status: "sent-unconfirmed" });
+          await expect(show()).resolves.toMatchObject({
+            status: "sent-unconfirmed",
+          });
           expect(frames.filter((message) => message.type === "host.show")).toHaveLength(2);
           owners.mockResolvedValue(ownedBy(createId("user")));
-          await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+          await expect(show()).rejects.toMatchObject({
+            code: "forbidden",
+          });
           return;
         }
         expect(computerUse.authorizeDisplay).toHaveBeenLastCalledWith(
@@ -470,9 +520,18 @@ integration("agent-to-agent messaging round trip", () => {
             message: "Access revoked",
           }),
         );
-        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
-        computerUse.sessionsForRunner.mockReturnValue([{ ...session, runId: createId("run") }]);
-        await expect(show()).rejects.toMatchObject({ code: "forbidden" });
+        await expect(show()).rejects.toMatchObject({
+          code: "forbidden",
+        });
+        computerUse.sessionsForRunner.mockReturnValue([
+          {
+            ...session,
+            runId: createId("run"),
+          },
+        ]);
+        await expect(show()).rejects.toMatchObject({
+          code: "forbidden",
+        });
         expect(frames.filter((message) => message.type === "host.show")).toHaveLength(1);
       } finally {
         release();
@@ -482,38 +541,42 @@ integration("agent-to-agent messaging round trip", () => {
       }
     },
   );
-
   it("searches asleep saved tabs before pagination and reports matching fields", async () => {
     const f = await createMessagingFixture();
     const sessionId = createBrowserSessionId();
     await store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "test",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.threadA.workspaceId,
     });
-    const tabs = new WorkspaceTabStore(database);
-    const rows = Array.from({ length: 70 }, (_, index) => ({
-      id: BrowserSurfaceIdSchema.parse(`tab-${String(index).padStart(3, "0")}`),
-      title: index < 65 ? "Recent" : "Gmail",
-      url: index < 65 ? "https://example.com" : "https://mail.google.com",
-      order: index,
-      openerId: null,
-    }));
+    const tabs = new PersonalTabStore(database);
+    const rows = Array.from(
+      {
+        length: 70,
+      },
+      (_, index) => ({
+        id: BrowserSurfaceIdSchema.parse(`tab-${String(index).padStart(3, "0")}`),
+        title: index < 65 ? "Recent" : "Gmail",
+        url: index < 65 ? "https://example.com" : "https://mail.google.com",
+        order: index,
+        openerId: null,
+      }),
+    );
     await tabs.recordChanges(sessionId, rows.slice(64), []);
     await tabs.suspend(sessionId);
     const recentSessionId = createBrowserSessionId();
     await store.createBrowserSession({
       id: recentSessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "recent",
       profileId: null,
       runtimeId: "test",
-      workspaceId: f.threadA.workspaceId,
     });
     await tabs.recordChanges(recentSessionId, rows.slice(0, 64), []);
     const read = async (input: Record<string, string>) => {
@@ -528,7 +591,9 @@ integration("agent-to-agent messaging round trip", () => {
     const first = await read({});
     expect(first.tabs).toHaveLength(64);
     expect(first.tabs.every((tab) => tab.title === "Recent")).toBe(true);
-    const found = await read({ query: "gmail" });
+    const found = await read({
+      query: "gmail",
+    });
     expect(found.tabs).toHaveLength(5);
     expect(
       found.tabs.every((tab) => tab.state === "asleep" && tab.matchedFields?.includes("title")),
@@ -539,29 +604,63 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Archive",
       idempotencyKey: randomUUID(),
     });
-    expect((await read({ query: "archive" })).tabs).toMatchObject([
-      { tabId: rows[69]!.id, matchedFields: ["group"] },
+    expect(
+      (
+        await read({
+          query: "archive",
+        })
+      ).tabs,
+    ).toMatchObject([
+      {
+        tabId: rows[69]!.id,
+        matchedFields: ["group"],
+      },
     ]);
     expect(
-      (await read({ query: "Guest" })).tabs.every((tab) => tab.matchedFields?.includes("profile")),
+      (
+        await read({
+          query: "Guest",
+        })
+      ).tabs.every((tab) => tab.matchedFields?.includes("profile")),
     ).toBe(true);
-    const paged = await read({ query: "example" });
+    const paged = await read({
+      query: "example",
+    });
     expect(paged.tabs).toHaveLength(64);
     expect(paged.totalMatches).toBe(65);
     expect(paged.nextCursor).toBeTruthy();
-    expect((await read({ query: "example", cursor: paged.nextCursor! })).tabs).toHaveLength(1);
-    await expect(read({ query: "gmail", cursor: paged.nextCursor! })).rejects.toThrow(
-      "different search",
-    );
+    expect(
+      (
+        await read({
+          query: "example",
+          cursor: paged.nextCursor!,
+        })
+      ).tabs,
+    ).toHaveLength(1);
+    await expect(
+      read({
+        query: "gmail",
+        cursor: paged.nextCursor!,
+      }),
+    ).rejects.toThrow("different search");
     await tabs.close(f.userId, rows[69]!.id);
-    expect((await read({ query: "gmail" })).totalMatches).toBe(4);
+    expect(
+      (
+        await read({
+          query: "gmail",
+        })
+      ).totalMatches,
+    ).toBe(4);
   });
-
   it("round-trips typed agent authorship across Threads", async () => {
     const fixture = await createMessagingFixture();
-
     const outbound = await service.handle(fixture.tokenA, {
-      content: [{ text: "Please summarize the signed contract.", type: "text" }],
+      content: [
+        {
+          text: "Please summarize the signed contract.",
+          type: "text",
+        },
+      ],
       delivery: "queue",
       requestId: randomUUID(),
       threadId: fixture.threadB.id,
@@ -580,10 +679,13 @@ integration("agent-to-agent messaging round trip", () => {
         kind: "agent",
         runId: fixture.runA.id,
         threadId: fixture.threadA.id,
-        workspaceId: fixture.threadA.workspaceId,
-        workspaceName: "Main workspace",
       },
-      content: [{ text: "Please summarize the signed contract.", type: "text" }],
+      content: [
+        {
+          text: "Please summarize the signed contract.",
+          type: "text",
+        },
+      ],
       kind: "input",
       threadId: fixture.threadB.id,
     });
@@ -597,7 +699,12 @@ integration("agent-to-agent messaging round trip", () => {
     expect(projectHarnessInputs(inboundContext.inputs)).toEqual([
       {
         author: (await readToolRecords(store, outbound.result)).message!.author,
-        content: [{ text: "Please summarize the signed contract.", type: "text" }],
+        content: [
+          {
+            text: "Please summarize the signed contract.",
+            type: "text",
+          },
+        ],
         createdAt: (await readToolRecords(store, outbound.result)).message!.createdAt,
         kind: "input",
         messageId: (await readToolRecords(store, outbound.result)).message!.id,
@@ -608,7 +715,6 @@ integration("agent-to-agent messaging round trip", () => {
       (await readToolRecords(store, outbound.result)).run!,
       fixture.threadB,
     );
-
     claimsByToken.set(
       fixture.tokenB,
       testClaims({
@@ -617,11 +723,15 @@ integration("agent-to-agent messaging round trip", () => {
         runId: (await readToolRecords(store, outbound.result)).run!.id,
         runnerId: fixture.runnerId,
         threadId: fixture.threadB.id,
-        workspaceId: fixture.threadB.workspaceId,
       }),
     );
     const reply = await service.handle(fixture.tokenB, {
-      content: [{ text: "Summarized: the counterparty signed on Tuesday.", type: "text" }],
+      content: [
+        {
+          text: "Summarized: the counterparty signed on Tuesday.",
+          type: "text",
+        },
+      ],
       delivery: "steer",
       requestId: randomUUID(),
       threadId: fixture.threadA.id,
@@ -636,13 +746,10 @@ integration("agent-to-agent messaging round trip", () => {
         kind: "agent",
         runId: (await readToolRecords(store, outbound.result)).run!.id,
         threadId: fixture.threadB.id,
-        workspaceId: fixture.threadB.workspaceId,
-        workspaceName: "Main workspace",
       },
       kind: "input",
       threadId: fixture.threadA.id,
     });
-
     const replyCommand = await database
       .selectFrom("commands")
       .select("id")
@@ -654,20 +761,28 @@ integration("agent-to-agent messaging round trip", () => {
     expect(projectHarnessInputs([steered.message])).toEqual([
       {
         author: (await readToolRecords(store, reply.result)).message!.author,
-        content: [{ text: "Summarized: the counterparty signed on Tuesday.", type: "text" }],
+        content: [
+          {
+            text: "Summarized: the counterparty signed on Tuesday.",
+            type: "text",
+          },
+        ],
         createdAt: (await readToolRecords(store, reply.result)).message!.createdAt,
         kind: "input",
         messageId: (await readToolRecords(store, reply.result)).message!.id,
       },
     ]);
   });
-
   it("steers an active Run exactly once on an exact retry", async () => {
     const fixture = await createMessagingFixture();
     const running = await startRun(fixture, fixture.threadB);
-
     const request = {
-      content: [{ text: "The contract is signed.", type: "text" as const }],
+      content: [
+        {
+          text: "The contract is signed.",
+          type: "text" as const,
+        },
+      ],
       delivery: "steer" as const,
       requestId: randomUUID(),
       threadId: fixture.threadB.id,
@@ -675,7 +790,6 @@ integration("agent-to-agent messaging round trip", () => {
     };
     const steered = await service.handle(fixture.tokenA, request);
     if (steered.type !== "thread.message.result") throw new Error("Expected a message result");
-
     expect(steered.result.disposition).toBe("steering");
     expect((await readToolRecords(store, steered.result)).run?.id).toBe(running.runId);
     expect((await readToolRecords(store, steered.result)).input!).toMatchObject({
@@ -684,7 +798,11 @@ integration("agent-to-agent messaging round trip", () => {
       state: "claimed",
     });
     expect((await readToolRecords(store, steered.result)).message!).toMatchObject({
-      author: { kind: "agent", runId: fixture.runA.id, threadId: fixture.threadA.id },
+      author: {
+        kind: "agent",
+        runId: fixture.runA.id,
+        threadId: fixture.threadA.id,
+      },
       runId: running.runId,
     });
     const steer = await database
@@ -693,8 +811,9 @@ integration("agent-to-agent messaging round trip", () => {
       .where("type", "=", "run.steer")
       .execute();
     expect(steer).toHaveLength(1);
-    expect(steer[0]).toMatchObject({ runId: running.runId });
-
+    expect(steer[0]).toMatchObject({
+      runId: running.runId,
+    });
     const retried = await service.handle(fixture.tokenA, request);
     if (retried.type !== "thread.message.result") throw new Error("Expected a message result");
     expect(retried.result).toMatchObject({
@@ -709,21 +828,25 @@ integration("agent-to-agent messaging round trip", () => {
         .select(({ fn }) => fn.countAll<string>().as("count"))
         .where("type", "=", "run.steer")
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ count: "1" });
+    ).resolves.toEqual({
+      count: "1",
+    });
   });
-
   it("leaves a report pending on an idle Thread", async () => {
     const fixture = await createMessagingFixture();
-
     const queued = await service.handle(fixture.tokenA, {
-      content: [{ text: "The contract is signed.", type: "text" }],
+      content: [
+        {
+          text: "The contract is signed.",
+          type: "text",
+        },
+      ],
       delivery: "report",
       requestId: randomUUID(),
       threadId: fixture.threadB.id,
       type: "thread.message",
     });
     if (queued.type !== "thread.message.result") throw new Error("Expected a message result");
-
     expect(queued.result.disposition).toBe("pending");
     expect((await readToolRecords(store, queued.result)).run!).toBeNull();
     expect((await readToolRecords(store, queued.result)).input!).toMatchObject({
@@ -765,25 +888,33 @@ integration("agent-to-agent messaging round trip", () => {
         idempotencyKey: `burst-thread-${index}-${randomUUID()}`,
         modelSelection: testModelSelection,
         title: `Burst ${index}`,
-        workspaceId: fixture.threadA.workspaceId,
       });
       threads.push(thread);
     }
     const sends = threads.flatMap((thread) =>
-      Array.from({ length: 5 }, (_unused, order) =>
-        commands.enqueueThreadInput({
-          content: [{ text: `${thread.id} ${order}`, type: "text" }],
-          idempotencyKey: `burst-${thread.id}-${order}`,
-          policy: "queue",
-          requestedBy: fixture.userId,
-          source: { kind: "human" },
-          threadId: thread.id,
-        }),
+      Array.from(
+        {
+          length: 5,
+        },
+        (_unused, order) =>
+          commands.enqueueThreadInput({
+            content: [
+              {
+                text: `${thread.id} ${order}`,
+                type: "text",
+              },
+            ],
+            idempotencyKey: `burst-${thread.id}-${order}`,
+            policy: "queue",
+            requestedBy: fixture.userId,
+            source: {
+              kind: "human",
+            },
+            threadId: thread.id,
+          }),
       ),
     );
-
     const settled = await Promise.allSettled(sends);
-
     expect(settled.filter((result) => result.status === "rejected")).toEqual([]);
     for (const thread of threads) {
       const queued = await database
@@ -791,16 +922,30 @@ integration("agent-to-agent messaging round trip", () => {
         .innerJoin("messages", "messages.id", "threadInputs.messageId")
         .select("messages.content")
         .where("threadInputs.threadId", "=", thread.id)
-        .where("messages.content", "@>", sql<never>`${JSON.stringify([{ type: "text" }])}::jsonb`)
+        .where(
+          "messages.content",
+          "@>",
+          sql<never>`${JSON.stringify([
+            {
+              type: "text",
+            },
+          ])}::jsonb`,
+        )
         .orderBy("threadInputs.queueRank", "asc")
         .execute();
       const burst = queued
-        .map((row) => (row.content as readonly { readonly text?: string }[])[0]?.text ?? "")
+        .map(
+          (row) =>
+            (
+              row.content as readonly {
+                readonly text?: string;
+              }[]
+            )[0]?.text ?? "",
+        )
         .filter((text) => text.startsWith(`${thread.id} `));
       expect(burst).toEqual([0, 1, 2, 3, 4].map((order) => `${thread.id} ${order}`));
     }
   });
-
   it.each([undefined, "Agent chose this"])(
     "delegates with title %s and reads the live worker title in summaries",
     async (title) => {
@@ -810,8 +955,11 @@ integration("agent-to-agent messaging round trip", () => {
         requestId: randomUUID(),
         type: "thread.delegate",
         task,
-        workspaceId: fixture.threadA.workspaceId,
-        ...(title === undefined ? {} : { title }),
+        ...(title === undefined
+          ? {}
+          : {
+              title,
+            }),
       });
       if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
       if (!(await readToolRecords(store, response.result)).run!)
@@ -875,17 +1023,18 @@ integration("agent-to-agent messaging round trip", () => {
           .select(["title", "titleSource"])
           .where("id", "=", worker.id)
           .executeTakeFirstOrThrow(),
-      ).toEqual({ title: "Reviewed contract", titleSource: "chosen" });
+      ).toEqual({
+        title: "Reviewed contract",
+        titleSource: "chosen",
+      });
     },
   );
-
   it("preserves the person's chosen marks when reusing a worker", async () => {
     const f = await createMessagingFixture();
     const response = await service.handle(f.tokenA, {
       type: "thread.delegate",
       requestId: randomUUID(),
       task: "Book a flight",
-      workspaceId: f.threadA.workspaceId,
     });
     if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
     const worker = (await readToolRecords(store, response.result)).thread;
@@ -900,7 +1049,11 @@ integration("agent-to-agent messaging round trip", () => {
       .select(["icon", "iconSource", "color"])
       .where("id", "=", worker.id)
       .executeTakeFirstOrThrow();
-    expect(before).toEqual({ icon: "plane", iconSource: "chosen", color: worker.color });
+    expect(before).toEqual({
+      icon: "plane",
+      iconSource: "chosen",
+      color: worker.color,
+    });
     await commands.cancelAssignment({
       assignmentId: response.result.assignmentId,
       idempotencyKey: randomUUID(),
@@ -931,94 +1084,14 @@ integration("agent-to-agent messaging round trip", () => {
     ).toEqual(before);
   });
 
-  it.each([undefined, "Explicit legacy title"])(
-    "replays legacy agent delegation receipts with title %s and rejects changed intent",
-    async (title) => {
-      const fixture = await createMessagingFixture();
-      const task = "Research contract changes " + "with the full instructions ".repeat(14);
-      const request = {
-        requestId: randomUUID(),
-        type: "thread.delegate",
-        task,
-        workspaceId: fixture.threadA.workspaceId,
-        ...(title === undefined ? {} : { title }),
-      };
-      const response = await service.handle(fixture.tokenA, request);
-      if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
-      expect(await service.handle(fixture.tokenA, request)).toMatchObject({
-        type: "thread.delegate.result",
-        result: {
-          threadId: response.result.threadId,
-          assignmentId: response.result.assignmentId,
-        },
-      });
-      await expect(
-        service.handle(fixture.tokenA, { ...request, task: task + " changed" }),
-      ).rejects.toMatchObject({ code: "conflict" });
-      await sql`update commands set payload = (payload - 'titleSource' - 'callerIntent') ||
-        jsonb_build_object('title', ${title ?? task.slice(0, 240)}::text)
-        where payload->>'type' = 'thread.delegate' and thread_id = ${(await readToolRecords(store, response.result)).thread.id}`.execute(
-        database,
-      );
-      const replay = await service.handle(fixture.tokenA, request);
-      expect(replay).toMatchObject({
-        type: "thread.delegate.result",
-        result: {
-          threadId: response.result.threadId,
-          assignmentId: response.result.assignmentId,
-        },
-      });
-      for (const changed of [{ task: task + " changed" }, { title: "Changed explicit name" }]) {
-        await expect(
-          service.handle(fixture.tokenA, { ...request, ...changed }),
-        ).rejects.toMatchObject({
-          code: "conflict",
-        });
-      }
-      await titleEvidence(`legacy-agent-${title === undefined ? "untitled" : "chosen"}`, {
-        replay,
-      });
-    },
-  );
-
-  it("creates a Project while storing the requested colour", async () => {
-    const f = await createMessagingFixture();
-    const response = await service.handle(f.tokenA, {
-      type: "project.create",
-      requestId: randomUUID(),
-      name: "Travel",
-      color: "teal",
-    });
-    if (response.type !== "project.create.result") throw new Error("Expected Project");
-    expect(response).toMatchObject({ slug: "travel", path: "/Main/Projects/travel" });
-    expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
-      color: "teal",
-    });
-  });
-
   it.each(["rename", "generated", "icon", "generated-icon"] as const)(
-    "republishes completed cross-Workspace assignment titles after %s",
+    "republishes completed assignment titles after %s",
     async (mode) => {
       const fixture = await createMessagingFixture();
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          kind: "local-directory",
-          generation: 1,
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: fixture.environmentId,
-          storageAuthorityId: createId("storageAuthority"),
-        },
-
-        createdBy: fixture.userId,
-        idempotencyKey: randomUUID(),
-        name: "Worker workspace",
-        status: "ready",
-      });
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
         task: "Research the contract",
-        workspaceId: workspace.id,
       });
       if (
         response.type !== "thread.delegate.result" ||
@@ -1035,14 +1108,15 @@ integration("agent-to-agent messaging round trip", () => {
         runnerId: fixture.runnerId,
         event: {
           bindingGeneration: binding.bindingGeneration,
-          data: { status: "completed" },
+          data: {
+            status: "completed",
+          },
           emittedAt: new Date().toISOString(),
           environmentId: fixture.environmentId,
           ordinal: 1,
           runId: run.id,
           threadId: worker.id,
           type: "run.completed",
-          workspaceId: workspace.id,
         },
       });
       await store.drainPendingAssignmentReturns();
@@ -1059,18 +1133,26 @@ integration("agent-to-agent messaging round trip", () => {
         harnessInstanceId: fixture.harnessInstanceId,
         idempotencyKey: randomUUID(),
         modelSelection: testModelSelection,
-        origin: { kind: "run", parentRunId: fixture.runA.id, parentThreadId: fixture.threadA.id },
-        task: [{ text: "Follow up on the contract", type: "text" }],
+        origin: {
+          kind: "run",
+          parentRunId: fixture.runA.id,
+          parentThreadId: fixture.threadA.id,
+        },
+        task: [
+          {
+            text: "Follow up on the contract",
+            type: "text",
+          },
+        ],
         threadId: worker.id,
         title: "Follow-up seed",
         titleSource: "provisional",
-        workspaceId: workspace.id,
       });
       expect(reused.assignment.status).toBe("open");
       const head = await database
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=", fixture.threadA.workspaceId)
+        .selectFrom("deploymentEventState")
+        .select("sequence")
+        .where("deploymentId", "=", fixture.deploymentId)
         .executeTakeFirstOrThrow();
       const title =
         mode === "rename"
@@ -1084,7 +1166,7 @@ integration("agent-to-agent messaging round trip", () => {
         const changed = new CommandService({
           admission,
           onExecutionQueued: () => undefined,
-          onWorkspaceEvent: (event) => events.push(event),
+          onDeploymentEvent: (event) => events.push(event),
           store,
         });
         await (mode === "icon"
@@ -1103,15 +1185,20 @@ integration("agent-to-agent messaging round trip", () => {
       } else {
         const result = await store.applyGeneratedThreadName({
           threadId: worker.id,
-          ...(mode === "generated-icon" ? { icon: "plane" as const } : { title }),
+          ...(mode === "generated-icon"
+            ? {
+                icon: "plane" as const,
+              }
+            : {
+                title,
+              }),
         });
         if (result) events.push(...result.events);
       }
       const updates = await database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
-        .where("workspaceId", "=", fixture.threadA.workspaceId)
-        .where("sequence", ">", head.eventSequence)
+        .where("sequence", ">", head.sequence)
         .where("type", "=", "assignment.updated")
         .execute();
       expect(updates).toHaveLength(2);
@@ -1119,13 +1206,18 @@ integration("agent-to-agent messaging round trip", () => {
         expect(updates).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
-              threadId: fixture.threadA.id,
+              threadId: worker.id,
               data: {
                 assignment: expect.objectContaining({
                   id: assignment.id,
-                  revision: assignment.revision + 1,
+                  parentThreadId: fixture.threadA.id,
+                  revision: Number(assignment.revision) + 1,
                   status: assignment.status,
-                  workerThread: expect.objectContaining({ title, icon, color: worker.color }),
+                  workerThread: expect.objectContaining({
+                    title,
+                    icon,
+                    color: worker.color,
+                  }),
                 }),
               },
             }),
@@ -1135,86 +1227,42 @@ integration("agent-to-agent messaging round trip", () => {
       expect(events).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            workspaceId: fixture.threadA.workspaceId,
-            threadId: fixture.threadA.id,
-            type: "assignment.updated",
-          }),
-          expect.objectContaining({
-            workspaceId: workspace.id,
             threadId: worker.id,
             type: "assignment.updated",
           }),
         ]),
       );
-      const otherOwner = await store.createUser("Parent workspace owner");
-      const tokenHash = `sha256:${randomUUID()}`;
-      const invitation = await store.createWorkspaceInvitation({
-        createdBy: fixture.userId,
-        expiresAt: new Date(Date.now() + 60_000),
-        idempotencyKey: randomUUID(),
-        intendedEmail: null,
-        requestFingerprint: `sha256:${randomUUID()}`,
-        role: "owner",
-        selector: randomUUID(),
-        tokenHash,
-        type: "link",
-        workspaceId: fixture.threadA.workspaceId,
+      await titleEvidence(`completed-${mode}`, {
+        before,
+        updates,
+        events,
       });
-      await store.acceptWorkspaceInvitation({
-        selector: invitation.selector,
-        tokenHash,
-        userEmail: "parent-owner@titles.test",
-        userEmailVerified: true,
-        userId: otherOwner,
-      });
-      const parentHead = await database
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=", fixture.threadA.workspaceId)
-        .executeTakeFirstOrThrow();
-      await database
-        .updateTable("workspaceMemberships")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: fixture.userId })
-        .where("workspaceId", "=", fixture.threadA.workspaceId)
-        .where("userId", "=", fixture.userId)
-        .execute();
-      const hidden = await store.renameThread({
-        idempotencyKey: randomUUID(),
-        requestedBy: fixture.userId,
-        threadId: worker.id,
-        title: "Private worker title",
-      });
-      expect(hidden.events?.filter((event) => event.type === "assignment.updated")).toHaveLength(2);
-      expect(
-        hidden.events?.some((event) => event.workspaceId === fixture.threadA.workspaceId),
-      ).toBe(false);
-      expect(
-        await database
-          .selectFrom("workspaceEvents")
-          .select("eventId")
-          .where("workspaceId", "=", fixture.threadA.workspaceId)
-          .where("sequence", ">", parentHead.eventSequence)
-          .execute(),
-      ).toEqual([]);
-      await titleEvidence(`completed-${mode}`, { before, updates, events, hidden });
     },
   );
-
   async function titleEvidence(name: string, result: unknown) {
-    await mkdir(evidenceRoot, { recursive: true });
+    await mkdir(evidenceRoot, {
+      recursive: true,
+    });
     await writeFile(join(evidenceRoot, `${name}.json`), JSON.stringify(result, null, 2));
     console.info(`Title review receipt: ${join(evidenceRoot, `${name}.json`)}`);
   }
-
   it("thread_update shares Done, freezes messages and delegation, and reopens through the same authority", async () => {
     const f = await createMessagingFixture();
     const write = (action: string, fields = {}) =>
       service.handle(f.tokenA, {
         type: "thread.update",
         requestId: randomUUID(),
-        input: { threadId: f.threadB.id, action, ...fields },
+        input: {
+          threadId: f.threadB.id,
+          action,
+          ...fields,
+        },
       });
-    expect(await write("rename", { title: "Shared result" })).toMatchObject({
+    expect(
+      await write("rename", {
+        title: "Shared result",
+      }),
+    ).toMatchObject({
       type: "thread.update.result",
       doneWhenRunEnds: false,
       title: "Shared result",
@@ -1232,10 +1280,18 @@ integration("agent-to-agent messaging round trip", () => {
         type: "thread.message",
         requestId: randomUUID(),
         threadId: f.threadB.id,
-        content: [{ type: "text", text: "No new work" }],
+        content: [
+          {
+            type: "text",
+            text: "No new work",
+          },
+        ],
         delivery: "queue",
       }),
-    ).rejects.toMatchObject({ code: "conflict", message: "This task is Done. Reopen it first." });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This task is Done. Reopen it first.",
+    });
     await expect(
       service.handle(f.tokenA, {
         type: "thread.delegate",
@@ -1243,28 +1299,52 @@ integration("agent-to-agent messaging round trip", () => {
         threadId: f.threadB.id,
         task: "No delegation",
       }),
-    ).rejects.toMatchObject({ code: "conflict", message: "This task is Done. Reopen it first." });
-    expect(await write("reopen")).toMatchObject({ doneAt: null });
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "This task is Done. Reopen it first.",
+    });
+    expect(await write("reopen")).toMatchObject({
+      doneAt: null,
+    });
     const next = await service.handle(f.tokenA, {
       type: "thread.message",
       requestId: randomUUID(),
       threadId: f.threadB.id,
-      content: [{ type: "text", text: "Now run" }],
+      content: [
+        {
+          type: "text",
+          text: "Now run",
+        },
+      ],
       delivery: "queue",
     });
     expect(next).toMatchObject({
       type: "thread.message.result",
-      result: { runId: expect.any(String) },
+      result: {
+        runId: expect.any(String),
+      },
     });
     if (next.type !== "thread.message.result") throw new Error("Expected a message result");
-    expect((await readToolRecords(store, next.result)).run).toMatchObject({ status: "queued" });
-    await mkdir("/tmp/opensteer-task-done", { recursive: true });
+    expect((await readToolRecords(store, next.result)).run).toMatchObject({
+      status: "queued",
+    });
+    await mkdir("/tmp/opensteer-task-done", {
+      recursive: true,
+    });
     await writeFile(
       "/tmp/opensteer-task-done/agent-host.json",
-      JSON.stringify({ done, next, threadId: f.threadB.id, runId: f.runA.id }, null, 2),
+      JSON.stringify(
+        {
+          done,
+          next,
+          threadId: f.threadB.id,
+          runId: f.runA.id,
+        },
+        null,
+        2,
+      ),
     );
   });
-
   it("keeps one tool inventory through Runner reconnects and returns a compact Thread summary", async () => {
     const f = await createMessagingFixture();
     const claims = claimsByToken.get(f.tokenA)!;
@@ -1272,10 +1352,11 @@ integration("agent-to-agent messaging round trip", () => {
       publicUrl: new URL("http://localhost"),
       store: store,
       handlers: service.service.options.handlers,
-
       callers: new AgentCallerResolver({
         store: store,
-        runs: { authenticate: async () => claims } as unknown as RunToolTokenService,
+        runs: {
+          authenticate: async () => claims,
+        } as unknown as RunToolTokenService,
       }),
     });
     const inventories: string[][] = [];
@@ -1284,11 +1365,16 @@ integration("agent-to-agent messaging round trip", () => {
         if (!modern)
           await database
             .updateTable("runners")
-            .set({ capabilities: sql`${JSON.stringify(["filesystem"])}::jsonb` })
+            .set({
+              capabilities: sql`${JSON.stringify(["filesystem"])}::jsonb`,
+            })
             .where("id", "=", f.runnerId)
             .execute();
         const server = await mcp.createServer(await mcp.options.callers.authenticate("fixture"));
-        const client = new Client({ name: "task-done-test", version: "1" });
+        const client = new Client({
+          name: "task-done-test",
+          version: "1",
+        });
         const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair();
         try {
           await server.connect(serverTransport);
@@ -1296,7 +1382,11 @@ integration("agent-to-agent messaging round trip", () => {
           serverTransport.onmessage = (message, extra) =>
             receive(message, {
               ...extra,
-              authInfo: { token: f.tokenA, clientId: "task-done-test", scopes: [] },
+              authInfo: {
+                token: f.tokenA,
+                clientId: "task-done-test",
+                scopes: [],
+              },
             });
           await client.connect(clientTransport);
           const names = (await client.listTools()).tools.map(({ name }) => name);
@@ -1305,7 +1395,11 @@ integration("agent-to-agent messaging round trip", () => {
           if (modern) {
             const result = await client.callTool({
               name: "thread_update",
-              arguments: { threadId: f.threadB.id, action: "rename", title: "MCP write" },
+              arguments: {
+                threadId: f.threadB.id,
+                action: "rename",
+                title: "MCP write",
+              },
             });
             expect(result.isError, JSON.stringify(result.content)).not.toBe(true);
             expect(result.structuredContent).toMatchObject({
@@ -1323,86 +1417,84 @@ integration("agent-to-agent messaging round trip", () => {
         service.handle(f.tokenA, {
           type: "thread.update",
           requestId: randomUUID(),
-          input: { action: "done" },
+          input: {
+            action: "done",
+          },
         }),
-      ).resolves.toMatchObject({ type: "thread.update.result", doneWhenRunEnds: true });
-      await mkdir("/tmp/opensteer-task-done", { recursive: true });
+      ).resolves.toMatchObject({
+        type: "thread.update.result",
+        doneWhenRunEnds: true,
+      });
+      await mkdir("/tmp/opensteer-task-done", {
+        recursive: true,
+      });
       await writeFile(
         "/tmp/opensteer-task-done/runner-capability.json",
-        JSON.stringify({ runId: f.runA.id, inventories }, null, 2),
+        JSON.stringify(
+          {
+            runId: f.runA.id,
+            inventories,
+          },
+          null,
+          2,
+        ),
       );
     } finally {
       await mcp.close();
     }
   });
-
   async function createMessagingFixture(voice = false) {
-    const userId = await store.createUser("Alex");
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    await enrollTestRunner({ createdBy: userId, environmentId, runnerId });
-    const mainWorkspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: userId,
-      idempotencyKey: `messaging-main-${randomUUID()}`,
-      name: "Main workspace",
-      status: "ready",
-    });
+    const path = join(evidenceRoot, randomUUID());
+    await mkdir(path, { recursive: true });
+    const personal = await seedPersonalFixture(database, path);
+    const { userId, runnerId, environmentId, agentHome } = personal;
+    folders = personalTestFolders(store, personal);
     const harnessInstance = await store.createHarnessInstance({
-      config: { model: "test" },
+      config: {
+        model: "test",
+      },
       driverKind: HarnessIdSchema.parse("native"),
       environmentId,
       name: "Native",
       sourceId: "native",
       stateKind: "isolated",
     });
-    const chat = voice
-      ? await store.createThread({
-          createdBy: userId,
-          environmentId,
-          harnessInstanceId: harnessInstance.id,
-          idempotencyKey: `voice-home-${randomUUID()}`,
-          modelSelection: testModelSelection,
-          title: "Chat",
-          workspaceId: mainWorkspace.id,
-          home: true,
-        })
-      : null;
+    await store.recordHarnessCatalogs({
+      environmentId,
+      catalogs: [testReadyHarnessCatalog(harnessInstance.id)],
+      expectedRevisions: new Map([[harnessInstance.id, harnessInstance.runtimeRevision]]),
+    });
     const { thread: threadA } = await store.createThread({
-      ...(chat ? { parentThreadId: chat.thread.id } : {}),
+      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
       idempotencyKey: `messaging-thread-a-${randomUUID()}`,
       modelSelection: testModelSelection,
       title: "Contract coordination",
-      workspaceId: mainWorkspace.id,
     });
     const { thread: threadB } = await store.createThread({
+      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
       idempotencyKey: `messaging-thread-b-${randomUUID()}`,
       modelSelection: testModelSelection,
       title: "Client research",
-      workspaceId: mainWorkspace.id,
     });
-    expect(threadA.inheritsMain).toBe(true);
-    expect(threadB.inheritsMain).toBe(true);
-
     const humanTurn = await commands.enqueueThreadInput({
-      content: [{ text: "Coordinate the contract review", type: "text" }],
+      content: [
+        {
+          text: "Coordinate the contract review",
+          type: "text",
+        },
+      ],
       idempotencyKey: `messaging-human-${randomUUID()}`,
       policy: "queue",
       requestedBy: userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: threadA.id,
     });
     if (!humanTurn.command || !humanTurn.run) {
@@ -1421,12 +1513,17 @@ integration("agent-to-agent messaging round trip", () => {
     if (voice) {
       await database
         .updateTable("threads")
-        .set({ listed: false, title: "Voice" })
+        .set({
+          listed: false,
+          title: "Voice",
+        })
         .where("id", "=", threadA.id)
         .execute();
       await database
         .updateTable("runs")
-        .set({ voiceSessionId: randomUUID() })
+        .set({
+          voiceSessionId: randomUUID(),
+        })
         .where("id", "=", humanTurn.run.id)
         .execute();
     }
@@ -1439,11 +1536,10 @@ integration("agent-to-agent messaging round trip", () => {
         runId: humanTurn.run.id,
         runnerId,
         threadId: threadA.id,
-        workspaceId: threadA.workspaceId,
       }),
     );
     return {
-      environmentId,
+      ...personal,
       harnessInstanceId: harnessInstance.id,
       humanCommandId: humanTurn.command.id,
       runA: humanTurn.run,
@@ -1462,20 +1558,30 @@ integration("agent-to-agent messaging round trip", () => {
     thread: Thread,
   ) {
     const turn = await commands.enqueueThreadInput({
-      content: [{ text: "Start the research", type: "text" }],
+      content: [
+        {
+          text: "Start the research",
+          type: "text",
+        },
+      ],
       idempotencyKey: `messaging-start-${randomUUID()}`,
       policy: "queue",
       requestedBy: fixture.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: thread.id,
     });
     if (!turn.command || !turn.run) throw new Error("Expected the input to queue a Run");
     const runnerBootId = "boot-1";
     await store.claimCommand(turn.command.id, "messaging-dispatcher");
     const binding = await activateClaimedRun(fixture, turn.run, thread, runnerBootId);
-    return { bindingGeneration: binding.bindingGeneration, runId: turn.run.id, runnerBootId };
+    return {
+      bindingGeneration: binding.bindingGeneration,
+      runId: turn.run.id,
+      runnerBootId,
+    };
   }
-
   async function activateClaimedRun(
     fixture: Pick<
       Awaited<ReturnType<typeof createMessagingFixture>>,
@@ -1493,7 +1599,6 @@ integration("agent-to-agent messaging round trip", () => {
       },
       harnessInstanceId: fixture.harnessInstanceId,
       leaseTokenHash: `lease-${randomUUID()}`,
-      membershipGeneration: 1,
       runnerBootId,
       runnerId: fixture.runnerId,
       runId: run.id,
@@ -1503,21 +1608,21 @@ integration("agent-to-agent messaging round trip", () => {
       environmentId: fixture.environmentId,
       event: {
         bindingGeneration: binding.bindingGeneration,
-        data: { status: "running" },
+        data: {
+          status: "running",
+        },
         emittedAt: new Date().toISOString(),
         environmentId: fixture.environmentId,
         ordinal: 0,
         runId: run.id,
         threadId: thread.id,
         type: "run.started",
-        workspaceId: thread.workspaceId,
       },
       runnerBootId,
       runnerId: fixture.runnerId,
     });
     return binding;
   }
-
   async function pendingCommandIdForRun(runId: ReturnType<typeof createId<"run">>) {
     const row = await database
       .selectFrom("commands")
@@ -1527,98 +1632,13 @@ integration("agent-to-agent messaging round trip", () => {
       .executeTakeFirstOrThrow();
     return row.id;
   }
-
-  async function enrollTestRunner(input: {
-    readonly createdBy: UserId;
-    readonly environmentId: ReturnType<typeof createId<"environment">>;
-    readonly runnerId: ReturnType<typeof createId<"runner">>;
-  }): Promise<void> {
-    if (!(await store.getDeployment())) {
-      await store.ensureDeployment({
-        canonicalOrigin: "https://agent-messaging.opensteer.test",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "server" as const,
-        },
-      });
-    }
-    const pair = generateKeyPairSync("ed25519");
-    const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const descriptor: RunnerDescriptor = {
-      bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-      capabilities: ["filesystem", "task-done-v1"],
-      modules: {
-        agents: {
-          environmentIds: [input.environmentId],
-          harnessDrivers: [
-            {
-              accessModes: [...ThreadAccessModeSchema.options],
-              driverKind: HarnessIdSchema.parse("native"),
-              readiness: "configured",
-              steering: true,
-              sources: [
-                {
-                  fields: [],
-                  kind: "first-party",
-                  label: "Native",
-                  quota: "none",
-                  sourceId: "native",
-                  stateKinds: ["isolated"],
-                },
-              ],
-            },
-          ],
-          localStorage: {
-            bindings: [],
-            storageAuthorityId: createId("storageAuthority"),
-            truncated: false,
-          },
-          maxConcurrentRuns: 4,
-          providerStateModes: ["isolated"],
-          workspaceBackings: ["local-directory"],
-        },
-      },
-      name: "Main runner",
-      runnerId: input.runnerId,
-      runnerKind: "main",
-      runtimeVersion: "test",
-    };
-    const suffix = randomUUID();
-    const enrollmentTokenHash = `sha256:${createHash("sha256")
-      .update(`agent-messaging-${suffix}`, "utf8")
-      .digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: input.createdBy,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `agent-messaging-runner-${suffix}`,
-      mainEnrollmentPurpose: "initial",
-      name: descriptor.name,
-      requestFingerprint: `sha256:agent-messaging-${suffix}`,
-      runnerKind: "main",
-      tokenHash: enrollmentTokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor,
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256")
-        .update(publicKeyDer)
-        .digest("base64url")}`,
-      publicKeyPem,
-    });
-  }
 });
-
 function testClaims(input: {
   readonly environmentId: ReturnType<typeof createId<"environment">>;
   readonly requestedBy: UserId;
   readonly runId: ReturnType<typeof createId<"run">>;
   readonly runnerId: ReturnType<typeof createId<"runner">>;
   readonly threadId: Thread["id"];
-  readonly workspaceId: Thread["workspaceId"];
 }): RunToolScope {
   return {
     aud: "opensteer-run-tools",
@@ -1627,12 +1647,10 @@ function testClaims(input: {
     iat: Math.floor(Date.now() / 1_000),
     iss: "opensteer-host",
     jti: randomUUID(),
-    membershipGeneration: 1,
     runnerBootId: "boot-1",
     ...input,
   };
 }
-
 function projectHarnessInputs(messages: readonly Message[]) {
   return messages.map((message) =>
     HarnessInputSchema.parse({
@@ -1644,7 +1662,6 @@ function projectHarnessInputs(messages: readonly Message[]) {
     }),
   );
 }
-
 async function unexpected(): Promise<never> {
   throw new Error("Unexpected agent control dependency call");
 }

@@ -31,7 +31,7 @@ func ensureDesktopPrivateRoot(rootPath string) (bool, error) {
 		windows.CloseHandle(current)
 		return false, err
 	}
-	root := &workspaceRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
+	root := &filesystemRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
 	defer root.close()
 	relative, err := filepath.Rel(volumeRoot, cleaned)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
@@ -82,7 +82,7 @@ func ensureDesktopPrivateRoot(rootPath string) (bool, error) {
 	return createdFinal, nil
 }
 
-func openDesktopPrivateRoot(rootPath string) (*workspaceRoot, error) {
+func openDesktopPrivateRoot(rootPath string) (*filesystemRoot, error) {
 	cleaned, volumeRoot, err := validatedWindowsRootPath(rootPath)
 	if err != nil {
 		return nil, err
@@ -96,7 +96,7 @@ func openDesktopPrivateRoot(rootPath string) (*workspaceRoot, error) {
 		windows.CloseHandle(current)
 		return nil, err
 	}
-	root := &workspaceRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
+	root := &filesystemRoot{containment: platformContainment, handle: current, volumeID: baseStat.identity.volumeID}
 	relative, err := filepath.Rel(volumeRoot, cleaned)
 	if err != nil || filepath.IsAbs(relative) || relative == ".." || strings.HasPrefix(relative, `..\`) {
 		root.close()
@@ -130,7 +130,7 @@ func openDesktopPrivateRoot(rootPath string) (*workspaceRoot, error) {
 	return root, nil
 }
 
-func (root *workspaceRoot) duplicateDesktopRootHandle() (nodeHandle, error) {
+func (root *filesystemRoot) duplicateDesktopRootHandle() (nodeHandle, error) {
 	var duplicate windows.Handle
 	process := windows.CurrentProcess()
 	if err := windows.DuplicateHandle(process, root.handle, process, &duplicate, 0, false, windows.DUPLICATE_SAME_ACCESS); err != nil {
@@ -139,7 +139,7 @@ func (root *workspaceRoot) duplicateDesktopRootHandle() (nodeHandle, error) {
 	return duplicate, nil
 }
 
-func (root *workspaceRoot) openDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) openDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	handle, err := ntOpenAt(
 		parent,
 		name,
@@ -166,7 +166,7 @@ func (root *workspaceRoot) openDesktopDirectoryAt(parent nodeHandle, name string
 	return handle, nil
 }
 
-func (root *workspaceRoot) createDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) createDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	descriptor, err := desktopPrivateSecurityDescriptor(true)
 	if err != nil {
 		return windows.InvalidHandle, err
@@ -240,7 +240,7 @@ func desktopPrivateSecurityDescriptor(directory bool) (*windows.SECURITY_DESCRIP
 	)
 }
 
-func (root *workspaceRoot) openDesktopNodeAt(parent nodeHandle, name string, directory bool) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openDesktopNodeAt(parent nodeHandle, name string, directory bool) (nodeHandle, nodeStat, error) {
 	access := uint32(windows.FILE_READ_DATA | windows.FILE_READ_ATTRIBUTES | windows.READ_CONTROL | windows.WRITE_DAC)
 	options := uint32(windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
 	if directory {
@@ -263,7 +263,7 @@ func (root *workspaceRoot) openDesktopNodeAt(parent nodeHandle, name string, dir
 	return handle, stat, nil
 }
 
-func (root *workspaceRoot) openDesktopNode(parts []string, directory bool) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openDesktopNode(parts []string, directory bool) (nodeHandle, nodeStat, error) {
 	if len(parts) == 0 {
 		handle, err := root.duplicateDesktopRootHandle()
 		if err != nil {
@@ -284,7 +284,7 @@ func (root *workspaceRoot) openDesktopNode(parts []string, directory bool) (node
 	return root.openDesktopNodeAt(parent, name, directory)
 }
 
-func (root *workspaceRoot) openDesktopParent(parts []string, create bool) (nodeHandle, string, error) {
+func (root *filesystemRoot) openDesktopParent(parts []string, create bool) (nodeHandle, string, error) {
 	if len(parts) == 0 {
 		return windows.InvalidHandle, "", userError("invalid-path", "Desktop private path must name an entry")
 	}
@@ -450,7 +450,7 @@ func desktopPrivateSIDs() (*windows.SID, *windows.SID, error) {
 	return current, system, nil
 }
 
-func removeDesktopPrivateFileAt(root *workspaceRoot, parent nodeHandle, name string) (bool, error) {
+func removeDesktopPrivateFileAt(root *filesystemRoot, parent nodeHandle, name string) (bool, error) {
 	handle, err := ntOpenAt(
 		parent,
 		name,

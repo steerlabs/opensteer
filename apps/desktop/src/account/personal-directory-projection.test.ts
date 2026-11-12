@@ -28,7 +28,7 @@ const source: AccountDeploymentConnectionSource = {
 const discovery: HostDiscoveryDocument = {
   canonicalOrigin,
   deploymentId,
-  deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+  deploymentShape: { kind: "personal" },
   hostInstanceId: createId("hostInstance"),
   hostKey: { algorithm: "Ed25519" },
 };

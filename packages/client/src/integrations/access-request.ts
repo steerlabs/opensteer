@@ -17,7 +17,7 @@ import { integrationToolEffect } from "@opensteer/integration-core/effect";
 import { apiKeyFacts, connectableApiKeyMethod } from "./api-key.js";
 import { requestAgentProposedDetail, type Request } from "@opensteer/core";
 import { mutationIdempotencyKey, unwrapRpcResult } from "../host/host-session-client.js";
-import type { HostClient, WorkspaceSummary } from "../host/index.js";
+import type { HostClient } from "../host/index.js";
 
 /**
  * What one integration access Request comes to, shared by the browser card and
@@ -170,8 +170,8 @@ export function integrationInstallNextStep(input: {
  * every account they connect, so the Host answers the Request as soon as a
  * usable account is connected.
  */
-export function mainAccessDetail(workspaceName: string, integrationName: string): string {
-  return `Your tasks in ${workspaceName} can read and make changes with every ${integrationName} account you connect.`;
+export function mainAccessDetail(deploymentName: string, integrationName: string): string {
+  return `Your tasks in ${deploymentName} can read and make changes with every ${integrationName} account you connect.`;
 }
 
 export async function resolveIntegrationAccess(
@@ -186,22 +186,9 @@ export async function resolveIntegrationAccess(
       readonly displayName: string;
       readonly id: string;
     } | null;
-    readonly targetKind: WorkspaceSummary["kind"];
   },
 ): Promise<void> {
-  const { requestId, selectedAccount, targetKind } = input;
-  if (targetKind === "main") {
-    await hostClient.dispatch({
-      idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
-      requestId,
-      response: {
-        kind: "external",
-        value: { connectionId: selectedAccount?.id ?? null, decision: "fulfilled" },
-      },
-      type: "request.respond",
-    });
-    return;
-  }
+  const { requestId, selectedAccount } = input;
   await hostClient.dispatch({
     idempotencyKey: mutationIdempotencyKey(`request:${requestId}`),
     requestId,
@@ -247,16 +234,6 @@ export function accountConnectable(
   }
 }
 
-/**
- * The computer whose ceiling has to be raised before the effective access can
- * be fulfilled, or null when nothing stands in the way. Callers that do not
- * offer a broader choice use the Request's access by default.
- *
- * A connection's access decides which tool rows exist, so a read-only computer
- * simply has no send tool and no grant could reach one. Raising the ceiling is
- * therefore a separate, deliberate act on the computer — never a side effect of
- * approving a Workspace's access.
- */
 export function computerAccessUpgrade(
   plan: Pick<AccessPlan, "definition" | "requestedAccess" | "requirement" | "selectedAccount">,
   effectiveAccess: IntegrationAccess = plan.requestedAccess,
@@ -291,18 +268,6 @@ export interface AccessRequestAccount {
   readonly id: string;
 }
 
-/**
- * The accounts that can answer one connection requirement.
- *
- * Which list an integration draws from is a property of its requirement, not
- * of the surface asking: a provider integration's accounts are this person's
- * connections, an app's accounts are the computers it is on, and a remote MCP
- * server's are the platform connections made against that server. The Request
- * card and the Workspace-access editor both need exactly this, and a Workspace
- * that could be granted an account the Request card would not offer is a bug
- * with two homes — so there is one reading of it here, free of React and the
- * DOM, rather than a nested ternary in each.
- */
 export function accountsForRequirement(input: {
   readonly dashboard: Pick<IntegrationDashboard, "connections"> | null;
   /** The installation whose MCP connections count, for `mcp-oauth`. */
@@ -374,23 +339,14 @@ export function effectiveIntegrationAccess(
   return requested === "read-write" || allowChanges ? "read-write" : "read";
 }
 
-/**
- * The access answering a Request gives its Workspace, which its card states. A
- * project Workspace gets what the card allows. Tasks in Main use every
- * account their owner connects to read and make changes, whatever the Request
- * asked; only a computer's own access limits that, and the card raises it
- * first when the Request needs changes.
- */
 export function grantedIntegrationAccess(input: {
   readonly allowChanges: boolean;
   readonly plan: Pick<
     AccessPlan,
     "definition" | "requestedAccess" | "requirement" | "selectedAccount"
   >;
-  readonly workspaceKind: "main" | "project";
 }): IntegrationAccess {
   const allowed = effectiveIntegrationAccess(input.plan.requestedAccess, input.allowChanges);
-  if (input.workspaceKind === "project") return allowed;
   if (input.plan.requirement.kind !== "computer") return "read-write";
   const computer = input.plan.selectedAccount?.computer;
   return computer && computerAccessUpgrade(input.plan, allowed) === null

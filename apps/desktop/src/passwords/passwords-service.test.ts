@@ -1,3 +1,4 @@
+import { DeploymentIdSchema } from "@opensteer/core";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createECDH, randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -40,15 +41,13 @@ const cleanups: (() => Promise<void>)[] = [];
 const syntheticPassword = "synthetic-password-7c1a";
 const transactionId = "6f1c2a4b-5d6e-4f80-9a1b-2c3d4e5f6071";
 const requestParams = PasswordsBrokerSignInRequestParamsSchema.parse({
-  deploymentId: "dep_personal",
+  protocolVersion: 10,
+  permissionVersion: 6,
+  deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
   deploymentName: "Personal",
-  workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
-  expiresAt: "2026-10-11T17:00:00.000Z",
+  expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
   reason: "Check the invoice",
   threadTitle: "Invoices",
-  workspaceName: "Home",
-  runtimeId: "desktop-browser",
-  sessionId: "bsn_00000000-0000-4000-8000-000000000007",
   site: "https://example.com",
   transactionId,
 });
@@ -61,7 +60,12 @@ const credential = {
     account: "p•••@example.com",
   },
 } as const;
-const releaseParams = { transactionId, field: "password", origin: "https://example.com" } as const;
+const releaseParams = {
+  transactionId,
+  kind: "browser",
+  field: "password",
+  origin: "https://example.com",
+} as const;
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
@@ -117,41 +121,10 @@ describe("PasswordsService off the platforms the broker runs on", () => {
 
 // Unix sockets, the lifecycle lock and peer credentials: the macOS job.
 describe.runIf(process.platform === "darwin")("PasswordsService end to end", () => {
-  it("keeps each legacy protocol on its own connection beneath a v8 service", async () => {
-    const harness = await serviceHarness("multiple compatibility protocols", {
-      clientProtocolVersion: 8,
-    });
-    harness.broker.reply("card.probe", () => ({ cards: "has-card" }));
-    const login = harness.service.broker(6);
-    const card = harness.service.broker(7);
-    const legacy = harness.service.broker(4);
-    await expect(login.probe({ site: "https://example.com" })).resolves.toEqual({
-      passwords: "has-login",
-    });
-    await expect(card.cardProbe()).resolves.toEqual({ cards: "has-card" });
-    await expect(legacy.probe({ site: "https://example.com" })).resolves.toEqual({
-      passwords: "has-login",
-    });
-    expect([login.protocolVersion, card.protocolVersion, legacy.protocolVersion]).toEqual([
-      6, 7, 4,
-    ]);
-    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual(
-      [6, 7, 4].map((protocolVersion) => ({ client: { version: "9.9.9" }, protocolVersion })),
-    );
-    await harness.service.stop();
-    await expect(card.probe({ site: "https://example.com" })).resolves.toEqual({
-      passwords: "unavailable",
-    });
-    await expect(
-      harness.service.broker(5).request(requestParams, new AbortController().signal),
-    ).rejects.toMatchObject({ code: "stopped" });
-    expect(harness.broker.received("hello")).toHaveLength(3);
-  });
-
-  it("exposes person calls at v8 and keeps person and agent lifetimes separate", async () => {
+  it("keeps person and agent lifetimes separate on the current wire", async () => {
     const harness = await serviceHarness("person lifetime separation", {
-      clientProtocolVersion: 8,
-      status: { agentSignIns: "on", personFill: "on", vault: "ready" },
+      clientProtocolVersion: 10,
+      status: { personSave: "on", agentSignIns: "on", personFill: "on", vault: "ready" },
     });
     const session = harness.service.broker();
     const signal = new AbortController().signal;
@@ -173,7 +146,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       fill: "on",
       accounts: [account],
     });
-    expect(session.protocolVersion).toBe(8);
+    expect(session.protocolVersion).toBe(10);
     const person = await session.fillBegin!(
       {
         transactionId,
@@ -184,12 +157,17 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       },
       signal,
     );
-    const { runtimeId: _runtime, sessionId: _session, ...request } = requestParams;
+    const request = requestParams;
     const agent = await session.request(
-      { ...request, protocolVersion: 6, permissionVersion: 5, transactionId: randomUUID() },
+      { ...request, protocolVersion: 10, permissionVersion: 6, transactionId: randomUUID() },
       signal,
     );
-    harness.broker.setStatus({ agentSignIns: "off", personFill: "on", vault: "ready" });
+    harness.broker.setStatus({
+      personSave: "on",
+      agentSignIns: "off",
+      personFill: "on",
+      vault: "ready",
+    });
     await vi.waitFor(() => expect(agent.lifetime.aborted).toBe(true));
     expect(person.lifetime.aborted).toBe(false);
     expect(harness.statuses.at(-1)).toMatchObject({ broker: { personFill: "on" } });
@@ -206,7 +184,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
     ).rejects.toMatchObject({ code: "invalid" });
     await expect(
       session.approve(
-        { transactionId, loginId: account.id, revision: 3, permissionVersion: 5, remember: true },
+        { transactionId, loginId: account.id, revision: 3, permissionVersion: 6, remember: true },
         signal,
       ),
     ).rejects.toMatchObject({ code: "invalid" });
@@ -221,18 +199,33 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
     ).rejects.toMatchObject({ code: "invalid" });
     expect(harness.broker.received("signin.approve")).toEqual([]);
     expect(harness.broker.received("signin.commit")).toEqual([]);
-    harness.broker.setStatus({ agentSignIns: "on", personFill: "on", vault: "ready" });
+    harness.broker.setStatus({
+      personSave: "on",
+      agentSignIns: "on",
+      personFill: "on",
+      vault: "ready",
+    });
     await vi.waitFor(() =>
       expect(harness.statuses.at(-1)).toMatchObject({ broker: { agentSignIns: "on" } }),
     );
     const nextAgent = await session.request(
-      { ...request, protocolVersion: 6, permissionVersion: 5, transactionId: randomUUID() },
+      { ...request, protocolVersion: 10, permissionVersion: 6, transactionId: randomUUID() },
       signal,
     );
-    harness.broker.setStatus({ agentSignIns: "on", personFill: "off", vault: "ready" });
+    harness.broker.setStatus({
+      personSave: "off",
+      agentSignIns: "on",
+      personFill: "off",
+      vault: "ready",
+    });
     await vi.waitFor(() => expect(person.lifetime.aborted).toBe(true));
     expect(nextAgent.lifetime.aborted).toBe(false);
-    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "needs-reset" });
+    harness.broker.setStatus({
+      personSave: "off",
+      agentSignIns: "off",
+      personFill: "off",
+      vault: "needs-reset",
+    });
     await vi.waitFor(() => expect(nextAgent.lifetime.aborted).toBe(true));
     await session.cancel(transactionId);
     expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
@@ -241,8 +234,8 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
 
   it("ends person lifetimes when the vault becomes unsupported or its connection closes", async () => {
     const harness = await serviceHarness("person vault and connection", {
-      clientProtocolVersion: 8,
-      status: { agentSignIns: "on", personFill: "on", vault: "ready" },
+      clientProtocolVersion: 10,
+      status: { personSave: "on", agentSignIns: "on", personFill: "on", vault: "ready" },
     });
     const session = harness.service.broker();
     harness.broker.reply("fill.begin", () => ({
@@ -261,9 +254,19 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
         new AbortController().signal,
       );
     const first = await start();
-    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "unsupported" });
+    harness.broker.setStatus({
+      personSave: "off",
+      agentSignIns: "off",
+      personFill: "off",
+      vault: "unsupported",
+    });
     await vi.waitFor(() => expect(first.lifetime.aborted).toBe(true));
-    harness.broker.setStatus({ agentSignIns: "on", personFill: "on", vault: "ready" });
+    harness.broker.setStatus({
+      personSave: "on",
+      agentSignIns: "on",
+      personFill: "on",
+      vault: "ready",
+    });
     await vi.waitFor(() =>
       expect(harness.statuses.at(-1)).toMatchObject({ availability: "available" }),
     );
@@ -273,27 +276,10 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
     expect(harness.broker.received("signin.release")).toEqual([]);
   });
 
-  it("omits person calls after v8 falls back to a fresh v7 connection", async () => {
-    const harness = await serviceHarness("person compatibility", {
-      clientProtocolVersion: 8,
-      protocolVersion: 7,
-    });
-    const session = harness.service.broker();
-    await harness.service.status();
-    expect(session.protocolVersion).toBe(7);
-    expect(session.fillAccounts).toBeUndefined();
-    expect(session.fillBegin).toBeUndefined();
-    expect(harness.broker.received("hello").map((frame) => frame.params)).toEqual([
-      { client: { version: "9.9.9" }, protocolVersion: 8 },
-      { client: { version: "9.9.9" }, protocolVersion: 7 },
-    ]);
-    expect(harness.broker.received("status")).toHaveLength(1);
-  });
-
   it("withdraws an in-flight person begin when its own setting turns off", async () => {
     const harness = await serviceHarness("person pending toggle", {
-      clientProtocolVersion: 8,
-      status: { agentSignIns: "off", personFill: "on", vault: "ready" },
+      clientProtocolVersion: 10,
+      status: { personSave: "on", agentSignIns: "off", personFill: "on", vault: "ready" },
     });
     const session = harness.service.broker();
     await harness.service.status();
@@ -308,7 +294,12 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       new AbortController().signal,
     ).catch((error: unknown) => error);
     await harness.broker.waitFor("fill.begin");
-    harness.broker.setStatus({ agentSignIns: "off", personFill: "off", vault: "ready" });
+    harness.broker.setStatus({
+      personSave: "off",
+      agentSignIns: "off",
+      personFill: "off",
+      vault: "ready",
+    });
     await expect(waiting).resolves.toMatchObject({ code: "aborted" });
     await harness.broker.waitFor("signin.cancel");
     expect(harness.broker.received("signin.cancel")[0]?.params).toEqual({ transactionId });
@@ -323,7 +314,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       vault: "ready",
     } as const;
     const harness = await serviceHarness("save lifetime", {
-      clientProtocolVersion: 9,
+      clientProtocolVersion: 10,
       status: ready,
     });
     const session = harness.service.broker();
@@ -350,13 +341,13 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
   });
 
   it("binds card transactions to their kind and original v7 connection", async () => {
-    const harness = await serviceHarness("card connection", { clientProtocolVersion: 7 });
+    const harness = await serviceHarness("card connection", { clientProtocolVersion: 10 });
     const broker = harness.service.broker();
     const signal = new AbortController().signal;
     harness.broker.reply("card.request", () => ({ decision: "approve", cards: [] }));
-    const { runtimeId: _runtimeId, sessionId: _sessionId, ...request } = requestParams;
+    const request = requestParams;
     const grant = await broker.cardRequest(
-      { ...request, protocolVersion: 7, permissionVersion: 7 },
+      { ...request, protocolVersion: 10, permissionVersion: 7 },
       signal,
     );
     expect(grant.decision).toEqual({ decision: "approve", cards: [] });
@@ -369,7 +360,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
           transactionId,
           loginId: transactionId,
           revision: 1,
-          permissionVersion: 5,
+          permissionVersion: 6,
           remember: false,
         },
         signal,
@@ -411,7 +402,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
 
     await expect(harness.service.status()).resolves.toEqual({
       availability: "available",
-      broker: { agentSignIns: "on", vault: "ready" },
+      broker: { agentSignIns: "on", personFill: "off", personSave: "off", vault: "ready" },
       development: true,
     });
     expect(harness.commands()).toContain("/usr/bin/ditto --noqtn");
@@ -444,7 +435,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
 
   it("maps a Mac that cannot hold a vault to unsupported hardware", async () => {
     const harness = await serviceHarness("unsupported hardware", {
-      status: { agentSignIns: "off", vault: "unsupported" },
+      status: { agentSignIns: "off", personFill: "off", personSave: "off", vault: "unsupported" },
     });
 
     await expect(harness.service.status()).resolves.toEqual({
@@ -463,7 +454,12 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
     const harness = await serviceHarness("status events");
     await harness.service.status();
 
-    harness.broker.setStatus({ agentSignIns: "off", vault: "ready" });
+    harness.broker.setStatus({
+      agentSignIns: "off",
+      personFill: "off",
+      personSave: "off",
+      vault: "ready",
+    });
     await vi.waitFor(() =>
       expect(harness.statuses.at(-1)).toMatchObject({
         availability: "available",
@@ -542,7 +538,7 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
       loginId: credential.login.id,
       revision: 3,
       remember: true,
-      permissionVersion: 5 as const,
+      permissionVersion: 6 as const,
     };
     harness.broker.fail("signin.approve", {
       code: "invalid",
@@ -700,12 +696,12 @@ describe.runIf(process.platform === "darwin")("PasswordsService end to end", () 
   });
 });
 
-describe.runIf(process.platform === "darwin")("Workspace login release across surfaces", () => {
+describe.runIf(process.platform === "darwin")("Personal login release across surfaces", () => {
   it.each(["detach", "close"] as const)(
     "%s during a browser release discards only that fill and keeps app and browser reuse alive",
     async (ending) => {
-      const harness = await serviceHarness(`Workspace release after browser ${ending}`, {
-        clientProtocolVersion: 5,
+      const harness = await serviceHarness(`Personal release after browser ${ending}`, {
+        clientProtocolVersion: 10,
       });
       const authority = new PasswordsLoginAuthority({
         broker: harness.service.broker(),
@@ -729,15 +725,14 @@ describe.runIf(process.platform === "darwin")("Workspace login release across su
       await authority.control(
         {
           type: "login.authorize",
+          deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
           operationId,
           loginRef,
-          workspaceId: createId("workspace"),
           site: "https://example.com",
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
           requester: {
-            deploymentId: "personal",
+            deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000003"),
             deploymentName: "Personal",
-            workspaceName: "Main",
             threadTitle: "Login",
             reason: "Sign in",
           },
@@ -911,7 +906,7 @@ async function serviceHarness(
   const log = vi.fn();
   const service = new PasswordsService({
     appVersion: "9.9.9",
-    protocolVersion: options.clientProtocolVersion ?? 4,
+    protocolVersion: options.clientProtocolVersion ?? 10,
     bundledBrokerPath: () => bundledAppPath,
     client: {
       connectTimeoutMs: 3_000,

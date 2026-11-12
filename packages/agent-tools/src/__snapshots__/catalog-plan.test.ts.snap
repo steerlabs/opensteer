@@ -1,0 +1,2993 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`snapshots the personal/team guide and model-facing inventory 1`] = `
+{
+  "connection": "Opensteer runs the person's one agent and tools on their computers. Your connection has personal scope, an access-mode ceiling, expiry and revoke; live resource grants can narrow it further.
+- Tasks: delegate_task, thread_read and bounded thread_wait. Choices and limits: orchestrator_capabilities; computers: environment_list. New tasks default to agent home; pass an explicit folder {computerId, path} on the hosting computer when needed.
+- You have no task of your own: always name threadId for task operations; self is refused. Connections get no Assignment or automatic result return; wait on threadId.
+- A connection gets no team request authority. Act directly within authorization, including reducing access. Never grant access, raise power, handle credentials, sign in, pair or enroll. Ask the person in your conversation, or delegate a task that can open a Request. Pending is not permission.",
+  "ordinary": "Complete the person's request within their authorization. Use available context, agent-home and task-folder instructions, and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
+
+Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Each task has a fixed folder (computerId and absolute path) on the hosting computer. Other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state. A folder grants no resource access.
+
+Authority:
+- Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
+- Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
+- For a sign-in, card, profile or access, use \`sign_in\`, \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
+- A \`sign_in\` Passwords status is true only when returned: if the person retries or says it is set up, call \`sign_in\` again first.
+- Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
+
+Needs you:
+- Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this task.
+- A private steer may release the call while the Request stays open; the message never answers it.
+- Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
+- \`pending_request\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
+
+Routing:
+- Websites: read opensteer:browser and use Browser Harness.
+- iPhone pages use fixed actions, not CDP or page scripts. Verify script-made taps; ask the person holding the phone if the site refuses them. Never repeat input with an unknown outcome.
+- A browser profile opens only on its home device; name an offline home without switching identity. Saved passwords and cards fill websites only in the hosting computer's browser. Downloads stay on the browser's device.
+- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Mac/phone interfaces: read opensteer:computer-use and use \`computer\`, never in place of a missing service integration unless the person named that device.
+- Reminders, schedules, webhooks or watches: read opensteer:triggers before writing code. Anchor them to a real task; omission inside a Run uses the current task.
+- Full-access callers manage personal settings, computers, integrations, Messaging bridges, plugins and browser profiles with their *_write/*_manage tools. Revoke/disconnect/remove directly; new profiles, grants and credentials need the person.
+
+Helpers and folders:
+- Your engine's native subagents work inside this Run, under its authority, and end with it.
+- \`delegate_task\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- Omit \`folder\` to use this task's folder. Supply {computerId, path} when the work belongs elsewhere. The path is absolute; never silently substitute a refused folder. Continuing a finished task with \`threadId\` keeps its folder and engine/model; change active work with \`thread_send\`.
+- A delegated result returns automatically, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`. Empty final replies wake nobody.
+- An ordinary delegated question reaches its assigner. Answer with \`pending_request\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
+- \`thread_wait\` blocks for at most 100 seconds. Longer work returns by itself; poll nothing. A timeout stops nothing.
+- \`orchestrator_capabilities\` lists engines, models, folder choice and limits. \`environment_list\` lists computers and task execution eligibility.
+
+Task results:
+Complete the focused work. Try authorized repairs; if blocked, name the evidence and missing decision or access. Return a self-contained result with output locations and material limits. A task you started reports through its task result, notification and Needs you.
+- On an Assignment, your final reply returns to the assigner. Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
+- On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
+- Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
+- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news; end stale, duplicate or no-news wakes without assistant text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.
+
+Personal memory:
+The agent home folder is the canonical home of AGENTS.md, its standing instructions and ## Memory, memory/ notes and memory/inbox/ scraps. It is loaded in every task, including a task in another folder or started by a team thread. Read opensteer:memory to remember, correct or forget promptly. Use the supplied agent-home path for memory writes; never create a second personal memory in the task folder. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+
+Task purpose: task",
+  "team": "Complete the person's request within their authorization. Use available context, agent-home and task-folder instructions, and relevant skills. Make routine choices and repair failures you can. Preserve the objective through follow-ups. Verify effects before claiming success; promise future work only after confirming a durable mechanism.
+
+Opensteer is one person, their one agent, and their tasks. A task holds private history; a Run is one turn. Each task has a fixed folder (computerId and absolute path) on the hosting computer. Other enrolled computers remain tool targets. Use file tools for files and Opensteer tools for product state. A folder grants no resource access.
+
+Authority:
+- Your access mode is a ceiling. Delegated work cannot raise it. Act directly within authorization, including administration and reducing access.
+- Never grant access, raise your power or manage sign-in sessions, pairing or enrollment. Except for the phone PIN, sign-in-code and webhook cases here, never retrieve or reveal credentials.
+- For a sign-in, card, profile or access, use \`sign_in\`, \`use_card\`, \`browser_profile_request\` or \`integration_request\`. Credentials go in the Request UI. If no tool fits, ask the person or your assigner.
+- A \`sign_in\` Passwords status is true only when returned: if the person retries or says it is set up, call \`sign_in\` again first.
+- Phone screen-lock PIN: opensteer:computer-use covers an authorized unlock with a person-supplied PIN and keeping it privately only at their explicit request.
+- Asking you to sign in covers its SMS/email code unless they say otherwise. Retrieve the fresh code through an already-granted integration and enter it only into the genuine challenge. Never approve an Opensteer Request, repeat the code in replies or retain it.
+- A webhook result may supply its address and secret for the requested setup; never commit it, put it in memory or send it elsewhere.
+
+Needs you:
+- Request tools wait for the person and return the outcome. If the hold expires, Opensteer stops the Run; a later answer resumes this task.
+- A private steer may release the call while the Request stays open; the message never answers it.
+- Voice and background Runs get pending immediately. Pending is not permission: do not use the requested access, poll, repeat or route around the Request (including Guest or another account).
+- \`pending_request\` shows status, not the answer. Do not poll it. Answer questions about a Request from its current kind and title, never memory.
+
+Routing:
+- Websites: read opensteer:browser and use Browser Harness.
+- iPhone pages use fixed actions, not CDP or page scripts. Verify script-made taps; ask the person holding the phone if the site refuses them. Never repeat input with an unknown outcome.
+- A browser profile opens only on its home device; name an offline home without switching identity. Saved passwords and cards fill websites only in the hosting computer's browser. Downloads stay on the browser's device.
+- Services: read opensteer:integrations; discover with \`integration_search\`, then call.
+- Mac/phone interfaces: read opensteer:computer-use and use \`computer\`, never in place of a missing service integration unless the person named that device.
+- Reminders, schedules, webhooks or watches: read opensteer:triggers before writing code. Anchor them to a real task; omission inside a Run uses the current task.
+- Full-access callers manage personal settings, computers, integrations, Messaging bridges, plugins and browser profiles with their *_write/*_manage tools. Revoke/disconnect/remove directly; new profiles, grants and credentials need the person.
+
+Helpers and folders:
+- Your engine's native subagents work inside this Run, under its authority, and end with it.
+- \`delegate_task\` starts independent work in its own task that outlives your turn. Give its goal, context, constraints and completion criteria. Use a ready matching specialist when appropriate.
+- Omit \`folder\` to use this task's folder. Supply {computerId, path} when the work belongs elsewhere. The path is absolute; never silently substitute a refused folder. Continuing a finished task with \`threadId\` keeps its folder and engine/model; change active work with \`thread_send\`.
+- A delegated result returns automatically, waking you if your turn ended, unless you read it first with \`thread_wait\` or \`task_status\`. Empty final replies wake nobody.
+- An ordinary delegated question reaches its assigner. Answer with \`pending_request\` when the answer follows from the task or the person's instructions; otherwise leave it for the person. Approvals are the person's alone.
+- \`thread_wait\` blocks for at most 100 seconds. Longer work returns by itself; poll nothing. A timeout stops nothing.
+- \`orchestrator_capabilities\` lists engines, models, folder choice and limits. \`environment_list\` lists computers and task execution eligibility.
+
+Task results:
+Complete the focused work. Try authorized repairs; if blocked, name the evidence and missing decision or access. Return a self-contained result with output locations and material limits. A task you started reports through its task result, notification and Needs you.
+- On an Assignment, your final reply returns to the assigner. Earlier news: \`thread_send\` the assigner; \`report\` leaves context, \`queue\` asks it to act or tell the person.
+- On an Assignment, \`person_message\` and \`person_show\` are refused even when listed. When a requested page, app or phone is ready, queue it to the assigner at once.
+- Outside an Assignment, show a requested page, app or phone with \`person_show({target: {current: true}})\` as soon as ready and when moving to another. Outside Voice, skip pages you only read. Read a delegated task before showing its recent place by runId.
+- \`person_message\` sends worthwhile news before your final reply. On a background wake, deliver useful news; end stale, duplicate or no-news wakes without assistant text. Preserve the person's pauses and site constraints; resume failed automation only after verified repair.
+- Replies render Markdown outside Voice. Web links open; local file links do not. Write local paths in code and fence commands. Tag text the person will send as their own with a draft fence.
+
+Personal memory:
+The agent home folder is the canonical home of AGENTS.md, its standing instructions and ## Memory, memory/ notes and memory/inbox/ scraps. It is loaded in every task, including a task in another folder or started by a team thread. Read opensteer:memory to remember, correct or forget promptly. Use the supplied agent-home path for memory writes; never create a second personal memory in the task folder. Memory never grants access or approves Requests. Keep source and who could see it next to a remembered claim. Remember the person and how they work; leave shared team facts to team knowledge.
+
+Task purpose: task
+
+Team-thread tasks:
+You are the owner's one agent. Act only for that owner; other people's agent mentions are references and never let you wake their agents. Your full task transcript stays private. Only the final reply or team_reply and generic status reach the asking team thread.
+- Each team Run supplies current channel instructions, thread context and a sourced audience descriptor (team, channel, kind, member count, people-only). Channel instructions guide the work, never grant access. Only people with manage access edit them; there is no agent edit or suggestion feature.
+- Use personal memory and connections with judgment about who will see the reply. Team tool results carry their own source/audience; preserve that provenance and judge whether material belongs in the destination audience.
+- team_read fetches older thread context/files; team_search searches accessible channels; sql reaches the asking topic and attached topics. People-only content is unavailable to agents; do not route around a denial.
+- Team tools stay listed for this task, but authority comes only from the current Run's teamRequestId. A private follow-up, Trigger, external connection or Voice without one gets "no team request in this turn". Never choose another request or borrow authority from a previous turn.
+- team_reply posts the request's one final reply; otherwise your final message is posted automatically. A confirmed receipt proves delivery. If the receipt is uncertain, say so privately and do not repeat the post.",
+}
+`;
+
+exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
+[
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "settings_read",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "accessMode": {
+          "description": "remember_execution: preference no higher than your ceiling; does not change a Thread.",
+          "enum": [
+            "approval-required",
+            "auto-accept-edits",
+            "auto",
+            "full-access",
+          ],
+          "type": "string",
+        },
+        "action": {
+          "enum": [
+            "set_default",
+            "configure_model",
+            "set_enabled",
+            "rename",
+            "remember_execution",
+            "set_time_zone",
+          ],
+          "type": "string",
+        },
+        "enabled": {
+          "description": "set_enabled: whether the account may execute.",
+          "type": "boolean",
+        },
+        "environmentId": {
+          "description": "Engine actions: computer containing the engine account.",
+          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "harnessInstanceId": {
+          "description": "Engine actions: exact account ID.",
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "name": {
+          "description": "rename: new engine-account label.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string",
+        },
+        "nativeModelId": {
+          "description": "configure_model: native model ID, not display name.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "selection": {
+          "additionalProperties": false,
+          "description": "remember_execution: saved engine/model selectors.",
+          "properties": {
+            "environmentId": {
+              "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            "harnessInstanceId": {
+              "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            "modelSelection": {
+              "additionalProperties": false,
+              "properties": {
+                "modelId": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "nativeModelId": {
+                  "maxLength": 255,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "options": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "maxLength": 255,
+                        "type": "string",
+                      },
+                      {
+                        "type": "number",
+                      },
+                      {
+                        "type": "boolean",
+                      },
+                    ],
+                  },
+                  "propertyNames": {
+                    "maxLength": 100,
+                    "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+                    "type": "string",
+                  },
+                  "type": "object",
+                },
+                "providerId": {
+                  "maxLength": 100,
+                  "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "modelId",
+                "options",
+                "providerId",
+              ],
+              "type": "object",
+            },
+          },
+          "required": [
+            "environmentId",
+            "harnessInstanceId",
+            "modelSelection",
+          ],
+          "type": "object",
+        },
+        "settings": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "contextWindow": {
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000000,
+                  "type": "integer",
+                },
+                "maxOutputTokens": {
+                  "exclusiveMinimum": 0,
+                  "maximum": 10000000,
+                  "type": "integer",
+                },
+              },
+              "required": [
+                "contextWindow",
+              ],
+              "type": "object",
+            },
+            {
+              "type": "null",
+            },
+          ],
+          "description": "configure_model: limits, or null to clear overrides.",
+        },
+        "timeZone": {
+          "description": "set_time_zone: IANA zone, such as America/New_York.",
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "settings_write",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "computer_list",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "rename",
+            "revoke",
+            "stop_session",
+          ],
+          "type": "string",
+        },
+        "machineId": {
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "sessionId": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "computer_write",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "disconnect",
+            "uninstall",
+            "revoke_grant",
+          ],
+          "type": "string",
+        },
+        "connectionId": {
+          "description": "disconnect: account connection ID.",
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "grantId": {
+          "description": "revoke_grant: grant to remove.",
+          "pattern": "^igr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "installationId": {
+          "description": "uninstall: installed integration ID.",
+          "pattern": "^iin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "integration_manage",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "revoke_binding",
+            "pause",
+            "resume",
+          ],
+          "type": "string",
+        },
+        "bindingId": {
+          "description": "revoke_binding: existing binding to remove.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "connectionId": {
+          "description": "pause/resume: existing channel connection.",
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "channel_manage",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "update",
+            "enable",
+            "disable",
+            "remove",
+            "remove_specialist",
+          ],
+          "type": "string",
+        },
+        "directory": {
+          "description": "update: replacement plugin source folder on its computer.",
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "pluginId": {
+          "description": "Plugin to update, enable/disable or remove.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "runnerId": {
+          "description": "update: computer holding the source; omit for existing placement.",
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "specialistId": {
+          "description": "remove_specialist: registration to remove.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_manage",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "rename",
+            "delete",
+            "clear_history",
+            "remove_history",
+            "remove_site",
+          ],
+          "type": "string",
+        },
+        "name": {
+          "description": "rename: new profile label.",
+          "maxLength": 120,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "profileId": {
+          "description": "rename/delete/clear_history/remove_history: profile ID.",
+          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "site": {
+          "description": "remove_site: remembered site to remove.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "url": {
+          "description": "remove_history: exact history URL.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "browser_profile_write",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "path": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "start": {
+          "maxLength": 16384,
+          "minLength": 1,
+          "type": "string",
+        },
+        "title": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "path",
+        "title",
+      ],
+      "type": "object",
+    },
+    "name": "app_publish",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "app_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "appId": {
+          "pattern": "^app_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "body": {
+          "maxLength": 262144,
+          "type": "string",
+        },
+        "headers": {
+          "additionalProperties": {
+            "maxLength": 8192,
+            "type": "string",
+          },
+          "propertyNames": {
+            "maxLength": 200,
+            "type": "string",
+          },
+          "type": "object",
+        },
+        "method": {
+          "default": "GET",
+          "pattern": "^[A-Z]{1,32}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "path": {
+          "default": "/",
+          "maxLength": 4096,
+          "type": "string",
+        },
+      },
+      "required": [
+        "appId",
+      ],
+      "type": "object",
+    },
+    "name": "app_fetch",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "default": "list",
+          "enum": [
+            "list",
+            "read",
+            "respond",
+          ],
+          "type": "string",
+        },
+        "before": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "expectedRevision": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "requestId": {
+          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "response": {
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "choice",
+                  "type": "string",
+                },
+                "optionId": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string",
+                },
+                "text": {
+                  "maxLength": 20000,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "optionId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "answers": {
+                  "additionalProperties": {
+                    "items": {
+                      "maxLength": 100000,
+                      "type": "string",
+                    },
+                    "maxItems": 100,
+                    "type": "array",
+                  },
+                  "propertyNames": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "type": "object",
+                },
+                "kind": {
+                  "const": "form",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "answers",
+                "kind",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "external",
+                  "type": "string",
+                },
+                "value": {
+                  "additionalProperties": {
+                    "$ref": "#/$defs/__schema0",
+                  },
+                  "propertyNames": {
+                    "type": "string",
+                  },
+                  "type": "object",
+                },
+              },
+              "required": [
+                "kind",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "type": "object",
+    },
+    "name": "pending_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "requestId": {
+          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "requestId",
+      ],
+      "type": "object",
+    },
+    "name": "request_withdraw",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "environmentCursor": {
+          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "environment_list",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "folder": {
+          "additionalProperties": false,
+          "properties": {
+            "computerId": {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "computerId",
+            "path",
+          ],
+          "type": "object",
+        },
+        "harnessCursor": {
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "harnessInstanceId": {
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "query": {
+          "maxLength": 256,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "orchestrator_capabilities",
+  },
+  {
+    "access": "settings",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "directory": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "directory",
+      ],
+      "type": "object",
+    },
+    "name": "plugin_install",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "aroundMessageId": {
+          "description": "Messages around this one; excludes query and before.",
+          "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "before": {
+          "description": "From nextBefore; keep view and query.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "itemId": {
+          "description": "Read this one item.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "limit": {
+          "default": 20,
+          "description": "Max items.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "maxCharsPerItem": {
+          "default": 20000,
+          "description": "Max chars per item.",
+          "maximum": 50000,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "query": {
+          "description": "Search message text.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "runLimit": {
+          "default": 10,
+          "description": "Max recent Runs.",
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "subagentId": {
+          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "textOffset": {
+          "description": "With itemId.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "threadId": {
+          "anyOf": [
+            {
+              "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "const": "self",
+              "type": "string",
+            },
+          ],
+        },
+        "view": {
+          "default": "messages",
+          "enum": [
+            "messages",
+            "activity",
+          ],
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "thread_read",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+        "folder": {
+          "additionalProperties": false,
+          "properties": {
+            "computerId": {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "computerId",
+            "path",
+          ],
+          "type": "object",
+        },
+        "limit": {
+          "default": 25,
+          "maximum": 50,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "parentThreadId": {
+          "anyOf": [
+            {
+              "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "const": "self",
+              "type": "string",
+            },
+          ],
+        },
+        "query": {
+          "description": "Search titles.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "thread_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "folder": {
+          "additionalProperties": false,
+          "description": "New task folder on the hosting computer; omit when reusing threadId.",
+          "properties": {
+            "computerId": {
+              "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            "path": {
+              "maxLength": 4096,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "computerId",
+            "path",
+          ],
+          "type": "object",
+        },
+        "harnessInstanceId": {
+          "description": "New task engine account from orchestrator_capabilities.",
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "mode": {
+          "default": "async",
+          "enum": [
+            "async",
+            "wait",
+          ],
+          "type": "string",
+        },
+        "model": {
+          "additionalProperties": false,
+          "description": "New task model selectors/options from orchestrator_capabilities.",
+          "properties": {
+            "modelId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "options": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string",
+                  },
+                  {
+                    "type": "number",
+                  },
+                  {
+                    "type": "boolean",
+                  },
+                ],
+              },
+              "default": {},
+              "propertyNames": {
+                "maxLength": 100,
+                "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "providerId": {
+              "maxLength": 100,
+              "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "modelId",
+            "providerId",
+          ],
+          "type": "object",
+        },
+        "observationId": {
+          "description": "Watch observation identity; reuse for the same observation.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "places": {
+          "description": "Authorized page/app/phone content to forward; text IDs alone do not attach it.",
+          "items": {
+            "oneOf": [
+              {
+                "properties": {
+                  "auto": {
+                    "type": "boolean",
+                  },
+                  "documentId": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "sessionId": {
+                    "pattern": "^bsn_[0-9a-f-]{36}$",
+                    "type": "string",
+                  },
+                  "tabId": {
+                    "maxLength": 512,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "title": {
+                    "maxLength": 256,
+                    "type": "string",
+                  },
+                  "type": {
+                    "const": "browser-page",
+                    "type": "string",
+                  },
+                  "url": {
+                    "maxLength": 2048,
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "type",
+                  "sessionId",
+                  "tabId",
+                  "title",
+                  "url",
+                ],
+                "type": "object",
+              },
+              {
+                "properties": {
+                  "app": {
+                    "properties": {
+                      "bundleId": {
+                        "maxLength": 255,
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "displayName": {
+                        "maxLength": 255,
+                        "minLength": 1,
+                        "type": "string",
+                      },
+                      "teamId": {
+                        "anyOf": [
+                          {
+                            "pattern": "^[A-Z0-9]{10}$",
+                            "type": "string",
+                          },
+                          {
+                            "type": "null",
+                          },
+                        ],
+                      },
+                    },
+                    "required": [
+                      "bundleId",
+                      "displayName",
+                      "teamId",
+                    ],
+                    "type": "object",
+                  },
+                  "auto": {
+                    "const": false,
+                    "type": "boolean",
+                  },
+                  "machineId": {
+                    "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string",
+                  },
+                  "name": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "type": {
+                    "const": "computer-app",
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "type",
+                  "machineId",
+                  "app",
+                  "name",
+                ],
+                "type": "object",
+              },
+              {
+                "properties": {
+                  "auto": {
+                    "const": false,
+                    "type": "boolean",
+                  },
+                  "display": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "machineId": {
+                    "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string",
+                  },
+                  "name": {
+                    "maxLength": 255,
+                    "minLength": 1,
+                    "type": "string",
+                  },
+                  "type": {
+                    "const": "phone",
+                    "type": "string",
+                  },
+                },
+                "required": [
+                  "type",
+                  "machineId",
+                  "display",
+                  "name",
+                ],
+                "type": "object",
+              },
+            ],
+          },
+          "maxItems": 63,
+          "type": "array",
+        },
+        "specialist": {
+          "description": "Ready specialist registration ID or plugin name.",
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "task": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "description": "Finished task to continue; omit new-task selectors.",
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "timeoutMs": {
+          "default": 50000,
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "title": {
+          "description": "New task: 2–5 words naming the outcome; defaults to the first task line.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "task",
+      ],
+      "type": "object",
+    },
+    "name": "delegate_task",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "assignmentId": {
+          "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "assignmentId",
+      ],
+      "type": "object",
+    },
+    "name": "task_status",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "assignmentId": {
+          "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "subagentId": {
+          "pattern": "^nod_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "task_cancel",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "message": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "message",
+      ],
+      "type": "object",
+    },
+    "name": "person_message",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "target": {
+          "anyOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "tabId": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "tabId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "threadId": {
+                  "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "threadId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "current": {
+                  "const": true,
+                  "type": "boolean",
+                },
+              },
+              "required": [
+                "current",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "runId": {
+                  "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "runId",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "required": [
+        "target",
+      ],
+      "type": "object",
+    },
+    "name": "person_show",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "delivery": {
+          "description": "report, queue or steer.",
+          "enum": [
+            "report",
+            "queue",
+            "steer",
+          ],
+          "type": "string",
+        },
+        "message": {
+          "maxLength": 262144,
+          "minLength": 1,
+          "type": "string",
+        },
+        "observationId": {
+          "description": "Watch observation identity; reuse for the same observation.",
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "delivery",
+        "message",
+        "threadId",
+      ],
+      "type": "object",
+    },
+    "name": "thread_send",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "thread_interrupt",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "rename",
+            "done",
+            "reopen",
+          ],
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "title": {
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "thread_update",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "afterMessageId": {
+          "description": "Return published messages after this ID; omit to wait for Run settlement.",
+          "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "assignmentId": {
+          "pattern": "^dlg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "timeoutMs": {
+          "default": 50000,
+          "description": "Maximum wait in milliseconds; timeout never cancels work.",
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer",
+        },
+      },
+      "type": "object",
+    },
+    "name": "thread_wait",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "continuation": {
+          "additionalProperties": false,
+          "properties": {
+            "expectedProviderSessionId": {
+              "anyOf": [
+                {
+                  "pattern": "^psn_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+                {
+                  "type": "null",
+                },
+              ],
+            },
+          },
+          "required": [
+            "expectedProviderSessionId",
+          ],
+          "type": "object",
+        },
+        "harnessInstanceId": {
+          "pattern": "^hin_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "modelSelection": {
+          "additionalProperties": false,
+          "properties": {
+            "modelId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "nativeModelId": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "options": {
+              "additionalProperties": {
+                "anyOf": [
+                  {
+                    "maxLength": 255,
+                    "type": "string",
+                  },
+                  {
+                    "type": "number",
+                  },
+                  {
+                    "type": "boolean",
+                  },
+                ],
+              },
+              "propertyNames": {
+                "maxLength": 100,
+                "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "providerId": {
+              "maxLength": 100,
+              "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$",
+              "type": "string",
+            },
+          },
+          "required": [
+            "modelId",
+            "options",
+            "providerId",
+          ],
+          "type": "object",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "thread_configure",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "cancel",
+            "move",
+            "steer",
+            "resume",
+          ],
+          "type": "string",
+        },
+        "beforeMessageId": {
+          "anyOf": [
+            {
+              "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string",
+            },
+            {
+              "type": "null",
+            },
+          ],
+        },
+        "expectedRunId": {
+          "pattern": "^run_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "messageId": {
+          "pattern": "^msg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "thread_queue",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "browser_profile_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the account.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Website session on its sign-in page; omit for a genuine app.",
+          "pattern": "^bsn_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "site": {
+          "description": "Site whose login is needed, such as github.com.",
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "reason",
+        "site",
+      ],
+      "type": "object",
+    },
+    "name": "sign_in",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "sessionId": {
+          "pattern": "^bsn_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+        "site": {
+          "maxLength": 2048,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "site",
+        "reason",
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "use_card",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why this task needs the profile.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+        "suggestion": {
+          "description": "Suggestion only: existing profile, new empty profile, or user_choice. The person decides.",
+          "oneOf": [
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "existing",
+                  "type": "string",
+                },
+                "profileId": {
+                  "description": "Existing owner profile to suggest; the person decides.",
+                  "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+                "profileId",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "new",
+                  "type": "string",
+                },
+                "suggestedName": {
+                  "description": "One or two plain words, such as Personal, Work or Finance.",
+                  "maxLength": 120,
+                  "minLength": 1,
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+              ],
+              "type": "object",
+            },
+            {
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "const": "user_choice",
+                  "type": "string",
+                },
+              },
+              "required": [
+                "kind",
+              ],
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "required": [
+        "reason",
+        "suggestion",
+      ],
+      "type": "object",
+    },
+    "name": "browser_profile_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "computer": {
+          "description": "Exact Mac alias from the computers note.",
+          "maxLength": 63,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Protected files this task needs and why.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "computer",
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "machine_full_disk_access_request",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from the previous page; omit for the first page.",
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+        "query": {
+          "description": "Search title, site, group or profile; keep it when following nextCursor.",
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "browser_tab_read",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "group",
+            "ungroup",
+            "update_group",
+            "close",
+            "restore",
+            "move",
+          ],
+          "type": "string",
+        },
+        "before": {
+          "maxLength": 512,
+          "minLength": 1,
+          "type": "string",
+        },
+        "collapsed": {
+          "type": "boolean",
+        },
+        "color": {
+          "enum": [
+            "grey",
+            "blue",
+            "red",
+            "yellow",
+            "green",
+            "pink",
+            "purple",
+            "cyan",
+            "orange",
+          ],
+          "type": "string",
+        },
+        "groupId": {
+          "pattern": "^btg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "tabIds": {
+          "items": {
+            "maxLength": 512,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 500,
+          "minItems": 1,
+          "type": "array",
+        },
+        "title": {
+          "maxLength": 80,
+          "type": "string",
+        },
+        "toGroupId": {
+          "pattern": "^btg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "browser_tab_write",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {},
+      "type": "object",
+    },
+    "name": "browser_session_list",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "environmentId": {
+          "description": "Computer for an unplaced profile/Guest; defaults to this execution or the only browser. Cannot move a placed profile.",
+          "pattern": "^env_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "fresh": {
+          "const": true,
+          "description": "New Guest session; no saved identity or persistent data.",
+          "type": "boolean",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "profileId": {
+          "description": "Accessible named profile for a new session.",
+          "pattern": "^bpr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "sessionId": {
+          "description": "Existing session to attach with its original identity.",
+          "pattern": "^bsn_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "browser_session_open",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "sessionId": {
+          "pattern": "^bsn_[0-9a-f-]{36}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "sessionId",
+      ],
+      "type": "object",
+    },
+    "name": "browser_session_close",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "list",
+            "get",
+          ],
+          "type": "string",
+        },
+        "limit": {
+          "default": 50,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "occurrenceLimit": {
+          "default": 25,
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "systemRole": {
+          "enum": [
+            "memory-light",
+            "memory-nightly",
+          ],
+          "type": "string",
+        },
+        "triggerId": {
+          "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "trigger_read",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "enum": [
+            "create",
+            "update",
+            "set_status",
+            "set_next_fire",
+            "run",
+            "cancel",
+          ],
+          "type": "string",
+        },
+        "anchorThreadId": {
+          "pattern": "^thr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "expectedRevisionId": {
+          "pattern": "^trv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 160,
+          "minLength": 1,
+          "type": "string",
+        },
+        "nextFireAt": {
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+          "type": "string",
+        },
+        "occurrenceId": {
+          "pattern": "^toc_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "payload": {},
+        "program": {
+          "additionalProperties": false,
+          "properties": {
+            "language": {
+              "enum": [
+                "javascript",
+                "typescript",
+              ],
+              "type": "string",
+            },
+            "source": {
+              "maxLength": 524288,
+              "minLength": 1,
+              "type": "string",
+            },
+            "toolContractVersion": {
+              "const": 3,
+              "type": "number",
+            },
+          },
+          "required": [
+            "language",
+            "source",
+            "toolContractVersion",
+          ],
+          "type": "object",
+        },
+        "source": {
+          "additionalProperties": false,
+          "description": "Trigger source. kind "schedule" requires exactly one of at (a one-shot UTC ISO-8601 instant) or cron (a recurring expression), and cron additionally requires timezone as an IANA name; payload is the constant event payload each occurrence receives. kind "webhook" and kind "watch" accept none of at, cron, timezone, or payload.",
+          "properties": {
+            "at": {
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$",
+              "type": "string",
+            },
+            "cron": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+            "kind": {
+              "enum": [
+                "schedule",
+                "webhook",
+                "watch",
+              ],
+              "type": "string",
+            },
+            "payload": {},
+            "timezone": {
+              "maxLength": 255,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "kind",
+          ],
+          "type": "object",
+        },
+        "status": {
+          "enum": [
+            "active",
+            "paused",
+            "archived",
+          ],
+          "type": "string",
+        },
+        "triggerId": {
+          "pattern": "^trg_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "action",
+      ],
+      "type": "object",
+    },
+    "name": "trigger_write",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "limit": {
+          "default": 10,
+          "maximum": 20,
+          "minimum": 1,
+          "type": "integer",
+        },
+        "offset": {
+          "default": 0,
+          "maximum": 10000,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "provider": {
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)*$",
+          "type": "string",
+        },
+        "query": {
+          "default": "",
+          "maxLength": 240,
+          "type": "string",
+        },
+        "runnerId": {
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "integration_search",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+      "program",
+      "connection",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "connectionId of the account to act as. Required unless the operation has no account.",
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "cursor": {
+          "default": 0,
+          "description": "nextCursor from the previous schema page.",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer",
+        },
+        "operation": {
+          "description": "Operation name exactly as integration_search returned it.",
+          "maxLength": 528,
+          "minLength": 1,
+          "type": "string",
+        },
+        "path": {
+          "description": "Schema JSON Pointer; omit for root.",
+          "maxLength": 2048,
+          "type": "string",
+        },
+      },
+      "required": [
+        "operation",
+      ],
+      "type": "object",
+    },
+    "name": "integration_describe",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "description": "connectionId of the account to act as. Required unless the operation has no account.",
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "arguments": {
+          "additionalProperties": {},
+          "default": {},
+          "description": "Object matching the operation's input.",
+          "propertyNames": {
+            "type": "string",
+          },
+          "type": "object",
+        },
+        "operation": {
+          "description": "Operation name exactly as integration_search returned it.",
+          "maxLength": 528,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "operation",
+      ],
+      "type": "object",
+    },
+    "name": "integration_call",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "code",
+      ],
+      "type": "object",
+    },
+    "name": "computer",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "read-write",
+          ],
+          "type": "string",
+        },
+        "account": {
+          "pattern": "^con_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "app": {
+          "maxLength": 255,
+          "minLength": 1,
+          "type": "string",
+        },
+        "catalog": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "integration": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string",
+        },
+        "kind": {
+          "const": "computer-app",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "runnerId": {
+          "pattern": "^rnr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "server": {
+          "description": "isv_ serverId from integration_search; omit for single-server installs.",
+          "pattern": "^isv_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+      },
+      "required": [
+        "reason",
+      ],
+      "type": "object",
+    },
+    "name": "integration_request",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+      "program",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "enum": [
+            "read",
+            "read-write",
+          ],
+          "type": "string",
+        },
+        "check": {
+          "additionalProperties": false,
+          "properties": {
+            "args": {
+              "additionalProperties": {},
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+            "operationId": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string",
+            },
+          },
+          "required": [
+            "operationId",
+          ],
+          "type": "object",
+        },
+        "credential": {
+          "additionalProperties": false,
+          "description": "Key setup instructions, never a key value.",
+          "properties": {
+            "description": {
+              "maxLength": 240,
+              "minLength": 1,
+              "type": "string",
+            },
+            "label": {
+              "maxLength": 80,
+              "minLength": 1,
+              "type": "string",
+            },
+            "setupUrl": {
+              "format": "uri",
+              "maxLength": 2048,
+              "type": "string",
+            },
+          },
+          "required": [
+            "label",
+            "description",
+            "setupUrl",
+          ],
+          "type": "object",
+        },
+        "description": {
+          "maxLength": 240,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
+          "type": "string",
+        },
+        "kind": {
+          "enum": [
+            "graphql",
+            "mcp",
+            "openapi",
+          ],
+          "type": "string",
+        },
+        "name": {
+          "maxLength": 80,
+          "minLength": 1,
+          "pattern": "^[^\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}]*$",
+          "type": "string",
+        },
+        "operationKey": {
+          "description": "Retry key for identical input; usually omit.",
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string",
+        },
+        "reason": {
+          "description": "Why the person should approve this setup/access.",
+          "maxLength": 4000,
+          "minLength": 1,
+          "type": "string",
+        },
+        "source": {
+          "description": "Inspected MCP/OpenAPI/GraphQL source, unchanged.",
+          "maxLength": 8388608,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "required": [
+        "description",
+        "reason",
+        "source",
+      ],
+      "type": "object",
+    },
+    "name": "integration_propose",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "before": {
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$",
+          "type": "string",
+        },
+        "channelId": {
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "fileId": {
+          "pattern": "^tbl_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "threadRootId": {
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$",
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "team_read",
+  },
+  {
+    "access": "read",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "authorUserId": {
+          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "before": {
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$",
+          "type": "string",
+        },
+        "channelId": {
+          "pattern": "^tch_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "hasFile": {
+          "type": "boolean",
+        },
+        "query": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string",
+        },
+        "threadRootId": {
+          "maxLength": 19,
+          "pattern": "^[1-9][0-9]*$",
+          "type": "string",
+        },
+        "threadsOnly": {
+          "type": "boolean",
+        },
+      },
+      "required": [
+        "query",
+      ],
+      "type": "object",
+    },
+    "name": "team_search",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "attachmentPaths": {
+          "default": [],
+          "items": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string",
+          },
+          "maxItems": 10,
+          "type": "array",
+        },
+        "bodyMarkdown": {
+          "maxLength": 16384,
+          "type": "string",
+        },
+      },
+      "required": [
+        "bodyMarkdown",
+      ],
+      "type": "object",
+    },
+    "name": "team_reply",
+  },
+  {
+    "access": "write",
+    "callers": [
+      "run",
+    ],
+    "input": {
+      "$defs": {
+        "__schema0": {
+          "anyOf": [
+            {
+              "type": "string",
+            },
+            {
+              "type": "number",
+            },
+            {
+              "type": "boolean",
+            },
+            {
+              "type": "null",
+            },
+            {
+              "items": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "type": "array",
+            },
+            {
+              "additionalProperties": {
+                "$ref": "#/$defs/__schema0",
+              },
+              "propertyNames": {
+                "type": "string",
+              },
+              "type": "object",
+            },
+          ],
+        },
+      },
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "cursor": {
+          "description": "nextCursor from a call without sql.",
+          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
+        "mode": {
+          "default": "read",
+          "enum": [
+            "read",
+            "write",
+          ],
+          "type": "string",
+        },
+        "onlyIfUnchanged": {
+          "description": "Refuse the INSERT if a fact changed since the seen_fact_id it names.",
+          "type": "boolean",
+        },
+        "operationId": {
+          "description": "Required for a write: a new UUID, reused only to retry that same write.",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
+          "type": "string",
+        },
+        "parameters": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/__schema0",
+          },
+          "maxItems": 64,
+          "type": "array",
+        },
+        "sql": {
+          "maxLength": 16384,
+          "minLength": 1,
+          "type": "string",
+        },
+      },
+      "type": "object",
+    },
+    "name": "sql",
+  },
+]
+`;

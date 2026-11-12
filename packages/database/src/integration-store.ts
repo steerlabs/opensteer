@@ -1,3 +1,4 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -7,7 +8,7 @@ import {
   requireIntegrationAccountBinding,
 } from "./integration-account-binding.js";
 import type { IntegrationOAuthAccountBinding } from "@opensteer/integration-core/ports";
-import { withDatabaseTransaction } from "./connection.js";
+
 import { jsonValue } from "./store-primitives.js";
 import {
   IntegrationConnectionSummarySchema,
@@ -114,7 +115,7 @@ export class IntegrationStore {
     readonly provider: IntegrationProvider;
     readonly requestId: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       await transaction
         .insertInto("integrationApplicationSourceDefaults")
         .values({
@@ -145,7 +146,6 @@ export class IntegrationStore {
           requestId: input.requestId,
           targetId: input.provider,
           targetType: "integration-application-source-default",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
     });
@@ -167,7 +167,7 @@ export class IntegrationStore {
     readonly requestId: string;
     readonly secrets: StoredIntegrationSecret;
   }): Promise<StoredIntegrationProviderApplication> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const lockKey = input.application.ownerUserId
         ? `integration-provider:personal:${input.application.ownerUserId}:${input.application.provider}`
         : `integration-provider:shared:${input.application.provider}`;
@@ -276,7 +276,6 @@ export class IntegrationStore {
           requestId: input.requestId,
           targetId: row.id,
           targetType: "integration-provider-application",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       return providerApplicationFromRow(row);
@@ -290,7 +289,7 @@ export class IntegrationStore {
     readonly requestId: string;
     readonly status: "active" | "disabled";
   }): Promise<StoredIntegrationProviderApplication> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const current = await transaction
         .selectFrom("integrationProviderApplications")
         .selectAll()
@@ -326,7 +325,6 @@ export class IntegrationStore {
           requestId: input.requestId,
           targetId: row.id,
           targetType: "integration-provider-application",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       return providerApplicationFromRow(row);
@@ -431,7 +429,7 @@ export class IntegrationStore {
     readonly expectedGeneration: number;
     readonly ownerUserId: UserId;
   }): Promise<boolean> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const connection = await transaction
         .updateTable("integrationConnections")
         .set({
@@ -521,7 +519,7 @@ export class IntegrationStore {
     readonly ownerUserId: UserId;
     readonly statusDetail: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) => {
+    await withPersonalTransaction(this.#database, async (transaction) => {
       const now = new Date();
       let update = transaction
         .updateTable("integrationConnections")
@@ -559,7 +557,6 @@ export class IntegrationStore {
         requestId: null,
         targetId: input.connectionId,
         targetType: "integration-connection",
-        workspaceId: null,
       })
       .executeTakeFirstOrThrow();
   }
@@ -571,7 +568,7 @@ export class IntegrationStore {
     readonly ownerUserId: UserId;
     readonly requestId: string;
   }): Promise<void> {
-    await withDatabaseTransaction(this.#database, async (transaction) =>
+    await withPersonalTransaction(this.#database, async (transaction) =>
       administrationCommand(transaction, input.administration, async () => {
         const now = new Date();
         const connection = await transaction
@@ -595,6 +592,20 @@ export class IntegrationStore {
           });
         }
         await transaction
+          .selectFrom("integrationGrants")
+          .select("id")
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
+          .execute();
+        await transaction
+          .updateTable("integrationGrants")
+          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .execute();
+        await transaction
           .updateTable("credentials")
           .set({
             encryptedPayload: input.credential.envelope,
@@ -611,12 +622,6 @@ export class IntegrationStore {
           .where("id", "=", connection.id)
           .executeTakeFirstOrThrow();
         await transaction
-          .updateTable("integrationGrants")
-          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
-          .where("connectionId", "=", connection.id)
-          .where("revokedAt", "is", null)
-          .execute();
-        await transaction
           .insertInto("securityAudit")
           .values({
             action: "integration.connection.revoked",
@@ -627,7 +632,6 @@ export class IntegrationStore {
             requestId: input.requestId,
             targetId: connection.id,
             targetType: "integration-connection",
-            workspaceId: null,
           })
           .executeTakeFirstOrThrow();
       }),
@@ -642,7 +646,7 @@ export class IntegrationStore {
     readonly credentialProvider: string;
     readonly ownerUserId: UserId;
   }): Promise<IntegrationConnectionSummary> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       if (input.accountBinding)
         await checkIntegrationAccountBinding(transaction, input.ownerUserId, input.accountBinding);
       const attempt = await transaction
@@ -812,7 +816,6 @@ export class IntegrationStore {
           requestId: input.attemptId,
           targetId: connectionRow.id,
           targetType: "integration-connection",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       if (input.accountBinding)
@@ -846,7 +849,7 @@ export class IntegrationStore {
     readonly reconnect: boolean;
     readonly requestId: string;
   }): Promise<IntegrationConnectionSummary> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const identityKey = JSON.stringify([
         "provider-account",
         input.connection.definitionId,
@@ -1018,7 +1021,6 @@ export class IntegrationStore {
           requestId: input.requestId,
           targetId: row.id,
           targetType: "integration-connection",
-          workspaceId: null,
         })
         .executeTakeFirstOrThrow();
       return integrationConnectionFromRow(row);

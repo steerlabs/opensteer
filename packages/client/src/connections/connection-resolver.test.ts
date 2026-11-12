@@ -245,7 +245,7 @@ function discoveryDocument(): HostDiscoveryDocument {
   return {
     canonicalOrigin: loopbackOrigin,
     deploymentId: createId("deployment"),
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+    deploymentShape: { kind: "personal" },
     hostInstanceId: createId("hostInstance"),
     hostKey: { algorithm: "Ed25519" },
   };

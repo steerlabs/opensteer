@@ -30,7 +30,6 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
-    "@opensteer/agent-tools": "workspace:*",
     "@opensteer/browser-core": "workspace:*",
     "@opensteer/browser-profile": "workspace:*",
     "@opensteer/channel-core": "workspace:*",
@@ -38,7 +37,6 @@
     "@opensteer/core": "workspace:*",
     "@opensteer/integration-core": "workspace:*",
     "@opensteer/triggers": "workspace:*",
-    "@opensteer/workspace": "workspace:*",
     "zod": "catalog:",
     "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/shared": "workspace:*"

@@ -1,3 +1,4 @@
+import { DeploymentCatalogSchema } from "@opensteer/client/connections";
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -133,12 +134,12 @@ async function run(): Promise<object> {
         deploymentId,
         hostInstanceId: createId("hostInstance") as HostInstanceId,
         hostKey: { algorithm: "Ed25519" },
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+        deploymentShape: { kind: "personal" },
       }),
       bootstrapMethods: ["password"],
       createdAt: now,
       endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
-      kind: "self-hosted",
+      kind: "personal",
       lastUsedAt: null,
       name: "Attachment smoke",
       reachability: "canonical",
@@ -149,7 +150,7 @@ async function run(): Promise<object> {
       load: async () => ({
         deployments: [connection],
         revision: 1,
-        schemaVersion: 4 as const,
+        schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
         selectedDeploymentId: deploymentId,
         updatedAt: now,
       }),

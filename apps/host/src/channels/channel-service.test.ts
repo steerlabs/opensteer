@@ -61,7 +61,7 @@ function channelServiceFixture(
     channels: channels as never,
     credentials: {} as never,
     onExecutionQueued,
-    onWorkspaceEvent: () => undefined,
+    onDeploymentEvent: () => undefined,
     runners: {
       canRunHarness: (_environmentId: string, driverKind: string) => driverKind !== "broken",
       identityForEnvironment: (id: string) =>

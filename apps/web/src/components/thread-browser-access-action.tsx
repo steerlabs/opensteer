@@ -1,13 +1,10 @@
 import {
   browserAccessChoices,
   browserAccessGrantable,
-  browserAccessGrantLabel,
   browserAccessHomeChoice,
   browserAccessInitialName,
   browserAccessInitialSelection,
-  browserAccessProfileNote,
   browserAccessResponse,
-  browserAccessWarning,
   mutationIdempotencyKey,
   type BrowserAccessChoices,
   type BrowserAccessSelection,
@@ -90,7 +87,7 @@ export function ThreadBrowserRequestAction({
   if (request.payload.kind !== "browser.access") {
     return <ActionNote alert>This Browser Request is invalid.</ActionNote>;
   }
-  const choices = browserAccessChoices(snapshot, request.targetWorkspaceId);
+  const choices = browserAccessChoices(snapshot);
 
   return (
     <>
@@ -148,7 +145,6 @@ export function BrowserAccessBody({
       <div className="action-rows">
         {choices.profiles.map((profile) => {
           const selected = selection?.kind === "existing" && selection.profileId === profile.id;
-          const note = browserAccessProfileNote(choices, profile);
           return (
             <label
               className={selected ? "action-row action-row--selected" : "action-row"}
@@ -165,7 +161,6 @@ export function BrowserAccessBody({
                 <span className="action-row__label browser-profile-name" title={profile.name}>
                   {profile.name}
                 </span>
-                {note ? <span className="action-row__desc">{note}</span> : null}
               </span>
             </label>
           );
@@ -241,7 +236,10 @@ export function BrowserAccessBody({
           ) : null}
         </div>
       ) : null}
-      <ActionNote>{browserAccessWarning(choices)}</ActionNote>
+      <ActionNote>
+        Your agent can use every browser profile you have, with full control of its signed-in
+        accounts, cookies, and tabs.
+      </ActionNote>
       <div className="action-buttons">
         <button className="btn" disabled={pending} onClick={onDecline} type="button">
           Not now
@@ -252,7 +250,7 @@ export function BrowserAccessBody({
           onClick={onGrant}
           type="button"
         >
-          {pending ? "Continuing…" : browserAccessGrantLabel(selection, choices)}
+          {pending ? "Continuing…" : selection?.kind === "new" ? "Create profile" : "Use profile"}
         </button>
       </div>
     </>

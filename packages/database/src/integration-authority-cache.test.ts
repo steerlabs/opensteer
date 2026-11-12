@@ -1,4 +1,4 @@
-import { UserIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { UserIdSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { IntegrationAuthorityCache } from "./integration-authority-cache.js";
 
@@ -7,9 +7,7 @@ describe("IntegrationAuthorityCache", () => {
     const cache = new IntegrationAuthorityCache<readonly string[]>();
     const scope = {
       authorityFingerprint: "oauth-authority-v1",
-      inheritsMain: true,
       ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001"),
-      workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002"),
     };
     cache.set({ ...scope, generation: 7 }, ["callable-before-revocation"]);
 
@@ -25,9 +23,7 @@ describe("IntegrationAuthorityCache", () => {
     const cache = new IntegrationAuthorityCache<readonly string[]>();
     const scope = {
       generation: 7,
-      inheritsMain: true,
       ownerUserId: UserIdSchema.parse("usr_00000000-0000-4000-8000-000000000001"),
-      workspaceId: WorkspaceIdSchema.parse("wsp_00000000-0000-4000-8000-000000000002"),
     };
     cache.set({ ...scope, authorityFingerprint: "hosted-revision-1" }, ["callable"]);
 

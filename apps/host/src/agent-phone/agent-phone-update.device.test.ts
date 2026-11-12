@@ -8,8 +8,11 @@ import { agentPhoneAccessibilityService, androidPhoneDefinitionId } from "@opens
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { z } from "zod";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
-import { freePort, machineAccessHostConfig } from "../runtime/machine-access.test-support.js";
+import { createHostRuntime } from "../runtime/runtime.js";
+import {
+  freePort,
+  privateMachineHostConfig,
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   acquireAndroidDevice,
@@ -130,7 +133,7 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
       const teardown: unknown[] = [];
       const hostLog: string[] = [];
       const baselineLog: string[] = [];
-      let runtime: HostRuntime | undefined;
+      let runtime: import("../runtime/runtime.js").PersonalHostRuntime | undefined;
       let release: AgentPhoneUpdateRelease | null = null;
       let phone: AndroidDevice | undefined;
       const json = (name: string, value: unknown) =>
@@ -259,27 +262,40 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
         await phase("stop-old-host-and-run-current-migrations-on-the-same-database", async () => {
           await baseline.stopHost();
           const info = baseline.host;
-          const config = machineAccessHostConfig(
+          const config = privateMachineHostConfig(
             info.hostPort,
             info.dataDirectory,
-            new URL("http://127.0.0.1:9"),
             info.databaseUrl,
-            "invite-only",
-            new URL(info.publicOrigin),
           );
-          runtime = await createHostRuntime(config, {
-            phoneUpdateRelease: () => release,
-            logger: {
-              level: "info",
-              redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
-              stream: new Writable({
-                write(chunk: Buffer | string, _encoding, done) {
-                  hostLog.push(chunk.toString());
-                  done();
-                },
-              }),
+          const createdRuntime = await createHostRuntime(
+            {
+              ...config,
+              canonicalOrigin: new URL(info.publicOrigin),
+              runtimeOrigin: new URL(info.publicOrigin),
             },
-          });
+            {
+              phoneUpdateRelease: () => release,
+              logger: {
+                level: "info",
+                redact: [
+                  "req.headers.authorization",
+                  "req.headers.cookie",
+                  "res.headers.set-cookie",
+                ],
+                stream: new Writable({
+                  write(chunk: Buffer | string, _encoding, done) {
+                    hostLog.push(chunk.toString());
+                    done();
+                  },
+                }),
+              },
+            },
+          );
+          if (createdRuntime.kind !== "personal") {
+            await createdRuntime.close();
+            throw new Error("Expected Personal Host");
+          }
+          runtime = createdRuntime;
           const current = runtime;
           cleanup.push({ name: "current-host", close: () => current.close() });
           await current.listen();
@@ -384,7 +400,7 @@ describe.skipIf(!enabled)(`Agent Phone actual baseline cutover on API ${api}`, (
           const unauthorized = await new Promise<{ closeCode: number; binaryBytes: number }>(
             (resolve, reject) => {
               const socket = new WebSocket(
-                `${owner.origin.replace(/^http/u, "ws")}/internal/v1/runners/agent-phone-update`,
+                `${String(owner.origin).replace(/^http/u, "ws")}/internal/v1/runners/agent-phone-update`,
               );
               let binaryBytes = 0;
               const timer = setTimeout(() => {

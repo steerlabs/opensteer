@@ -1,3 +1,6 @@
+import { getBrowserSessionForOwner } from "./browser-session-store.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
@@ -8,6 +11,7 @@ import {
   BrowserProfileIdSchema,
   OpensteerError,
   PendingRequestSchema,
+  ResolvedRequestSchema,
   RequestIdSchema,
   RequestJsonObjectSchema,
   RequestResponseSchema,
@@ -16,7 +20,6 @@ import {
   browserSessionClosedReason,
   createId,
   type AgentEvent,
-  type BrowserProfileGrantId,
   type BrowserProfileId,
   type BrowserSourceId,
   type HeldAssignment,
@@ -34,7 +37,6 @@ import {
   type TriggerOccurrenceId,
   type UserId,
   type WaitingRequest,
-  type WorkspaceId,
 } from "@opensteer/core";
 import {
   ComputerAppIdentitySchema,
@@ -50,9 +52,9 @@ import {
   type ComputerAppIdentity,
   type ComputerAppSetupRequest,
   type IntegrationAccess,
+  type IntegrationGrant,
   type IntegrationConnectionId,
   type IntegrationConnectionSummary,
-  type IntegrationGrant,
   type IntegrationInstallManifest,
   type IntegrationInstallationId,
   type IntegrationProviderAuthorization,
@@ -79,7 +81,6 @@ import {
 import {
   askForComputerAppApprovalInTransaction,
   computerUsePolicyInTransaction,
-  discoverComputerRequestWorkspaces,
   lockComputerApprovalScopeInTransaction,
 } from "./computer-app-approvals.js";
 import {
@@ -87,7 +88,7 @@ import {
   computerAppScopeOf,
   computerAppSetupRequestFromRow,
 } from "./computer-app-setup.js";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import {
   IntegrationGrantStore,
   approveComputerAppAutomaticallyInTransaction,
@@ -100,26 +101,13 @@ import {
 import { machineOwnershipIn } from "./machine-ownership.js";
 import { cancelPending } from "./request-cancellation.js";
 import { requestFromRow, requestInsert, requestOriginEnvironment } from "./request-persistence.js";
-import {
-  discoverInstallationRequestWorkspaces,
-  discoverRequestWorkspaces,
-  lockRequestWorkspaces,
-  withRequestWorkspaceLocks,
-} from "./request-workspace-locks.js";
 import { insertBrowserProfileOnLockedHome } from "./browser-session-store.js";
 import { runHasActiveGrant } from "./run-grants.js";
 import type { DatabaseSchema, RequestRow } from "./schema.js";
-import {
-  jsonValue,
-  safeGeneration,
-  threadPathLinks,
-  type ChannelLinks,
-} from "./store-primitives.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-
+import { jsonValue, threadPathLinks, type ChannelLinks } from "./store-primitives.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 export { cancelPending } from "./request-cancellation.js";
 export { requestFromRow, requestInsert } from "./request-persistence.js";
-
 export interface IntegrationRequestDetailInput {
   readonly access: IntegrationAccess | null;
   readonly installationId: IntegrationInstallationId | null;
@@ -135,23 +123,25 @@ export interface IntegrationRequestDetailInput {
  * than one being a fallback for the other.
  */
 export type RequestOriginInput =
-  | { readonly originatingOccurrenceId?: never; readonly originatingRunId: RunId }
-  | { readonly originatingOccurrenceId: TriggerOccurrenceId; readonly originatingRunId?: never };
-
+  | {
+      readonly originatingOccurrenceId?: never;
+      readonly originatingRunId: RunId;
+    }
+  | {
+      readonly originatingOccurrenceId: TriggerOccurrenceId;
+      readonly originatingRunId?: never;
+    };
 interface CreateRequestFields {
   readonly callId: string;
   readonly kind: PendingRequest["kind"];
   readonly mode: PendingRequest["mode"];
   readonly originatingThreadId: ThreadId;
-  readonly originatingWorkspaceId: WorkspaceId;
   readonly payload: RequestPayload;
   readonly presentation: RequestPresentation;
   readonly requestedBy: UserId;
   readonly requiredActor: RequestRequiredActor;
-  readonly targetWorkspaceId: WorkspaceId;
   readonly integrationDetail?: IntegrationRequestDetailInput;
 }
-
 export type CreateRequestInput = CreateRequestFields & RequestOriginInput;
 
 /** What one task's ask for an app on a Mac came to. */
@@ -162,7 +152,7 @@ export type ComputerAppAccessDecision =
       readonly requestEvents: readonly AgentEvent[];
     }
   | {
-      readonly kind: "workspace-grant";
+      readonly kind: "personal-grant";
       readonly replayed: boolean;
       readonly request: Request;
       readonly requestEvents: readonly AgentEvent[];
@@ -182,24 +172,21 @@ export type ComputerAppAccessDecision =
  * install.
  */
 type IntegrationRequestSubject =
-  | { readonly definitionId: string; readonly kind: "integration.install" }
-  | { readonly kind: "integration.install"; readonly proposalDigest: string };
-
+  | {
+      readonly definitionId: string;
+      readonly kind: "integration.install";
+    }
+  | {
+      readonly kind: "integration.install";
+      readonly proposalDigest: string;
+    };
 export interface RequestMutation {
   readonly events: readonly AgentEvent[];
   readonly replayed: boolean;
   readonly request: Request;
 }
-
 export interface ResolvedBrowserRequest {
   readonly events: readonly AgentEvent[];
-  readonly grant: {
-    readonly access: "read-write";
-    readonly createdAt: Date;
-    readonly grantId: BrowserProfileGrantId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  } | null;
   readonly profile: {
     readonly homeRunnerId: RunnerId | null;
     readonly id: BrowserProfileId;
@@ -208,14 +195,12 @@ export interface ResolvedBrowserRequest {
   } | null;
   readonly request: Request;
 }
-
 interface PendingRequestContinuation {
   readonly attemptedAt: string | null;
   readonly reason: string | null;
   readonly request: Request;
   readonly status: "waiting" | "queued" | "undeliverable";
 }
-
 interface PendingIntegrationAccessRequest {
   readonly access: IntegrationAccess;
   readonly installationId: IntegrationInstallationId;
@@ -223,26 +208,22 @@ interface PendingIntegrationAccessRequest {
   readonly requestedConnectionId: IntegrationConnectionId | null;
   readonly requestedServerId: IntegrationServerId | null;
 }
-
 interface ResolvedIntegrationAccessRequest {
   readonly events: readonly AgentEvent[];
-  readonly grant: IntegrationGrant | null;
   readonly request: Request;
+  readonly grant: IntegrationGrant | null;
 }
-
 interface ResolvedIntegrationInstallRequest {
   readonly events: readonly AgentEvent[];
   readonly installation: InstallIntegrationMutation["installation"] | null;
   readonly request: Request;
   readonly requestEvents: readonly AgentEvent[];
 }
-
 interface BoundIntegrationAccessInstallation {
   readonly installation: InstallIntegrationMutation["installation"];
   readonly request: Request;
   readonly requestEvents: readonly AgentEvent[];
 }
-
 interface SelectedIntegrationAccessServer {
   readonly events: readonly AgentEvent[];
   readonly request: Request;
@@ -263,14 +244,11 @@ export interface PreparedIntegrationInstallFulfillment {
  * changes remain explicit callers of this store, but creation, visibility,
  * replay, withdrawal, cancellation, and continuation bookkeeping do not fork.
  */
-const personAuthorities = ["workspace-membership", "channel-ingress"];
-
+const personAuthorities = ["user-session", "channel-ingress"];
 export class RequestStore {
   readonly #database: Kysely<DatabaseSchema>;
-
   readonly #links: ChannelLinks;
   readonly #executionNow: () => number;
-
   constructor(
     database: Kysely<DatabaseSchema>,
     links: ChannelLinks = threadPathLinks,
@@ -296,7 +274,6 @@ export class RequestStore {
   async #pendingTriggerEquivalent(
     input: RequestOriginInput & {
       readonly requestedBy: UserId;
-      readonly targetWorkspaceId: WorkspaceId;
     },
     subject: IntegrationRequestSubject,
   ): Promise<RequestMutation | null> {
@@ -308,54 +285,48 @@ export class RequestStore {
       .where("requests.kind", "=", subject.kind)
       .where("requests.status", "=", "pending")
       .where("requests.requestedBy", "=", input.requestedBy)
-      .where("requests.targetWorkspaceId", "=", input.targetWorkspaceId)
       .where((expression) => integrationSubjectFilter(expression, subject))
       .orderBy("requests.createdAt", "asc")
       .orderBy("requests.id", "asc")
       .limit(1)
       .executeTakeFirst();
-    return row ? { events: [], replayed: true, request: requestFromRow(row) } : null;
+    return row
+      ? {
+          events: [],
+          replayed: true,
+          request: requestFromRow(row),
+        }
+      : null;
   }
-
   async create(input: CreateRequestInput): Promise<RequestMutation> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => {
-        const replay = await transaction
-          .selectFrom("requests")
-          .select(["originatingWorkspaceId", "targetWorkspaceId"])
-          .where(callIdentityFilter(input))
-          .executeTakeFirst();
-        return [
-          input.originatingWorkspaceId,
-          input.targetWorkspaceId,
-          ...(replay ? [replay.originatingWorkspaceId, replay.targetWorkspaceId] : []),
-        ];
-      },
-      (transaction) => createRequestInTransaction(this.#links, transaction, input),
-      async (transaction) => {
+    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+      await (async (transaction) => {
         await lockRequestOrigin(transaction, input);
-      },
-    );
+      })(personalTransaction);
+      return ((transaction) => createRequestInTransaction(this.#links, transaction, input))(
+        personalTransaction,
+      );
+    });
   }
-
   async createIntegrationInstallRequest(
     input: {
       readonly callId: string;
       readonly manifest: IntegrationInstallManifest;
       readonly originatingThreadId: ThreadId;
-      readonly originatingWorkspaceId: WorkspaceId;
       readonly reason: string;
       readonly requestedBy: UserId;
-      readonly targetWorkspaceId: WorkspaceId;
     } & RequestOriginInput,
   ): Promise<RequestMutation> {
     const manifest = IntegrationInstallManifestSchema.parse(input.manifest);
     const equivalent = await this.#pendingTriggerEquivalent(input, {
       kind: "integration.install",
       ...(manifest.kind === "catalog"
-        ? { definitionId: manifest.definition.id }
-        : { proposalDigest: manifest.proposal.digest }),
+        ? {
+            definitionId: manifest.definition.id,
+          }
+        : {
+            proposalDigest: manifest.proposal.digest,
+          }),
     });
     if (equivalent) return equivalent;
     return this.create({
@@ -371,35 +342,43 @@ export class RequestStore {
       kind: "integration.install",
       mode: "durable",
       originatingThreadId: input.originatingThreadId,
-      originatingWorkspaceId: input.originatingWorkspaceId,
       payload: {
         kind: "integration.install",
         manifest: RequestJsonObjectSchema.parse(integrationInstallManifestSummary(manifest)),
         reason: input.reason,
       },
       presentation: {
-        ...(manifest.kind === "proposal" ? { agentProposed: true } : {}),
+        ...(manifest.kind === "proposal"
+          ? {
+              agentProposed: true,
+            }
+          : {}),
         detail: input.reason,
         kind: "choice",
         options: [
-          { hint: "reject-once", id: "declined", label: "Not now" },
-          { hint: "confirm", id: "installed", label: "Install" },
+          {
+            hint: "reject-once",
+            id: "declined",
+            label: "Not now",
+          },
+          {
+            hint: "confirm",
+            id: "installed",
+            label: "Install",
+          },
         ],
         risk: "high",
         title: `Install ${integrationInstallDisplayName(manifest)}?`,
       },
       requestedBy: input.requestedBy,
-      requiredActor: "administrator",
-      targetWorkspaceId: input.targetWorkspaceId,
+      requiredActor: "owner",
     });
   }
-
   async createIntegrationAccessRequest(
     input: IntegrationAccessRequestInput,
   ): Promise<RequestMutation> {
     return this.create(await integrationAccessRequestInput(this.#database, input));
   }
-
   async resolveIntegrationAccessRequest(input: {
     readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestId: RequestId;
@@ -407,28 +386,47 @@ export class RequestStore {
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedIntegrationAccessRequest> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => {
-        const request = await transaction
-          .selectFrom("requests")
-          .select(["targetWorkspaceId", "originatingWorkspaceId"])
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        return request
-          ? [
-              request.originatingWorkspaceId,
-              request.targetWorkspaceId,
-              ...(await discoverRequestWorkspaces(transaction, {
-                workspaceId: request.targetWorkspaceId,
-                pending: true,
-                kinds: ["integration.access"],
-              })),
-            ]
-          : [];
-      },
-      async (transaction) => {
-        const observed = await transaction
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.access as detailAccess",
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
+          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.kind !== "integration.access" ||
+        observed.status !== "pending" ||
+        observed.requestedBy !== input.resolvedBy ||
+        !observed.detailAccess
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration Request is no longer pending",
+        });
+      }
+      const observedRequest = requestFromRow(observed);
+      await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      const response = withoutClientIntegrationAccount(RequestResponseSchema.parse(input.response));
+      const decision = parseIntegrationAccessDecision(response);
+      if (observed.detailInstallationId === null) {
+        if (decision.decision !== "declined") {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Install the reviewed integration before granting access",
+          });
+        }
+        const pending = await transaction
           .selectFrom("requests")
           .innerJoin(
             "integrationRequestDetails",
@@ -436,443 +434,24 @@ export class RequestStore {
             "requests.id",
           )
           .selectAll("requests")
-          .select([
-            "integrationRequestDetails.access as detailAccess",
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-            "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-          ])
+          .select("integrationRequestDetails.installationId as detailInstallationId")
           .where("requests.id", "=", input.requestId)
+          .forNoKeyUpdate("requests")
           .executeTakeFirst();
         if (
-          !observed ||
-          observed.kind !== "integration.access" ||
-          observed.status !== "pending" ||
-          observed.requestedBy !== input.resolvedBy ||
-          !observed.detailAccess
+          !pending ||
+          pending.kind !== "integration.access" ||
+          pending.status !== "pending" ||
+          pending.requestedBy !== input.resolvedBy ||
+          pending.detailInstallationId !== null
         ) {
           throw new OpensteerError({
             code: "conflict",
             message: "Integration Request is no longer pending",
           });
         }
-        const observedRequest = requestFromRow(observed);
-        await lockActiveDurableRequestAuthority(transaction, observedRequest);
-        const response = withoutClientIntegrationAccount(
-          RequestResponseSchema.parse(input.response),
-        );
-        const mainTarget =
-          (await transaction
-            .selectFrom("workspaces")
-            .select("id")
-            .where("id", "=", observedRequest.targetWorkspaceId)
-            .where("createdBy", "=", input.resolvedBy)
-            .where("kind", "=", "main")
-            .executeTakeFirst()) !== undefined;
-        const decision = parseIntegrationAccessDecision(response, mainTarget);
-        if (observed.detailInstallationId === null) {
-          if (decision.decision !== "declined") {
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Install the reviewed integration before granting access",
-            });
-          }
-          const pending = await transaction
-            .selectFrom("requests")
-            .innerJoin(
-              "integrationRequestDetails",
-              "integrationRequestDetails.requestId",
-              "requests.id",
-            )
-            .selectAll("requests")
-            .select("integrationRequestDetails.installationId as detailInstallationId")
-            .where("requests.id", "=", input.requestId)
-            .forNoKeyUpdate("requests")
-            .executeTakeFirst();
-          if (
-            !pending ||
-            pending.kind !== "integration.access" ||
-            pending.status !== "pending" ||
-            pending.requestedBy !== input.resolvedBy ||
-            pending.detailInstallationId !== null
-          ) {
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Integration Request is no longer pending",
-            });
-          }
-          const now = new Date();
-          const declinedRow = await transaction
-            .updateTable("requests")
-            .set({
-              resolvedAt: now,
-              resolvedBy: input.resolvedBy,
-              settlementProvenance: await readRequestSettlementProvenance(
-                transaction,
-                input.resolvedBy,
-                input.settlementSessionId,
-              ),
-              response: jsonValue(response),
-              status: "declined",
-            })
-            .where("id", "=", input.requestId)
-            .where("status", "=", "pending")
-            .returningAll()
-            .executeTakeFirstOrThrow();
-          const declined = requestFromRow(declinedRow);
-          await enqueueContinuation(transaction, declined, now);
-          await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-          return {
-            events: await terminalEvents(transaction, declined),
-            grant: null,
-            request: declined,
-          };
-        }
-        if (decision.decision === "fulfilled") {
-          await lockAndValidateIntegrationAccessResources(transaction, {
-            installationId: observed.detailInstallationId,
-            ownerUserId: input.resolvedBy,
-            requestedConnectionId: observed.detailRequestedConnectionId,
-            requestedServerId: observed.detailRequestedServerId,
-          });
-        }
-        const row = {
-          ...observed,
-          detailInstallationId: observed.detailInstallationId,
-          detailAccess: observed.detailAccess,
-        };
-        const request = requestFromRow(row);
-        if (
-          decision.decision === "fulfilled" &&
-          row.detailRequestedConnectionId !== null &&
-          decision.connectionId !== row.detailRequestedConnectionId
-        ) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Integration access requires the requested account",
-          });
-        }
-        if (
-          decision.decision === "fulfilled" &&
-          "access" in decision &&
-          row.detailAccess === "read-write" &&
-          decision.access !== "read-write"
-        ) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Integration access does not cover the requested write operations",
-          });
-        }
-        if (decision.decision === "fulfilled" && row.detailRequestedServerId === null) {
-          const activeServers = await transaction
-            .selectFrom("integrationServers")
-            .select("id")
-            .where("installationId", "=", row.detailInstallationId)
-            .where("status", "!=", "disabled")
-            .limit(2)
-            .execute();
-          if (activeServers.length > 1) {
-            throw new OpensteerError({
-              code: "conflict",
-              message: "Choose the integration server before granting access",
-            });
-          }
-        }
-        if (decision.decision === "fulfilled" && decision.connectionId !== null) {
-          await validateIntegrationAccessFulfillmentConnection(transaction, {
-            connectionId: decision.connectionId,
-            installationId: row.detailInstallationId,
-            ownerUserId: input.resolvedBy,
-            providerAuthorizations: input.providerAuthorizations,
-            requestedAccess: row.detailAccess,
-            requestedServerId: row.detailRequestedServerId,
-          });
-        }
-        let grant: IntegrationGrant | null = null;
-        if (decision.decision === "fulfilled" && mainTarget) {
-          await assertMainIntegrationAccessUsable(transaction, {
-            connectionId: decision.connectionId,
-            installationId: row.detailInstallationId,
-            ownerUserId: input.resolvedBy,
-            providerAuthorizations: input.providerAuthorizations,
-            requestedServerId: row.detailRequestedServerId,
-          });
-        }
-        if (decision.decision === "fulfilled" && !mainTarget) {
-          if (!("alias" in decision)) throw new Error("Project access decision has no grant");
-          grant = await createIntegrationGrantForRequest(transaction, {
-            ...decision,
-            installationId: row.detailInstallationId,
-            ownerUserId: input.resolvedBy,
-            providerAuthorizations: input.providerAuthorizations,
-            requestedServerId: row.detailRequestedServerId,
-            workspaceId: request.targetWorkspaceId,
-          });
-        }
-        // Resource and grant fences precede Request projection; a changed discovery
-        // rolls back the grant together with the answer under the Workspace fence.
-        await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .select("requests.id")
-          .where("requests.kind", "=", "integration.access")
-          .where("requests.status", "=", "pending")
-          .where("requests.requestedBy", "=", input.resolvedBy)
-          .where("requests.targetWorkspaceId", "=", request.targetWorkspaceId)
-          .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
-          .orderBy("requests.id", "asc")
-          .forNoKeyUpdate("requests")
-          .execute();
-        const lockedRequest = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.access as detailAccess",
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-            "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        if (
-          !lockedRequest ||
-          lockedRequest.kind !== "integration.access" ||
-          lockedRequest.status !== "pending" ||
-          lockedRequest.requestedBy !== input.resolvedBy ||
-          !lockedRequest.detailInstallationId ||
-          !lockedRequest.detailAccess ||
-          lockedRequest.detailInstallationId !== observed.detailInstallationId ||
-          lockedRequest.detailRequestedConnectionId !== observed.detailRequestedConnectionId ||
-          lockedRequest.detailRequestedServerId !== observed.detailRequestedServerId ||
-          lockedRequest.detailAccess !== observed.detailAccess
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration Request is no longer pending",
-          });
-        }
-        const persistedResponse =
-          decision.decision === "fulfilled" && decision.connectionId
-            ? await withAuthoritativeIntegrationAccount(
-                transaction,
-                response,
-                decision.connectionId,
-                input.resolvedBy,
-              )
-            : response;
         const now = new Date();
-        const resolvedRow = await transaction
-          .updateTable("requests")
-          .set({
-            resolvedAt: now,
-            resolvedBy: input.resolvedBy,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-            response: jsonValue(persistedResponse),
-            status: decision.decision === "fulfilled" ? "fulfilled" : "declined",
-          })
-          .where("id", "=", request.id)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const resolved = requestFromRow(resolvedRow);
-        await enqueueContinuation(transaction, resolved, now);
-        const grantedAccess =
-          decision.decision === "fulfilled" && "access" in decision
-            ? decision.access
-            : row.detailAccess;
-        const coveredEvents: AgentEvent[] = [];
-        if (decision.decision === "fulfilled" && grantedAccess === "read-write") {
-          const covered = await transaction
-            .selectFrom("requests")
-            .innerJoin(
-              "integrationRequestDetails",
-              "integrationRequestDetails.requestId",
-              "requests.id",
-            )
-            .selectAll("requests")
-            .where("requests.id", "!=", resolved.id)
-            .where("requests.kind", "=", "integration.access")
-            .where("requests.status", "=", "pending")
-            .where("requests.requestedBy", "=", input.resolvedBy)
-            .where("requests.targetWorkspaceId", "=", request.targetWorkspaceId)
-            .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
-            .where("integrationRequestDetails.access", "=", "read")
-            .where(
-              "integrationRequestDetails.requestedConnectionId",
-              row.detailRequestedConnectionId === null ? "is" : "=",
-              row.detailRequestedConnectionId,
-            )
-            .where(
-              "integrationRequestDetails.requestedServerId",
-              row.detailRequestedServerId === null ? "is" : "=",
-              row.detailRequestedServerId,
-            )
-            .forNoKeyUpdate("requests")
-            .execute();
-          for (const pending of covered) {
-            const coveredRow = await transaction
-              .updateTable("requests")
-              .set({
-                resolvedAt: now,
-                resolvedBy: input.resolvedBy,
-                response: jsonValue(persistedResponse),
-                responseCommandId: null,
-                status: "fulfilled",
-              })
-              .where("id", "=", pending.id)
-              .where("status", "=", "pending")
-              .returningAll()
-              .executeTakeFirst();
-            if (!coveredRow) continue;
-            const coveredRequest = requestFromRow(coveredRow);
-            await enqueueContinuation(transaction, coveredRequest, now);
-            coveredEvents.push(...(await terminalEvents(transaction, coveredRequest)));
-          }
-        }
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return {
-          events: [...coveredEvents, ...(await terminalEvents(transaction, resolved))],
-          grant,
-          request: resolved,
-        };
-      },
-    );
-  }
-
-  async resolveIntegrationInstallRequest(input: {
-    readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
-    readonly requestId: RequestId;
-    readonly resolvedBy: UserId;
-    readonly settlementSessionId?: string;
-    readonly response: RequestResponse;
-  }): Promise<ResolvedIntegrationInstallRequest> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => [
-        ...(await discoverRequestWorkspaces(transaction, { requestId: input.requestId })),
-        ...(input.preparedFulfillment
-          ? await discoverInstallationRequestWorkspaces(
-              transaction,
-              input.preparedFulfillment.material.installation,
-            )
-          : []),
-      ],
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select("integrationRequestDetails.manifest as detailManifest")
-          .where("requests.id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.install" ||
-          observed.status !== "pending" ||
-          !observed.detailManifest
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Installation Request is no longer pending",
-          });
-        }
-        const observedRequest = requestFromRow(observed);
-        await lockActiveDurableRequestAuthority(transaction, observedRequest);
-        const response = RequestResponseSchema.parse(input.response);
-        if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: "Installation decision is invalid",
-          });
-        }
-        const fulfilled = response.optionId === "installed";
-        if (fulfilled !== (input.preparedFulfillment !== undefined)) {
-          throw new OpensteerError({
-            code: "bad_request",
-            message: fulfilled
-              ? "Installation fulfillment requires prepared installation material"
-              : "A declined installation cannot carry installation material",
-          });
-        }
-        if (input.preparedFulfillment) {
-          await lockIntegrationInstallationIdentityInTransaction(
-            transaction,
-            input.preparedFulfillment.material.installation,
-          );
-        }
-        const row = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select("integrationRequestDetails.manifest as detailManifest")
-          .where("requests.id", "=", input.requestId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        if (
-          !row ||
-          row.kind !== "integration.install" ||
-          row.status !== "pending" ||
-          !row.detailManifest
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Installation Request is no longer pending",
-          });
-        }
-        const administrator = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.resolvedBy)
-          .executeTakeFirst();
-        if (administrator?.instanceRole !== "administrator") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only an administrator may install integrations",
-          });
-        }
-        if (
-          input.preparedFulfillment &&
-          !isDeepStrictEqual(
-            IntegrationInstallManifestSchema.parse(row.detailManifest),
-            IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-          )
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Prepared installation does not match the approved manifest",
-          });
-        }
-        const installationMutation = input.preparedFulfillment
-          ? await installIntegrationInTransaction(transaction, {
-              ...input.preparedFulfillment.material,
-              actorUserId: input.resolvedBy,
-              requestId: input.requestId,
-            })
-          : null;
-        const now = new Date();
-        const resolvedRow = await transaction
+        const declinedRow = await transaction
           .updateTable("requests")
           .set({
             resolvedAt: now,
@@ -883,30 +462,363 @@ export class RequestStore {
               input.settlementSessionId,
             ),
             response: jsonValue(response),
-            status: fulfilled ? "fulfilled" : "declined",
+            status: "declined",
           })
           .where("id", "=", input.requestId)
           .where("status", "=", "pending")
           .returningAll()
           .executeTakeFirstOrThrow();
-        const request = requestFromRow(resolvedRow);
-        await enqueueContinuation(transaction, request, now);
+        const declined = requestFromRow(declinedRow);
+        await enqueueContinuation(transaction, declined, now);
         await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         return {
-          events: await terminalEvents(transaction, request),
-          installation: installationMutation?.installation ?? null,
-          request,
-          requestEvents: installationMutation?.requestEvents ?? [],
+          events: await terminalEvents(transaction, declined),
+          grant: null,
+          request: declined,
         };
-      },
-    );
-  }
+      }
+      if (decision.decision === "fulfilled") {
+        await lockAndValidateIntegrationAccessResources(transaction, {
+          installationId: observed.detailInstallationId,
+          ownerUserId: input.resolvedBy,
+          requestedConnectionId: observed.detailRequestedConnectionId,
+          requestedServerId: observed.detailRequestedServerId,
+        });
+      }
+      const row = {
+        ...observed,
+        detailInstallationId: observed.detailInstallationId,
+        detailAccess: observed.detailAccess,
+      };
+      const request = requestFromRow(row);
+      if (
+        decision.decision === "fulfilled" &&
+        row.detailRequestedConnectionId !== null &&
+        decision.connectionId !== row.detailRequestedConnectionId
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Integration access requires the requested account",
+        });
+      }
+      if (
+        decision.decision === "fulfilled" &&
+        "access" in decision &&
+        row.detailAccess === "read-write" &&
+        decision.access !== "read-write"
+      ) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Integration access does not cover the requested write operations",
+        });
+      }
+      if (decision.decision === "fulfilled" && row.detailRequestedServerId === null) {
+        const activeServers = await transaction
+          .selectFrom("integrationServers")
+          .select("id")
+          .where("installationId", "=", row.detailInstallationId)
+          .where("status", "!=", "disabled")
+          .limit(2)
+          .execute();
+        if (activeServers.length > 1) {
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Choose the integration server before granting access",
+          });
+        }
+      }
+      if (decision.decision === "fulfilled" && decision.connectionId !== null) {
+        await validateIntegrationAccessFulfillmentConnection(transaction, {
+          connectionId: decision.connectionId,
+          installationId: row.detailInstallationId,
+          ownerUserId: input.resolvedBy,
+          providerAuthorizations: input.providerAuthorizations,
+          requestedAccess: row.detailAccess,
+          requestedServerId: row.detailRequestedServerId,
+        });
+      }
+      const grant =
+        decision.decision === "fulfilled"
+          ? await createPersonalIntegrationGrantForRequest(transaction, {
+              ...decision,
+              installationId: row.detailInstallationId,
+              ownerUserId: input.resolvedBy,
+              providerAuthorizations: input.providerAuthorizations,
+              requestedServerId: row.detailRequestedServerId,
+            })
+          : null;
+      // Resource and grant fences precede Request projection; a changed discovery
 
+      await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .select("requests.id")
+        .where("requests.kind", "=", "integration.access")
+        .where("requests.status", "=", "pending")
+        .where("requests.requestedBy", "=", input.resolvedBy)
+        .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
+        .orderBy("requests.id", "asc")
+        .forNoKeyUpdate("requests")
+        .execute();
+      const lockedRequest = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.access as detailAccess",
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
+          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .forNoKeyUpdate("requests")
+        .executeTakeFirst();
+      if (
+        !lockedRequest ||
+        lockedRequest.kind !== "integration.access" ||
+        lockedRequest.status !== "pending" ||
+        lockedRequest.requestedBy !== input.resolvedBy ||
+        !lockedRequest.detailInstallationId ||
+        !lockedRequest.detailAccess ||
+        lockedRequest.detailInstallationId !== observed.detailInstallationId ||
+        lockedRequest.detailRequestedConnectionId !== observed.detailRequestedConnectionId ||
+        lockedRequest.detailRequestedServerId !== observed.detailRequestedServerId ||
+        lockedRequest.detailAccess !== observed.detailAccess
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration Request is no longer pending",
+        });
+      }
+      const persistedResponse =
+        decision.decision === "fulfilled" && decision.connectionId
+          ? await withAuthoritativeIntegrationAccount(
+              transaction,
+              response,
+              decision.connectionId,
+              input.resolvedBy,
+            )
+          : response;
+      const now = new Date();
+      const resolvedRow = await transaction
+        .updateTable("requests")
+        .set({
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue(persistedResponse),
+          status: decision.decision === "fulfilled" ? "fulfilled" : "declined",
+        })
+        .where("id", "=", request.id)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const resolved = requestFromRow(resolvedRow);
+      await enqueueContinuation(transaction, resolved, now);
+      const grantedAccess =
+        decision.decision === "fulfilled" && "access" in decision
+          ? decision.access
+          : row.detailAccess;
+      const coveredEvents: AgentEvent[] = [];
+      if (decision.decision === "fulfilled" && grantedAccess === "read-write") {
+        const covered = await transaction
+          .selectFrom("requests")
+          .innerJoin(
+            "integrationRequestDetails",
+            "integrationRequestDetails.requestId",
+            "requests.id",
+          )
+          .selectAll("requests")
+          .where("requests.id", "!=", resolved.id)
+          .where("requests.kind", "=", "integration.access")
+          .where("requests.status", "=", "pending")
+          .where("requests.requestedBy", "=", input.resolvedBy)
+          .where("integrationRequestDetails.installationId", "=", row.detailInstallationId)
+          .where("integrationRequestDetails.access", "=", "read")
+          .where(
+            "integrationRequestDetails.requestedConnectionId",
+            row.detailRequestedConnectionId === null ? "is" : "=",
+            row.detailRequestedConnectionId,
+          )
+          .where(
+            "integrationRequestDetails.requestedServerId",
+            row.detailRequestedServerId === null ? "is" : "=",
+            row.detailRequestedServerId,
+          )
+          .forNoKeyUpdate("requests")
+          .execute();
+        for (const pending of covered) {
+          const coveredRow = await transaction
+            .updateTable("requests")
+            .set({
+              resolvedAt: now,
+              resolvedBy: input.resolvedBy,
+              response: jsonValue(persistedResponse),
+              responseCommandId: null,
+              status: "fulfilled",
+            })
+            .where("id", "=", pending.id)
+            .where("status", "=", "pending")
+            .returningAll()
+            .executeTakeFirst();
+          if (!coveredRow) continue;
+          const coveredRequest = requestFromRow(coveredRow);
+          await enqueueContinuation(transaction, coveredRequest, now);
+          coveredEvents.push(...(await terminalEvents(transaction, coveredRequest)));
+        }
+      }
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return {
+        events: [...coveredEvents, ...(await terminalEvents(transaction, resolved))],
+        grant,
+        request: resolved,
+      };
+    });
+  }
+  async resolveIntegrationInstallRequest(input: {
+    readonly preparedFulfillment?: PreparedIntegrationInstallFulfillment;
+    readonly requestId: RequestId;
+    readonly resolvedBy: UserId;
+    readonly settlementSessionId?: string;
+    readonly response: RequestResponse;
+  }): Promise<ResolvedIntegrationInstallRequest> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select("integrationRequestDetails.manifest as detailManifest")
+        .where("requests.id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.kind !== "integration.install" ||
+        observed.status !== "pending" ||
+        !observed.detailManifest
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Installation Request is no longer pending",
+        });
+      }
+      const observedRequest = requestFromRow(observed);
+      await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      const response = RequestResponseSchema.parse(input.response);
+      if (response.kind !== "choice" || !["installed", "declined"].includes(response.optionId)) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Installation decision is invalid",
+        });
+      }
+      const fulfilled = response.optionId === "installed";
+      if (fulfilled !== (input.preparedFulfillment !== undefined)) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: fulfilled
+            ? "Installation fulfillment requires prepared installation material"
+            : "A declined installation cannot carry installation material",
+        });
+      }
+      if (input.preparedFulfillment) {
+        await lockIntegrationInstallationIdentityInTransaction(
+          transaction,
+          input.preparedFulfillment.material.installation,
+        );
+      }
+      const row = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select("integrationRequestDetails.manifest as detailManifest")
+        .where("requests.id", "=", input.requestId)
+        .forNoKeyUpdate("requests")
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.kind !== "integration.install" ||
+        row.status !== "pending" ||
+        !row.detailManifest
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Installation Request is no longer pending",
+        });
+      }
+      await requirePersonalOwner(transaction, input.resolvedBy);
+      if (
+        input.preparedFulfillment &&
+        !isDeepStrictEqual(
+          IntegrationInstallManifestSchema.parse(row.detailManifest),
+          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
+        )
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Prepared installation does not match the approved manifest",
+        });
+      }
+      const installationMutation = input.preparedFulfillment
+        ? await installIntegrationInTransaction(transaction, {
+            ...input.preparedFulfillment.material,
+            actorUserId: input.resolvedBy,
+            requestId: input.requestId,
+          })
+        : null;
+      const now = new Date();
+      const resolvedRow = await transaction
+        .updateTable("requests")
+        .set({
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue(response),
+          status: fulfilled ? "fulfilled" : "declined",
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(resolvedRow);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, request),
+        installation: installationMutation?.installation ?? null,
+        request,
+        requestEvents: installationMutation?.requestEvents ?? [],
+      };
+    });
+  }
   async loadIntegrationInstallManifest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<IntegrationInstallManifest> {
+    await requirePersonalOwner(this.#database, input.resolvedBy);
     const row = await this.#database
       .selectFrom("requests")
       .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
@@ -915,36 +827,31 @@ export class RequestStore {
       .where("requests.id", "=", input.requestId)
       .where("requests.kind", "=", "integration.install")
       .where("requests.status", "=", "pending")
-      .where("users.instanceRole", "=", "administrator")
       .executeTakeFirst();
     if (!row?.manifest) {
       throw new OpensteerError({
         code: "conflict",
-        message: "Installation Request is unavailable or administrator authority is required",
+        message: "Installation Request is unavailable or the personal owner is required",
       });
     }
     return IntegrationInstallManifestSchema.parse(row.manifest);
   }
-
   async loadIntegrationAccessInstallManifest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<IntegrationInstallManifest> {
+    await requirePersonalOwner(this.#database, input.resolvedBy);
     const row = await this.#database
       .selectFrom("requests")
       .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
       .innerJoin("users", (join) => join.on("users.id", "=", input.resolvedBy))
-      .select([
-        "integrationRequestDetails.installationId",
-        "integrationRequestDetails.manifest",
-        "users.instanceRole",
-      ])
+      .select(["integrationRequestDetails.installationId", "integrationRequestDetails.manifest"])
       .where("requests.id", "=", input.requestId)
       .where("requests.kind", "=", "integration.access")
       .where("requests.status", "=", "pending")
       .executeTakeFirst();
-    if (!row?.manifest || row.installationId !== null || row.instanceRole !== "administrator") {
+    if (!row?.manifest || row.installationId !== null) {
       throw new OpensteerError({
         code: "conflict",
         message: "Integration access installation is unavailable",
@@ -952,367 +859,322 @@ export class RequestStore {
     }
     return IntegrationInstallManifestSchema.parse(row.manifest);
   }
-
   async tryBindExistingIntegrationAccessInstallation(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation | null> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.manifest as detailManifest",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.access" ||
-          observed.status !== "pending" ||
-          observed.detailInstallationId !== null ||
-          !observed.detailManifest
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration access installation is no longer pending",
-          });
-        }
-        await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-        const actor = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.resolvedBy)
-          .executeTakeFirst();
-        if (observed.requestedBy !== input.resolvedBy && actor?.instanceRole !== "administrator") {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only the requester or an administrator may continue this installation",
-          });
-        }
-        const manifest = IntegrationInstallManifestSchema.parse(observed.detailManifest);
-        const candidates = await transaction
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("status", "=", "active")
-          .where("sourceKind", "=", manifest.kind === "catalog" ? "built-in" : "proposed")
-          .where(
-            manifest.kind === "catalog"
-              ? sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${manifest.definition.id}`
-              : sql<boolean>`integration_installations.provenance ->> 'artifactDigest' = ${manifest.proposal.digest}`,
-          )
-          .execute();
-        const candidate = candidates.find((row) =>
-          installedIntegrationMatchesReviewedManifest(row, manifest),
-        );
-        if (!candidate) return null;
-        await lockIntegrationInstallationIdentityInTransaction(transaction, candidate);
-        const current = await transaction
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("id", "=", candidate.id)
-          .where("status", "=", "active")
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest))
-          return null;
-        const bound = await bindIntegrationAccessInstallation(transaction, {
-          installation: integrationInstallationFromRequestRow(current),
-          requestEvents: [],
-          requestId: input.requestId,
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.manifest as detailManifest",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.kind !== "integration.access" ||
+        observed.status !== "pending" ||
+        observed.detailInstallationId !== null ||
+        !observed.detailManifest
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration access installation is no longer pending",
         });
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return bound;
-      },
-    );
+      }
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      await requirePersonalOwner(transaction, input.resolvedBy);
+      const manifest = IntegrationInstallManifestSchema.parse(observed.detailManifest);
+      const candidates = await transaction
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .where("status", "=", "active")
+        .where("sourceKind", "=", manifest.kind === "catalog" ? "built-in" : "proposed")
+        .where(
+          manifest.kind === "catalog"
+            ? sql<boolean>`integration_installations.provenance ->> 'definitionId' = ${manifest.definition.id}`
+            : sql<boolean>`integration_installations.provenance ->> 'artifactDigest' = ${manifest.proposal.digest}`,
+        )
+        .execute();
+      const candidate = candidates.find((row) =>
+        installedIntegrationMatchesReviewedManifest(row, manifest),
+      );
+      if (!candidate) return null;
+      await lockIntegrationInstallationIdentityInTransaction(transaction, candidate);
+      const current = await transaction
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .where("id", "=", candidate.id)
+        .where("status", "=", "active")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!current || !installedIntegrationMatchesReviewedManifest(current, manifest)) return null;
+      const bound = await bindIntegrationAccessInstallation(transaction, {
+        installation: integrationInstallationFromRequestRow(current),
+        requestEvents: [],
+        requestId: input.requestId,
+      });
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return bound;
+    });
   }
-
   async installForIntegrationAccessRequest(input: {
     readonly preparedFulfillment: PreparedIntegrationInstallFulfillment;
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<BoundIntegrationAccessInstallation> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => [
-        ...(await discoverRequestWorkspaces(transaction, { requestId: input.requestId })),
-        ...(input.preparedFulfillment
-          ? await discoverInstallationRequestWorkspaces(
-              transaction,
-              input.preparedFulfillment.material.installation,
-            )
-          : []),
-      ],
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.manifest as detailManifest",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.access" ||
-          observed.status !== "pending" ||
-          observed.detailInstallationId !== null ||
-          !observed.detailManifest
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration access installation is no longer pending",
-          });
-        }
-        if (
-          !isDeepStrictEqual(
-            IntegrationInstallManifestSchema.parse(observed.detailManifest),
-            IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-          )
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Prepared installation does not match the reviewed manifest",
-          });
-        }
-        await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-        await lockIntegrationInstallationIdentityInTransaction(
-          transaction,
-          input.preparedFulfillment.material.installation,
-        );
-        const row = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.manifest as detailManifest",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        const actor = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.resolvedBy)
-          .executeTakeFirst();
-        const current = await transaction
-          .selectFrom("integrationInstallations")
-          .selectAll()
-          .where("name", "=", input.preparedFulfillment.material.installation.name)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (
-          !row ||
-          row.kind !== "integration.access" ||
-          row.status !== "pending" ||
-          row.detailInstallationId !== null ||
-          !row.detailManifest ||
-          !isDeepStrictEqual(
-            IntegrationInstallManifestSchema.parse(row.detailManifest),
-            IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
-          )
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration access installation is no longer pending",
-          });
-        }
-        const isRequester = row.requestedBy === input.resolvedBy;
-        const isAdministrator = actor?.instanceRole === "administrator";
-        if (!isRequester && !isAdministrator) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only the requester or an administrator may continue this installation",
-          });
-        }
-        const exactCurrent =
-          current && currentIntegrationMatchesPrepared(current, input.preparedFulfillment.material);
-        if (!exactCurrent && !isAdministrator) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Administrator authority is required to install this integration",
-          });
-        }
-        const installationMutation = exactCurrent
-          ? {
-              installation: IntegrationInstallationSchema.parse({
-                createdAt: current.createdAt.toISOString(),
-                description: current.description,
-                id: current.id,
-                manifest: current.manifest,
-                name: current.name,
-                provenance: current.provenance,
-                revision: current.revision,
-                sourceKind: current.sourceKind,
-                status: current.status,
-                title: current.title,
-                trust: current.trust,
-                updatedAt: current.updatedAt.toISOString(),
-                version: current.version,
-              }),
-              requestEvents: [] as readonly AgentEvent[],
-            }
-          : await installIntegrationInTransaction(transaction, {
-              ...input.preparedFulfillment.material,
-              actorUserId: input.resolvedBy,
-              requestId: input.requestId,
-            });
-        const bound = await bindIntegrationAccessInstallation(transaction, {
-          installation: installationMutation.installation,
-          requestEvents: installationMutation.requestEvents,
-          requestId: input.requestId,
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.manifest as detailManifest",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.kind !== "integration.access" ||
+        observed.status !== "pending" ||
+        observed.detailInstallationId !== null ||
+        !observed.detailManifest
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration access installation is no longer pending",
         });
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return bound;
-      },
-    );
+      }
+      if (
+        !isDeepStrictEqual(
+          IntegrationInstallManifestSchema.parse(observed.detailManifest),
+          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
+        )
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Prepared installation does not match the reviewed manifest",
+        });
+      }
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      await lockIntegrationInstallationIdentityInTransaction(
+        transaction,
+        input.preparedFulfillment.material.installation,
+      );
+      const row = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.manifest as detailManifest",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .forNoKeyUpdate("requests")
+        .executeTakeFirst();
+      await requirePersonalOwner(transaction, input.resolvedBy);
+      const current = await transaction
+        .selectFrom("integrationInstallations")
+        .selectAll()
+        .where("name", "=", input.preparedFulfillment.material.installation.name)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.kind !== "integration.access" ||
+        row.status !== "pending" ||
+        row.detailInstallationId !== null ||
+        !row.detailManifest ||
+        !isDeepStrictEqual(
+          IntegrationInstallManifestSchema.parse(row.detailManifest),
+          IntegrationInstallManifestSchema.parse(input.preparedFulfillment.approvalManifest),
+        )
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration access installation is no longer pending",
+        });
+      }
+      const exactCurrent =
+        current && currentIntegrationMatchesPrepared(current, input.preparedFulfillment.material);
+      const installationMutation = exactCurrent
+        ? {
+            installation: IntegrationInstallationSchema.parse({
+              createdAt: current.createdAt.toISOString(),
+              description: current.description,
+              id: current.id,
+              manifest: current.manifest,
+              name: current.name,
+              provenance: current.provenance,
+              revision: current.revision,
+              sourceKind: current.sourceKind,
+              status: current.status,
+              title: current.title,
+              trust: current.trust,
+              updatedAt: current.updatedAt.toISOString(),
+              version: current.version,
+            }),
+            requestEvents: [] as readonly AgentEvent[],
+          }
+        : await installIntegrationInTransaction(transaction, {
+            ...input.preparedFulfillment.material,
+            actorUserId: input.resolvedBy,
+            requestId: input.requestId,
+          });
+      const bound = await bindIntegrationAccessInstallation(transaction, {
+        installation: installationMutation.installation,
+        requestEvents: installationMutation.requestEvents,
+        requestId: input.requestId,
+      });
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return bound;
+    });
   }
-
   async selectIntegrationAccessServer(input: {
     readonly requestId: RequestId;
     readonly requestedServerId: IntegrationServerId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<SelectedIntegrationAccessServer> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-            "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.kind !== "integration.access" ||
-          observed.status !== "pending" ||
-          observed.requestedBy !== input.resolvedBy ||
-          !observed.detailInstallationId ||
-          observed.detailRequestedServerId !== null
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration server selection is no longer available",
-          });
-        }
-        await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-        await lockAndValidateIntegrationAccessResources(transaction, {
-          installationId: observed.detailInstallationId,
-          ownerUserId: input.resolvedBy,
-          requestedConnectionId: observed.detailRequestedConnectionId,
-          requestedServerId: input.requestedServerId,
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
+          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.kind !== "integration.access" ||
+        observed.status !== "pending" ||
+        observed.requestedBy !== input.resolvedBy ||
+        !observed.detailInstallationId ||
+        observed.detailRequestedServerId !== null
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration server selection is no longer available",
         });
-        const server = await transaction
-          .selectFrom("integrationServers")
-          .select("id")
-          .where("id", "=", input.requestedServerId)
-          .where("installationId", "=", observed.detailInstallationId)
-          .where("status", "!=", "disabled")
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!server) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration server is unavailable",
-          });
-        }
-        const row = await transaction
-          .selectFrom("requests")
-          .innerJoin(
-            "integrationRequestDetails",
-            "integrationRequestDetails.requestId",
-            "requests.id",
-          )
-          .selectAll("requests")
-          .select([
-            "integrationRequestDetails.installationId as detailInstallationId",
-            "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
-            "integrationRequestDetails.requestedServerId as detailRequestedServerId",
-          ])
-          .where("requests.id", "=", input.requestId)
-          .forNoKeyUpdate("requests")
-          .executeTakeFirst();
-        if (
-          !row ||
-          row.kind !== "integration.access" ||
-          row.status !== "pending" ||
-          row.requestedBy !== input.resolvedBy ||
-          !row.detailInstallationId ||
-          row.detailRequestedServerId !== null
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Integration server selection is no longer available",
-          });
-        }
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        const previous = requestFromRow(row);
-        if (previous.payload.kind !== "integration.access")
-          throw new Error("Invalid Request payload");
-        const payload = {
-          ...previous.payload,
+      }
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      await lockAndValidateIntegrationAccessResources(transaction, {
+        installationId: observed.detailInstallationId,
+        ownerUserId: input.resolvedBy,
+        requestedConnectionId: observed.detailRequestedConnectionId,
+        requestedServerId: input.requestedServerId,
+      });
+      const server = await transaction
+        .selectFrom("integrationServers")
+        .select("id")
+        .where("id", "=", input.requestedServerId)
+        .where("installationId", "=", observed.detailInstallationId)
+        .where("status", "!=", "disabled")
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!server) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration server is unavailable",
+        });
+      }
+      const row = await transaction
+        .selectFrom("requests")
+        .innerJoin(
+          "integrationRequestDetails",
+          "integrationRequestDetails.requestId",
+          "requests.id",
+        )
+        .selectAll("requests")
+        .select([
+          "integrationRequestDetails.installationId as detailInstallationId",
+          "integrationRequestDetails.requestedConnectionId as detailRequestedConnectionId",
+          "integrationRequestDetails.requestedServerId as detailRequestedServerId",
+        ])
+        .where("requests.id", "=", input.requestId)
+        .forNoKeyUpdate("requests")
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.kind !== "integration.access" ||
+        row.status !== "pending" ||
+        row.requestedBy !== input.resolvedBy ||
+        !row.detailInstallationId ||
+        row.detailRequestedServerId !== null
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Integration server selection is no longer available",
+        });
+      }
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      const previous = requestFromRow(row);
+      if (previous.payload.kind !== "integration.access")
+        throw new Error("Invalid Request payload");
+      const payload = {
+        ...previous.payload,
+        requestedServerId: server.id,
+      } satisfies RequestPayload;
+      await transaction
+        .updateTable("integrationRequestDetails")
+        .set({
           requestedServerId: server.id,
-        } satisfies RequestPayload;
-        await transaction
-          .updateTable("integrationRequestDetails")
-          .set({ requestedServerId: server.id })
-          .where("requestId", "=", input.requestId)
-          .where("requestedServerId", "is", null)
-          .executeTakeFirstOrThrow();
-        const updated = await transaction
-          .updateTable("requests")
-          .set({ payload: jsonValue(payload) })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const request = requestFromRow(updated);
-        const event = await appendHostWorkspaceEvent(transaction, {
-          data: { request },
-          environmentId: await requestOriginEnvironment(transaction, request),
-          runId: request.originatingRunId,
-          threadId: request.originatingThreadId,
-          type: "request.updated",
-          workspaceId: request.originatingWorkspaceId,
-        });
-        return { events: [event], request };
-      },
-    );
+        })
+        .where("requestId", "=", input.requestId)
+        .where("requestedServerId", "is", null)
+        .executeTakeFirstOrThrow();
+      const updated = await transaction
+        .updateTable("requests")
+        .set({
+          payload: jsonValue(payload),
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(updated);
+      const event = await appendHostDeploymentEvent(transaction, {
+        data: {
+          request: PendingRequestSchema.parse(request),
+        },
+        environmentId: await requestOriginEnvironment(transaction, request),
+        runId: request.originatingRunId,
+        threadId: request.originatingThreadId,
+        type: "request.updated",
+      });
+      return {
+        events: [event],
+        request,
+      };
+    });
   }
-
   async get(id: RequestId): Promise<Request | null> {
     const row = await this.#database
       .selectFrom("requests")
@@ -1321,7 +1183,6 @@ export class RequestStore {
       .executeTakeFirst();
     return row ? requestFromRow(row) : null;
   }
-
   async settleIntegrationInput(input: {
     readonly caller: Parameters<typeof assertActiveGrant>[1];
     readonly requestId: RequestId;
@@ -1329,10 +1190,23 @@ export class RequestStore {
     readonly settlementSessionId?: string;
     readonly action: "accept" | "decline" | "cancel";
   }): Promise<RequestMutation> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
+    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+      await (async (transaction) => {
+        const request = await transaction
+          .selectFrom("requests")
+          .selectAll()
+          .where("id", "=", input.requestId)
+          .executeTakeFirst();
+        if (request) {
+          const origin = await lockRequestOrigin(transaction, request);
+          if (!origin?.running)
+            throw new OpensteerError({
+              code: "conflict",
+              message: "The calling Run has ended",
+            });
+        }
+      })(personalTransaction);
+      return (async (transaction) => {
         const observed = await transaction
           .selectFrom("requests")
           .selectAll()
@@ -1365,7 +1239,12 @@ export class RequestStore {
                   pending.presentation.fields.map((field) => [field.id, []]),
                 ),
               }
-            : { kind: "external", value: { decision: input.action } };
+            : {
+                kind: "external",
+                value: {
+                  decision: input.action,
+                },
+              };
         const row = await transaction
           .updateTable("requests")
           .set({
@@ -1390,52 +1269,33 @@ export class RequestStore {
           });
         await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
         const request = requestFromRow(row);
-        return { request, events: await terminalEvents(transaction, request), replayed: false };
-      },
-      async (transaction) => {
-        const request = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (request) {
-          const origin = await lockRequestOrigin(transaction, request);
-          if (!origin?.running)
-            throw new OpensteerError({ code: "conflict", message: "The calling Run has ended" });
-        }
-      },
-    );
+        return {
+          request,
+          events: await terminalEvents(transaction, request),
+          replayed: false,
+        };
+      })(personalTransaction);
+    });
   }
-
   async cancelIntegrationInputs(
     reason: RequestCancellationReason,
     requestId?: RequestId,
   ): Promise<readonly AgentEvent[]> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) =>
-        discoverRequestWorkspaces(transaction, {
-          ...(requestId ? { requestId } : {}),
-          kinds: ["integration.input"],
-          pending: true,
-        }),
-      async (transaction) => {
-        const rows = await transaction
-          .selectFrom("requests")
-          .select("id")
-          .where("kind", "=", "integration.input")
-          .where("status", "=", "pending")
-          .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
-          .execute();
-        return cancelPending(transaction, {
-          reason,
-          resolvedAt: new Date(),
-          requestIds: rows.map(({ id }) => id),
-        });
-      },
-    );
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const rows = await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("kind", "=", "integration.input")
+        .where("status", "=", "pending")
+        .$if(requestId !== undefined, (query) => query.where("id", "=", requestId!))
+        .execute();
+      return cancelPending(transaction, {
+        reason,
+        resolvedAt: new Date(),
+        requestIds: rows.map(({ id }) => id),
+      });
+    });
   }
-
   async listPendingIntegrationAccessRequests(
     requestedBy: UserId,
   ): Promise<readonly PendingIntegrationAccessRequest[]> {
@@ -1472,7 +1332,9 @@ export class RequestStore {
 
   /** The Request a call opened, or the one it joined. */
   async findByCallIdentity(
-    input: { readonly callId: string } & RequestOriginInput,
+    input: {
+      readonly callId: string;
+    } & RequestOriginInput,
   ): Promise<Request | null> {
     const row = await this.#database
       .selectFrom("requests")
@@ -1484,12 +1346,14 @@ export class RequestStore {
     if (origin.originatingRunId === undefined) return null;
     return joinedRequest(this.#database, origin.originatingRunId, input.callId);
   }
-
   async originatingPage(input: {
     readonly before?: string;
     readonly limit: number;
     readonly threadId: ThreadId;
-  }): Promise<{ readonly requests: readonly Request[]; readonly window: DurableWindow }> {
+  }): Promise<{
+    readonly requests: readonly Request[];
+    readonly window: DurableWindow;
+  }> {
     const limit = clampLimit(input.limit);
     const scope = `originating:${input.threadId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
@@ -1521,12 +1385,14 @@ export class RequestStore {
     ]);
     return requestPage(rows, Number(count.count), limit, scope);
   }
-
   async originatingPendingPage(input: {
     readonly before?: string;
     readonly limit: number;
     readonly threadId: ThreadId;
-  }): Promise<{ readonly requests: readonly Request[]; readonly window: DurableWindow }> {
+  }): Promise<{
+    readonly requests: readonly Request[];
+    readonly window: DurableWindow;
+  }> {
     const limit = clampLimit(input.limit);
     const scope = `originating-pending:${input.threadId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
@@ -1561,18 +1427,6 @@ export class RequestStore {
     return requestPage(rows, Number(count.count), limit, scope);
   }
 
-  /**
-   * The pending Requests a person is the one to answer, newest first, each
-   * with the work it holds up.
-   *
-   * Who answers is `requestNotificationAudience`'s rule, the one Request
-   * responses enforce: the requester (and, for an integration not yet
-   * installed, administrators), a Workspace owner, or an administrator, each
-   * only while an active member of the Workspace that asked. The held work is
-   * read from the Run's own Assignment and its parents, never from Thread
-   * lineage, because a reused Thread's history says nothing about whose work
-   * it is doing now. A link the reader could not open ends the chain there.
-   */
   async waitingOnUserPage(input: {
     readonly before?: string;
     readonly limit: number;
@@ -1581,65 +1435,23 @@ export class RequestStore {
     const limit = clampLimit(input.limit);
     const scope = `waiting:${input.userId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    return withDatabaseTransaction(
+    return withPersonalReadTransaction(
       this.#database,
       async (transaction) => {
-        const viewer = await transaction
-          .selectFrom("users")
-          .select("instanceRole")
-          .where("id", "=", input.userId)
-          .executeTakeFirst();
-        const administrator = viewer?.instanceRole === "administrator";
-        const addressed = transaction
-          .selectFrom("requests")
-          .innerJoin("workspaceMemberships as membership", (join) =>
-            join
-              .onRef("membership.workspaceId", "=", "requests.originatingWorkspaceId")
-              .on("membership.userId", "=", input.userId)
-              .on("membership.state", "=", "active"),
-          )
-          .where("requests.status", "=", "pending")
-          .where((expression) =>
-            expression.or([
-              expression.and([
-                expression("requests.requiredActor", "=", "requester"),
-                expression.or([
-                  expression("requests.requestedBy", "=", input.userId),
-                  ...(administrator
-                    ? [
-                        expression.and([
-                          expression("requests.kind", "=", "integration.access"),
-                          sql<boolean>`requests.payload ->> 'installationId' is null`,
-                        ]),
-                      ]
-                    : []),
-                ]),
-              ]),
-              expression.and([
-                expression("requests.requiredActor", "=", "workspace-owner"),
-                expression("membership.role", "=", "owner"),
-              ]),
-              ...(administrator
-                ? [expression("requests.requiredActor", "=", "administrator")]
-                : []),
-            ]),
-          );
+        await requirePersonalOwner(transaction, input.userId);
+        const addressed = transaction.selectFrom("requests").where("status", "=", "pending");
         let page = addressed
-          .selectAll("requests")
-          .orderBy("requests.createdAt", "desc")
-          .orderBy("requests.id", "desc")
+          .selectAll()
+          .orderBy("createdAt", "desc")
+          .orderBy("id", "desc")
           .limit(limit + 1);
-        if (anchor) {
-          page = page.where((expression) =>
-            expression.or([
-              expression("requests.createdAt", "<", anchor.createdAt),
-              expression.and([
-                expression("requests.createdAt", "=", anchor.createdAt),
-                expression("requests.id", "<", anchor.id),
-              ]),
+        if (anchor)
+          page = page.where((eb) =>
+            eb.or([
+              eb("createdAt", "<", anchor.createdAt),
+              eb.and([eb("createdAt", "=", anchor.createdAt), eb("id", "<", anchor.id)]),
             ]),
           );
-        }
         const [rows, count] = await Promise.all([
           page.execute(),
           addressed.select(({ fn }) => fn.countAll<string>().as("count")).executeTakeFirstOrThrow(),
@@ -1650,57 +1462,23 @@ export class RequestStore {
           requests.map(({ id }) => id),
           input.userId,
         );
-        const managed = requests.length
-          ? await transaction
-              .selectFrom("triggers")
-              .innerJoin("threads as worker", "worker.id", "triggers.anchorThreadId")
-              .innerJoin("workspaces as main", "main.id", "worker.workspaceId")
-              .innerJoin("threads as chat", "chat.id", "main.homeThreadId")
-              .innerJoin("workspaceMemberships as reader", (join) =>
-                join
-                  .onRef("reader.workspaceId", "=", "main.id")
-                  .on("reader.userId", "=", input.userId)
-                  .on("reader.state", "=", "active"),
-              )
-              .select(["worker.id", "worker.title", "chat.id as chatId"])
-              .where("triggers.systemRole", "is not", null)
-              .where("main.kind", "=", "main")
-              .where("main.createdBy", "=", input.userId)
-              .where("triggers.createdBy", "=", input.userId)
-              .whereRef("worker.parentThreadId", "=", "chat.id")
-              .whereRef("worker.lineageRootThreadId", "=", "chat.lineageRootThreadId")
-              .where("worker.listed", "=", false)
-              .where("chat.inheritsMain", "=", true)
-              .where(
-                "worker.id",
-                "in",
-                requests.map(({ originatingThreadId }) => originatingThreadId),
-              )
-              .execute()
-          : [];
-        const presentations = new Map(
-          managed.map(({ id, title, chatId }) => [
-            id,
-            { threadId: chatId, workerThread: { id, title } },
-          ]),
-        );
         const askingNodeIds = requests.flatMap((request) =>
           request.originatingNodeId ? [request.originatingNodeId] : [],
         );
         const askingNodes = new Map(
-          (askingNodeIds.length === 0
-            ? []
-            : await transaction
+          (askingNodeIds.length
+            ? await transaction
                 .selectFrom("executionNodes")
                 .select(["id", "title"])
                 .where("id", "in", askingNodeIds)
                 .execute()
+            : []
           ).map((node) => [node.id, node]),
         );
         return {
           requests: requests.map((request) => ({
             assignments: held.get(request.id) ?? [],
-            presentation: presentations.get(request.originatingThreadId) ?? null,
+            presentation: null,
             request: PendingRequestSchema.parse(request),
             subagent: request.originatingNodeId
               ? (askingNodes.get(request.originatingNodeId) ?? null)
@@ -1713,29 +1491,12 @@ export class RequestStore {
     );
   }
 
-  async connectionPage(input: {
-    userId: UserId;
-    workspaceId?: WorkspaceId;
-    before?: string;
-    limit: number;
-  }) {
+  async connectionPage(input: { userId: UserId; before?: string; limit: number }) {
     const limit = clampLimit(input.limit);
-    const scope = `connection:${input.userId}:${input.workspaceId ?? "user"}`;
+    const scope = `connection:${input.userId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    let query = this.#database
-      .selectFrom("requests")
-      .selectAll("requests")
-      .where((eb) =>
-        eb.exists(
-          eb
-            .selectFrom("workspaceMemberships")
-            .select("id")
-            .whereRef("workspaceMemberships.workspaceId", "=", "requests.originatingWorkspaceId")
-            .where("workspaceMemberships.userId", "=", input.userId)
-            .where("workspaceMemberships.state", "=", "active"),
-        ),
-      );
-    if (input.workspaceId) query = query.where("originatingWorkspaceId", "=", input.workspaceId);
+    await requirePersonalOwner(this.#database, input.userId);
+    let query = this.#database.selectFrom("requests").selectAll("requests");
     const count = await query
       .clearSelect()
       .select(({ fn }) => fn.countAll<string>().as("count"))
@@ -1754,24 +1515,20 @@ export class RequestStore {
       .execute();
     return requestPage(rows, Number(count.count), limit, scope);
   }
-
   async visiblePage(input: {
     readonly before?: string;
     readonly limit: number;
     readonly originatingThreadId: ThreadId;
-    readonly targetWorkspaceId: WorkspaceId;
-  }): Promise<{ readonly requests: readonly Request[]; readonly window: DurableWindow }> {
+  }): Promise<{
+    readonly requests: readonly Request[];
+    readonly window: DurableWindow;
+  }> {
     const limit = clampLimit(input.limit);
-    const scope = `visible:${input.originatingThreadId}:${input.targetWorkspaceId}`;
+    const scope = `visible:${input.originatingThreadId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
       const visible = (builder: ReturnType<typeof transaction.selectFrom<"requests">>) =>
-        builder.where((expression) =>
-          expression.or([
-            expression("originatingThreadId", "=", input.originatingThreadId),
-            expression("targetWorkspaceId", "=", input.targetWorkspaceId),
-          ]),
-        );
+        builder.where("originatingThreadId", "=", input.originatingThreadId);
       let pageQuery = visible(transaction.selectFrom("requests"))
         .selectAll()
         .orderBy("createdAt", "desc")
@@ -1798,37 +1555,6 @@ export class RequestStore {
     });
   }
 
-  /**
-   * How a task asks for one app on one Mac, or for a whole Android phone,
-   * decided in one transaction under that computer's row lock.
-   *
-   * The owner's policy is read under the same lock the decision is written
-   * under, so a policy that changes while the task is asking can only change
-   * which of these the task gets, never make it fail:
-   *
-   * - automatic, and no connection or one that already covers the ask: the
-   *   connection and this Workspace's grant, inline;
-   * - a connection that covers the ask: an ordinary `integration.access`
-   *   Request for this Workspace's grant, which the person may approve from
-   *   anywhere;
-   * - otherwise: a `computer.app.access` Request on the one waiting approval
-   *   for that app, which the person answers on the Mac.
-   *
-   * A phone has no app: `app` is null, its connection is keyed by no app, and
-   * the automatic policy never applies to it, because "any app" says nothing
-   * about letting a task take over a whole phone.
-   *
-   * The durable `Request` and the `computer_app_setup_requests` row are one
-   * ask seen from two sides — the Thread's card and the approval the desktop
-   * on that Mac serves — so they are written together. Replay is the
-   * `integration.access` rule: an identical pending ask for the same Thread,
-   * Mac, app and access is the same card, and the caller is told so rather
-   * than given a second one.
-   *
-   * `originatingRunId` and `originatingOccurrenceId` carry the usual
-   * invariant: exactly one of them, because a Request originates from exactly
-   * one execution and a Trigger Occurrence produces no Run row.
-   */
   async requestComputerAppAccess(input: {
     readonly reason: string;
     readonly threadTitle: string | null;
@@ -1847,7 +1573,6 @@ export class RequestStore {
     readonly threadId: ThreadId;
     /** The tool rows of a connection this ask creates inline. */
     readonly tools: (connectionId: IntegrationConnectionId) => readonly IntegrationToolMaterial[];
-    readonly workspaceId: WorkspaceId;
   }): Promise<ComputerAppAccessDecision> {
     if ((input.app === null) !== (input.definitionId === "android-phone")) {
       throw new OpensteerError({
@@ -1860,33 +1585,34 @@ export class RequestStore {
     const origin =
       input.originatingRunId === null
         ? input.originatingOccurrenceId
-          ? ({ originatingOccurrenceId: input.originatingOccurrenceId } as const)
+          ? ({
+              originatingOccurrenceId: input.originatingOccurrenceId,
+            } as const)
           : null
         : input.originatingOccurrenceId
           ? null
-          : ({ originatingRunId: input.originatingRunId } as const);
+          : ({
+              originatingRunId: input.originatingRunId,
+            } as const);
     if (!origin) {
       throw new OpensteerError({
         code: "bad_request",
         message: "A computer app access Request originates from exactly one Run or Occurrence",
       });
     }
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => [
-        input.workspaceId,
-        ...(await discoverComputerRequestWorkspaces(transaction, input.runnerId)),
-      ],
-      async (transaction) => {
-        // The asking origin and settlement Workspaces are already fenced.
+    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+      await ((transaction) => lockRequestOrigin(transaction, origin))(personalTransaction);
+      return (async (transaction) => {
         const runner = await lockComputerApprovalScopeInTransaction(transaction, {
           runnerId: input.runnerId,
-          workspaceIds: [input.workspaceId],
         });
         const ownership =
           runner.revokedAt === null ? await machineOwnershipIn(transaction, runner.id) : null;
         if (runner.revokedAt !== null) {
-          throw new OpensteerError({ code: "not_found", message: "Computer not found" });
+          throw new OpensteerError({
+            code: "not_found",
+            message: "Computer not found",
+          });
         }
         // Only the computer's owner can answer its access Requests.
         if (ownership?.effectiveOwner !== input.ownerUserId) {
@@ -1958,7 +1684,6 @@ export class RequestStore {
             runner,
             runnerId: input.runnerId,
             tools: input.tools,
-            workspaceId: input.workspaceId,
           });
           return {
             connection: approved.connection,
@@ -1978,16 +1703,14 @@ export class RequestStore {
                 `computer.app.grant:${input.definitionId}:${input.runnerId}:${scope.appKey ?? ""}:${access}`,
               installationId: current.installationId,
               originatingThreadId: input.threadId,
-              originatingWorkspaceId: input.workspaceId,
               reason: input.reason,
               requestedBy: input.ownerUserId,
               requestedConnectionId: current.id,
               requestedServerId: current.integrationServerId,
-              targetWorkspaceId: input.workspaceId,
             }),
           );
           return {
-            kind: "workspace-grant",
+            kind: "personal-grant",
             replayed: mutation.replayed,
             request: mutation.request,
             requestEvents: mutation.events,
@@ -2005,7 +1728,6 @@ export class RequestStore {
             reason: input.reason,
             threadId: input.threadId,
             threadTitle: input.threadTitle,
-            workspaceId: input.workspaceId,
           },
         });
         const setupRequest = computerAppSetupRequestFromRow(row);
@@ -2017,7 +1739,6 @@ export class RequestStore {
           kind: "computer.app.access",
           mode: "durable",
           originatingThreadId: input.threadId,
-          originatingWorkspaceId: input.workspaceId,
           payload: {
             access,
             app,
@@ -2026,7 +1747,6 @@ export class RequestStore {
             reason: input.reason,
             runnerId: input.runnerId,
             setupRequestId: setupRequest.id,
-            workspaceId: input.workspaceId,
           },
           presentation: computerAppAccessPresentation({
             access,
@@ -2039,7 +1759,6 @@ export class RequestStore {
           // Only the requester owns this computer. Phones are allowed from any
           // Opensteer app; Mac apps are approved on the Mac.
           requiredActor: "requester",
-          targetWorkspaceId: input.workspaceId,
         });
         return {
           kind: "computer",
@@ -2048,31 +1767,26 @@ export class RequestStore {
           requestEvents: [...settlement.requestEvents, ...mutation.events],
           setupRequest,
         };
-      },
-      (transaction) => lockRequestOrigin(transaction, origin),
-    );
+      })(personalTransaction);
+    });
   }
 
-  /**
-   * The only answer a person can give from anywhere but that Mac.
-   *
-   * Approving means consuming the setup request on the computer itself, so a
-   * decline is the whole of what web and mobile may say; it takes the approval
-   * back with it once no other Thread is waiting on it, because an approval
-   * nobody is waiting for is authority left lying around.
-   *
-   * It takes the Mac's row lock after the complete Workspace set,
-   * so a Thread joining the approval cannot commit between this deciding it
-   * was the last one waiting and removing the approval under it.
-   */
   async declineComputerAppAccessRequest(input: {
     readonly actorUserId: UserId;
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly response?: RequestResponse;
-  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+  }): Promise<{
+    events: readonly AgentEvent[];
+    request: Request;
+  }> {
     const response = RequestResponseSchema.parse(
-      input.response ?? { kind: "external", value: { decision: "declined" } },
+      input.response ?? {
+        kind: "external",
+        value: {
+          decision: "declined",
+        },
+      },
     );
     const value = response.kind === "external" ? response.value : undefined;
     if (!value || Object.keys(value).length !== 1 || value.decision !== "declined") {
@@ -2081,115 +1795,101 @@ export class RequestStore {
         message: "Computer app access is approved on that Mac; from here it can only be declined.",
       });
     }
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => {
-        const request = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (!request) return [];
-        const payload = requestFromRow(request).payload;
-        return [
-          request.originatingWorkspaceId,
-          request.targetWorkspaceId,
-          ...(payload.kind === "computer.app.access"
-            ? await discoverComputerRequestWorkspaces(transaction, payload.runnerId)
-            : []),
-        ];
-      },
-      async (transaction) => {
-        const noLongerPending = () =>
-          new OpensteerError({
-            code: "conflict",
-            message: "Computer app access Request is no longer pending for this requester",
-          });
-        const named = await transaction
-          .selectFrom("requests")
-          .select(sql<string>`payload->>'runnerId'`.as("runnerId"))
-          .where("id", "=", input.requestId)
-          .where("kind", "=", "computer.app.access")
-          .executeTakeFirst();
-        if (!named) throw noLongerPending();
-        await lockComputerApprovalScopeInTransaction(transaction, {
-          runnerId: RunnerIdSchema.parse(named.runnerId),
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const noLongerPending = () =>
+        new OpensteerError({
+          code: "conflict",
+          message: "Computer app access Request is no longer pending for this requester",
         });
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.status !== "pending" ||
-          observed.kind !== "computer.app.access" ||
-          observed.requestedBy !== input.actorUserId
-        ) {
-          throw noLongerPending();
-        }
-        const observedRequest = requestFromRow(observed);
-        if (observedRequest.payload.kind !== "computer.app.access") {
-          throw new Error("Computer app access Request payload does not match its kind");
-        }
-        await lockActiveDurableRequestAuthority(transaction, observedRequest);
-        const setupRequestId = observedRequest.payload.setupRequestId;
-        // Another Thread may still be waiting on this same approval, and its
-        // card is authority to keep the row. Only the last decline takes it.
-        const alsoWaiting = await transaction
-          .selectFrom("requests")
-          .select("id")
-          .where("kind", "=", "computer.app.access")
-          .where("status", "=", "pending")
-          .where("id", "!=", observedRequest.id)
-          .where(sql<string>`payload->>'setupRequestId'`, "=", setupRequestId)
-          .limit(1)
-          .executeTakeFirst();
-        const now = new Date();
-        if (!alsoWaiting) {
-          await transaction
-            .deleteFrom("computerAppSetupRequests")
-            .where("id", "=", setupRequestId)
-            .execute();
-        }
-        const row = await transaction
-          .updateTable("requests")
-          .set({
-            resolvedAt: now,
-            resolvedBy: input.actorUserId,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.actorUserId,
-              input.settlementSessionId,
-            ),
-            response: jsonValue(response),
-            responseCommandId: null,
-            status: "declined",
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirst();
-        if (!row) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Computer app access Request is no longer pending",
-          });
-        }
-        const request = requestFromRow(row);
-        await enqueueContinuation(transaction, request, now);
-        await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
-        return { events: await terminalEvents(transaction, request), request };
-      },
-    );
+      const named = await transaction
+        .selectFrom("requests")
+        .select(sql<string>`payload->>'runnerId'`.as("runnerId"))
+        .where("id", "=", input.requestId)
+        .where("kind", "=", "computer.app.access")
+        .executeTakeFirst();
+      if (!named) throw noLongerPending();
+      await lockComputerApprovalScopeInTransaction(transaction, {
+        runnerId: RunnerIdSchema.parse(named.runnerId),
+      });
+      const observed = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.status !== "pending" ||
+        observed.kind !== "computer.app.access" ||
+        observed.requestedBy !== input.actorUserId
+      ) {
+        throw noLongerPending();
+      }
+      const observedRequest = requestFromRow(observed);
+      if (observedRequest.payload.kind !== "computer.app.access") {
+        throw new Error("Computer app access Request payload does not match its kind");
+      }
+      await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      const setupRequestId = observedRequest.payload.setupRequestId;
+      // Another Thread may still be waiting on this same approval, and its
+      // card is authority to keep the row. Only the last decline takes it.
+      const alsoWaiting = await transaction
+        .selectFrom("requests")
+        .select("id")
+        .where("kind", "=", "computer.app.access")
+        .where("status", "=", "pending")
+        .where("id", "!=", observedRequest.id)
+        .where(sql<string>`payload->>'setupRequestId'`, "=", setupRequestId)
+        .limit(1)
+        .executeTakeFirst();
+      const now = new Date();
+      if (!alsoWaiting) {
+        await transaction
+          .deleteFrom("computerAppSetupRequests")
+          .where("id", "=", setupRequestId)
+          .execute();
+      }
+      const row = await transaction
+        .updateTable("requests")
+        .set({
+          resolvedAt: now,
+          resolvedBy: input.actorUserId,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.actorUserId,
+            input.settlementSessionId,
+          ),
+          response: jsonValue(response),
+          responseCommandId: null,
+          status: "declined",
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Computer app access Request is no longer pending",
+        });
+      }
+      const request = requestFromRow(row);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.actorUserId, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, request),
+        request,
+      };
+    });
   }
-
   async declineMachineFullDiskAccessRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
-  }): Promise<{ events: readonly AgentEvent[]; request: Request }> {
+  }): Promise<{
+    events: readonly AgentEvent[];
+    request: Request;
+  }> {
     // Only "not now" is a person's to say; the grant itself arrives from the
     // machine, so any other external value here is a client that misunderstood.
     const value = input.response.kind === "external" ? input.response.value : undefined;
@@ -2201,275 +1901,253 @@ export class RequestStore {
         message: "macOS Full Disk Access Requests can only be declined by a person",
       });
     }
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !observed ||
-          observed.status !== "pending" ||
-          observed.kind !== "machine.full-disk-access" ||
-          observed.requestedBy !== input.resolvedBy
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "macOS Full Disk Access Request is no longer pending for this requester",
-          });
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.status !== "pending" ||
+        observed.kind !== "machine.full-disk-access" ||
+        observed.requestedBy !== input.resolvedBy
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "macOS Full Disk Access Request is no longer pending for this requester",
+        });
+      }
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      const now = new Date();
+      const row = await transaction
+        .updateTable("requests")
+        .set({
+          status: "declined",
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue(input.response),
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirst();
+      if (!row)
+        throw new OpensteerError({
+          code: "conflict",
+          message: "macOS Full Disk Access Request is no longer pending",
+        });
+      const request = requestFromRow(row);
+      await enqueueContinuation(transaction, request, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, request),
+        request,
+      };
+    });
+  }
+  async fulfillMachineFullDiskAccessRequests(machineId: RunnerId): Promise<{
+    events: AgentEvent[];
+    requests: Request[];
+  }> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const rows = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("kind", "=", "machine.full-disk-access")
+        .where("status", "=", "pending")
+        .where(sql<string>`payload->>'machineId'`, "=", machineId)
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
+      const events: AgentEvent[] = [];
+      const requests: Request[] = [];
+      for (const row of rows) {
+        try {
+          await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+        } catch (error) {
+          // Revocation and cancellation own Requests whose origin authority has ended.
+          if (error instanceof OpensteerError) continue;
+          throw error;
         }
-        await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
         const now = new Date();
-        const row = await transaction
+        const resolved = await transaction
           .updateTable("requests")
           .set({
-            status: "declined",
+            status: "fulfilled",
             resolvedAt: now,
-            resolvedBy: input.resolvedBy,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-            response: jsonValue(input.response),
+            resolvedBy: row.requestedBy,
+            response: jsonValue({
+              kind: "external",
+              value: {
+                decision: "fulfilled",
+              },
+            }),
           })
-          .where("id", "=", input.requestId)
+          .where("id", "=", row.id)
           .where("status", "=", "pending")
           .returningAll()
           .executeTakeFirst();
-        if (!row)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "macOS Full Disk Access Request is no longer pending",
-          });
-        const request = requestFromRow(row);
+        if (!resolved) continue;
+        const request = requestFromRow(resolved);
         await enqueueContinuation(transaction, request, now);
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return { events: await terminalEvents(transaction, request), request };
-      },
-    );
+        events.push(...(await terminalEvents(transaction, request)));
+        requests.push(request);
+      }
+      return {
+        events,
+        requests,
+      };
+    });
   }
-
-  async fulfillMachineFullDiskAccessRequests(
-    machineId: RunnerId,
-  ): Promise<{ events: AgentEvent[]; requests: Request[] }> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) =>
-        (
-          await transaction
-            .selectFrom("requests")
-            .select(["originatingWorkspaceId", "targetWorkspaceId"])
-            .where("kind", "=", "machine.full-disk-access")
-            .where("status", "=", "pending")
-            .where(sql<string>`payload->>'machineId'`, "=", machineId)
-            .execute()
-        ).flatMap((row) => [row.originatingWorkspaceId, row.targetWorkspaceId]),
-      async (transaction) => {
-        const rows = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("kind", "=", "machine.full-disk-access")
-          .where("status", "=", "pending")
-          .where(sql<string>`payload->>'machineId'`, "=", machineId)
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute();
-        const events: AgentEvent[] = [];
-        const requests: Request[] = [];
-        for (const row of rows) {
-          try {
-            await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
-          } catch (error) {
-            // Revocation and cancellation own Requests whose origin authority has ended.
-            if (error instanceof OpensteerError) continue;
-            throw error;
-          }
-          const now = new Date();
-          const resolved = await transaction
-            .updateTable("requests")
-            .set({
-              status: "fulfilled",
-              resolvedAt: now,
-              resolvedBy: row.requestedBy,
-              response: jsonValue({ kind: "external", value: { decision: "fulfilled" } }),
-            })
-            .where("id", "=", row.id)
-            .where("status", "=", "pending")
-            .returningAll()
-            .executeTakeFirst();
-          if (!resolved) continue;
-          const request = requestFromRow(resolved);
-          await enqueueContinuation(transaction, request, now);
-          events.push(...(await terminalEvents(transaction, request)));
-          requests.push(request);
-        }
-        return { events, requests };
-      },
-    );
-  }
-
   async resolveBrowserRequest(input: {
     readonly requestId: RequestId;
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
     readonly response: RequestResponse;
   }): Promise<ResolvedBrowserRequest> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !observed ||
+        observed.status !== "pending" ||
+        observed.requestedBy !== input.resolvedBy ||
+        observed.kind !== "browser.access"
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Browser Request is no longer pending",
+        });
+      }
+      const parsedResponse = RequestResponseSchema.parse(input.response);
+      const creation =
+        parsedResponse.kind === "external" && parsedResponse.value
+          ? parseBrowserDecision(parsedResponse.value)
+          : undefined;
+      const homeRunnerId =
+        creation && "createProfile" in creation
+          ? creation.createProfile.homeRunnerId === null
+            ? null
+            : await lockBrowserHomeRunner(
+                transaction,
+                input.resolvedBy,
+                creation.createProfile.homeRunnerId,
+              )
+          : undefined;
+      const observedRequest = requestFromRow(observed);
+      await lockActiveDurableRequestAuthority(transaction, observedRequest);
+      if (creation && "profileId" in creation) {
+        await transaction
+          .selectFrom("browserProfiles")
+          .select("id")
+          .where("id", "=", creation.profileId)
+          .forShare()
           .executeTakeFirst();
-        if (
-          !observed ||
-          observed.status !== "pending" ||
-          observed.requestedBy !== input.resolvedBy ||
-          observed.kind !== "browser.access"
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Browser Request is no longer pending",
+      }
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.status !== "pending" ||
+        row.requestedBy !== input.resolvedBy ||
+        row.kind !== "browser.access"
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Browser Request is no longer pending",
+        });
+      }
+      const request = requestFromRow(row);
+      const response = RequestResponseSchema.parse(input.response);
+      if (response.kind !== "external" || !response.value) {
+        throw new OpensteerError({
+          code: "bad_request",
+          message: "Browser Request response is invalid",
+        });
+      }
+      const decision = parseBrowserDecision(response.value);
+      let profile: ResolvedBrowserRequest["profile"] = null;
+      if (decision.decision === "fulfilled") {
+        if ("profileId" in decision) {
+          profile =
+            (await transaction
+              .selectFrom("browserProfiles")
+              .select(["id", "name", "ownerId", "homeRunnerId"])
+              .where("id", "=", decision.profileId)
+              .where("ownerId", "=", input.resolvedBy)
+              .where("archivedAt", "is", null)
+              .executeTakeFirst()) ?? null;
+          if (!profile) {
+            throw new OpensteerError({
+              code: "forbidden",
+              message: "Browser Profile is unavailable",
+            });
+          }
+        } else if ("createProfile" in decision && homeRunnerId !== undefined) {
+          profile = await insertBrowserProfileOnLockedHome(transaction, {
+            name: decision.createProfile.name,
+            homeRunnerId,
+            ownerId: input.resolvedBy,
           });
-        }
-        const parsedResponse = RequestResponseSchema.parse(input.response);
-        const creation =
-          parsedResponse.kind === "external" && parsedResponse.value
-            ? parseBrowserDecision(parsedResponse.value)
-            : undefined;
-        const homeRunnerId =
-          creation && "createProfile" in creation
-            ? creation.createProfile.homeRunnerId === null
-              ? null
-              : await lockBrowserHomeRunner(
-                  transaction,
-                  input.resolvedBy,
-                  creation.createProfile.homeRunnerId,
-                )
-            : undefined;
-        const observedRequest = requestFromRow(observed);
-        await lockActiveDurableRequestAuthority(transaction, observedRequest);
-        if (creation && "profileId" in creation) {
-          await transaction
-            .selectFrom("browserProfiles")
-            .select("id")
-            .where("id", "=", creation.profileId)
-            .forShare()
-            .executeTakeFirst();
-        }
-        const row = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (
-          !row ||
-          row.status !== "pending" ||
-          row.requestedBy !== input.resolvedBy ||
-          row.kind !== "browser.access"
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Browser Request is no longer pending",
-          });
-        }
-        const request = requestFromRow(row);
-        const response = RequestResponseSchema.parse(input.response);
-        if (response.kind !== "external" || !response.value) {
+        } else {
           throw new OpensteerError({
             code: "bad_request",
-            message: "Browser Request response is invalid",
+            message: "Browser access selection is invalid",
           });
         }
-        const decision = parseBrowserDecision(response.value);
-
-        let profile: ResolvedBrowserRequest["profile"] = null;
-        let grant: ResolvedBrowserRequest["grant"] = null;
-        if (decision.decision === "fulfilled") {
-          if ("profileId" in decision) {
-            profile =
-              (await transaction
-                .selectFrom("browserProfiles")
-                .select(["id", "name", "ownerId", "homeRunnerId"])
-                .where("id", "=", decision.profileId)
-                .where("ownerId", "=", input.resolvedBy)
-                .where("archivedAt", "is", null)
-                .executeTakeFirst()) ?? null;
-            if (!profile) {
-              throw new OpensteerError({
-                code: "forbidden",
-                message: "Browser Profile is unavailable",
-              });
-            }
-          } else if ("createProfile" in decision && homeRunnerId !== undefined) {
-            profile = await insertBrowserProfileOnLockedHome(transaction, {
-              name: decision.createProfile.name,
-              homeRunnerId,
-              ownerId: input.resolvedBy,
-            });
-          } else {
-            throw new OpensteerError({
-              code: "bad_request",
-              message: "Browser access selection is invalid",
-            });
+      }
+      const storedResponse: RequestResponse = profile
+        ? {
+            kind: "external",
+            value: {
+              ...response.value,
+              profile: {
+                id: profile.id,
+                name: profile.name,
+              },
+            },
           }
-          const targetWorkspace = await transaction
-            .selectFrom("workspaces")
-            .select("kind")
-            .where("id", "=", request.targetWorkspaceId)
-            .executeTakeFirstOrThrow();
-          // Main already reaches every profile its owner has; only a Project needs a grant.
-          if (targetWorkspace.kind === "project") {
-            grant = await ensureBrowserGrant(transaction, {
-              createdBy: input.resolvedBy,
-              profileId: profile.id,
-              workspaceId: request.targetWorkspaceId,
-            });
-          }
-        }
-
-        const storedResponse: RequestResponse = profile
-          ? {
-              kind: "external",
-              value: { ...response.value, profile: { id: profile.id, name: profile.name } },
-            }
-          : response;
-        const now = new Date();
-        const resolvedRow = await transaction
-          .updateTable("requests")
-          .set({
-            resolvedAt: now,
-            resolvedBy: input.resolvedBy,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-            response: jsonValue(storedResponse),
-            status: decision.decision === "declined" ? "declined" : "fulfilled",
-          })
-          .where("id", "=", request.id)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const resolved = requestFromRow(resolvedRow);
-        await enqueueContinuation(transaction, resolved, now);
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
-        return {
-          events: await terminalEvents(transaction, resolved),
-          grant,
-          profile,
-          request: resolved,
-        };
-      },
-    );
+        : response;
+      const now = new Date();
+      const resolvedRow = await transaction
+        .updateTable("requests")
+        .set({
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue(storedResponse),
+          status: decision.decision === "declined" ? "declined" : "fulfilled",
+        })
+        .where("id", "=", request.id)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const resolved = requestFromRow(resolvedRow);
+      await enqueueContinuation(transaction, resolved, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, resolved),
+        profile,
+        request: resolved,
+      };
+    });
   }
 
   /** The owner said no: the agent is told not to ask for this site again. */
@@ -2478,69 +2156,74 @@ export class RequestStore {
     readonly resolvedBy: UserId;
     readonly settlementSessionId?: string;
   }): Promise<RequestMutation> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          observed?.kind === "browser.sign-in" &&
-          observed.status === "declined" &&
-          observed.requestedBy === input.resolvedBy &&
-          observed.resolvedBy === input.resolvedBy
-        ) {
-          return { events: [], replayed: true, request: requestFromRow(observed) };
-        }
-        if (
-          !observed ||
-          observed.kind !== "browser.sign-in" ||
-          observed.status !== "pending" ||
-          observed.requestedBy !== input.resolvedBy
-        ) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The sign-in Request is no longer pending",
-          });
-        }
-        await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-        const now = new Date();
-        const resolvedRow = await transaction
-          .updateTable("requests")
-          .set({
-            status: "declined",
-            resolvedAt: now,
-            resolvedBy: input.resolvedBy,
-            settlementProvenance: await readRequestSettlementProvenance(
-              transaction,
-              input.resolvedBy,
-              input.settlementSessionId,
-            ),
-            response: jsonValue({ kind: "external", value: { decision: "declined" } }),
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirst();
-        if (!resolvedRow) {
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The sign-in Request is no longer pending",
-          });
-        }
-        const resolved = requestFromRow(resolvedRow);
-        await enqueueContinuation(transaction, resolved, now);
-        await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const observed = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        observed?.kind === "browser.sign-in" &&
+        observed.status === "declined" &&
+        observed.requestedBy === input.resolvedBy &&
+        observed.resolvedBy === input.resolvedBy
+      ) {
         return {
-          events: await terminalEvents(transaction, resolved),
-          replayed: false,
-          request: resolved,
+          events: [],
+          replayed: true,
+          request: requestFromRow(observed),
         };
-      },
-    );
+      }
+      if (
+        !observed ||
+        observed.kind !== "browser.sign-in" ||
+        observed.status !== "pending" ||
+        observed.requestedBy !== input.resolvedBy
+      ) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The sign-in Request is no longer pending",
+        });
+      }
+      await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+      const now = new Date();
+      const resolvedRow = await transaction
+        .updateTable("requests")
+        .set({
+          status: "declined",
+          resolvedAt: now,
+          resolvedBy: input.resolvedBy,
+          settlementProvenance: await readRequestSettlementProvenance(
+            transaction,
+            input.resolvedBy,
+            input.settlementSessionId,
+          ),
+          response: jsonValue({
+            kind: "external",
+            value: {
+              decision: "declined",
+            },
+          }),
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirst();
+      if (!resolvedRow) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "The sign-in Request is no longer pending",
+        });
+      }
+      const resolved = requestFromRow(resolvedRow);
+      await enqueueContinuation(transaction, resolved, now);
+      await requestSettlementActor(transaction, input.resolvedBy, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, resolved),
+        replayed: false,
+        request: resolved,
+      };
+    });
   }
 
   /** Settles a sign-in Request without a delivery, such as when its session closed. */
@@ -2549,25 +2232,17 @@ export class RequestStore {
     readonly ownerId: UserId;
     readonly settlementSessionId?: string;
     readonly response: BrowserSignInRequestResponse;
-  }): Promise<{ readonly events: readonly AgentEvent[]; readonly request: Request } | null> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const result = await fulfilBrowserSignInRequestInTransaction(transaction, input);
-        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
-        return result;
-      },
-    );
+  }): Promise<{
+    readonly events: readonly AgentEvent[];
+    readonly request: Request;
+  } | null> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const result = await fulfilBrowserSignInRequestInTransaction(transaction, input);
+      await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
+      return result;
+    });
   }
 
-  /**
-   * Pending sign-in Requests one Chrome profile could complete now: their
-   * (Workspace, site) is allowed and prefers this Chrome, or prefers none that
-   * is still connected. Oldest first, so the longest wait completes first; a
-   * caller pages with `after` so Requests nobody can answer never hide ones
-   * that can be.
-   */
   async listDeliverableBrowserSignIns(input: {
     readonly ownerId: UserId;
     readonly sourceId: BrowserSourceId;
@@ -2580,7 +2255,6 @@ export class RequestStore {
       .innerJoin("browserSiteGrants", (join) =>
         join
           .onRef("browserSiteGrants.ownerId", "=", "requests.requestedBy")
-          .onRef("browserSiteGrants.workspaceId", "=", "requests.targetWorkspaceId")
           .on(sql<boolean>`browser_site_grants.site = requests.payload->>'site'`)
           .on("browserSiteGrants.revokedAt", "is", null),
       )
@@ -2609,10 +2283,6 @@ export class RequestStore {
     return rows.map(requestFromRow);
   }
 
-  /**
-   * Pending sign-in Requests whose (Workspace, site) nobody has allowed yet,
-   * oldest first and paged like `listDeliverableBrowserSignIns`.
-   */
   async listUngrantedBrowserSignIns(input: {
     readonly ownerId: UserId;
     readonly after: RequestId | null;
@@ -2623,7 +2293,6 @@ export class RequestStore {
       .leftJoin("browserSiteGrants", (join) =>
         join
           .onRef("browserSiteGrants.ownerId", "=", "requests.requestedBy")
-          .onRef("browserSiteGrants.workspaceId", "=", "requests.targetWorkspaceId")
           .on(sql<boolean>`browser_site_grants.site = requests.payload->>'site'`)
           .on("browserSiteGrants.revokedAt", "is", null),
       )
@@ -2644,12 +2313,10 @@ export class RequestStore {
       .execute();
     return rows.map(requestFromRow);
   }
-
   async findPendingBrowserSignIn(input: {
     readonly ownerId: UserId;
     readonly originatingRunId: RunId;
     readonly site: string;
-    readonly workspaceId: WorkspaceId;
   }): Promise<Request | null> {
     const row = await this.#database
       .selectFrom("requests")
@@ -2658,7 +2325,6 @@ export class RequestStore {
       .where("status", "=", "pending")
       .where("requestedBy", "=", input.ownerId)
       .where("originatingRunId", "=", input.originatingRunId)
-      .where("targetWorkspaceId", "=", input.workspaceId)
       .where(sql<string>`payload->>'site'`, "=", input.site)
       .orderBy("createdAt", "asc")
       .orderBy("id", "asc")
@@ -2687,71 +2353,48 @@ export class RequestStore {
     readonly ownerId: UserId;
     readonly requestId: RequestId;
   }): Promise<boolean> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const row = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (
-          !row ||
-          row.kind !== "browser.password-sign-in" ||
-          row.status !== "pending" ||
-          row.requestedBy !== input.ownerId ||
-          row.requiredActor !== "requester"
-        )
-          return false;
-        try {
-          await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
-          return true;
-        } catch (error) {
-          if (error instanceof OpensteerError) return false;
-          throw error;
-        }
-      },
-    );
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (
+        !row ||
+        row.kind !== "browser.password-sign-in" ||
+        row.status !== "pending" ||
+        row.requestedBy !== input.ownerId ||
+        row.requiredActor !== "requester"
+      )
+        return false;
+      try {
+        await lockActiveDurableRequestAuthority(transaction, requestFromRow(row));
+        return true;
+      } catch (error) {
+        if (error instanceof OpensteerError) return false;
+        throw error;
+      }
+    });
   }
 
   /** Live authority for an unattended Passwords operation, without creating a Request. */
   async hasActiveRunPasswordSignInAuthority(input: {
     readonly originatingRunId: RunId;
     readonly originatingThreadId: ThreadId;
-    readonly originatingWorkspaceId: WorkspaceId;
     readonly requestedBy: UserId;
-    readonly targetWorkspaceId: WorkspaceId;
   }): Promise<boolean> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async () => [input.originatingWorkspaceId, input.targetWorkspaceId],
-      async (transaction) => {
-        const origin = await lockRequestOrigin(transaction, input);
-        if (
-          !origin?.running ||
-          origin.threadId !== input.originatingThreadId ||
-          origin.workspaceId !== input.originatingWorkspaceId ||
-          origin.requestedBy !== input.requestedBy ||
-          !(await runHasActiveGrant(transaction, input.originatingRunId))
-        )
-          return false;
-        const authority = await lockRequestWorkspaceAuthorities(transaction, input);
-        try {
-          assertActiveRequestAuthority(
-            authority,
-            origin.membershipGeneration === null
-              ? {}
-              : { originatingMembershipGeneration: origin.membershipGeneration },
-          );
-          return true;
-        } catch (error) {
-          if (error instanceof OpensteerError) return false;
-          throw error;
-        }
-      },
-      (transaction) => lockRequestOrigin(transaction, input),
-    );
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      const origin = await lockRequestOrigin(transaction, input, false);
+      if (
+        !origin?.running ||
+        origin.threadId !== input.originatingThreadId ||
+        origin.requestedBy !== input.requestedBy ||
+        !(await runHasActiveGrant(transaction, input.originatingRunId))
+      )
+        return false;
+      await requirePersonalOwner(transaction, input.requestedBy);
+      return true;
+    });
   }
 
   /** Opens or joins one operation's Request, recording its Run's calls atomically. */
@@ -2769,21 +2412,9 @@ export class RequestStore {
         message: "Only a password sign-in can join an open Request",
       });
     }
-    return withRequestWorkspaceLocks(
-      this.#database,
-      async (transaction) => {
-        const replay = await transaction
-          .selectFrom("requests")
-          .select(["originatingWorkspaceId", "targetWorkspaceId"])
-          .where(callIdentityFilter(input))
-          .executeTakeFirst();
-        return [
-          input.originatingWorkspaceId,
-          input.targetWorkspaceId,
-          ...(replay ? [replay.originatingWorkspaceId, replay.targetWorkspaceId] : []),
-        ];
-      },
-      async (transaction) => {
+    return withPersonalTransaction(this.#database, async (personalTransaction) => {
+      await ((transaction) => lockRequestOrigin(transaction, input))(personalTransaction);
+      return (async (transaction) => {
         const recordJoins = async (mutation: RequestMutation): Promise<RequestMutation> => {
           for (const callId of new Set(joinedCallIds ?? [])) {
             if (callId === mutation.request.callId) continue;
@@ -2807,7 +2438,12 @@ export class RequestStore {
           return mutation;
         };
         const joined = await joinedRequest(transaction, input.originatingRunId, input.callId);
-        if (joined) return recordJoins({ events: [], replayed: true, request: joined });
+        if (joined)
+          return recordJoins({
+            events: [],
+            replayed: true,
+            request: joined,
+          });
         const own = await transaction
           .selectFrom("requests")
           .select("id")
@@ -2817,7 +2453,6 @@ export class RequestStore {
         if (
           origin?.running &&
           origin.threadId === input.originatingThreadId &&
-          origin.workspaceId === input.originatingWorkspaceId &&
           origin.requestedBy === input.requestedBy
         ) {
           const pending = transaction
@@ -2829,15 +2464,10 @@ export class RequestStore {
             .where("originatingRunId", "=", input.originatingRunId)
             .where(sql<string>`payload->>'site'`, "=", payload.site)
             .where(sql<string>`payload->>'operationId'`, "=", payload.operationId);
-          // A Workspace-scoped sign-in joins only its own Workspace's consent; a
+
           // legacy one stays bound to the Browser Session it was asked for.
-          const open = await (
-            payload.sessionId === undefined
-              ? pending
-                  .where("targetWorkspaceId", "=", input.targetWorkspaceId)
-                  .where(sql<string>`payload->>'scope'`, "=", "workspace")
-              : pending.where(sql<string>`payload->>'sessionId'`, "=", payload.sessionId)
-          )
+          const open = await pending
+            .where(sql<string>`payload->>'scope'`, "=", "personal")
             .orderBy("createdAt", "asc")
             .orderBy("id", "asc")
             .limit(1)
@@ -2851,15 +2481,18 @@ export class RequestStore {
                 requestId: open.id,
               })
               .execute();
-            return recordJoins({ events: [], replayed: true, request: requestFromRow(open) });
+            return recordJoins({
+              events: [],
+              replayed: true,
+              request: requestFromRow(open),
+            });
           }
         }
         // A replay of the opening call, a new Request, or the refusal for a
         // Run that can no longer ask.
         return recordJoins(await createRequestInTransaction(this.#links, transaction, fields));
-      },
-      (transaction) => lockRequestOrigin(transaction, input),
-    );
+      })(personalTransaction);
+    });
   }
 
   /** Oldest first; the Host settles these when their sessions cannot answer. */
@@ -2898,157 +2531,179 @@ export class RequestStore {
     readonly settlementSessionId?: string;
     readonly requestId: RequestId;
     readonly settlement:
-      | { readonly status: "declined" }
-      | { readonly status: "fulfilled"; readonly response: PasswordSignInRequestResponse };
-  }): Promise<{ readonly events: readonly AgentEvent[]; readonly request: Request } | null> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const eligible = (row: RequestRow | undefined): row is RequestRow =>
-          row?.kind === "browser.password-sign-in" &&
-          row.requestedBy === input.ownerId &&
-          (row.status === "pending" ||
-            (input.settlement.status === "fulfilled" &&
-              input.settlement.response.outcome === "interrupted" &&
-              row.status === "fulfilled" &&
-              row.response?.kind === "external" &&
-              row.response.value?.outcome === "authorized"));
-        const observed = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .executeTakeFirst();
-        if (!eligible(observed)) return null;
-        if (observed.status === "pending") {
-          try {
-            await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
-          } catch (error) {
-            if (error instanceof OpensteerError) return null;
-            throw error;
-          }
+      | {
+          readonly status: "declined";
         }
-        const row = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!eligible(row)) return null;
-        if (
-          input.settlement.status === "fulfilled" &&
-          input.settlement.response.outcome === "authorized" &&
-          (row.payload.kind !== "browser.password-sign-in" ||
-            Date.parse(row.payload.expiresAt) <= Date.now())
-        )
-          return null;
-        const now = new Date();
-        const response =
-          input.settlement.status === "declined"
-            ? { kind: "external" as const, value: { decision: "declined" } }
-            : RequestResponseSchema.parse({
-                kind: "external",
-                value: PasswordSignInRequestResponseSchema.parse(input.settlement.response),
-              });
-        const resolvedRow = await transaction
-          .updateTable("requests")
-          .set({
-            status: input.settlement.status,
-            ...(row.status === "pending"
-              ? {
-                  resolvedAt: now,
-                  resolvedBy: input.ownerId,
-                  settlementProvenance: await readRequestSettlementProvenance(
-                    transaction,
-                    input.ownerId,
-                    input.settlementSessionId,
-                  ),
-                }
-              : {}),
-            response: jsonValue(response),
-          })
-          .where("id", "=", input.requestId)
-          .where("status", "=", row.status)
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const resolved = requestFromRow(resolvedRow);
-        await enqueueContinuation(transaction, resolved, now);
-        await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
-        return { events: await terminalEvents(transaction, resolved), request: resolved };
-      },
-    );
+      | {
+          readonly status: "fulfilled";
+          readonly response: PasswordSignInRequestResponse;
+        };
+  }): Promise<{
+    readonly events: readonly AgentEvent[];
+    readonly request: Request;
+  } | null> {
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const eligible = (row: RequestRow | undefined): row is RequestRow =>
+        row?.kind === "browser.password-sign-in" &&
+        row.requestedBy === input.ownerId &&
+        (row.status === "pending" ||
+          (input.settlement.status === "fulfilled" &&
+            input.settlement.response.outcome === "interrupted" &&
+            row.status === "fulfilled" &&
+            row.response?.kind === "external" &&
+            row.response.value?.outcome === "authorized"));
+      const observed = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .executeTakeFirst();
+      if (!eligible(observed)) return null;
+      if (observed.status === "pending") {
+        try {
+          await lockActiveDurableRequestAuthority(transaction, requestFromRow(observed));
+        } catch (error) {
+          if (error instanceof OpensteerError) return null;
+          throw error;
+        }
+      }
+      const row = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!eligible(row)) return null;
+      if (
+        input.settlement.status === "fulfilled" &&
+        input.settlement.response.outcome === "authorized" &&
+        (row.payload.kind !== "browser.password-sign-in" ||
+          Date.parse(row.payload.expiresAt) <= Date.now())
+      )
+        return null;
+      const now = new Date();
+      const response =
+        input.settlement.status === "declined"
+          ? {
+              kind: "external" as const,
+              value: {
+                decision: "declined",
+              },
+            }
+          : RequestResponseSchema.parse({
+              kind: "external",
+              value: PasswordSignInRequestResponseSchema.parse(input.settlement.response),
+            });
+      const resolvedRow = await transaction
+        .updateTable("requests")
+        .set({
+          status: input.settlement.status,
+          ...(row.status === "pending"
+            ? {
+                resolvedAt: now,
+                resolvedBy: input.ownerId,
+                settlementProvenance: await readRequestSettlementProvenance(
+                  transaction,
+                  input.ownerId,
+                  input.settlementSessionId,
+                ),
+              }
+            : {}),
+          response: jsonValue(response),
+        })
+        .where("id", "=", input.requestId)
+        .where("status", "=", row.status)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const resolved = requestFromRow(resolvedRow);
+      await enqueueContinuation(transaction, resolved, now);
+      await requestSettlementActor(transaction, input.ownerId, input.settlementSessionId);
+      return {
+        events: await terminalEvents(transaction, resolved),
+        request: resolved,
+      };
+    });
   }
-
   async withdraw(input: {
     readonly requestId: RequestId;
     readonly threadId: ThreadId;
     readonly withdrawnBy: UserId;
   }): Promise<RequestMutation> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { requestId: input.requestId }),
-      async (transaction) => {
-        const pending = await transaction
-          .selectFrom("requests")
-          .selectAll()
-          .where("id", "=", input.requestId)
-          .forNoKeyUpdate()
-          .executeTakeFirst();
-        if (!pending) {
-          throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });
-        }
-        if (
-          pending.status === "withdrawn" &&
-          pending.mode === "durable" &&
-          pending.originatingThreadId === input.threadId &&
-          pending.requestedBy === input.withdrawnBy &&
-          pending.resolvedBy === input.withdrawnBy
-        ) {
-          return { events: [], replayed: true, request: requestFromRow(pending) };
-        }
-        if (pending.status !== "pending") {
-          throw new OpensteerError({ code: "conflict", message: "Request is no longer pending" });
-        }
-        if (pending.mode !== "durable" || pending.originatingThreadId !== input.threadId) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Only the originating Thread may withdraw its pending durable Request",
-          });
-        }
-        if (pending.requestedBy !== input.withdrawnBy) {
-          throw new OpensteerError({
-            code: "forbidden",
-            message: "Request actor is no longer valid",
-          });
-        }
-        const now = new Date();
-        const row = await transaction
-          .updateTable("requests")
-          .set({ resolvedAt: now, resolvedBy: input.withdrawnBy, status: "withdrawn" })
-          .where("id", "=", pending.id)
-          .where("status", "=", "pending")
-          .returningAll()
-          .executeTakeFirstOrThrow();
-        const request = requestFromRow(row);
-        await enqueueContinuation(transaction, request, now);
+    return withPersonalTransaction(this.#database, async (transaction) => {
+      const pending = await transaction
+        .selectFrom("requests")
+        .selectAll()
+        .where("id", "=", input.requestId)
+        .forNoKeyUpdate()
+        .executeTakeFirst();
+      if (!pending) {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Request is no longer pending",
+        });
+      }
+      if (
+        pending.status === "withdrawn" &&
+        pending.mode === "durable" &&
+        pending.originatingThreadId === input.threadId &&
+        pending.requestedBy === input.withdrawnBy &&
+        pending.resolvedBy === input.withdrawnBy
+      ) {
         return {
-          events: await terminalEvents(transaction, request),
-          replayed: false,
-          request,
+          events: [],
+          replayed: true,
+          request: requestFromRow(pending),
         };
-      },
-    );
+      }
+      if (pending.status !== "pending") {
+        throw new OpensteerError({
+          code: "conflict",
+          message: "Request is no longer pending",
+        });
+      }
+      if (pending.mode !== "durable" || pending.originatingThreadId !== input.threadId) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Only the originating Thread may withdraw its pending durable Request",
+        });
+      }
+      if (pending.requestedBy !== input.withdrawnBy) {
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Request actor is no longer valid",
+        });
+      }
+      const now = new Date();
+      const row = await transaction
+        .updateTable("requests")
+        .set({
+          resolvedAt: now,
+          resolvedBy: input.withdrawnBy,
+          status: "withdrawn",
+        })
+        .where("id", "=", pending.id)
+        .where("status", "=", "pending")
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      const request = requestFromRow(row);
+      await enqueueContinuation(transaction, request, now);
+      return {
+        events: await terminalEvents(transaction, request),
+        replayed: false,
+        request,
+      };
+    });
   }
-
   async cancelForRun(
     runId: RunId,
     reason: RequestCancellationReason,
     resolvedAt = new Date(),
   ): Promise<readonly AgentEvent[]> {
-    return withRequestWorkspaceLocks(
-      this.#database,
-      (transaction) => discoverRequestWorkspaces(transaction, { runId, pending: true }),
-      (transaction) => cancelPending(transaction, { reason, resolvedAt, runId }),
+    return withPersonalTransaction(this.#database, (transaction) =>
+      cancelPending(transaction, {
+        reason,
+        resolvedAt,
+        runId,
+      }),
     );
   }
 
@@ -3065,7 +2720,6 @@ export class RequestStore {
       .executeTakeFirstOrThrow();
     return Number(count);
   }
-
   async holdSnapshot(requestId: RequestId, runId: RunId, steersAtAdmission: number) {
     const row = await this.#database
       .selectFrom("requests")
@@ -3092,18 +2746,21 @@ export class RequestStore {
     return row
       ? {
           request: requestFromRow(row),
-          run: { status: row.runStatus, phase: row.runPhase, voiceSessionId: row.voiceSessionId },
+          run: {
+            status: row.runStatus,
+            phase: row.runPhase,
+            voiceSessionId: row.voiceSessionId,
+          },
           steered: (await this.personSteerCount(runId)) > steersAtAdmission,
           queued: row.queued,
         }
       : null;
   }
-
   async markToolDelivered(
     requestId: RequestId,
     claims: Parameters<typeof assertActiveGrant>[1],
   ): Promise<"delivered" | "already-delivered" | "refused"> {
-    return withDatabaseTransaction(this.#database, async (transaction) => {
+    return withPersonalTransaction(this.#database, async (transaction) => {
       const run = await transaction
         .selectFrom("runs")
         .select(["phase", "voiceSessionId"])
@@ -3128,7 +2785,11 @@ export class RequestStore {
       const now = new Date(this.#executionNow());
       const updated = await transaction
         .updateTable("requestContinuations")
-        .set({ status: "delivered", attemptedAt: now, updatedAt: now })
+        .set({
+          status: "delivered",
+          attemptedAt: now,
+          updatedAt: now,
+        })
         .where("requestId", "=", requestId)
         .where("status", "=", "waiting")
         .executeTakeFirst();
@@ -3144,7 +2805,6 @@ export class RequestStore {
       return "refused";
     });
   }
-
   async listPendingContinuations(limit = 100): Promise<readonly PendingRequestContinuation[]> {
     const pending = this.#database
       .selectFrom("requestContinuations")
@@ -3230,7 +2890,6 @@ export class RequestStore {
       status: "waiting" as const,
     }));
   }
-
   async recordContinuationAttempt(input: {
     readonly reason: string | null;
     readonly requestId: RequestId;
@@ -3275,12 +2934,10 @@ type IntegrationAccessRequestInput = {
   readonly installationId: IntegrationInstallationId | null;
   readonly manifest?: IntegrationInstallManifest | null;
   readonly originatingThreadId: ThreadId;
-  readonly originatingWorkspaceId: WorkspaceId;
   readonly reason: string;
   readonly requestedConnectionId?: IntegrationConnectionId | null;
   readonly requestedBy: UserId;
   readonly requestedServerId: IntegrationServerId | null;
-  readonly targetWorkspaceId: WorkspaceId;
 } & RequestOriginInput;
 
 /** An ordinary `integration.access` Request, which the person can approve from anywhere. */
@@ -3335,7 +2992,6 @@ async function integrationAccessRequestInput(
     kind: "integration.access",
     mode: "durable",
     originatingThreadId: input.originatingThreadId,
-    originatingWorkspaceId: input.originatingWorkspaceId,
     payload: {
       access,
       installationId: input.installationId,
@@ -3346,7 +3002,11 @@ async function integrationAccessRequestInput(
       requestedServerId: input.requestedServerId,
     },
     presentation: {
-      ...(agentProposed ? { agentProposed: true } : {}),
+      ...(agentProposed
+        ? {
+            agentProposed: true,
+          }
+        : {}),
       detail: input.reason,
       kind: "external",
       subject: {
@@ -3357,40 +3017,29 @@ async function integrationAccessRequestInput(
     },
     requestedBy: input.requestedBy,
     requiredActor: "requester",
-    targetWorkspaceId: input.targetWorkspaceId,
   };
 }
-
 async function createRequestInTransaction(
   links: ChannelLinks,
   transaction: Transaction<DatabaseSchema>,
   input: CreateRequestInput,
 ): Promise<RequestMutation> {
-  if (input.kind === "browser.profile.save")
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Create a browser profile before signing in. Guest sign-ins cannot be saved.",
-    });
   if (input.callId.length < 1 || input.callId.length > 512 || input.callId.includes("\0")) {
     throw new OpensteerError({
       code: "bad_request",
       message: "Request call identity is invalid",
     });
   }
-  if (input.kind === "browser.profile.import") {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Browser profile import Requests are no longer supported",
-    });
-  }
   const origin = await lockRequestOrigin(transaction, input);
   if (
     !origin ||
     origin.threadId !== input.originatingThreadId ||
-    origin.workspaceId !== input.originatingWorkspaceId ||
     origin.requestedBy !== input.requestedBy
   ) {
-    throw new OpensteerError({ code: "forbidden", message: originMismatchMessage(input) });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: originMismatchMessage(input),
+    });
   }
   const existing = await transaction
     .selectFrom("requests")
@@ -3401,46 +3050,45 @@ async function createRequestInTransaction(
     // Replay stays canonical after a Run ends or authority is removed. It
     // still locks both authority scopes before the Request so a concurrent
     // revocation/deletion cannot leave the caller with stale pending state.
-    await lockRequestWorkspaceAuthorities(transaction, {
-      originatingWorkspaceId: existing.originatingWorkspaceId,
-      requestedBy: existing.requestedBy,
-      targetWorkspaceId: existing.targetWorkspaceId,
-    });
+    await requirePersonalOwner(transaction, existing.requestedBy);
     const replay = await transaction
       .selectFrom("requests")
       .selectAll()
       .where("id", "=", existing.id)
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
-    return { events: [], replayed: true, request: requestFromRow(replay) };
+    return {
+      events: [],
+      replayed: true,
+      request: requestFromRow(replay),
+    };
   }
-
   if (!origin.running) {
-    throw new OpensteerError({ code: "forbidden", message: originMismatchMessage(input) });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: originMismatchMessage(input),
+    });
   }
   // A stopped Run is still running until its Runner winds it down, but may not
   // ask for anything more. Revocation holds the Run, as this caller now does.
   if (origin.runId && !(await runHasActiveGrant(transaction, origin.runId))) {
-    throw new OpensteerError({ code: "forbidden", message: "Run tool authority has ended" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Run tool authority has ended",
+    });
   }
-  const authority = await lockRequestWorkspaceAuthorities(transaction, {
-    originatingWorkspaceId: input.originatingWorkspaceId,
-    requestedBy: input.requestedBy,
-    targetWorkspaceId: input.targetWorkspaceId,
-  });
-  // Only a Run signs a membership generation into its authority; a Trigger
+  await requirePersonalOwner(transaction, input.requestedBy);
+
   // Occurrence is re-validated against its Trigger's live authority instead.
-  assertActiveRequestAuthority(
-    authority,
-    origin.membershipGeneration === null
-      ? {}
-      : { originatingMembershipGeneration: origin.membershipGeneration },
-  );
+
   if (
     input.originatingRunId &&
     !(await runAssignmentAcceptsRequests(transaction, input.originatingRunId))
   ) {
-    throw new OpensteerError({ code: "conflict", message: assignmentClosedToRequestsMessage });
+    throw new OpensteerError({
+      code: "conflict",
+      message: assignmentClosedToRequestsMessage,
+    });
   }
   if (input.kind === "browser.sign-in") {
     if (input.payload.kind !== "browser.sign-in") {
@@ -3449,21 +3097,16 @@ async function createRequestInTransaction(
         message: "Browser sign-in Request payload is invalid",
       });
     }
-    // The session's Workspace is the one the site is remembered for, so a
-    // Request can only target the Workspace its live session belongs to.
-    const session = await transaction
-      .selectFrom("browserSessions")
-      .select(["workspaceId", "state"])
-      .where("id", "=", BrowserSessionIdSchema.parse(input.payload.sessionId))
-      .executeTakeFirst();
-    if (
-      !session ||
-      session.workspaceId !== input.targetWorkspaceId ||
-      (session.state !== "starting" && session.state !== "ready")
-    ) {
+
+    const session = await getBrowserSessionForOwner(
+      transaction,
+      BrowserSessionIdSchema.parse(input.payload.sessionId),
+      input.requestedBy,
+    );
+    if (!session || (session.state !== "starting" && session.state !== "ready")) {
       throw new OpensteerError({
         code: "conflict",
-        message: "The Browser Session is no longer open in the target Workspace",
+        message: "The Browser Session is no longer open",
         reason: browserSessionClosedReason,
       });
     }
@@ -3484,7 +3127,6 @@ async function createRequestInTransaction(
       .where("requests.kind", "=", "integration.access")
       .where("requests.status", "=", "pending")
       .where("requests.requestedBy", "=", input.requestedBy)
-      .where("requests.targetWorkspaceId", "=", input.targetWorkspaceId)
       .where("integrationRequestDetails.access", "=", integrationDetail.access);
     duplicateQuery =
       integrationDetail.requestedConnectionId === null
@@ -3519,7 +3161,11 @@ async function createRequestInTransaction(
       .limit(1)
       .executeTakeFirst();
     if (duplicate) {
-      return { events: [], replayed: true, request: requestFromRow(duplicate) };
+      return {
+        events: [],
+        replayed: true,
+        request: requestFromRow(duplicate),
+      };
     }
   }
   if (input.payload.kind === "computer.app.access") {
@@ -3534,7 +3180,6 @@ async function createRequestInTransaction(
       .where("kind", "=", "computer.app.access")
       .where("status", "=", "pending")
       .where("requestedBy", "=", input.requestedBy)
-      .where("targetWorkspaceId", "=", input.targetWorkspaceId)
       .where("originatingThreadId", "=", input.originatingThreadId)
       .where(sql<string>`payload->>'definitionId'`, "=", input.payload.definitionId)
       .where(sql<string>`payload->>'runnerId'`, "=", input.payload.runnerId)
@@ -3549,7 +3194,11 @@ async function createRequestInTransaction(
       .limit(1)
       .executeTakeFirst();
     if (duplicate) {
-      return { events: [], replayed: true, request: requestFromRow(duplicate) };
+      return {
+        events: [],
+        replayed: true,
+        request: requestFromRow(duplicate),
+      };
     }
   }
   const { integrationDetail: _integrationDetail, ...requestInput } = input;
@@ -3589,7 +3238,11 @@ async function createRequestInTransaction(
       .selectAll()
       .where(callIdentityFilter(input))
       .executeTakeFirstOrThrow();
-    return { events: [], replayed: true, request: requestFromRow(replay) };
+    return {
+      events: [],
+      replayed: true,
+      request: requestFromRow(replay),
+    };
   }
   if (input.integrationDetail) {
     await insertIntegrationDetail(transaction, inserted.id, input.integrationDetail);
@@ -3618,14 +3271,14 @@ async function createRequestInTransaction(
       });
     }
   }
-
-  const event = await appendHostWorkspaceEvent(transaction, {
-    data: { request: canonical },
+  const event = await appendHostDeploymentEvent(transaction, {
+    data: {
+      request: PendingRequestSchema.parse(canonical),
+    },
     environmentId: origin.environmentId,
     runId: origin.runId,
     threadId: origin.threadId,
     type: "request.opened",
-    workspaceId: origin.workspaceId,
   });
   return {
     events: [
@@ -3654,13 +3307,11 @@ export function integrationInstallDisplayName(manifest: IntegrationInstallManife
     ? manifest.definition.name
     : integrationProposalName(manifest.proposal);
 }
-
 function installManifestSubject(manifest: IntegrationInstallManifest): string {
   return manifest.kind === "catalog"
     ? `catalog:${manifest.definition.id}:${manifest.digest}`
     : `proposal:${manifest.proposal.digest}`;
 }
-
 function currentIntegrationMatchesPrepared(
   current: {
     readonly adapterSnapshot: unknown;
@@ -3690,7 +3341,6 @@ function currentIntegrationMatchesPrepared(
     isDeepStrictEqual(current.adapterSnapshot, prepared.adapterSnapshot)
   );
 }
-
 function installedIntegrationMatchesReviewedManifest(
   installation: {
     readonly manifest: unknown;
@@ -3725,7 +3375,6 @@ function installedIntegrationMatchesReviewedManifest(
     isDeepStrictEqual(installedManifest.data.proposal, summary.proposal)
   );
 }
-
 function integrationInstallationFromRequestRow(row: {
   readonly createdAt: Date;
   readonly description: string;
@@ -3757,7 +3406,6 @@ function integrationInstallationFromRequestRow(row: {
     version: row.version,
   });
 }
-
 async function bindIntegrationAccessInstallation(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -3808,25 +3456,31 @@ async function bindIntegrationAccessInstallation(
   } satisfies RequestPayload;
   await transaction
     .updateTable("integrationRequestDetails")
-    .set({ installationId: input.installation.id, requestedServerId })
+    .set({
+      installationId: input.installation.id,
+      requestedServerId,
+    })
     .where("requestId", "=", input.requestId)
     .where("installationId", "is", null)
     .executeTakeFirstOrThrow();
   const updatedRow = await transaction
     .updateTable("requests")
-    .set({ payload: jsonValue(payload) })
+    .set({
+      payload: jsonValue(payload),
+    })
     .where("id", "=", input.requestId)
     .where("status", "=", "pending")
     .returningAll()
     .executeTakeFirstOrThrow();
   const request = requestFromRow(updatedRow);
-  const event = await appendHostWorkspaceEvent(transaction, {
-    data: { request },
+  const event = await appendHostDeploymentEvent(transaction, {
+    data: {
+      request: PendingRequestSchema.parse(request),
+    },
     environmentId: await requestOriginEnvironment(transaction, request),
     runId: request.originatingRunId,
     threadId: request.originatingThreadId,
     type: "request.updated",
-    workspaceId: request.originatingWorkspaceId,
   });
   return {
     installation: input.installation,
@@ -3834,7 +3488,6 @@ async function bindIntegrationAccessInstallation(
     requestEvents: [...input.requestEvents, event],
   };
 }
-
 async function validateIntegrationRequestDetail(
   transaction: Transaction<DatabaseSchema>,
   input: CreateRequestInput,
@@ -3870,7 +3523,10 @@ async function validateIntegrationRequestDetail(
     !detail.access ||
     (detail.installationId === null) === (detail.manifest === null)
   ) {
-    throw new OpensteerError({ code: "bad_request", message: "Access Request detail is invalid" });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Access Request detail is invalid",
+    });
   }
   if (detail.installationId) {
     await lockAndValidateIntegrationAccessResources(transaction, {
@@ -3892,7 +3548,6 @@ async function validateIntegrationRequestDetail(
     }
   }
 }
-
 async function assertCatalogDefinitionAvailable(
   transaction: Transaction<DatabaseSchema>,
   definitionId: string,
@@ -3915,7 +3570,6 @@ async function assertCatalogDefinitionAvailable(
     });
   }
 }
-
 async function lockAndValidateIntegrationAccessResources(
   transaction: Transaction<DatabaseSchema>,
   detail: {
@@ -3933,7 +3587,10 @@ async function lockAndValidateIntegrationAccessResources(
     .forNoKeyUpdate()
     .executeTakeFirst();
   if (!installation) {
-    throw new OpensteerError({ code: "conflict", message: "Integration is inactive" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Integration is inactive",
+    });
   }
   if (detail.requestedServerId) {
     const server = await transaction
@@ -4003,7 +3660,6 @@ async function lockAndValidateIntegrationAccessResources(
     }
   }
 }
-
 async function withAuthoritativeIntegrationAccount(
   transaction: Transaction<DatabaseSchema>,
   response: RequestResponse,
@@ -4023,10 +3679,12 @@ async function withAuthoritativeIntegrationAccount(
   if (!account) return response;
   return {
     kind: "external",
-    value: RequestJsonObjectSchema.parse({ ...response.value, account }),
+    value: RequestJsonObjectSchema.parse({
+      ...response.value,
+      account,
+    }),
   };
 }
-
 async function validateIntegrationAccessFulfillmentConnection(
   transaction: Transaction<DatabaseSchema>,
   input: {
@@ -4076,59 +3734,34 @@ async function validateIntegrationAccessFulfillmentConnection(
     });
   }
 }
-
 function withoutClientIntegrationAccount(response: RequestResponse): RequestResponse {
   if (response.kind !== "external" || !response.value) return response;
-  const value = { ...response.value };
+  const value = {
+    ...response.value,
+  };
   delete value.account;
-  return { kind: "external", value: RequestJsonObjectSchema.parse(value) };
+  return {
+    kind: "external",
+    value: RequestJsonObjectSchema.parse(value),
+  };
 }
-
 type IntegrationAccessDecision =
   | { readonly decision: "declined" }
   | {
-      readonly connectionId: IntegrationConnectionId | null;
       readonly decision: "fulfilled";
-    }
-  | {
       readonly access: IntegrationAccess;
       readonly alias: string;
       readonly connectionId: IntegrationConnectionId | null;
-      readonly decision: "fulfilled";
       readonly isDefault: boolean;
     };
-
-function parseIntegrationAccessDecision(
-  response: RequestResponse,
-  mainTarget: boolean,
-): IntegrationAccessDecision {
-  if (response.kind !== "external" || !response.value) {
+function parseIntegrationAccessDecision(response: RequestResponse): IntegrationAccessDecision {
+  if (response.kind !== "external" || !response.value)
     throw new OpensteerError({
       code: "bad_request",
       message: "Integration Request response is invalid",
     });
-  }
   const value = response.value;
   if (value.decision === "declined") return { decision: "declined" };
-  if (mainTarget) {
-    if (
-      value.decision !== "fulfilled" ||
-      !("connectionId" in value) ||
-      (value.connectionId !== null && typeof value.connectionId !== "string")
-    ) {
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Integration access decision is invalid",
-      });
-    }
-    return {
-      connectionId:
-        value.connectionId === null
-          ? null
-          : IntegrationConnectionIdSchema.parse(value.connectionId),
-      decision: "fulfilled",
-    };
-  }
   if (
     value.decision !== "fulfilled" ||
     !IntegrationAccessSchema.safeParse(value.access).success ||
@@ -4136,37 +3769,33 @@ function parseIntegrationAccessDecision(
     typeof value.isDefault !== "boolean" ||
     !("connectionId" in value) ||
     (value.connectionId !== null && typeof value.connectionId !== "string")
-  ) {
+  )
     throw new OpensteerError({
       code: "bad_request",
-      message: "Integration grant selection is invalid",
+      message: "Choose the personal account and access to grant.",
     });
-  }
   const alias = value.alias.trim();
-  if (!alias || alias.length > 80) {
+  if (!alias || alias.length > 80)
     throw new OpensteerError({
       code: "bad_request",
       message: "Integration grant alias is invalid",
     });
-  }
   return {
+    decision: "fulfilled",
     access: IntegrationAccessSchema.parse(value.access),
     alias,
+    isDefault: value.isDefault,
     connectionId:
       value.connectionId === null ? null : IntegrationConnectionIdSchema.parse(value.connectionId),
-    decision: "fulfilled",
-    isDefault: value.isDefault,
   };
 }
-
-async function createIntegrationGrantForRequest(
+async function createPersonalIntegrationGrantForRequest(
   transaction: Transaction<DatabaseSchema>,
   input: Extract<IntegrationAccessDecision, { alias: string }> & {
     readonly installationId: IntegrationInstallationId;
     readonly ownerUserId: UserId;
     readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
     readonly requestedServerId: IntegrationServerId | null;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<IntegrationGrant> {
   const grantStore = new IntegrationGrantStore(transaction);
@@ -4207,60 +3836,6 @@ async function createIntegrationGrantForRequest(
     isDefault: input.isDefault,
     ownerUserId: input.ownerUserId,
     providerAuthorizations: input.providerAuthorizations,
-    workspaceId: input.workspaceId,
-  });
-}
-
-async function assertMainIntegrationAccessUsable(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly connectionId: IntegrationConnectionId | null;
-    readonly installationId: IntegrationInstallationId;
-    readonly ownerUserId: UserId;
-    readonly providerAuthorizations: Readonly<Record<string, IntegrationProviderAuthorization>>;
-    readonly requestedServerId: IntegrationServerId | null;
-  },
-): Promise<void> {
-  if (input.connectionId !== null) {
-    const usable = await new IntegrationGrantStore(transaction).isConnectionUsableForAccessRequest({
-      connectionId: input.connectionId,
-      installationId: input.installationId,
-      ownerUserId: input.ownerUserId,
-      providerAuthorizations: input.providerAuthorizations,
-      requestedServerId: input.requestedServerId,
-    });
-    if (usable) return;
-  } else {
-    const installation = await transaction
-      .selectFrom("integrationInstallations")
-      .select("id")
-      .where("id", "=", input.installationId)
-      .where("status", "=", "active")
-      .executeTakeFirst();
-    const servers = installation
-      ? await transaction
-          .selectFrom("integrationServers")
-          .select("connectionRequirement")
-          .where("installationId", "=", input.installationId)
-          .where("status", "=", "active")
-          .$if(input.requestedServerId !== null, (query) =>
-            query.where("id", "=", input.requestedServerId!),
-          )
-          .execute()
-      : [];
-    if (
-      installation &&
-      servers.some(
-        ({ connectionRequirement }) =>
-          IntegrationConnectionRequirementSchema.parse(connectionRequirement).kind === "none",
-      )
-    ) {
-      return;
-    }
-  }
-  throw new OpensteerError({
-    code: "forbidden",
-    message: "Integration account is not usable for this access request",
   });
 }
 
@@ -4281,7 +3856,6 @@ async function insertIntegrationDetail(
     })
     .executeTakeFirstOrThrow();
 }
-
 async function terminalEvents(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
@@ -4289,13 +3863,14 @@ async function terminalEvents(
   if (request.status === "pending" || request.status === "cancelled") {
     throw new Error("Request resolution event requires a non-cancellation terminal state");
   }
-  const event = await appendHostWorkspaceEvent(transaction, {
-    data: { request },
+  const event = await appendHostDeploymentEvent(transaction, {
+    data: {
+      request: ResolvedRequestSchema.parse(request),
+    },
     environmentId: await requestOriginEnvironment(transaction, request),
     runId: request.originatingRunId,
     threadId: request.originatingThreadId,
     type: "request.resolved",
-    workspaceId: request.originatingWorkspaceId,
   });
   return [
     event,
@@ -4304,7 +3879,6 @@ async function terminalEvents(
       : []),
   ];
 }
-
 type BrowserSignInRequestScope = {
   readonly settlementSessionId?: string;
   readonly requestId: RequestId;
@@ -4312,10 +3886,8 @@ type BrowserSignInRequestScope = {
   readonly scope?: {
     readonly sessionId: string;
     readonly site: string;
-    readonly workspaceId: WorkspaceId;
   };
 };
-
 function pendingBrowserSignInMatches(
   row: RequestRow | undefined,
   input: BrowserSignInRequestScope,
@@ -4332,7 +3904,6 @@ function pendingBrowserSignInMatches(
   const payload = requestFromRow(row).payload;
   return (
     payload.kind === "browser.sign-in" &&
-    row.targetWorkspaceId === input.scope.workspaceId &&
     payload.site === input.scope.site &&
     payload.sessionId === input.scope.sessionId
   );
@@ -4378,8 +3949,13 @@ export async function browserSignInRequestDeliverableInTransaction(
  */
 export async function fulfilBrowserSignInRequestInTransaction(
   transaction: Transaction<DatabaseSchema>,
-  input: BrowserSignInRequestScope & { readonly response: BrowserSignInRequestResponse },
-): Promise<{ readonly events: readonly AgentEvent[]; readonly request: Request } | null> {
+  input: BrowserSignInRequestScope & {
+    readonly response: BrowserSignInRequestResponse;
+  },
+): Promise<{
+  readonly events: readonly AgentEvent[];
+  readonly request: Request;
+} | null> {
   const matches = (row: RequestRow | undefined): row is RequestRow =>
     pendingBrowserSignInMatches(row, input);
   const observed = await transaction
@@ -4420,9 +3996,11 @@ export async function fulfilBrowserSignInRequestInTransaction(
     .executeTakeFirstOrThrow();
   const resolved = requestFromRow(resolvedRow);
   await enqueueContinuation(transaction, resolved, now);
-  return { events: await terminalEvents(transaction, resolved), request: resolved };
+  return {
+    events: await terminalEvents(transaction, resolved),
+    request: resolved,
+  };
 }
-
 async function enqueueContinuation(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
@@ -4448,19 +4026,30 @@ async function enqueueContinuation(
     .onConflict((conflict) => conflict.column("requestId").doNothing())
     .execute();
 }
-
 type BrowserDecision =
-  | { readonly decision: "declined" }
-  | { readonly decision: "fulfilled"; readonly profileId: BrowserProfileId }
   | {
-      readonly createProfile: { readonly name: string; readonly homeRunnerId?: RunnerId | null };
+      readonly decision: "declined";
+    }
+  | {
+      readonly decision: "fulfilled";
+      readonly profileId: BrowserProfileId;
+    }
+  | {
+      readonly createProfile: {
+        readonly name: string;
+        readonly homeRunnerId?: RunnerId | null;
+      };
       readonly decision: "fulfilled";
     }
-  | { readonly decision: "fulfilled"; readonly name: string };
-
+  | {
+      readonly decision: "fulfilled";
+      readonly name: string;
+    };
 function parseBrowserDecision(value: Readonly<Record<string, unknown>>): BrowserDecision {
   if (value.decision === "declined" && Object.keys(value).length === 1) {
-    return { decision: "declined" };
+    return {
+      decision: "declined",
+    };
   }
   if (value.decision !== "fulfilled") {
     throw new OpensteerError({
@@ -4469,10 +4058,16 @@ function parseBrowserDecision(value: Readonly<Record<string, unknown>>): Browser
     });
   }
   if (typeof value.profileId === "string" && Object.keys(value).length === 2) {
-    return { decision: "fulfilled", profileId: BrowserProfileIdSchema.parse(value.profileId) };
+    return {
+      decision: "fulfilled",
+      profileId: BrowserProfileIdSchema.parse(value.profileId),
+    };
   }
   if (typeof value.name === "string" && Object.keys(value).length === 2) {
-    return { decision: "fulfilled", name: boundedProfileName(value.name) };
+    return {
+      decision: "fulfilled",
+      name: boundedProfileName(value.name),
+    };
   }
   if (
     value.createProfile &&
@@ -4490,23 +4085,29 @@ function parseBrowserDecision(value: Readonly<Record<string, unknown>>): Browser
           name: boundedProfileName(profile.name),
           ...(profile.homeRunnerId === undefined
             ? {}
-            : { homeRunnerId: RunnerIdSchema.nullable().parse(profile.homeRunnerId) }),
+            : {
+                homeRunnerId: RunnerIdSchema.nullable().parse(profile.homeRunnerId),
+              }),
         },
         decision: "fulfilled",
       };
     }
   }
-  throw new OpensteerError({ code: "bad_request", message: "Browser Request decision is invalid" });
+  throw new OpensteerError({
+    code: "bad_request",
+    message: "Browser Request decision is invalid",
+  });
 }
-
 function boundedProfileName(value: string): string {
   const name = value.trim();
   if (!name || name.length > 120) {
-    throw new OpensteerError({ code: "bad_request", message: "Browser Profile name is invalid" });
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Browser Profile name is invalid",
+    });
   }
   return name;
 }
-
 type RequestOriginSelector = {
   readonly originatingOccurrenceId?: TriggerOccurrenceId | null;
   readonly originatingRunId?: RunId | null;
@@ -4514,9 +4115,14 @@ type RequestOriginSelector = {
 
 /** Narrows an origin-carrying input back to the exclusive pair `create` takes. */
 function requestOriginOf(input: RequestOriginSelector): RequestOriginInput {
-  if (input.originatingRunId != null) return { originatingRunId: input.originatingRunId };
+  if (input.originatingRunId != null)
+    return {
+      originatingRunId: input.originatingRunId,
+    };
   if (input.originatingOccurrenceId != null) {
-    return { originatingOccurrenceId: input.originatingOccurrenceId };
+    return {
+      originatingOccurrenceId: input.originatingOccurrenceId,
+    };
   }
   throw new OpensteerError({
     code: "bad_request",
@@ -4539,8 +4145,11 @@ async function joinedRequest(
     .executeTakeFirst();
   return row ? requestFromRow(row) : null;
 }
-
-function callIdentityFilter(input: { readonly callId: string } & RequestOriginSelector) {
+function callIdentityFilter(
+  input: {
+    readonly callId: string;
+  } & RequestOriginSelector,
+) {
   const origin = requestOriginOf(input);
   return (expression: ExpressionBuilder<DatabaseSchema, "requests">) =>
     expression.and([
@@ -4550,7 +4159,6 @@ function callIdentityFilter(input: { readonly callId: string } & RequestOriginSe
         : expression("originatingRunId", "=", origin.originatingRunId),
     ]);
 }
-
 function integrationSubjectFilter(
   expression: ExpressionBuilder<DatabaseSchema, "integrationRequestDetails" | "requests">,
   subject: IntegrationRequestSubject,
@@ -4567,24 +4175,20 @@ function integrationSubjectFilter(
         subject.proposalDigest,
       );
 }
-
 function originMismatchMessage(input: RequestOriginSelector): string {
   return input.originatingRunId != null
     ? "Request origin does not match its signed Run authority"
     : "Request origin does not match its signed Trigger Occurrence authority";
 }
-
 type LockedRequestOrigin = {
   readonly environmentId: DatabaseSchema["runs"]["environmentId"];
   /** Present only for a Run, which signs the generation into its authority. */
-  readonly membershipGeneration: number | null;
+
   readonly requestedBy: UserId;
   readonly running: boolean;
   readonly runId: RunId | null;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 };
-
 async function lockRequestOrigin(
   transaction: Transaction<DatabaseSchema>,
   input: RequestOriginSelector,
@@ -4600,7 +4204,6 @@ async function lockRequestOrigin(
         "triggerOccurrences.status",
         "triggers.anchorThreadId",
         "triggers.createdBy",
-        "triggers.workspaceId",
       ])
       .where("triggerOccurrences.id", "=", origin.originatingOccurrenceId)
       .$if(lock, (query) => query.forNoKeyUpdate("triggerOccurrences"))
@@ -4608,157 +4211,44 @@ async function lockRequestOrigin(
     if (!occurrence) return undefined;
     return {
       environmentId: occurrence.environmentId,
-      membershipGeneration: null,
       requestedBy: occurrence.createdBy,
       runId: null,
       running: occurrence.status === "running",
       threadId: occurrence.anchorThreadId,
-      workspaceId: occurrence.workspaceId,
     };
   }
   const run = await transaction
     .selectFrom("runs")
     .innerJoin("threads", "threads.id", "runs.threadId")
-    .select([
-      "runs.environmentId",
-      "runs.id",
-      "runs.membershipGeneration",
-      "runs.requestedBy",
-      "runs.status",
-      "runs.threadId",
-      "threads.workspaceId",
-    ])
+    .select(["runs.environmentId", "runs.id", "runs.requestedBy", "runs.status", "runs.threadId"])
     .where("runs.id", "=", origin.originatingRunId)
     .$if(lock, (query) => query.forNoKeyUpdate("runs"))
     .executeTakeFirst();
   if (!run) return undefined;
   return {
     environmentId: run.environmentId,
-    membershipGeneration: safeGeneration(run.membershipGeneration),
     requestedBy: run.requestedBy,
     runId: run.id,
     running: run.status === "running",
     threadId: run.threadId,
-    workspaceId: run.workspaceId,
   };
 }
-
-type LockedWorkspaceAuthority = {
-  readonly membership:
-    | {
-        readonly generation: string | number;
-        readonly state: DatabaseSchema["workspaceMemberships"]["state"];
-      }
-    | undefined;
-  readonly workspace:
-    | {
-        readonly kind: DatabaseSchema["workspaces"]["kind"];
-        readonly status: DatabaseSchema["workspaces"]["status"];
-      }
-    | undefined;
-};
-
-type LockedRequestWorkspaceAuthorities = {
-  readonly originatingMembership: LockedWorkspaceAuthority["membership"];
-  readonly originatingWorkspace: LockedWorkspaceAuthority["workspace"];
-  readonly targetMembership: LockedWorkspaceAuthority["membership"];
-  readonly targetWorkspace: LockedWorkspaceAuthority["workspace"];
-};
-
-type ActiveRequestWorkspaceAuthorities = {
-  readonly originatingMembership: NonNullable<LockedWorkspaceAuthority["membership"]>;
-  readonly originatingWorkspace: NonNullable<LockedWorkspaceAuthority["workspace"]>;
-  readonly targetMembership: NonNullable<LockedWorkspaceAuthority["membership"]>;
-  readonly targetWorkspace: NonNullable<LockedWorkspaceAuthority["workspace"]>;
-};
-
-async function lockRequestWorkspaceAuthorities(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly originatingWorkspaceId: WorkspaceId;
-    readonly requestedBy: UserId;
-    readonly targetWorkspaceId: WorkspaceId;
-  },
-): Promise<LockedRequestWorkspaceAuthorities> {
-  const workspaceIds = [...new Set([input.originatingWorkspaceId, input.targetWorkspaceId])].sort();
-  await lockRequestWorkspaces(transaction, workspaceIds);
-  const workspaces = new Map<WorkspaceId, LockedWorkspaceAuthority["workspace"]>();
-  for (const row of await transaction
-    .selectFrom("workspaces")
-    .select(["id", "kind", "status"])
-    .where("id", "in", workspaceIds)
-    .execute())
-    workspaces.set(row.id, row);
-
-  // Membership writers own these Workspace fences before changing rows.
-  const memberships = new Map<WorkspaceId, LockedWorkspaceAuthority["membership"]>();
-  for (const workspaceId of workspaceIds) {
-    const membership = await transaction
-      .selectFrom("workspaceMemberships")
-      .select(["generation", "state"])
-      .where("workspaceId", "=", workspaceId)
-      .where("userId", "=", input.requestedBy)
-      .executeTakeFirst();
-    memberships.set(workspaceId, membership);
-  }
-
-  return {
-    originatingMembership: memberships.get(input.originatingWorkspaceId),
-    originatingWorkspace: workspaces.get(input.originatingWorkspaceId),
-    targetMembership: memberships.get(input.targetWorkspaceId),
-    targetWorkspace: workspaces.get(input.targetWorkspaceId),
-  };
-}
-
-function assertActiveRequestAuthority(
-  authority: LockedRequestWorkspaceAuthorities,
-  input: { readonly originatingMembershipGeneration?: number } = {},
-): asserts authority is ActiveRequestWorkspaceAuthorities {
-  if (
-    !authority.originatingWorkspace ||
-    authority.originatingWorkspace.status !== "ready" ||
-    !authority.targetWorkspace ||
-    authority.targetWorkspace.status !== "ready"
-  ) {
-    throw new OpensteerError({
-      code: "conflict",
-      message: "Request Workspace authority is not ready",
-    });
-  }
-  if (
-    !authority.originatingMembership ||
-    authority.originatingMembership.state !== "active" ||
-    !authority.targetMembership ||
-    authority.targetMembership.state !== "active"
-  ) {
-    throw new OpensteerError({ code: "forbidden", message: "Request authority was revoked" });
-  }
-  if (
-    input.originatingMembershipGeneration !== undefined &&
-    safeGeneration(authority.originatingMembership.generation) !==
-      input.originatingMembershipGeneration
-  ) {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Request origin membership no longer matches its signed Run authority",
-    });
-  }
-}
-
 async function lockActiveDurableRequestAuthority(
   transaction: Transaction<DatabaseSchema>,
   request: Request,
-): Promise<LockedRequestWorkspaceAuthorities> {
+): Promise<void> {
   if (request.mode !== "durable") {
-    throw new OpensteerError({ code: "conflict", message: "Request is not durable" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Request is not durable",
+    });
   }
   // Durable answers validate immutable origin fields; they do not depend on Run status.
-  // The Workspace fences serialize changes to the authority that can revoke them.
+
   const origin = await lockRequestOrigin(transaction, request, false);
   if (
     !origin ||
     origin.threadId !== request.originatingThreadId ||
-    origin.workspaceId !== request.originatingWorkspaceId ||
     origin.requestedBy !== request.requestedBy
   ) {
     throw new OpensteerError({
@@ -4769,85 +4259,16 @@ async function lockActiveDurableRequestAuthority(
           : "Request origin no longer matches its signed Run authority",
     });
   }
-  const authority = await lockRequestWorkspaceAuthorities(transaction, request);
-  assertActiveRequestAuthority(authority);
-  return authority;
+  await requirePersonalOwner(transaction, request.requestedBy);
 }
-
-async function ensureBrowserGrant(
-  transaction: Transaction<DatabaseSchema>,
-  input: {
-    readonly createdBy: UserId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<NonNullable<ResolvedBrowserRequest["grant"]>> {
-  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
-    transaction,
-  );
-  // The caller holds the profile row against archival before locking the Request.
-  const profile = await transaction
-    .selectFrom("browserProfiles")
-    .select("archivedAt")
-    .where("id", "=", input.profileId)
-    .where("ownerId", "=", input.createdBy)
-    .executeTakeFirst();
-  if (!profile || profile.archivedAt) {
-    throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
-  }
-  const existing = await transaction
-    .selectFrom("browserProfileGrants")
-    .select(["id", "createdAt", "profileId", "workspaceId"])
-    .where("workspaceId", "=", input.workspaceId)
-    .where("createdBy", "=", input.createdBy)
-    .where("profileId", "=", input.profileId)
-    .where("revokedAt", "is", null)
-    .forNoKeyUpdate()
-    .executeTakeFirst();
-  // Approval selects authority to use; it need not create a new grant.
-  // Check this before capacity, since reusing access consumes no additional slot.
-  if (existing) {
-    return {
-      access: "read-write",
-      createdAt: existing.createdAt,
-      grantId: existing.id,
-      profileId: existing.profileId,
-      workspaceId: existing.workspaceId,
-    };
-  }
-  const active = await transaction
-    .selectFrom("browserProfileGrants")
-    .innerJoin("browserProfiles", "browserProfiles.id", "browserProfileGrants.profileId")
-    .select("browserProfileGrants.id")
-    .where("browserProfileGrants.revokedAt", "is", null)
-    .where("browserProfiles.ownerId", "=", input.createdBy)
-    .limit(100)
-    .execute();
-  if (active.length >= 100) {
+function clampLimit(limit: number): number {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
     throw new OpensteerError({
-      code: "resource_exhausted",
-      message: "Active browser grant limit reached",
+      code: "bad_request",
+      message: "Request page limit must be an integer from 1 through 500",
     });
   }
-  const row = await transaction
-    .insertInto("browserProfileGrants")
-    .values({
-      access: "read-write",
-      createdBy: input.createdBy,
-      id: createId("browserProfileGrant"),
-      profileId: input.profileId,
-      revokedAt: null,
-      workspaceId: input.workspaceId,
-    })
-    .returning(["access", "createdAt", "id", "profileId", "workspaceId"])
-    .executeTakeFirstOrThrow();
-  return {
-    access: "read-write",
-    createdAt: row.createdAt,
-    grantId: row.id,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  };
+  return limit;
 }
 
 function encodeRequestCursor(createdAt: string, id: RequestId, scope: string): string {
@@ -4907,15 +4328,8 @@ async function heldAssignments(
     select chain.request_id as "requestId", chain.assignment_id as "assignmentId",
       chain.parent_thread_id as "parentThreadId", chain.child_thread_id as "workerThreadId",
       chain.depth, worker.title as "workerTitle",
-      exists (
-        select 1 from public.workspace_memberships as membership
-        where membership.workspace_id = worker.workspace_id
-          and membership.user_id = ${userId} and membership.state = 'active'
-      ) and exists (
-        select 1 from public.workspace_memberships as membership
-        where membership.workspace_id = parent.workspace_id
-          and membership.user_id = ${userId} and membership.state = 'active'
-      ) as readable
+      exists (select 1 from public.personal_settings settings join public.users owner on owner.id = settings.owner_id
+        where settings.owner_id = ${userId} and owner.disabled_at is null) as readable
     from chain
     join public.threads as worker on worker.id = chain.child_thread_id
     join public.threads as parent on parent.id = chain.parent_thread_id
@@ -4961,14 +4375,4 @@ function requestPage(
       totalItems,
     },
   };
-}
-
-function clampLimit(limit: number): number {
-  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Request page limit must be an integer from 1 through 500",
-    });
-  }
-  return limit;
 }

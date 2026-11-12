@@ -13,9 +13,9 @@ import {
   createMachineAccessDatabase,
   enrollmentToken,
   openRealtime,
-  startMachineAccessHost,
+  startMachineAccessWireHost,
   waitForCondition,
-} from "./machine-access.test-support.js";
+} from "./machine-access-protocol.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -57,7 +57,7 @@ integration("device platform release compatibility", () => {
     const rpc: { method: (typeof methods)[number]; data: unknown }[] = [];
     const frames: unknown[] = [];
     let failure: string | null = null;
-    const host = await startMachineAccessHost(database!.url);
+    const host = await startMachineAccessWireHost(database!.url, { remoteAccess: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
       const failures: unknown[] = [];

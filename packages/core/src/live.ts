@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  ExecutionNodeIdSchema,
-  RunIdSchema,
-  ThreadIdSchema,
-  WorkspaceIdSchema,
-  type ExecutionNodeId,
-} from "./ids.js";
+import { ExecutionNodeIdSchema, RunIdSchema, ThreadIdSchema, type ExecutionNodeId } from "./ids.js";
 
 /**
  * Live progress is what a turn is saying before it has said it: the text of an
@@ -121,7 +115,6 @@ export type LiveStreamKey =
 const liveRunProgressShape = {
   runId: RunIdSchema,
   threadId: ThreadIdSchema,
-  workspaceId: WorkspaceIdSchema,
 } as const;
 
 export const LiveRunProgressSchema = z.strictObject({

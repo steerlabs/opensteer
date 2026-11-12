@@ -152,8 +152,7 @@ function PictureCursors({ hostClient, placeKey, tabId, variant }: AgentCursorsPr
       ref={attachLayer}
     >
       {cursors.threadIds.map((threadId) => {
-        const home = threadId === directory.homeThreadId;
-        const own = ownCursor(threadId, home, directory.snapshot);
+        const own = ownCursor(threadId, directory.snapshot);
         return (
           <CursorMark
             color={taskCursorPaint(threadMark(threadId, directory.snapshot), own)}
@@ -161,11 +160,7 @@ function PictureCursors({ hostClient, placeKey, tabId, variant }: AgentCursorsPr
             id={threadId}
             key={threadId}
             motion={motion}
-            title={
-              home
-                ? "Opensteer"
-                : (threadInDirectory(threadId, directory.snapshot)?.title ?? "Task")
-            }
+            title={threadInDirectory(threadId, directory.snapshot)?.title ?? "Task"}
           />
         );
       })}

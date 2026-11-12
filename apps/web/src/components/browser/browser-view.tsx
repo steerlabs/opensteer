@@ -11,7 +11,6 @@ import {
   type PlaceItem,
 } from "@opensteer/client/host";
 import {
-  useBrowserGroup,
   useBrowserPresentationWait,
   useBrowserSessionGroupId,
   useBrowserTab,
@@ -77,15 +76,10 @@ export interface BrowserChromeSignIn {
 interface BrowserReads {
   readonly session: BrowserSessionSummary | null;
   readonly profiles: HostSnapshot["browserProfiles"];
-  readonly workspaces: HostSnapshot["workspaces"];
 }
 
 function sameReads(left: BrowserReads, right: BrowserReads): boolean {
-  return (
-    left.session === right.session &&
-    left.profiles === right.profiles &&
-    left.workspaces === right.workspaces
-  );
+  return left.session === right.session && left.profiles === right.profiles;
 }
 
 /**
@@ -144,7 +138,6 @@ export function PlaceBrowserView({
     (snapshot: HostSnapshot): BrowserReads => ({
       profiles: snapshot.browserProfiles,
       session: snapshot.browserSessions.find((session) => session.id === sessionId) ?? null,
-      workspaces: snapshot.workspaces,
     }),
     [sessionId],
   );
@@ -153,7 +146,6 @@ export function PlaceBrowserView({
   // This tab's own row, its group's list and the exact page a viewer holds: nothing else.
   const groupId =
     useBrowserSessionGroupId(hostClient, sessionId) ?? hostClient.browserTabs.groupForTab(tabId);
-  const group = useBrowserGroup(hostClient, groupId ?? "");
   const row = useBrowserTab(hostClient, groupId, tabId);
   const whole = useBrowserTabs(hostClient, groupId ?? "").whole && groupId !== undefined;
   const viewed = useBrowserViewerSurface(hostClient, sessionId, tabId);
@@ -171,7 +163,7 @@ export function PlaceBrowserView({
   // Asleep, restoring or not yet started: selecting it wakes it, and nothing is retained meanwhile.
   const dormant = row
     ? row.state !== "live"
-    : !!place?.workspaceTab && place.workspaceTab.state !== "live";
+    : !!place?.personalTab && place.personalTab.state !== "live";
   const sessionReady = !dormant && session?.state === "ready";
   const mode = useBrowserPresentationMode(hostClient, sessionId, sessionReady);
   const native = mode.mode === "native";
@@ -499,9 +491,6 @@ export function PlaceBrowserView({
   const signIn = chromeSignIn && signInOpen && site !== null && live ? chromeSignIn : null;
   const blocked = signIn !== null || askingClose;
   const pageReachable = live && !dialog;
-  const workspace = reads.workspaces.find(
-    (candidate) => candidate.id === (session?.workspaceId ?? group?.workspaceId),
-  );
   const pageFollowsView = tab?.sizedByAgent !== undefined;
   const loading = place?.loading === true;
   useBrowserCommandKeys({
@@ -930,8 +919,6 @@ export function PlaceBrowserView({
           sessionId={sessionId}
           site={site}
           url={url}
-          workspaceId={session.workspaceId}
-          workspaceName={workspace?.name ?? "this Workspace"}
         />
       ) : null}
     </>

@@ -1,7 +1,7 @@
 import {
   ownerViewDestination,
   type HostClient,
-  type WorkspaceSurfaceDestination,
+  type PersonalSurfaceDestination,
 } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { computerAppIdentityKey, type ComputerViewTarget } from "@opensteer/protocol";
@@ -18,7 +18,7 @@ export async function openOwnerView(
   machineId: string,
   target: ComputerViewTarget,
   stillHere: () => boolean,
-): Promise<WorkspaceSurfaceDestination | null> {
+): Promise<PersonalSurfaceDestination | null> {
   const view = await hostClient.openComputerView(machineId, target);
   if (stillHere()) return ownerViewDestination(view);
   sharedDisplayStreams(hostClient).cancelAutoWake({
@@ -54,7 +54,7 @@ export async function openAppOwnerView(
   appKey: string,
   windowId: number | undefined,
   stillHere: () => boolean,
-): Promise<WorkspaceSurfaceDestination | null> {
+): Promise<PersonalSurfaceDestination | null> {
   const apps = await hostClient.listApprovedComputerApps();
   const target = apps.find(
     (app) =>

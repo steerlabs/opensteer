@@ -3,7 +3,7 @@ import {
   MessageContentSchema,
   MessageIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
+  TaskFolderSchema,
 } from "@opensteer/core";
 import { z } from "zod";
 import {
@@ -306,7 +306,7 @@ const ChannelExecutionPolicyViewSchema = z
 /** Admission is independent of the external identity's optional Opensteer link. */
 export const ChannelSenderPolicySchema = z.strictObject({
   allowedExternalUserIds: z.array(ExternalIdSchema).max(500).default([]),
-  mode: z.enum(["off", "owner", "approved", "linked-members", "anyone"]),
+  mode: z.enum(["off", "owner", "approved", "anyone"]),
 });
 const ChannelSenderPolicyViewSchema = z.object(ChannelSenderPolicySchema.shape);
 export type ChannelSenderPolicy = z.infer<typeof ChannelSenderPolicySchema>;
@@ -354,10 +354,11 @@ export const ChannelBindingSchema = z.strictObject({
   selector: ChannelRouteSelectorSchema,
   status: z.enum(["active", "paused", "revoked"]),
   updatedAt: IsoDateTimeSchema,
-  workspaceId: WorkspaceIdSchema,
+  folder: TaskFolderSchema,
 });
 export const ChannelBindingViewSchema = z.object({
   ...ChannelBindingSchema.shape,
+  folder: z.object(TaskFolderSchema.shape),
   accessPolicy: ChannelAccessPolicyViewSchema,
   executionPolicy: ChannelExecutionPolicyViewSchema,
   selector: ChannelRouteSelectorViewSchema,

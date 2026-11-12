@@ -1,0 +1,232 @@
+import {
+  DeploymentConnectionSchema,
+  type DeploymentConnection,
+} from "@opensteer/client/connections";
+import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
+import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
+import { createId, OpensteerError } from "@opensteer/core";
+import type { HostApiClient } from "@opensteer/protocol";
+import { describe, expect, it, vi } from "vitest";
+import type { MobileClient } from "../client/mobile-client.js";
+import {
+  mockDeploymentConnections,
+  mockDeploymentId,
+  mockFamilyTeamId,
+  mockFamilyTeamOrigin,
+  mockTeamId,
+  mockTeamOrigin,
+} from "../client/mock-mode.js";
+import type { NotificationPreviews } from "../notifications/notification-preview.js";
+import { MobileTeams, type TeamTransport } from "./mobile-teams.js";
+import { mockTeamReaderId, mockTeamTransport } from "./team-transport.js";
+
+const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
+  .filter((row) => row.kind === "team")
+  .map((row) =>
+    DeploymentConnectionSchema.parse({
+      ...row,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+      lastUsedAt: null,
+      preferredEndpointOrigin: null,
+    }),
+  );
+
+/**
+ * The phone's teams over the real registry and mock team Hosts: Acme's first
+ * bootstrap waits until the test lets it answer.
+ */
+function fixture(
+  options: {
+    readonly previews?: Pick<NotificationPreviews, "attach" | "clear">;
+    /** Answers a team command in place of the mock team Host. */
+    readonly dispatch?: (command: { readonly type: string }) => unknown;
+  } = {},
+) {
+  const hosts = new Map<string, MockTeamHost>();
+  const mock = mockTeamTransport(hosts);
+  let releaseAcme!: () => void;
+  const acmeAnswers = new Promise<void>((resolve) => {
+    releaseAcme = resolve;
+  });
+  const transport = (connection: DeploymentConnection, scope: TeamCacheScope): TeamTransport => {
+    const inner = mock(connection, scope);
+    const acme = connection.authority.document.deploymentId === mockTeamId;
+    const rpc = new Proxy(inner.rpc, {
+      get: (target, name, receiver) =>
+        name === "team.bootstrap.get" && acme
+          ? async (input: never) => {
+              await acmeAnswers;
+              return target["team.bootstrap.get"](input);
+            }
+          : name === "commands.dispatch" && options.dispatch !== undefined
+            ? async (input: { readonly type: string }) =>
+                options.dispatch!(input) ?? target["commands.dispatch"](input as never)
+            : Reflect.get(target, name, receiver),
+    }) as HostApiClient;
+    return { ...inner, rpc };
+  };
+  const listeners = new Set<() => void>();
+  const signOut = vi.fn(async (_teamId: string) => undefined);
+  let snapshot = {
+    selection: { deploymentId: mockDeploymentId, hostClient: null },
+    teams: connections.map((connection) => ({ connection, signedIn: true })),
+  };
+  const client = {
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    getSnapshot: () => snapshot,
+    signOut,
+    remove: async () => undefined,
+  } as unknown as MobileClient;
+  const teams = new MobileTeams({
+    client,
+    directory: "/private/teams-test",
+    files: new MemoryPrivateFilesystem(),
+    previews: (options.previews ?? null) as NotificationPreviews | null,
+    transport,
+    verify: () => Promise.reject(new Error("No network in this test.")),
+    seed: {
+      [mockDeploymentId]: [
+        { teamId: mockTeamId, origin: mockTeamOrigin, teamName: "Acme" },
+        { teamId: mockFamilyTeamId, origin: mockFamilyTeamOrigin, teamName: "Family" },
+      ],
+    },
+  });
+  return {
+    teams,
+    hosts,
+    signOut,
+    releaseAcme,
+    showComputer(deploymentId: string) {
+      snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
+      for (const listener of listeners) listener();
+    },
+    sockets: () =>
+      Object.fromEntries([...hosts].map(([teamId, host]) => [teamId, host.socketCount])),
+  };
+}
+
+describe("the one team socket a phone keeps", () => {
+  it("never lets a slower, older selection replace the team now in view", async () => {
+    const f = fixture();
+    const acme = f.teams.select(mockTeamId);
+    await f.teams.select(mockFamilyTeamId);
+    expect(f.sockets()[mockFamilyTeamId]).toBe(1);
+    f.releaseAcme();
+    await acme;
+    expect(f.teams.getSnapshot().selected).toBe(mockFamilyTeamId);
+    expect(f.sockets()).toEqual({ [mockTeamId]: 0, [mockFamilyTeamId]: 1 });
+    f.teams.dispose();
+  });
+
+  it("does not reconnect in the background when a selection lands late", async () => {
+    const f = fixture();
+    const acme = f.teams.select(mockTeamId);
+    f.teams.foreground(false);
+    f.releaseAcme();
+    await acme;
+    expect(f.sockets()[mockTeamId] ?? 0).toBe(0);
+    // Back in front, the team that was on screen is the one connected again.
+    f.teams.foreground(true);
+    await vi.waitFor(() => expect(f.sockets()[mockTeamId], "Acme never reconnected").toBe(1), {
+      timeout: 2_000,
+    });
+    f.teams.dispose();
+  });
+
+  it("registers a team's notification preview key once its session is known", async () => {
+    const attach = vi.fn();
+    const f = fixture({ previews: { attach, clear: async () => undefined } });
+    f.releaseAcme();
+    const session = await f.teams.session(mockTeamId);
+    expect(attach).toHaveBeenCalledTimes(1);
+    const attachment = attach.mock.calls[0]![0];
+    expect(attachment.deploymentId).toBe(mockTeamId);
+    expect(attachment.current()).toBe(true);
+    await f.teams.forget(mockTeamId);
+    expect(attachment.current()).toBe(false);
+    expect(session.getSnapshot().bootstrap).toBeNull();
+    f.teams.dispose();
+  });
+
+  it("leaves through the team itself before forgetting it on this phone", async () => {
+    const sent: { readonly type: string }[] = [];
+    let refuse = true;
+    const f = fixture({
+      dispatch: (command) => {
+        if (command.type !== "team.member.remove") return undefined;
+        sent.push(command);
+        return refuse
+          ? {
+              ok: false,
+              error: { code: "conflict", message: "The last owner cannot leave", retryable: false },
+            }
+          : { ok: true, data: { type: "team.member.remove" } };
+      },
+    });
+    await f.teams.session(mockFamilyTeamId);
+    await expect(f.teams.leave(mockFamilyTeamId)).rejects.toThrow("The last owner cannot leave");
+    expect(f.teams.computersIn(mockFamilyTeamId)).toEqual([mockDeploymentId]);
+    expect(f.signOut).not.toHaveBeenCalled();
+    refuse = false;
+    await f.teams.leave(mockFamilyTeamId);
+    expect(sent.at(-1)).toEqual({ type: "team.member.remove", userId: mockTeamReaderId });
+    expect(f.teams.computersIn(mockFamilyTeamId)).toEqual([]);
+    expect(f.signOut).toHaveBeenCalledWith(mockFamilyTeamId);
+    f.teams.dispose();
+  });
+
+  it("takes an open team off its socket when the team removes the reader", async () => {
+    const attach = vi.fn();
+    const f = fixture({ previews: { attach, clear: async () => undefined } });
+    f.teams.start();
+    await f.teams.select(mockFamilyTeamId);
+    const held = await f.teams.session(mockFamilyTeamId);
+    await vi.waitFor(() => expect(held.getSnapshot().connection).toBe("connected"), {
+      timeout: 2_000,
+    });
+    const host = f.hosts.get(mockFamilyTeamId)!;
+    const read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation((name, input) => {
+      if (name === "team.bootstrap.get")
+        throw new OpensteerError({ code: "forbidden", message: "Membership removed" });
+      return read(name, input);
+    });
+    // The team closes the removed member's socket.
+    host.dispose();
+    await vi.waitFor(
+      () => expect(f.teams.team(mockFamilyTeamId)?.state, "never shown as removed").toBe("removed"),
+      { timeout: 2_000 },
+    );
+    expect(f.teams.team(mockFamilyTeamId)?.session).toBeNull();
+    expect(held.getSnapshot().drafts).toEqual({});
+    expect(attach.mock.calls.at(-1)![0].current()).toBe(false);
+    f.teams.dispose();
+  });
+
+  it("never hands back the old person's session once the team's login names someone else", async () => {
+    const f = fixture();
+    f.releaseAcme();
+    const first = await f.teams.session(mockFamilyTeamId);
+    const host = f.hosts.get(mockFamilyTeamId)!;
+    const someoneElse = createId("user");
+    const read = host.read.bind(host);
+    vi.spyOn(host, "read").mockImplementation(async (name, input) => {
+      const answer = await read(name, input);
+      return name === "team.bootstrap.get"
+        ? { ...(answer as object), member: { ...host.bootstrap.member, userId: someoneElse } }
+        : answer;
+    });
+    await first.load(false);
+    expect(first.getSnapshot().ended).toBe("viewer-changed");
+    const next = await f.teams.session(mockFamilyTeamId);
+    expect(next).not.toBe(first);
+    expect(next.getSnapshot().bootstrap?.member.userId ?? null).toBe(null);
+    await next.load(false);
+    expect(next.getSnapshot().bootstrap?.member.userId).toBe(someoneElse);
+    f.teams.dispose();
+  });
+});

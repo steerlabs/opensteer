@@ -156,7 +156,7 @@ function request(overrides: Partial<RequestReceiptEntry> = {}): RequestReceiptEn
 function delegation(overrides: Partial<DelegationEntry> = {}): DelegationEntry {
   return {
     childRunId: "run-child",
-    childThread: { id: "thread-child", title: "Sales Agent", workspaceId: "workspace-sales" },
+    childThread: { id: "thread-child", title: "Sales Agent" },
     createdAt: at(5),
     delegationId: "delegation-1",
     delivery: { resultMessageId: createId("message"), status: "delivered" },
@@ -2094,8 +2094,6 @@ describe("quiet Chat", () => {
         kind: "agent",
         runId: createId("run"),
         threadId: createId("thread"),
-        workspaceId: createId("workspace"),
-        workspaceName: "Main",
       },
     });
     const relayed = message({ id: "relayed", runId: "run-relay", sequence: "4" });
@@ -2153,9 +2151,9 @@ describe("quiet Chat", () => {
     const step = tool();
     const before = [completed, reply];
     const after = [completed, step, reply];
-    const thread = { id: "chat", inputQueuePaused: false, role: "conversation" as const };
-    for (const role of ["conversation", "work"] as const) {
-      const context = { thread: { ...thread, role } };
+    const thread = { id: "chat", inputQueuePaused: false, purpose: "voice" as const };
+    for (const purpose of ["voice", "task"] as const) {
+      const context = { thread: { ...thread, purpose } };
       const keys = drawnTranscriptRowKeys(before, context);
       expect(keys).toHaveLength(1);
       expect(drawnTranscriptRowKeys(after, context)).toEqual(keys);
@@ -2214,11 +2212,12 @@ it("shows only the tasks needing the reader from work nobody waited on", () => {
       revision: 1,
       status: "open",
       workerThread: {
+        folder: { computerId: createId("runner"), path: "/tmp/agent" },
         id: createId("thread"),
         title: "Research",
         icon: null,
         environmentId: createId("environment"),
-        workspaceId: createId("workspace"),
+
         pendingRequests: 0,
         status: "running",
       },
@@ -2326,8 +2325,6 @@ it("draws no automatic message, whether it joined a person's Run or started its 
       kind: "agent",
       runId: createId("run"),
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
-      workspaceName: "Main",
     },
   });
   const personRun = run({ id: "run-a", status: "running" });

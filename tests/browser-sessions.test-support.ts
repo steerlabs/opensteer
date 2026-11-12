@@ -1,4 +1,8 @@
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -14,11 +18,7 @@ import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { browserSiteFromUrl } from "../packages/browser-profile/src/source-state.js";
 import { readImageDimensions } from "../packages/browser-runtime-core/src/index.js";
-import {
-  BrowserProfileIdSchema,
-  ModelSelectionSchema,
-  type WorkspaceId,
-} from "../packages/core/src/index.js";
+import { BrowserProfileIdSchema, ModelSelectionSchema } from "../packages/core/src/index.js";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
@@ -28,7 +28,8 @@ import {
 import {
   addCleanup,
   executablePath,
-  grantedProfile,
+  enrollBrowserComputer,
+  createProfile,
   waitFor,
 } from "./browser-deployment.test-support.js";
 
@@ -60,7 +61,7 @@ export async function agentJourney(
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 
-  const workspace = await stack.createWorkspace("Marketplace");
+  const folder = await stack.createFolder("Marketplace");
   const threadId = await stack.createThread({
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
@@ -68,11 +69,11 @@ export async function agentJourney(
       providerId: "openai",
     }),
     title: "List the mattress",
-    workspaceId: workspace.id,
+    folder: folder,
   });
-  const profileId = await grantedProfile(stack, workspace.id);
+  const profileId = await createProfile(stack);
   const photo = noisePng(900, 900);
-  const attachment = await upload(stack, workspace.id, "mattress.png", "image/png", photo);
+  const attachment = await upload(stack, "mattress.png", "image/png", photo);
 
   const first = await stack.sendMessage({
     attachments: [
@@ -86,7 +87,6 @@ export async function agentJourney(
     ],
     text: `List this mattress. UPLOAD_PAGE=${pageOrigin}/upload PROFILE_ID=${profileId}`,
     threadId,
-    workspaceId: workspace.id,
   });
   const report = JSON.parse(first.assistantText) as AgentReport;
   if ("error" in report) throw new Error(report.error);
@@ -146,10 +146,14 @@ export async function agentJourney(
   // Every mistake says what happened and what to do next.
   expect(report.withoutSession.stderr).toContain("--session <Browser Session ID>");
   expect(report.outsideFile.stderr).toContain("accepts only files staged for this Browser Session");
-  expect(report.endedSession.stderr).toContain(`Browser Session ${sessionB} has ended`);
-  expect(report.unknownSession.stderr).toContain("was not found");
+  for (const refused of [report.endedSession, report.unknownSession]) {
+    expect(refused.code).not.toBe(0);
+    expect(refused.stderr).toContain(
+      "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
+    );
+  }
   expect(report.accessAlreadyAvailable.error).toContain(
-    `This Workspace can already use browser profile ${profileId}`,
+    "This browser profile is already available. Open it with browser_session_open.",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),
@@ -202,7 +206,6 @@ export async function agentJourney(
   const later = await stack.sendMessage({
     text: `Check the account. UPLOAD_PAGE=${pageOrigin}/upload CHECK_PROFILE=${profileId}`,
     threadId,
-    workspaceId: workspace.id,
   });
   const check = JSON.parse(later.assistantText) as { cookie: string };
   expect(check.cookie).toContain("marketplace_session=signed-in");
@@ -243,7 +246,11 @@ async function watchBrowserSession(
     const url = new URL(`/v1/browser-sessions/${sessionId}/connect`, stack.hostOrigin);
     if (mode === "watch") url.searchParams.set("mode", "watch");
     const socket = new WebSocket(url, {
-      headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+      headers: {
+        cookie: stack.sessionCookie,
+        origin: stack.hostOrigin.origin,
+        [hostApiVersionHeader]: String(hostApiVersion),
+      },
     });
     sockets.push(socket);
     await waitForBrowserSnapshot(socket);
@@ -416,6 +423,10 @@ export async function startPersonBrowser(
   stack: VerticalStack,
   input: {
     readonly initialUrl?: string;
+    readonly placement?: {
+      readonly kind: "runner";
+      readonly runnerId: import("../packages/core/src/index.js").RunnerId;
+    };
     readonly viewport: { readonly height: number; readonly width: number };
   },
 ): Promise<string> {
@@ -423,7 +434,6 @@ export async function startPersonBrowser(
     idempotencyKey: randomUUID(),
     input: { fresh: true, reuseExisting: false, ...input },
     type: "browser.session.start",
-    workspaceId: stack.mainWorkspaceId,
   });
   if (!started.ok) throw new Error(started.error.message);
   if (started.data.type !== "browser.session.start") throw new Error("Session command mismatch.");
@@ -443,20 +453,41 @@ export async function openBrowserView(
   const url = new URL(`/v1/browser-sessions/${sessionId}/connect`, stack.hostOrigin);
   if (mode === "watch") url.searchParams.set("mode", "watch");
   const socket = new WebSocket(url, {
-    headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+    headers: {
+      cookie: stack.sessionCookie,
+      origin: stack.hostOrigin.origin,
+      [hostApiVersionHeader]: String(hostApiVersion),
+    },
   });
+  addCleanup("browser viewer socket", async () => socket.terminate(), 0);
   const snapshot = await new Promise<Extract<BrowserServerMessage, { type: "browser.snapshot" }>>(
     (resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Browser snapshot timed out.")), 10_000);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        socket.off("message", onMessage);
+        socket.off("close", onClose);
+        socket.off("error", onError);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      const onClose = (code: number, reason: Buffer) =>
+        onError(new Error(`Browser closed before its snapshot (${code}: ${reason.toString()})`));
+      const timeout = setTimeout(() => {
+        onError(new Error("Browser snapshot timed out."));
+        socket.terminate();
+      }, 10_000);
       const onMessage = (raw: WebSocket.RawData, isBinary: boolean) => {
         if (isBinary) return;
         const message = BrowserServerMessageSchema.parse(JSON.parse(raw.toString()));
         if (message.type !== "browser.snapshot") return;
-        clearTimeout(timeout);
-        socket.off("message", onMessage);
+        cleanup();
         resolve(message);
       };
       socket.on("message", onMessage);
+      socket.once("close", onClose);
+      socket.once("error", onError);
     },
   );
   if (mode === "control")
@@ -815,14 +846,10 @@ type AgentReport =
     };
 
 /**
- * The shipped browser service, as a process of its own that enrolls with the
- * Deployment's configured token and relays to the Host itself — the Compose
- * and managed-cloud arrangement.
+ * A reachable Personal computer lends its Browser without executing agents.
  */
-export async function startBrowserService(
-  stack: VerticalStack,
-  enrollmentToken: string,
-): Promise<{ readonly pid: number }> {
+export async function startBrowserService(stack: VerticalStack): Promise<{ readonly pid: number }> {
+  const enrollmentToken = await enrollBrowserComputer(stack, "Browser journey computer");
   const root = await mkdtemp(path.join(tmpdir(), "opensteer-browser-service-e2e-"));
   addCleanup("browser service files", () => rm(root, { force: true, recursive: true }));
   const child = spawn(process.execPath, ["--import", "tsx", browserServiceMain], {
@@ -867,20 +894,13 @@ export async function startBrowserService(
   return { pid: child.pid };
 }
 
-async function upload(
-  stack: VerticalStack,
-  workspaceId: WorkspaceId,
-  name: string,
-  mediaType: string,
-  bytes: Buffer,
-) {
+async function upload(stack: VerticalStack, name: string, mediaType: string, bytes: Buffer) {
   const reservation = await stack.api["commands.dispatch"]({
     idempotencyKey: randomUUID(),
     mediaType,
     name,
     sizeBytes: bytes.length,
     type: "attachment.upload.create",
-    workspaceId,
   });
   if (!reservation.ok || reservation.data.type !== "attachment.upload.create") {
     throw new Error("Could not reserve the attachment");

@@ -239,8 +239,7 @@ export function computerOfflineLabel(machineName: string): string {
   return `${machineName} is offline`;
 }
 
-export const computerAppTurnOffConsequence =
-  "Turning this off removes agents' access in every Workspace.";
+export const computerAppTurnOffConsequence = "Turning this off removes your agents' access.";
 
 /**
  * The durable human identity of a computer-app connection.

@@ -39,7 +39,7 @@ export * from "./surfaces.js";
 export * from "./task-family.js";
 export * from "./task-list.js";
 export { compareTaskOrder } from "./task-entries.js";
-export * from "./workspace-icon-art.js";
+export * from "./icon-art.js";
 export * from "./thread-read-state.js";
 export * from "./places.js";
 export * from "./person-show.js";
@@ -78,7 +78,6 @@ export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./plugins.js";
-export * from "./project-folders.js";
 export * from "./connected-agents.js";
 
 export * from "./automatic-models.js";
@@ -92,14 +91,14 @@ export * from "./harness-authentication.js";
 export * from "./account-name.js";
 export * from "./ai-accounts.js";
 export * from "./model-servers.js";
-export * from "./team-access.js";
-export * from "./team-presentation.js";
-export * from "./team-session.js";
-export * from "./team-join.js";
-export * from "./team-paging.js";
-export * from "./team-settings.js";
 export * from "./subagent-model.js";
 export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
 export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";
+export * from "./task-folders.js";
+export * from "./personal-team-links.js";
+export * from "./personal-stream-cache.js";
+export * from "./needs-you.js";
+
+export * from "./task-drafts.js";

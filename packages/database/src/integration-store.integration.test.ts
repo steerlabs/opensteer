@@ -1,9 +1,10 @@
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
-import { createId } from "@opensteer/core";
+
 import { createIntegrationId } from "@opensteer/integration-core";
 
 import { describe, expect, it as baseIt } from "vitest";
@@ -36,7 +37,15 @@ integration.sequential("PostgreSQL integration store", () => {
     const attempts = new IntegrationAuthAttemptStore(database);
     const store = new OpensteerStore(database);
 
-    return Object.freeze({ database, integrations, attempts, store, databaseUrl });
+    const personal = await personalFixtureOwner(database, databaseUrl);
+    return Object.freeze({
+      database,
+      integrations,
+      attempts,
+      store,
+      databaseUrl,
+      ownerUserId: personal.userId,
+    });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
   const it = baseIt.extend<{ storeFixture: StoreFixture }>({
@@ -52,7 +61,7 @@ integration.sequential("PostgreSQL integration store", () => {
     storeFixture,
   }) => {
     const { store, integrations, attempts, database } = storeFixture;
-    const ownerUserId = await store.createUser("Integration owner");
+    const ownerUserId = (await personalFixtureOwner(database, storeFixture.databaseUrl)).userId;
     const applicationId = createIntegrationId("providerApplication");
     const application = await integrations.saveProviderApplication({
       actorUserId: ownerUserId,
@@ -198,11 +207,6 @@ integration.sequential("PostgreSQL integration store", () => {
     const issuer = "https://accounts.example.test";
     const subject = `acct_${crypto.randomUUID()}`;
     await database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", ownerUserId)
-      .execute();
-    await database
       .insertInto("personalRemoteAccountLink")
       .values({
         challengeId: `phc_${crypto.randomUUID()}`,
@@ -220,8 +224,6 @@ integration.sequential("PostgreSQL integration store", () => {
     const binding = (await readIntegrationAccountBinding({
       database,
       ownerUserId,
-      kind: "personal",
-      accountAttached: true,
     }))!;
     await database
       .updateTable("personalRemoteAccountLink")
@@ -238,53 +240,6 @@ integration.sequential("PostgreSQL integration store", () => {
     expect(await attempts.getAuthAttempt({ id: attemptId, ownerUserId })).toMatchObject({
       status: "claimed",
     });
-    // The same generation fence also uses each server member's own Account row.
-    await database
-      .insertInto("accountDirectoryProvider")
-      .values({
-        createdAt: now,
-        updatedAt: now,
-        singletonKey: "opensteer-account",
-        providerId: "account-test",
-        issuer,
-      })
-      .execute();
-    const authAccountId = createId("authAccount");
-    await database
-      .insertInto("authAccounts")
-      .values({
-        id: authAccountId,
-        userId: ownerUserId,
-        providerId: "account-test",
-        accountId: subject,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .execute();
-    const serverBinding = (await readIntegrationAccountBinding({
-      database,
-      ownerUserId,
-      kind: "server",
-      accountAttached: true,
-    }))!;
-    await database.deleteFrom("authAccounts").where("id", "=", authAccountId).execute();
-    await database
-      .insertInto("authAccounts")
-      .values({
-        id: createId("authAccount"),
-        userId: ownerUserId,
-        providerId: "account-test",
-        accountId: subject,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .execute();
-    await expect(
-      integrations.completeOAuthAttempt({
-        ...completion,
-        accountBinding: { ...serverBinding, kind: "server" },
-      }),
-    ).rejects.toMatchObject({ reason: "account-link-mismatch" });
     const connection = await integrations.completeOAuthAttempt({
       ...completion,
       accountBinding: { ...binding, linkGeneration: "b".repeat(43), kind: "personal" },
@@ -461,76 +416,9 @@ integration.sequential("PostgreSQL integration store", () => {
     ).resolves.toMatchObject({ encryptedPayload: erasedIntegrationAuthAttemptPayload });
   });
 
-  it("isolates personal OAuth applications while retaining shared applications", async ({
-    storeFixture,
-  }) => {
-    const { store, integrations } = storeFixture;
-    const firstUserId = await store.createUser("First integration owner");
-    const secondUserId = await store.createUser("Second integration owner");
-    const sharedId = createIntegrationId("providerApplication");
-    const firstPrivateId = createIntegrationId("providerApplication");
-    const secondPrivateId = createIntegrationId("providerApplication");
-    const save = (
-      id: typeof sharedId,
-      ownerUserId: typeof firstUserId | null,
-      actorUserId: typeof firstUserId,
-      displayName: string,
-    ) =>
-      integrations.saveProviderApplication({
-        actorUserId,
-        application: {
-          clientId: `${displayName}-client`,
-          displayName,
-          id,
-          ownerUserId,
-          provider: "slack",
-          status: "active",
-        },
-        expectedRevision: null,
-        requestId: `save-${displayName}`,
-        secrets: { envelope: Buffer.from(`encrypted-${displayName}`), keyVersion: 1 },
-      });
-
-    await save(sharedId, null, firstUserId, "Shared Slack");
-    await save(firstPrivateId, firstUserId, firstUserId, "First Slack");
-    await save(secondPrivateId, secondUserId, secondUserId, "Second Slack");
-
-    expect(
-      new Set((await integrations.listProviderApplications(firstUserId)).map(({ id }) => id)),
-    ).toEqual(new Set([sharedId, firstPrivateId]));
-    expect(
-      new Set((await integrations.listProviderApplications(secondUserId)).map(({ id }) => id)),
-    ).toEqual(new Set([sharedId, secondPrivateId]));
-    expect((await integrations.getProviderApplication(firstPrivateId))?.ownerUserId).toBe(
-      firstUserId,
-    );
-    expect((await integrations.getSharedProviderApplication("slack"))?.id).toBe(sharedId);
-
-    await expect(
-      integrations.saveProviderApplication({
-        actorUserId: firstUserId,
-        application: {
-          clientId: "changed-owner-client",
-          displayName: "Changed owner",
-          id: firstPrivateId,
-          ownerUserId: secondUserId,
-          provider: "slack",
-          status: "active",
-        },
-        expectedRevision: 1,
-        requestId: "change-owner",
-        secrets: { envelope: Buffer.from("encrypted-change"), keyVersion: 1 },
-      }),
-    ).rejects.toMatchObject({ code: "conflict" });
-
-    await expect(
-      save(createIntegrationId("providerApplication"), null, secondUserId, "Duplicate shared"),
-    ).rejects.toMatchObject({ code: "conflict" });
-  });
-
   it("persists the exact install page for a custom GitHub App", async ({ storeFixture }) => {
-    const { store, integrations } = storeFixture;
-    const ownerUserId = await store.createUser("GitHub App owner");
+    const { integrations } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const applicationId = createIntegrationId("providerApplication");
     const saved = await integrations.saveProviderApplication({
       actorUserId: ownerUserId,
@@ -565,8 +453,8 @@ integration.sequential("PostgreSQL integration store", () => {
   it("fences GitHub repository readiness and pending credential rotation", async ({
     storeFixture,
   }) => {
-    const { store, attempts, integrations } = storeFixture;
-    const ownerUserId = await store.createUser("GitHub repository owner");
+    const { attempts, integrations } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const attemptId = createIntegrationId("oauthAttempt");
     await attempts.createAuthAttempt({
       encryptedPayload: Buffer.from("github-attempt"),
@@ -787,8 +675,8 @@ integration.sequential("PostgreSQL integration store", () => {
   it("says a GitHub account waits for repositories only while it does", async ({
     storeFixture,
   }) => {
-    const { store, attempts, integrations, database } = storeFixture;
-    const ownerUserId = await store.createUser("GitHub reason owner");
+    const { attempts, integrations, database } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const connectionId = createIntegrationId("connection");
     const applicationSource = {
       brokerIssuer: "https://accounts.opensteer.test",
@@ -943,8 +831,8 @@ integration.sequential("PostgreSQL integration store", () => {
   it("does not mark GitHub repository access ready after the custom app revision changes", async ({
     storeFixture,
   }) => {
-    const { store, integrations, attempts } = storeFixture;
-    const ownerUserId = await store.createUser("Custom GitHub repository owner");
+    const { integrations, attempts } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const applicationId = createIntegrationId("providerApplication");
     await integrations.saveProviderApplication({
       actorUserId: ownerUserId,
@@ -1060,8 +948,8 @@ integration.sequential("PostgreSQL integration store", () => {
   it("erases the temporary authorization context when an attempt fails", async ({
     storeFixture,
   }) => {
-    const { store, attempts } = storeFixture;
-    const ownerUserId = await store.createUser("Attempt owner");
+    const { attempts } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const attemptId = createIntegrationId("oauthAttempt");
     await attempts.createAuthAttempt({
       encryptedPayload: Buffer.from("pkce-verifier-and-host-private-key"),
@@ -1096,8 +984,8 @@ integration.sequential("PostgreSQL integration store", () => {
   it("erases the temporary authorization context when an attempt is cancelled", async ({
     storeFixture,
   }) => {
-    const { store, attempts } = storeFixture;
-    const ownerUserId = await store.createUser("Cancelling attempt owner");
+    const { attempts } = storeFixture;
+    const ownerUserId = storeFixture.ownerUserId;
     const attemptId = createIntegrationId("oauthAttempt");
     await attempts.createAuthAttempt({
       encryptedPayload: Buffer.from("temporary-authorization-context"),

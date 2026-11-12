@@ -13,7 +13,7 @@ vi.mock("../voice/controls.js", () => ({
   VoiceMic: () => null,
 }));
 
-import { type ModelSelection, type WorkspaceId } from "@opensteer/core";
+import type { ModelSelection } from "@opensteer/core";
 import type { HarnessModelDescriptor, HostApiClient } from "@opensteer/protocol";
 
 import {
@@ -29,13 +29,8 @@ interface InspectionStack {
   readonly catalog: { readonly models: readonly HarnessModelDescriptor[] };
   readonly environmentId: string;
   readonly harnessInstanceId: string;
-  readonly mainWorkspaceId: WorkspaceId;
   close(): Promise<void>;
-  createThread(input: {
-    modelSelection: ModelSelection;
-    title: string;
-    workspaceId: WorkspaceId;
-  }): Promise<string>;
+  createThread(input: { modelSelection: ModelSelection; title: string }): Promise<string>;
 }
 const fixtureModule = "../../../host/src/agents/engine-inspection.test-support.js";
 const { startEngineInspectionStack, engineInspectionViewer } = (await import(fixtureModule)) as {
@@ -77,7 +72,6 @@ integration("Expo external engine sign-in recovery", () => {
       const threadId = await active.createThread({
         modelSelection: { modelId: model.modelId, providerId: model.providerId, options: {} },
         title: "Expo recovery",
-        workspaceId: active.mainWorkspaceId,
       });
       await writeFile(state, "logged-out");
       unwrapRpcResult(
@@ -88,7 +82,6 @@ integration("Expo external engine sign-in recovery", () => {
       );
       client = engineInspectionViewer(active);
       await client.load();
-      client.activateWorkspace(active.mainWorkspaceId);
       await expect
         .poll(() => client!.getSnapshot().connection, { timeout: 10_000 })
         .toBe("connected");
@@ -152,11 +145,13 @@ integration("Expo external engine sign-in recovery", () => {
       }
       // The model appears with the ready catalog; it becomes selectable once the
       // engine's availability settles, which can take another render.
-      await act(async () => {
-        await expect
-          .poll(() => button(model.displayName)?.disabled, { timeout: 10_000 })
-          .toBe(false);
-      });
+      await vi.waitFor(
+        async () => {
+          await act(async () => {});
+          expect(button(model.displayName)?.disabled).toBe(false);
+        },
+        { timeout: 10_000 },
+      );
       expect(refresh).toHaveBeenCalledExactlyOnceWith({
         environmentId: active.environmentId,
         harnessInstanceId: active.harnessInstanceId,

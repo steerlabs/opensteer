@@ -16,10 +16,11 @@ it("matches the caller-visible MCP context byte budget", async () => {
     metrics[`opensteer.${kind}.toolsJsonBytes`] = bytes(context.toolsJson);
     metrics[`opensteer.${kind}.instructionsBytes`] = bytes(context.instructions);
   }
-  for (const role of ["conversation", "work"] as const) {
-    for (const reach of ["user", "workspace", "lineage"] as const) {
-      metrics[`runGuide.${role}.${reach}.bytes`] = bytes(platformGuideForRun({ role, reach }));
-    }
+  for (const purpose of ["task", "background-job", "voice"] as const) {
+    for (const personalContext of [true, false])
+      metrics[`runGuide.${purpose}.personalContext.${personalContext}.bytes`] = bytes(
+        platformGuideForRun({ purpose, personalContext }),
+      );
   }
   const bundle = await loadAgentSkillBundle(
     fileURLToPath(new URL("../apps/runner/agent-skills", import.meta.url)),

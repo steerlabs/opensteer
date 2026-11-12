@@ -496,7 +496,6 @@ function sessionContext(
     skills: undefined,
     threadId: createId("thread"),
     threadStateDirectory: join(root, "thread-state"),
-    workspaceId: createId("workspace"),
     workspacePath,
     wrapProcessLaunch: (launch) => launch,
     writableRoots: [workspacePath],

@@ -2,7 +2,7 @@ import type {
   MockBrowserSource as HostSnapshot,
   MockBrowserSession as BrowserSessionSummary,
 } from "./mock-browser-source.js";
-import type { WorkspaceTabLineage } from "../host/client.js";
+import type { PersonalTabLineage } from "../host/client.js";
 import type { MockBrowserCatalog } from "./mock-browser-source.js";
 import type { BrowserViewerSurface } from "@opensteer/protocol/browser-tabs";
 import {
@@ -28,8 +28,8 @@ import {
   HostedBrowserSessionSchema,
   PlaceActivitySchema,
   PlaceIdentitySchema,
-  WorkspaceTabActivateResultSchema,
-  WorkspaceTabReopenResultSchema,
+  PersonalTabActivateResultSchema,
+  PersonalTabReopenResultSchema,
   browserHistoryMaxEntries,
   browserHistoryRetentionMs,
   createBrowserSessionId,
@@ -81,7 +81,7 @@ const sessionId = (index: number) =>
   `bsn_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`;
 const sessionIdForBasicInput = sessionId(11);
 /**
- * `busy` is the decisive world of the approved design: 21 tabs over two
+ * `busy` is the decisive world of the approved design: tabs over two
  * computers, two Work browsers and two separate Guest browsers. `stress`
  * adds one browser with 64 tabs, the bounded large case.
  */
@@ -92,9 +92,7 @@ export function seedMockPlaces(
   world: MockPlacesWorld = "seeded",
 ): HostSnapshot {
   const busy = world !== "seeded";
-  const threads = snapshot.threads.filter(
-    (thread) => thread.listed && thread.id !== snapshot.homeThreadId,
-  );
+  const threads = snapshot.threads.filter((thread) => thread.listed && thread.purpose === "task");
   const first = threads.find((thread) => thread.status === "running") ?? threads[0];
   if (!first) return snapshot;
   const at = now.toISOString();
@@ -103,7 +101,7 @@ export function seedMockPlaces(
     const live = !thread || thread.status === "running" || thread.status === "waiting";
     return {
       threadId: ThreadIdSchema.parse(id),
-      home: id === snapshot.homeThreadId,
+
       holding: live,
       acting: acting && (!thread || thread.status === "running"),
       lastActiveAt: at,
@@ -202,7 +200,7 @@ export function seedMockPlaces(
           ? { kind: "automation" }
           : index === 6
             ? { kind: "opensteer" }
-            : origin === "workspace"
+            : origin === "person"
               ? { kind: "you" }
               : {
                   kind: "task",
@@ -231,13 +229,9 @@ export function seedMockPlaces(
       page: { title: pages[0]?.title ?? "New tab", url: pages[0]?.site ?? "about:blank" },
       viewerError: null,
       viewerState: "disconnected",
-      workspaceId:
-        origin === "workspace"
-          ? (snapshot.homeWorkspaceId ?? first.workspaceId)
-          : first.workspaceId,
     });
   };
-  add(0, "workspace", [
+  add(0, "person", [
     { title: "Your reading list", site: "https://en.wikipedia.org", occupants: [] },
     { title: "Le Petit Jardin", site: "https://resy.com", occupants: [occupant(first.id)] },
     {
@@ -279,18 +273,16 @@ export function seedMockPlaces(
         : []),
     ]),
   );
-  if (snapshot.homeThreadId)
-    add(6, "workspace", [
+  const delegated = snapshot.threads.find((thread) => thread.title === "Book a table for Friday");
+  if (delegated)
+    add(13, "trigger", [
       {
-        title: "Weekend ideas",
-        site: "https://www.nps.gov",
-        occupants: [occupant(snapshot.homeThreadId)],
+        title: "Flight award alerts",
+        site: "https://www.google.com",
+        occupants: [occupant(delegated.id)],
       },
     ]);
-  add(7, "trigger", [
-    { title: "Flight award alerts", site: "https://www.united.com", occupants: [] },
-  ]);
-  add(8, "workspace", [
+  add(8, "person", [
     { title: "Q4 roadmap – Linear", site: "https://linear.app", occupants: [] },
     ...(busy
       ? [
@@ -308,7 +300,7 @@ export function seedMockPlaces(
   };
   if (busy) {
     // A second Guest browser of the person's own, on the other computer.
-    add(9, "workspace", [
+    add(9, "person", [
       { title: "SFO → JFK · Google Flights", site: "https://www.google.com", occupants: [] },
       { title: "SFO to NYC – Kayak", site: "https://www.kayak.com", occupants: [] },
     ]);
@@ -317,7 +309,7 @@ export function seedMockPlaces(
       placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
     };
   }
-  add(11, "workspace", [
+  add(11, "person", [
     { title: "Running shoes – Allbirds", site: "https://www.allbirds.com", occupants: [] },
     ...(busy ? [{ title: "Cart – Target", site: "https://www.target.com", occupants: [] }] : []),
   ]);
@@ -327,7 +319,7 @@ export function seedMockPlaces(
     profileId: "bpr_00000000-0000-4000-8000-000000000003",
   };
   if (busy) {
-    add(12, "workspace", [
+    add(12, "person", [
       { title: "Lisbon itinerary – TripIt", site: "https://www.tripit.com", occupants: [] },
     ]);
     sessions[sessions.length - 1] = {
@@ -362,7 +354,7 @@ export function seedMockPlaces(
             })),
             actingAppKeys: session.apps.map((app) => app.bundleId.toLowerCase()),
             actingDisplay: false,
-            actor: { threadId: session.threadId, home: false },
+            actor: { threadId: session.threadId },
           })),
         }
       : null,
@@ -394,7 +386,7 @@ export function seedMockPlaces(
               sessionId: "cus_00000000-0000-4000-8000-000000000888",
               threadId: second.id,
               threadTitle: second.title,
-              actor: { threadId: second.id, home: false },
+              actor: { threadId: second.id },
             }),
           ],
         },
@@ -443,7 +435,7 @@ export function seedMockPlaces(
                 threadTitle: phoneThread.title,
                 actingDisplay: true,
                 runId: RunIdSchema.parse("run_00000000-0000-4000-8000-000000000903"),
-                actor: { threadId: ThreadIdSchema.parse(phoneThread.id), home: false },
+                actor: { threadId: ThreadIdSchema.parse(phoneThread.id) },
               }
             : session,
         ),
@@ -462,27 +454,25 @@ export function seedMockPlaces(
     fullDiskAccess: null,
     id: mockIphoneRunnerId,
     lastSeenAt: at,
-    localWorkspaces: 0,
+
     modules: {
       browser: { checkedAt: null, detail: null, readiness: "ready" },
       integrations: { checkedAt: null, detail: null, readiness: "ready" },
     },
     name: "Alex's iPhone",
     ownership: "mine",
-    ownerName: null,
+
     pinnedThreads: 0,
     revocable: true,
     status: "online",
     runtimeVersion: null,
-    unlinkedLocalFolders: 0,
   });
   const main = machines[0]!.id;
   const studio = machines.find((machine) => machine.name === "Studio Mac")?.id ?? main;
   const profileHomes = machines
     .filter(
       (machine) =>
-        machine.allowedModules.includes("browser") ||
-        (machine.device?.platform === "macos" && machine.ownership !== "other"),
+        machine.allowedModules.includes("browser") || machine.device?.platform === "macos",
     )
     .map((machine) => machine.id);
   const profile = (id: number, name: string, homeRunnerId: string | null) =>
@@ -636,8 +626,8 @@ export class MockPlaceWorld {
   readonly #closedTabs: {
     ownerId: string | undefined;
     at: number;
-    lineage: WorkspaceTabLineage;
-    tab: NonNullable<WorkspaceTabLineage["tabs"]>[number];
+    lineage: PersonalTabLineage;
+    tab: NonNullable<PersonalTabLineage["tabs"]>[number];
     url: string;
     preceding: string | null;
     groupId: string | null;
@@ -645,7 +635,7 @@ export class MockPlaceWorld {
   readonly #restoreUrls = new Map<string, string>();
   readonly #reopenedTabs = new Map<
     string,
-    ReturnType<typeof WorkspaceTabReopenResultSchema.parse>
+    ReturnType<typeof PersonalTabReopenResultSchema.parse>
   >();
   #scripted = false;
   #seq = 0;
@@ -839,7 +829,7 @@ export class MockPlaceWorld {
         if (target)
           occupants.push({
             threadId: ThreadIdSchema.parse(threadId),
-            home: threadId === snapshot.homeThreadId,
+
             holding: true,
             acting: true,
             lastActiveAt: at,
@@ -1257,8 +1247,7 @@ export class MockPlaceWorld {
       .filter(
         (session) =>
           session.opener?.kind === "you" &&
-          session.origin === "workspace" &&
-          session.workspaceId === snapshot.homeWorkspaceId &&
+          session.origin === "person" &&
           session.profileId === profileId &&
           session.placement.runnerId === placement.runnerId &&
           session.state === "ready",
@@ -1274,8 +1263,7 @@ export class MockPlaceWorld {
       id,
       access: "read-write",
       opener: { kind: "you" },
-      origin: "workspace",
-      workspaceId: snapshot.homeWorkspaceId!,
+      origin: "person",
       profileId,
       placement: { kind: "runner", runnerId: placement.runnerId },
       runtimeId: placement.runtimeId ?? "mock-targeted-runtime",
@@ -1473,8 +1461,8 @@ export class MockPlaceWorld {
       ],
       browserTabGroups: layout,
     });
-    const result = WorkspaceTabReopenResultSchema.parse({
-      type: "workspace.tab.reopen",
+    const result = PersonalTabReopenResultSchema.parse({
+      type: "tab.reopen",
       tabId: id,
       groupId: group.id,
       sessionId: group.session.id,
@@ -1483,7 +1471,7 @@ export class MockPlaceWorld {
     this.#reopenedTabs.set(key, result);
     return result;
   }
-  activateWorkspaceTab(tabId: string) {
+  activatePersonalTab(tabId: string) {
     const snapshot = this.#snapshot();
     const lineage = snapshot.browserGroups?.find((group) =>
       group.tabs?.some((tab) => tab.id === tabId),
@@ -1533,8 +1521,8 @@ export class MockPlaceWorld {
       ),
     });
     this.#frames();
-    return WorkspaceTabActivateResultSchema.parse({
-      type: "workspace.tab.activate",
+    return PersonalTabActivateResultSchema.parse({
+      type: "tab.activate",
       tabId,
       groupId: lineage.id,
       sessionId: session.id,
@@ -1857,6 +1845,7 @@ export class MockPlaceWorld {
     if (recorded) this.#update({ ...current, browserUses: uses });
     this.#seq++;
     const places = placeList(this.#snapshot());
+    const animatedRuns = new Set<string>();
     // Seeded native sessions predate the browser actions animated by this tick.
     for (const place of [
       ...places.filter((place) => place.kind !== "browser"),
@@ -1896,13 +1885,14 @@ export class MockPlaceWorld {
           });
           continue;
         }
+        if (animatedRuns.has(runId)) continue;
+        animatedRuns.add(runId);
         const phase = (now - this.#started) / 2000 + place.title.length;
         // As the runtime does, a pointer is labelled with the page's current geometry.
         const geometry = this.#viewports.get(this.#key(identity.sessionId, identity.surfaceId));
         const activity = PlaceActivitySchema.parse({
           place: identity,
           threadId: occupant.threadId,
-          home: occupant.home,
           runId: RunIdSchema.parse(runId),
           generation: 1,
           seq: this.#seq,

@@ -328,11 +328,10 @@ describe("ComputerUseBridgeServer", () => {
       operationId,
       loginRef: `lgn_${"0".repeat(32)}`,
       site: "https://example.com",
-      workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
+      deploymentId: "dep_00000000-0000-4000-8000-000000000002",
       requester: {
         deploymentId: "test",
         deploymentName: "Test",
-        workspaceName: "Main",
         threadTitle: "Checkout",
         reason: "Sign in",
       },

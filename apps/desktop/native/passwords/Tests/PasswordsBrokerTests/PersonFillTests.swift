@@ -6,7 +6,7 @@ import XCTest
 
 @MainActor
 final class PersonFillTests: BrokerTestCase {
-  private func desktop(_ version: Int64 = 8) async throws -> TestClient {
+  private func desktop(_ version: Int64 = 10) async throws -> TestClient {
     let client = try await harness.client(greet: false)
     _ = try await client.hello(version: version)
     return client
@@ -308,7 +308,7 @@ final class PersonFillTests: BrokerTestCase {
     _ = try await client.call("fill.begin", begin(login, id: id))
     let descriptor = Wire.Login(
       id: login["id"]!.string!, revision: 1, account: "a•••@example.com", hasTOTP: false)
-    let params = try Wire.ReleaseParams(json: Fixtures.release(id), protocolVersion: 8)
+    let params = try Wire.ReleaseParams(json: Fixtures.release(id), protocolVersion: 10)
     let authority = TransactionAuthority()
     let deadline = Date().addingTimeInterval(300)
     same(
@@ -319,16 +319,16 @@ final class PersonFillTests: BrokerTestCase {
     same(
       try await harness.vault.release(
         params, login: descriptor, site: "https://example.com", grant: Fixtures.grantKey(),
-        permissionVersion: 5, authority: authority, expiresAt: deadline, kind: .person),
+        permissionVersion: 6, authority: authority, expiresAt: deadline, kind: .person),
       .refused(.revoked))
     let app = try Wire.ReleaseParams(
       json: .object([
         "transactionId": .string(id), "field": .string("password"), "kind": .string("app"),
-      ]), protocolVersion: 8)
+      ]), protocolVersion: 10)
     same(
       try await harness.vault.release(
         app, login: descriptor, site: "https://example.com", grant: nil,
-        permissionVersion: 5, authority: authority, expiresAt: deadline, kind: .person),
+        permissionVersion: 6, authority: authority, expiresAt: deadline, kind: .person),
       .refused(.revoked))
     try harness.protected.write(
       .personFill, Wire.encode(.object(["v": .integer(1), "personFill": .string("off")])))
@@ -399,9 +399,9 @@ final class PersonFillTests: BrokerTestCase {
       try Wire.FillAccountsParams(json: .object(["origin": .string("https://example.com/")])))
   }
 
-  func testSettingsAreSeparateDefaultOnMalformedOffAndStatusIsVersioned() async throws {
-    let clients = try await [desktop(4), desktop(5), desktop(6), desktop(7), desktop(8)]
-    same(try await clients[4].call("status").result?["personFill"], .string("off"))
+  func testSettingsAreSeparateDefaultOnAndMalformedOff() async throws {
+    let client = try await desktop()
+    same(try await client.call("status").result?["personFill"], .string("off"))
     try await harness.ready(items: [Fixtures.login()])
     same(await harness.vault.personFill(), true)
     try await broker.setAgentSignIns(false)
@@ -409,26 +409,12 @@ final class PersonFillTests: BrokerTestCase {
     try await broker.setPersonFill(false)
     same(try harness.protected.read(.settings), agentSetting)
     try await broker.setPersonFill(true)
-    for (index, client) in clients.enumerated() {
-      let status = try await client.call("status").result
-      same(status?["agentSignIns"], .string("off"))
-      same(status?["personFill"], index == 4 ? .string("on") : nil)
-      let events = client.takeEvents()
-      XCTAssertFalse(events.isEmpty)
-      for event in events {
-        if index == 4 {
-          XCTAssertNotNil(event["personFill"])
-        } else {
-          XCTAssertNil(event["personFill"])
-        }
-      }
-      if index < 4 {
-        same(
-          try await client.call(
-            "fill.accounts", .object(["origin": .string("https://example.com")])
-          ).errorCode, "invalid")
-      }
-    }
+    let status = try await client.call("status").result
+    same(status?["agentSignIns"], .string("off"))
+    same(status?["personFill"], .string("on"))
+    let events = client.takeEvents()
+    XCTAssertFalse(events.isEmpty)
+    for event in events { XCTAssertNotNil(event["personFill"]) }
     for value in [
       Data("broken".utf8),
       Wire.encode(.object(["v": .integer(1), "personFill": .string("maybe")])),
@@ -463,7 +449,7 @@ final class PersonFillTests: BrokerTestCase {
     same(await harness.activity.entries(), [])
     let oldest = ActivityEntry(
       at: Date(timeIntervalSince1970: 0), site: "example.com", account: nil,
-      deployment: "Personal", workspace: "Main", thread: "Test", automatic: false, outcome: .used)
+      deployment: "Personal", thread: "Test", automatic: false, outcome: .used)
     harness.activity.append(oldest)
     let merged = RecentSignIn.merge(await harness.activity.entries(), entries)
     same(merged.count, 3)

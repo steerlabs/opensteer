@@ -12,23 +12,15 @@ import {
   browserSiteLabel,
   mutationIdempotencyKey,
   passwordSignInAccountFilterLabel,
-  passwordSignInAccountLegend,
   passwordSignInAccountList,
-  passwordSignInAllowLabel,
   passwordSignInAllowRemembers,
-  passwordSignInConfirming,
-  passwordSignInDeclineLabel,
-  passwordSignInDecliningLabel,
   passwordSignInExpiry,
-  passwordSignInGone,
   passwordSignInNoAccount,
   passwordSignInNoAccountMatch,
-  passwordSignInOnceLabel,
   passwordSignInOtherAccounts,
   passwordSignInOutcome,
   passwordSignInConsent,
   passwordSignInPrivacy,
-  passwordSignInReasonLabel,
   type HostClient,
   type PasswordSignInAccount,
   type PasswordSignInAccountGroup,
@@ -43,6 +35,11 @@ import { Icon } from "./icon.js";
 
 export type PasswordSignInRequestClient = Pick<HostClient, "dispatch" | "rpc">;
 
+/** The agent wrote the reason, so it is labelled as the agent's and never as Opensteer's. */
+const reasonLabel = "Agent’s reason";
+/** The Mac no longer runs a sign-in whose Request the Host has not settled yet. */
+const signInGone = "This sign-in is no longer running.";
+
 /** Often enough that "Expires in" never lags the deadline by more than a moment. */
 const expiryTickMs = 5_000;
 /** Past this many accounts in view the list offers a filter. */
@@ -56,17 +53,13 @@ export function ThreadPasswordSignInAction({
   readonly disabled: boolean;
   readonly request: Request;
 }) {
-  const { hostClient, snapshot } = useShell();
+  const { hostClient } = useShell();
   return (
     <CredentialRequestBody
       client={hostClient}
       disabled={disabled}
       key={request.id}
       request={request}
-      workspaceName={
-        snapshot.workspaces.find(({ id }) => id === request.targetWorkspaceId)?.name ??
-        "this Workspace"
-      }
     />
   );
 }
@@ -86,12 +79,10 @@ export function PasswordSignInRequestBody({
   client,
   disabled,
   request,
-  workspaceName,
 }: {
   readonly client: PasswordSignInRequestClient;
   readonly disabled: boolean;
   readonly request: Request;
-  readonly workspaceName: string;
 }) {
   const payload = request.payload.kind === "browser.password-sign-in" ? request.payload : null;
   const pending = request.status === "pending";
@@ -188,7 +179,7 @@ export function PasswordSignInRequestBody({
           loginId: account.id,
           revision: account.revision,
           remember,
-          permissionVersion: 5,
+          permissionVersion: 6,
         },
       })
       .then((result) => {
@@ -200,11 +191,7 @@ export function PasswordSignInRequestBody({
       .finally(() => setBusy(null));
   }
 
-  const offer =
-    !expired &&
-    state?.stage === "approval" &&
-    accounts.length > 0 &&
-    (payload.permissionVersion !== 5 || state.permissionVersion === 5);
+  const offer = !expired && state?.stage === "approval" && accounts.length > 0;
   const forward = offer && chosen !== null ? () => approve(true) : null;
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -231,7 +218,7 @@ export function PasswordSignInRequestBody({
   return (
     <div className="sign-in-card" onKeyDown={onKeyDown} ref={rootRef}>
       <div className="action-field">
-        <span className="eyebrow eyebrow--micro">{passwordSignInReasonLabel}</span>
+        <span className="eyebrow eyebrow--micro">{reasonLabel}</span>
         <span>{payload.reason}</span>
       </div>
       <div aria-live="polite" className="sign-in-card__state">
@@ -240,8 +227,7 @@ export function PasswordSignInRequestBody({
             <p className="sign-in-card__lead">{passwordSignInNoAccount(payload.site)}</p>
           ) : accounts.length === 1 && chosen ? (
             <p className="sign-in-card__lead">
-              {passwordSignInAccountLegend}{" "}
-              <strong className="sign-in-card__account">{chosen.username}</strong>
+              Sign in as <strong className="sign-in-card__account">{chosen.username}</strong>
               {loneAccountDetail(chosen, payload.site) ? (
                 <span className="sign-in-card__problem-detail">
                   {" "}
@@ -264,28 +250,21 @@ export function PasswordSignInRequestBody({
             Allowed agents to sign in
           </p>
         ) : (
-          <ActionNote>{passwordSignInGone}</ActionNote>
+          <ActionNote>{signInGone}</ActionNote>
         )}
       </div>
       <div className="sign-in-card__notes">
         <p>
           {chosen !== null
-            ? passwordSignInConsent(
-                workspaceName,
-                payload.site,
-                chosen.username,
-                payload.permissionVersion,
-              )
-            : passwordSignInPrivacy(payload.site, payload.permissionVersion)}
+            ? passwordSignInConsent(payload.site, chosen.username)
+            : passwordSignInPrivacy(payload.site)}
         </p>
-        {offer && chosen !== null ? (
-          <p>{passwordSignInAllowRemembers(workspaceName, chosen.username)}</p>
-        ) : null}
+        {offer && chosen !== null ? <p>{passwordSignInAllowRemembers(chosen.username)}</p> : null}
       </div>
       {confirming ? (
         <p className="sign-in-card__line" role="status">
           <span aria-hidden className="spinner" />
-          {passwordSignInConfirming}
+          Allowing agents to sign in…
         </p>
       ) : null}
       {signIn.readError ? (
@@ -311,7 +290,7 @@ export function PasswordSignInRequestBody({
         )}
         <div className="sign-in-card__answers">
           <button className="btn" disabled={locked} onClick={decline} type="button">
-            {busy === "decline" ? passwordSignInDecliningLabel : passwordSignInDeclineLabel}
+            {busy === "decline" ? "Declining…" : "Don’t allow"}
           </button>
           {offer ? (
             <>
@@ -321,7 +300,7 @@ export function PasswordSignInRequestBody({
                 onClick={() => approve(false)}
                 type="button"
               >
-                {passwordSignInOnceLabel}
+                Only this time
               </button>
               <button
                 className="btn btn--primary"
@@ -331,7 +310,7 @@ export function PasswordSignInRequestBody({
                 type="button"
               >
                 <Icon name="key" />
-                {passwordSignInAllowLabel}
+                Allow
               </button>
             </>
           ) : null}
@@ -435,7 +414,7 @@ function AccountChoice({
     <div className="account-choice">
       <div className="account-choice__head">
         <span className="account-choice__legend" id={`${id}-legend`}>
-          {passwordSignInAccountLegend}
+          Sign in as
         </span>
         {filterable ? (
           <input

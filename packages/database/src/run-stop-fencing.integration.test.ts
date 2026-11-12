@@ -1,14 +1,13 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { jsonValue } from "./store-primitives.js";
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,9 +28,8 @@ import {
   type PendingAgentEvent,
   type RunnerDescriptor,
 } from "@opensteer/protocol";
-
 import { afterAll, describe, expect, it as baseIt } from "vitest";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import { createDatabase, OpensteerStore } from "./index.js";
 import { revokeRunGrants } from "./run-grants.js";
 
@@ -44,7 +42,9 @@ const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const continuationIdentity = {
@@ -52,7 +52,6 @@ const continuationIdentity = {
   driverKind: HarnessIdSchema.parse("native"),
 } as const;
 const matrix: Record<string, unknown> = {};
-
 integration.sequential("Run stop fencing", () => {
   async function createTestFixture() {
     type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -64,7 +63,10 @@ integration.sequential("Run stop fencing", () => {
         connectionString: databaseUrl,
         maxConnections: 4,
       });
-      return { database, close: () => database.destroy() };
+      return {
+        database,
+        close: () => database.destroy(),
+      };
     });
     const store = new OpensteerStore(database);
     async function runStatus(runId: RunId): Promise<string | undefined> {
@@ -110,11 +112,18 @@ integration.sequential("Run stop fencing", () => {
     }
     async function claim(f: Fixture, suffix: string) {
       const sent = await store.enqueueThreadInput({
-        content: [{ text: `Work ${suffix}`, type: "text" }],
+        content: [
+          {
+            text: `Work ${suffix}`,
+            type: "text",
+          },
+        ],
         idempotencyKey: `send-${suffix}`,
         policy: "queue",
         requestedBy: f.userId,
-        source: { kind: "human" },
+        source: {
+          kind: "human",
+        },
         threadId: f.thread.id,
       });
       if (!sent.command || !sent.run) throw new Error("Expected a queued Run");
@@ -130,7 +139,6 @@ integration.sequential("Run stop fencing", () => {
         continuationIdentity,
         harnessInstanceId: f.harness.id,
         leaseTokenHash: `lease-${runId}`,
-        membershipGeneration: 1,
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
         runId,
@@ -146,20 +154,27 @@ integration.sequential("Run stop fencing", () => {
         environmentId: f.environmentId,
         event: pendingEvent({
           bindingGeneration: binding.bindingGeneration,
-          data: { status: "running" },
+          data: {
+            status: "running",
+          },
           environmentId: f.environmentId,
           ordinal: f.ordinal++,
           runId: run.id,
           threadId: f.thread.id,
           type: "run.started",
-          workspaceId: f.workspace.id,
         }),
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
       });
       return run;
     }
-    async function openRequest(f: Fixture, run: { readonly id: RunId }, index: number) {
+    async function openRequest(
+      f: Fixture,
+      run: {
+        readonly id: RunId;
+      },
+      index: number,
+    ) {
       const request = PendingRequestSchema.parse({
         callId: `call-${index}`,
         cancellationReason: null,
@@ -170,12 +185,19 @@ integration.sequential("Run stop fencing", () => {
         originatingOccurrenceId: null,
         originatingRunId: run.id,
         originatingThreadId: f.thread.id,
-        originatingWorkspaceId: f.workspace.id,
-        payload: { kind: "harness.approval" },
+        payload: {
+          kind: "harness.approval",
+        },
         presentation: {
           detail: "Confirm",
           kind: "choice",
-          options: [{ hint: "confirm", id: "yes", label: "Yes" }],
+          options: [
+            {
+              hint: "confirm",
+              id: "yes",
+              label: "Yes",
+            },
+          ],
           title: "Continue?",
         },
         requestedBy: f.userId,
@@ -184,19 +206,19 @@ integration.sequential("Run stop fencing", () => {
         resolvedBy: null,
         response: null,
         status: "pending",
-        targetWorkspaceId: f.workspace.id,
       });
       await store.commitRunnerEvent({
         environmentId: f.environmentId,
         event: pendingEvent({
           bindingGeneration: f.bindingGeneration,
-          data: { request },
+          data: {
+            request,
+          },
           environmentId: f.environmentId,
           ordinal: f.ordinal++,
           runId: run.id,
           threadId: f.thread.id,
           type: "request.opened",
-          workspaceId: f.workspace.id,
         }),
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
@@ -208,7 +230,10 @@ integration.sequential("Run stop fencing", () => {
         idempotencyKey: `answer-${key}`,
         requestId,
         requestedBy: f.userId,
-        response: { kind: "choice", optionId: "yes" },
+        response: {
+          kind: "choice",
+          optionId: "yes",
+        },
         runId,
         sealedResponse: {
           envelope: Buffer.from("encrypted-test-response"),
@@ -236,33 +261,13 @@ integration.sequential("Run stop fencing", () => {
       });
     }
     async function fixture(suffix: string) {
-      await store.ensureDeployment({
-        canonicalOrigin: "https://test-host.invalid",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-        hostInstanceId: createId("hostInstance"),
-      });
-      const userId = await store.createUser("Owner");
-      const runnerId = createId("runner");
-      const environmentId = createId("environment");
-      await enrollRunner({ environmentId, runnerId, suffix, userId });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: userId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const { userId, runnerId, environmentId } = personal;
+      await enrollRunner({ environmentId, runnerId, suffix, userId: userId });
       const harness = await store.createHarnessInstance({
-        config: { model: "test" },
+        config: {
+          model: "test",
+        },
         driverKind: HarnessIdSchema.parse("native"),
         environmentId,
         name: "Native",
@@ -296,7 +301,6 @@ integration.sequential("Run stop fencing", () => {
         idempotencyKey: `thread-${suffix}`,
         modelSelection,
         title: `Thread ${suffix}`,
-        workspaceId: workspace.id,
       });
       return {
         bindingGeneration: 0,
@@ -307,7 +311,6 @@ integration.sequential("Run stop fencing", () => {
         runnerId,
         thread,
         userId,
-        workspace,
       };
     }
     async function enrollRunner(input: {
@@ -316,7 +319,6 @@ integration.sequential("Run stop fencing", () => {
       suffix: string;
       userId: UserId;
     }) {
-      const pair = generateKeyPairSync("ed25519");
       const descriptor: RunnerDescriptor = {
         bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
         capabilities: ["filesystem"],
@@ -344,36 +346,21 @@ integration.sequential("Run stop fencing", () => {
                 ],
               },
             ],
-            localStorage: null,
+
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
           },
         },
       };
-      const tokenHash = `sha256:${createHash("sha256").update(input.suffix).digest("base64url")}`;
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
-        createdBy: input.userId,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `runner-${input.suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: descriptor.name,
-        requestFingerprint: `sha256:${input.suffix}`,
-        runnerKind: "main",
-        tokenHash,
-      });
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash: tokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256")
-          .update(pair.publicKey.export({ format: "der", type: "spki" }))
-          .digest("base64url")}`,
-        publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      });
+      await database
+        .updateTable("runners")
+        .set({
+          capabilities: jsonValue(descriptor.capabilities),
+          moduleDescriptors: descriptor.modules,
+        })
+        .where("id", "=", input.runnerId)
+        .execute();
     }
-
     return Object.freeze({
       database,
       store,
@@ -394,7 +381,9 @@ integration.sequential("Run stop fencing", () => {
     });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
+  const it = baseIt.extend<{
+    storeFixture: StoreFixture;
+  }>({
     storeFixture: async ({ task }, use) => {
       const started = performance.now();
       const fixture = await createTestFixture();
@@ -402,37 +391,36 @@ integration.sequential("Run stop fencing", () => {
       await use(fixture);
     },
   });
-
   afterAll(async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-fault-matrix-"));
     const artifact = join(directory, "fault-matrix-database.json");
     await writeFile(artifact, `${JSON.stringify(matrix, null, 2)}\n`);
     console.info(`Database fault matrix: ${artifact}`);
   });
-
   it("ends a Run stopped before it was bound, and the Thread's next Run starts", async ({
     storeFixture,
   }) => {
     const { fixture, claim, stop, runStatus, bind, commandStatus, resume } = storeFixture;
     const f = await fixture("unbound");
     const run = await claim(f, "unbound");
-
     const stopped = await stop(f, run.id, "unbound");
     expect(await runStatus(run.id)).toBe("interrupted");
     expect(stopped.command.status).toBe("succeeded");
-    await expect(bind(f, run.id)).rejects.toMatchObject({ code: "conflict" });
+    await expect(bind(f, run.id)).rejects.toMatchObject({
+      code: "conflict",
+    });
     expect(await commandStatus(run.id, "run.execute")).toBe("failed");
-
     await resume(f, "unbound");
     const next = await claim(f, "unbound-next");
-    await expect(bind(f, next.id)).resolves.toMatchObject({ bindingGeneration: 1 });
+    await expect(bind(f, next.id)).resolves.toMatchObject({
+      bindingGeneration: 1,
+    });
     matrix["stop-before-binding"] = {
       nextRunBinds: true,
       runStatus: "interrupted",
       runnerReceivedExecute: false,
     };
   });
-
   it("ends a stopped Run its Runner never held instead of queueing it again", async ({
     storeFixture,
   }) => {
@@ -452,13 +440,16 @@ integration.sequential("Run stop fencing", () => {
       runnerId: f.runnerId,
     });
     expect(await runStatus(run.id)).toBe("interrupted");
-
     await resume(f, "unheld");
     const next = await claim(f, "unheld-next");
-    await expect(bind(f, next.id)).resolves.toMatchObject({ bindingGeneration: 2 });
-    matrix["stop-then-runner-never-held"] = { requeued: false, runStatus: "interrupted" };
+    await expect(bind(f, next.id)).resolves.toMatchObject({
+      bindingGeneration: 2,
+    });
+    matrix["stop-then-runner-never-held"] = {
+      requeued: false,
+      runStatus: "interrupted",
+    };
   });
-
   it("ends a stopped Run whose dispatch is retried instead of queueing it again", async ({
     storeFixture,
   }) => {
@@ -475,14 +466,15 @@ integration.sequential("Run stop fencing", () => {
     expect(await runStatus(run.id)).toBe("interrupted");
     await resume(f, "retried");
     const next = await claim(f, "retried-next");
-    await expect(bind(f, next.id)).resolves.toMatchObject({ bindingGeneration: 2 });
+    await expect(bind(f, next.id)).resolves.toMatchObject({
+      bindingGeneration: 2,
+    });
     matrix["stop-then-dispatch-retry"] = {
       nextRunBinds: true,
       requeued: false,
       runStatus: "interrupted",
     };
   });
-
   it("cancels a stopped Run's questions, refuses new answers and never delivers an admitted one", async ({
     storeFixture,
   }) => {
@@ -494,14 +486,12 @@ integration.sequential("Run stop fencing", () => {
     const answeredFirst = await openRequest(f, run, 2);
     const admitted = await answer(f, run.id, answeredFirst.id, "admitted");
     await store.claimCommand(admitted.command.id, "answers-dispatcher");
-
     expect(await runStatus(run.id)).toBe("waiting");
     await stop(f, run.id, "answers");
     expect(await requestStatus(asked.id)).toBe("cancelled");
     expect(await requestStatus(answeredFirst.id)).toBe("cancelled");
     // Nothing is left to answer, so no one is shown a question that is gone.
     expect(await runStatus(run.id)).toBe("running");
-
     await expect(answer(f, run.id, asked.id, "late")).rejects.toMatchObject({
       code: "conflict",
     });
@@ -510,7 +500,9 @@ integration.sequential("Run stop fencing", () => {
       store.dispatchRequestResponse(admitted.command.id, async () => {
         delivered = true;
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
     expect(delivered).toBe(false);
     matrix["answers-after-stop"] = {
       admittedAnswerDelivered: false,
@@ -518,7 +510,6 @@ integration.sequential("Run stop fencing", () => {
       pendingRequests: "cancelled",
     };
   });
-
   it("records an engine's question asked after Stop as cancelled, leaving the Run running", async ({
     storeFixture,
   }) => {
@@ -526,13 +517,14 @@ integration.sequential("Run stop fencing", () => {
     const f = await fixture("late-ask");
     const run = await running(f, "late-ask");
     await stop(f, run.id, "late-ask");
-
     const late = await openRequest(f, run, 1);
     expect(await requestStatus(late.id)).toBe("cancelled");
     expect(await runStatus(run.id)).toBe("running");
-    matrix["engine-asks-after-stop"] = { request: "cancelled", runStatus: "running" };
+    matrix["engine-asks-after-stop"] = {
+      request: "cancelled",
+      runStatus: "running",
+    };
   });
-
   it("refuses a steer into a Run whose authority ended while it still runs", async ({
     storeFixture,
   }) => {
@@ -540,18 +532,24 @@ integration.sequential("Run stop fencing", () => {
     const f = await fixture("steer");
     const run = await running(f, "steer");
     const waiting = await store.enqueueThreadInput({
-      content: [{ text: "Also do this", type: "text" }],
+      content: [
+        {
+          text: "Also do this",
+          type: "text",
+        },
+      ],
       idempotencyKey: "steer-waiting",
       policy: "queue",
       requestedBy: f.userId,
-      source: { kind: "human" },
+      source: {
+        kind: "human",
+      },
       threadId: f.thread.id,
     });
     // An Assignment cancel ends a worker's grant without pausing its queue.
-    await withDatabaseTransaction(database, (transaction) =>
+    await withPersonalTransaction(database, (transaction) =>
       revokeRunGrants(transaction, [run.id], "assignment-cancelled"),
     );
-
     await expect(
       store.steerThreadInput({
         expectedRunId: run.id,
@@ -560,10 +558,13 @@ integration.sequential("Run stop fencing", () => {
         requestedBy: f.userId,
         threadId: f.thread.id,
       }),
-    ).rejects.toMatchObject({ code: "conflict" });
-    matrix["steer-after-authority-ended"] = { steer: "refused" };
+    ).rejects.toMatchObject({
+      code: "conflict",
+    });
+    matrix["steer-after-authority-ended"] = {
+      steer: "refused",
+    };
   });
-
   it("never renews a lease that already ran out, nor one the Run no longer holds", async ({
     storeFixture,
   }) => {
@@ -572,7 +573,9 @@ integration.sequential("Run stop fencing", () => {
     const run = await running(f, "leases");
     await database
       .updateTable("providerSessions")
-      .set({ leaseExpiresAt: new Date(Date.now() - 1_000) })
+      .set({
+        leaseExpiresAt: new Date(Date.now() - 1_000),
+      })
       .execute();
     const renewed = await store.renewActiveExecutionBindings({
       activeRunIds: [run.id],
@@ -596,7 +599,9 @@ integration.sequential("Run stop fencing", () => {
     // A binding the Run does not hold is never renewed in its name.
     await database
       .updateTable("runs")
-      .set({ bindingGeneration: f.bindingGeneration + 1 })
+      .set({
+        bindingGeneration: f.bindingGeneration + 1,
+      })
       .where("id", "=", run.id)
       .execute();
     expect(
@@ -614,7 +619,9 @@ integration.sequential("Run stop fencing", () => {
     };
   });
 });
-
 function pendingEvent<T extends PendingAgentEvent>(input: Omit<T, "emittedAt">): T {
-  return { ...input, emittedAt: new Date().toISOString() } as T;
+  return {
+    ...input,
+    emittedAt: new Date().toISOString(),
+  } as T;
 }

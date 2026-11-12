@@ -434,10 +434,11 @@ function environment(
         },
   );
   return {
+    can: { executeTasks: true },
     capabilities: ["filesystem"],
     connected: true,
     harnessAuthenticationAllowed: true,
-    workspaceBackings: ["local-directory"],
+
     harnessCatalogs: harnessDrivers.map((driver) => {
       const harness = harnesses.find(
         (candidate) => candidate.environmentId === id && candidate.driverKind === driver.driverKind,

@@ -1,6 +1,4 @@
 import { createSettingsReadHandlers } from "./settings-read-handlers.js";
-import { createTeamAccessHandlers, handleTeamCommand } from "./team-access-handlers.js";
-import type { TeamAdministrationService } from "../team/team-administration-service.js";
 import type { ComputerViewService } from "../computer-use/computer-view-service.js";
 import type { PhoneTabs } from "../computer-use/phone-tabs.js";
 import { OpensteerError, RunnerIdSchema } from "@opensteer/core";
@@ -12,7 +10,6 @@ import {
   type HostApiCommandOutput,
   type HostApiHandlers,
   type HostApiServerContext,
-  type TeamCommand,
 } from "@opensteer/protocol";
 import { listedPluginRow } from "../integrations/catalog-presentation.js";
 import type { IdentityRpcHandlers } from "../identity/identity-routes.js";
@@ -91,6 +88,14 @@ export function createHostApiHandlers(
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
+    | "folder.files.list"
+    | "folder.files.preview"
+    | "attention.get"
+    | "needsYou.get"
+    | "teams.links.list"
+    | "teams.channelFolder.get"
+    | "teams.threadTask.get"
+    | "teams.replyTask.get"
     | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"
@@ -115,12 +120,6 @@ export function createHostApiHandlers(
     | "thread.inputQueue.get"
     | "thread.live.get"
     | "thread.requests.list"
-    | "workspace.catalog.list"
-    | "workspace.files.list"
-    | "workspace.files.preview"
-    | "workspace.invitations.list"
-    | "workspace.members.list"
-    | "workspace.prefetch"
   >,
   handleCoreCommand: (
     command: CoreCommand,
@@ -128,10 +127,12 @@ export function createHostApiHandlers(
   ) => Promise<HostApiCommandOutput>,
   computerViews?: ComputerViewService,
   phoneTabs?: PhoneTabs,
-  teamAdministration?: TeamAdministrationService,
 ): Omit<
   HostApiHandlers,
-  "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+  | "personal.remoteAccess.get"
+  | "connections.list"
+  | "connections.authorization.get"
+  | `team.${string}`
 > {
   return {
     "plugins.overview.get": async (_input, context) => {
@@ -226,9 +227,12 @@ export function createHostApiHandlers(
     ...channelHandlers,
     ...browserSourceHandlers,
     ...coreHandlers,
-    ...createTeamAccessHandlers(teamAdministration),
     "commands.dispatch": async (command, context) => {
-      if (isTeamCommand(command)) return handleTeamCommand(command, context, teamAdministration);
+      if (isTeamCommand(command))
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Team commands require a team Host",
+        });
       if (
         command.type === "computer.view.open" ||
         command.type === "computer.view.close" ||
@@ -300,7 +304,11 @@ export function createHostApiHandlers(
     },
   } satisfies Omit<
     HostApiHandlers,
-    "personal.remoteAccess.get" | "connections.list" | "connections.authorization.get"
+    | "personal.remoteAccess.get"
+    | "connections.list"
+    | "connections.authorization.get"
+    | `team.${string}`
+    | `team.${string}`
   >;
 }
 
@@ -314,9 +322,9 @@ export type CoreCommand = Exclude<
   | IntegrationPlatformCommand
   | ChannelCommand
   | BrowserSourceCommand
-  | TeamCommand
 >;
 
+type TeamCommand = Extract<HostApiCommand, { readonly type: `team.${string}` }>;
 function isTeamCommand(command: HostApiCommand): command is TeamCommand {
   return command.type.startsWith("team.");
 }

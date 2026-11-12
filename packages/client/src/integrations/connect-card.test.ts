@@ -4,7 +4,6 @@ import { mockMessagesDefinition, mockTmdbProposal } from "../mock/mock-integrati
 import { collapsedAccountRows, connectCard } from "./connect-card.js";
 
 const workspace = { kind: "main", name: "Main" } as const;
-const project = { kind: "project", name: "Launch" } as const;
 const source = {
   kind: "hosted-oauth",
   brokerIssuer: "https://account.test",
@@ -29,7 +28,7 @@ function loaded(
       access: "read",
       reason: "Read the latest message",
       installationId: "installation",
-      requestedServerId: "server",
+      requestedServerId: "team",
       requestedConnectionId: null,
       manifest: null,
     },
@@ -50,7 +49,7 @@ function loaded(
               ...c,
               connectionId: c.id,
               installationId: "installation",
-              serverId: "server",
+              serverId: "team",
             }))
           : [],
       installations: [
@@ -104,7 +103,7 @@ function loaded(
           },
           servers: [
             {
-              id: "server",
+              id: "team",
               name: "Gmail",
               status: "active",
               connectionRequirement:
@@ -121,8 +120,8 @@ function loaded(
             },
           ],
           tools: [
-            { connectionId: null, serverId: "server", annotations: { readOnlyHint: true } },
-            { connectionId: null, serverId: "server", annotations: { readOnlyHint: false } },
+            { connectionId: null, serverId: "team", annotations: { readOnlyHint: true } },
+            { connectionId: null, serverId: "team", annotations: { readOnlyHint: false } },
           ],
         },
       ],
@@ -147,48 +146,50 @@ function preinstall(administrator: boolean, proposal = false) {
 
 describe("connectCard", () => {
   it("discloses Main inherited changes before catalog installation", () => {
-    const card = connectCard({ loaded: preinstall(true), workspace });
-    expect(card.scope).toBe("All tasks in Main");
-    expect(card.details).toContain(mainAccessDetail("Main", "Gmail"));
+    const card = connectCard({ deploymentName: "Opensteer", loaded: preinstall(true) });
+    expect(card.scope).toBe("All your tasks");
+    expect(card.details).toContain(mainAccessDetail("Opensteer", "Gmail"));
   });
   it("connects Main in one action and discloses inherited changes", () => {
-    const card = connectCard({ loaded: loaded(), workspace });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: loaded() });
     expect(card).toMatchObject({
       phase: "ask",
       title: "Connect Gmail",
       primary: { kind: "connect", label: "Connect" },
       secondary: "Not now",
       reason: "Read the latest message",
-      scope: "All tasks in Main",
+      scope: "All your tasks",
       source,
     });
-    expect(card.details).toContain(mainAccessDetail("Main", "Gmail"));
+    expect(card.details).toContain(mainAccessDetail("Opensteer", "Gmail"));
   });
-  it("connects and grants only the named project, with optional changes", () => {
-    expect(connectCard({ loaded: loaded(), workspace: project })).toMatchObject({
-      title: "Connect Gmail in Launch",
+  it("shows the full Personal grant without offering an ineffective access toggle", () => {
+    expect(connectCard({ deploymentName: "Opensteer", loaded: loaded() })).toMatchObject({
+      title: "Connect Gmail",
       primary: { label: "Connect" },
-      scope: null,
-      canAllowChanges: true,
-      effectiveAccess: "read",
+      scope: "All your tasks",
+      canAllowChanges: false,
+      effectiveAccess: "read-write",
     });
-    expect(connectCard({ loaded: loaded(), workspace: project }).details).toContain(
-      "Only Launch gets access.",
+    expect(connectCard({ deploymentName: "Opensteer", loaded: loaded() }).details).toContain(
+      mainAccessDetail("Opensteer", "Gmail"),
     );
     expect(
-      connectCard({ loaded: loaded(), workspace: project, allowChanges: true }).effectiveAccess,
+      connectCard({ deploymentName: "Opensteer", loaded: loaded(), allowChanges: true })
+        .effectiveAccess,
     ).toBe("read-write");
     const original = loaded();
     const value = { ...original, request: { ...original.request, access: "read-write" as const } };
-    const card = connectCard({ loaded: value, workspace: project });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: value });
     expect(card.effectiveAccess).toBe("read-write");
     expect(card.canAllowChanges).toBe(false);
-    expect(card.scope).toBe("Read and write");
+    expect(card.scope).toBe("All your tasks");
   });
   it.each([1, 3])("offers account rows and one Allow with %i accounts", (count) => {
     const card = connectCard({
+      deploymentName: "Opensteer",
       loaded: loaded("provider", count),
-      workspace,
+
       selectedAccountId: "account-0",
     });
     expect(card.phase).toBe("choose-account");
@@ -200,8 +201,11 @@ describe("connectCard", () => {
   });
   it("preserves the selected account across model reads", () => {
     expect(
-      connectCard({ loaded: loaded("provider", 3), workspace, selectedAccountId: "account-2" })
-        .selectedAccount?.id,
+      connectCard({
+        deploymentName: "Opensteer",
+        loaded: loaded("provider", 3),
+        selectedAccountId: "account-2",
+      }).selectedAccount?.id,
     ).toBe("account-2");
   });
   it("says an account's identity once, and a second line only between look-alikes", () => {
@@ -211,7 +215,7 @@ describe("connectCard", () => {
       accountIdentifier: "you0@gmail.com",
       displayName: "Work inbox",
     };
-    const card = connectCard({ loaded: value, workspace });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: value });
     expect(card.accounts.map(({ label, detail }) => [label, detail])).toEqual([
       ["you0@gmail.com", "Personal"],
       ["you1@gmail.com", null],
@@ -220,10 +224,9 @@ describe("connectCard", () => {
     // A Request pinned to one look-alike still says which one it is.
     const pinned = { ...value, request: { ...value.request, requestedConnectionId: "account-2" } };
     expect(
-      connectCard({ loaded: pinned, workspace }).accounts.map(({ label, detail }) => [
-        label,
-        detail,
-      ]),
+      connectCard({ deploymentName: "Opensteer", loaded: pinned }).accounts.map(
+        ({ label, detail }) => [label, detail],
+      ),
     ).toEqual([["you0@gmail.com", "Work inbox"]]);
   });
   it("falls back to when look-alikes were added once their names match too", () => {
@@ -234,7 +237,7 @@ describe("connectCard", () => {
       createdAt: `2026-01-0${index + 1}T00:00:00Z`,
       displayName: "Work inbox",
     }));
-    const card = connectCard({ loaded: value, workspace });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: value });
     expect(card.accounts.map(({ detail }) => detail)).toEqual(["Added Jan 1", "Added Jan 2"]);
   });
   it("repairs a pinned account and never offers another", () => {
@@ -248,15 +251,15 @@ describe("connectCard", () => {
       status: "needs-attention",
       connectionMethod: "managed-oauth",
     };
-    expect(connectCard({ loaded: value, workspace, selectedAccountId: "account-1" })).toMatchObject(
-      {
-        primary: { label: "Reconnect you0@gmail.com" },
-        canConnectAnother: false,
-        selectedAccount: null,
-      },
-    );
+    expect(
+      connectCard({ deploymentName: "Opensteer", loaded: value, selectedAccountId: "account-1" }),
+    ).toMatchObject({
+      primary: { label: "Reconnect you0@gmail.com" },
+      canConnectAnother: false,
+      selectedAccount: null,
+    });
     value = { ...value, request: { ...value.request, requestedConnectionId: "gone" } };
-    expect(connectCard({ loaded: value, workspace })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: value })).toMatchObject({
       phase: "unavailable",
       primary: null,
     });
@@ -267,7 +270,7 @@ describe("connectCard", () => {
   ] as const)(
     "auto-installs a catalog item only with admin authority (%s)",
     (administrator, phase) => {
-      const card = connectCard({ loaded: preinstall(administrator), workspace });
+      const card = connectCard({ deploymentName: "Opensteer", loaded: preinstall(administrator) });
       expect(card.phase).toBe(phase);
       expect(card.autoInstall).toBe(true);
       expect(card.primary?.label).toBe(administrator ? "Connect" : undefined);
@@ -275,7 +278,7 @@ describe("connectCard", () => {
     },
   );
   it("requires explicit, attributed proposal review before connecting", () => {
-    const card = connectCard({ loaded: preinstall(true, true), workspace });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: preinstall(true, true) });
     expect(card.autoInstall).toBe(false);
     expect(card.primary?.kind).toBe("install");
     expect(card.installReview?.provenance).toContain("agent");
@@ -284,17 +287,21 @@ describe("connectCard", () => {
     ["api-key", "api-key"],
     ["computer", "computer"],
   ] as const)("keeps the %s form", (kind, form) => {
-    expect(connectCard({ loaded: loaded(kind), workspace })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: loaded(kind) })).toMatchObject({
       phase: "needs-form",
       form,
     });
   });
   it("connects MCP directly and uses existing MCP account rows", () => {
-    expect(connectCard({ loaded: loaded("mcp-oauth"), workspace })).toMatchObject({
-      phase: "ask",
-      primary: { label: "Connect" },
-    });
-    expect(connectCard({ loaded: loaded("mcp-oauth", 1), workspace }).primary).toEqual({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: loaded("mcp-oauth") })).toMatchObject(
+      {
+        phase: "ask",
+        primary: { label: "Connect" },
+      },
+    );
+    expect(
+      connectCard({ deploymentName: "Opensteer", loaded: loaded("mcp-oauth", 1) }).primary,
+    ).toEqual({
       kind: "use",
       label: "Allow",
     });
@@ -302,14 +309,16 @@ describe("connectCard", () => {
   it("requires explicit server choice, including a singleton", () => {
     const original = loaded();
     const value = { ...original, request: { ...original.request, requestedServerId: null } };
-    expect(connectCard({ loaded: value, workspace })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: value })).toMatchObject({
       phase: "needs-form",
       form: "server",
       primary: { label: "Choose server" },
     });
   });
   it("keeps repositories as a readiness step", () => {
-    expect(connectCard({ loaded: loaded(), workspace, repositories: true })).toMatchObject({
+    expect(
+      connectCard({ deploymentName: "Opensteer", loaded: loaded(), repositories: true }),
+    ).toMatchObject({
       phase: "needs-form",
       form: "repositories",
       primary: { label: "Recheck repository access" },
@@ -317,17 +326,18 @@ describe("connectCard", () => {
   });
   it("shows connecting, failures, committed success and answered states in place", () => {
     const input = { loaded: loaded(), workspace };
-    expect(connectCard({ ...input, connecting: true })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", ...input, connecting: true })).toMatchObject({
       phase: "connecting",
       primary: null,
     });
-    expect(connectCard({ ...input, error: "Denied" })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", ...input, error: "Denied" })).toMatchObject({
       phase: "failed",
       primary: { label: "Try again" },
       error: "Denied",
     });
     expect(
       connectCard({
+        deploymentName: "Opensteer",
         ...input,
         connectedAccount: { displayName: "You", accountIdentifier: "you@gmail.com" },
       }),
@@ -336,7 +346,9 @@ describe("connectCard", () => {
       primary: null,
       success: "Gmail connected · you@gmail.com",
     });
-    expect(connectCard({ ...input, answered: true }).phase).toBe("answered");
+    expect(connectCard({ deploymentName: "Opensteer", ...input, answered: true }).phase).toBe(
+      "answered",
+    );
   });
   it("never silently replaces an unavailable saved sign-in source", () => {
     const value = loaded();
@@ -347,7 +359,7 @@ describe("connectCard", () => {
       detail: "The selected app is unavailable",
       availableSources: [source],
     } as never;
-    expect(connectCard({ loaded: value, workspace })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: value })).toMatchObject({
       phase: "unavailable",
       source: null,
       primary: { kind: "settings" },
@@ -360,7 +372,7 @@ describe("connectCard", () => {
       id: "gmail",
       name: "Gmail",
     };
-    const card = connectCard({ loaded: value, workspace: project, allowChanges: true });
+    const card = connectCard({ deploymentName: "Opensteer", loaded: value, allowChanges: true });
     expect(card).toMatchObject({
       phase: "needs-form",
       form: "computer",
@@ -369,23 +381,28 @@ describe("connectCard", () => {
     });
   });
   it("keeps the Request's proposal attribution on account and grant surfaces", () => {
-    const card = connectCard({ loaded: loaded(), workspace, agentProposed: true });
+    const card = connectCard({
+      deploymentName: "Opensteer",
+      loaded: loaded(),
+      agentProposed: true,
+    });
     expect(card.proposed).toBe(true);
   });
   it("keeps an active browser attempt ahead of a local failure", () => {
     expect(
       connectCard({
+        deploymentName: "Opensteer",
         loaded: loaded(),
-        workspace,
+
         connecting: true,
         error: "Cancel could not be sent",
       }),
     ).toMatchObject({ phase: "connecting", primary: null, error: "Cancel could not be sent" });
   });
   it("allows a credential-free integration without inventing an account", () => {
-    expect(connectCard({ loaded: loaded("none"), workspace: project })).toMatchObject({
+    expect(connectCard({ deploymentName: "Opensteer", loaded: loaded("none") })).toMatchObject({
       phase: "ask",
-      title: "Use Gmail in Launch",
+      title: "Use Gmail",
       primary: { kind: "use", label: "Allow" },
       accounts: [],
     });

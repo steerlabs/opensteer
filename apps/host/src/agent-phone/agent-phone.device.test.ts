@@ -86,7 +86,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentPhoneArtifact, AgentPhoneSetupStep } from "@opensteer/agent-phone-setup";
-import { DeploymentIdSchema, type RunnerId, type WorkspaceId } from "@opensteer/core";
+import { DeploymentIdSchema, type RunnerId } from "@opensteer/core";
 import {
   agentPhoneAccessibilityService,
   agentPhoneMinSdk,
@@ -107,7 +107,7 @@ import {
   waitForMessage,
   type CallerMachine,
   type MachineAccessDatabase,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   assertNoPhoneApprovalActivity,
@@ -549,23 +549,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       .some((line) => /\bfl=[^\n]*\bSECURE\b/u.test(line));
   }
 
-  async function createWorkspace(name: string): Promise<WorkspaceId> {
-    const created = await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      { idempotencyKey: `workspace-${randomUUID()}`, name, type: "workspace.create" },
-      owner(),
-    );
-    if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    return created.workspace.id;
-  }
-
   /** The owner lets a Workspace use the phone, as the Workspace's integration settings do. */
-  async function grantPhone(
-    runnerId: RunnerId,
-    workspaceId: WorkspaceId,
-    access: "read" | "read-write",
-  ) {
+  async function grantPhone(runnerId: RunnerId, access: "read" | "read-write") {
     const connection = await phoneConnection(runnerId);
     if (!connection) throw new Error("The phone has no connection to grant.");
     const installation = (
@@ -589,7 +574,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           connectionId: connection.id,
           installationId: installation.id,
           isDefault: false,
-          workspaceId,
         },
         type: "integration.grant.create",
       },
@@ -605,21 +589,14 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     return caller;
   }
 
-  async function homeWorkspace(): Promise<WorkspaceId> {
-    const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner());
-    if (!bootstrap.homeWorkspace) throw new Error("The owner has no Main Workspace.");
-    return bootstrap.homeWorkspace.id;
-  }
-
   async function startAgent(
     caller: CallerMachine,
-    input: { readonly title: string; readonly workspaceId: WorkspaceId },
+    input: { readonly title: string },
   ): Promise<Agent> {
     const agent = await startPhoneAgent(host, caller, {
       key: `run-${randomUUID()}`,
       redaction,
       title: input.title,
-      workspaceId: input.workspaceId,
     });
     closers.push(() => agent.gateway.close());
     return { ...agent, title: input.title };
@@ -998,8 +975,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
 
     // ---- 2. An agent in the owner's Main ------------------------------------
     const caller = await newCaller("caller-1");
-    const main = await homeWorkspace();
-    const agentA = await startAgent(caller, { title: "Text the driver", workspaceId: main });
+    const agentA = await startAgent(caller, { title: "Text the driver" });
     let refsA!: PhoneToolRefs;
     let firstObservation = "";
 
@@ -1458,9 +1434,8 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     });
 
     // ---- 3. Concurrency ----------------------------------------------------
-    const lunch = await createWorkspace("Lunch orders");
-    const grantB = await grantPhone(runnerId, lunch, "read-write");
-    let agentB = await startAgent(caller, { title: "Order lunch", workspaceId: lunch });
+    const grantB = await grantPhone(runnerId, "read-write");
+    let agentB = await startAgent(caller, { title: "Order lunch" });
     let refsB!: PhoneToolRefs;
 
     await step("a second task finds the phone held and is told by whom", async () => {
@@ -1493,11 +1468,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
 
     // ---- 4. Read-only ------------------------------------------------------
     await step("a read-only grant sees, cannot act, and can let go", async () => {
-      const reading = await createWorkspace("Delivery tracking");
-      await grantPhone(runnerId, reading, "read");
+      await grantPhone(runnerId, "read");
       const agentC = await startAgent(caller, {
         title: "Track the delivery",
-        workspaceId: reading,
       });
       const row = await phoneRow(agentC, runnerId);
       expect(row).toMatchObject({ access: "read", approval: "approved" });
@@ -1525,9 +1498,9 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     });
 
     // ---- 5. Stops and pause ------------------------------------------------
-    const agentA2 = await startAgent(caller, { title: "Book the table", workspaceId: main });
+    const agentA2 = await startAgent(caller, { title: "Book the table" });
     let refsA2!: PhoneToolRefs;
-    const agentA3 = await startAgent(caller, { title: "Pay the bill", workspaceId: main });
+    const agentA3 = await startAgent(caller, { title: "Pay the bill" });
     let refsA3 = await toolRefs(agentA3, runnerId);
 
     /** The waiting task's next Run takes the phone, then lets it go. */
@@ -1542,7 +1515,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       async () => {
         const lockedAgent = await startAgent(caller, {
           title: "Unlock the phone",
-          workspaceId: main,
         });
         const lockedRefs = await toolRefs(lockedAgent, runnerId);
         const credential = await stagePhonePin(device, redaction);
@@ -1681,7 +1653,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       async () => {
         const stoppedAgent = await startAgent(caller, {
           title: "Stop locally with observations in transit",
-          workspaceId: main,
         });
         const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
         const { acting } = await startWaitingBatch(stoppedAgent, stoppedRefs);
@@ -1742,7 +1713,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     await step("an owner's Stop the Host never heard survives the app being killed", async () => {
       const lostAgent = await startAgent(caller, {
         title: "Stop lost on the way",
-        workspaceId: main,
       });
       const lostRefs = await toolRefs(lostAgent, runnerId);
       expect((await observe(lostAgent, lostRefs)).observation.headline).toBe(
@@ -1807,7 +1777,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     await step("remote Watch Stop cancels a waiting batch before its later tap", async () => {
       const stoppedAgent = await startAgent(caller, {
         title: "Stop a waiting task",
-        workspaceId: main,
       });
       const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
       const { acting } = await startWaitingBatch(stoppedAgent, stoppedRefs);
@@ -1836,7 +1805,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     await step("a Stop during a drag's hold lifts the finger where it pressed", async () => {
       const stoppedAgent = await startAgent(caller, {
         title: "Stop a drag mid-hold",
-        workspaceId: main,
       });
       const stoppedRefs = await toolRefs(stoppedAgent, runnerId);
       const fixture = await openFixture(stoppedAgent, stoppedRefs);
@@ -1888,7 +1856,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
     await step("a person's Stop of a Run ends its phone batch at once", async () => {
       const stopped = await startAgent(caller, {
         title: "Stopped by its person",
-        workspaceId: main,
       });
       const stoppedRefs = await toolRefs(stopped, runnerId);
       const { acting, laterTapDueAt } = await startWaitingBatch(stopped, stoppedRefs, 3);
@@ -1919,7 +1886,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const restarting = await newCaller("caller-restarts", true);
       const restarted = await startAgent(restarting, {
         title: "Restarted mid-task",
-        workspaceId: main,
       });
       const first = restarted.run.attempt;
       await lookAwake(restarted, await toolRefs(restarted, runnerId));
@@ -2340,7 +2306,7 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       await host.restart();
       await waitForOnline(runnerId, reconnectBudgetMs);
       const restartedCaller = await newCaller("caller-2");
-      agentE = await startAgent(restartedCaller, { title: "After the restart", workspaceId: main });
+      agentE = await startAgent(restartedCaller, { title: "After the restart" });
       refsE = await toolRefs(agentE, runnerId);
       const fixture = await openFixture(agentE, refsE);
       await clearReceipts(device);
@@ -2404,7 +2370,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
       const restartedCaller = await newCaller("caller-3");
       agentB = await startAgent(restartedCaller, {
         title: "Order lunch again",
-        workspaceId: lunch,
       });
       refsB = await toolRefs(agentB, runnerId);
       expect(resultText(await call(agentE, "integration_call", { toolRef: refsE.release }))).toBe(
@@ -2420,7 +2385,6 @@ describe.sequential(`Agent Phone on Android API ${api}, end to end`, () => {
           grantId: grantB.id,
           idempotencyKey: `revoke-${randomUUID()}`,
           type: "integration.grant.revoke",
-          workspaceId: lunch,
         },
         owner(),
       );

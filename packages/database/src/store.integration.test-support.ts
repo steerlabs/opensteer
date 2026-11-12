@@ -1,8 +1,9 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { testRunnerDescriptor } from "./runner-fixture.test-support.js";
+export { testRunnerDescriptor } from "./runner-fixture.test-support.js";
+import { findActiveBrowserSessionForPerson } from "./browser-session-store.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { sql } from "kysely";
+import type { ChannelStore } from "./channel-store.js";
 import {
   createChannelId,
   slackChannelProviderManifest,
@@ -11,65 +12,748 @@ import {
   type ChannelIngressId,
   type ChannelProviderManifest,
 } from "@opensteer/channel-core";
-import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  PendingRequestSchema,
-  RunnerIdSchema,
-  ThreadAccessModeSchema,
-  ThreadIdSchema,
-  type EnvironmentId,
-  type HarnessInstanceId,
-  type RequestId,
-  type RunId,
-  type RunnerId,
-  type UserId,
-  type Workspace,
-} from "@opensteer/core";
+import { RunnerIdSchema, type RunnerId } from "@opensteer/core";
 import {
   IntegrationDefinitionSchema,
   integrationDefinitionSummary,
 } from "@opensteer/integration-core";
+import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
+import { createId } from "@opensteer/core";
 import {
   HarnessInstanceCatalogSchema,
-  type PendingAgentEvent,
   type RunnerDescriptor,
   type RunnerModuleName,
 } from "@opensteer/protocol";
-import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID, type KeyObject } from "node:crypto";
-import { appendFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import type { OpensteerStore } from "./store.js";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, it, expect, vi } from "vitest";
 import {
-  ChannelIngressDeferredError,
-  ChannelStore,
-  createDatabase,
-  OpensteerStore,
-  TriggerStore,
-} from "./index.js";
-import { cloneTestDatabase, ownTestDatabaseProducer } from "./test-database.test-support.js";
+  ModelSelectionSchema,
+  ProviderContinuationIdentitySchema,
+  type HarnessInstanceId,
+  type RunId,
+  type ThreadId,
+  type TaskFolder,
+  PendingRequestSchema,
+  type RequestId,
+  type EnvironmentId,
+} from "@opensteer/core";
+import type { PendingAgentEvent } from "@opensteer/protocol";
+import { createDatabase } from "./connection.js";
+import {
+  cloneTestDatabase,
+  ownTestDatabaseProducer,
+  recordTestDatabaseSetup,
+} from "./test-database.test-support.js";
+import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 
 export const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
-
-const integration = databaseUrl ? describe : describe.skip;
-
 export const testModelSelection = ModelSelectionSchema.parse({
-  modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
   providerId: "openai",
+  modelId: "fixture",
+  options: {},
+});
+export const testContinuationIdentity = ProviderContinuationIdentitySchema.parse({
+  driverKind: "native",
+  continuationKey: `runner:v1:${"A".repeat(43)}`,
 });
 
-export const testContinuationIdentity = {
-  continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-  driverKind: HarnessIdSchema.parse("native"),
-} as const;
+export interface PersonalRunFixturePort {
+  createTask(input: {
+    readonly ownerId: string;
+    readonly folder: TaskFolder;
+    readonly suffix: string;
+  }): Promise<{
+    readonly threadId: ThreadId;
+    readonly thread: import("@opensteer/core").Thread;
+    readonly harnessInstance: Awaited<ReturnType<OpensteerStore["createHarnessInstance"]>>;
+  }>;
+  startTask(
+    threadId: ThreadId,
+    text: string,
+  ): Promise<{
+    readonly runId: RunId;
+    readonly run: import("@opensteer/core").Run;
+    readonly turn: import("./thread-store.js").EnqueuedThreadInput & {
+      readonly run: import("@opensteer/core").Run;
+      readonly command: import("./schema.js").CommandRow;
+    };
+    readonly bindingGeneration: number;
+    readonly runnerBootId: string;
+  }>;
+}
+export async function createStoreFixture() {
+  const clone = await cloneTestDatabase("host");
+  try {
+    const { database } = await ownTestDatabaseProducer(clone.url, async () => {
+      const database = createDatabase({
+        connectionString: clone.url,
+        applicationName: "opensteer-integration-test",
+        maxConnections: 6,
+      });
+      return { database, close: () => database.destroy() };
+    });
+    const { OpensteerStore } = await import("./store.js");
+    const store = new OpensteerStore(database, {
+      readPersonalResources: readEmptyPersonalResources,
+    });
+    const { createPersonalRunFixturePort } = await import("./personal-run-fixture.test-support.js");
+    const personalRuns = createPersonalRunFixturePort(store);
+    let personal: Awaited<ReturnType<typeof seedPersonalFixture>> | undefined;
+    async function createRunFixture(
+      suffix: string,
+      admission: PersonalRunFixturePort = personalRuns,
+    ) {
+      const directory = await realpath(
+        await mkdtemp(join(tmpdir(), "opensteer-personal-fixture-")),
+      );
+      await ownTestDatabaseProducer(clone.url, async () => ({
+        close: () => rm(directory, { recursive: true, force: true }),
+      }));
+      personal ??= await seedPersonalFixture(database, directory);
+      const task = await admission.createTask({
+        ownerId: personal.userId,
+        folder: personal.agentHome,
+        suffix,
+      });
+      return {
+        ...personal,
+        ...task,
+        folder: personal.agentHome,
+        close: () => rm(directory, { recursive: true, force: true }),
+      };
+    }
+    async function startRunFixture(
+      suffix: string,
+      admission: PersonalRunFixturePort = personalRuns,
+    ) {
+      const fixture = await createRunFixture(suffix, admission);
+      return { ...fixture, ...(await admission.startTask(fixture.threadId, "Fixture input")) };
+    }
 
-/**
- * What a Runner last reported for an account. A channel message picks the
- * model marked `isDefault` here, so a fixture whose Threads are created for it
- * has to have one.
- */
+    const { TriggerStore } = await import("./trigger-store.js");
+    const triggers = new TriggerStore(database);
+    type HumanTriggerInput = Omit<
+      Parameters<OpensteerStore["enqueueThreadInput"]>[0],
+      "policy" | "source"
+    >;
+    async function enqueueHumanTrigger(input: HumanTriggerInput, targetStore = store) {
+      const admitted = await targetStore.enqueueThreadInput({
+        ...input,
+        policy: "queue",
+        source: { kind: "human" },
+      });
+      if (!admitted.command || !admitted.run) throw new Error("Expected a queued personal Run");
+      return { ...admitted, command: admitted.command, run: admitted.run };
+    }
+    async function recordReadyHarnessCatalog(
+      environmentId: EnvironmentId,
+      harness: { readonly id: HarnessInstanceId; readonly runtimeRevision: number },
+    ) {
+      await store.recordHarnessCatalogs({
+        catalogs: [testReadyHarnessCatalog(harness.id)],
+        environmentId,
+        expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
+      });
+    }
+    async function bindAgentControlRun(
+      fixture: Awaited<ReturnType<typeof createRunFixture>>,
+      runId: RunId,
+      suffix: string,
+      threadId = fixture.threadId,
+    ) {
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: fixture.harnessInstance.id,
+        leaseTokenHash: suffix,
+        runnerBootId: suffix,
+        runnerId: fixture.runnerId,
+        runId,
+        threadId,
+      });
+      return {
+        bindingGeneration: binding.bindingGeneration,
+        environmentId: fixture.environmentId,
+        requestedBy: fixture.userId,
+        runnerBootId: suffix,
+        runnerId: fixture.runnerId,
+      };
+    }
+    async function startTriggerOccurrence(
+      fixture: Awaited<ReturnType<typeof startRunFixture>>,
+      suffix: string,
+    ) {
+      const created = await triggers.create({
+        actorThreadId: null,
+        anchorThreadId: fixture.threadId,
+        createdBy: fixture.userId,
+        idempotencyKey: "trigger-" + suffix,
+        name: "Trigger " + suffix,
+        program: {
+          toolContractVersion: 3,
+          language: "javascript",
+          source: "export default async () => null",
+        },
+        source: {
+          kind: "schedule",
+          schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+        },
+      });
+      const occurrence = await triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId: created.trigger.id,
+      });
+      await store.claimCommand(occurrence.commandId, suffix);
+      await triggers.startExecution({
+        commandId: occurrence.commandId,
+        runnerBootId: "trigger-boot-" + suffix,
+        runnerId: fixture.runnerId,
+      });
+      return occurrence;
+    }
+    async function openLiveRequest(
+      fixture: Awaited<ReturnType<typeof startRunFixture>>,
+      requestId: RequestId,
+    ) {
+      const run = await database
+        .selectFrom("runs")
+        .select("nextRunnerOrdinal")
+        .where("id", "=", fixture.run.id)
+        .executeTakeFirstOrThrow();
+      return store.commitRunnerEvent({
+        environmentId: fixture.environmentId,
+        runnerBootId: fixture.runnerBootId,
+        runnerId: fixture.runnerId,
+        event: pendingEvent({
+          bindingGeneration: fixture.bindingGeneration,
+          data: {
+            request: liveRequest({
+              harnessInstanceId: fixture.harnessInstance.id,
+              id: requestId,
+              presentation: {
+                detail: "Approve this operation",
+                kind: "choice",
+                options: [{ hint: "allow-once", id: "allow", label: "Allow" }],
+                title: "Approval required",
+              },
+              requestedBy: fixture.userId,
+              runId: fixture.run.id,
+              threadId: fixture.threadId,
+            }),
+          },
+          environmentId: fixture.environmentId,
+          ordinal: run.nextRunnerOrdinal,
+          runId: fixture.run.id,
+          threadId: fixture.threadId,
+          type: "request.opened",
+        }),
+      });
+    }
+
+    async function enrollMessagingRunner(runnerId: RunnerId, name: string): Promise<void> {
+      const tokenHash = `sha256:messaging-runner-${runnerId}`;
+      await store.createRunnerEnrollment({
+        allowedModules: ["integrations", "messaging"],
+        createdBy: null,
+        expiresAt: new Date(Date.now() + 60_000),
+        id: `ren_${randomUUID()}`,
+        idempotencyKey: `messaging-runner-${runnerId}`,
+        name,
+        requestFingerprint: `sha256:messaging-runner-${runnerId}`,
+        runnerKind: "managed",
+        tokenHash,
+      });
+      await store.enrollRunnerConnection({
+        descriptor: {
+          bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
+          capabilities: [],
+          modules: {
+            messaging: {
+              capabilities: [
+                {
+                  manifest: slackChannelProviderManifest,
+                  provider: "slack",
+                  transportKinds: ["socket"],
+                },
+              ],
+            },
+          },
+          name,
+          runnerId,
+          runnerKind: "managed",
+          runtimeVersion: "test",
+        },
+        enrollmentTokenHash: tokenHash,
+        publicKeyFingerprint: `sha256:messaging-key-${runnerId}`,
+        publicKeyPem: `-----BEGIN PUBLIC KEY-----\n${runnerId}\n-----END PUBLIC KEY-----\n`,
+      });
+    }
+    async function createChannelDeliveryFixture(suffix: string) {
+      const { ChannelStore } = await import("./channel-store.js");
+      const fixture = await createRunFixture(`channel-delivery-${suffix}`);
+      await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
+      const channels = new ChannelStore(database);
+      const configured = await channels.createConnection({
+        accessPolicy: testChannelAccessPolicy("anyone"),
+        account: {
+          displayName: `Delivery ${suffix}`,
+          externalAccountId: `T-${suffix}`,
+          routingMode: "dedicated",
+        },
+        connection: {
+          runnerId: testMessagingRunnerId,
+          connectionMethod: "bring-your-own",
+          displayName: `Delivery ${suffix}`,
+          externalIdentityId: `U-${suffix}`,
+          externalTenantId: `T-${suffix}`,
+          provider: "slack",
+          transportKind: "socket",
+        },
+        createdBy: fixture.userId,
+        credential: {
+          encryptedPayload: Buffer.from(`delivery-${suffix}`),
+          encryptionKeyVersion: 1,
+          id: createId("credential"),
+          name: `Delivery ${suffix}`,
+          ownerId: fixture.userId,
+          provider: "channel:slack",
+        },
+        executionPolicy: { harness: "default", harnessInstanceId: null },
+        selector: {
+          conversationId: null,
+          conversationType: null,
+          scopeId: null,
+          threadId: null,
+        },
+        folder: fixture.folder,
+      });
+      await channels.setRuntimeConnectionHealth({
+        connectionId: configured.connection.id,
+        detail: null,
+        reason: null,
+        runnerId: testMessagingRunnerId,
+        status: "connected",
+      });
+      const conversationId = createChannelId("conversation");
+      await database
+        .insertInto("channelConversations")
+        .values({
+          accountId: configured.account.id,
+          activeThreadId: fixture.thread.id,
+          bindingId: configured.binding.id,
+          bindingRevision: configured.binding.revision,
+          conversationType: "dm",
+          displayName: `Delivery ${suffix}`,
+          externalAccountId: `T-${suffix}`,
+          externalConversationId: `D-${suffix}`,
+          externalScopeId: null,
+          externalThreadId: null,
+          id: conversationId,
+          provider: "slack",
+          providerState: sql`${JSON.stringify({})}::jsonb`,
+          updatedAt: new Date(),
+        })
+        .executeTakeFirstOrThrow();
+      return { channels, configured, conversationId, fixture };
+    }
+    async function insertChannelDelivery(input: {
+      readonly accountId: ChannelAccountId;
+      readonly conversationId: ChannelConversationId;
+      readonly status: "pending" | "leased" | "attempt-started" | "retryable-failed";
+    }) {
+      const id = createChannelId("delivery");
+      const claimed = input.status === "leased" || input.status === "attempt-started";
+      await database
+        .insertInto("channelDeliveries")
+        .values({
+          accountId: input.accountId,
+          attempts: input.status === "attempt-started" ? 1 : 0,
+          claimExpiresAt: claimed ? new Date(Date.now() + 60_000) : null,
+          claimOwner: claimed ? testMessagingRunnerId : null,
+          claimTokenHash: claimed ? `claim-${id}` : null,
+          audience: "conversation",
+          content: sql`${JSON.stringify([{ text: "Delivery", type: "text" }])}::jsonb`,
+          conversationId: input.conversationId,
+          id,
+          ingressId: null,
+          kind: "status",
+          lastError: input.status === "retryable-failed" ? "Temporary provider failure" : null,
+          messageId: null,
+          nextAttemptAt: new Date(),
+          receipt: null,
+          sentAt: null,
+          status: input.status,
+          updatedAt: new Date(),
+        })
+        .executeTakeFirstOrThrow();
+      return id;
+    }
+    async function createChannelNoticeFixture(
+      suffix: string,
+      options: {
+        readonly accessMode?: "anyone" | "approved" | "owner";
+        readonly providers?: readonly ChannelProviderManifest[];
+      } = {},
+    ) {
+      const { ChannelStore, ChannelIngressDeferredError } = await import("./channel-store.js");
+      const fixture = await createRunFixture(`channel-notice-${suffix}`);
+      const messagingRunnerId = testMessagingRunnerId;
+      await enrollMessagingRunner(messagingRunnerId, "Test messaging service");
+      const channels = new ChannelStore(
+        database,
+        options.providers ? { providers: options.providers } : {},
+      );
+      const configured = await channels.createConnection({
+        accessPolicy: testChannelAccessPolicy(options.accessMode ?? "owner"),
+        account: {
+          displayName: `Notice ${suffix}`,
+          externalAccountId: `T-${suffix}`,
+          routingMode: "dedicated",
+        },
+        connection: {
+          runnerId: messagingRunnerId,
+          connectionMethod: "bring-your-own",
+          displayName: `Notice ${suffix}`,
+          externalIdentityId: `U-BOT-${suffix}`,
+          externalTenantId: `T-${suffix}`,
+          provider: "slack",
+          transportKind: "socket",
+        },
+        createdBy: fixture.userId,
+        credential: {
+          encryptedPayload: Buffer.from(`notice-${suffix}`),
+          encryptionKeyVersion: 1,
+          id: createId("credential"),
+          name: `Notice ${suffix}`,
+          ownerId: fixture.userId,
+          provider: "channel:slack",
+        },
+        executionPolicy: { harness: "default", harnessInstanceId: null },
+        selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
+        folder: fixture.folder,
+      });
+      await channels.setRuntimeConnectionHealth({
+        connectionId: configured.connection.id,
+        detail: null,
+        reason: null,
+        runnerId: messagingRunnerId,
+        status: "connected",
+      });
+      const event = (input: {
+        readonly displayName?: string;
+        readonly eventId: string;
+        readonly externalUserId?: string;
+        readonly type?: "channel" | "dm";
+        readonly trigger?: "mention" | "conversation-followup";
+      }) => ({
+        accountExternalId: `T-${suffix}`,
+        actor: {
+          displayName: input.displayName ?? "External operator",
+          externalUserId: input.externalUserId ?? `U-${suffix}`,
+        },
+        content: [{ text: "Look at this", type: "text" as const }],
+        conversation:
+          input.type === "dm"
+            ? {
+                displayName: null,
+                externalConversationId: `D-${suffix}`,
+                externalScopeId: `T-${suffix}`,
+                externalThreadId: null,
+                type: "dm" as const,
+              }
+            : {
+                displayName: suffix.toLowerCase(),
+                externalConversationId: `C-${suffix}`,
+                externalScopeId: `T-${suffix}`,
+                externalThreadId: "1786320000.000100",
+                type: "channel" as const,
+              },
+        eventId: input.eventId,
+        occurredAt: new Date().toISOString(),
+        provider: "slack" as const,
+        providerMessageId: input.eventId,
+        trigger: input.trigger ?? ("mention" as const),
+      });
+      const availableEngines = [
+        { environmentId: fixture.environmentId, driverKinds: [fixture.harnessInstance.driverKind] },
+      ];
+      const claimFor = async (
+        ingressId: ChannelIngressId,
+      ): Promise<NonNullable<Awaited<ReturnType<ChannelStore["claimIngress"]>>>> => {
+        const claimed = await channels.claimIngress(`notice-worker-${suffix}`);
+        expect(claimed?.id).toBe(ingressId);
+        return claimed!;
+      };
+      const adopt = async (
+        input: Parameters<typeof event>[0],
+      ): Promise<{
+        ingressId: ChannelIngressId;
+        result: Awaited<ReturnType<ChannelStore["adoptIngress"]>>;
+      }> => {
+        const committed = await channels.commitIngress(configured.connection.id, event(input));
+        const claimed = await claimFor(committed.ingressId);
+        try {
+          const result = await channels.adoptIngress({
+            claimToken: claimed.claimToken,
+            ingressId: claimed.id,
+            notices: testChannelNotices,
+            availableEngines,
+          });
+          return { ingressId: committed.ingressId, result };
+        } catch (error) {
+          // The ingress worker puts a failed claim back so the conversation's
+          // lane keeps moving; a test that expects the failure must do the same
+          // or its next message can never be claimed.
+          await channels.releaseIngress(
+            claimed.id,
+            claimed.claimToken,
+            error instanceof Error ? error.message : String(error),
+            { deferred: error instanceof ChannelIngressDeferredError },
+          );
+          throw error;
+        }
+      };
+      const notices = (ingressId: ChannelIngressId) =>
+        database
+          .selectFrom("channelDeliveries")
+          .select(["audience", "content", "kind", "status"])
+          .where("ingressId", "=", ingressId)
+          .execute();
+      return { adopt, channels, claimFor, configured, event, fixture, notices, availableEngines };
+    }
+    async function enablePersonalRemoteAccess() {
+      const enabled = {
+        generation: 1,
+        mode: "private" as const,
+        routeOrigin: "https://personal.test.invalid",
+        updatedAt: new Date(),
+      };
+      await database
+        .insertInto("personalRemoteAccess")
+        .values({ singletonKey: "personal", ...enabled })
+        .onConflict((c) => c.column("singletonKey").doUpdateSet(enabled))
+        .execute();
+    }
+    async function enrollBrowserRunner(ownerId: import("@opensteer/core").UserId, name: string) {
+      const personal = await database
+        .selectFrom("personalSettings")
+        .select("agentHomeComputerId")
+        .where("ownerId", "=", ownerId)
+        .executeTakeFirstOrThrow();
+      const computer = await database
+        .selectFrom("runners")
+        .select(["allowedModules", "moduleDescriptors"])
+        .where("id", "=", personal.agentHomeComputerId)
+        .executeTakeFirstOrThrow();
+      await database
+        .updateTable("runners")
+        .set({
+          name,
+          allowedModules: sql`${JSON.stringify([...new Set([...computer.allowedModules, "browser"])])}::jsonb`,
+          moduleDescriptors: {
+            ...computer.moduleDescriptors,
+            browser: { runtimeId: name, wireVersion: 2 },
+          },
+        })
+        .where("id", "=", personal.agentHomeComputerId)
+        .execute();
+      return personal.agentHomeComputerId;
+    }
+    async function createTaskForOwner(ownerId: import("@opensteer/core").UserId, suffix: string) {
+      const task = await createRunFixture(suffix);
+      if (task.userId !== ownerId)
+        throw new Error("This fixture only creates the personal owner's tasks");
+      return task.thread;
+    }
+    async function stagedRequestRace(
+      lock: (
+        transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
+      ) => Promise<unknown>,
+      first: () => Promise<unknown>,
+      second: () => Promise<unknown>,
+    ) {
+      const held = Promise.withResolvers<void>(),
+        release = Promise.withResolvers<void>();
+      const blocker = (await import("./personal-transaction.js")).withPersonalTransaction(
+        database,
+        async (transaction) => {
+          await lock(transaction);
+          held.resolve();
+          await withTimeout(release.promise, 5_000, {
+            timeoutError: () => new Error("Request race fence was never released"),
+          });
+        },
+      );
+      await withTimeout(held.promise, 5_000, {
+        timeoutError: () => new Error("Request race never acquired its fence"),
+      });
+      let a: Promise<unknown> | undefined, b: Promise<unknown> | undefined;
+      try {
+        a = first();
+        void a.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{
+              count: string;
+            }>`select count(*) from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
+              database,
+            );
+            expect(
+              Number(waiting.rows[0]!.count),
+              "First Request writer never reached the fence",
+            ).toBeGreaterThanOrEqual(1);
+          },
+          { timeout: 2_000 },
+        );
+        b = second();
+        void b.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{
+              count: string;
+            }>`select count(*) from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
+              database,
+            );
+            expect(
+              Number(waiting.rows[0]!.count),
+              "Both Request writers never reached the fence",
+            ).toBeGreaterThanOrEqual(2);
+          },
+          { timeout: 2_000 },
+        );
+      } finally {
+        release.resolve();
+        await blocker;
+      }
+      return Promise.allSettled([a!, b!]);
+    }
+
+    async function runDelegatedTurn(
+      fixture: Awaited<ReturnType<typeof startRunFixture>>,
+      run: { readonly id: RunId; readonly threadId: ThreadId },
+      input: {
+        readonly end: "completed" | "failed" | "interrupted";
+        readonly replies: readonly string[];
+        readonly suffix: string;
+      },
+    ) {
+      const command = await database
+        .selectFrom("commands")
+        .select("id")
+        .where("runId", "=", run.id)
+        .where("type", "=", "run.execute")
+        .executeTakeFirstOrThrow();
+      await store.claimCommand(command.id, `${input.suffix}-dispatcher`);
+      const runnerBootId = `boot-${input.suffix}`;
+      const binding = await store.acquireExecutionBinding({
+        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
+        continuationIdentity: testContinuationIdentity,
+        harnessInstanceId: fixture.harnessInstance.id,
+        leaseTokenHash: `${input.suffix}-lease`,
+        runnerBootId,
+        runnerId: fixture.runnerId,
+        runId: run.id,
+        threadId: run.threadId,
+      });
+      const commit = (event: PendingAgentEvent) =>
+        store.commitRunnerEvent({
+          environmentId: fixture.environmentId,
+          event,
+          runnerBootId,
+          runnerId: fixture.runnerId,
+        });
+      const scope = {
+        bindingGeneration: binding.bindingGeneration,
+        environmentId: fixture.environmentId,
+        runId: run.id,
+        threadId: run.threadId,
+      };
+      await commit(
+        pendingEvent({ ...scope, data: { status: "running" }, ordinal: 0, type: "run.started" }),
+      );
+      for (const [index, text] of input.replies.entries()) {
+        await commit(
+          pendingEvent({
+            ...scope,
+            data: { content: [{ text, type: "text" }], messageId: createId("message") },
+            ordinal: index + 1,
+            type: "assistant.message",
+          }),
+        );
+      }
+      const ordinal = input.replies.length + 1;
+      const terminalEvent: PendingAgentEvent =
+        input.end === "failed"
+          ? pendingEvent({
+              ...scope,
+              data: {
+                code: "harness_error",
+                message: "The child provider failed",
+                retryable: false,
+                status: "failed",
+              },
+              ordinal,
+              type: "run.failed",
+            })
+          : pendingEvent({
+              ...scope,
+              data: { status: input.end },
+              ordinal,
+              type: input.end === "completed" ? "run.completed" : "run.interrupted",
+            });
+      return { terminal: await commit(terminalEvent), terminalEvent, commit };
+    }
+    return Object.freeze({
+      createTaskForOwner,
+      stagedRequestRace,
+      runDelegatedTurn,
+      enablePersonalRemoteAccess,
+      enrollBrowserRunner,
+      enrollMessagingRunner,
+      createChannelDeliveryFixture,
+      insertChannelDelivery,
+      createChannelNoticeFixture,
+      triggers,
+      enqueueHumanTrigger,
+      recordReadyHarnessCatalog,
+      bindAgentControlRun,
+      startTriggerOccurrence,
+      openLiveRequest,
+      principalIdFor: (userId: import("@opensteer/core").UserId) =>
+        import("./personal-transaction.js").then(({ withPersonalTransaction }) =>
+          withPersonalTransaction(database, async (transaction) =>
+            (await import("./store-primitives.js")).principalIdForUser(transaction, userId),
+          ),
+        ),
+      database,
+      databaseUrl: clone.url,
+      store,
+      createRunFixture,
+      startRunFixture,
+      close: clone.drop,
+    });
+  } catch (error) {
+    await clone.drop();
+    throw error;
+  }
+}
+export type StoreFixture = Awaited<ReturnType<typeof createStoreFixture>>;
+const storeTest = it.extend<{ storeFixture: StoreFixture }>({
+  storeFixture: async ({ task }, use) => {
+    const started = performance.now();
+    const fixture = await createStoreFixture();
+    recordTestDatabaseSetup(task, started);
+    await use(fixture);
+  },
+});
+export function describeStore(name: string, body: (test: typeof storeTest) => void): void {
+  describe(name, () => body(storeTest));
+}
+
 export function testReadyHarnessCatalog(harnessInstanceId: HarnessInstanceId) {
   return HarnessInstanceCatalogSchema.parse({
     continuationIdentity: testContinuationIdentity,
@@ -86,63 +770,6 @@ export function testReadyHarnessCatalog(harnessInstanceId: HarnessInstanceId) {
     ],
     status: "ready",
   });
-}
-
-/** The messaging computer: an enrolled Runner whose only module is messaging. */
-export const testMessagingRunnerId = RunnerIdSchema.parse(
-  "rnr_00000000-0000-4000-8000-000000000001",
-);
-
-export const replacementMessagingRunnerId = RunnerIdSchema.parse(
-  "rnr_00000000-0000-4000-8000-000000000002",
-);
-
-export const testWorkspaceProfile = {
-  defaultWorkspaceBacking: "local-directory",
-  kind: "server" as const,
-} as const;
-
-/**
- * What a reach-only computer advertises: the `shell` module and nothing else.
- * The host key is a placeholder — the store records what a machine claims about
- * itself and never judges it.
- */
-export const reachOnlyModules: RunnerDescriptor["modules"] = {
-  shell: { hostPublicKey: `ssh-ed25519 ${"A".repeat(68)}`, platform: "darwin" },
-};
-
-/** What the Host would say; adoption inserts whichever of these it decides on. */
-export const testChannelNotices = {
-  approvalPending: "Your access request is waiting for approval.",
-  linkByDirectMessage: "Send me a direct message to link your account.",
-  linkCode: (code: string) => `Enter the code **${code}** to link your account.`,
-  noRoute: "This conversation is not routed to an Opensteer Workspace.",
-  notAMember: "You don't have access to the Workspace this conversation is routed to.",
-} as const;
-
-export function testChannelAccessPolicy(mode: "anyone" | "approved" | "linked-members" | "owner") {
-  const sender = { allowedExternalUserIds: [], mode } as const;
-  return {
-    channels: { conversationIds: [], scope: "all" as const, sender },
-    directMessages: sender,
-  };
-}
-
-export function localBacking(workspace: Workspace) {
-  expect(workspace.backing.kind).toBe("local-directory");
-  if (workspace.backing.kind !== "local-directory") {
-    throw new Error(`Expected storage backing, received ${workspace.backing.kind}`);
-  }
-  return workspace.backing;
-}
-
-/** Writes one browser-usage verification artifact where the run asked for them. */
-export async function writeBrowserUsageArtifact(name: string, value: unknown): Promise<void> {
-  const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
-  if (!directory) return;
-  const { mkdir, writeFile } = await import("node:fs/promises");
-  await mkdir(directory, { recursive: true });
-  await writeFile(`${directory}/${name}`, JSON.stringify(value, null, 2));
 }
 
 export async function enrollTestRunner(
@@ -165,9 +792,9 @@ export async function enrollTestRunner(
 ): Promise<void> {
   if (!(await store.getDeployment())) {
     await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
+      canonicalOrigin: "http://127.0.0.1:4310",
       hostInstanceId: createId("hostInstance"),
-      deploymentShape: testWorkspaceProfile,
+      deploymentShape: { kind: "personal" },
     });
   }
   const pair = generateKeyPairSync("ed25519");
@@ -206,51 +833,6 @@ export async function enrollTestRunner(
   });
 }
 
-export function testRunnerDescriptor(input: {
-  readonly environmentId: ReturnType<typeof createId<"environment">>;
-  /** What this boot advertises; the full agents machine unless a caller says otherwise. */
-  readonly modules?: RunnerDescriptor["modules"];
-  readonly name: string;
-  readonly runnerId: ReturnType<typeof createId<"runner">>;
-  readonly runnerKind: "main" | "local" | "managed";
-}): RunnerDescriptor {
-  return {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: input.modules ?? {
-      agents: {
-        environmentIds: [input.environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            steering: true,
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        localStorage: null,
-        maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
-      },
-    },
-    name: input.name,
-    runnerId: input.runnerId,
-    runnerKind: input.runnerKind,
-    runtimeVersion: "test",
-  };
-}
-
 export function fingerprint(publicKey: KeyObject): string {
   return `sha256:${createHash("sha256")
     .update(publicKey.export({ format: "der", type: "spki" }))
@@ -268,7 +850,6 @@ export function liveRequest(input: {
   readonly requestedBy: string;
   readonly runId: string;
   readonly threadId: string;
-  readonly workspaceId: string;
 }) {
   return PendingRequestSchema.parse({
     callId: input.id,
@@ -280,7 +861,6 @@ export function liveRequest(input: {
     originatingOccurrenceId: null,
     originatingRunId: input.runId,
     originatingThreadId: input.threadId,
-    originatingWorkspaceId: input.workspaceId,
     payload: { kind: "harness.input" },
     presentation: input.presentation,
     requestedBy: input.requestedBy,
@@ -289,7 +869,6 @@ export function liveRequest(input: {
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: input.workspaceId,
   });
 }
 
@@ -339,978 +918,76 @@ export function testOpenApiAdapterContract(input: {
   };
 }
 
-void (undefined as EnvironmentId | undefined);
+export async function writeBrowserUsageArtifact(name: string, value: unknown): Promise<void> {
+  const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
+  if (!directory) return;
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  await mkdir(directory, { recursive: true });
+  await writeFile(`${directory}/${name}`, JSON.stringify(value, null, 2));
+}
 
-export async function createStoreFixture() {
-  const clone = await cloneTestDatabase("host");
-  const { database } = await ownTestDatabaseProducer(clone.url, async () => {
-    const database = createDatabase({
-      applicationName: "opensteer-integration-test",
-      connectionString: clone.url,
-      maxConnections: 6,
-    });
-    return { database, close: () => database.destroy() };
-  });
+export function testChannelAccessPolicy(mode: "anyone" | "approved" | "owner") {
+  const sender = { allowedExternalUserIds: [], mode } as const;
+  return {
+    channels: { conversationIds: [], scope: "all" as const, sender },
+    directMessages: sender,
+  };
+}
 
-  const store = new OpensteerStore(database);
-
-  const triggers = new TriggerStore(database);
-
-  type HumanTriggerInput = Omit<
-    Parameters<OpensteerStore["enqueueThreadInput"]>[0],
-    "policy" | "source"
-  >;
-
-  async function enqueueHumanTrigger(
-    input: HumanTriggerInput,
-    targetStore: OpensteerStore = store,
-  ) {
-    const admitted = await targetStore.enqueueThreadInput({
-      ...input,
-      policy: "queue",
-      source: { kind: "human" },
-    });
-    expect(admitted).toMatchObject({
-      command: { type: "run.execute" },
-      disposition: "run-queued",
-      run: { status: "queued" },
-    });
-    if (!admitted.command || !admitted.run) {
-      throw new Error("Expected human trigger input to queue a Run");
-    }
-    return { ...admitted, command: admitted.command, run: admitted.run };
-  }
-
-  /** Turns the Personal route on, which is what admits any computer but Main. */
-  async function enablePersonalRemoteAccess(): Promise<void> {
-    await database
-      .updateTable("personalRemoteAccess")
-      .set({
-        generation: 1,
-        mode: "private",
-        routeOrigin: "https://personal.test.invalid",
-        updatedAt: new Date(),
-      })
-      .where("singletonKey", "=", "personal")
-      .executeTakeFirstOrThrow();
-  }
-
-  async function enrollMessagingRunner(runnerId: RunnerId, name: string): Promise<void> {
-    const tokenHash = `sha256:messaging-runner-${runnerId}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["messaging"],
-      createdBy: null,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `messaging-runner-${runnerId}`,
-      name,
-      requestFingerprint: `sha256:messaging-runner-${runnerId}`,
-      runnerKind: "managed",
-      tokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor: {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: [],
-        modules: {
-          messaging: {
-            capabilities: [
-              {
-                manifest: slackChannelProviderManifest,
-                provider: "slack",
-                transportKinds: ["socket"],
-              },
-            ],
-          },
-        },
-        name,
-        runnerId,
-        runnerKind: "managed",
-        runtimeVersion: "test",
-      },
-      enrollmentTokenHash: tokenHash,
-      publicKeyFingerprint: `sha256:messaging-key-${runnerId}`,
-      publicKeyPem: `-----BEGIN PUBLIC KEY-----\n${runnerId}\n-----END PUBLIC KEY-----\n`,
-    });
-  }
-
-  /** A computer whose only module is a browser, which is what a relay pod is. */
-  async function enrollBrowserRunner(createdBy: UserId, name: string): Promise<RunnerId> {
-    const runnerId = createId("runner");
-    const tokenHash = `sha256:browser-runner-${runnerId}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["browser"],
-      createdBy,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `browser-runner-${runnerId}`,
-      name,
-      requestFingerprint: `sha256:browser-runner-${runnerId}`,
-      runnerKind: "managed",
-      tokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor: {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: [],
-        modules: {
-          browser: {
-            wireVersion: 2,
-            runtimeId: name.toLowerCase().replaceAll(" ", "-"),
-          },
-        },
-        name,
-        runnerId,
-        runnerKind: "managed",
-        runtimeVersion: "test",
-      },
-      enrollmentTokenHash: tokenHash,
-      publicKeyFingerprint: `sha256:browser-key-${runnerId}`,
-      publicKeyPem: `-----BEGIN PUBLIC KEY-----\n${runnerId}\n-----END PUBLIC KEY-----\n`,
-    });
-    return runnerId;
-  }
-
-  async function recordReadyHarnessCatalog(
-    environmentId: EnvironmentId,
-    harness: { readonly id: HarnessInstanceId; readonly runtimeRevision: number },
-  ): Promise<void> {
-    await store.recordHarnessCatalogs({
-      catalogs: [testReadyHarnessCatalog(harness.id)],
-      environmentId,
-      expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-    });
-  }
-
-  async function createRunFixture(
-    suffix: string,
-    options: {
-      readonly deploymentShape: {
-        readonly defaultWorkspaceBacking: "local-directory";
-        readonly kind: "personal" | "server";
-      };
-      readonly workspaceBacking: "local-directory";
-    } | null = null,
-    workspaceKind: "main" | "project" = "main",
-  ) {
-    if (options) {
-      await store.ensureDeployment({
-        canonicalOrigin:
-          options.deploymentShape.kind === "personal"
-            ? "http://127.0.0.1:4310"
-            : "https://server.test.invalid",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: options.deploymentShape,
-      });
-    }
-    const userId = await store.createUser("Alex");
-    if (options?.deploymentShape.kind === "personal") {
-      await database
-        .updateTable("users")
-        .set({ instanceRole: "administrator" })
-        .where("id", "=", userId)
-        .executeTakeFirstOrThrow();
-    }
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    const storageAuthorityId = createId("storageAuthority");
-    const messagingOnMain = options?.deploymentShape.kind === "personal";
-    const agentsModule: NonNullable<RunnerDescriptor["modules"]["agents"]> = {
-      environmentIds: [environmentId],
-      harnessDrivers: [
-        {
-          accessModes: ThreadAccessModeSchema.options,
-          driverKind: HarnessIdSchema.parse("native"),
-          readiness: "configured",
-          steering: true,
-          sources: [
-            {
-              fields: [],
-              kind: "first-party",
-              label: "Native",
-              quota: "none",
-              sourceId: "native",
-              stateKinds: ["isolated"],
-            },
-          ],
-        },
-      ],
-      localStorage: { bindings: [], storageAuthorityId, truncated: false },
-      maxConcurrentRuns: 4,
-      providerStateModes: ["isolated"],
-      workspaceBackings: ["local-directory"],
-    };
-    await enrollTestRunner(store, {
-      allowedModules: messagingOnMain ? ["agents", "messaging"] : ["agents"],
-      createdBy: options?.deploymentShape.kind === "personal" ? null : userId,
-      environmentId,
-      modules: {
-        agents: agentsModule,
-        ...(messagingOnMain
-          ? {
-              messaging: {
-                capabilities: [
-                  {
-                    manifest: slackChannelProviderManifest,
-                    provider: "slack" as const,
-                    transportKinds: ["socket" as const],
-                  },
-                ],
-              },
-            }
-          : {}),
-      },
-      name: "Main runner",
-      runnerId,
-      tokenSuffix: suffix,
-    });
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-        kind: "local-directory",
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId,
-      },
-      createdBy: userId,
-      idempotencyKey: `workspace-${suffix}`,
-      ...(workspaceKind === "project" ? { kind: workspaceKind } : {}),
-      name: `Workspace ${suffix}`,
-      status: "ready",
-    });
-    expect(workspace.kind).toBe(workspaceKind);
-    const harnessInstance = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    await recordReadyHarnessCatalog(environmentId, harnessInstance);
-    const { thread } = await store.createThread({
-      createdBy: userId,
-      environmentId,
-      harnessInstanceId: harnessInstance.id,
-      idempotencyKey: `thread-${suffix}`,
-      modelSelection: testModelSelection,
-      title: `Thread ${suffix}`,
-      workspaceId: workspace.id,
-    });
-    expect(thread.inheritsMain).toBe(workspaceKind === "main");
-    return { environmentId, harnessInstance, runnerId, thread, userId, workspace };
-  }
-
-  async function createChannelDeliveryFixture(suffix: string) {
-    const fixture = await createRunFixture(`channel-delivery-${suffix}`);
-    await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
-    const channels = new ChannelStore(database);
-    const configured = await channels.createConnection({
-      accessPolicy: testChannelAccessPolicy("anyone"),
-      account: {
-        displayName: `Delivery ${suffix}`,
-        externalAccountId: `T-${suffix}`,
-        routingMode: "dedicated",
-      },
-      connection: {
-        runnerId: testMessagingRunnerId,
-        connectionMethod: "bring-your-own",
-        displayName: `Delivery ${suffix}`,
-        externalIdentityId: `U-${suffix}`,
-        externalTenantId: `T-${suffix}`,
-        provider: "slack",
-        transportKind: "socket",
-      },
-      createdBy: fixture.userId,
-      credential: {
-        encryptedPayload: Buffer.from(`delivery-${suffix}`),
-        encryptionKeyVersion: 1,
-        id: createId("credential"),
-        name: `Delivery ${suffix}`,
-        ownerId: fixture.userId,
-        provider: "channel:slack",
-      },
-      executionPolicy: { harness: "default", harnessInstanceId: null },
-      selector: {
-        conversationId: null,
-        conversationType: null,
-        scopeId: null,
-        threadId: null,
-      },
-      workspaceId: fixture.workspace.id,
-    });
-    await channels.setRuntimeConnectionHealth({
-      connectionId: configured.connection.id,
-      detail: null,
-      reason: null,
-      runnerId: testMessagingRunnerId,
-      status: "connected",
-    });
-    const conversationId = createChannelId("conversation");
-    await database
-      .insertInto("channelConversations")
-      .values({
-        accountId: configured.account.id,
-        activeThreadId: fixture.thread.id,
-        bindingId: configured.binding.id,
-        bindingRevision: configured.binding.revision,
-        conversationType: "dm",
-        displayName: `Delivery ${suffix}`,
-        externalAccountId: `T-${suffix}`,
-        externalConversationId: `D-${suffix}`,
-        externalScopeId: null,
-        externalThreadId: null,
-        id: conversationId,
-        provider: "slack",
-        providerState: sql`${JSON.stringify({})}::jsonb`,
-        updatedAt: new Date(),
-        workspaceId: fixture.workspace.id,
-      })
-      .executeTakeFirstOrThrow();
-    return { channels, configured, conversationId, fixture };
-  }
-
-  async function insertChannelDelivery(input: {
-    readonly accountId: ChannelAccountId;
-    readonly conversationId: ChannelConversationId;
-    readonly status: "pending" | "leased" | "attempt-started" | "retryable-failed";
-  }) {
-    const id = createChannelId("delivery");
-    const claimed = input.status === "leased" || input.status === "attempt-started";
-    await database
-      .insertInto("channelDeliveries")
-      .values({
-        accountId: input.accountId,
-        attempts: input.status === "attempt-started" ? 1 : 0,
-        claimExpiresAt: claimed ? new Date(Date.now() + 60_000) : null,
-        claimOwner: claimed ? testMessagingRunnerId : null,
-        claimTokenHash: claimed ? `claim-${id}` : null,
-        audience: "conversation",
-        content: sql`${JSON.stringify([{ text: "Delivery", type: "text" }])}::jsonb`,
-        conversationId: input.conversationId,
-        id,
-        ingressId: null,
-        kind: "status",
-        lastError: input.status === "retryable-failed" ? "Temporary provider failure" : null,
-        messageId: null,
-        nextAttemptAt: new Date(),
-        receipt: null,
-        sentAt: null,
-        status: input.status,
-        updatedAt: new Date(),
-      })
-      .executeTakeFirstOrThrow();
-    return id;
-  }
-
-  async function bindAgentControlRun(
-    fixture: Awaited<ReturnType<typeof createRunFixture>>,
-    runId: RunId,
-    suffix: string,
-    threadId = fixture.thread.id,
-  ) {
-    const runnerBootId = `boot-agent-control-${suffix}`;
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: fixture.harnessInstance.id,
-      leaseTokenHash: `agent-control-${suffix}-lease`,
-      membershipGeneration: 1,
-      runnerBootId,
-      runnerId: fixture.runnerId,
-      runId,
-      threadId,
-    });
-    return {
-      bindingGeneration: binding.bindingGeneration,
-      environmentId: fixture.environmentId,
-      membershipGeneration: 1,
-      requestedBy: fixture.userId,
-      runnerBootId,
-      runnerId: fixture.runnerId,
-      workspaceId: fixture.workspace.id,
-    };
-  }
-
-  /** A Thread whose head Run has reached `running` on a bound Runner. */
-  async function startRunFixture(suffix: string, workspaceKind: "main" | "project" = "main") {
-    const fixture = await createRunFixture(suffix, null, workspaceKind);
-    const runnerBootId = `boot-${suffix}`;
-    const turn = await enqueueHumanTrigger({
-      content: [{ text: "Start the work", type: "text" }],
-      idempotencyKey: `${suffix}-initial-turn`,
-      requestedBy: fixture.userId,
-      threadId: fixture.thread.id,
-    });
-    await store.claimCommand(turn.command.id, `${suffix}-dispatcher`);
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: fixture.harnessInstance.id,
-      leaseTokenHash: `${suffix}-lease`,
-      membershipGeneration: 1,
-      runnerBootId,
-      runnerId: fixture.runnerId,
-      runId: turn.run.id,
-      threadId: fixture.thread.id,
-    });
-    await store.commitRunnerEvent({
-      environmentId: fixture.environmentId,
-      event: pendingEvent({
-        bindingGeneration: binding.bindingGeneration,
-        data: { status: "running" },
-        environmentId: fixture.environmentId,
-        ordinal: 0,
-        runId: turn.run.id,
-        threadId: fixture.thread.id,
-        type: "run.started",
-        workspaceId: fixture.workspace.id,
-      }),
-      runnerBootId,
-      runnerId: fixture.runnerId,
-    });
-    return {
-      ...fixture,
-      bindingGeneration: binding.bindingGeneration,
-      run: turn.run,
-      runnerBootId,
-      turn,
-    };
-  }
-
-  async function stagedRequestRace(
-    lock: (
-      transaction: import("kysely").Transaction<import("./schema.js").DatabaseSchema>,
-    ) => Promise<unknown>,
-    first: () => Promise<unknown>,
-    second: () => Promise<unknown>,
-  ) {
-    const held = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const blocker = database.transaction().execute(async (transaction) => {
-      await lock(transaction);
-      held.resolve();
-      await release.promise;
-    });
-    await held.promise;
-    const waiters = (count: number) =>
-      expect
-        .poll(async () => {
-          const result = await sql<{
-            waiting: number;
-          }>`select count(*)::integer as waiting from pg_stat_activity
-        where datname = current_database() and application_name = 'opensteer-integration-test' and wait_event_type = 'Lock'`.execute(
-            database,
-          );
-          return result.rows[0]!.waiting;
-        })
-        .toBeGreaterThanOrEqual(count);
-    const a = first();
-    void a.catch(() => undefined);
-    let b: Promise<unknown> | undefined;
-    try {
-      await waiters(1);
-      b = second();
-      void b.catch(() => undefined);
-      await waiters(2);
-    } finally {
-      release.resolve();
-      await blocker;
-    }
-    const results = await Promise.allSettled([a, b!]);
-    for (const result of results) {
-      if (result.status === "rejected")
-        expect(result.reason).toMatchObject({
-          code: expect.stringMatching(/^(conflict|forbidden|not_found)$/),
-        });
-    }
-    expect(results.some(({ status }) => status === "fulfilled")).toBe(true);
-    return results;
-  }
-
-  /** A Trigger anchored to the fixture's Thread, with one Occurrence running. */
-  async function startTriggerOccurrence(
-    fixture: Awaited<ReturnType<typeof startRunFixture>>,
-    suffix: string,
-  ) {
-    const created = await triggers.create({
-      actorThreadId: null,
-      anchorThreadId: fixture.thread.id,
-      createdBy: fixture.userId,
-      idempotencyKey: `trigger-${suffix}`,
-      name: `Trigger ${suffix}`,
-      program: {
-        toolContractVersion: 2,
-        language: "javascript",
-        source: "export default async () => null",
-      },
-      source: {
-        kind: "schedule",
-        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
-      },
-    });
-    const occurrence = await triggers.enqueueManual({
-      actorThreadId: null,
-      ownerId: fixture.userId,
-      triggerId: created.trigger.id,
-    });
-    const claimed = await store.claimCommand(occurrence.commandId, `trigger-dispatcher-${suffix}`);
-    if (!claimed) throw new Error("Expected the Trigger command claim");
-    await triggers.startExecution({
-      commandId: occurrence.commandId,
-      runnerBootId: `trigger-boot-${suffix}`,
-      runnerId: fixture.runnerId,
-    });
-    return occurrence;
-  }
-
-  function openLiveRequest(
-    fixture: Awaited<ReturnType<typeof startRunFixture>>,
-    requestId: RequestId,
-  ) {
-    return store.commitRunnerEvent({
-      environmentId: fixture.environmentId,
-      event: pendingEvent({
-        bindingGeneration: fixture.bindingGeneration,
-        data: {
-          request: liveRequest({
-            harnessInstanceId: fixture.harnessInstance.id,
-            id: requestId,
-            presentation: {
-              detail: "Approve this operation",
-              kind: "choice",
-              options: [{ hint: "allow-once", id: "allow", label: "Allow" }],
-              title: "Approval required",
-            },
-            requestedBy: fixture.userId,
-            runId: fixture.run.id,
-            threadId: fixture.thread.id,
-            workspaceId: fixture.workspace.id,
-          }),
-        },
-        environmentId: fixture.environmentId,
-        ordinal: 1,
-        runId: fixture.run.id,
-        threadId: fixture.thread.id,
-        type: "request.opened",
-        workspaceId: fixture.workspace.id,
-      }),
-      runnerBootId: fixture.runnerBootId,
-      runnerId: fixture.runnerId,
-    });
-  }
-
-  function createProjectWorkspace(ownerId: UserId, suffix: string, id?: Workspace["id"]) {
-    return createTestWorkspace(store, {
-      ...(id ? { id } : {}),
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: `workspace-${suffix}`,
-      kind: "project" as const,
-      name: `Workspace ${suffix}`,
-      status: "ready" as const,
-    });
-  }
-
-  /** The SQL mirror of the TypeScript execution-authority predicate. */
-  async function sqlCanExecute(environmentId: EnvironmentId, userId: string): Promise<boolean> {
-    const result = await sql<{ readonly allowed: boolean }>`
-      select opensteer_user_can_execute_environment(${environmentId}, ${userId}) as allowed
-    `.execute(database);
-    return result.rows[0]?.allowed === true;
-  }
-
-  async function principalIdFor(userId: string): Promise<string> {
-    const result = await sql<{
-      readonly id: string;
-    }>`select id from principals where user_id = ${userId}`.execute(database);
-    const id = result.rows[0]?.id;
-    if (!id) throw new Error("Principal for user is missing");
-    return id;
-  }
-
-  /**
-   * A deployment where a managed Runner was attached for Alice, and Bob
-   * is an active member of the same Workspace. Bob's access to the Workspace is
-   * real; only the work location is private.
-   */
-  async function createCloudBindingFixture(suffix: string) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://cloud.test.invalid",
-      hostInstanceId: createId("hostInstance"),
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-    });
-    const aliceId = await store.createUser("Alice");
-    const bobId = await store.createUser("Bob");
-    const mainEnvironmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: aliceId,
-      environmentId: mainEnvironmentId,
-      name: "Main runner",
-      runnerId: createId("runner"),
-      tokenSuffix: `${suffix}-main`,
-    });
-    const aliceEnvironmentId = createId("environment");
-    const aliceRunnerId = createId("runner");
-    await enrollTestRunner(store, {
-      createdBy: aliceId,
-      environmentId: aliceEnvironmentId,
-      name: "Alice's managed Runner",
-      ownerUserId: aliceId,
-      runnerId: aliceRunnerId,
-      runnerKind: "managed",
-      tokenSuffix: `${suffix}-alice-cloud`,
-    });
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: aliceId,
-      idempotencyKey: `workspace-${suffix}`,
-      name: `Workspace ${suffix}`,
-      status: "ready",
-    });
-    const harness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: aliceEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    await recordReadyHarnessCatalog(aliceEnvironmentId, harness);
-    const mainHarness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: mainEnvironmentId,
-      name: "Native Main",
-      stateKind: "isolated",
-    });
-    await recordReadyHarnessCatalog(mainEnvironmentId, mainHarness);
-    const invitation = await store.createWorkspaceInvitation({
-      createdBy: aliceId,
-      expiresAt: new Date(Date.now() + 60_000),
-      idempotencyKey: `${suffix}-invite`,
-      intendedEmail: null,
-      requestFingerprint: `sha256:${suffix}-invite`,
-      role: "collaborator",
-      selector: `${suffix}-selector`.padEnd(20, "0").slice(0, 32),
-      tokenHash: `sha256:${suffix}-verifier`,
-      type: "link",
-      workspaceId: workspace.id,
-    });
-    await store.acceptWorkspaceInvitation({
-      selector: invitation.selector,
-      tokenHash: `sha256:${suffix}-verifier`,
-      userEmail: `${bobId}@test.invalid`,
-      userEmailVerified: true,
-      userId: bobId,
-    });
-    return {
-      aliceEnvironmentId,
-      aliceId,
-      aliceRunnerId,
-      bobId,
-      harness,
-      mainHarness,
-      mainEnvironmentId,
-      workspace,
-    };
-  }
-
-  /**
-   * Drives a delegated Run through the Runner's event stream: start, replies,
-   * then its terminal event. Returns the terminal commit and that event so a
-   * caller can replay it.
-   */
-  async function runDelegatedTurn(
-    fixture: Awaited<ReturnType<typeof startRunFixture>>,
-    run: { readonly id: RunId; readonly threadId: ReturnType<typeof ThreadIdSchema.parse> },
-    input: {
-      readonly end: "completed" | "failed" | "interrupted";
-      readonly replies: readonly string[];
-      readonly suffix: string;
-    },
-  ) {
-    const command = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", run.id)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    await store.claimCommand(command.id, `${input.suffix}-dispatcher`);
-    const runnerBootId = `boot-${input.suffix}`;
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: testContinuationIdentity,
-      harnessInstanceId: fixture.harnessInstance.id,
-      leaseTokenHash: `${input.suffix}-lease`,
-      membershipGeneration: 1,
-      runnerBootId,
-      runnerId: fixture.runnerId,
-      runId: run.id,
-      threadId: run.threadId,
-    });
-    const commit = (event: PendingAgentEvent) =>
-      store.commitRunnerEvent({
-        environmentId: fixture.environmentId,
-        event,
-        runnerBootId,
-        runnerId: fixture.runnerId,
-      });
-    const scope = {
-      bindingGeneration: binding.bindingGeneration,
-      environmentId: fixture.environmentId,
-      runId: run.id,
-      threadId: run.threadId,
-      workspaceId: fixture.workspace.id,
-    };
-    await commit(
-      pendingEvent({ ...scope, data: { status: "running" }, ordinal: 0, type: "run.started" }),
-    );
-    for (const [index, text] of input.replies.entries()) {
-      await commit(
-        pendingEvent({
-          ...scope,
-          data: { content: [{ text, type: "text" }], messageId: createId("message") },
-          ordinal: index + 1,
-          type: "assistant.message",
-        }),
-      );
-    }
-    const ordinal = input.replies.length + 1;
-    const terminalEvent: PendingAgentEvent =
-      input.end === "failed"
-        ? pendingEvent({
-            ...scope,
-            data: {
-              code: "harness_error",
-              message: "The child provider failed",
-              retryable: false,
-              status: "failed",
-            },
-            ordinal,
-            type: "run.failed",
-          })
-        : pendingEvent({
-            ...scope,
-            data: { status: input.end },
-            ordinal,
-            type: input.end === "completed" ? "run.completed" : "run.interrupted",
-          });
-    return { terminal: await commit(terminalEvent), terminalEvent, commit };
-  }
-
-  /**
-   * A connection whose route admits only linked people, so an unlinked sender
-   * is the ordinary case rather than a contrivance.
-   */
-  async function createChannelNoticeFixture(
-    suffix: string,
-    options: {
-      readonly accessMode?: "anyone" | "approved" | "linked-members" | "owner";
-      readonly providers?: readonly ChannelProviderManifest[];
-      readonly runFixture?: NonNullable<Parameters<typeof createRunFixture>[1]>;
-    } = {},
-  ) {
-    const fixture = await createRunFixture(`channel-notice-${suffix}`, options.runFixture ?? null);
-    const messagingRunnerId =
-      options.runFixture?.deploymentShape.kind === "personal"
-        ? fixture.runnerId
-        : testMessagingRunnerId;
-    if (messagingRunnerId === testMessagingRunnerId) {
-      await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
-    }
-    const channels = new ChannelStore(
-      database,
-      options.providers ? { providers: options.providers } : {},
-    );
-    const configured = await channels.createConnection({
-      accessPolicy: testChannelAccessPolicy(options.accessMode ?? "linked-members"),
-      account: {
-        displayName: `Notice ${suffix}`,
-        externalAccountId: `T-${suffix}`,
-        routingMode: "dedicated",
-      },
-      connection: {
-        runnerId: messagingRunnerId,
-        connectionMethod: "bring-your-own",
-        displayName: `Notice ${suffix}`,
-        externalIdentityId: `U-BOT-${suffix}`,
-        externalTenantId: `T-${suffix}`,
-        provider: "slack",
-        transportKind: "socket",
-      },
-      createdBy: fixture.userId,
-      credential: {
-        encryptedPayload: Buffer.from(`notice-${suffix}`),
-        encryptionKeyVersion: 1,
-        id: createId("credential"),
-        name: `Notice ${suffix}`,
-        ownerId: fixture.userId,
-        provider: "channel:slack",
-      },
-      executionPolicy: { harness: "default", harnessInstanceId: null },
-      selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      workspaceId: fixture.workspace.id,
-    });
-    await channels.setRuntimeConnectionHealth({
-      connectionId: configured.connection.id,
-      detail: null,
-      reason: null,
-      runnerId: messagingRunnerId,
-      status: "connected",
-    });
-    const event = (input: {
-      readonly displayName?: string;
-      readonly eventId: string;
-      readonly externalUserId?: string;
-      readonly type?: "channel" | "dm";
-      readonly trigger?: "mention" | "conversation-followup";
-    }) => ({
-      accountExternalId: `T-${suffix}`,
-      actor: {
-        displayName: input.displayName ?? "External operator",
-        externalUserId: input.externalUserId ?? `U-${suffix}`,
-      },
-      content: [{ text: "Look at this", type: "text" as const }],
-      conversation:
-        input.type === "dm"
-          ? {
-              displayName: null,
-              externalConversationId: `D-${suffix}`,
-              externalScopeId: `T-${suffix}`,
-              externalThreadId: null,
-              type: "dm" as const,
-            }
-          : {
-              displayName: suffix.toLowerCase(),
-              externalConversationId: `C-${suffix}`,
-              externalScopeId: `T-${suffix}`,
-              externalThreadId: "1786320000.000100",
-              type: "channel" as const,
-            },
-      eventId: input.eventId,
-      occurredAt: new Date().toISOString(),
-      provider: "slack" as const,
-      providerMessageId: input.eventId,
-      trigger: input.trigger ?? ("mention" as const),
-    });
-    const availableEngines = [
-      { environmentId: fixture.environmentId, driverKinds: [fixture.harnessInstance.driverKind] },
-    ];
-    const claimFor = async (
-      ingressId: ChannelIngressId,
-    ): Promise<NonNullable<Awaited<ReturnType<ChannelStore["claimIngress"]>>>> => {
-      const claimed = await channels.claimIngress(`notice-worker-${suffix}`);
-      expect(claimed?.id).toBe(ingressId);
-      return claimed!;
-    };
-    const adopt = async (
-      input: Parameters<typeof event>[0],
-    ): Promise<{
-      ingressId: ChannelIngressId;
-      result: Awaited<ReturnType<ChannelStore["adoptIngress"]>>;
-    }> => {
-      const committed = await channels.commitIngress(configured.connection.id, event(input));
-      const claimed = await claimFor(committed.ingressId);
-      try {
-        const result = await channels.adoptIngress({
-          claimToken: claimed.claimToken,
-          ingressId: claimed.id,
-          notices: testChannelNotices,
-          availableEngines,
-        });
-        return { ingressId: committed.ingressId, result };
-      } catch (error) {
-        // The ingress worker puts a failed claim back so the conversation's
-        // lane keeps moving; a test that expects the failure must do the same
-        // or its next message can never be claimed.
-        await channels.releaseIngress(
-          claimed.id,
-          claimed.claimToken,
-          error instanceof Error ? error.message : String(error),
-          { deferred: error instanceof ChannelIngressDeferredError },
-        );
-        throw error;
-      }
-    };
-    const notices = (ingressId: ChannelIngressId) =>
+export const readEmptyPersonalResources: import("./snapshot-store.js").PersonalSnapshotResourcesReader =
+  async ({ database }) => {
+    const [app, tab, profile] = await Promise.all([
+      database.selectFrom("apps").select("id").limit(1).executeTakeFirst(),
       database
-        .selectFrom("channelDeliveries")
-        .select(["audience", "content", "kind", "status"])
-        .where("ingressId", "=", ingressId)
-        .execute();
-    return { adopt, channels, claimFor, configured, event, fixture, notices, availableEngines };
-  }
-  return Object.freeze({
-    databaseUrl: clone.url,
-    database,
-    store,
-    triggers,
-    enqueueHumanTrigger,
-    enablePersonalRemoteAccess,
-    enrollMessagingRunner,
-    enrollBrowserRunner,
-    recordReadyHarnessCatalog,
-    createRunFixture,
-    createChannelDeliveryFixture,
-    insertChannelDelivery,
-    bindAgentControlRun,
-    startRunFixture,
-    stagedRequestRace,
-    startTriggerOccurrence,
-    openLiveRequest,
-    createProjectWorkspace,
-    sqlCanExecute,
-    principalIdFor,
-    createCloudBindingFixture,
-    runDelegatedTurn,
-    createChannelNoticeFixture,
-  });
-}
-
-export type StoreFixture = Awaited<ReturnType<typeof createStoreFixture>>;
-
-const storeTest = it.extend<{ storeFixture: StoreFixture }>({
-  storeFixture: async ({ task }, use) => {
-    const started = performance.now();
-    const fixture = await createStoreFixture();
-    if (process.env.OPENSTEER_STORE_SETUP_TIMINGS)
-      appendFileSync(
-        process.env.OPENSTEER_STORE_SETUP_TIMINGS,
-        JSON.stringify({
-          file: task.file.filepath,
-          test: task.name,
-          setupMs: performance.now() - started,
-        }) + "\n",
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("closedAt", "is", null)
+        .limit(1)
+        .executeTakeFirst(),
+      database.selectFrom("browserProfiles").select("id").limit(1).executeTakeFirst(),
+    ]);
+    if (app || tab || profile)
+      throw new Error(
+        "This fixture needs a resource snapshot collaborator for its private resources",
       );
-    await use(fixture);
-  },
-});
+    return {
+      appTabs: [],
+      browser: {
+        available: false,
+        placements: [],
+        profiles: [],
+        groups: { rows: [], complete: true },
+        tabs: [],
+      },
+    };
+  };
 
-export function describeStore(name: string, body: (test: typeof storeTest) => void): void {
-  integration(name, () => {
-    body(storeTest);
+export const testMessagingRunnerId = RunnerIdSchema.parse(
+  "rnr_00000000-0000-4000-8000-000000000001",
+);
+export const replacementMessagingRunnerId = RunnerIdSchema.parse(
+  "rnr_00000000-0000-4000-8000-000000000002",
+);
+export const testChannelNotices = {
+  approvalPending: "Your access request is waiting for approval.",
+  linkByDirectMessage: "Send a direct message to link your account.",
+  linkCode: (code: string) => `Enter the code **${code}** to link your account.`,
+  noRoute: "Choose a task folder for this conversation.",
+} as const;
+
+export const reachOnlyModules: RunnerDescriptor["modules"] = {
+  shell: { hostPublicKey: `ssh-ed25519 ${"A".repeat(68)}`, platform: "darwin" },
+};
+
+export { seedPersonalOwnerResources } from "./personal-fixture.test-support.js";
+
+export function personalBrowserRepository(store: OpensteerStore) {
+  return Object.assign(store, {
+    findActiveBrowserSessionForPerson: (ownerId: import("@opensteer/core").UserId) =>
+      findActiveBrowserSessionForPerson(store.database, ownerId),
   });
 }
+
 export {
   messageFromRow,
   runFromRow,

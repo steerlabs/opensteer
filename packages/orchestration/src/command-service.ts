@@ -4,60 +4,52 @@ import type {
   AgentEvent,
   Sequence,
   EnvironmentId,
-  HarnessInstanceId,
-  ModelSelection,
   ThreadAccessMode,
   Thread,
   ThreadId,
   UserId,
-  WorkspaceId,
-  Workspace,
 } from "@opensteer/core";
-import {
+import type {
   OpensteerStore,
-  type CommandRow,
-  type AdmittedThreadDelegationRequest,
-  type AdmittedThreadInputRequest,
-  type CancelledThreadInput,
-  type CancelThreadInputRequest,
-  type DelegatedThreadResult,
-  type DelegateThreadRequest,
-  type EnqueuedThreadInput,
-  type EnqueueThreadInputRequest,
-  type MovedThreadInput,
-  type MoveThreadInputRequest,
-  type SteerThreadInputRequest,
-  type RunnerControlInput,
+  CommandRow,
+  AdmittedThreadDelegationRequest,
+  AdmittedThreadInputRequest,
+  CancelledThreadInput,
+  CancelThreadInputRequest,
+  DelegatedThreadResult,
+  DelegateThreadRequest,
+  EnqueuedThreadInput,
+  EnqueueThreadInputRequest,
+  MovedThreadInput,
+  MoveThreadInputRequest,
+  SteerThreadInputRequest,
+  RunnerControlInput,
 } from "@opensteer/database";
 import { KeyedAdmissionQueue } from "./admission-queue.js";
 
 /** How many times stopping a task re-fences a tree that grew meanwhile. */
 const maxCancelRounds = 8;
-
 interface CommandServiceOptions {
   readonly store: OpensteerStore;
   readonly admission: KeyedAdmissionQueue;
   /** A durable execution was accepted, so dispatch can resume immediately. */
   readonly onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly onWorkspaceActivity?: (workspaceId: WorkspaceId) => void;
-  readonly onWorkspaceEvent: (event: AgentEvent) => void;
+  readonly onActivity?: () => void;
+  readonly onDeploymentEvent: (event: AgentEvent) => void;
 }
-
 export class CommandService {
   readonly #store: OpensteerStore;
   readonly #admission: KeyedAdmissionQueue;
   readonly #onExecutionQueued: (environmentId: EnvironmentId) => void;
-  readonly #onWorkspaceActivity: ((workspaceId: WorkspaceId) => void) | undefined;
-  readonly #onWorkspaceEvent: (event: AgentEvent) => void;
-
+  readonly #onActivity: (() => void) | undefined;
+  readonly #onDeploymentEvent: (event: AgentEvent) => void;
   constructor(options: CommandServiceOptions) {
     this.#store = options.store;
     this.#admission = options.admission;
     this.#onExecutionQueued = options.onExecutionQueued;
-    this.#onWorkspaceActivity = options.onWorkspaceActivity;
-    this.#onWorkspaceEvent = options.onWorkspaceEvent;
+    this.#onActivity = options.onActivity;
+    this.#onDeploymentEvent = options.onDeploymentEvent;
   }
-
   readonly #inputAdmissions = new Map<string, Promise<void>>();
 
   /** One Host owns a deployment. Coordinate external preflight with commit per input key,
@@ -86,151 +78,132 @@ export class CommandService {
       void settled.catch(() => undefined);
     }
   }
-
-  createThread(input: {
-    readonly specialistId?: string;
-    readonly icon?: import("@opensteer/core").WorkspaceIconName;
-    readonly authority?: import("@opensteer/database").ThreadCallerAuthority;
-    readonly accessMode: ThreadAccessMode;
-    readonly createdBy: UserId;
-    readonly environmentId: EnvironmentId;
-    readonly harnessInstanceId: HarnessInstanceId;
-    readonly idempotencyKey: string;
-    readonly modelSelection: ModelSelection;
-    readonly parentThreadId?: ThreadId;
-    readonly home?: boolean;
-    readonly generateTitle?: true;
-    readonly title: string;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<{
+  createThread(input: Parameters<OpensteerStore["createThread"]>[0]): Promise<{
     readonly asOfSequence: Sequence;
     readonly thread: Thread;
     readonly wasDuplicate: boolean;
   }> {
-    return this.#admission.execute(
-      [`workspace:${input.workspaceId}`],
-      byteSize(input),
-      async () => {
-        const result = await this.#store.createThread(input);
-        if (result.event) this.#onWorkspaceEvent(result.event);
-        return result;
-      },
-    );
+    return this.#admission.execute(["personal-task-create"], byteSize(input), async () => {
+      const result = await this.#store.createThread(input);
+      if (result.event) this.#onDeploymentEvent(result.event);
+      return result;
+    });
   }
-
-  renameThread(
-    input: Parameters<OpensteerStore["renameThread"]>[0],
-  ): Promise<{ readonly asOfSequence: Sequence; readonly thread: Thread }> {
+  renameThread(input: Parameters<OpensteerStore["renameThread"]>[0]): Promise<{
+    readonly asOfSequence: Sequence;
+    readonly thread: Thread;
+  }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.renameThread(input);
-      for (const event of result.events ?? []) this.#onWorkspaceEvent(event);
-      return { asOfSequence: result.asOfSequence, thread: result.thread };
+      for (const event of result.events ?? []) this.#onDeploymentEvent(event);
+      return {
+        asOfSequence: result.asOfSequence,
+        thread: result.thread,
+      };
     });
   }
-
-  setThreadIcon(
-    input: Parameters<OpensteerStore["setThreadIcon"]>[0],
-  ): Promise<{ readonly asOfSequence: Sequence; readonly thread: Thread }> {
+  setThreadIcon(input: Parameters<OpensteerStore["setThreadIcon"]>[0]): Promise<{
+    readonly asOfSequence: Sequence;
+    readonly thread: Thread;
+  }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.setThreadIcon(input);
-      for (const event of result.events ?? []) this.#onWorkspaceEvent(event);
-      return { asOfSequence: result.asOfSequence, thread: result.thread };
+      for (const event of result.events ?? []) this.#onDeploymentEvent(event);
+      return {
+        asOfSequence: result.asOfSequence,
+        thread: result.thread,
+      };
     });
   }
-
-  setWorkspaceColor(input: Parameters<OpensteerStore["setWorkspaceColor"]>[0]): Promise<Workspace> {
-    return this.#admission.execute([`workspace:${input.workspaceId}`], byteSize(input), () =>
-      this.#store.setWorkspaceColor(input),
-    );
-  }
-
   updateThreadAccessMode(input: {
     readonly accessMode: ThreadAccessMode;
     readonly requestedBy: UserId;
     readonly threadId: ThreadId;
-  }): Promise<{ readonly asOfSequence: Sequence; readonly thread: Thread }> {
+  }): Promise<{
+    readonly asOfSequence: Sequence;
+    readonly thread: Thread;
+  }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.updateThreadAccessMode(input);
-      if (result.event) this.#onWorkspaceEvent(result.event);
-      return { asOfSequence: result.asOfSequence, thread: result.thread };
+      if (result.event) this.#onDeploymentEvent(result.event);
+      return {
+        asOfSequence: result.asOfSequence,
+        thread: result.thread,
+      };
     });
   }
-
   updateThreadExecutionSelection(
     input: Parameters<OpensteerStore["updateThreadExecutionSelection"]>[0],
-  ): Promise<{ readonly asOfSequence: Sequence; readonly thread: Thread }> {
+  ): Promise<{
+    readonly asOfSequence: Sequence;
+    readonly thread: Thread;
+  }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.updateThreadExecutionSelection(input);
-      if (result.event) this.#onWorkspaceEvent(result.event);
-      return { asOfSequence: result.asOfSequence, thread: result.thread };
+      if (result.event) this.#onDeploymentEvent(result.event);
+      return {
+        asOfSequence: result.asOfSequence,
+        thread: result.thread,
+      };
     });
   }
-
   enqueueThreadInput(input: EnqueueThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueThreadInput(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
-      const workspaceId = result.events[0]?.workspaceId;
-      if (workspaceId && input.policy !== "report") this.#onWorkspaceActivity?.(workspaceId);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      if (result.events.length && input.policy !== "report") this.#onActivity?.();
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
       return result;
     });
   }
-
   steerThreadInput(input: SteerThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.steerThreadInput(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
+      for (const event of result.events) this.#onDeploymentEvent(event);
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
       return result;
     });
   }
-
   cancelThreadInput(input: CancelThreadInputRequest): Promise<CancelledThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.cancelThreadInput(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
+      for (const event of result.events) this.#onDeploymentEvent(event);
       return result;
     });
   }
-
   moveThreadInput(input: MoveThreadInputRequest): Promise<MovedThreadInput> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.moveThreadInput(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
+      for (const event of result.events) this.#onDeploymentEvent(event);
       return result;
     });
   }
-
   publishPersonMessage(input: PersonMessageInput): Promise<PersonMessageResult> {
     return this.#admission.execute(
       [threadKey(input.admission.sourceThreadId)],
       byteSize(input),
       async () => {
         const result = await this.#store.publishPersonMessage(input);
-        for (const event of result.events) this.#onWorkspaceEvent(event);
+        for (const event of result.events) this.#onDeploymentEvent(event);
         return result;
       },
     );
   }
-
   enqueueAdmittedThreadInput(input: AdmittedThreadInputRequest): Promise<EnqueuedThreadInput> {
     return this.#admission.execute([threadKey(input.input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueAdmittedThreadInput(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
-      const workspaceId = result.events[0]?.workspaceId;
-      if (workspaceId && input.input.policy !== "report") this.#onWorkspaceActivity?.(workspaceId);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      if (result.events.length && input.input.policy !== "report") this.#onActivity?.();
       if (!result.wasDuplicate && result.command?.environmentId) {
         this.#onExecutionQueued(result.command.environmentId);
       }
       return result;
     });
   }
-
   resumeThreadInputQueue(input: {
     readonly authority?: import("@opensteer/database").ThreadCallerAuthority;
     readonly idempotencyKey: string;
@@ -243,36 +216,30 @@ export class CommandService {
   }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.resumeThreadInputQueue(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
-      const workspaceId = result.events[0]?.workspaceId;
-      if (workspaceId) this.#onWorkspaceActivity?.(workspaceId);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      if (result.events.length) this.#onActivity?.();
       if (result.events.length > 0) this.#onExecutionQueued(result.thread.environmentId);
       return result;
     });
   }
-
   delegateThread(input: DelegateThreadRequest): Promise<DelegatedThreadResult> {
     return this.#admission.execute(delegationKeys(input), byteSize(input), async () => {
       const result = await this.#store.delegateThread(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
-      const workspaceId = result.events[0]?.workspaceId;
-      if (workspaceId) this.#onWorkspaceActivity?.(workspaceId);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      if (result.events.length) this.#onActivity?.();
       if (!result.wasDuplicate) this.#onExecutionQueued(result.run.environmentId);
       return result;
     });
   }
-
   delegateAdmittedThread(input: AdmittedThreadDelegationRequest): Promise<DelegatedThreadResult> {
     return this.#admission.execute(delegationKeys(input.input), byteSize(input), async () => {
       const result = await this.#store.delegateAdmittedThread(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
-      const workspaceId = result.events[0]?.workspaceId;
-      if (workspaceId) this.#onWorkspaceActivity?.(workspaceId);
+      for (const event of result.events) this.#onDeploymentEvent(event);
+      if (result.events.length) this.#onActivity?.();
       if (!result.wasDuplicate) this.#onExecutionQueued(result.run.environmentId);
       return result;
     });
   }
-
   async cancelAssignment(
     input: Parameters<OpensteerStore["cancelAssignment"]>[0],
   ): ReturnType<OpensteerStore["cancelAssignment"]> {
@@ -292,7 +259,7 @@ export class CommandService {
             return null;
           }
           const cancelled = await this.#store.cancelAssignment(input);
-          for (const event of cancelled.events) this.#onWorkspaceEvent(event);
+          for (const event of cancelled.events) this.#onDeploymentEvent(event);
           for (const command of cancelled.interruptCommands) {
             if (command.environmentId) this.#onExecutionQueued(command.environmentId);
           }
@@ -329,7 +296,7 @@ export class CommandService {
             return null;
           }
           const done = await this.#store.setThreadDone(input);
-          for (const event of done.events) this.#onWorkspaceEvent(event);
+          for (const event of done.events) this.#onDeploymentEvent(event);
           for (const command of done.interruptCommands) {
             if (command.environmentId) this.#onExecutionQueued(command.environmentId);
           }
@@ -344,23 +311,22 @@ export class CommandService {
       retryable: true,
     });
   }
-
   stopNode(input: import("@opensteer/database").NodeStopInput) {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.stopNode(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
+      for (const event of result.events) this.#onDeploymentEvent(event);
       if (!result.wasDuplicate && result.command.environmentId)
         this.#onExecutionQueued(result.command.environmentId);
       return result;
     });
   }
-
-  sendControl(
-    input: RunnerControlInput,
-  ): Promise<{ readonly command: CommandRow; readonly wasDuplicate: boolean }> {
+  sendControl(input: RunnerControlInput): Promise<{
+    readonly command: CommandRow;
+    readonly wasDuplicate: boolean;
+  }> {
     return this.#admission.execute([threadKey(input.threadId)], byteSize(input), async () => {
       const result = await this.#store.enqueueRunnerControl(input);
-      for (const event of result.events) this.#onWorkspaceEvent(event);
+      for (const event of result.events) this.#onDeploymentEvent(event);
       // Control commands are dispatched to a Runner, so the schema refuses to
       // enqueue one without an environment. The null branch is unreachable and
       // is left as a silence rather than a guess: nothing is nudged awake for a
@@ -381,15 +347,14 @@ function threadKey(threadId: ThreadId): string {
 
 /**
  * A delegation changes the Thread it comes from and the Thread it delegates
- * to, or creates that Thread in its Workspace.
+ * to, or creates the worker task.
  */
 function delegationKeys(input: DelegateThreadRequest): readonly string[] {
   return [
     threadKey(input.origin.parentThreadId),
-    input.threadId ? threadKey(input.threadId) : `workspace:${input.workspaceId}`,
+    input.threadId ? threadKey(input.threadId) : "personal-task-create",
   ];
 }
-
 function byteSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
 }

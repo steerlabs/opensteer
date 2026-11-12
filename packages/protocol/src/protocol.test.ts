@@ -1,11 +1,3 @@
-import {
-  agentTools,
-  environment_list,
-  orchestrator_capabilities,
-  thread_read,
-  thread_list,
-  thread_send,
-} from "@opensteer/agent-tools/tools";
 import { ThreadAccessModeSchema, createId, type Message } from "@opensteer/core";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
@@ -30,7 +22,6 @@ import {
   RunnerToHostMessageSchema,
   StartHostedBrowserBodySchema,
   advertisedRunnerModules,
-  agentToolPayloadMaxSerializedBytes,
   decodeBrowserFrameEnvelope,
   maxHarnessInstancesPerEnvironment,
   maxHarnessModelsPerCatalog,
@@ -312,14 +303,9 @@ describe("wire protocol", () => {
           sources: harnessSources("openai", "OpenAI"),
         },
       ],
-      localStorage: {
-        bindings: [],
-        storageAuthorityId: createId("storageAuthority"),
-        truncated: false,
-      },
+
       maxConcurrentRuns: 2,
       providerStateModes: ["isolated"],
-      workspaceBackings: ["local-directory"],
     } as const;
     const descriptor = {
       bootId: `rbt_${randomUUID()}`,
@@ -572,56 +558,10 @@ describe("wire protocol", () => {
     ).toMatchObject({ type: "cdp.event" });
   });
 
-  it("uses machine-scoped Workspace mount and detach commands", () => {
-    const environmentId = createId("environment");
-    const workspaceId = createId("workspace");
-    const base = {
-      commandId: createId("command"),
-      correlationId: createId("command"),
-      environmentId,
-    };
-    expect(
-      RunnerCommandSchema.parse({
-        ...base,
-        plan: {
-          generation: 4,
-          kind: "local-directory",
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: createId("environment"),
-          storageAuthorityId: createId("storageAuthority"),
-
-          workspaceId,
-        },
-        runId: createId("run"),
-        threadId: createId("thread"),
-        type: "workspace.mount",
-        workspaceId,
-      }),
-    ).toMatchObject({ type: "workspace.mount", workspaceId });
-    expect(
-      RunnerCommandSchema.parse({
-        ...base,
-        type: "workspace.detach",
-        volumeId: "volume-4",
-        workspaceId,
-      }),
-    ).toMatchObject({ type: "workspace.detach", volumeId: "volume-4", workspaceId });
-    expect(
-      RunnerCommandSchema.safeParse({
-        ...base,
-        sourceWorkspaceId: workspaceId,
-        targetWorkspaceId: workspaceId,
-        type: "workspace.detach",
-        volumeId: "volume-4",
-        workspaceId,
-      }).success,
-    ).toBe(false);
-  });
-
   it("parses bounded watch reconciliation and status messages", () => {
     const activationId = createId("triggerWatchActivation");
     const environmentId = createId("environment");
-    const workspaceId = createId("workspace");
+
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const command = {
       commandId: createId("command"),
@@ -629,6 +569,10 @@ describe("wire protocol", () => {
       desired: [
         {
           activationId,
+          location: {
+            folder: { computerId: createId("runner"), path: "/tmp/task" },
+            agentHome: { computerId: createId("runner"), path: "/tmp/home" },
+          },
           anchorThreadId: createId("thread"),
           capabilities: {
             browserCdp: null,
@@ -638,15 +582,6 @@ describe("wire protocol", () => {
           executionGeneration: 2,
           revisionId: createId("triggerRevision"),
           triggerId: createId("trigger"),
-          workspaceAccess: {
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            kind: "local-directory",
-            ownerEnvironmentId: environmentId,
-            storageAuthorityId: createId("storageAuthority"),
-            workspaceId,
-          },
-          workspaceId,
         },
       ],
       environmentId,
@@ -683,7 +618,7 @@ describe("wire protocol", () => {
 
   it("fits a largest practical current message and bounded history in one Runner frame", () => {
     const threadId = createId("thread");
-    const workspaceId = createId("workspace");
+
     const history: Message[] = [
       {
         author: {
@@ -703,12 +638,13 @@ describe("wire protocol", () => {
     const base = {
       commandId: createId("command"),
       context: {
+        personalContext: true,
         accessMode: "full-access",
         assignment: null,
-        threadRole: "work",
+        taskPurpose: "task",
         threadState: { previousAssignment: null, previousRun: null },
         agentTools: {
-          tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),
+          tools: ["thread_read", "thread_send"],
           toolsRevision: "test-tools-v1",
           instructions: "Host Opensteer instructions",
           skills: ["opensteer:threads"],
@@ -724,7 +660,6 @@ describe("wire protocol", () => {
         },
         bindingGeneration: 1,
         executionLeaseMs: 90_000,
-        membershipGeneration: 1,
         egress: {
           maxRequestBytes: 1_024,
           maxResponseBytes: 1_024,
@@ -761,18 +696,6 @@ describe("wire protocol", () => {
         requesterTimeZone: "America/New_York",
         runId: createId("run"),
         threadId,
-        workspaceId,
-        workspaceKind: "main",
-        workspaceInstructionsPath: "AGENTS.md",
-        workspaceAccess: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: createId("environment"),
-          storageAuthorityId: createId("storageAuthority"),
-
-          workspaceId,
-        },
       },
       correlationId: createId("command"),
       environmentId: createId("environment"),
@@ -791,6 +714,10 @@ describe("wire protocol", () => {
       ],
       reports: { messages: [], omittedCount: 0, throughSequence: null },
       type: "run.execute" as const,
+      location: {
+        folder: { computerId: createId("runner"), path: "/tmp/task" },
+        agentHome: { computerId: createId("runner"), path: "/tmp/agent-home" },
+      },
     };
 
     const parsed = RunnerCommandSchema.safeParse(base);
@@ -834,8 +761,6 @@ describe("wire protocol", () => {
       kind: "agent" as const,
       runId: createId("run"),
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
-      workspaceName: "Research",
     };
     expect(
       RunnerCommandSchema.safeParse({
@@ -885,7 +810,7 @@ describe("wire protocol", () => {
         ordinal: 0,
         runId: createId("run"),
         threadId: createId("thread"),
-        workspaceId: createId("workspace"),
+
         data: {
           place: {
             kind: "browser",
@@ -908,7 +833,6 @@ describe("wire protocol", () => {
       runId: createId("run"),
       threadId: createId("thread"),
       type: "tool.completed" as const,
-      workspaceId: createId("workspace"),
     };
     expect(
       PendingAgentEventSchema.safeParse({
@@ -930,180 +854,6 @@ describe("wire protocol", () => {
     ).toBe(false);
   });
 
-  it("fits largest catalog and single-message tool pages but rejects an oversized combined page", () => {
-    const requestId = randomUUID();
-    const harnessIds = Array.from({ length: 64 }, () => createId("harnessInstance"));
-    const environments = Array.from({ length: 64 }, (_, index) => ({
-      capabilities: ["filesystem", "shell", "browser"],
-      connected: true,
-      id: createId("environment"),
-      kind: index === 0 ? ("main" as const) : ("local" as const),
-      name: "e".repeat(120),
-      workspaceBackings: ["local-directory" as const, "local-directory" as const],
-    }));
-    const threads = Array.from({ length: 100 }, () => {
-      const id = createId("thread");
-      return {
-        accessMode: "full-access" as const,
-        inheritsMain: true,
-        continuationIdentity: null,
-        createdAt: new Date().toISOString(),
-        createdBy: createId("user"),
-        environmentId: createId("environment"),
-        harnessInstanceId: harnessIds[0],
-        id,
-        inputQueuePaused: false,
-        lineageRootThreadId: id,
-        modelSelection: {
-          modelId: "gpt-5.6-sol",
-          options: { effort: "low" },
-          providerId: "openai",
-        },
-        listed: true,
-        parentThreadId: null,
-        pendingRequests: 0,
-        role: "work" as const,
-        status: "idle" as const,
-        title: "t".repeat(240),
-        updatedAt: new Date().toISOString(),
-        workspaceId: createId("workspace"),
-      };
-    });
-    // Every model a discovery page may show, each at its longest names.
-    const longestModel = (index: number) => ({
-      modelId: `${index}`.padEnd(255, "m"),
-      providerId: `p${index}`.padEnd(100, "p"),
-    });
-    const catalog = orchestrator_capabilities.output.parse({
-      accessCeiling: "full-access",
-      limits: {
-        maxDepth: 4,
-        remainingDepth: 4,
-        maxTasks: 32,
-        remainingTasks: 32,
-        maxAutonomousRuns: 64,
-        remainingAutonomousRuns: 64,
-        maxWaitMs: 100_000,
-        taskDeadlineAt: null,
-      },
-      delegationDefault: {
-        environmentId: environments[0]!.id,
-        harnessInstanceId: harnessIds[0],
-        model: {
-          ...longestModel(0),
-          options: Object.fromEntries(
-            Array.from({ length: 16 }, (_, option) => [`o${option}`.padEnd(100, "o"), true]),
-          ),
-        },
-      },
-      harnesses: harnessIds.map((id, index) => ({
-        driverKind: "d".repeat(100),
-        enabled: true,
-        environmentId: environments[index % environments.length]!.id,
-        id,
-        models:
-          index < 5 ? Array.from({ length: 8 }, (_, model) => longestModel(index * 8 + model)) : [],
-        modelsOmitted: index < 5 ? 8_184 : 0,
-        status: "ready",
-        name: "h".repeat(120),
-      })),
-      requestId,
-    });
-    expect(Buffer.byteLength(JSON.stringify(catalog), "utf8")).toBeLessThanOrEqual(
-      agentToolPayloadMaxSerializedBytes,
-    );
-    expect(
-      Buffer.byteLength(JSON.stringify(environment_list.output.parse({ environments })), "utf8"),
-    ).toBeLessThanOrEqual(agentToolPayloadMaxSerializedBytes);
-
-    const threadId = createId("thread");
-    const thread = { ...threads[0], id: threadId };
-    const largeItem = {
-      itemId: createId("message"),
-      type: "message",
-      status: "published",
-      runId: createId("run"),
-      title: null,
-      text: "m".repeat(256 * 1_024),
-      textTruncated: false,
-      nextTextOffset: null,
-      createdAt: new Date().toISOString(),
-    };
-    const readPage = {
-      items: [largeItem],
-      recentRuns: [],
-      recentPlaces: [],
-      hasMore: false,
-      nextBefore: null,
-      thread,
-    };
-    expect(thread_read.output.safeParse(readPage).success).toBe(true);
-    const oversized = thread_read.output.safeParse({
-      ...readPage,
-      items: [largeItem, { ...largeItem, itemId: createId("message") }],
-    });
-    expect(oversized.error?.issues.map(({ message }) => message)).toEqual([
-      "Thread history exceeds the agent output byte limit",
-    ]);
-  });
-
-  it("fits a full Thread listing page and requires explicit agent message delivery", () => {
-    const listing = thread_list.output.parse({
-      threads: Array.from({ length: 50 }, () => ({
-        assignmentId: createId("delegation"),
-        taskStatus: "open" as const,
-        environmentConnected: true,
-        environmentId: createId("environment"),
-        id: createId("thread"),
-        parentThreadId: createId("thread"),
-        pendingRequests: 2,
-        status: "running" as const,
-        title: "t".repeat(240),
-        updatedAt: new Date().toISOString(),
-        workspaceId: createId("workspace"),
-        workspaceName: "w".repeat(160),
-      })),
-      hasMore: true,
-      nextBefore: "cursor",
-    });
-    expect(Buffer.byteLength(JSON.stringify(listing), "utf8")).toBeLessThanOrEqual(
-      agentToolPayloadMaxSerializedBytes,
-    );
-    expect(
-      thread_list.output.safeParse({
-        ...listing,
-        threads: [...listing.threads, listing],
-      }).success,
-    ).toBe(false);
-
-    const untitled = thread_send.input.parse({
-      message: "Status?",
-      delivery: "queue",
-      threadId: createId("thread"),
-    });
-    expect(untitled).toMatchObject({ delivery: "queue" });
-    expect(
-      thread_send.input.safeParse({
-        message: "Status?",
-        threadId: createId("thread"),
-      }).success,
-    ).toBe(false);
-    for (const delivery of ["turn", "notify"] as const) {
-      expect(
-        thread_send.input.safeParse({
-          message: "Status?",
-          delivery,
-          threadId: createId("thread"),
-        }).success,
-      ).toBe(false);
-    }
-    expect(thread_list.input.parse({ limit: 50 })).toMatchObject({ limit: 50 });
-    expect(thread_list.input.parse({})).toMatchObject({
-      limit: 25,
-    });
-    expect(thread_list.input.safeParse({ limit: 51 }).success).toBe(false);
-  });
-
   it("rejects duplicate and unbounded Runner harness advertisements", () => {
     const base = {
       challengeId: `rch_${randomUUID()}`,
@@ -1113,10 +863,9 @@ describe("wire protocol", () => {
         modules: {
           agents: {
             environmentIds: [createId("environment")],
-            localStorage: null,
+
             maxConcurrentRuns: 1,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
           },
         },
         name: "Main runner",
@@ -1285,7 +1034,6 @@ describe("wire protocol", () => {
       runtimeId: "hosted-browser-1",
       state: "ready",
       updatedAt: new Date().toISOString(),
-      workspaceId: createId("workspace"),
     } as const;
     expect(HostedBrowserSessionSchema.parse(session)).toEqual(session);
     const summary = {
@@ -1300,7 +1048,7 @@ describe("wire protocol", () => {
     ).toBe(false);
   });
 
-  it("requires an explicit identity when a Workspace opens a Browser Session", () => {
+  it("requires an explicit identity when a task opens a Browser Session", () => {
     const runnerId = createId("runner");
     expect(
       StartHostedBrowserBodySchema.parse({

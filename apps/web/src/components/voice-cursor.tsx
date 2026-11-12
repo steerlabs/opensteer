@@ -1,4 +1,3 @@
-import { homeCursorPaint } from "@opensteer/client/host";
 import type { VoiceTarget } from "@opensteer/client/voice";
 import {
   useCallback,
@@ -10,6 +9,7 @@ import {
   type RefObject,
 } from "react";
 import { CursorMark, CursorMotion } from "./workspace/cursor-motion.js";
+import { opensteerCursorPaint } from "./workspace/task-mark.js";
 
 interface Point {
   readonly x: number;
@@ -28,7 +28,6 @@ const cursorId = "voice";
  * spell the rest of a destination differently.
  */
 export function voiceRowKey(target: VoiceTarget): string {
-  if (target.kind === "chat") return "chat";
   if (target.kind === "thread") return target.threadId;
   const place = target.destination;
   if (place.kind === "browser") return `browser:${place.tabId}`;
@@ -193,7 +192,7 @@ function Flight({
         style={{ left: flight.to.x, top: flight.to.y }}
       />
       <CursorMark
-        color={homeCursorPaint}
+        color={opensteerCursorPaint}
         icon={null}
         id={cursorId}
         motion={motion}

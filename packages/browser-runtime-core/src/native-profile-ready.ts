@@ -1,4 +1,5 @@
 import { isLoopbackHostname } from "@opensteer/core";
+import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import type { BrowserAttachTicketIdentity } from "@opensteer/protocol";
 import { BrowserRuntimeError } from "./errors.js";
 
@@ -27,7 +28,10 @@ export function nativeProfileReadyClient(trustedHttpOrigin?: string): NativeProf
       );
     const response = await fetch(url, {
       method: "POST",
-      headers: { authorization: `Bearer ${ticket}` },
+      headers: {
+        authorization: `Bearer ${ticket}`,
+        [hostApiVersionHeader]: String(hostApiVersion),
+      },
       redirect: "error",
       signal,
     });

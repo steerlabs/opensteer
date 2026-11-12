@@ -1,0 +1,16 @@
+{$OPENSTEER_SITE_ADDRESS} {
+	encode zstd gzip
+	@api path /healthz /.well-known/* /v1/* /oauth/* /internal/v1/team/link /internal/v1/team/link/redeem
+	handle @api {
+		reverse_proxy host:4310
+	}
+	@internal path /internal/*
+	handle @internal {
+		respond 404
+	}
+	handle {
+		root * /srv/opensteer-web
+		try_files {path} /index.html
+		file_server
+	}
+}

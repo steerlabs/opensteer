@@ -1,7 +1,7 @@
 import { parse } from "@babel/parser";
 
 type SyntaxNode = Record<string, unknown>;
-const sqlKindSelector = String.raw`(?:(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*(?:->>?\s*'(?:kind|mode|tenancy|ownerEstablishment)'|#>>?\s*'\{(?:kind|mode|tenancy|ownerEstablishment)\}'|\[\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\])|jsonb_extract_path_text\(\s*(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*,\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\))`;
+const sqlKindSelector = String.raw`(?:(?:\w+\.)?deployment_shape|(?:(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*(?:->>?\s*'(?:kind|mode|tenancy|ownerEstablishment)'|#>>?\s*'\{(?:kind|mode|tenancy|ownerEstablishment)\}'|\[\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\])|jsonb_extract_path_text\(\s*(?:\w+\.)?(?:deployment_shape|workspace_profile)\s*,\s*'(?:kind|mode|tenancy|ownerEstablishment)'\s*\)))`;
 const sqlKindDecisionPattern = new RegExp(
   `${sqlKindSelector}\\s*\\)*\\s*(?:<>|!=|=|\\b(?:not\\s+)?in\\b)[^\\n;]*|'[^'\\n]+'\\s*(?:<>|!=|=)\\s*\\(*\\s*${sqlKindSelector}\\s*\\)*`,
   "giu",
@@ -34,7 +34,7 @@ export function sqlKindComparisons(source: string): string[] {
 
 export function kindComparisons(file: string, source: string): string[] {
   if (file.endsWith(".sql")) return sqlKindComparisons(source);
-  const literalText = /["'`](?:personal|server)["'`]/u.test(source)
+  const literalText = /["'`](?:personal|team|server)["'`]/u.test(source)
     ? source
     : source.replace(
         /\\(?:u\{([\da-f]+)\}|u([\da-f]{4})|x([\da-f]{2}))/giu,
@@ -46,7 +46,7 @@ export function kindComparisons(file: string, source: string): string[] {
         ) => String.fromCodePoint(Number.parseInt(codePoint ?? unicode ?? hex!, 16)),
       );
   if (
-    !/["'`](?:personal|server)["'`]/u.test(literalText) ||
+    !/["'`](?:personal|team|server)["'`]/u.test(literalText) ||
     !/(?:[!=]={1,2}|\bswitch\s*\(|\b(?:includes|has|indexOf|is\w*|has\w*|matches\w*)\s*\()/u.test(
       source,
     )
@@ -110,10 +110,10 @@ export function kindComparisons(file: string, source: string): string[] {
     const entry = constantValue(value, seen);
     if (!entry) return false;
     if (entry["type"] === "StringLiteral")
-      return ["personal", "server"].includes(String(entry["value"]));
+      return ["personal", "team", "server"].includes(String(entry["value"]));
     if (entry["type"] === "TemplateLiteral" && !(entry["expressions"] as unknown[]).length)
       return (entry["quasis"] as SyntaxNode[]).some((quasi) =>
-        ["personal", "server"].includes(String((quasi["value"] as SyntaxNode)["cooked"])),
+        ["personal", "team", "server"].includes(String((quasi["value"] as SyntaxNode)["cooked"])),
       );
     if (entry["type"] === "ArrayExpression")
       return (entry["elements"] as unknown[]).some((element) => hasKind(element, seen));

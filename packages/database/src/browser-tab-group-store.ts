@@ -1,3 +1,5 @@
+import { retryDatabaseTransaction } from "./connection.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   BrowserTabGroupIdSchema,
   browserTabOrderMaxTabs,
@@ -24,11 +26,11 @@ import {
 import { sql, type Kysely, type Transaction } from "kysely";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { TransactionScopeChanged, withDatabaseTransaction } from "./connection.js";
+import { TransactionScopeChanged } from "./connection.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
 import { safeCount } from "./store-primitives.js";
-import { visibleWorkspaceTabLineages } from "./workspace-tab-visibility.js";
+import { visiblePersonalTabLineages } from "./personal-tab-visibility.js";
 
 type Database = Kysely<DatabaseSchema>;
 type GroupId = z.infer<typeof BrowserTabGroupIdSchema>;
@@ -43,35 +45,31 @@ interface Mutation {
   readonly move?: BrowserTabMove;
 }
 
-function visibleWorkspaceTabs(database: Database, ownerId: UserId, includeClosed = false) {
-  return visibleWorkspaceTabLineages(database, ownerId)
-    .innerJoin("workspaceTabs", "workspaceTabs.groupId", "browserSessions.tabGroupId")
-    .$if(!includeClosed, (query) => query.where("workspaceTabs.closedAt", "is", null))
+function visiblePersonalTabs(database: Database, ownerId: UserId, includeClosed = false) {
+  return visiblePersonalTabLineages(database, ownerId)
+    .innerJoin("personalTabs", "personalTabs.groupId", "browserSessions.tabGroupId")
+    .$if(!includeClosed, (query) => query.where("personalTabs.closedAt", "is", null))
     .clearSelect()
     .select([
-      "workspaceTabs.id",
-      "workspaceTabs.groupId",
-      "workspaceTabs.sessionId",
-      "workspaceTabs.title",
-      "workspaceTabs.url",
-      "workspaceTabs.order",
-      "workspaceTabs.openerId",
-      "workspaceTabs.state",
-      "workspaceTabs.closedAt",
-      "workspaceTabs.createdAt",
+      "personalTabs.id",
+      "personalTabs.groupId",
+      "personalTabs.sessionId",
+      "personalTabs.title",
+      "personalTabs.url",
+      "personalTabs.order",
+      "personalTabs.openerId",
+      "personalTabs.state",
+      "personalTabs.closedAt",
+      "personalTabs.createdAt",
     ])
-    .select([
-      "browserSessions.id as latestSessionId",
-      "browserSessions.workspaceId",
-      "lineages.createdAt as lineageCreatedAt",
-    ])
+    .select(["browserSessions.id as latestSessionId", "lineages.createdAt as lineageCreatedAt"])
     .select(
       sql<string>`to_char(lineages.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`.as(
         "lineageTimestamp",
       ),
     );
 }
-type VisibleTabs = Awaited<ReturnType<ReturnType<typeof visibleWorkspaceTabs>["execute"]>>;
+type VisibleTabs = Awaited<ReturnType<ReturnType<typeof visiblePersonalTabs>["execute"]>>;
 
 function groupIdForKey(ownerId: UserId, key: string): GroupId {
   const bytes = createHash("sha256")
@@ -93,18 +91,18 @@ export class BrowserTabGroupStore {
   }
 
   async groups(ownerId: UserId, database = this.database) {
-    const rows = await visibleWorkspaceTabs(database, ownerId)
+    const rows = await visiblePersonalTabs(database, ownerId)
       .innerJoin("browserTabGroupMembers", (join) =>
         join
-          .onRef("browserTabGroupMembers.tabId", "=", "workspaceTabs.id")
+          .onRef("browserTabGroupMembers.tabId", "=", "personalTabs.id")
           .on("browserTabGroupMembers.ownerId", "=", ownerId),
       )
       .innerJoin("browserTabGroups", "browserTabGroups.id", "browserTabGroupMembers.groupId")
       .clearSelect()
       .selectAll("browserTabGroups")
-      .select(["workspaceTabs.id as tabId", "browserSessions.id as latestSessionId"])
+      .select(["personalTabs.id as tabId", "browserSessions.id as latestSessionId"])
       .orderBy("browserTabGroups.id")
-      .orderBy("workspaceTabs.id")
+      .orderBy("personalTabs.id")
       .execute(databaseOperationOptions());
     const groups = new Map<
       GroupId,
@@ -156,10 +154,10 @@ export class BrowserTabGroupStore {
     const visible = new Set(
       saved.length
         ? (
-            await visibleWorkspaceTabs(database, ownerId)
-              .where("workspaceTabs.id", "in", saved)
+            await visiblePersonalTabs(database, ownerId)
+              .where("personalTabs.id", "in", saved)
               .clearSelect()
-              .select("workspaceTabs.id")
+              .select("personalTabs.id")
               .execute(databaseOperationOptions())
           ).map((tab) => tab.id)
         : [],
@@ -186,7 +184,7 @@ export class BrowserTabGroupStore {
         .setIsolationLevel("repeatable read")
         .execute((tx) => this.orderedTabs(ownerId, tx));
     const [tabs, groups, layout] = await Promise.all([
-      visibleWorkspaceTabs(database, ownerId).execute(databaseOperationOptions()),
+      visiblePersonalTabs(database, ownerId).execute(databaseOperationOptions()),
       this.groups(ownerId, database),
       database
         .selectFrom("browserTabLayouts")
@@ -215,8 +213,8 @@ export class BrowserTabGroupStore {
     database = this.database,
     includeClosed = false,
   ) {
-    return visibleWorkspaceTabs(database, ownerId, includeClosed)
-      .where("workspaceTabs.id", "in", [...tabIds])
+    return visiblePersonalTabs(database, ownerId, includeClosed)
+      .where("personalTabs.id", "in", [...tabIds])
       .execute(databaseOperationOptions());
   }
 
@@ -278,15 +276,15 @@ export class BrowserTabGroupStore {
     ];
     const discover = async (database: Database) => {
       const members = involvedGroups.length
-        ? await visibleWorkspaceTabs(database, ownerId)
+        ? await visiblePersonalTabs(database, ownerId)
             .innerJoin("browserTabGroupMembers", (join) =>
               join
-                .onRef("browserTabGroupMembers.tabId", "=", "workspaceTabs.id")
+                .onRef("browserTabGroupMembers.tabId", "=", "personalTabs.id")
                 .on("browserTabGroupMembers.ownerId", "=", ownerId),
             )
             .where("browserTabGroupMembers.groupId", "in", involvedGroups)
             .clearSelect()
-            .select("workspaceTabs.id")
+            .select("personalTabs.id")
             .execute(databaseOperationOptions())
         : [];
       return [
@@ -298,240 +296,245 @@ export class BrowserTabGroupStore {
       ].sort();
     };
     const groupId = input.groupId ?? groupIdForKey(ownerId, input.idempotencyKey);
-    return withDatabaseTransaction(
-      this.database,
-      async (tx) => {
-        const scope = await discover(tx);
-        if (scope.length) {
-          await tx
-            .selectFrom("workspaceTabs")
-            .select("id")
-            .where("id", "in", scope)
-            .orderBy("id")
-            .forShare()
-            .execute(databaseOperationOptions());
-        }
-        await tx
-          .insertInto("browserTabLayouts")
-          .values({ ownerId })
-          .onConflict((c) => c.column("ownerId").doNothing())
-          .execute(databaseOperationOptions());
-        await tx
-          .selectFrom("browserTabLayouts")
-          .select("ownerId")
-          .where("ownerId", "=", ownerId)
-          .forNoKeyUpdate()
-          .executeTakeFirstOrThrow(databaseOperationOptions());
-        const currentScope = await discover(tx);
-        if (
-          scope.length !== currentScope.length ||
-          scope.some((id, index) => id !== currentScope[index])
-        )
-          throw new TransactionScopeChanged();
-        const reachable = new Set(
-          scope.length ? (await this.tabs(ownerId, scope, tx)).map((tab) => tab.id) : [],
-        );
-        if (anchorTabId && !reachable.has(anchorTabId))
-          throw new OpensteerError({
-            code: "conflict",
-            message: "The tab to land before is no longer there.",
-          });
-        if (tabIds.some((id) => !reachable.has(id)))
-          throw new OpensteerError({
-            code: "not_found",
-            message: "A tab is not a saved tab you can reach.",
-          });
-        await authorizeGroup?.([...reachable], tx);
-        let changed = await this.#pruneOwner(tx, ownerId, scope);
-        const before =
-          action === "update_group" ? undefined : (await this.orderedTabs(ownerId, tx)).arrangement;
-        let arrangement = before;
-        const groups = await tx
-          .selectFrom("browserTabGroups")
-          .selectAll()
-          .where("ownerId", "=", ownerId)
-          .execute(databaseOperationOptions());
-        const target =
-          action === "ungroup" || action === "move"
-            ? undefined
-            : groups.find((group) => group.id === groupId);
-        const previous = tabIds.length
-          ? await tx
-              .selectFrom("browserTabGroupMembers")
-              .select("groupId")
-              .where("ownerId", "=", ownerId)
-              .where("tabId", "in", tabIds)
-              .execute(databaseOperationOptions())
-          : [];
-        const affectedGroupIds = [
-          ...new Set([...previous.map((member) => member.groupId), ...(target ? [target.id] : [])]),
-        ];
-        if (input.groupId && !target)
-          throw new OpensteerError({ code: "not_found", message: "Tab group not found." });
-        if (target) {
-          const visible = (await this.groups(ownerId, tx)).find((group) => group.id === groupId);
-          if (!visible)
-            throw new OpensteerError({ code: "not_found", message: "Tab group not found." });
-        }
-        if (action === "group") {
-          if (!tabIds.length)
-            throw new OpensteerError({
-              code: "bad_request",
-              message: "Creating a tab group requires at least one tab.",
-            });
-          if (!target) {
-            changed = true;
-            if (groups.length >= browserTabGroupsMaxPerOwner)
-              throw new OpensteerError({
-                code: "conflict",
-                message: "You can keep at most 200 tab groups.",
-              });
-            const colors = BrowserTabGroupColorSchema.options;
-            const color =
-              input.color ??
-              colors.reduce(
-                (least, candidate) =>
-                  groups.filter((g) => g.color === candidate).length <
-                  groups.filter((g) => g.color === least).length
-                    ? candidate
-                    : least,
-                colors[0]!,
-              );
+    return retryDatabaseTransaction(
+      () =>
+        withPersonalTransaction(this.database, async (tx) => {
+          const scope = await discover(tx);
+          if (scope.length) {
             await tx
-              .insertInto("browserTabGroups")
-              .values({
-                id: groupId,
-                ownerId,
-                title: input.title ?? "",
-                color,
-                createdByThreadId: input.createdByThreadId ?? null,
-              })
+              .selectFrom("personalTabs")
+              .select("id")
+              .where("id", "in", scope)
+              .orderBy("id")
+              .forShare()
               .execute(databaseOperationOptions());
           }
-          const members = await tx
-            .selectFrom("browserTabGroupMembers")
-            .select("tabId")
-            .where("groupId", "=", groupId)
+          await tx
+            .insertInto("browserTabLayouts")
+            .values({ ownerId })
+            .onConflict((c) => c.column("ownerId").doNothing())
             .execute(databaseOperationOptions());
-          const memberIds = new Set(members.map((member) => member.tabId));
-          if (new Set([...memberIds, ...tabIds]).size > browserTabGroupMaxTabs)
+          await tx
+            .selectFrom("browserTabLayouts")
+            .select("ownerId")
+            .where("ownerId", "=", ownerId)
+            .forNoKeyUpdate()
+            .executeTakeFirstOrThrow(databaseOperationOptions());
+          const currentScope = await discover(tx);
+          if (
+            scope.length !== currentScope.length ||
+            scope.some((id, index) => id !== currentScope[index])
+          )
+            throw new TransactionScopeChanged();
+          const reachable = new Set(
+            scope.length ? (await this.tabs(ownerId, scope, tx)).map((tab) => tab.id) : [],
+          );
+          if (anchorTabId && !reachable.has(anchorTabId))
             throw new OpensteerError({
               code: "conflict",
-              message: "A tab group can keep at most 500 tabs.",
+              message: "The tab to land before is no longer there.",
             });
-          const addedTabIds = tabIds.filter((tabId) => !memberIds.has(tabId));
-          changed ||= addedTabIds.length > 0;
-          for (const tabId of addedTabIds)
-            await tx
-              .insertInto("browserTabGroupMembers")
-              .values({ ownerId, tabId, groupId })
-              .onConflict((c) => c.columns(["ownerId", "tabId"]).doUpdateSet({ groupId }))
-              .execute(databaseOperationOptions());
-          arrangement = groupBrowserTabs(before!, tabIds, groupId);
-        } else if (action === "ungroup") {
-          const removed = previous.length > 0;
-          changed ||= removed;
-          if (removed)
-            await tx
-              .deleteFrom("browserTabGroupMembers")
-              .where("ownerId", "=", ownerId)
-              .where("tabId", "in", tabIds)
-              .execute(databaseOperationOptions());
-          arrangement = ungroupBrowserTabs(before!, tabIds);
-        } else if (action === "move" && move) {
-          const result = moveBrowserTabs(before!, move);
-          if (!result.ok) throw new OpensteerError({ code: result.code, message: result.message });
-          arrangement = result.arrangement;
-          if (move.to.groupId !== null) {
+          if (tabIds.some((id) => !reachable.has(id)))
+            throw new OpensteerError({
+              code: "not_found",
+              message: "A tab is not a saved tab you can reach.",
+            });
+          await authorizeGroup?.([...reachable], tx);
+          let changed = await this.#pruneOwner(tx, ownerId, scope);
+          const before =
+            action === "update_group"
+              ? undefined
+              : (await this.orderedTabs(ownerId, tx)).arrangement;
+          let arrangement = before;
+          const groups = await tx
+            .selectFrom("browserTabGroups")
+            .selectAll()
+            .where("ownerId", "=", ownerId)
+            .execute(databaseOperationOptions());
+          const target =
+            action === "ungroup" || action === "move"
+              ? undefined
+              : groups.find((group) => group.id === groupId);
+          const previous = tabIds.length
+            ? await tx
+                .selectFrom("browserTabGroupMembers")
+                .select("groupId")
+                .where("ownerId", "=", ownerId)
+                .where("tabId", "in", tabIds)
+                .execute(databaseOperationOptions())
+            : [];
+          const affectedGroupIds = [
+            ...new Set([
+              ...previous.map((member) => member.groupId),
+              ...(target ? [target.id] : []),
+            ]),
+          ];
+          if (input.groupId && !target)
+            throw new OpensteerError({ code: "not_found", message: "Tab group not found." });
+          if (target) {
+            const visible = (await this.groups(ownerId, tx)).find((group) => group.id === groupId);
+            if (!visible)
+              throw new OpensteerError({ code: "not_found", message: "Tab group not found." });
+          }
+          if (action === "group") {
+            if (!tabIds.length)
+              throw new OpensteerError({
+                code: "bad_request",
+                message: "Creating a tab group requires at least one tab.",
+              });
+            if (!target) {
+              changed = true;
+              if (groups.length >= browserTabGroupsMaxPerOwner)
+                throw new OpensteerError({
+                  code: "conflict",
+                  message: "You can keep at most 200 tab groups.",
+                });
+              const colors = BrowserTabGroupColorSchema.options;
+              const color =
+                input.color ??
+                colors.reduce(
+                  (least, candidate) =>
+                    groups.filter((g) => g.color === candidate).length <
+                    groups.filter((g) => g.color === least).length
+                      ? candidate
+                      : least,
+                  colors[0]!,
+                );
+              await tx
+                .insertInto("browserTabGroups")
+                .values({
+                  id: groupId,
+                  ownerId,
+                  title: input.title ?? "",
+                  color,
+                  createdByThreadId: input.createdByThreadId ?? null,
+                })
+                .execute(databaseOperationOptions());
+            }
             const members = await tx
               .selectFrom("browserTabGroupMembers")
               .select("tabId")
-              .where("groupId", "=", move.to.groupId)
+              .where("groupId", "=", groupId)
               .execute(databaseOperationOptions());
-            if (
-              new Set([...members.map((member) => member.tabId), ...tabIds]).size >
-              browserTabGroupMaxTabs
-            )
+            const memberIds = new Set(members.map((member) => member.tabId));
+            if (new Set([...memberIds, ...tabIds]).size > browserTabGroupMaxTabs)
               throw new OpensteerError({
                 code: "conflict",
                 message: "A tab group can keep at most 500 tabs.",
               });
-          }
-          for (const tabId of tabIds) {
-            if (before!.groupOf.get(tabId) === arrangement.groupOf.get(tabId)) continue;
-            changed = true;
-            const destination = arrangement.groupOf.get(tabId);
-            if (destination === undefined)
+            const addedTabIds = tabIds.filter((tabId) => !memberIds.has(tabId));
+            changed ||= addedTabIds.length > 0;
+            for (const tabId of addedTabIds)
+              await tx
+                .insertInto("browserTabGroupMembers")
+                .values({ ownerId, tabId, groupId })
+                .onConflict((c) => c.columns(["ownerId", "tabId"]).doUpdateSet({ groupId }))
+                .execute(databaseOperationOptions());
+            arrangement = groupBrowserTabs(before!, tabIds, groupId);
+          } else if (action === "ungroup") {
+            const removed = previous.length > 0;
+            changed ||= removed;
+            if (removed)
               await tx
                 .deleteFrom("browserTabGroupMembers")
                 .where("ownerId", "=", ownerId)
-                .where("tabId", "=", tabId)
+                .where("tabId", "in", tabIds)
                 .execute(databaseOperationOptions());
-            else
-              await tx
-                .insertInto("browserTabGroupMembers")
-                .values({ ownerId, tabId, groupId: BrowserTabGroupIdSchema.parse(destination) })
-                .onConflict((c) =>
-                  c
-                    .columns(["ownerId", "tabId"])
-                    .doUpdateSet({ groupId: BrowserTabGroupIdSchema.parse(destination) }),
-                )
+            arrangement = ungroupBrowserTabs(before!, tabIds);
+          } else if (action === "move" && move) {
+            const result = moveBrowserTabs(before!, move);
+            if (!result.ok)
+              throw new OpensteerError({ code: result.code, message: result.message });
+            arrangement = result.arrangement;
+            if (move.to.groupId !== null) {
+              const members = await tx
+                .selectFrom("browserTabGroupMembers")
+                .select("tabId")
+                .where("groupId", "=", move.to.groupId)
                 .execute(databaseOperationOptions());
-          }
-        } else if (
-          target &&
-          ((input.title !== undefined && input.title !== target.title) ||
-            (input.color !== undefined && input.color !== target.color) ||
-            (input.collapsed !== undefined && input.collapsed !== target.collapsed))
-        ) {
-          changed = true;
-          await tx
-            .updateTable("browserTabGroups")
-            .set({
-              ...(input.title === undefined ? {} : { title: input.title }),
-              ...(input.color === undefined ? {} : { color: input.color }),
-              ...(input.collapsed === undefined ? {} : { collapsed: input.collapsed }),
-              updatedAt: new Date(),
-            })
-            .where("id", "=", groupId)
-            .where("ownerId", "=", ownerId)
-            .execute(databaseOperationOptions());
-        }
-        if (arrangement) {
-          if (arrangement.order.length > browserTabOrderMaxTabs)
-            throw new OpensteerError({
-              code: "conflict",
-              message:
-                "Close some tabs to keep organizing; Opensteer keeps the order of up to 10,000 tabs.",
-            });
-          const saved = await tx
-            .selectFrom("browserTabLayouts")
-            .select("tabOrder")
-            .where("ownerId", "=", ownerId)
-            .executeTakeFirstOrThrow(databaseOperationOptions());
-          if (
-            saved.tabOrder === null ||
-            saved.tabOrder.length !== arrangement.order.length ||
-            saved.tabOrder.some((id, index) => id !== arrangement.order[index])
+              if (
+                new Set([...members.map((member) => member.tabId), ...tabIds]).size >
+                browserTabGroupMaxTabs
+              )
+                throw new OpensteerError({
+                  code: "conflict",
+                  message: "A tab group can keep at most 500 tabs.",
+                });
+            }
+            for (const tabId of tabIds) {
+              if (before!.groupOf.get(tabId) === arrangement.groupOf.get(tabId)) continue;
+              changed = true;
+              const destination = arrangement.groupOf.get(tabId);
+              if (destination === undefined)
+                await tx
+                  .deleteFrom("browserTabGroupMembers")
+                  .where("ownerId", "=", ownerId)
+                  .where("tabId", "=", tabId)
+                  .execute(databaseOperationOptions());
+              else
+                await tx
+                  .insertInto("browserTabGroupMembers")
+                  .values({ ownerId, tabId, groupId: BrowserTabGroupIdSchema.parse(destination) })
+                  .onConflict((c) =>
+                    c
+                      .columns(["ownerId", "tabId"])
+                      .doUpdateSet({ groupId: BrowserTabGroupIdSchema.parse(destination) }),
+                  )
+                  .execute(databaseOperationOptions());
+            }
+          } else if (
+            target &&
+            ((input.title !== undefined && input.title !== target.title) ||
+              (input.color !== undefined && input.color !== target.color) ||
+              (input.collapsed !== undefined && input.collapsed !== target.collapsed))
           ) {
             changed = true;
             await tx
-              .updateTable("browserTabLayouts")
-              .set({ tabOrder: sql`${JSON.stringify(arrangement.order)}::jsonb` })
+              .updateTable("browserTabGroups")
+              .set({
+                ...(input.title === undefined ? {} : { title: input.title }),
+                ...(input.color === undefined ? {} : { color: input.color }),
+                ...(input.collapsed === undefined ? {} : { collapsed: input.collapsed }),
+                updatedAt: new Date(),
+              })
+              .where("id", "=", groupId)
               .where("ownerId", "=", ownerId)
               .execute(databaseOperationOptions());
           }
-        }
-        if (!changed) return { groupId, layout: await this.layout(ownerId, tx) };
-        await this.#deleteEmpty(tx, ownerId, affectedGroupIds);
-        await tx
-          .updateTable("browserTabLayouts")
-          .set((eb) => ({ revision: eb("revision", "+", 1) }))
-          .where("ownerId", "=", ownerId)
-          .execute(databaseOperationOptions());
-        return { groupId, layout: await this.layout(ownerId, tx) };
-      },
-      undefined,
+          if (arrangement) {
+            if (arrangement.order.length > browserTabOrderMaxTabs)
+              throw new OpensteerError({
+                code: "conflict",
+                message:
+                  "Close some tabs to keep organizing; Opensteer keeps the order of up to 10,000 tabs.",
+              });
+            const saved = await tx
+              .selectFrom("browserTabLayouts")
+              .select("tabOrder")
+              .where("ownerId", "=", ownerId)
+              .executeTakeFirstOrThrow(databaseOperationOptions());
+            if (
+              saved.tabOrder === null ||
+              saved.tabOrder.length !== arrangement.order.length ||
+              saved.tabOrder.some((id, index) => id !== arrangement.order[index])
+            ) {
+              changed = true;
+              await tx
+                .updateTable("browserTabLayouts")
+                .set({ tabOrder: sql`${JSON.stringify(arrangement.order)}::jsonb` })
+                .where("ownerId", "=", ownerId)
+                .execute(databaseOperationOptions());
+            }
+          }
+          if (!changed) return { groupId, layout: await this.layout(ownerId, tx) };
+          await this.#deleteEmpty(tx, ownerId, affectedGroupIds);
+          await tx
+            .updateTable("browserTabLayouts")
+            .set((eb) => ({ revision: eb("revision", "+", 1) }))
+            .where("ownerId", "=", ownerId)
+            .execute(databaseOperationOptions());
+          return { groupId, layout: await this.layout(ownerId, tx) };
+        }),
       (error) => error instanceof TransactionScopeChanged,
     );
   }
@@ -573,10 +576,10 @@ export class BrowserTabGroupStore {
       .execute(databaseOperationOptions());
     const closed = await tx
       .selectFrom("browserTabGroupMembers")
-      .innerJoin("workspaceTabs", "workspaceTabs.id", "browserTabGroupMembers.tabId")
+      .innerJoin("personalTabs", "personalTabs.id", "browserTabGroupMembers.tabId")
       .select("browserTabGroupMembers.tabId")
       .where("browserTabGroupMembers.ownerId", "=", ownerId)
-      .where("workspaceTabs.closedAt", "is not", null)
+      .where("personalTabs.closedAt", "is not", null)
       .execute(databaseOperationOptions());
     // Closed markers are irreversible; fix this set before locking so later closes cannot add unordered locks.
     const closedIds = closed.map((member) => member.tabId);
@@ -616,7 +619,7 @@ export class BrowserTabGroupStore {
       .orderBy("ownerId")
       .execute(databaseOperationOptions());
     for (const { ownerId } of owners)
-      await withDatabaseTransaction(this.database, async (tx) => {
+      await withPersonalTransaction(this.database, async (tx) => {
         const layout = await tx
           .selectFrom("browserTabLayouts")
           .select("tabOrder")
@@ -628,7 +631,7 @@ export class BrowserTabGroupStore {
           saved.length
             ? (
                 await tx
-                  .selectFrom("workspaceTabs")
+                  .selectFrom("personalTabs")
                   .select("id")
                   .where("id", "in", saved)
                   .where("closedAt", "is", null)

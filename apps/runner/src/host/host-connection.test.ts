@@ -41,7 +41,7 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
-  type RunnerAgentsConnection,
+  AgentsWorkSession,
   CausallyOrderedRunnerSink,
   WebSocketMessageSink,
   ReconnectingHostConnection,
@@ -55,8 +55,7 @@ import {
 } from "@opensteer/runner-client";
 
 const serverDeploymentShape = {
-  defaultWorkspaceBacking: "local-directory",
-  kind: "server" as const,
+  kind: "personal" as const,
 } as const;
 const testAgentSkills = {
   paths: {
@@ -108,7 +107,146 @@ async function connectedSocketPair() {
   }
 }
 
+describe("AgentsWorkSession", () => {
+  it.each(["interrupt", "revoke"] as const)(
+    "%s overtakes an admitted steer but waits for execute admission",
+    async (stop) => {
+      const ids = {
+        environmentId: createId("environment"),
+        runId: createId("run"),
+        threadId: createId("thread"),
+      };
+      const execution = Promise.withResolvers<void>();
+      const steering = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      const messages: RunnerOperationalReport[] = [];
+      const sink = new CausallyOrderedRunnerSink({
+        send: async (message) => void messages.push(message),
+      });
+      const runtime = {
+        observeFolderSkills: () => undefined,
+        subscribeHarnessPreparation: () => () => undefined,
+        handleCommand: async (command: RunnerCommand) => {
+          calls.push(command.type);
+          if (command.type === "run.execute") await execution.promise;
+          if (command.type === "run.steer") await steering.promise;
+          if (command.type === "run.interrupt") {
+            await sink.send(terminalEvent(ids));
+            steering.resolve();
+          }
+          return { status: "accepted" as const };
+        },
+        revokeRuns: () => {
+          calls.push("revoked");
+          steering.resolve();
+        },
+      } as unknown as RunnerRuntime;
+      const fail = vi.fn();
+      const fence: RunnerConnectionFence = {
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        connectionGeneration: 1,
+        connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+        connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+        runnerId: createId("runner"),
+      };
+      const work = new AgentsWorkSession({
+        agents: { runtime },
+        appTransport: {
+          controlCaPath: undefined,
+          hostUrl: new URL("http://localhost"),
+          mode: "development",
+        },
+        environmentId: () => ids.environmentId,
+        fail,
+        fence: new RunnerConnectionFenceLedger(),
+        heartbeatNow: () => undefined,
+        signal: new AbortController().signal,
+        sink,
+      });
+      const execute = {
+        type: "run.execute",
+        context: { runId: ids.runId },
+      } as RunnerCommand;
+      const steer = controlCommand("run.steer", ids);
+      const interrupt = controlCommand("run.interrupt", ids);
+      try {
+        await work.handle({ ...fence, type: "host.command", command: execute });
+        await work.handle({ ...fence, type: "host.command", command: steer });
+        await work.handle(
+          stop === "interrupt"
+            ? { ...fence, type: "host.command", command: interrupt }
+            : {
+                ...fence,
+                type: "host.runs.revoked",
+                revocations: [{ reason: "Stopped", runId: ids.runId }],
+              },
+        );
+        expect(calls).toEqual(["run.execute"]);
+        expect(work.settled()).toBe(false);
+        execution.resolve();
+        await vi.waitFor(() =>
+          expect([...calls], `${stop} never overtook the pending steer`).toEqual([
+            "run.execute",
+            "run.steer",
+            stop === "interrupt" ? "run.interrupt" : "revoked",
+          ]),
+        );
+        await vi.waitFor(() => expect(work.settled(), "Command receipts never settled").toBe(true));
+        expect(fail).not.toHaveBeenCalled();
+        if (stop === "interrupt") {
+          const receipt = messages.findIndex(
+            (message) => "commandId" in message && message.commandId === interrupt.commandId,
+          );
+          const event = messages.findIndex((message) => message.type === "runner.event");
+          expect(receipt).toBeGreaterThanOrEqual(0);
+          expect(event).toBeGreaterThan(receipt);
+          expect(messages.at(-1)).toMatchObject({
+            type: "runner.event",
+            event: { runId: ids.runId, type: "run.interrupted" },
+          });
+        }
+      } finally {
+        execution.resolve();
+        steering.resolve();
+        await work.close();
+        sink.close();
+      }
+    },
+  );
+});
+
 describe("CausallyOrderedRunnerSink", () => {
+  it("holds events until both a pending steer and its interrupt have receipts", async () => {
+    const ids = {
+      environmentId: createId("environment"),
+      runId: createId("run"),
+      threadId: createId("thread"),
+    };
+    const messages: RunnerOperationalReport[] = [];
+    const sink = new CausallyOrderedRunnerSink({
+      send: async (message) => void messages.push(message),
+    });
+    const steering = Promise.withResolvers<{ status: "accepted" }>();
+    const steer = sink.applyCommand(controlCommand("run.steer", ids), () => steering.promise);
+    try {
+      await sink.applyCommand(controlCommand("run.interrupt", ids), async () => {
+        await sink.send(terminalEvent(ids));
+        return { status: "accepted" };
+      });
+      expect(messages.map((message) => message.type)).toEqual(["runner.command-accepted"]);
+      steering.resolve({ status: "accepted" });
+      await steer;
+      expect(messages.map((message) => message.type)).toEqual([
+        "runner.command-accepted",
+        "runner.command-accepted",
+        "runner.event",
+      ]);
+    } finally {
+      steering.resolve({ status: "accepted" });
+      await steer;
+      sink.close();
+    }
+  });
   it("reports an uncertain steer without converting it to a refusal", async () => {
     const messages: RunnerOperationalReport[] = [];
     const sink = new CausallyOrderedRunnerSink({
@@ -164,7 +302,7 @@ describe("CausallyOrderedRunnerSink", () => {
 });
 
 describe("WebSocketMessageSink", () => {
-  it("sends storage replies with only their nested fence and keeps ordinary reports fenced", async () => {
+  it("sends app replies with only their nested fence and keeps ordinary reports fenced", async () => {
     const { server, socket, peer } = await connectedSocketPair();
     const fence: RunnerConnectionFence = {
       bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
@@ -177,15 +315,17 @@ describe("WebSocketMessageSink", () => {
     ledger.adopt(fence, new Date(Date.now() + 60_000).toISOString());
     const sink = new WebSocketMessageSink(socket, ledger);
     const reply = {
-      error: { code: "configuration-invalid", message: "Test storage failure", retryable: false },
+      appId: `app_${randomUUID()}`,
+      ok: false,
+      error: "Test app failure",
       fence: {
         ...fence,
+        bindingGeneration: 1,
         environmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
       },
-      operationId: "workspace:test:provision:v1:1",
+
       requestId: randomUUID(),
-      type: "runner.workspace.local.error",
+      type: "runner.app.result",
     } satisfies RunnerOperationalReport;
     const receive = () =>
       withTimeout(
@@ -475,12 +615,10 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-full-access-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "f".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -490,9 +628,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
-        workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
       identity,
       identityStore: {
@@ -590,8 +726,6 @@ describe("runnerWebSocketUrl", () => {
       OPENSTEER_HOST_URL: `http://127.0.0.1:${address.port}`,
       OPENSTEER_RUNNER_MODULES: "agents,browser",
       OPENSTEER_MAX_CONCURRENT_RUNS: "1",
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/tmp/opensteer-browser-agents-test/workspaces",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/tmp/opensteer-browser-agents-test/workspaces.json",
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: "e".repeat(32),
       OPENSTEER_BROWSER_BRIDGE_URL: `http://127.0.0.1:${address.port}`,
       OPENSTEER_BROWSER_BRIDGE_TOKEN: "b".repeat(32),
@@ -612,7 +746,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-browser-agents-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => {
           throw new Error("not used");
         },
@@ -628,8 +762,6 @@ describe("runnerWebSocketUrl", () => {
       runtimeVersion: "test",
       agents: {
         runtime,
-        workspaceBackings: ["local-directory"],
-        localWorkspaces: localStorageFixture(environmentId),
       },
       browserBridge: config.browserBridge,
     });
@@ -676,7 +808,7 @@ describe("runnerWebSocketUrl", () => {
     const runnerId = createId("runner");
     const environmentId = createId("environment");
     const harness = {
-      config: {},
+      config: {} as unknown as RunnerConfig,
       driverKind: "native",
       id: createId("harnessInstance"),
       name: "Native",
@@ -686,10 +818,6 @@ describe("runnerWebSocketUrl", () => {
     } as const;
     const otherHarness = { ...harness, id: createId("harnessInstance"), name: "Other" } as const;
     const abort = new AbortController();
-    let finishSkillScan!: () => void;
-    const skillScan = new Promise<void>((resolve) => {
-      finishSkillScan = resolve;
-    });
     let finishInspection!: () => void;
     const inspection = new Promise<readonly []>((resolve) => {
       finishInspection = () => resolve([]);
@@ -773,7 +901,6 @@ describe("runnerWebSocketUrl", () => {
             }),
           );
         } else if (message.type === "runner.command-rejected") {
-          finishSkillScan();
           finishInspection();
         } else if (message.type === "runner.harness-catalog") {
           if (message.requestId === "overtaking-catalog") return;
@@ -811,7 +938,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-connection-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -847,16 +974,11 @@ describe("runnerWebSocketUrl", () => {
       maxConcurrentTriggerPrograms: 4,
       mode: "development",
       modules: ["agents", "browser", "shell"],
-
-      localWorkspaceRegistryPath: undefined,
-      localWorkspaceRoot: undefined,
       name: "Test runner",
       nodeExecutable: process.execPath,
       runnerId,
       runnerKind: "main",
-      workspaceBackings: ["local-directory"],
-      workspaceNamespace: "owner-scoped",
-    };
+    } as unknown as RunnerConfig;
     const pair = generateKeyPairSync("ed25519");
     const identity = {
       createdAt: new Date().toISOString(),
@@ -870,19 +992,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
-        knowledgeSkill: true,
-        localWorkspaces: (() => {
-          const local = localStorageFixture(environmentId);
-          local.service.scanSkills = async () => {
-            await withTimeout(skillScan, 1_000, {
-              timeoutError: () => new Error("Command waited behind the initial skill scan"),
-            });
-            return { status: "complete", skills: [], warnings: [] };
-          };
-          return local;
-        })(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config,
@@ -902,19 +1012,20 @@ describe("runnerWebSocketUrl", () => {
       expect(authorization).toBeUndefined();
       expect(received).toContainEqual(
         expect.objectContaining({
-          type: "runner.skills.report",
-          environmentId,
-          scanSequence: 1,
-          result: { status: "complete", skills: [], warnings: [] },
+          type: "runner.harness-catalog",
+          requestId: "cold-catalog",
+          catalogs: [],
         }),
-      );
-      const reportIndex = received.findIndex(
-        (message) => (message as { type: string }).type === "runner.skills.report",
       );
       const commandIndex = received.findIndex(
         (message) => (message as { type: string }).type === "runner.command-rejected",
       );
-      expect(reportIndex).toBeGreaterThan(commandIndex);
+      const catalogIndex = received.findIndex((message) => {
+        const parsed = RunnerToHostMessageSchema.parse(message);
+        return parsed.type === "runner.harness-catalog" && parsed.requestId === "cold-catalog";
+      });
+      expect(commandIndex).toBeGreaterThanOrEqual(0);
+      expect(catalogIndex).toBeGreaterThan(commandIndex);
 
       expect(received[0]).toMatchObject({
         descriptor: {
@@ -924,13 +1035,8 @@ describe("runnerWebSocketUrl", () => {
             agents: {
               environmentIds: [environmentId],
               computerTool: 1,
-              knowledgeSkill: 1,
+
               harnessDrivers: [],
-              localStorage: expect.objectContaining({
-                bindings: [expect.objectContaining({ state: "ready" })],
-                truncated: false,
-              }),
-              workspaceBackings: ["local-directory"],
             },
           },
           runnerId,
@@ -1113,12 +1219,10 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-reach-only-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1128,9 +1232,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
-        workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1356,12 +1458,10 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-integrations-reconnect-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "i".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1371,9 +1471,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
-        workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1566,12 +1664,10 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-lease-expiry-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1581,9 +1677,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
-        workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1723,12 +1817,10 @@ describe("runnerWebSocketUrl", () => {
         browserBridge: undefined,
         controlCaPath: undefined,
         dataDirectory: "/tmp/opensteer-revoked-test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+        deploymentShape: { kind: "personal" },
         enrollmentToken: "v".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1738,9 +1830,7 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-        workspaceBackings: [],
-        workspaceNamespace: "single-owner",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: { acceptHostConnection: async () => identity },
       logger: { error: () => undefined, info: () => undefined },
@@ -1848,7 +1938,7 @@ describe("runnerWebSocketUrl", () => {
       privateStateDirectory: "/tmp/opensteer-runner-reenroll-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -1867,9 +1957,7 @@ describe("runnerWebSocketUrl", () => {
     };
     const connection = new ReconnectingHostConnection({
       agents: {
-        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config: {
@@ -1884,16 +1972,11 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["agents", "browser", "shell"],
-
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         name: "Test runner",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["local-directory"],
-        workspaceNamespace: "owner-scoped",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -1927,7 +2010,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       const host = await fakeAgentsHost();
       const runner = engineRecheckRunner(host.url, () => false);
       const first = {
-        config: {},
+        config: {} as unknown as RunnerConfig,
         driverKind,
         id: createId("harnessInstance"),
         name: "First",
@@ -2026,7 +2109,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       runId: createId("run"),
       terminal: false,
       threadId: createId("thread"),
-      workspaceId: createId("workspace"),
     };
     vi.spyOn(runner.runtime, "attachInventory").mockReturnValue([heldRun]);
     const abort = new AbortController();
@@ -2201,7 +2283,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
       privateStateDirectory: "/tmp/opensteer-engine-recheck-test/state",
       browserHarnessExecutable: "/opt/opensteer/browser-harness",
       projectContinuationIdentity,
-      workspaceManager: {
+      folderManager: {
         prepare: async () => Promise.reject(new Error("not used")),
         writableRoots: () => ["/runner/workspaces"],
       },
@@ -2220,9 +2302,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
     const errors: string[] = [];
     const connection = new ReconnectingHostConnection({
       agents: {
-        localWorkspaces: localStorageFixture(),
         runtime,
-        workspaceBackings: ["local-directory"],
       },
       bootId,
       config: {
@@ -2233,8 +2313,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         enrollmentToken: "e".repeat(32),
         environmentId,
         hostUrl,
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -2243,9 +2321,7 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-        workspaceBackings: ["local-directory"],
-        workspaceNamespace: "owner-scoped",
-      },
+      } as unknown as RunnerConfig,
       identity,
       identityStore: {
         acceptHostConnection: async ({ connectionGeneration }) => ({
@@ -2424,33 +2500,7 @@ function terminalEvent(ids: {
       runId: ids.runId,
       threadId: ids.threadId,
       type: "run.interrupted",
-      workspaceId: createId("workspace"),
     },
     type: "runner.event",
-  };
-}
-
-function localStorageFixture(
-  environmentId?: EnvironmentId,
-): NonNullable<RunnerAgentsConnection["localWorkspaces"]> {
-  const storageAuthorityId = createId("storageAuthority");
-  return {
-    inventory: async () => ({
-      bindings: environmentId
-        ? [
-            {
-              bindingId: createId("workspaceBinding"),
-              generation: 1,
-              workspaceId: createId("workspace"),
-              state: "ready" as const,
-            },
-          ]
-        : [],
-      storageAuthorityId,
-      truncated: false,
-    }),
-    service: {
-      scanSkills: async () => ({ status: "complete", skills: [], warnings: [] }),
-    } as unknown as NonNullable<RunnerAgentsConnection["localWorkspaces"]>["service"],
   };
 }

@@ -1526,7 +1526,6 @@ async function registerFixture(
     hostInstanceId,
     hostKey: { algorithm: "Ed25519" as const },
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory" as const,
       kind: "personal" as const,
     },
   };

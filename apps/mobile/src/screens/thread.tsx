@@ -1,13 +1,7 @@
 import type { HostClient } from "@opensteer/client/host";
-import { useHostSelector } from "@opensteer/client/react";
-import {
-  StackActions,
-  useIsFocused,
-  useNavigation,
-  type StaticScreenProps,
-} from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
-import { useEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";
 import { Screen } from "../ui/screen.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
@@ -47,9 +41,6 @@ export function ThreadScreen(props: ThreadScreenProps): ReactNode {
   );
 }
 
-const selectHomeThreadId = (snapshot: { readonly homeThreadId: string | null }) =>
-  snapshot.homeThreadId;
-
 function AttachedThread(props: {
   readonly hostClient: HostClient;
   readonly messageId: string | undefined;
@@ -57,27 +48,7 @@ function AttachedThread(props: {
   readonly params: ThreadScreenProps["route"]["params"];
 }): ReactNode {
   const navigation = useNavigation();
-  const focused = useIsFocused();
-  const homeThreadId = useHostSelector(props.hostClient, selectHomeThreadId);
   const { deploymentId, requestId, threadId } = props.params;
-  const isHome = homeThreadId === threadId;
-
-  // Chat has one screen, the root under everything. A link or notification
-  // about Chat — a report into it, a Request asked there — names its Thread,
-  // so it arrives here and goes on to Chat with its exact update, rather
-  // than opening a second Chat whose draft would drift from the first.
-  useEffect(() => {
-    if (!isHome || !focused) return;
-    navigation.dispatch(
-      StackActions.popTo("Home", {
-        deploymentId,
-        ...(props.messageId === undefined ? {} : { messageId: props.messageId }),
-        ...(requestId === undefined ? {} : { requestId }),
-      }),
-    );
-  }, [deploymentId, focused, isHome, navigation, props.messageId, requestId]);
-
-  if (isHome) return <Screen>{null}</Screen>;
   return (
     <Screen edgeToEdge>
       <ThreadPane

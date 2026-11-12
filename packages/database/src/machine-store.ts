@@ -287,10 +287,7 @@ export async function updateMachineAccessPolicy(
       }
     }
     const ownership = await machineOwnershipIn(transaction, input.runnerId);
-    if (
-      !ownership ||
-      !machineIsManagedBy(ownership, input.ownerId, { allowDeployment: input.allowDeployment })
-    ) {
+    if (!ownership || !machineIsManagedBy(ownership, input.ownerId)) {
       throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
     }
     // "My agents" has to name somebody. A Deployment-owned machine normally
@@ -804,21 +801,18 @@ async function isPersonalDeployment(database: Kysely<DatabaseSchema>): Promise<b
     .select("deploymentShape")
     .where("singletonKey", "=", "primary")
     .executeTakeFirst();
-  return deployment
-    ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
-    : false;
+  return deployment ? deploymentPolicy(deployment.deploymentShape).services.personal : false;
 }
 
 /** A Personal Deployment has exactly one established owner. */
 export async function personalDeploymentOwner(
   database: Kysely<DatabaseSchema>,
 ): Promise<UserId | null> {
+  if (!(await isPersonalDeployment(database))) return null;
   const owner = await database
     .selectFrom("users")
-    .select("id")
-    .where("instanceRole", "=", "administrator")
-    .where("disabledAt", "is", null)
+    .select(["id", "disabledAt"])
     .orderBy("createdAt", "asc")
     .executeTakeFirst();
-  return owner?.id ?? null;
+  return owner && owner.disabledAt === null ? owner.id : null;
 }

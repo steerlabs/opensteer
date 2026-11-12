@@ -69,9 +69,13 @@ afterEach(async () => {
 async function mount() {
   state.host = new MockHostClient({ latencyMs: 0 });
   const snapshot = state.host.getSnapshot();
-  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const source = snapshot.threads[0]!;
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
-  state.route = { key: "home", name: "Home", params: { deploymentId: snapshot.deploymentId } };
+  state.route = {
+    key: "task",
+    name: "Thread",
+    params: { deploymentId: snapshot.deploymentId, threadId: source.id },
+  };
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -85,7 +89,6 @@ async function mount() {
   const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
-    workspaceId: source.workspaceId,
     threadId: source.id,
     target: { threadId: target.id },
   });
@@ -121,7 +124,7 @@ it.each(["app", "phone"] as const)(
         name: "WorkspaceBrowser",
         params: {
           deploymentId: f.snapshot.deploymentId,
-          scope: "workspace",
+          scope: "tabs",
           machineId: machine.id,
           ...(kind === "app"
             ? {
@@ -148,43 +151,39 @@ it("routes an authorized unloaded Thread through the existing Thread screen", as
   });
 });
 
-it.each(["Home", "Thread"])(
-  "opens the exact requested tab from the active %s conversation",
-  async (name) => {
-    const f = await mount();
-    const source = name === "Home" ? f.source : f.target;
-    state.route = {
-      key: name,
-      name,
-      params: { deploymentId: f.snapshot.deploymentId, threadId: source.id },
-    };
-    const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
-    if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
-    const { sessionId, tabId } = place.destination;
-    await act(async () =>
-      f.host.receivePersonShow(
-        PersonShowMessageSchema.parse({
-          ...f.message,
-          threadId: source.id,
-          workspaceId: source.workspaceId,
-          target: { tabId },
-        }),
-      ),
-    );
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
-      type: "PUSH",
-      payload: {
-        name: "WorkspaceBrowser",
-        params: {
-          deploymentId: f.snapshot.deploymentId,
-          scope: "workspace",
-          sessionId,
-          tabId,
-        },
+it("opens the exact requested tab from the active Thread", async () => {
+  const f = await mount();
+  const source = f.target;
+  state.route = {
+    key: "Thread",
+    name: "Thread",
+    params: { deploymentId: f.snapshot.deploymentId, threadId: source.id },
+  };
+  const place = placeList(f.snapshot).find((place) => place.destination.kind === "browser")!;
+  if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");
+  const { sessionId, tabId } = place.destination;
+  await act(async () =>
+    f.host.receivePersonShow(
+      PersonShowMessageSchema.parse({
+        ...f.message,
+        threadId: source.id,
+        target: { tabId },
+      }),
+    ),
+  );
+  expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
+    type: "PUSH",
+    payload: {
+      name: "WorkspaceBrowser",
+      params: {
+        deploymentId: f.snapshot.deploymentId,
+        scope: "tabs",
+        sessionId,
+        tabId,
       },
-    });
-  },
-);
+    },
+  });
+});
 
 it("ignores inactive apps, covered routes and different Threads or Deployments, without replaying Show", async () => {
   const f = await mount();
@@ -257,7 +256,6 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   const call = {
     threadId: createId("thread"),
     runId: createId("run"),
-    workspaceId: f.source.workspaceId,
   };
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);

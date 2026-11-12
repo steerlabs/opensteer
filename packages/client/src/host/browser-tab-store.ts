@@ -175,7 +175,7 @@ export class BrowserTabStore {
           [
             "sessionId",
             "state",
-            "workspaceId",
+            "deploymentId",
             "profileId",
             "placement",
             "unavailableReason",

@@ -1,9 +1,10 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
-import { resolveResourceAccess } from "./resource-access.js";
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import {
   eventDataSchemas,
   integrationGatewayNamespaces,
@@ -11,15 +12,9 @@ import {
   type EventData,
 } from "@opensteer/core";
 import { storableText } from "./runner-event-store.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
-import {
-  type BrowserProfileAccess,
-  BrowserProfileAccessSchema,
-} from "@opensteer/browser-profile/grant";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   type AgentEvent,
-  type BrowserProfileGrantId,
-  BrowserProfileGrantIdSchema,
   type BrowserProfileId,
   BrowserProfileIdSchema,
   type ContentPart,
@@ -30,7 +25,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
   createId,
   nonTerminalRunStatuses,
 } from "@opensteer/core";
@@ -63,9 +57,8 @@ import {
   publicProfileDeletion,
   recordBrowserProfileDeletion,
 } from "./browser-profile-storage-store.js";
-import { withDatabaseTransaction } from "./connection.js";
+
 import { databaseOperationOptions } from "./operation-budget.js";
-import { withRequestWorkspaceLocks } from "./request-workspace-locks.js";
 import { type DatabaseSchema } from "./schema.js";
 import {
   findCommandByIdempotency,
@@ -75,20 +68,6 @@ import {
   lockCommandIdempotency,
   principalIdForUser,
 } from "./store-primitives.js";
-
-export interface ActiveBrowserProfileGrantRecord {
-  readonly access: BrowserProfileAccess;
-  readonly createdAt: Date;
-  readonly grantId: BrowserProfileGrantId;
-  readonly profileId: BrowserProfileId;
-  readonly workspaceId: WorkspaceId;
-}
-
-export interface RevokedBrowserProfileGrantRecord {
-  readonly grantId: BrowserProfileGrantId;
-  readonly profileId: BrowserProfileId;
-  readonly workspaceId: WorkspaceId;
-}
 
 export interface BrowserProfileRecord {
   readonly homeRunnerId: RunnerId | null;
@@ -102,14 +81,13 @@ export interface BrowserSessionRecord {
   readonly createdAt: Date;
   readonly runnerId: RunnerId;
   readonly id: BrowserSessionId;
-  readonly origin: "agent" | "trigger" | "workspace";
+  readonly origin: "agent" | "trigger" | "person";
   readonly placementKey: string;
   /** Null for a fresh session. */
   readonly profileId: BrowserProfileId | null;
   readonly runtimeId: string;
   readonly state: HostedBrowserSessionState;
   readonly updatedAt: Date;
-  readonly workspaceId: WorkspaceId;
 }
 
 export interface BrowserSessionWithAttachmentCountRecord extends BrowserSessionRecord {
@@ -120,40 +98,23 @@ export function ownedBrowserSession(
   expression: ExpressionBuilder<DatabaseSchema, "browserProfiles" | "browserSessions">,
   ownerId: UserId,
 ) {
-  return expression.or([
-    expression("browserProfiles.ownerId", "=", ownerId),
-    expression.and([
+  return expression.and([
+    expression.exists(
+      expression
+        .selectFrom("personalSettings")
+        .innerJoin("users", "users.id", "personalSettings.ownerId")
+        .select("personalSettings.ownerId")
+        .where("personalSettings.ownerId", "=", ownerId)
+        .where("users.disabledAt", "is", null),
+    ),
+    expression.or([
+      expression.and([
+        expression("browserProfiles.ownerId", "=", ownerId),
+        expression("browserProfiles.archivedAt", "is", null),
+      ]),
       expression("browserSessions.profileId", "is", null),
-      expression.exists(
-        expression
-          .selectFrom("workspaceMemberships")
-          .select("workspaceMemberships.id")
-          .whereRef("workspaceMemberships.workspaceId", "=", "browserSessions.workspaceId")
-          .where("workspaceMemberships.userId", "=", ownerId)
-          .where("workspaceMemberships.state", "=", "active"),
-      ),
     ]),
   ]);
-}
-
-function inheritedMainBrowserGrantId(
-  ownerId: UserId,
-  workspaceId: WorkspaceId,
-  profileId: BrowserProfileId,
-): BrowserProfileGrantId {
-  const bytes = createHash("sha256")
-    .update(
-      ["opensteer-main-inherited-browser-v1", ownerId, workspaceId, profileId].join("\0"),
-      "utf8",
-    )
-    .digest()
-    .subarray(0, 16);
-  bytes[6] = (bytes[6]! & 0x0f) | 0x80;
-  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-  const hex = bytes.toString("hex");
-  return BrowserProfileGrantIdSchema.parse(
-    `bpg_${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
-  );
 }
 
 /**
@@ -168,6 +129,7 @@ export async function insertBrowserProfileOnLockedHome(
     readonly homeRunnerId: RunnerId | null;
   },
 ): Promise<BrowserProfileRecord> {
+  await assertPersonalOwner(transaction, input.ownerId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile:${input.ownerId}`}, 0))`.execute(
     transaction,
     databaseOperationOptions(),
@@ -216,7 +178,7 @@ export async function createBrowserProfile(
     readonly ownerId: UserId;
   },
 ): Promise<BrowserProfileRecord> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     await lockCommandIdempotency(transaction, input.ownerId, input.idempotencyKey);
     const command = await findCommandByIdempotency(
       transaction,
@@ -289,6 +251,7 @@ export async function getBrowserProfile(
   profileId: BrowserProfileId,
   ownerId: UserId,
 ): Promise<BrowserProfileRecord | null> {
+  await assertPersonalOwner(database, ownerId);
   const row = await database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
@@ -303,6 +266,7 @@ export async function listBrowserProfiles(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
 ): Promise<readonly BrowserProfileRecord[]> {
+  await assertPersonalOwner(database, ownerId);
   return database
     .selectFrom("browserProfiles")
     .select(["id", "name", "ownerId", "homeRunnerId"])
@@ -323,8 +287,9 @@ export async function renameBrowserProfile(
     readonly profileId: BrowserProfileId;
   },
 ): Promise<BrowserProfileRecord> {
-  return withDatabaseTransaction(database, (transaction) =>
+  return withPersonalTransaction(database, (transaction) =>
     administrationCommand(transaction, input.administration, async () => {
+      await assertPersonalOwner(transaction, input.ownerId);
       const row = await transaction
         .updateTable("browserProfiles")
         .set({ name: input.name, updatedAt: new Date() })
@@ -340,17 +305,7 @@ export async function renameBrowserProfile(
   );
 }
 
-/**
- * Deletes one of the owner's profiles in one transaction: its waiting and open
- * tabs close, its saved state is erased and its grants are revoked. It holds
- * the session lock that every session start and revision commit takes, and the
- * grant lock that every grant takes, so no session, save or grant can follow.
- * The row stays, archived, because sessions keep naming the identity they were
- * created with.
- *
- * Returns the profile's live sessions for the caller to stop. Nothing durable
- * is left to them: a Host that stops before they do fails them on restart.
- */
+/** Archived identities remain named by session history until native erasure is confirmed. */
 export async function deleteBrowserProfile(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -359,7 +314,7 @@ export async function deleteBrowserProfile(
     readonly profileId: BrowserProfileId;
   },
 ) {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     // The profile lock ranks before the administration ledger's.
     await lockBrowserProfile(transaction, input.profileId);
     return administrationCommand(transaction, input.administration, () =>
@@ -377,6 +332,7 @@ export async function deleteBrowserProfileInTransaction(
     readonly binding?: LocalProfileBinding;
   },
 ): Promise<NativeProfileDeletionResult> {
+  await assertPersonalOwner(transaction, input.ownerId);
   await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-profile-session:${input.profileId}`}, 0))`.execute(
     transaction,
     databaseOperationOptions(),
@@ -407,7 +363,7 @@ export async function deleteBrowserProfileInTransaction(
     )
     .where(({ exists, selectFrom }) =>
       exists(
-        selectFrom("workspaceTabs as tab")
+        selectFrom("personalTabs as tab")
           .select("tab.id")
           .whereRef("tab.groupId", "=", "session.tabGroupId")
           .where("tab.closedAt", "is", null),
@@ -427,14 +383,14 @@ export async function deleteBrowserProfileInTransaction(
       .forNoKeyUpdate()
       .execute(databaseOperationOptions());
     await transaction
-      .selectFrom("workspaceTabs")
+      .selectFrom("personalTabs")
       .select("id")
       .where("groupId", "in", groupIds)
       .orderBy("id")
       .forNoKeyUpdate()
       .execute(databaseOperationOptions());
     await transaction
-      .updateTable("workspaceTabs")
+      .updateTable("personalTabs")
       .set({ closedAt: now })
       .where("groupId", "in", groupIds)
       .where("closedAt", "is", null)
@@ -463,16 +419,6 @@ export async function deleteBrowserProfileInTransaction(
     .deleteFrom("browserHistoryIcons")
     .where("profileId", "=", input.profileId)
     .execute(databaseOperationOptions());
-  await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.ownerId}`}, 0))`.execute(
-    transaction,
-    databaseOperationOptions(),
-  );
-  await transaction
-    .updateTable("browserProfileGrants")
-    .set({ revokedAt: now })
-    .where("profileId", "=", input.profileId)
-    .where("revokedAt", "is", null)
-    .execute(databaseOperationOptions());
   const live = await transaction
     .selectFrom("browserSessions")
     .select("id")
@@ -493,36 +439,42 @@ export async function deleteBrowserProfileInTransaction(
 export async function createBrowserSession(
   database: Kysely<DatabaseSchema>,
   input: {
+    readonly ownerId: UserId;
     readonly tabGroupId?: BrowserSessionId;
     readonly opener?: BrowserSessionOpenerRecord | null;
     readonly id: BrowserSessionId;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
-    readonly origin: "agent" | "trigger" | "workspace";
+    readonly origin: "agent" | "trigger" | "person";
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<BrowserSessionRecord> {
   const profileId = input.profileId;
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
+    await assertPersonalOwner(transaction, input.ownerId);
     if (profileId !== null) await lockBrowserProfile(transaction, profileId);
     const runner = await transaction
       .selectFrom("runners")
-      .select("revokedAt")
+      .select(["revokedAt", "ownerKind", "ownerUserId", "kind"])
       .where("id", "=", input.runnerId)
       .forShare()
       .executeTakeFirst(databaseOperationOptions());
-    if (!runner || runner.revokedAt)
+    if (
+      !runner ||
+      runner.revokedAt ||
+      (runner.ownerUserId !== input.ownerId &&
+        !(runner.ownerKind === "deployment" && runner.kind === "main"))
+    )
       throw new OpensteerError({ code: "conflict", message: "This computer was removed." });
     if (profileId !== null) {
       // Under the lock a deletion takes, so a session cannot outlive its profile.
       const profile = await transaction
         .selectFrom("browserProfiles")
-        .select(["archivedAt", "storageState", "storageRunnerId", "homeRunnerId"])
+        .select(["archivedAt", "storageState", "storageRunnerId", "homeRunnerId", "ownerId"])
         .where("id", "=", profileId)
         .executeTakeFirst(databaseOperationOptions());
-      if (!profile || profile.archivedAt) {
+      if (!profile || profile.archivedAt || profile.ownerId !== input.ownerId) {
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       }
       if (
@@ -563,7 +515,6 @@ export async function createBrowserSession(
         profileId: input.profileId,
         runtimeId: input.runtimeId,
         state: "starting",
-        workspaceId: input.workspaceId,
       })
       .returning([
         "createdAt",
@@ -576,7 +527,6 @@ export async function createBrowserSession(
         "runtimeId",
         "state",
         "updatedAt",
-        "workspaceId",
       ])
       .executeTakeFirstOrThrow(databaseOperationOptions());
   });
@@ -594,10 +544,11 @@ export async function countBrowserSessionAttachments(
   return Number(row.count);
 }
 
-export async function findActiveBrowserSessionForWorkspace(
+export async function findActiveBrowserSessionForPerson(
   database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
+  ownerId: UserId,
 ): Promise<BrowserSessionRecord | null> {
+  await assertPersonalOwner(database, ownerId);
   const row = await database
     .selectFrom("browserSessions")
     .select([
@@ -611,10 +562,8 @@ export async function findActiveBrowserSessionForWorkspace(
       "runtimeId",
       "state",
       "updatedAt",
-      "workspaceId",
     ])
-    .where("workspaceId", "=", workspaceId)
-    .where("origin", "=", "workspace")
+    .where("origin", "=", "person")
     .where("state", "in", ["starting", "ready", "closing"])
     .orderBy("createdAt", "desc")
     .executeTakeFirst(databaseOperationOptions());
@@ -640,7 +589,6 @@ export async function listActiveBrowserSessionsForAgentBinding(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
-      "browserSessions.workspaceId",
     ])
     .where("browserSessionAttachments.agentBindingId", "=", agentBindingId)
     .where("browserSessions.state", "in", ["starting", "ready", "closing"])
@@ -696,11 +644,9 @@ export async function authorizedPlaceThreadIds(
   if (threadIds.length === 0) return [];
   const rows = await database
     .selectFrom("threads")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .select("threads.id")
     .where("threads.id", "in", threadIds)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where("threads.createdBy", "=", ownerId)
     .execute(databaseOperationOptions());
   return rows.map(({ id }) => id);
 }
@@ -721,7 +667,7 @@ export async function latestNativePlaces(
     with recursive native_calls as (
       select distinct on (s.run_id, s.runner_binding_generation, s.data->>'callId', coalesce(s.data->>'nodeId', ''))
         s.run_id, s.data->'integration' as integration, c.created_at as at, c.sequence
-      from workspace_events s join workspace_events c
+      from deployment_events s join deployment_events c
         on c.run_id = s.run_id and c.type = 'tool.completed'
         and c.runner_binding_generation is not distinct from s.runner_binding_generation
         and c.data->>'callId' = s.data->>'callId'
@@ -747,14 +693,13 @@ export async function latestNativePlaces(
       where l.depth < 64 and not d.id::text = any(l.path)
     ), addressed as (
       select distinct on (l.run_id, l.sequence) l.*
-      from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
-      where t.listed or w.home_thread_id = t.id
+      from lineage l join threads t on t.id = l.thread_id
+      where t.listed
       order by l.run_id, l.sequence, l.depth
     )
     select distinct on (a.thread_id) a.thread_id, a.run_id, a.integration, a.at
     from addressed a join threads t on t.id = a.thread_id
-    join workspace_memberships m on m.workspace_id = t.workspace_id
-    where m.user_id = ${ownerId} and m.state = 'active'
+    where t.created_by = ${ownerId}
       and not exists (select 1 from browser_session_uses b where b.thread_id = a.thread_id and b.last_used_at > a.at)
     order by a.thread_id, a.at desc, a.sequence desc limit 4096
   `.execute(database, databaseOperationOptions());
@@ -791,18 +736,7 @@ export async function latestNativePlaces(
 export async function resolvePlaceActors(
   database: Kysely<DatabaseSchema>,
   input: { readonly agentBindingIds: readonly string[]; readonly ownerIds: readonly UserId[] },
-): Promise<
-  readonly {
-    agentBindingId: string;
-    ownerId: UserId;
-    runId: RunId;
-    threadId: ThreadId;
-    home: boolean;
-    generation: number;
-    lineageThreadIds: ThreadId[];
-    lineageWorkspaceIds: WorkspaceId[];
-  }[]
-> {
+) {
   const runIds = input.agentBindingIds.flatMap((binding) => {
     const id = bindingRunId(binding);
     return id ? [id] : [];
@@ -811,54 +745,28 @@ export async function resolvePlaceActors(
   const lineage = await sql<{
     runId: RunId;
     threadId: ThreadId;
-    home: boolean;
+    ownerId: UserId;
     generation: number;
-    workspaceId: WorkspaceId;
     lineageThreadIds: ThreadId[];
-    lineageWorkspaceIds: WorkspaceId[];
   }>`
     with recursive lineage as (
-      select r.id as run_id, r.thread_id,
-        r.assignment_id, r.binding_generation as generation, 0 as depth, array[]::text[] as path
-      from runs r join threads c on c.id = r.thread_id
-      where r.id in (${sql.join(runIds)}) and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
-        and not exists (
-          select 1 from grants g where g.run_id = r.id
-            and g.binding_generation = r.binding_generation and g.status = 'revoked'
-        )
+      select r.id as run_id, r.thread_id, r.assignment_id, r.binding_generation as generation,
+        0 as depth, array[]::text[] as path
+      from runs r where r.id in (${sql.join(runIds)})
+        and r.status in (${sql.join(nonTerminalRunStatuses)}) and r.binding_generation is not null
+        and not exists (select 1 from grants g where g.run_id = r.id and g.binding_generation = r.binding_generation and g.status = 'revoked')
       union all
       select l.run_id, d.parent_thread_id, d.parent_assignment_id, l.generation, l.depth + 1, l.path || d.id::text
       from lineage l join delegations d on d.id = l.assignment_id
       where l.depth < 64 and not d.id::text = any(l.path)
     )
-    select distinct on (l.run_id) l.run_id, l.thread_id, l.generation, w.id as workspace_id,
-      (w.home_thread_id = t.id) as home, array(select l2.thread_id from lineage l2 where l2.run_id = l.run_id order by l2.depth) as lineage_thread_ids,
-      array(select distinct t2.workspace_id from lineage l2 join threads t2 on t2.id = l2.thread_id where l2.run_id = l.run_id) as lineage_workspace_ids
-    from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
-    where t.listed or w.home_thread_id = t.id or w.voice_thread_id = t.id order by l.run_id, l.depth
+    select distinct on (l.run_id) l.run_id, l.thread_id, t.created_by as owner_id, l.generation,
+      array(select l2.thread_id from lineage l2 where l2.run_id = l.run_id order by l2.depth) as lineage_thread_ids
+    from lineage l join threads t on t.id = l.thread_id
+    join personal_settings p on p.owner_id = t.created_by join users u on u.id = p.owner_id and u.disabled_at is null
+    where (t.listed or t.purpose = 'voice') and t.created_by in (${sql.join(input.ownerIds)}) order by l.run_id, l.depth
   `.execute(database, databaseOperationOptions());
-  if (!lineage.rows.length) return [];
-  const members = await database
-    .selectFrom("workspaceMemberships")
-    .select(["workspaceId", "userId"])
-    .where("workspaceId", "in", [...new Set(lineage.rows.map((row) => row.workspaceId))])
-    .where("userId", "in", input.ownerIds)
-    .where("state", "=", "active")
-    .execute(databaseOperationOptions());
-  return lineage.rows.flatMap((row) =>
-    members
-      .filter((member) => member.workspaceId === row.workspaceId)
-      .map((member) => ({
-        agentBindingId: `run:${row.runId}`,
-        ownerId: member.userId,
-        runId: row.runId,
-        threadId: row.threadId,
-        home: row.home === true,
-        generation: row.generation,
-        lineageThreadIds: row.lineageThreadIds,
-        lineageWorkspaceIds: row.lineageWorkspaceIds,
-      })),
-  );
+  return lineage.rows.map((row) => ({ ...row, agentBindingId: `run:${row.runId}` }));
 }
 
 export async function resolvePlaceActor(
@@ -908,10 +816,9 @@ export async function attachBrowserSession(
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<boolean> {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     if (input.agentBindingId.startsWith("run:")) {
       const runId = bindingRunId(input.agentBindingId);
       const run = runId
@@ -932,7 +839,6 @@ export async function attachBrowserSession(
         agentBindingId: input.agentBindingId,
         ownerId: input.ownerId,
         sessionId: input.sessionId,
-        workspaceId: input.workspaceId,
       })
       .onConflict((conflict) =>
         // Recency orders a binding's sessions, so it comes from the one clock
@@ -940,7 +846,6 @@ export async function attachBrowserSession(
         conflict.columns(["agentBindingId", "sessionId"]).doUpdateSet({
           ownerId: input.ownerId,
           updatedAt: sql<Date>`now()`,
-          workspaceId: input.workspaceId,
         }),
       )
       // An inserted row has no deleting transaction; an updated one does.
@@ -956,16 +861,15 @@ export interface BrowserUsePage {
   readonly site: string;
 }
 
-/** A conversation whose visible browser usage changed, and its Workspace. */
+/** A conversation whose visible browser usage changed, and the task. */
 export interface BrowserUsageCredit {
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
   /**
    * The catalog's conversation list changed: a first use, or a revisit that
    * changes its recency order (including re-entering the bounded list).
    */
   readonly joined: boolean;
-  /** Sessions whose catalog changed; their viewers can span the conversation's Workspace. */
+  /** Sessions whose catalog changed; their viewers can span the task owner. */
   readonly catalogSessionIds?: readonly BrowserSessionId[];
 }
 
@@ -997,7 +901,7 @@ export async function recordAgentBrowserUse(
 ): Promise<readonly BrowserUsageCredit[]> {
   const runId = bindingRunId(input.agentBindingId);
   if (!runId) return [];
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     const run = await transaction
       .selectFrom("runs")
       .select(["id", "threadId", "assignmentId"])
@@ -1018,7 +922,7 @@ export async function recordAgentBrowserUse(
         `.execute(transaction, databaseOperationOptions())
       : { rows: [] };
     const threadIds = new Set([run.threadId, ...ancestors.rows.map((row) => row.threadId)]);
-    return creditedWorkspaces(
+    return creditedThreads(
       transaction,
       await writeBrowserSessionUses(
         transaction,
@@ -1034,14 +938,14 @@ export async function recordAgentBrowserUse(
   });
 }
 
-async function creditedWorkspaces(
+async function creditedThreads(
   database: Kysely<DatabaseSchema>,
   gained: ReadonlyMap<ThreadId, Pick<BrowserUsageCredit, "joined" | "catalogSessionIds">>,
 ): Promise<readonly BrowserUsageCredit[]> {
   if (gained.size === 0) return [];
   const threads = await database
     .selectFrom("threads")
-    .select(["id as threadId", "workspaceId"])
+    .select("id as threadId")
     .where("id", "in", [...gained.keys()])
     .orderBy("id")
     .execute(databaseOperationOptions());
@@ -1223,7 +1127,7 @@ async function upsertBrowserSessionUseRow(
 /**
  * Records that a person brought a browser into a conversation: they opened it
  * there (no page), or included one of its pages in a message. The person must
- * be an active member of the conversation's Workspace and able to see the
+ * be an personal owner of the task and able to see the
  * session. Returns the conversation when its visible usage changes.
  */
 export async function recordBrowserSessionUse(
@@ -1236,10 +1140,10 @@ export async function recordBrowserSessionUse(
     readonly page?: BrowserUsePage | null;
   },
 ): Promise<readonly BrowserUsageCredit[]> {
-  return withDatabaseTransaction(database, async (transaction) => {
-    const workspaceId = await personBrowserThreadWorkspace(transaction, input);
+  return withPersonalTransaction(database, async (transaction) => {
+    const threadId = await personBrowserThread(transaction, input);
     if (
-      !workspaceId ||
+      !threadId ||
       !(await getBrowserSessionForOwner(transaction, input.sessionId, input.ownerId))
     )
       throw new OpensteerError({ code: "not_found", message: "Browser conversation not found." });
@@ -1253,24 +1157,22 @@ export async function recordBrowserSessionUse(
       },
     ]);
     const credit = gained.get(input.threadId);
-    return credit ? [{ ...credit, threadId: input.threadId, workspaceId }] : [];
+    return credit ? [{ ...credit, threadId: input.threadId }] : [];
   });
 }
 
-/** The conversation's Workspace, when the person is an active member of it. */
-async function personBrowserThreadWorkspace(
+/** The task owner, when the person is an active member of it. */
+async function personBrowserThread(
   database: Kysely<DatabaseSchema>,
   input: { readonly ownerId: UserId; readonly threadId: ThreadId },
-): Promise<WorkspaceId | null> {
+): Promise<ThreadId | null> {
   const thread = await database
     .selectFrom("threads")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
-    .select("threads.workspaceId")
+    .select("threads.id")
     .where("threads.id", "=", input.threadId)
-    .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where("workspaceMemberships.state", "=", "active")
+    .where("threads.createdBy", "=", input.ownerId)
     .executeTakeFirst(databaseOperationOptions());
-  return thread?.workspaceId ?? null;
+  return thread?.id ?? null;
 }
 
 /**
@@ -1289,8 +1191,8 @@ export async function recordIncludedBrowserPages(
 ): Promise<readonly BrowserUsageCredit[]> {
   const pages = input.content.flatMap((part) => (part.type === "browser-page" ? [part] : []));
   if (pages.length === 0) return [];
-  const workspaceId = await personBrowserThreadWorkspace(transaction, input);
-  if (!workspaceId) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
+  const threadId = await personBrowserThread(transaction, input);
+  if (!threadId) throw new OpensteerError({ code: "not_found", message: "Thread not found" });
   for (const page of pages) {
     if (await getBrowserSessionForOwner(transaction, page.sessionId, input.ownerId)) continue;
     throw new OpensteerError({
@@ -1309,42 +1211,31 @@ export async function recordIncludedBrowserPages(
     })),
   );
   const credit = gained.get(input.threadId);
-  return credit ? [{ ...credit, threadId: input.threadId, workspaceId }] : [];
+  return credit ? [{ ...credit, threadId: input.threadId }] : [];
 }
 
 /**
  * Who may see one Browser Session now, by the rule the catalog reads it with:
  * a profile's owner sees its sessions, and a fresh session is seen by the
- * active members of its Workspace. Null when the session does not exist.
+ * active members of the task. Null when the session does not exist.
  */
 export async function listBrowserSessionViewers(
   database: Kysely<DatabaseSchema>,
   sessionId: BrowserSessionId,
-): Promise<{ readonly userIds: readonly UserId[]; readonly workspaceId: WorkspaceId } | null> {
+) {
   const session = await database
     .selectFrom("browserSessions")
-    .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
-    .select([
-      "browserSessions.profileId",
-      "browserSessions.workspaceId",
-      "browserProfiles.ownerId as profileOwnerId",
-    ])
-    .where("browserSessions.id", "=", sessionId)
+    .select("id")
+    .where("id", "=", sessionId)
     .executeTakeFirst(databaseOperationOptions());
   if (!session) return null;
-  if (session.profileId !== null) {
-    return {
-      userIds: session.profileOwnerId ? [session.profileOwnerId] : [],
-      workspaceId: session.workspaceId,
-    };
-  }
-  const members = await database
-    .selectFrom("workspaceMemberships")
-    .select("userId")
-    .where("workspaceId", "=", session.workspaceId)
-    .where("state", "=", "active")
-    .execute(databaseOperationOptions());
-  return { userIds: members.map(({ userId }) => userId), workspaceId: session.workspaceId };
+  const owner = await database
+    .selectFrom("personalSettings")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
+    .select("personalSettings.ownerId")
+    .where("users.disabledAt", "is", null)
+    .executeTakeFirst(databaseOperationOptions());
+  return { userIds: owner ? [owner.ownerId] : [] };
 }
 
 export async function detachBrowserSessionAttachments(
@@ -1357,30 +1248,6 @@ export async function detachBrowserSessionAttachments(
     .returning("sessionId")
     .execute(databaseOperationOptions());
   return detached.map((row) => row.sessionId);
-}
-
-export async function detachBrowserSessionAttachmentsForProfileGrant(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly ownerId: UserId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<number> {
-  const sessionIds = database
-    .selectFrom("browserSessions")
-    .innerJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
-    .select("browserSessions.id")
-    .where("browserProfiles.ownerId", "=", input.ownerId)
-    .where("browserSessions.profileId", "=", input.profileId)
-    .where("browserSessions.workspaceId", "=", input.workspaceId);
-  const result = await database
-    .deleteFrom("browserSessionAttachments")
-    .where("sessionId", "in", sessionIds)
-    .where("ownerId", "=", input.ownerId)
-    .where("workspaceId", "=", input.workspaceId)
-    .executeTakeFirst(databaseOperationOptions());
-  return Number(result.numDeletedRows);
 }
 
 export async function findBrowserSessionHoldingProfilePlacement(
@@ -1400,7 +1267,6 @@ export async function findBrowserSessionHoldingProfilePlacement(
       "runtimeId",
       "state",
       "updatedAt",
-      "workspaceId",
     ])
     .where("profileId", "=", profileId)
     .where("state", "in", ["starting", "ready", "closing"])
@@ -1428,10 +1294,30 @@ export async function getBrowserSessionForOwner(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
-      "browserSessions.workspaceId",
     ])
     .where("browserSessions.id", "=", sessionId)
     .where((expression) => ownedBrowserSession(expression, ownerId))
+    .where((eb) =>
+      eb.exists(
+        eb
+          .selectFrom("runners")
+          .select("runners.id")
+          .whereRef("runners.id", "=", "browserSessions.runnerId")
+          .where("runners.revokedAt", "is", null)
+          .where((owner) =>
+            owner.or([
+              owner.and([
+                owner("runners.ownerKind", "=", "user"),
+                owner("runners.ownerUserId", "=", ownerId),
+              ]),
+              owner.and([
+                owner("runners.ownerKind", "=", "deployment"),
+                owner("runners.kind", "=", "main"),
+              ]),
+            ]),
+          ),
+      ),
+    )
     .executeTakeFirst(databaseOperationOptions());
   return row ?? null;
 }
@@ -1454,7 +1340,6 @@ export async function listBrowserSessions(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
-      "browserSessions.workspaceId",
     ])
     .where((expression) => ownedBrowserSession(expression, ownerId))
     .orderBy(
@@ -1466,7 +1351,7 @@ export async function listBrowserSessions(
 
 /**
  * The conversations using each session that the reader can open — they are an
- * active member of its Workspace — at most `browserSessionMaxThreads` per
+ * active member of the task — at most `browserSessionMaxThreads` per
  * session, most recently active first. A conversation uses a session from its
  * first use of it; its membership row moves with every later one.
  */
@@ -1478,7 +1363,6 @@ export async function listBrowserSessionThreads(
   const ranked = database
     .selectFrom("browserSessionUses")
     .innerJoin("threads", "threads.id", "browserSessionUses.threadId")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .select([
       "browserSessionUses.sessionId",
       "browserSessionUses.threadId",
@@ -1489,8 +1373,7 @@ export async function listBrowserSessionThreads(
     .where("browserSessionUses.sessionId", "in", input.sessionIds)
     .where("browserSessionUses.runId", "is", null)
     .where("browserSessionUses.tabId", "is", null)
-    .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where("workspaceMemberships.state", "=", "active");
+    .where("threads.createdBy", "=", input.ownerId);
   const rows = await database
     .selectFrom(ranked.as("ranked"))
     .select(["ranked.sessionId", "ranked.threadId"])
@@ -1528,11 +1411,9 @@ export async function getThreadBrowserUsage(
     .innerJoin("browserSessions", "browserSessions.id", "browserSessionUses.sessionId")
     .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
     .innerJoin("threads", "threads.id", "browserSessionUses.threadId")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .where("browserSessionUses.threadId", "=", input.threadId)
     .where((eb) => ownedBrowserSession(eb, input.ownerId))
-    .where("workspaceMemberships.userId", "=", input.ownerId)
-    .where("workspaceMemberships.state", "=", "active");
+    .where("threads.createdBy", "=", input.ownerId);
   const sessionIds = authorized
     .select("browserSessionUses.sessionId")
     .groupBy("browserSessionUses.sessionId")
@@ -1622,12 +1503,10 @@ export async function getThreadBrowserUsage(
 export async function listActiveBrowserSessionsForAgent(
   database: Kysely<DatabaseSchema>,
   input: {
-    readonly allOwnerWorkspaces: boolean;
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<readonly BrowserSessionWithAttachmentCountRecord[]> {
-  let query = database
+  const query = database
     .selectFrom("browserSessions")
     .leftJoin("browserProfiles", "browserProfiles.id", "browserSessions.profileId")
     .select([
@@ -1641,7 +1520,6 @@ export async function listActiveBrowserSessionsForAgent(
       "browserSessions.runtimeId",
       "browserSessions.state",
       "browserSessions.updatedAt",
-      "browserSessions.workspaceId",
     ])
     .select((expression) =>
       expression
@@ -1652,9 +1530,6 @@ export async function listActiveBrowserSessionsForAgent(
     )
     .where((expression) => ownedBrowserSession(expression, input.ownerId))
     .where("browserSessions.state", "in", ["starting", "ready", "closing"]);
-  if (!input.allOwnerWorkspaces) {
-    query = query.where("browserSessions.workspaceId", "=", input.workspaceId);
-  }
   const rows = await query
     .orderBy("browserSessions.createdAt", "desc")
     .execute(databaseOperationOptions());
@@ -1676,54 +1551,46 @@ export async function failActiveBrowserSessions(
     await interruptPendingBrowserTabOpens(database);
   }
   let sessionIds: BrowserSessionId[] = [];
-  return withRequestWorkspaceLocks(
-    database,
-    async () => [],
-    async (transaction) => {
-      if (sessionIds.length === 0) return { events: [], failed: 0 };
-      let transactionalUpdate = transaction
-        .updateTable("browserSessions")
-        .set({
-          closedAt: now,
-          state: "failed",
-          updatedAt: now,
-        })
-        .where("id", "in", sessionIds)
-        .where("state", "in", ["starting", "ready", "closing"]);
-      if (placementKey) {
-        transactionalUpdate = transactionalUpdate.where("placementKey", "=", placementKey);
-      }
-      const failed = await transactionalUpdate.returning("id").execute(databaseOperationOptions());
-      if (failed.length > 0) {
-        await transaction
-          .deleteFrom("browserSessionAttachments")
-          .where(
-            "sessionId",
-            "in",
-            failed.map((session) => session.id),
-          )
-          .execute(databaseOperationOptions());
-      }
-      return {
-        events: [],
-        failed: failed.length,
-      };
-    },
-    async (transaction) => {
-      sessionIds = (
-        await transaction
-          .selectFrom("browserSessions")
-          .select("id")
-          .where("state", "in", ["starting", "ready", "closing"])
-          .$if(placementKey !== undefined, (query) =>
-            query.where("placementKey", "=", placementKey!),
-          )
-          .orderBy("id", "asc")
-          .forNoKeyUpdate()
-          .execute(databaseOperationOptions())
-      ).map(({ id }) => id);
-    },
-  );
+  return withPersonalTransaction(database, async (transaction) => {
+    sessionIds = (
+      await transaction
+        .selectFrom("browserSessions")
+        .select("id")
+        .where("state", "in", ["starting", "ready", "closing"])
+        .$if(placementKey !== undefined, (query) => query.where("placementKey", "=", placementKey!))
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions())
+    ).map(({ id }) => id);
+    if (sessionIds.length === 0) return { events: [], failed: 0 };
+    let transactionalUpdate = transaction
+      .updateTable("browserSessions")
+      .set({
+        closedAt: now,
+        state: "failed",
+        updatedAt: now,
+      })
+      .where("id", "in", sessionIds)
+      .where("state", "in", ["starting", "ready", "closing"]);
+    if (placementKey) {
+      transactionalUpdate = transactionalUpdate.where("placementKey", "=", placementKey);
+    }
+    const failed = await transactionalUpdate.returning("id").execute(databaseOperationOptions());
+    if (failed.length > 0) {
+      await transaction
+        .deleteFrom("browserSessionAttachments")
+        .where(
+          "sessionId",
+          "in",
+          failed.map((session) => session.id),
+        )
+        .execute(databaseOperationOptions());
+    }
+    return {
+      events: [],
+      failed: failed.length,
+    };
+  });
 }
 
 export async function transitionBrowserSession(
@@ -1737,326 +1604,93 @@ export async function transitionBrowserSession(
   readonly events: readonly AgentEvent[];
   readonly session: BrowserSessionRecord;
 }> {
-  return withRequestWorkspaceLocks(
-    database,
-    async () => [],
-    async (transaction) => {
-      const now = new Date();
-      let update = transaction
-        .updateTable("browserSessions")
-        .set({
-          ...(input.state === "closed" || input.state === "failed" ? { closedAt: now } : {}),
-          state: input.state,
-          updatedAt: now,
-        })
-        .where("id", "=", input.sessionId)
-        .where("state", "not in", ["closed", "failed"]);
-      if (input.from) update = update.where("state", "in", [...input.from]);
-      const row = await update
-        .returning([
-          "createdAt",
-          "runnerId",
-          "id",
-          "origin",
-          "opener",
-          "placementKey",
-          "profileId",
-          "runtimeId",
-          "state",
-          "updatedAt",
-          "workspaceId",
-        ])
-        .executeTakeFirst(databaseOperationOptions());
-      if (row) {
-        if (input.state === "closed" || input.state === "failed") {
-          await transaction
-            .selectFrom("browserSessionAttachments")
-            .select(["agentBindingId", "sessionId"])
-            .where("sessionId", "=", input.sessionId)
-            .orderBy("agentBindingId", "asc")
-            .orderBy("sessionId", "asc")
-            // FOR UPDATE: These attachments are deleted below; lock their keys in order.
-            .forUpdate()
-            .execute(databaseOperationOptions());
-          await transaction
-            .deleteFrom("browserSessionAttachments")
-            .where("sessionId", "=", input.sessionId)
-            .execute(databaseOperationOptions());
-        }
-        return {
-          events: [],
-          session: row,
-        };
-      }
-      const existing = await transaction
-        .selectFrom("browserSessions")
-        .select([
-          "createdAt",
-          "runnerId",
-          "id",
-          "origin",
-          "opener",
-          "placementKey",
-          "profileId",
-          "runtimeId",
-          "state",
-          "updatedAt",
-          "workspaceId",
-        ])
-        .where("id", "=", input.sessionId)
-        .executeTakeFirst(databaseOperationOptions());
-      if (!existing) {
-        throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
-      }
-      if (existing.state === "closed" || existing.state === "failed") {
-        return { events: [], session: existing };
-      }
-      if (existing.state === input.state) {
-        return {
-          events: [],
-          session: existing,
-        };
-      }
-      throw new OpensteerError({
-        code: "conflict",
-        message: `Browser session cannot transition from ${existing.state} to ${input.state}`,
-      });
-    },
-    (transaction) =>
-      transaction
-        .selectFrom("browserSessions")
-        .select("id")
-        .where("id", "=", input.sessionId)
-        .forNoKeyUpdate()
-        .execute(databaseOperationOptions()),
-  );
-}
-
-export async function createBrowserProfileGrant(
-  database: Kysely<DatabaseSchema>,
-  input: {
-    readonly access: BrowserProfileAccess;
-    readonly createdBy: UserId;
-    readonly id?: BrowserProfileGrantId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  },
-): Promise<ActiveBrowserProfileGrantRecord> {
-  const id = input.id ?? createId("browserProfileGrant");
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     await transaction
-      .selectFrom("workspaces")
+      .selectFrom("browserSessions")
       .select("id")
-      .where("id", "=", input.workspaceId)
+      .where("id", "=", input.sessionId)
       .forNoKeyUpdate()
-      .executeTakeFirstOrThrow(databaseOperationOptions());
-    const membership = await transaction
-      .selectFrom("workspaceMemberships")
-      .select(["role", "state"])
-      .where("workspaceId", "=", input.workspaceId)
-      .where("userId", "=", input.createdBy)
-      .forNoKeyUpdate()
-      .executeTakeFirst(databaseOperationOptions());
-    const profile = await transaction
-      .selectFrom("browserProfiles")
-      .select(["archivedAt", "ownerId"])
-      .where("id", "=", input.profileId)
-      .forShare()
-      .executeTakeFirst(databaseOperationOptions());
-    await sql`select pg_advisory_xact_lock(hashtextextended(${`browser-grants:${input.createdBy}`}, 0))`.execute(
-      transaction,
-      databaseOperationOptions(),
-    );
-    const [existing, activeOwnerGrants] = await Promise.all([
-      transaction
-        .selectFrom("browserProfileGrants")
-        .select("id")
-        .where("workspaceId", "=", input.workspaceId)
-        .where("createdBy", "=", input.createdBy)
-        .where("profileId", "=", input.profileId)
-        .where("revokedAt", "is", null)
-        .executeTakeFirst(databaseOperationOptions()),
-      transaction
-        .selectFrom("browserProfileGrants")
-        .innerJoin("browserProfiles", "browserProfiles.id", "browserProfileGrants.profileId")
-        .select("browserProfileGrants.id")
-        .where("browserProfileGrants.revokedAt", "is", null)
-        .where("browserProfiles.ownerId", "=", input.createdBy)
-        .limit(100)
-        .execute(databaseOperationOptions()),
-    ]);
-    if (!profile) {
-      throw new OpensteerError({
-        code: "not_found",
-        message: "Workspace or browser profile not found",
-      });
-    }
-    if (
-      !membership ||
-      membership.state !== "active" ||
-      profile.ownerId !== input.createdBy ||
-      profile.archivedAt
-    ) {
-      throw new OpensteerError({
-        code: "forbidden",
-        message: "A Workspace member may grant only their own active browser profile",
-      });
-    }
-    if (existing) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: "This browser profile is already granted to the Workspace",
-      });
-    }
-    if (activeOwnerGrants.length >= 100) {
-      throw new OpensteerError({
-        code: "resource_exhausted",
-        message: "Active browser grant limit reached",
-      });
-    }
-    const row = await transaction
-      .insertInto("browserProfileGrants")
-      .values({
-        access: input.access,
-        createdBy: input.createdBy,
-        id,
-        profileId: input.profileId,
-        revokedAt: null,
-        workspaceId: input.workspaceId,
-      })
-      .returning(["access", "createdAt", "id", "profileId", "workspaceId"])
-      .executeTakeFirstOrThrow(databaseOperationOptions());
-    return {
-      access: BrowserProfileAccessSchema.parse(row.access),
-      createdAt: row.createdAt,
-      grantId: row.id,
-      profileId: row.profileId,
-      workspaceId: row.workspaceId,
-    };
-  });
-}
-
-export async function listActiveBrowserProfileGrantsForWorkspace(
-  database: Kysely<DatabaseSchema>,
-  workspaceId: WorkspaceId,
-  ownerId: UserId,
-  agentBindingId?: string,
-): Promise<readonly ActiveBrowserProfileGrantRecord[]> {
-  const { inheritsMain, specialistAllowed } = await resolveResourceAccess(database, {
-    workspaceId,
-    ownerUserId: ownerId,
-    ...(agentBindingId ? { agentBindingId } : {}),
-  });
-  if (!specialistAllowed) return [];
-  if (inheritsMain) {
-    const profiles = await database
-      .selectFrom("browserProfiles")
-      .select(["createdAt", "id"])
-      .where("ownerId", "=", ownerId)
-      .where("archivedAt", "is", null)
-      .orderBy("createdAt", "asc")
-      .orderBy("id", "asc")
-      .limit(129)
       .execute(databaseOperationOptions());
-    return profiles.map((profile) => ({
-      access: "read-write" as const,
-      createdAt: profile.createdAt,
-      grantId: inheritedMainBrowserGrantId(ownerId, workspaceId, profile.id),
-      profileId: profile.id,
-      workspaceId,
-    }));
-  }
-  const rows = await database
-    .selectFrom("browserProfileGrants")
-    .innerJoin(
-      "workspaceMemberships",
-      "workspaceMemberships.workspaceId",
-      "browserProfileGrants.workspaceId",
-    )
-    .select([
-      "browserProfileGrants.createdAt",
-      "browserProfileGrants.access",
-      "browserProfileGrants.id as grantId",
-      "browserProfileGrants.profileId",
-      "browserProfileGrants.workspaceId",
-    ])
-    .where("browserProfileGrants.workspaceId", "=", workspaceId)
-    .where("browserProfileGrants.revokedAt", "is", null)
-    .where("browserProfileGrants.createdBy", "=", ownerId)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
-    .orderBy("browserProfileGrants.createdAt", "asc")
-    .limit(129)
-    .execute(databaseOperationOptions());
-  return rows.map((row) => ({
-    access: BrowserProfileAccessSchema.parse(row.access),
-    createdAt: row.createdAt,
-    grantId: row.grantId,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  }));
-}
 
-export async function listActiveBrowserProfileGrants(
-  database: Kysely<DatabaseSchema>,
-  ownerId: UserId,
-): Promise<readonly ActiveBrowserProfileGrantRecord[]> {
-  const rows = await database
-    .selectFrom("browserProfileGrants")
-    .innerJoin(
-      "workspaceMemberships",
-      "workspaceMemberships.workspaceId",
-      "browserProfileGrants.workspaceId",
-    )
-    .select([
-      "browserProfileGrants.createdAt",
-      "browserProfileGrants.access",
-      "browserProfileGrants.id as grantId",
-      "browserProfileGrants.profileId",
-      "browserProfileGrants.workspaceId",
-    ])
-    .where("browserProfileGrants.revokedAt", "is", null)
-    .where("browserProfileGrants.createdBy", "=", ownerId)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
-    .orderBy("browserProfileGrants.createdAt", "asc")
-    .limit(101)
-    .execute(databaseOperationOptions());
-  return rows.map((row) => ({
-    access: BrowserProfileAccessSchema.parse(row.access),
-    createdAt: row.createdAt,
-    grantId: row.grantId,
-    profileId: row.profileId,
-    workspaceId: row.workspaceId,
-  }));
-}
-
-export async function revokeBrowserProfileGrant(
-  database: Kysely<DatabaseSchema>,
-  grantId: BrowserProfileGrantId,
-  revokedBy: UserId,
-  administration?: AdministrationCommandIdentity | undefined,
-): Promise<RevokedBrowserProfileGrantRecord> {
-  return withDatabaseTransaction(database, (transaction) =>
-    administrationCommand(transaction, administration, async () => {
-      const row = await transaction
-        .updateTable("browserProfileGrants")
-        .set({ revokedAt: new Date() })
-        .where("id", "=", grantId)
-        .where("createdBy", "=", revokedBy)
-        .where("revokedAt", "is", null)
-        .returning(["id", "profileId", "workspaceId"])
-        .executeTakeFirst(databaseOperationOptions());
-      if (!row) {
-        throw new OpensteerError({ code: "not_found", message: "Active grant not found" });
+    const now = new Date();
+    let update = transaction
+      .updateTable("browserSessions")
+      .set({
+        ...(input.state === "closed" || input.state === "failed" ? { closedAt: now } : {}),
+        state: input.state,
+        updatedAt: now,
+      })
+      .where("id", "=", input.sessionId)
+      .where("state", "not in", ["closed", "failed"]);
+    if (input.from) update = update.where("state", "in", [...input.from]);
+    const row = await update
+      .returning([
+        "createdAt",
+        "runnerId",
+        "id",
+        "origin",
+        "opener",
+        "placementKey",
+        "profileId",
+        "runtimeId",
+        "state",
+        "updatedAt",
+      ])
+      .executeTakeFirst(databaseOperationOptions());
+    if (row) {
+      if (input.state === "closed" || input.state === "failed") {
+        await transaction
+          .selectFrom("browserSessionAttachments")
+          .select(["agentBindingId", "sessionId"])
+          .where("sessionId", "=", input.sessionId)
+          .orderBy("agentBindingId", "asc")
+          .orderBy("sessionId", "asc")
+          // FOR UPDATE: These attachments are deleted below; lock their keys in order.
+          .forUpdate()
+          .execute(databaseOperationOptions());
+        await transaction
+          .deleteFrom("browserSessionAttachments")
+          .where("sessionId", "=", input.sessionId)
+          .execute(databaseOperationOptions());
       }
       return {
-        grantId: row.id,
-        profileId: row.profileId,
-        workspaceId: row.workspaceId,
+        events: [],
+        session: row,
       };
-    }),
-  );
+    }
+    const existing = await transaction
+      .selectFrom("browserSessions")
+      .select([
+        "createdAt",
+        "runnerId",
+        "id",
+        "origin",
+        "opener",
+        "placementKey",
+        "profileId",
+        "runtimeId",
+        "state",
+        "updatedAt",
+      ])
+      .where("id", "=", input.sessionId)
+      .executeTakeFirst(databaseOperationOptions());
+    if (!existing) {
+      throw new OpensteerError({ code: "not_found", message: "Browser session not found" });
+    }
+    if (existing.state === "closed" || existing.state === "failed") {
+      return { events: [], session: existing };
+    }
+    if (existing.state === input.state) {
+      return {
+        events: [],
+        session: existing,
+      };
+    }
+    throw new OpensteerError({
+      code: "conflict",
+      message: `Browser session cannot transition from ${existing.state} to ${input.state}`,
+    });
+  });
 }
 
 export async function getBrowserTabOpen(
@@ -2151,26 +1785,12 @@ export async function browserSessionOpenerForBinding(
   if (agentBindingId.startsWith("trigger:")) return { kind: "automation" };
   const runId = bindingRunId(agentBindingId);
   if (!runId) return null;
-  const result = await sql<{ threadId: ThreadId; home: boolean }>`
-    with recursive lineage as (
-      select r.thread_id, r.assignment_id, 0 as depth, array[]::text[] as path
-      from runs r where r.id = ${runId}
-      union all
-      select d.parent_thread_id, d.parent_assignment_id, l.depth + 1, l.path || d.id::text
-      from lineage l join delegations d on d.id = l.assignment_id
-      where l.depth < 64 and not d.id::text = any(l.path)
-    )
-    select t.id as thread_id, (w.home_thread_id = t.id) as home
-    from lineage l join threads t on t.id = l.thread_id join workspaces w on w.id = t.workspace_id
-    join workspace_memberships m on m.workspace_id = t.workspace_id
-    where (t.listed or w.home_thread_id = t.id) and m.user_id = ${ownerId} and m.state = 'active'
-    order by l.depth limit 1
-  `.execute(database, databaseOperationOptions());
-  const row = result.rows[0];
-  if (!row) return null;
-  return row.home
-    ? { kind: "opensteer", threadId: row.threadId }
-    : { kind: "task", threadId: row.threadId, runId };
+  const actors = await resolvePlaceActors(database, {
+    agentBindingIds: [agentBindingId],
+    ownerIds: [ownerId],
+  });
+  const actor = actors[0];
+  return actor ? { kind: "task", threadId: actor.threadId, runId } : null;
 }
 
 /** Fence pending attempts before accepting Runtime streams after Host restart. */
@@ -2187,7 +1807,7 @@ export async function interruptPendingBrowserTabOpens(
 
 export async function latestRunPlace(database: Kysely<DatabaseSchema>, runId: RunId) {
   const row = await database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("runId", "=", runId)
     .where("type", "=", "place.entered")
@@ -2199,7 +1819,7 @@ export async function latestRunPlace(database: Kysely<DatabaseSchema>, runId: Ru
   return event.type === "place.entered" ? event : null;
 }
 
-/** The Run fence precedes the Workspace allocator, including on delegated Runs. */
+/** The personal event allocator precedes Run locks, including on delegated Runs. */
 export async function recordRunPlace(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -2208,61 +1828,44 @@ export async function recordRunPlace(
     readonly data: EventData<"place.entered">;
   },
 ): Promise<AgentEvent | undefined> {
-  return withRequestWorkspaceLocks(
-    database,
-    async (transaction) => {
-      const run = await transaction
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select("threads.workspaceId")
-        .where("runs.id", "=", input.runId)
-        .executeTakeFirst();
-      return run ? [run.workspaceId] : [];
-    },
-    async (transaction) => {
-      const run = await transaction
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .selectAll("runs")
-        .select("threads.workspaceId")
-        .where("runs.id", "=", input.runId)
-        .executeTakeFirst();
-      if (
-        !run ||
-        run.bindingGeneration !== input.bindingGeneration ||
-        !(nonTerminalRunStatuses as readonly string[]).includes(run.status)
-      )
-        return undefined;
-      const last = await transaction
-        .selectFrom("workspaceEvents")
-        .select("data")
-        .where("runId", "=", input.runId)
-        .where("type", "=", "place.entered")
-        .orderBy("sequence", "desc")
-        .limit(1)
-        .executeTakeFirst();
-      if (last) {
-        const previous = eventDataSchemas["place.entered"].parse(last.data);
-        if (placeIdentityKey(previous.place) === placeIdentityKey(input.data.place))
-          return undefined;
-      }
-      return appendHostWorkspaceEvent(transaction, {
-        type: "place.entered",
-        runId: input.runId,
-        threadId: run.threadId,
-        workspaceId: run.workspaceId,
-        environmentId: run.environmentId,
-        // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
-        data: { ...input.data, title: storableText(input.data.title) },
-      });
-    },
-    async (transaction) => {
-      await transaction
-        .selectFrom("runs")
-        .select("id")
-        .where("runs.id", "=", input.runId)
-        .forNoKeyUpdate()
-        .execute();
-    },
-  );
+  return withPersonalTransaction(database, async (transaction) => {
+    await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("id", "=", input.runId)
+      .forNoKeyUpdate()
+      .execute();
+    const run = await transaction
+      .selectFrom("runs")
+      .innerJoin("threads", "threads.id", "runs.threadId")
+      .selectAll("runs")
+      .where("runs.id", "=", input.runId)
+      .executeTakeFirst();
+    if (
+      !run ||
+      run.bindingGeneration !== input.bindingGeneration ||
+      !(nonTerminalRunStatuses as readonly string[]).includes(run.status)
+    )
+      return undefined;
+    const last = await transaction
+      .selectFrom("deploymentEvents")
+      .select("data")
+      .where("runId", "=", input.runId)
+      .where("type", "=", "place.entered")
+      .orderBy("sequence", "desc")
+      .limit(1)
+      .executeTakeFirst();
+    if (last) {
+      const previous = eventDataSchemas["place.entered"].parse(last.data);
+      if (placeIdentityKey(previous.place) === placeIdentityKey(input.data.place)) return undefined;
+    }
+    return appendHostDeploymentEvent(transaction, {
+      type: "place.entered",
+      runId: input.runId,
+      threadId: run.threadId,
+      environmentId: run.environmentId,
+      // A title cut to its bound can end on half a surrogate pair, which jsonb refuses.
+      data: { ...input.data, title: storableText(input.data.title) },
+    });
+  });
 }

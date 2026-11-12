@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { assertUnambiguousBinding, resolveChannelBinding } from "./routing.js";
 import type { ChannelBinding, RouteCandidate } from "./models.js";
@@ -15,9 +16,9 @@ function binding(id: string, selector: Partial<ChannelBinding["selector"]>): Cha
       channels: {
         scope: "all",
         conversationIds: [],
-        sender: { allowedExternalUserIds: [], mode: "linked-members" },
+        sender: { allowedExternalUserIds: [], mode: "owner" },
       },
-      directMessages: { allowedExternalUserIds: [], mode: "linked-members" },
+      directMessages: { allowedExternalUserIds: [], mode: "owner" },
     },
     accountId: "cha_00000000-0000-4000-8000-000000000001" as ChannelBinding["accountId"],
     createdAt: "2026-08-10T00:00:00.000Z",
@@ -34,7 +35,7 @@ function binding(id: string, selector: Partial<ChannelBinding["selector"]>): Cha
     },
     status: "active",
     updatedAt: "2026-08-10T00:00:00.000Z",
-    workspaceId: "wsp_00000000-0000-4000-8000-000000000001" as ChannelBinding["workspaceId"],
+    folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
   };
 }
 

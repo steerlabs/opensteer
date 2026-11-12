@@ -122,7 +122,7 @@ async function setup(
       initialSurfaceId: surfaceId,
       basicInput: 1,
       surfaceState: 1,
-      workspaceTabRestoreVersion: 1,
+      tabRestoreVersion: 1,
       navigationAttributionVersion: 1,
       popupFollowVersion: 1,
       ...initialClaims,

@@ -33,8 +33,11 @@ and cleanup have a separate budget; explicit scenario and operation deadlines st
 Integration requires isolated `forks` and `retry: 0`; global setup rejects anything else before
 touching a database. Tests own immutable database clones, register cleanup before asynchronous
 startup, stop producers before dropping databases and respect cancellation. Never replace
-isolation with a shared TRUNCATE. Templates hold migrated schema, never a Deployment or Account
-identity.
+isolation with a shared TRUNCATE. Templates hold baseline schema, never a Deployment or Account identity. Personal fixtures seed
+one owner, hosting computer and agent home; team fixtures seed team access state and membership.
+Do not turn a personal fixture into a multi-person Host. See the
+[personal fixture](../packages/database/src/personal-fixture.test-support.ts) and
+[team fixture](../packages/database/src/team-fixture.test-support.ts).
 
 An unexpected timeout, aborted signal or unproved cleanup poisons the rest of that file: later
 tests fail with `worker contaminated by <test>: <original error>`. Diagnose the first failure.
@@ -44,14 +47,17 @@ Poison does not cross files ([file-poison.test.ts](../tests/file-poison.test.ts)
 checkout's outputs, so a pnpm lifecycle hook would build too early; bypassing its bundle manifests
 tests stale code. Caller-owned PostgreSQL needs both `OPENSTEER_TEST_DATABASE_URL` and
 `OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL`, with permission to create databases.
-`pnpm test:migration-compat` needs an explicit released SHA that is a strict ancestor of HEAD; it proves
-old stores survive the upgrade, which wire compatibility cannot.
+The fresh baseline contains both Deployment kinds in one lineage. Old databases are refused,
+not migrated; test Start fresh with disposable supervisor fixtures or a VM, never a real install.
+Migration-compatibility evidence from the previous lineage cannot qualify this baseline.
 
 ### Lock-order modes
 
 CI's integration shards run `OPENSTEER_LOCK_ORDER_MODE=enforce`. The local default, `off`, still
 fails on deadlocks and serialization failures; `record` is diagnostic only. Neither substitutes
-for enforcing evidence ([lockOrderMode.ts](../packages/shared/src/lockOrderMode.ts)).
+for enforcing evidence. Team access/content races must prove the commit fence and revocation
+after the removal command returns; the personal event fence precedes personal domain locks
+([lockOrderMode.ts](../packages/shared/src/lockOrderMode.ts)).
 
 ## Same-SHA reruns
 

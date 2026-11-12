@@ -263,17 +263,15 @@ public struct GrantChange: Sendable {
   public let key: GrantKey
   public let login: Login
   public let deploymentName: String
-  public let workspaceName: String
   public let permissionVersion: Int64
 
   public init(
-    key: GrantKey, login: Login, deploymentName: String, workspaceName: String,
-    permissionVersion: Int64 = 4
+    key: GrantKey, login: Login, deploymentName: String,
+    permissionVersion: Int64 = 6
   ) {
     self.key = key
     self.login = login
     self.deploymentName = deploymentName
-    self.workspaceName = workspaceName
     self.permissionVersion = permissionVersion
   }
 }

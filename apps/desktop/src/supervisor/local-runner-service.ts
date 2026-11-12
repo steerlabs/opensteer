@@ -729,15 +729,6 @@ export class LocalRunnerService {
               agentSkillsDirectory: runtimeRelease.agentSkillsDirectory,
               browserHarnessExecutable: runtimeRelease.browserHarnessExecutable,
               harnessExecutables: runtimeRelease.harnessExecutables,
-              // One managed root per Deployment under the user's own home,
-              // mirroring the Personal convention, so a person can find their
-              // agents' files where they would look for any other folder.
-              localWorkspaceRoot: path.join(
-                this.#homeDirectory,
-                "Opensteer",
-                "Workspaces",
-                target.deploymentId,
-              ),
             },
           }
         : {}),
@@ -1257,7 +1248,6 @@ interface RunnerExecutionEnvironment {
   readonly agentSkillsDirectory: string;
   readonly browserHarnessExecutable: string;
   readonly harnessExecutables: Record<ShippedHarnessKind, string>;
-  readonly localWorkspaceRoot: string;
 }
 
 /**
@@ -1321,17 +1311,10 @@ function runnerEnvironment(input: {
                   execution.harnessExecutables[entry.kind],
                 ]),
             ),
-            OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: path.join(
-              input.runnerDataDirectory,
-              "workspace-bindings.v1.json",
-            ),
-            OPENSTEER_LOCAL_WORKSPACE_ROOT: execution.localWorkspaceRoot,
             OPENSTEER_MAX_CONCURRENT_RUNS: "2",
-            OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
           }
         : {}),
       OPENSTEER_DEPLOYMENT_KIND: input.deploymentShape.kind,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: input.deploymentShape.defaultWorkspaceBacking,
       OPENSTEER_HOST_URL: new URL(input.hostUrl).toString(),
       OPENSTEER_MODE: input.config.mode,
       OPENSTEER_NATIVE_FS_HELPER: input.config.localExecution.nativeFsHelperBinary,

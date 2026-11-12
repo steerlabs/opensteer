@@ -1,0 +1,48 @@
+import type {
+  RunId,
+  TeamAgentRequestId,
+  TeamBlobId,
+  TeamLinkId,
+  TeamMessageId,
+  TeamSource,
+  TeamStatusStepSchema,
+} from "@opensteer/core";
+import type { TeamAgentRequest, TeamRequestContextSchema } from "@opensteer/protocol";
+import type { z } from "zod";
+
+export interface TeamRequestStorePort {
+  authorize(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+    action: "read" | "post" | "knowledge" | "status",
+  ): Promise<TeamAgentRequest>;
+  pending(
+    linkId: TeamLinkId,
+  ): Promise<readonly { readonly request: TeamAgentRequest; readonly source: TeamSource }[]>;
+  /** First accept fixes expiry at seven days; repeated accepts never extend it. */
+  accept(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamAgentRequest>;
+  context(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+  ): Promise<z.infer<typeof TeamRequestContextSchema>>;
+  status(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+    input: {
+      readonly state: "working" | "needs_you" | "failed" | "stopped" | "cancelled";
+      readonly steps: readonly z.infer<typeof TeamStatusStepSchema>[];
+    },
+  ): Promise<void>;
+  reply(
+    linkId: TeamLinkId,
+    requestId: TeamAgentRequestId,
+    input: { readonly bodyMarkdown: string; readonly attachmentIds: readonly TeamBlobId[] },
+  ): Promise<TeamMessageId>;
+  /** A completed request permits receipt retrieval only, never new content authority. */
+  receipt(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<TeamMessageId | null>;
+  cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): Promise<void>;
+}
+export interface PersonalTeamRequestRun {
+  readonly requestId: TeamAgentRequestId;
+  readonly runId: RunId;
+}

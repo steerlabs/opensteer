@@ -1,4 +1,5 @@
-import { withDatabaseTransaction } from "./connection.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
+import "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
   MessageIdSchema,
@@ -14,23 +15,24 @@ import { z } from "zod";
 import type { DatabaseSchema } from "./schema.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { boundedSerializedPrefix, serializedArrayBytes } from "./message-window.js";
-
 const historyCursorSchema = z.strictObject({
   threadId: z.string(),
   sequence: SequenceSchema,
   query: z.string().nullable(),
 });
-
 export function encodeThreadHistoryCursor(
   threadId: ThreadId,
   sequence: import("@opensteer/core").Sequence,
   query?: string,
 ) {
-  return Buffer.from(JSON.stringify({ threadId, sequence, query: query?.trim() || null })).toString(
-    "base64url",
-  );
+  return Buffer.from(
+    JSON.stringify({
+      threadId,
+      sequence,
+      query: query?.trim() || null,
+    }),
+  ).toString("base64url");
 }
-
 export interface ThreadHistoryQuery {
   readonly threadId: ThreadId;
   readonly ownerId: UserId;
@@ -75,20 +77,13 @@ export async function readThreadHistory(
       });
     }
   })();
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const thread = await transaction
         .selectFrom("threads")
-        .innerJoin(
-          "workspaceMemberships",
-          "workspaceMemberships.workspaceId",
-          "threads.workspaceId",
-        )
         .select("threads.id")
         .where("threads.id", "=", input.threadId)
-        .where("workspaceMemberships.userId", "=", input.ownerId)
-        .where("workspaceMemberships.state", "=", "active")
         .executeTakeFirst();
       if (!thread) return null;
       let visible = transaction
@@ -134,8 +129,16 @@ export async function readThreadHistory(
       const window = boundedSerializedPrefix(
         rows.map(({ policy, ...row }) => ({
           ...messageFromRow(row),
-          ...(row.addressedToUserId ? { addressedToUserId: row.addressedToUserId } : {}),
-          ...(policy ? { policy } : {}),
+          ...(row.addressedToUserId
+            ? {
+                addressedToUserId: row.addressedToUserId,
+              }
+            : {}),
+          ...(policy
+            ? {
+                policy,
+              }
+            : {}),
         })),
         limit,
         maxBytes,

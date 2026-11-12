@@ -311,7 +311,7 @@ export function browserSignInProblemCopy(
       return {
         fix:
           input.context === "request" ? "Allow it again to sign in." : "Sign in again to allow it.",
-        title: `${domain} was removed from this Workspace’s sites`,
+        title: `${domain} was removed from your allowed sites`,
       };
     case "unsupported":
     case "too-large":
@@ -382,14 +382,9 @@ export function chromeCandidateDetail(
   }
 }
 
-/** The Chrome a Workspace last used for a site, which a sign-in offers first. */
 export function browserSitePreferredSource(
   state: Pick<BrowserSourcesState, "sites">,
-  workspaceId: string,
   site: string,
 ): string | null {
-  return (
-    state.sites.find((grant) => grant.workspaceId === workspaceId && grant.site === site)
-      ?.preferredSourceId ?? null
-  );
+  return state.sites.find((grant) => grant.site === site)?.preferredSourceId ?? null;
 }

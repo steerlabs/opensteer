@@ -7,6 +7,7 @@ import {
   task_cancel,
 } from "@opensteer/agent-tools/tools";
 import {
+  BrowserProfileListOutputSchema,
   ThreadReadOutputSchema,
   ThreadListOutputSchema,
   TaskSchema,
@@ -18,14 +19,13 @@ import {
 import type { AgentTriggerManager } from "./handlers/triggers.js";
 import { ThreadService } from "../threads/thread-service.js";
 import {
+  createId,
   OpensteerError,
   AssignmentIdSchema,
   BrowserAccessSuggestionSchema,
-  BrowserProfileGrantIdSchema,
   BrowserProfileIdSchema,
   EnvironmentIdSchema,
   HarnessInstanceIdSchema,
-  MarkColorSchema,
   MessageContentSchema,
   MessageIdSchema,
   PersonMessageSchema,
@@ -37,11 +37,7 @@ import {
   RequestStatusSchema,
   ThreadIdSchema,
   ThreadInputPolicySchema,
-  WorkspaceIconNameSchema,
-  WorkspaceIdSchema,
-  WorkspaceKindSchema,
   readableRequestList,
-  type Workspace,
   ThreadAccessModeSchema,
 } from "@opensteer/core";
 import { TriggerControlInputSchema } from "@opensteer/triggers";
@@ -55,36 +51,11 @@ import {
   BrowserTabWriteInputSchema,
   BrowserTabWriteResultSchema,
 } from "@opensteer/protocol";
-import {
-  DurableWindowCursorSchema,
-  DurableWindowSchema,
-  WorkspaceViewSchema,
-  workspaceViewFromWorkspace,
-} from "@opensteer/protocol";
+import { DurableWindowCursorSchema, DurableWindowSchema } from "@opensteer/protocol";
 import { agentToolPayloadMaxSerializedBytes } from "@opensteer/protocol";
-import { PasswordSignInCodeSchema } from "@opensteer/protocol";
 import { MachineAliasSchema } from "@opensteer/protocol";
 
 const AgentDurableWindowSchema = z.strictObject(DurableWindowSchema.shape);
-/**
- * The Workspace an agent is told about. The icon and colour are presentation
- * for people, and a Runner's strict parser from before them must still read
- * this, so they are left out rather than negotiated.
- */
-const agentOmittedWorkspaceFields = { color: true, icon: true } as const;
-const AgentWorkspaceViewSchema = z.strictObject({
-  ...WorkspaceViewSchema.omit(agentOmittedWorkspaceFields).shape,
-  capacity: z.strictObject(WorkspaceViewSchema.shape.capacity.shape),
-  location: z.strictObject(WorkspaceViewSchema.shape.location.shape),
-  storageIssue: z.strictObject(WorkspaceViewSchema.shape.storageIssue.unwrap().shape).nullable(),
-});
-
-function agentWorkspaceView(workspace: Workspace): z.infer<typeof AgentWorkspaceViewSchema> {
-  // A plain object schema drops the key the agent view does not carry.
-  return WorkspaceViewSchema.omit(agentOmittedWorkspaceFields).parse(
-    workspaceViewFromWorkspace(workspace),
-  );
-}
 const AgentBrowserSessionSummaryStrictSchema = z.strictObject({
   ...AgentBrowserSessionSummarySchema.shape,
   placement: z.strictObject(AgentBrowserSessionSummarySchema.shape.placement.shape),
@@ -121,21 +92,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     ...requestBase,
     type: z.literal("environment.list"),
   }),
-  z.strictObject({
-    ...requestBase,
-    before: DurableWindowCursorSchema.optional(),
-    limit: z.number().int().min(1).max(50).default(25),
-    type: z.literal("project.list"),
-  }),
-
-  z.strictObject({
-    ...requestBase,
-    color: MarkColorSchema.optional(),
-    icon: WorkspaceIconNameSchema.optional(),
-    name: z.string().trim().min(1).max(160),
-    type: z.literal("project.create"),
-  }),
-
   thread_read.input.safeExtend({ ...requestBase, type: z.literal("thread.read") }),
   thread_list.input.safeExtend({ ...requestBase, type: z.literal("thread.list") }),
   delegate_task.input.safeExtend({ ...requestBase, type: z.literal("thread.delegate") }),
@@ -145,7 +101,7 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     content: MessageContentSchema,
     delivery: ThreadInputPolicySchema,
     observationId: z.string().trim().min(1).max(255).optional(),
-    threadId: z.union([ThreadIdSchema, z.literal("home")]),
+    threadId: ThreadIdSchema,
     type: z.literal("thread.message"),
   }),
   z.strictObject({
@@ -185,17 +141,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...requestBase,
-    /** Legacy Runner field, accepted for compatibility and ignored. */
-    code: PasswordSignInCodeSchema.optional(),
-    reason: z.string().trim().min(1).max(500),
-    sessionId: BrowserSessionIdSchema,
-    site: z.string().trim().min(1).max(2_048),
-    /** Legacy Runner field, accepted for compatibility and ignored. */
-    targetId: z.string().min(1).max(512).optional(),
-    type: z.literal("browser.sign-in"),
-  }),
-  z.strictObject({
-    ...requestBase,
     reason: z.string().trim().min(1).max(500),
     sessionId: BrowserSessionIdSchema.optional(),
     site: z.string().trim().min(1).max(2_048),
@@ -206,7 +151,6 @@ const ProductToolRequestUnionSchema = z.discriminatedUnion("type", [
     reason: z.string().trim().min(1).max(500),
     suggestion: BrowserAccessSuggestionSchema,
     type: z.literal("browser.profile.request"),
-    workspaceId: WorkspaceIdSchema.optional(),
   }),
   /**
    * The computer is named by the alias the Run's machine-access note listed,
@@ -260,16 +204,6 @@ export const ProductToolRequestSchema = ProductToolRequestUnionSchema.refine(
 
   .refine(
     (request) =>
-      request.type !== "thread.delegate" ||
-      ((request.threadId !== undefined
-        ? request.workspaceId === undefined
-        : request.workspaceId !== undefined || request.specialist !== undefined) &&
-        (request.threadId === undefined ||
-          (request.harnessInstanceId === undefined && request.model === undefined))),
-    "Choose one destination; reuse of a Thread cannot change its execution placement",
-  )
-  .refine(
-    (request) =>
       new TextEncoder().encode(JSON.stringify(request)).byteLength <=
       agentToolPayloadMaxSerializedBytes,
     `Agent control request must not exceed ${agentToolPayloadMaxSerializedBytes} serialized bytes`,
@@ -278,29 +212,6 @@ export const ProductToolRequestSchema = ProductToolRequestUnionSchema.refine(
 const responseBase = {
   requestId: z.uuid(),
 } as const;
-
-const WorkspaceSummarySchema = z.strictObject({
-  id: WorkspaceIdSchema,
-  kind: WorkspaceKindSchema,
-  name: z.string().min(1).max(160),
-  status: z.enum([
-    "provisioning",
-    "ready",
-    "archiving",
-    "archived",
-    "unavailable",
-    "failed",
-    "deleting",
-    "deleted",
-  ]),
-});
-
-const GrantedBrowserProfileSchema = z.strictObject({
-  access: z.enum(["read", "read-write"]),
-  grantId: BrowserProfileGrantIdSchema,
-  id: BrowserProfileIdSchema,
-  name: z.string().min(1).max(120),
-});
 
 const RequestCreationResultSchema = z.strictObject({
   kind: RequestKindSchema,
@@ -314,20 +225,6 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
     ...responseBase,
     type: z.literal("environment.list.result"),
   }),
-  z.strictObject({
-    ...responseBase,
-    type: z.literal("project.list.result"),
-    workspaces: z.array(WorkspaceSummarySchema).max(50),
-    window: AgentDurableWindowSchema,
-  }),
-  z.strictObject({
-    ...responseBase,
-    type: z.literal("project.create.result"),
-    path: z.string().regex(/^(?:\/|[A-Za-z]:[\\/]|\\\\)/u),
-    slug: z.string().min(1),
-    workspace: AgentWorkspaceViewSchema,
-  }),
-
   ThreadReadOutputSchema.safeExtend({ ...responseBase, type: z.literal("thread.read.result") }),
   z.strictObject({
     ...responseBase,
@@ -370,13 +267,8 @@ const ProductToolResultUnionSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({
     ...responseBase,
-    profiles: z.array(GrantedBrowserProfileSchema).max(128),
+    profiles: BrowserProfileListOutputSchema.shape.profiles,
     type: z.literal("browser.profile.list.result"),
-  }),
-  z.strictObject({
-    ...responseBase,
-    result: AgentBrowserSignInResultSchema,
-    type: z.literal("browser.sign-in.result"),
   }),
   z.strictObject({
     ...responseBase,
@@ -443,21 +335,17 @@ import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
 import type { TriggerControlTokenService } from "../triggers/trigger-control-service.js";
 import type { WatchControlTokenService } from "../triggers/watch-capability.js";
 type ProductOptions = ConstructorParameters<typeof ProductToolHandlers>[0];
-type TestOptions = Partial<Omit<ProductOptions, "workspaces">> & {
+type TestOptions = Partial<ProductOptions> & {
   readonly store: ProductOptions["store"];
-  readonly tokens:
-    | Pick<RunToolTokenService, "authenticate">
-    | Pick<TriggerControlTokenService, "authenticate">
-    | Pick<WatchControlTokenService, "authenticate">;
+  readonly tokens: Pick<
+    RunToolTokenService | TriggerControlTokenService | WatchControlTokenService,
+    "authenticate"
+  >;
   readonly triggers?: AgentTriggerManager;
-  readonly workspaces?: Omit<ProductOptions["workspaces"], "projectPath"> & {
-    projectPath?: ProductOptions["workspaces"]["projectPath"];
-  };
 };
 export class ProductToolsTestClient {
   readonly options: TestOptions;
   readonly service: OpensteerMcpService;
-  readonly createdWorkspaces = new Map<string, Workspace>();
   constructor(options: TestOptions, kind: "run" | "trigger" | "watch" = "run") {
     this.options = options;
     const unavailableDefaults = new Proxy(
@@ -485,7 +373,9 @@ export class ProductToolsTestClient {
           },
         }) as ProductOptions["commands"]);
     const product = new ProductToolHandlers({
+      deploymentId: createId("deployment"),
       threads: new ThreadService({
+        folders: { admit: async (folder) => folder },
         store: options.store,
         commands,
         runners: {
@@ -504,24 +394,11 @@ export class ProductToolsTestClient {
       machineFullDiskAccess: unavailableDefaults as never,
       canRunHarness: () => true,
       harnessAccessModes: () => ThreadAccessModeSchema.options,
-      defaultWorkspaceBacking: "local-directory",
-      environmentWorkspaceBackings: () => ["local-directory"],
       isEnvironmentConnected: () => true,
-      onWorkspaceEvent: () => {},
-      workspaceMounts: unavailableDefaults as never,
+      onEvent: () => {},
+      folders: unavailableDefaults as never,
       ...options,
       commands,
-      workspaces: {
-        create: async (input) => {
-          if (!options.workspaces) throw new Error("Unexpected create");
-          const workspace = await options.workspaces.create(input);
-          this.createdWorkspaces.set(workspace.id, workspace);
-          return workspace;
-        },
-        projectPath:
-          options.workspaces?.projectPath?.bind(options.workspaces) ??
-          (async (workspace) => `/main/Projects/${workspace.slug}`),
-      },
     });
     const unavailable = new Proxy(
       {},
@@ -544,6 +421,7 @@ export class ProductToolsTestClient {
       integrations: unavailable as never,
       apps: unavailable as never,
       triggers: new TriggerToolHandlers(options.triggers ?? (unavailable as AgentTriggerManager)),
+      teamRequestForRun: async () => null,
       pluginInstall: async () => {
         throw new Error("Unexpected install");
       },
@@ -569,8 +447,6 @@ export class ProductToolsTestClient {
   }
   async handle(token: string, value: unknown): Promise<ProductToolResult> {
     const request = ProductToolRequestSchema.parse(value);
-    if (request.type === "browser.sign-in")
-      throw new Error("This agent operation has been removed");
     let name: string = request.type.replaceAll(".", "_").replaceAll("-", "_");
     if (request.type === "thread.delegate") name = "delegate_task";
     if (request.type === "thread.message") name = "thread_send";
@@ -628,13 +504,6 @@ export class ProductToolsTestClient {
       ].includes(request.type)
     )
       fields = { result };
-    if (request.type === "project.list")
-      fields = { window: result.window, workspaces: result.projects };
-    if (request.type === "project.create")
-      fields = {
-        ...result,
-        workspace: agentWorkspaceView(this.createdWorkspaces.get(String(result.id))!),
-      };
     if (request.type === "browser.session.close") fields = { sessionId: result.sessionId };
     return { ...fields, type: `${request.type}.result`, requestId } as ProductToolResult;
   }

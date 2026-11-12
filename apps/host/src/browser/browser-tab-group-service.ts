@@ -3,9 +3,7 @@ import {
   OpensteerError,
   refused,
   UserIdSchema,
-  WorkspaceIdSchema,
   type UserId,
-  type WorkspaceId,
   type ThreadId,
   type BrowserTabGroupId,
 } from "@opensteer/core";
@@ -35,7 +33,6 @@ export type BrowserTabActor =
   | {
       readonly kind: "agent";
       readonly ownerId: UserId;
-      readonly workspaceId: WorkspaceId;
       readonly threadId: ThreadId;
       readonly agentBindingId: string;
     };
@@ -43,7 +40,6 @@ type AgentActor = Extract<BrowserTabActor, { kind: "agent" }>;
 const CursorSchema = z.strictObject({
   queryFingerprint: z.string().length(64).optional(),
   ownerId: UserIdSchema,
-  workspaceId: WorkspaceIdSchema,
   createdAt: z.iso.datetime({ precision: 6 }),
   lineageId: BrowserSessionIdSchema,
   tabId: BrowserSurfaceIdSchema,
@@ -64,11 +60,11 @@ function unreachable(): never {
 export class BrowserTabGroupService {
   readonly #groups: BrowserTabGroupStore;
   readonly #browser: BrowserService;
-  readonly #publish: (workspaceId: WorkspaceId, ownerIds: UserId[]) => void;
+  readonly #publish: (ownerIds: UserId[]) => void;
   constructor(options: {
     readonly groups: BrowserTabGroupStore;
     readonly browser: BrowserService;
-    readonly publish: (workspaceId: WorkspaceId, ownerIds: UserId[]) => void;
+    readonly publish: (ownerIds: UserId[]) => void;
   }) {
     this.#groups = options.groups;
     this.#browser = options.browser;
@@ -138,7 +134,7 @@ export class BrowserTabGroupService {
       } catch {
         badRequest("Invalid saved-tab cursor.", restartCursorNext);
       }
-      if (cursor.ownerId !== actor.ownerId || cursor.workspaceId !== actor.workspaceId)
+      if (cursor.ownerId !== actor.ownerId)
         badRequest("This saved-tab cursor belongs to a different reader.", restartCursorNext);
       if (cursor.queryFingerprint !== queryFingerprint)
         badRequest("This saved-tab cursor belongs to a different search.", restartCursorNext);
@@ -171,13 +167,7 @@ export class BrowserTabGroupService {
     const membership = new Map(
       visibleGroups.flatMap((group) => group.tabIds.map((tabId) => [tabId, group.id] as const)),
     );
-    const profiles = query
-      ? await this.#browser.listGrantedProfiles(
-          actor.ownerId,
-          actor.workspaceId,
-          actor.agentBindingId,
-        )
-      : [];
+    const profiles = query ? await this.#browser.listAgentProfiles(actor.ownerId) : [];
     const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name]));
     const groupTitles = new Map(groups.map((group) => [group.id, group.title]));
     const matches = new Map<string, Array<"title" | "site" | "group" | "profile">>();
@@ -276,7 +266,6 @@ export class BrowserTabGroupService {
           ? Buffer.from(
               JSON.stringify({
                 ownerId: actor.ownerId,
-                workspaceId: actor.workspaceId,
                 createdAt: last.lineageTimestamp,
                 lineageId: last.groupId,
                 tabId: last.id,
@@ -304,7 +293,7 @@ export class BrowserTabGroupService {
       ...(actor.kind === "agent" ? { createdByThreadId: actor.threadId } : {}),
     };
     if (actor.kind === "agent") await this.#browser.flushPendingTabDescriptors();
-    const rows = await this.#authorize(actor, parsed.tabIds!);
+    await this.#authorize(actor, parsed.tabIds!);
     const result = await this.#groups.group(
       actor.ownerId,
       mutation,
@@ -314,7 +303,7 @@ export class BrowserTabGroupService {
           }
         : undefined,
     );
-    this.#changed(actor, rows[0]!.workspaceId);
+    this.#changed(actor);
     return result;
   }
   async ungroup(
@@ -323,7 +312,7 @@ export class BrowserTabGroupService {
     idempotencyKey: string,
   ) {
     if (actor.kind === "agent") await this.#browser.flushPendingTabDescriptors();
-    const rows = await this.#authorize(actor, tabIds);
+    await this.#authorize(actor, tabIds);
     const layout = await this.#groups.ungroup(
       actor.ownerId,
       { tabIds, idempotencyKey },
@@ -333,22 +322,20 @@ export class BrowserTabGroupService {
           }
         : undefined,
     );
-    this.#changed(actor, rows[0]!.workspaceId);
+    this.#changed(actor);
     return layout;
   }
   async move(actor: BrowserTabActor, input: BrowserTabMove & { readonly idempotencyKey: string }) {
     if (actor.kind === "agent") await this.#browser.flushPendingTabDescriptors();
     const move = BrowserTabMoveSchema.parse({ item: input.item, to: input.to });
-    let workspaceId: WorkspaceId | undefined;
     const layout = await this.#groups.move(
       actor.ownerId,
       { ...move, idempotencyKey: input.idempotencyKey },
       async (ids, database) => {
-        const rows = await this.#authorize(actor, ids, database);
-        workspaceId = rows[0]?.workspaceId;
+        await this.#authorize(actor, ids, database);
       },
     );
-    if (workspaceId) this.#changed(actor, workspaceId);
+    this.#changed(actor);
     return layout;
   }
   async update(
@@ -371,7 +358,7 @@ export class BrowserTabGroupService {
         "Tab group not found.",
         "Get current group IDs from browser_tab_read.",
       );
-    const rows = await this.#authorize(actor, group.tabIds);
+    await this.#authorize(actor, group.tabIds);
     const layout = await this.#groups.update(
       actor.ownerId,
       { ...fields, idempotencyKey },
@@ -381,17 +368,17 @@ export class BrowserTabGroupService {
           }
         : undefined,
     );
-    this.#changed(actor, rows[0]!.workspaceId);
+    this.#changed(actor);
     return layout;
   }
   async close(actor: BrowserTabActor, tabIds: readonly z.infer<typeof BrowserSurfaceIdSchema>[]) {
     if (actor.kind === "agent") await this.#browser.flushPendingTabDescriptors();
-    const rows = await this.#authorize(actor, tabIds, this.#groups.database, true);
+    await this.#authorize(actor, tabIds, this.#groups.database, true);
     const closed: z.infer<typeof BrowserSurfaceIdSchema>[] = [];
     const failed: Array<{ tabId: z.infer<typeof BrowserSurfaceIdSchema>; message: string }> = [];
     for (const tabId of new Set(tabIds)) {
       try {
-        await this.#browser.closeWorkspaceTab(actor.ownerId, tabId, actor.kind === "person");
+        await this.#browser.closePersonalTab(actor.ownerId, tabId, actor.kind === "person");
         closed.push(tabId);
       } catch (error) {
         failed.push({
@@ -403,12 +390,11 @@ export class BrowserTabGroupService {
         });
       }
     }
-    this.#changed(actor, rows[0]!.workspaceId);
+    this.#changed(actor);
     return { closed, failed };
   }
-  #changed(actor: BrowserTabActor, workspaceId: WorkspaceId) {
-    // Clients invalidate all browser data; the first affected tab supplies the notice's required Workspace.
-    this.#publish(workspaceId, [actor.ownerId]);
+  #changed(actor: BrowserTabActor) {
+    this.#publish([actor.ownerId]);
   }
 
   #validate(input: BrowserTabWriteInput): BrowserTabWriteInput {
@@ -485,11 +471,11 @@ export class BrowserTabGroupService {
         return { action: "close", ...(await this.close(actor, parsed.tabIds!)) };
       case "restore": {
         await this.#browser.flushPendingTabDescriptors();
-        const rows = await this.#authorize(actor, parsed.tabIds!);
+        await this.#authorize(actor, parsed.tabIds!);
         const restored = [];
         for (const id of new Set(parsed.tabIds))
-          restored.push(await this.#browser.restoreAgentWorkspaceTab(actor, id));
-        this.#changed(actor, rows[0]!.workspaceId);
+          restored.push(await this.#browser.restoreAgentPersonalTab(actor, id));
+        this.#changed(actor);
         return { action: "restore", restored };
       }
     }

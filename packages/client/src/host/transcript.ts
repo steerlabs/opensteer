@@ -48,15 +48,6 @@ export function transcriptPlaces(entries: readonly TranscriptEntry[]): readonly 
   return places;
 }
 
-/**
- * The transcript reducer. Folds the durable agent event stream into ordered,
- * structure-preserving entries. It is pure and idempotent per event, and is
- * shared by the live realtime path and durable history restoration so a
- * refreshed page reconstructs exactly what a live session saw.
- *
- * Ordering: entries keep their first-arrival slot (the workspace sequence
- * order) and are updated in place as their lifecycle progresses.
- */
 export function foldTranscriptEvent(
   entries: readonly TranscriptEntry[],
   event: AgentEvent,
@@ -228,8 +219,6 @@ function foldTranscriptOwnEvent(
               kind: "agent",
               runId: event.runId,
               threadId: event.threadId,
-              workspaceId: event.workspaceId,
-              workspaceName: "Current Workspace",
             }
           : { cause: "assistant-message", kind: "platform" },
         body,
@@ -771,8 +760,6 @@ export function foldLiveRun(
             kind: "agent",
             runId: run.runId,
             threadId: run.threadId,
-            workspaceId: run.workspaceId,
-            workspaceName: "Current Workspace",
           },
           body: text,
           createdAt: prior?.createdAt ?? receivedAt,

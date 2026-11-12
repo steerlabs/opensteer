@@ -10,7 +10,6 @@ import {
   hostApiCompatibility,
   hostApiVersion,
   hostDiscoverySigningBytes,
-  hostDiscoveryDefaultWorkspaceBacking,
   knownHostCapabilities,
   hostAuthorityIdentityMatches,
   isSameHost,
@@ -30,7 +29,6 @@ const fixedAuthority = PersonalHostAccessAuthoritySchema.parse({
   hostInstanceId: "hst_22222222-2222-4222-8222-222222222222",
   hostKey: { algorithm: "Ed25519" },
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
     kind: "personal" as const,
   },
 });
@@ -49,22 +47,7 @@ const fixedRoute = PersonalHostAccessRouteDocumentSchema.parse({
 describe("signing corpus", () => {
   it("keeps the complete Host discovery signing bytes byte-identical", () => {
     expect(new TextDecoder().decode(hostDiscoverySigningBytes(fixedAuthority))).toBe(
-      'opensteer-host-discovery-v4\0{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"defaultWorkspaceBacking":"local-directory","kind":"personal"}}',
-    );
-  });
-
-  it("keeps legacy Host and Personal route signing bytes byte-identical", () => {
-    const authority = HostDiscoveryDocumentSchema.parse({
-      ...fixedAuthority,
-      deploymentShape: { backing: "local-directory", kind: "personal" },
-    });
-    const route = PersonalHostAccessRouteDocumentSchema.parse({ ...fixedRoute, authority });
-
-    expect(new TextDecoder().decode(hostDiscoverySigningBytes(authority))).toBe(
-      'opensteer-host-discovery-v4\0{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"backing":"local-directory","kind":"personal"}}',
-    );
-    expect(new TextDecoder().decode(personalHostAccessRouteSigningBytes(route))).toBe(
-      'opensteer-personal-access-route-v4\0{"authority":{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"backing":"local-directory","kind":"personal"}},"documentVersion":2,"purpose":"opensteer-personal-access-route","route":{"generation":9,"kind":"connect","origin":"https://connect-fixture.opensteer.test"}}',
+      'opensteer-host-discovery-v4\0{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"kind":"personal"}}',
     );
   });
 
@@ -74,7 +57,6 @@ describe("signing corpus", () => {
         ...fixedAuthority,
         deploymentShape: {
           backing: "local-directory",
-          defaultWorkspaceBacking: "local-directory",
           kind: "personal",
         },
       }),
@@ -83,7 +65,7 @@ describe("signing corpus", () => {
 
   it("keeps the complete Personal access-route signing bytes byte-identical", () => {
     expect(new TextDecoder().decode(personalHostAccessRouteSigningBytes(fixedRoute))).toBe(
-      'opensteer-personal-access-route-v4\0{"authority":{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"defaultWorkspaceBacking":"local-directory","kind":"personal"}},"documentVersion":2,"purpose":"opensteer-personal-access-route","route":{"generation":9,"kind":"connect","origin":"https://connect-fixture.opensteer.test"}}',
+      'opensteer-personal-access-route-v4\0{"authority":{"canonicalOrigin":"http://127.0.0.1:4310","deploymentId":"dep_11111111-1111-4111-8111-111111111111","hostInstanceId":"hst_22222222-2222-4222-8222-222222222222","hostKey":{"algorithm":"Ed25519"},"deploymentShape":{"kind":"personal"}},"documentVersion":2,"purpose":"opensteer-personal-access-route","route":{"generation":9,"kind":"connect","origin":"https://connect-fixture.opensteer.test"}}',
     );
   });
 
@@ -95,7 +77,7 @@ describe("signing corpus", () => {
       signature: "B".repeat(86),
     });
     expect(personalHostAccessRouteEnvelopeSha256(envelope)).toBe(
-      "ACnhtJ4UiqlWsVrx3iWZ6CGOSMiCpXFj89sGPnQ8gNo",
+      "zgohczIgWVr_LQ4hvMl79ZLU1vAcG3sM80zNYM-liFA",
     );
     expect(
       personalHostAccessRouteEnvelopeSha256({
@@ -104,7 +86,7 @@ describe("signing corpus", () => {
         publicKey: envelope.publicKey,
         document: envelope.document,
       }),
-    ).toBe("ACnhtJ4UiqlWsVrx3iWZ6CGOSMiCpXFj89sGPnQ8gNo");
+    ).toBe("zgohczIgWVr_LQ4hvMl79ZLU1vAcG3sM80zNYM-liFA");
   });
 
   it("agrees with Web Crypto, which is what a Host and an Account already ran", async () => {
@@ -170,8 +152,7 @@ describe("Personal Host access authority", () => {
     { canonicalOrigin: "http://192.168.1.2:4310" },
     {
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     },
   ])("rejects a non-Personal canonical authority %#", (override) => {
@@ -226,51 +207,6 @@ describe("authority equality and Host identity", () => {
 });
 
 describe("Ed25519 envelope verification", () => {
-  it("verifies legacy backing envelopes without changing their signed bytes", () => {
-    const keys = generateKeyPairSync("ed25519");
-    const legacyDocument = HostDiscoveryDocumentSchema.parse({
-      ...fixedAuthority,
-      deploymentShape: { backing: "local-directory", kind: "personal" },
-    });
-    const legacyEnvelope = HostDiscoveryEnvelopeSchema.parse({
-      document: legacyDocument,
-      publicKey: { algorithm: "Ed25519", spki: encodedSpki(keys.publicKey) },
-      signature: sign(null, hostDiscoverySigningBytes(legacyDocument), keys.privateKey).toString(
-        "base64url",
-      ),
-    });
-    const legacyRouteDocument = PersonalHostAccessRouteDocumentSchema.parse({
-      ...fixedRoute,
-      authority: legacyDocument,
-    });
-    const legacyRouteEnvelope = PersonalHostAccessRouteEnvelopeSchema.parse({
-      document: legacyRouteDocument,
-      publicKey: legacyEnvelope.publicKey,
-      schemaVersion: 1,
-      signature: sign(
-        null,
-        personalHostAccessRouteSigningBytes(legacyRouteDocument),
-        keys.privateKey,
-      ).toString("base64url"),
-    });
-
-    expect(verifyHostDiscoveryEnvelope(legacyEnvelope)).toEqual(legacyDocument);
-    expect(verifyPersonalHostAccessRouteEnvelope(legacyRouteEnvelope)).toEqual(legacyRouteEnvelope);
-    expect(hostDiscoveryDefaultWorkspaceBacking(legacyDocument.deploymentShape)).toBe(
-      "local-directory",
-    );
-    expect(sameDiscoveryDocument(legacyDocument, fixedAuthority)).toBe(true);
-    expect(() =>
-      verifyHostDiscoveryEnvelope({
-        ...legacyEnvelope,
-        document: {
-          ...legacyDocument,
-          deploymentShape: { backing: "local-directory", kind: "server" },
-        },
-      }),
-    ).toThrow("signature is invalid");
-  });
-
   it("verifies Host discovery and rejects document, signature, and key tampering", () => {
     const fixture = signedFixture();
     expect(verifyHostDiscoveryEnvelope(fixture.discovery)).toEqual(fixture.discovery.document);
@@ -333,6 +269,7 @@ describe("Host descriptor", () => {
 
     expect(
       HostDescriptorSchema.parse({
+        kind: "personal",
         apiVersion: hostApiVersion,
         authority: discovery,
         bootstrapMethods: [],
@@ -345,6 +282,7 @@ describe("Host descriptor", () => {
   it("names which side is behind, and rejects legacy epochs as too old", () => {
     const { discovery } = signedFixture();
     const descriptor = {
+      kind: "personal",
       apiVersion: hostApiVersion,
       authority: discovery,
       bootstrapMethods: [],
@@ -426,7 +364,6 @@ function authorityForKey(): HostDiscoveryDocument {
     hostInstanceId: "hst_55555555-5555-4555-8555-555555555555",
     hostKey: { algorithm: "Ed25519" },
     deploymentShape: {
-      defaultWorkspaceBacking: "local-directory",
       kind: "personal" as const,
     },
   });

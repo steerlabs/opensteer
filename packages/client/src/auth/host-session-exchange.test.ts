@@ -364,7 +364,6 @@ function sessionExchangeResponse(delivery: PersonalRemoteSessionDelivery) {
         emailVerified: true,
         id: createId("user"),
         image: null,
-        instanceRole: "administrator",
       },
     },
   };
@@ -377,7 +376,7 @@ function serverConnection(): DeploymentConnection {
       deploymentId: serverDeploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+      deploymentShape: { kind: "team" },
     }),
     bootstrapMethods: ["password"],
     createdAt: "2026-08-17T09:00:00.000Z",
@@ -388,7 +387,7 @@ function serverConnection(): DeploymentConnection {
         verifiedAt: "2026-08-17T09:00:00.000Z",
       },
     ],
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: null,
     name: "My Opensteer",
     reachability: "canonical",
@@ -459,7 +458,6 @@ function remoteAuthority(): RemoteAuthorityFixture {
         algorithm: "Ed25519",
       },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),

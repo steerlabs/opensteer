@@ -60,12 +60,11 @@ public enum Copy {
     "Opensteer Passwords couldn’t open the saved passwords. Ask your agent to try again."
   public static let notUnlockedSinceRestart = "Unlock this Mac to use Opensteer Passwords."
   // A grant's names when the Host's had nothing to show.
-  public static let unnamedWorkspace = "Unnamed Workspace"
   public static let unnamedDeployment = "Unnamed Deployment"
 
   // The Passwords window.
   public static let agentSignInsDetail =
-    "Agents use only the accounts you allowed for their Workspace. Sign-ins can stay saved in the browser profile."
+    "Your agent uses only the accounts you allowed for your Opensteer. Sign-ins can stay saved in the browser profile."
   public static let confirming = "Confirm with Touch ID or your Mac password."
   public static let addPasswords = "Add your passwords"
   public static let addPassword = "Add One by Hand…"
@@ -90,11 +89,11 @@ public enum Copy {
   public static let deleteAction = "Delete"
   public static let cancel = "Cancel"
   public static let save = "Save"
-  /// One line per Workspace allowed to use a login, each with Remove; the
+  /// One line per personal Deployment allowed to use a login, each with Remove; the
   /// site is named only when it is not the login's own.
-  public static func allowedIn(_ workspace: String, site: String?) -> String {
-    site.map { "Allowed for agents in: \(workspace), on \($0)" }
-      ?? "Allowed for agents in: \(workspace)"
+  public static func allowedIn(_ deployment: String, site: String?) -> String {
+    site.map { "Allowed for your agent in: \(deployment), on \($0)" }
+      ?? "Allowed for your agent in: \(deployment)"
   }
   public static let remove = "Remove"
   public static let recentSignIns = "Recent sign-ins"

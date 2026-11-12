@@ -407,11 +407,7 @@ export class PasswordsBrokerClient {
       typeof hello === "object" && hello !== null
         ? (hello as { readonly protocolVersion?: unknown }).protocolVersion
         : undefined;
-    if (
-      typeof announced === "number" &&
-      announced !== this.#protocolVersion &&
-      olderBrokerProtocol(this.#protocolVersion, announced) === null
-    ) {
+    if (typeof announced === "number" && announced !== this.#protocolVersion) {
       socket.destroy();
       throw new PasswordsBrokerFailure(
         "incompatible",
@@ -437,12 +433,6 @@ export class PasswordsBrokerClient {
           ? "A release Opensteer Passwords answered this development build, which uses its own broker."
           : "A development Opensteer Passwords answered this release build, which never uses one.",
       );
-    }
-    if (parsed.data.protocolVersion !== this.#protocolVersion) {
-      socket.destroy();
-      this.#protocolVersion =
-        olderBrokerProtocol(this.#protocolVersion, parsed.data.protocolVersion) ?? 7;
-      return await this.#establish(retried);
     }
     this.#requireCurrent(generation, socket);
     const live: LiveConnection = {
@@ -777,16 +767,4 @@ function brokerMethodNegotiated(
   if (method.startsWith("fill.")) return version >= 8;
   if (method.startsWith("save.")) return version >= 9;
   return true;
-}
-
-/**
- * The version to ask again with when an older broker answers a current
- * client: what it announced for 8, otherwise 7, the oldest current authority.
- */
-function olderBrokerProtocol(
-  offered: PasswordsBrokerProtocolVersion,
-  announced: number,
-): 7 | 8 | null {
-  if (offered < 8 || announced < 4 || announced >= offered) return null;
-  return announced >= 8 ? 8 : 7;
 }

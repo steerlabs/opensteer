@@ -11,41 +11,40 @@ import {
   type DatabaseSchema,
 } from "@opensteer/database";
 import type { Kysely } from "kysely";
-
 interface TaskQuestionNoticeOptions {
   readonly database: Kysely<DatabaseSchema>;
   readonly publish: (event: AgentEvent) => void;
   readonly wake: () => void;
   readonly onError: (error: unknown) => void;
 }
-
 interface QuestionWait {
   readonly parentThreadId: ThreadId;
   readonly threadId: ThreadId;
   readonly result: Promise<string | undefined>;
   readonly finish: (requestId?: string) => void;
 }
-
 export class TaskQuestionNotices {
   readonly #waiting = new Set<QuestionWait>();
   readonly #pending = new Map<RequestId, Promise<void>>();
   readonly #options: TaskQuestionNoticeOptions;
   #closed = false;
-
   constructor(options: TaskQuestionNoticeOptions) {
     this.#options = options;
   }
-
   wait(parentThreadId: ThreadId, threadId: ThreadId): (requestId?: string) => void {
     const { promise, resolve } = Promise.withResolvers<string | undefined>();
-    const entry = { parentThreadId, threadId, result: promise, finish: resolve };
+    const entry = {
+      parentThreadId,
+      threadId,
+      result: promise,
+      finish: resolve,
+    };
     this.#waiting.add(entry);
     return (requestId) => {
       this.#waiting.delete(entry);
       resolve(requestId);
     };
   }
-
   observe(event: AgentEvent): void {
     if (this.#closed || !event.type.startsWith("request.")) return;
     const id =
@@ -59,7 +58,6 @@ export class TaskQuestionNotices {
     const waiting = [...this.#waiting].filter(({ threadId }) => threadId === event.threadId);
     this.#enqueue(parsed.data, waiting);
   }
-
   #enqueue(requestId: RequestId, observedWaits: readonly QuestionWait[] = []): void {
     const previous = this.#pending.get(requestId) ?? Promise.resolve();
     const pending = previous
@@ -99,7 +97,6 @@ export class TaskQuestionNotices {
       });
     this.#pending.set(requestId, pending);
   }
-
   async reconcile(): Promise<void> {
     const rows = await this.#options.database
       .selectFrom("requests")
@@ -123,7 +120,6 @@ export class TaskQuestionNotices {
     for (const row of rows) this.#enqueue(row.id);
     await Promise.all(this.#pending.values());
   }
-
   async close(): Promise<void> {
     this.#closed = true;
     for (const entry of this.#waiting) entry.finish();

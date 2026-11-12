@@ -196,7 +196,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
     const incompatibility = this.#admissionReason(stream);
     if (incompatibility !== null) {
       throw new OpensteerError({
-        code: "workspace_unavailable",
+        code: "runner_offline",
         message: incompatibility,
       });
     }
@@ -223,7 +223,7 @@ export class RunnerBrowserRuntimeRouter implements BrowserRuntimeTargetResolver 
       targetControl: browser.targetControl === 1,
       navigationVersion: browser.navigationVersion === 1,
       navigationAttributionVersion: browser.navigationAttributionVersion === 1,
-      workspaceTabRestoreVersion: browser.workspaceTabRestoreVersion === 1,
+      tabRestoreVersion: browser.tabRestoreVersion === 1,
       popupFollowVersion: browser.popupFollowVersion === 1,
       captureRegion: browser.captureRegion === 1,
       rasterDemand: browser.rasterDemand === 1,

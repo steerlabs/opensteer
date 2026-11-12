@@ -1,14 +1,13 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
+
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
   recordTestDatabaseSetup,
 } from "./test-database.test-support.js";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   AgentEventSchema,
   HarnessIdSchema,
@@ -20,25 +19,24 @@ import {
   type ThreadId,
   type TriggerId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import type { RunnerDescriptor } from "@opensteer/protocol";
 import { WATCH_AUTO_PAUSE_REASON, type TriggerOccurrence } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { describe, expect, it as baseIt } from "vitest";
 import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
-import { createDatabase, withDatabaseTransaction } from "./connection.js";
-
+import { createDatabase } from "./connection.js";
 import { NotificationStore } from "./notification-store.js";
 import { jsonValue } from "./store-primitives.js";
 import { OpensteerStore } from "./store.js";
 import { TriggerStore } from "./trigger-store.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 
@@ -59,7 +57,10 @@ integration.sequential("automation failure notices", () => {
         connectionString: databaseUrl,
         maxConnections: 4,
       });
-      return { database, close: () => database.destroy() };
+      return {
+        database,
+        close: () => database.destroy(),
+      };
     });
     const store = new OpensteerStore(database);
     const triggers = new TriggerStore(database);
@@ -72,35 +73,13 @@ integration.sequential("automation failure notices", () => {
         .execute();
     }
     async function createFixture(suffix: string): Promise<Fixture> {
-      const userId = await store.createUser(`Automation owner ${suffix}`);
-      const runnerId = createId("runner");
-      const environmentId = createId("environment");
-      if (!(await store.getDeployment())) {
-        await store.ensureDeployment({
-          canonicalOrigin: "https://test-host.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-          hostInstanceId: createId("hostInstance"),
-        });
-      }
-      await enrollRunner({ environmentId, runnerId, suffix, userId });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          generation: 1,
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: userId,
-        idempotencyKey: `workspace-${suffix}`,
-        name: `Workspace ${suffix}`,
-        status: "ready",
-      });
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const { userId, runnerId, environmentId } = personal;
+      await enrollRunner({ environmentId, runnerId, suffix, userId: userId });
       const harness = await store.createHarnessInstance({
-        config: { model: "test" },
+        config: {
+          model: "test",
+        },
         driverKind: HarnessIdSchema.parse("native"),
         environmentId,
         name: "Native",
@@ -111,13 +90,16 @@ integration.sequential("automation failure notices", () => {
         createdBy: userId,
         environmentId,
         harnessInstanceId: harness.id,
-        home: true,
         idempotencyKey: `thread-${suffix}`,
         modelSelection,
-        title: `Chat ${suffix}`,
-        workspaceId: workspace.id,
+        title: `Anchor ${suffix}`,
       });
-      return { environmentId, runnerId, threadId: thread.id, userId, workspaceId: workspace.id };
+      return {
+        environmentId,
+        runnerId,
+        threadId: thread.id,
+        userId,
+      };
     }
     async function enrollRunner(input: {
       readonly environmentId: ReturnType<typeof createId<"environment">>;
@@ -125,11 +107,6 @@ integration.sequential("automation failure notices", () => {
       readonly suffix: string;
       readonly userId: UserId;
     }): Promise<void> {
-      const pair = generateKeyPairSync("ed25519");
-      const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-      const enrollmentTokenHash = `sha256:${createHash("sha256")
-        .update(`automation-failure-${input.suffix}`, "utf8")
-        .digest("base64url")}`;
       const descriptor: RunnerDescriptor = {
         bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
         capabilities: ["filesystem"],
@@ -154,10 +131,9 @@ integration.sequential("automation failure notices", () => {
                 ],
               },
             ],
-            localStorage: null,
+
             maxConcurrentRuns: 4,
             providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
           },
         },
         name: "Automation test Runner",
@@ -165,29 +141,19 @@ integration.sequential("automation failure notices", () => {
         runnerKind: "main",
         runtimeVersion: "test",
       };
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
-        createdBy: input.userId,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `automation-runner-${input.suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: descriptor.name,
-        requestFingerprint: `sha256:automation-runner-${input.suffix}`,
-        runnerKind: "main",
-        tokenHash: enrollmentTokenHash,
-      });
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-        publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      });
+      await database
+        .updateTable("runners")
+        .set({
+          capabilities: jsonValue(descriptor.capabilities),
+          moduleDescriptors: descriptor.modules,
+        })
+        .where("id", "=", input.runnerId)
+        .execute();
     }
     const program = {
       language: "javascript",
       source: "export default async () => null",
-      toolContractVersion: 2,
+      toolContractVersion: 3,
     } as const;
     function createOneShotTrigger(fixture: Fixture, suffix: string) {
       return triggers.create({
@@ -199,7 +165,10 @@ integration.sequential("automation failure notices", () => {
         program,
         source: {
           kind: "schedule",
-          schedule: { at: new Date(Date.now() + 60_000).toISOString(), kind: "at" },
+          schedule: {
+            at: new Date(Date.now() + 60_000).toISOString(),
+            kind: "at",
+          },
         },
       });
     }
@@ -213,7 +182,11 @@ integration.sequential("automation failure notices", () => {
         program,
         source: {
           kind: "schedule",
-          schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+          schedule: {
+            expression: "0 9 * * *",
+            kind: "cron",
+            timezone: "UTC",
+          },
         },
       });
     }
@@ -225,14 +198,20 @@ integration.sequential("automation failure notices", () => {
     }
     async function listed(fixture: Fixture) {
       return (
-        await triggers.listForOwner({ scope: { kind: "user" }, ownerId: fixture.userId })
+        await triggers.listForOwner({
+          ownerId: fixture.userId,
+        })
       ).map(({ id }) => id);
     }
     function fireManual(fixture: Fixture, triggerId: TriggerId) {
-      return triggers.enqueueManual({ actorThreadId: null, ownerId: fixture.userId, triggerId });
+      return triggers.enqueueManual({
+        actorThreadId: null,
+        ownerId: fixture.userId,
+        triggerId,
+      });
     }
     async function detail(triggerId: TriggerId, userId: UserId) {
-      const value = await triggers.getForOwner(triggerId, userId, 25, { kind: "user" });
+      const value = await triggers.getForOwner(triggerId, userId, 25);
       if (!value) throw new Error("Expected Trigger detail");
       return value;
     }
@@ -240,7 +219,11 @@ integration.sequential("automation failure notices", () => {
       fixture: Fixture,
       occurrence: TriggerOccurrence,
       runnerBootId: string,
-    ): Promise<TriggerOccurrence & { readonly executionGeneration: number }> {
+    ): Promise<
+      TriggerOccurrence & {
+        readonly executionGeneration: number;
+      }
+    > {
       const claimed = await store.claimCommand(occurrence.commandId, `dispatcher-${randomUUID()}`);
       if (!claimed) throw new Error("Expected Trigger command claim");
       const started = await triggers.startExecution({
@@ -248,7 +231,10 @@ integration.sequential("automation failure notices", () => {
         runnerBootId,
         runnerId: fixture.runnerId,
       });
-      return { ...occurrence, executionGeneration: started.executionGeneration };
+      return {
+        ...occurrence,
+        executionGeneration: started.executionGeneration,
+      };
     }
     async function complete(
       fixture: Fixture,
@@ -265,7 +251,12 @@ integration.sequential("automation failure notices", () => {
           error: status === "failed" ? "Program failed" : null,
           exitCode: status === "failed" ? 1 : 0,
           occurrenceId: occurrence.id,
-          result: status === "succeeded" ? { ok: true } : null,
+          result:
+            status === "succeeded"
+              ? {
+                  ok: true,
+                }
+              : null,
           status,
           stderr: status === "failed" ? "failure\n" : "",
           stdout: status === "succeeded" ? "success\n" : "",
@@ -301,11 +292,14 @@ integration.sequential("automation failure notices", () => {
                 kind: "agent",
                 runId,
                 threadId: fixture.threadId,
-                workspaceId: fixture.workspaceId,
-                workspaceName: "Main",
               }),
             ),
-            content: jsonValue([{ text: words, type: "text" }]),
+            content: jsonValue([
+              {
+                text: words,
+                type: "text",
+              },
+            ]),
             id,
             kind: "assistant",
             runId,
@@ -315,65 +309,25 @@ integration.sequential("automation failure notices", () => {
           .executeTakeFirstOrThrow();
         await transaction
           .updateTable("threads")
-          .set({ nextMessageSequence: sql`next_message_sequence + 1`, updatedAt: new Date() })
+          .set({
+            nextMessageSequence: sql`next_message_sequence + 1`,
+            updatedAt: new Date(),
+          })
           .where("id", "=", fixture.threadId)
           .executeTakeFirstOrThrow();
         return id;
       });
-      await database.transaction().execute(async (transaction) => {
-        const createdAt = new Date();
-        const workspace = await transaction
-          .updateTable("workspaces")
-          .set({ eventSequence: sql<string>`event_sequence + 1`, updatedAt: createdAt })
-          .where("id", "=", fixture.workspaceId)
-          .returning("eventSequence")
-          .executeTakeFirstOrThrow();
-        const eventId = createId("event");
-        const seed = await transaction
-          .selectFrom("runs")
-          .innerJoin("messages", "messages.id", "runs.seedInputId")
-          .select(["messages.author", "runs.createdAt"])
-          .where("runs.id", "=", runId)
-          .executeTakeFirstOrThrow();
-        const event = AgentEventSchema.parse({
-          createdAt: createdAt.toISOString(),
-          data: {
-            replyMessageId: messageId,
-            startedAt: seed.createdAt.toISOString(),
-            personWaiting: seed.author.kind === "human",
-            startedBy: MessageAuthorSchema.parse(seed.author),
-            status: "completed",
-          },
-          environmentId: fixture.environmentId,
-          eventId,
-          runId,
-          sequence: String(workspace.eventSequence),
-          threadId: fixture.threadId,
+      await withPersonalTransaction(database, (transaction) =>
+        appendHostDeploymentEvent(transaction, {
           type: "run.completed",
-          workspaceId: fixture.workspaceId,
-        });
-        await transaction
-          .insertInto("workspaceEvents")
-          .values({
-            createdAt,
-            data: jsonValue(event.data),
-            environmentId: fixture.environmentId,
-            eventId,
-            runId,
-            runnerBindingGeneration: null,
-            runnerBootId: null,
-            runnerId: null,
-            runnerOrdinal: null,
-            sequence: workspace.eventSequence,
-            threadId: fixture.threadId,
-            type: "run.completed",
-            workspaceId: fixture.workspaceId,
-          })
-          .executeTakeFirstOrThrow();
-      });
+          environmentId: fixture.environmentId,
+          threadId: fixture.threadId,
+          runId,
+          data: { status: "completed", replyMessageId: messageId },
+        }),
+      );
       return messageId;
     }
-
     return Object.freeze({
       database,
       store,
@@ -397,7 +351,9 @@ integration.sequential("automation failure notices", () => {
     });
   }
   type StoreFixture = Awaited<ReturnType<typeof createTestFixture>>;
-  const it = baseIt.extend<{ storeFixture: StoreFixture }>({
+  const it = baseIt.extend<{
+    storeFixture: StoreFixture;
+  }>({
     storeFixture: async ({ task }, use) => {
       const started = performance.now();
       const fixture = await createTestFixture();
@@ -405,24 +361,19 @@ integration.sequential("automation failure notices", () => {
       await use(fixture);
     },
   });
-
   interface Fixture {
     readonly environmentId: ReturnType<typeof createId<"environment">>;
     readonly runnerId: RunnerId;
     readonly threadId: ThreadId;
     readonly userId: UserId;
-    readonly workspaceId: WorkspaceId;
   }
-
   it("records a notice when a one-shot schedule's only run fails", async ({ storeFixture }) => {
     const { createFixture, createOneShotTrigger, fireOneShot, complete, storedNotices, notices } =
       storeFixture;
     const fixture = await createFixture("one-shot-failed");
     const created = await createOneShotTrigger(fixture, "one-shot-failed");
     const occurrence = await fireOneShot(created.trigger.id);
-
     await complete(fixture, occurrence, "failed", "one-shot-failed");
-
     expect(await storedNotices()).toEqual([
       {
         activationId: null,
@@ -446,7 +397,6 @@ integration.sequential("automation failure notices", () => {
       },
     ]);
   });
-
   it("finishes a one-shot whose run succeeds: no notice, archived, and off its owner's list", async ({
     storeFixture,
   }) => {
@@ -463,16 +413,16 @@ integration.sequential("automation failure notices", () => {
     const created = await createOneShotTrigger(fixture, "one-shot-succeeded");
     const occurrence = await fireOneShot(created.trigger.id);
     await expect(listed(fixture)).resolves.toEqual([created.trigger.id]);
-
     await complete(fixture, occurrence, "succeeded", "one-shot-succeeded");
-
     expect(await storedNotices()).toEqual([]);
     const finished = await detail(created.trigger.id, fixture.userId);
-    expect(finished.trigger).toMatchObject({ nextFireAt: null, status: "archived" });
+    expect(finished.trigger).toMatchObject({
+      nextFireAt: null,
+      status: "archived",
+    });
     expect(finished.occurrences.map(({ status }) => status)).toEqual(["succeeded"]);
     await expect(listed(fixture)).resolves.toEqual([]);
   });
-
   it("keeps a one-shot run early by hand: its own time is still to come", async ({
     storeFixture,
   }) => {
@@ -480,9 +430,7 @@ integration.sequential("automation failure notices", () => {
       storeFixture;
     const fixture = await createFixture("one-shot-early");
     const created = await createOneShotTrigger(fixture, "one-shot-early");
-
     await complete(fixture, await fireManual(fixture, created.trigger.id), "succeeded", "early");
-
     const kept = await detail(created.trigger.id, fixture.userId);
     expect(kept.trigger).toMatchObject({
       nextFireAt: created.trigger.nextFireAt,
@@ -490,7 +438,6 @@ integration.sequential("automation failure notices", () => {
     });
     await expect(listed(fixture)).resolves.toEqual([created.trigger.id]);
   });
-
   it("keeps a failed one-shot listed until a run by hand succeeds, which finishes it", async ({
     storeFixture,
   }) => {
@@ -507,24 +454,23 @@ integration.sequential("automation failure notices", () => {
     const fixture = await createFixture("one-shot-retried");
     const created = await createOneShotTrigger(fixture, "one-shot-retried");
     await complete(fixture, await fireOneShot(created.trigger.id), "failed", "retried-first");
-
     const [failed] = await triggers.listForOwner({
-      scope: { kind: "user" },
       ownerId: fixture.userId,
     });
     expect(failed).toMatchObject({
       id: created.trigger.id,
-      latestOccurrence: { error: "Program failed", source: "schedule", status: "failed" },
+      latestOccurrence: {
+        error: "Program failed",
+        source: "schedule",
+        status: "failed",
+      },
       nextFireAt: null,
       status: "active",
     });
-
     await complete(fixture, await fireManual(fixture, created.trigger.id), "succeeded", "retried");
-
     expect((await detail(created.trigger.id, fixture.userId)).trigger.status).toBe("archived");
     await expect(listed(fixture)).resolves.toEqual([]);
   });
-
   it("keeps a paused one-shot whose time has not come, even after a run by hand", async ({
     storeFixture,
   }) => {
@@ -538,13 +484,10 @@ integration.sequential("automation failure notices", () => {
       status: "paused",
       triggerId: created.trigger.id,
     });
-
     await complete(fixture, await fireManual(fixture, created.trigger.id), "succeeded", "paused");
-
     expect((await detail(created.trigger.id, fixture.userId)).trigger.status).toBe("paused");
     await expect(listed(fixture)).resolves.toEqual([created.trigger.id]);
   });
-
   it("lists each Trigger with when it runs, how it last went and where it talks", async ({
     storeFixture,
   }) => {
@@ -561,7 +504,13 @@ integration.sequential("automation failure notices", () => {
       program,
       source: {
         kind: "schedule",
-        schedule: { at, kind: "at", payload: { large: "x".repeat(64) } },
+        schedule: {
+          at,
+          kind: "at",
+          payload: {
+            large: "x".repeat(64),
+          },
+        },
       },
     });
     const daily = await createCronTrigger(fixture, "summary");
@@ -571,22 +520,29 @@ integration.sequential("automation failure notices", () => {
       "succeeded",
       "summary",
     );
-
     const summaries = await triggers.listForOwner({
-      scope: { kind: "user" },
       ownerId: fixture.userId,
     });
     const byId = Object.fromEntries(summaries.map((summary) => [summary.id, summary]));
     expect(byId[once.trigger.id]).toMatchObject({
-      anchorThreadTitle: "Chat",
+      anchorThreadTitle: "Anchor summary",
       latestOccurrence: null,
       // The list says when; the payload a schedule carries is the detail's.
-      source: { kind: "schedule", schedule: { at, kind: "at" } },
+      source: {
+        kind: "schedule",
+        schedule: {
+          at,
+          kind: "at",
+        },
+      },
       watch: null,
     });
     expect(byId[once.trigger.id]?.source).toEqual({
       kind: "schedule",
-      schedule: { at, kind: "at" },
+      schedule: {
+        at,
+        kind: "at",
+      },
     });
     expect(byId[daily.trigger.id]).toMatchObject({
       latestOccurrence: {
@@ -598,23 +554,26 @@ integration.sequential("automation failure notices", () => {
       },
       source: {
         kind: "schedule",
-        schedule: { expression: "0 9 * * *", kind: "cron", timezone: "UTC" },
+        schedule: {
+          expression: "0 9 * * *",
+          kind: "cron",
+          timezone: "UTC",
+        },
       },
     });
-    expect((await detail(once.trigger.id, fixture.userId)).anchorThreadTitle).toBe("Chat");
+    expect((await detail(once.trigger.id, fixture.userId)).anchorThreadTitle).toBe(
+      "Anchor summary",
+    );
   });
-
   it("records nothing for a recurring failure below the threshold, and one auto-pause", async ({
     storeFixture,
   }) => {
     const { createFixture, createCronTrigger, failManual, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("recurring");
     const created = await createCronTrigger(fixture, "recurring");
-
     await failManual(fixture, created.trigger.id, "first");
     await failManual(fixture, created.trigger.id, "second");
     expect(await storedNotices()).toEqual([]);
-
     const third = await failManual(fixture, created.trigger.id, "third");
     expect(await storedNotices()).toEqual([
       {
@@ -634,7 +593,6 @@ integration.sequential("automation failure notices", () => {
     await failManual(fixture, created.trigger.id, "after-pause");
     expect(await storedNotices()).toHaveLength(1);
   });
-
   it("records a notice when a Runner disconnect or Host restart loses a one-shot's only run", async ({
     storeFixture,
   }) => {
@@ -681,7 +639,6 @@ integration.sequential("automation failure notices", () => {
         triggerId: oneShot.trigger.id,
       },
     ]);
-
     const restarted = await createOneShotTrigger(fixture, "restarted-one-shot");
     const lostToRestart = await start(fixture, await fireOneShot(restarted.trigger.id), "boot-b");
     await expect(triggers.failActiveAfterHostRestart()).resolves.toBe(1);
@@ -694,7 +651,6 @@ integration.sequential("automation failure notices", () => {
       triggerId: restarted.trigger.id,
     });
   });
-
   it("records one notice when a crash-looping watch is auto-paused", async ({ storeFixture }) => {
     const { createFixture, triggers, storedNotices, detail } = storeFixture;
     const fixture = await createFixture("watch");
@@ -707,9 +663,11 @@ integration.sequential("automation failure notices", () => {
       program: {
         language: "javascript",
         source: "export default async () => new Promise(() => setInterval(() => {}, 1000))",
-        toolContractVersion: 2,
+        toolContractVersion: 3,
       },
-      source: { kind: "watch" },
+      source: {
+        kind: "watch",
+      },
     });
     const bootId = `watch-boot-${randomUUID()}`;
     const snapshot = await triggers.reconcileWatchesForRunner({
@@ -735,13 +693,11 @@ integration.sequential("automation failure notices", () => {
         stderrTail: "failed\n",
         stdoutTail: "",
       });
-
     expect((await report(1)).autoPaused).toBe(false);
     expect((await report(2)).autoPaused).toBe(false);
     expect(await storedNotices()).toEqual([]);
     expect((await report(3)).autoPaused).toBe(true);
     await report(4);
-
     expect(await storedNotices()).toEqual([
       {
         activationId: activation.id,
@@ -757,7 +713,6 @@ integration.sequential("automation failure notices", () => {
       status: "paused",
     });
   });
-
   it("records one notice per Occurrence, with a bounded detail", async ({ storeFixture }) => {
     const {
       createFixture,
@@ -770,9 +725,8 @@ integration.sequential("automation failure notices", () => {
     const fixture = await createFixture("bounded");
     const created = await createOneShotTrigger(fixture, "bounded");
     const occurrence = await fireOneShot(created.trigger.id);
-
     for (const detailText of ["x".repeat(3_000), "a second record of the same Occurrence"]) {
-      await withDatabaseTransaction(database, (transaction) =>
+      await withPersonalTransaction(database, (transaction) =>
         recordAutomationFailure(transaction, {
           detail: detailText,
           occurrenceId: occurrence.id,
@@ -782,7 +736,7 @@ integration.sequential("automation failure notices", () => {
       );
     }
     const manual = await fireManual(fixture, created.trigger.id);
-    await withDatabaseTransaction(database, (transaction) =>
+    await withPersonalTransaction(database, (transaction) =>
       recordAutomationFailure(transaction, {
         detail: "   ",
         occurrenceId: manual.id,
@@ -790,13 +744,11 @@ integration.sequential("automation failure notices", () => {
         triggerId: created.trigger.id,
       }),
     );
-
     expect((await storedNotices()).map(({ detail: text }) => text)).toEqual([
       "x".repeat(2_000),
       "No error was reported.",
     ]);
   });
-
   it("lists due notices, backs a failed delivery off and settles each once", async ({
     storeFixture,
   }) => {
@@ -806,8 +758,10 @@ integration.sequential("automation failure notices", () => {
     const created = await createOneShotTrigger(fixture, "drain");
     await complete(fixture, await fireOneShot(created.trigger.id), "failed", "drain");
     const [due] = await notices.listDue();
-
-    await notices.retryLater({ error: "Thread busy", id: due!.id });
+    await notices.retryLater({
+      error: "Thread busy",
+      id: due!.id,
+    });
     await expect(notices.listDue()).resolves.toEqual([]);
     const backedOff = await database
       .selectFrom("automationFailureNotices")
@@ -818,22 +772,37 @@ integration.sequential("automation failure notices", () => {
       ])
       .where("id", "=", due!.id)
       .executeTakeFirstOrThrow();
-    expect(backedOff).toMatchObject({ attempts: 1, lastError: "Thread busy" });
+    expect(backedOff).toMatchObject({
+      attempts: 1,
+      lastError: "Thread busy",
+    });
     expect(Number(backedOff.delaySeconds)).toBeGreaterThan(0);
     expect(Number(backedOff.delaySeconds)).toBeLessThanOrEqual(3_600);
-
     await database
       .updateTable("automationFailureNotices")
-      .set({ nextAttemptAt: new Date(Date.now() - 1_000) })
+      .set({
+        nextAttemptAt: new Date(Date.now() - 1_000),
+      })
       .where("id", "=", due!.id)
       .execute();
     await expect(notices.listDue()).resolves.toEqual([
-      expect.objectContaining({ attempts: 1, id: due!.id }),
+      expect.objectContaining({
+        attempts: 1,
+        id: due!.id,
+      }),
     ]);
-
-    await notices.settle({ id: due!.id, reason: null });
-    await notices.settle({ id: due!.id, reason: "a later settle changes nothing" });
-    await notices.retryLater({ error: "too late", id: due!.id });
+    await notices.settle({
+      id: due!.id,
+      reason: null,
+    });
+    await notices.settle({
+      id: due!.id,
+      reason: "a later settle changes nothing",
+    });
+    await notices.retryLater({
+      error: "too late",
+      id: due!.id,
+    });
     await expect(notices.listDue()).resolves.toEqual([]);
     await expect(
       database
@@ -842,9 +811,12 @@ integration.sequential("automation failure notices", () => {
         .select((expression) => expression("settledAt", "is not", null).as("settled"))
         .where("id", "=", due!.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({ attempts: 1, lastError: null, settled: true });
+    ).resolves.toEqual({
+      attempts: 1,
+      lastError: null,
+      settled: true,
+    });
   });
-
   it("wakes the anchor Thread with the notice, and that agent's reply alerts the owner", async ({
     storeFixture,
   }) => {
@@ -863,42 +835,45 @@ integration.sequential("automation failure notices", () => {
     await complete(fixture, await fireOneShot(created.trigger.id), "failed", "wake-anchor");
     const [notice] = await notices.listDue();
 
-    // Only the Trigger's own owner, into its own anchor Thread, may say so:
-    // another member of the Workspace may not speak for it.
     const colleague = await store.createUser("Colleague");
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy: fixture.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role: "owner",
-        state: "active",
-        updatedAt: new Date(),
-        userId: colleague,
-        workspaceId: fixture.workspaceId,
-      })
-      .executeTakeFirstOrThrow();
+
     await expect(
       store.enqueueThreadInput({
-        content: [{ text: "Forged", type: "text" }],
+        content: [
+          {
+            text: "Forged",
+            type: "text",
+          },
+        ],
         idempotencyKey: `automation-failure:forged:${notice!.id}`,
         policy: "queue",
         requestedBy: colleague,
-        source: { kind: "automation", noticeId: notice!.id, triggerId: notice!.triggerId },
+        source: {
+          kind: "automation",
+          noticeId: notice!.id,
+          triggerId: notice!.triggerId,
+        },
         threadId: notice!.anchorThreadId,
       }),
-    ).rejects.toMatchObject({ code: "forbidden", message: "Automation source is invalid" });
-
+    ).rejects.toMatchObject({
+      code: "forbidden",
+      message: "The personal owner is required.",
+    });
     const delivered = await store.enqueueThreadInput({
-      content: [{ text: `The automation "${notice!.triggerName}" failed.`, type: "text" }],
+      content: [
+        {
+          text: `The automation "${notice!.triggerName}" failed.`,
+          type: "text",
+        },
+      ],
       idempotencyKey: `automation-failure:${notice!.id}`,
       policy: "queue",
       requestedBy: notice!.createdBy,
-      source: { kind: "automation", noticeId: notice!.id, triggerId: notice!.triggerId },
+      source: {
+        kind: "automation",
+        noticeId: notice!.id,
+        triggerId: notice!.triggerId,
+      },
       threadId: notice!.anchorThreadId,
     });
     expect(delivered.message.author).toMatchObject({
@@ -907,17 +882,21 @@ integration.sequential("automation failure notices", () => {
     });
     expect(delivered.message.kind).toBe("continuation");
     if (!delivered.run) throw new Error("Expected the notice to wake the anchor Thread");
-    expect(delivered.run).toMatchObject({ requestedBy: fixture.userId });
-
+    expect(delivered.run).toMatchObject({
+      requestedBy: fixture.userId,
+    });
     const notifications = new NotificationStore(database);
     const reply = await appendCompletedReply(fixture, delivered.run.id, "Your reminder failed.");
     const row = await database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", delivered.run.id)
       .where("type", "=", "run.completed")
       .executeTakeFirstOrThrow();
-    const event = AgentEventSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+    const event = AgentEventSchema.parse({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+    });
     expect(await notifications.decide(event)).toEqual([
       expect.objectContaining({
         userId: fixture.userId,

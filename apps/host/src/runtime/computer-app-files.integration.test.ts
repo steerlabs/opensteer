@@ -23,10 +23,9 @@ import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
   resetMachineAccessDatabase,
-  startMachineAccessHost,
-} from "./machine-access.test-support.js";
+  startMachineAccessWireHost,
+} from "./machine-access-protocol.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 // Needs the PostgreSQL that `pnpm test:integration` provides.
@@ -86,7 +85,10 @@ integration("files between a Run and an app on another computer", () => {
   }, 60_000);
 
   async function connected(appFiles: boolean) {
-    const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
     closers.unshift(() => host.close());
     const root = await mkdtemp(join(tmpdir(), "computer-app-files-"));
     closers.push(() => rm(root, { force: true, recursive: true }));
@@ -99,11 +101,7 @@ integration("files between a Run and an app on another computer", () => {
     const caller = await connectCallerMachine(host, {
       name: "Caller",
       runFiles: true,
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "computer-app-files-caller",
-        name: "Caller",
-      }),
+      token: host.hostingRunnerEnrollmentToken,
     });
     closers.unshift(() => caller.close());
     const sent: Buffer[] = [];

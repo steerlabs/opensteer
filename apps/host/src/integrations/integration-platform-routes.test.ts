@@ -43,6 +43,7 @@ describe("integration platform OAuth routes", () => {
     const store = new IntegrationPlatformStore({
       selectFrom: () => pluginQuery,
     } as unknown as Kysely<DatabaseSchema>);
+    vi.spyOn(store.plugins, "assertCanRemove").mockResolvedValue(undefined);
     vi.spyOn(store.plugins, "remove").mockImplementation(remove);
     const options = {
       authenticator: {} as HostAuthenticator,
@@ -50,6 +51,7 @@ describe("integration platform OAuth routes", () => {
       mcpOauth: {} as McpOAuthService,
       platform: {
         store: {
+          connections: { assertOwner: vi.fn(async () => undefined) },
           specialists: { retirePlugin },
           plugins: store.plugins,
           listInstallations: async () => [{ id: "installation", pluginId: "plugin" }],
@@ -60,7 +62,7 @@ describe("integration platform OAuth routes", () => {
         uninstallIntegration,
       } as never,
     };
-    const context = testHostApiContext(createId("user"), { instanceRole: "administrator" });
+    const context = testHostApiContext(createId("user"), {});
     const command = {
       type: "plugin.remove",
       pluginId: "plugin",
@@ -81,10 +83,8 @@ describe("integration platform OAuth routes", () => {
     expect(order).toEqual(["retire", "uninstall", "remove", "data"]);
   });
 
-  it("addresses invalidation to affected viewers only after a committed shared mutation", async () => {
-    const owner = createId("user"),
-      member = createId("user"),
-      workspaceId = createId("workspace");
+  it("invalidates the owner’s settings only after a committed mutation", async () => {
+    const owner = createId("user");
     const changed = vi.fn();
     const setActivation = vi.fn(async () => {
       expect(changed).not.toHaveBeenCalled();
@@ -96,8 +96,15 @@ describe("integration platform OAuth routes", () => {
       pluginsChanged: changed,
       platform: {
         store: {
-          settings: { affectedViewers: vi.fn(async () => [owner, member]) },
-          plugins: { setActivation },
+          connections: { assertOwner: vi.fn(async () => undefined) },
+          settings: {
+            affectedViewers: vi.fn(async () => [owner]),
+            detail: vi.fn(async () => ({
+              installationId: "installation",
+              row: { placement: { revision: 1 } },
+            })),
+            setEnabled: setActivation,
+          },
         },
       } as never,
     };
@@ -106,13 +113,13 @@ describe("integration platform OAuth routes", () => {
       {
         type: "plugin.activation.set",
         pluginId: "plugin",
-        workspaceId,
+
         active: true,
         idempotencyKey: "activate",
       },
       testHostApiContext(owner),
     );
-    expect(changed).toHaveBeenCalledExactlyOnceWith([owner, member]);
+    expect(changed).toHaveBeenCalledExactlyOnceWith([owner]);
     changed.mockClear();
     setActivation.mockRejectedValueOnce(new Error("refused"));
     await expect(
@@ -121,7 +128,7 @@ describe("integration platform OAuth routes", () => {
         {
           type: "plugin.activation.set",
           pluginId: "plugin",
-          workspaceId,
+
           active: true,
           idempotencyKey: "refused",
         },
@@ -131,31 +138,35 @@ describe("integration platform OAuth routes", () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
-  it("routes member plugin reads through the scoped projection on both entry points", async () => {
-    const userId = createId("user"),
-      workspaceId = createId("workspace");
+  it("routes personal plugin reads through the owner projection on both entry points", async () => {
+    const userId = createId("user");
     const listForUser = vi.fn(async () => [{ id: "plugin" }]);
     const options = {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
-      platform: { store: { plugins: { listForUser } } } as never,
+      platform: {
+        store: {
+          connections: { assertOwner: vi.fn(async () => undefined) },
+          plugins: { listForUser },
+        },
+      } as never,
     };
     const context = testHostApiContext(userId);
     expect(
-      await createIntegrationPlatformRpcHandlers(options)["plugin.list"]({ workspaceId }, context),
+      await createIntegrationPlatformRpcHandlers(options)["plugin.list"]({}, context),
     ).toMatchObject({ ok: true, data: { plugins: [{ id: "plugin" }] } });
     expect(
       await handleIntegrationPlatformCommand(
         options,
-        { type: "plugin.list", workspaceId, idempotencyKey: "list" },
+        { type: "plugin.list", idempotencyKey: "list" },
         context,
       ),
     ).toEqual({ type: "plugin.list", plugins: [{ id: "plugin" }] });
-    expect(listForUser).toHaveBeenNthCalledWith(1, userId, workspaceId);
-    expect(listForUser).toHaveBeenNthCalledWith(2, userId, workspaceId);
+    expect(listForUser).toHaveBeenNthCalledWith(1, userId);
+    expect(listForUser).toHaveBeenNthCalledWith(2, userId);
   });
-  it("routes computer app changes with the caller's administrator posture", async () => {
+  it("routes computer app changes with the owner's session", async () => {
     const userId = createId("user");
     const runnerId = createId("runner");
     const connection = { id: createIntegrationId("connection") };
@@ -175,7 +186,10 @@ describe("integration platform OAuth routes", () => {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
-      platform: { computerAppApprovals: { setComputerConnection } } as never,
+      platform: {
+        store: { connections: { assertOwner: vi.fn(async () => undefined) } },
+        computerAppApprovals: { setComputerConnection },
+      } as never,
     };
 
     const context = testHostApiContext(userId);
@@ -186,13 +200,12 @@ describe("integration platform OAuth routes", () => {
     expect(setComputerConnection).toHaveBeenCalledWith({
       ...command.input,
       actorUserId: userId,
-      isAdministrator: false,
       requestId: "test-request",
       settlementSessionId: context.session?.id,
     });
   });
 
-  it("routes uninstall to the platform only for an administrator", async () => {
+  it("routes uninstall only for the personal owner", async () => {
     const userId = createId("user");
     const installationId = createIntegrationId("installation");
     const uninstallIntegration = vi.fn(async () => ({
@@ -203,7 +216,10 @@ describe("integration platform OAuth routes", () => {
       authenticator: {} as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: {} as McpOAuthService,
-      platform: { uninstallIntegration } as never,
+      platform: {
+        store: { connections: { assertOwner: vi.fn(async () => undefined) } },
+        uninstallIntegration,
+      } as never,
     };
     const command = {
       idempotencyKey: "uninstall-integration",
@@ -211,17 +227,23 @@ describe("integration platform OAuth routes", () => {
       type: "integration.uninstall",
     } as const;
 
+    (
+      options.platform as unknown as {
+        store: { connections: { assertOwner: ReturnType<typeof vi.fn> } };
+      }
+    ).store.connections.assertOwner.mockRejectedValueOnce(
+      new (await import("@opensteer/core")).OpensteerError({
+        code: "forbidden",
+        message: "Personal owner required",
+      }),
+    );
     await expect(
       handleIntegrationPlatformCommand(options, command, testHostApiContext(userId)),
-    ).rejects.toMatchObject({ code: "forbidden", message: "Administrator access required" });
+    ).rejects.toMatchObject({ code: "forbidden", message: "Personal owner required" });
     expect(uninstallIntegration).not.toHaveBeenCalled();
 
     await expect(
-      handleIntegrationPlatformCommand(
-        options,
-        command,
-        testHostApiContext(userId, { instanceRole: "administrator" }),
-      ),
+      handleIntegrationPlatformCommand(options, command, testHostApiContext(userId, {})),
     ).resolves.toEqual({
       cancelledRequests: 2,
       removedConnections: 1,
@@ -248,7 +270,7 @@ describe("integration platform OAuth routes", () => {
       } as unknown as HostAuthenticator,
       dashboard: {} as never,
       mcpOauth: { identifyAuthorizationCallback } as unknown as McpOAuthService,
-      platform: {} as never,
+      platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
 
     const response = await app.inject({
@@ -293,7 +315,9 @@ describe("integration platform OAuth routes", () => {
           handleAuthorizationCallback,
           identifyAuthorizationCallback: vi.fn(async () => attemptId),
         } as unknown as McpOAuthService,
-        platform: {} as never,
+        platform: {
+          store: { connections: { assertOwner: vi.fn(async () => undefined) } },
+        } as never,
       });
 
       const response = await app.inject({

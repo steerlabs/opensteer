@@ -145,7 +145,10 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: (props: { name: string }) => <i data-symbol={props.name} />,
 }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-mark="chat" /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-mark="chat" />,
+}));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: (props: { quiet?: boolean }) => <i data-mark="task" data-quiet={props.quiet} />,
 }));
@@ -512,26 +515,6 @@ describe("One schedule", () => {
     ]);
   });
 
-  it("returns to Chat for a schedule that runs in Chat, and opens a run's reply where it was written", async () => {
-    const f = host();
-    const summary = await named(f, "Morning email summary");
-    expect(summary.anchorThreadId).toBe(f.snapshot().homeThreadId);
-    const screen = detailScreen(summary.id);
-    await shown(screen, "Runs in Chat", "the schedule never loaded");
-    expect(button(screen, "Runs in Chat").querySelector('[data-mark="chat"]')).not.toBeNull();
-    press(button(screen, "Runs in Chat"));
-    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
-    const replied = wire.downstreamRuns[0]!;
-    press(button(screen, /Opensteer replied in Chat/));
-    expect(pushed()).toEqual([
-      { payload: { name: "Home", params: { deploymentId } }, type: "POP_TO" },
-      {
-        payload: { name: "Home", params: { deploymentId, messageId: replied.run.seedInputId } },
-        type: "POP_TO",
-      },
-    ]);
-  });
-
   it("offers no way into a thread this reader cannot see", async () => {
     const f = host();
     const summary = await named(f, "GitHub deploys");
@@ -559,11 +542,11 @@ describe("One schedule", () => {
       };
     });
     const list = listScreen();
-    await shown(list, "Unavailable thread", "the list never named the unavailable thread");
+    await shown(list, "Unavailable task", "the list never named the unavailable thread");
     expect(button(list, /^GitHub deploys\./).querySelector("[data-quiet]")).not.toBeNull();
     const screen = detailScreen(summary.id);
-    await shown(screen, "That thread isn’t available to you", "the schedule never loaded");
-    const anchor = button(screen, "Runs in Unavailable thread");
+    await shown(screen, "That task isn’t available to you", "the schedule never loaded");
+    const anchor = button(screen, "Runs in Unavailable task");
     expect(anchor.disabled).toBe(true);
     press(anchor);
     expect(pushed()).toEqual([]);
@@ -727,9 +710,13 @@ describe("Managed memory passes", () => {
     const f = host("waiting-for-model");
     const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
     const screen = detailScreen(light.id);
-    await shown(screen, "Waiting for an AI account it can use", "waiting reason missing");
+    await shown(
+      screen,
+      "Waiting for an eligible AI account on the hosting computer.",
+      "waiting reason missing",
+    );
     expect(screen.textContent).not.toContain("Run now");
-    expect(screen.textContent).toContain("Findings reach you through Chat");
+    expect(screen.textContent).toContain("It tells you when something matters");
     press(button(screen, /^Runs in /));
     expect(pushed().at(-1)).toMatchObject({
       payload: { params: { threadId: light.anchorThreadId } },
@@ -738,33 +725,24 @@ describe("Managed memory passes", () => {
     await vi.waitFor(() => expect(button(screen, "Resume").disabled).toBe(false), {
       timeout: 2000,
     });
-    expect(screen.textContent).not.toContain("Waiting for an AI account it can use");
+    expect(screen.textContent).not.toContain(
+      "Waiting for an eligible AI account on the hosting computer.",
+    );
     press(button(screen, "Resume"));
     await vi.waitFor(() => expect(button(screen, "Pause").disabled).toBe(false), { timeout: 2000 });
   });
 
-  it("refreshes Done/Reopen/stopped recovery from another device without streaming reads", async () => {
+  it("refreshes stopped-worker recovery from another device without streaming reads", async () => {
     const f = host("active");
     const light = (await f.summaries()).find((t) => t.systemRole === "memory-light")!;
     const screen = detailScreen(light.id);
     await shown(screen, "Pause", "detail missing");
     const original = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: light.id }));
-    let worker = { ...original.anchorThread!, doneAt: "2026-11-03T10:00:00Z" as string | null };
+    let worker = { ...original.anchorThread! };
     f.get.mockImplementation(async () => ({
       ok: true,
       data: { ...original, anchorThread: worker },
     }));
-    f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
-    await shown(screen, "Reopen worker", "Done state did not refresh");
-    const reopen = vi.spyOn(harness.host, "setTaskDone").mockImplementation(async () => {
-      worker = { ...worker, doneAt: null };
-      return f.mock.setTaskDone(light.anchorThreadId, false);
-    });
-    press(button(screen, "Reopen worker"));
-    await vi.waitFor(() => expect(screen.textContent).not.toContain("Reopen worker"), {
-      timeout: 2000,
-    });
-    expect(reopen).toHaveBeenCalledWith(light.anchorThreadId, false);
     worker = { ...worker, inputQueuePaused: true };
     f.emit({ triggerRevision: f.snapshot().triggerRevision + 1 });
     await shown(screen, "Resume worker", "Stop state did not refresh");

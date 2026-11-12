@@ -11,14 +11,13 @@ import type { MachineAccessPolicy } from "@opensteer/protocol";
 import {
   activeSessionId,
   openRealtime,
-  machineAccessHistory,
   createMachineAccessDatabase,
   resetMachineAccessDatabase,
   revokeMachine,
   runGrants,
   runShim,
   shellSessionRows,
-  startMachineAccessScenario,
+  startShellAccessScenario,
   startShim,
   steerRun,
   stopRun,
@@ -30,11 +29,11 @@ import {
   connectTargetMachine,
   dispatchCallerRun,
   enrollmentToken,
-  followWorkspace,
+  followPersonalDeployment,
   setUpCallerLaunchDirectory,
-  startMachineAccessHost,
-  type MachineAccessScenario,
-} from "./machine-access.test-support.js";
+  startMachineAccessWireHost,
+  type ShellAccessScenario,
+} from "./machine-access-protocol.test-support.js";
 import { createId, type CommandId, type RequestId, type RunId } from "@opensteer/core";
 import { sql } from "kysely";
 import { testRpcData } from "../server/test-host-api-request.js";
@@ -64,7 +63,7 @@ integration("Machine access session lifecycle", () => {
     database = undefined;
   }, 120_000);
 
-  let scenario: MachineAccessScenario | undefined;
+  let scenario: ShellAccessScenario | undefined;
 
   beforeEach(async () => {
     await resetMachineAccessDatabase(databaseUrl);
@@ -77,18 +76,17 @@ integration("Machine access session lifecycle", () => {
   }, 60_000);
 
   it("fulfills a full access Request only after the Mac reports its grant", async () => {
-    const host = await startMachineAccessHost(databaseUrl);
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     const db = createDatabase({ connectionString: databaseUrl });
     closers.unshift(() => db.destroy());
     try {
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "fda-caller",
-          name: "Caller",
-        }),
+        token: host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const target = await connectTargetMachine(host, {
@@ -169,16 +167,15 @@ integration("Machine access session lifecycle", () => {
   it("fulfills a pending full access Request when the Mac comes back holding the grant", async () => {
     // macOS applies the grant only after the app quits and reopens, so the
     // grant arrives as a fresh registration, not as a change message.
-    const host = await startMachineAccessHost(databaseUrl);
+    const host = await startMachineAccessWireHost(databaseUrl, {
+      remoteAccess: true,
+      manualRunner: true,
+    });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     try {
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "fda-relaunch-caller",
-          name: "Caller",
-        }),
+        token: host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const target = await connectTargetMachine(host, {
@@ -229,7 +226,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("ends every live session on a policy write, and nothing on a stale one", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, target } = scenario;
@@ -274,7 +271,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("ends a live session on Stop, and says a second Stop ended nothing", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, target } = scenario;
@@ -301,7 +298,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("ends sessions and the target's processes when the machine is revoked", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, target } = scenario;
@@ -351,7 +348,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("closes the Run's relay and ends its sessions when the Run ends", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, run, target } = scenario;
@@ -374,7 +371,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("prints the offline sentence, queues nothing, and works again on reconnect", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, target } = scenario;
@@ -420,7 +417,7 @@ integration("Machine access session lifecycle", () => {
   }, 180_000);
 
   it("refuses a caller the machine's reach does not admit", async () => {
-    scenario = await startMachineAccessScenario(databaseUrl, {
+    scenario = await startShellAccessScenario(databaseUrl, {
       policy: openPolicy,
     });
     const { alias, host, launch, target } = scenario;
@@ -437,170 +434,6 @@ integration("Machine access session lifecycle", () => {
     expect(denied.stderr).toContain("Example Mac does not allow access from other computers.");
     // A refusal reserves nothing, so no row was ever written for it.
     expect((await shellSessionRows(host)).every((row) => row.endReason !== null)).toBe(true);
-  }, 180_000);
-
-  it("refuses `reach: owner` on a machine whose effective owner is not the caller", async () => {
-    // A managed computer belongs to this server Deployment rather than to a
-    // person, so it has no effective owner and `reach: owner` admits no Run at
-    // all — including the administrator's own, who may still manage it.
-    const host = await startMachineAccessHost(databaseUrl);
-    const closers: (() => Promise<void>)[] = [() => host.close()];
-    try {
-      const caller = await connectCallerMachine(host, {
-        name: "Caller computer",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "caller",
-          name: "Caller computer",
-        }),
-      });
-      closers.unshift(() => caller.close());
-      const deploymentMachine = await connectTargetMachine(host, {
-        name: "Build Box",
-        runnerKind: "managed",
-        token: await enrollmentToken(host, {
-          allowedModules: ["shell"],
-          idempotencyKey: "build-box",
-          managed: true,
-          name: "Build Box",
-        }),
-      });
-      closers.unshift(() => deploymentMachine.close());
-      await expect(host.store.effectiveMachineOwner(deploymentMachine.runnerId)).resolves.toEqual({
-        effectiveOwner: null,
-        ownerKind: "deployment",
-      });
-
-      await updateAccessPolicy(host, {
-        expectedRevision: 1,
-        key: "build-box-deployment",
-        policy: { ...openPolicy, reach: "deployment" },
-        runnerId: deploymentMachine.runnerId,
-      });
-      const run = await dispatchCallerRun(host, caller, { key: "run", title: "Reach out" });
-      const launch = await setUpCallerLaunchDirectory(host, run);
-      closers.unshift(() => launch.close());
-      expect(run.machineAccess?.machines.map((machine) => machine.alias)).toEqual(["build-box"]);
-      expect(await runShim(launch, "ssh", ["build-box", "true"])).toMatchObject({ code: 0 });
-
-      // A Deployment-owned computer has no effective owner, so "owner" reach
-      // would admit nobody: the authoritative write refuses it by name rather
-      // than saving a setting that silently locks everyone out.
-      await expect(
-        updateAccessPolicy(host, {
-          expectedRevision: 2,
-          key: "build-box-owner",
-          policy: openPolicy,
-          runnerId: deploymentMachine.runnerId,
-        }),
-      ).rejects.toThrow("cannot be limited to its owner's agents");
-      // Nothing changed, so the Run still reaches the computer and the refused
-      // write closed no session.
-      expect(await runShim(launch, "ssh", ["build-box", "true"])).toMatchObject({ code: 0 });
-      await waitForCondition(async () => {
-        const history = await machineAccessHistory(host, deploymentMachine.runnerId);
-        return (
-          history.sessions.length === 2 &&
-          history.sessions.every(
-            (session) =>
-              session.endReason === "client-closed" || session.endReason === "target-closed",
-          )
-        );
-      });
-      const history = await machineAccessHistory(host, deploymentMachine.runnerId);
-      expect(history.sessions).toHaveLength(2);
-      // A completed SSH process closes both ends of the byte stream. Which
-      // close reaches the Host first is scheduling-dependent; either natural
-      // close proves the refused policy write did not terminate the session.
-      expect(
-        history.sessions.every(
-          (session) =>
-            session.endReason === "client-closed" || session.endReason === "target-closed",
-        ),
-      ).toBe(true);
-    } finally {
-      for (const close of closers) await close().catch(() => undefined);
-    }
-  }, 180_000);
-
-  it("binds one environment and keeps it while a computer flips to reach-only and back", async () => {
-    const host = await startMachineAccessHost(databaseUrl);
-    const machine = await connectTargetMachine(host, {
-      name: "Studio Mac",
-      // The grant says what this computer may ever advertise; what it is
-      // advertising right now is a separate fact, and it starts reach-only.
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents", "shell"],
-        idempotencyKey: "flippable",
-        name: "Studio Mac",
-      }),
-    });
-    try {
-      const bound = () =>
-        host.store.database
-          .selectFrom("executionEnvironments")
-          .select("id")
-          .where("runnerId", "=", machine.runnerId)
-          .execute()
-          .then((rows) => rows.map((row) => row.id));
-      const row = async () => {
-        const inventory = await testRpcData(
-          host.origin,
-          "machines.list",
-          {},
-          { headers: host.ownerHeaders },
-        );
-        const found = inventory.machines.find((entry) => entry.id === machine.runnerId);
-        if (!found) throw new Error("The computer is missing from the list.");
-        return found;
-      };
-      const placement = async () => {
-        const bootstrap = await testRpcData(
-          host.origin,
-          "bootstrap.get",
-          {},
-          { headers: host.ownerHeaders },
-        );
-        return bootstrap.environments.find((entry) => entry.id === machine.environmentId)?.status;
-      };
-
-      // Enrolled reach-only: nothing to bind yet, and nowhere to place work.
-      expect(await bound()).toEqual([]);
-      expect(await row()).toMatchObject({
-        allowedModules: ["agents", "browser", "integrations", "messaging", "shell"],
-        status: "online",
-      });
-      expect(Object.keys((await row()).modules)).toEqual(["shell"]);
-      expect(await placement()).toBeUndefined();
-
-      // Running agents: the first advertisement is the binding.
-      await machine.reconnect({ runsAgents: true });
-      await waitForCondition(async () => (await placement()) === "connected");
-      expect(await bound()).toEqual([machine.environmentId]);
-      expect(Object.keys((await row()).modules).sort()).toEqual(["agents", "shell"]);
-
-      // Reach-only again: the binding survives, and the row stops offering the
-      // module, exactly as it reads when a lent machine is stopped.
-      await machine.reconnect({ runsAgents: false });
-      await waitForCondition(async () => (await placement()) === "disconnected");
-      expect(await bound()).toEqual([machine.environmentId]);
-      expect(Object.keys((await row()).modules)).toEqual(["shell"]);
-
-      // And back, onto the same environment rather than a second one.
-      await machine.reconnect({ runsAgents: true });
-      await waitForCondition(async () => (await placement()) === "connected");
-      expect(await bound()).toEqual([machine.environmentId]);
-
-      // A different environment is a different computer wearing this one's
-      // credential, and the binding never moves.
-      await expect(
-        machine.reconnect({ environmentId: createId("environment"), runsAgents: true }),
-      ).rejects.toThrow();
-      expect(await bound()).toEqual([machine.environmentId]);
-    } finally {
-      await machine.close().catch(() => undefined);
-      await host.close();
-    }
   }, 180_000);
 });
 
@@ -655,7 +488,7 @@ interface AuthorityJourney {
 integration("Machine access across a Run's authority", () => {
   let authorityDatabase: Awaited<ReturnType<typeof createMachineAccessDatabase>> | undefined;
   let authorityDatabaseUrl = "postgres://unconfigured";
-  let scenario: MachineAccessScenario | undefined;
+  let scenario: ShellAccessScenario | undefined;
   const journeys: AuthorityJourney[] = [];
 
   beforeAll(async () => {
@@ -685,7 +518,7 @@ integration("Machine access across a Run's authority", () => {
   /** What the database says happened to one Run's grants and sessions, for the artifact. */
   async function record(
     name: string,
-    host: MachineAccessScenario["host"],
+    host: ShellAccessScenario["host"],
     runId: RunId,
     sessions: readonly {
       readonly id: string;
@@ -697,7 +530,7 @@ integration("Machine access across a Run's authority", () => {
     const grants = await runGrants(host, runId);
     const rows = await shellSessionRows(host);
     const terminal = await host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select(["createdAt", "type"])
       .where("runId", "=", runId)
       .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
@@ -736,14 +569,14 @@ integration("Machine access across a Run's authority", () => {
     return journey;
   }
 
-  async function runState(host: MachineAccessScenario["host"], runId: RunId) {
+  async function runState(host: ShellAccessScenario["host"], runId: RunId) {
     const run = await host.store.database
       .selectFrom("runs")
       .select(["bindingGeneration", "status"])
       .where("id", "=", runId)
       .executeTakeFirstOrThrow();
     const terminal = await host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("type")
       .where("runId", "=", runId)
       .where("type", "in", ["run.completed", "run.failed", "run.interrupted"])
@@ -752,7 +585,7 @@ integration("Machine access across a Run's authority", () => {
   }
 
   it("ends a stopped Run's command and forward at the revocation, before the Run reports its end", async () => {
-    scenario = await startMachineAccessScenario(authorityDatabaseUrl, {
+    scenario = await startShellAccessScenario(authorityDatabaseUrl, {
       policy: { ...openPolicy, forwarding: true },
     });
     const { alias, host, launch, run, target } = scenario;
@@ -840,7 +673,7 @@ integration("Machine access across a Run's authority", () => {
   }, 180_000);
 
   it("ends a restarted attempt's sessions at the restart, and never its replacement's", async () => {
-    scenario = await startMachineAccessScenario(authorityDatabaseUrl, {
+    scenario = await startShellAccessScenario(authorityDatabaseUrl, {
       policy: openPolicy,
       restartsRuns: true,
     });
@@ -936,7 +769,7 @@ integration("Machine access across a Run's authority", () => {
 
   it("keeps a session through a token refresh and past its first token's expiry", async () => {
     const lifetimeSeconds = 4;
-    scenario = await startMachineAccessScenario(authorityDatabaseUrl, {
+    scenario = await startShellAccessScenario(authorityDatabaseUrl, {
       policy: openPolicy,
       runCapabilityLifetimeSeconds: lifetimeSeconds,
     });
@@ -1012,7 +845,7 @@ integration("Machine access across a Run's authority", () => {
   }, 180_000);
 
   it("ends an overdue background Run's sessions and tells its clients when its stop commits, though a later Run's stop fails", async () => {
-    scenario = await startMachineAccessScenario(authorityDatabaseUrl, { policy: openPolicy });
+    scenario = await startShellAccessScenario(authorityDatabaseUrl, { policy: openPolicy });
     const { alias, caller, host, launch, run, target } = scenario;
     const other = await dispatchCallerRun(host, caller, {
       key: "second-run",
@@ -1043,7 +876,7 @@ integration("Machine access across a Run's authority", () => {
       // The first Run's engine is also waiting on its requester, so its stop
       // has something to tell the clients following its Workspace.
       const request = await first.openLiveRequest();
-      const feed = await followWorkspace(host, first.workspaceId);
+      const feed = await followPersonalDeployment(host);
       closers.push(() => feed.close());
       await host.store.database
         .updateTable("runs")
@@ -1136,7 +969,7 @@ integration("Machine access across a Run's authority", () => {
  * under, so that Run's stop fails on a unique key until the row is removed.
  */
 async function occupyBackgroundDeadlineKey(
-  host: MachineAccessScenario["host"],
+  host: ShellAccessScenario["host"],
   runId: RunId,
 ): Promise<CommandId> {
   const id = createId("command");
@@ -1237,7 +1070,7 @@ function connectToSocket(path: string): Promise<void> {
 }
 
 /** A Request tool's call stays open, so its Request is read while the call is held. */
-async function heldRequest(host: MachineAccessScenario["host"], runId: RunId): Promise<RequestId> {
+async function heldRequest(host: ShellAccessScenario["host"], runId: RunId): Promise<RequestId> {
   let id: RequestId | undefined;
   await waitForCondition(async () => {
     const row = await host.store.database

@@ -6,7 +6,6 @@ import {
   RunnerIdSchema,
   ThreadIdSchema,
   UserIdSchema,
-  WorkspaceIdSchema,
 } from "@opensteer/core";
 import type { RunEgressPlan } from "@opensteer/protocol";
 import { z } from "zod";
@@ -21,13 +20,11 @@ const EgressClaimsSchema = SignedTokenClaimsSchema.extend({
   bindingGeneration: z.number().int().positive(),
   environmentId: EnvironmentIdSchema,
   grantId: GrantIdSchema.optional(),
-  membershipGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   requestedBy: UserIdSchema,
   runId: RunIdSchema,
   runnerBootId: z.string().min(1).max(255),
   runnerId: RunnerIdSchema,
   threadId: ThreadIdSchema,
-  workspaceId: WorkspaceIdSchema,
 });
 type EgressClaims = z.infer<typeof EgressClaimsSchema>;
 

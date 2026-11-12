@@ -89,11 +89,11 @@ describe("ordered personal tab edits", () => {
     expect(f.layout.order).toEqual([d, b, c, a]);
     const updated = f.client.updateBrowserTabGroup(groupId, { collapsed: true });
     await vi.waitFor(() => expect(f.requests).toHaveLength(1));
-    expect(f.requests[0]!.type).toBe("workspace.tabs.move");
+    expect(f.requests[0]!.type).toBe("tabs.move");
     f.requests[0]!.resolve({ revision: 2, order: [d, a, b, c], groups: [group] });
     await moved;
     await vi.waitFor(() => expect(f.requests).toHaveLength(2));
-    expect(f.requests[1]!.type).toBe("workspace.tabs.group");
+    expect(f.requests[1]!.type).toBe("tabs.group");
     f.requests[1]!.resolve({
       revision: 3,
       order: [d, a, b, c],
@@ -101,7 +101,7 @@ describe("ordered personal tab edits", () => {
     });
     await grouped;
     await vi.waitFor(() => expect(f.requests).toHaveLength(3));
-    expect(f.requests[2]!.type).toBe("workspace.tabs.ungroup");
+    expect(f.requests[2]!.type).toBe("tabs.ungroup");
     f.requests[2]!.resolve({
       revision: 4,
       order: [d, b, c, a],
@@ -109,7 +109,7 @@ describe("ordered personal tab edits", () => {
     });
     await ungrouped;
     await vi.waitFor(() => expect(f.requests).toHaveLength(4));
-    expect(f.requests[3]!.type).toBe("workspace.tabGroup.update");
+    expect(f.requests[3]!.type).toBe("tabGroup.update");
     f.requests[3]!.resolve({ ...f.layout, revision: 5 });
     await updated;
     expect(f.layout.order).toEqual([d, b, c, a]);

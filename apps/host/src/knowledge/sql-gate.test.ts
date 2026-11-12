@@ -10,6 +10,7 @@ import {
   otherDecisions,
   prototypeCorpus,
   reviewMatrix,
+  teamScopeForgeries,
   wrongAcceptVariants,
 } from "./sql-gate-corpus.test-support.js";
 
@@ -58,6 +59,7 @@ const corpus: Readonly<Record<string, readonly GateCase[]>> = {
   "grammar-level forms": grammarDecisions,
   "other decisions": otherDecisions,
   "INSERT shapes": insertShapes,
+  "team scope forgeries": teamScopeForgeries,
 };
 const allCases = Object.values(corpus).flat();
 

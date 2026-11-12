@@ -29,7 +29,8 @@ never claim the Host was unreachable. Deadlines and size limits live in the tran
 
 Brief reconnects keep the Connected presentation and resume from the cursor, while answering
 Requests still needs a synchronized Host. Hidden surfaces must not accrue outage time. Report
-connection state without moving content; unrelated Workspace retries stay quiet.
+connection state without moving content. The personal event stream decides the personal
+connection; team transports retry quietly and independently.
 [The lifecycle](../packages/client/src/host/lifecycle.ts) owns presentation timing.
 
 A phone can report the same network path after an actual move. Probe unchanged paths before
@@ -72,11 +73,11 @@ courier and recovery journal hold only ciphertext. Commit rechecks the session a
 erases the key. Connector credentials reach only the supervisor's private executor, never owner
 status payloads.
 
-Desktop updates target only the installation supervising its Personal Host. The
-[maintenance contract](../packages/protocol/src/maintenance.ts) works below normal attachment and
-independently of its epoch, with verified identity and session authentication. A desktop without
-that contract needs one local update. Journal the target before native staging: any quit can
-apply it, and only a new process can confirm installation. A failed handoff must restore the
+Desktop updates target only the installation supervising its Personal Host, never a team server.
+The [maintenance contract](../packages/protocol/src/maintenance.ts) works below normal attachment
+and independently of its epoch, with verified identity and session authentication. A desktop
+without that contract needs one local update. Journal the target before native staging: any quit
+can apply it, and only a new process can confirm installation. A failed handoff must restore the
 Personal stack.
 
 First-run setup's phone step composes these steps and adds no authority. With Connect its QR code
@@ -93,10 +94,10 @@ computer is Account-linked and the phone is signed in to that Account.
 
 ## Durable stream and live progress
 
-Durable events arrive strictly in Workspace sequence order, since an early event makes clients
+Durable events arrive strictly in personal Deployment sequence order, since an early event makes clients
 discard the lower events it overtook; the [hub](../packages/orchestration/src/realtime-hub.ts) fills
 publication holes from the store. Readers skip unknown kinds and Thread statuses, validate every
-event's Workspace before changing batch state, and advance cursors in order.
+event's Deployment before changing batch state, and advance cursors in order.
 
 Unreadable notices may be dropped only when an authoritative read repairs their state. Never
 acknowledge an unreadable durable event: reconnect from the cursor or take a fresh snapshot when

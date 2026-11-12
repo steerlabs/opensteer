@@ -341,7 +341,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
         levelTimer = timers.set(() => {
           void levels();
         }, 100);
-        const { threadId, runId, workspaceId } = result.data;
+        const { threadId, runId } = result.data;
         // A refusal ends the call; a transport failure has an unknown outcome and is the caller's to retry.
         const control = async (
           send: () => ReturnType<CodexVoiceProviderInput["rpc"]["voice.say"]>,
@@ -354,7 +354,7 @@ export function createCodexVoiceProvider(input: CodexVoiceProviderInput): VoiceP
           throw new VoiceStartError(startFailure(value.error.reason));
         };
         return {
-          identity: { threadId, runId, workspaceId },
+          identity: { threadId, runId },
           say: (id, text) => control(() => input.rpc["voice.say"]({ ...address, id, text })),
           view: (view) => control(() => input.rpc["voice.context"]({ ...address, view })),
           setMuted(muted) {

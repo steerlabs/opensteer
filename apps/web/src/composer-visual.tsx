@@ -176,7 +176,7 @@ function App() {
           onSend={async () => {}}
           attachments={{
             client,
-            workspaceId: client.getSnapshot().workspaces[0]!.id,
+            deploymentId: client.getSnapshot().deploymentId!,
             scope: "visual",
           }}
           footerExtras={

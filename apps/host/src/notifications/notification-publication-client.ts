@@ -10,7 +10,6 @@ import { z } from "zod";
 import { buildMobileThreadDeepLink } from "@opensteer/core";
 import type { NotificationPreviewService } from "./notification-preview-service.js";
 import { sealNotificationPreview } from "./notification-preview.js";
-
 const maximumResponseBytes = 4 * 1_024;
 
 /**
@@ -23,7 +22,6 @@ export interface NotificationPublicationTarget {
   readonly controlApiOrigin: URL;
   readonly hostCredential: string;
 }
-
 export interface NotificationPublicationClientOptions {
   readonly previews?: Pick<NotificationPreviewService, "keys">;
   readonly deploymentId: DeploymentId;
@@ -31,21 +29,30 @@ export interface NotificationPublicationClientOptions {
   readonly hostInstanceId: HostInstanceId;
   readonly target: () => Promise<NotificationPublicationTarget | null>;
 }
-
 export type NotificationPublicationResult =
-  | { readonly status: "published" }
-  | { readonly status: "no-target" }
-  | { readonly status: "push-not-configured" }
-  | { readonly status: "retry"; readonly reason: string }
-  | { readonly status: "failed"; readonly reason: string };
-
+  | {
+      readonly status: "published";
+    }
+  | {
+      readonly status: "no-target";
+    }
+  | {
+      readonly status: "push-not-configured";
+    }
+  | {
+      readonly status: "retry";
+      readonly reason: string;
+    }
+  | {
+      readonly status: "failed";
+      readonly reason: string;
+    };
 export class NotificationPublicationClient {
   readonly #previews: NotificationPublicationClientOptions["previews"];
   readonly #deploymentId: DeploymentId;
   readonly #fetch: typeof globalThis.fetch;
   readonly #hostInstanceId: HostInstanceId;
   readonly #target: NotificationPublicationClientOptions["target"];
-
   constructor(options: NotificationPublicationClientOptions) {
     this.#previews = options.previews;
     this.#deploymentId = options.deploymentId;
@@ -53,7 +60,6 @@ export class NotificationPublicationClient {
     this.#hostInstanceId = options.hostInstanceId;
     this.#target = options.target;
   }
-
   async publish(input: {
     readonly entry: NotificationPublication;
     readonly recipientAccountIds: readonly string[];
@@ -61,7 +67,10 @@ export class NotificationPublicationClient {
   }): Promise<NotificationPublicationResult> {
     const { entry } = input;
     const target = await this.#target();
-    if (!target) return { status: "no-target" };
+    if (!target)
+      return {
+        status: "no-target",
+      };
     input.signal.throwIfAborted();
     const deepLink = buildMobileThreadDeepLink({
       deploymentId: this.#deploymentId,
@@ -75,7 +84,11 @@ export class NotificationPublicationClient {
       installationId: key.installationId,
       preview: sealNotificationPreview({
         key: key.key,
-        plaintext: { version: 1, title: entry.title, body: entry.body },
+        plaintext: {
+          version: 1,
+          title: entry.title,
+          body: entry.body,
+        },
         context: {
           deploymentId: this.#deploymentId,
           notificationId: entry.id,
@@ -94,17 +107,24 @@ export class NotificationPublicationClient {
       expiresAt: entry.expiresAt.toISOString(),
       hostInstanceId: this.#hostInstanceId,
       kind: entry.kind,
-      ...(entry.messageId ? { messageId: entry.messageId } : {}),
+      ...(entry.messageId
+        ? {
+            messageId: entry.messageId,
+          }
+        : {}),
       notificationId: entry.id,
       occurredAt: entry.occurredAt.toISOString(),
       recipientAccountIds: input.recipientAccountIds,
-      ...(previews.length ? { previews } : {}),
+      ...(previews.length
+        ? {
+            previews,
+          }
+        : {}),
       requestId: entry.requestId,
       runId: entry.runId,
       schemaVersion: 1,
       sequence: entry.sequence,
       threadId: entry.threadId,
-      workspaceId: entry.workspaceId,
     });
     const url = new URL("/v1/host/notifications", exactOrigin(target.controlApiOrigin));
     const authorization = `Bearer ${hostCredential(target.hostCredential)}`;
@@ -117,15 +137,22 @@ export class NotificationPublicationClient {
       const fallback = await this.#post(url, authorization, generic, input.signal);
       if (fallback.status !== "rejected") return fallback;
     }
-    return { status: "failed", reason: "Notification publication API returned HTTP 400" };
+    return {
+      status: "failed",
+      reason: "Notification publication API returned HTTP 400",
+    };
   }
-
   async #post(
     url: URL,
     authorization: string,
     request: HostNotificationPublication,
     abort: AbortSignal,
-  ): Promise<NotificationPublicationResult | { readonly status: "rejected" }> {
+  ): Promise<
+    | NotificationPublicationResult
+    | {
+        readonly status: "rejected";
+      }
+  > {
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), 15_000);
     timer.unref();
@@ -146,11 +173,20 @@ export class NotificationPublicationClient {
         });
       } catch {
         abort.throwIfAborted();
-        return { status: "retry", reason: "Notification publication API request failed" };
+        return {
+          status: "retry",
+          reason: "Notification publication API request failed",
+        };
       }
       if (!response.ok) {
-        if (await pushNotConfigured(response, signal)) return { status: "push-not-configured" };
-        if (response.status === 400) return { status: "rejected" };
+        if (await pushNotConfigured(response, signal))
+          return {
+            status: "push-not-configured",
+          };
+        if (response.status === 400)
+          return {
+            status: "rejected",
+          };
         return {
           status: response.status === 429 || response.status >= 500 ? "retry" : "failed",
           reason: `Notification publication API returned HTTP ${response.status}`,
@@ -158,32 +194,43 @@ export class NotificationPublicationClient {
       }
       try {
         const acknowledged = HostNotificationPublicationResponseSchema.parse(
-          await readBoundedJson(response, { ...boundedJsonOptions, signal }),
+          await readBoundedJson(response, {
+            ...boundedJsonOptions,
+            signal,
+          }),
         );
         if (acknowledged.notificationId !== request.notificationId)
           throw new Error("Mismatched notification");
       } catch (error) {
         abort.throwIfAborted();
         if (timeout.signal.aborted)
-          return { status: "retry", reason: "Notification publication API request timed out" };
+          return {
+            status: "retry",
+            reason: "Notification publication API request timed out",
+          };
         if (error instanceof TypeError)
-          return { status: "retry", reason: "Notification publication API request failed" };
+          return {
+            status: "retry",
+            reason: "Notification publication API request failed",
+          };
         return {
           status: "failed",
           reason: "Notification publication API returned an invalid acknowledgement",
         };
       }
-      return { status: "published" };
+      return {
+        status: "published",
+      };
     } finally {
       clearTimeout(timer);
     }
   }
 }
-
 const AccountErrorSchema = z.object({
-  error: z.object({ reason: z.string().max(120).optional() }),
+  error: z.object({
+    reason: z.string().max(120).optional(),
+  }),
 });
-
 async function pushNotConfigured(response: Response, signal: AbortSignal): Promise<boolean> {
   if (response.status !== 404) {
     await response.body?.cancel();
@@ -191,14 +238,16 @@ async function pushNotConfigured(response: Response, signal: AbortSignal): Promi
   }
   try {
     const body = AccountErrorSchema.safeParse(
-      await readBoundedJson(response, { ...boundedJsonOptions, signal }),
+      await readBoundedJson(response, {
+        ...boundedJsonOptions,
+        signal,
+      }),
     );
     return body.success && body.data.error.reason === "push-not-configured";
   } catch {
     return false;
   }
 }
-
 function exactOrigin(input: URL): URL {
   const url = new URL(input.toString());
   if (
@@ -213,18 +262,18 @@ function exactOrigin(input: URL): URL {
   }
   return url;
 }
-
 function hostCredential(value: string): string {
   if (!/^osc_[A-Za-z0-9_-]{43}$/u.test(value)) {
     throw new TypeError("Notification publication Host credential is invalid");
   }
   return value;
 }
-
 const boundedJsonOptions = {
   emptyError: () => new Error("Notification publication API returned an empty response"),
   invalidJsonError: (cause: unknown) =>
-    new Error("Notification publication API returned invalid JSON", { cause }),
+    new Error("Notification publication API returned invalid JSON", {
+      cause,
+    }),
   maximumBytes: maximumResponseBytes,
   sizeError: () => new Error("Notification publication API response exceeded its size limit"),
 } as const;

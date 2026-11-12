@@ -48,7 +48,6 @@ let app: ChildProcess | undefined;
 let quitting = false;
 let passed = false;
 let installed: string | undefined;
-let ownedWorkspace: string | undefined;
 let step = "preparing the isolated packaged app";
 const failure = new AbortController();
 const log = bestEffortLog();
@@ -175,15 +174,7 @@ try {
     path.join(copy, "Contents/Resources/personal-runtime/release.json"),
     "utf8",
   );
-  // Packaged builds reject Workspace overrides and symlinks. Its default is
-  // temporary only because this machine is disposable; never reuse a Workspace.
-  // The app keeps its durable folder's legacy spelling (config.ts durableDesktopPathName).
-  const workspaceParent = path.join(runnerHome, "Opensteer");
-  await mkdir(workspaceParent, { recursive: true });
-  const workspace = path.join(workspaceParent, "Workspaces");
-  await mkdir(workspace);
-  ownedWorkspace = workspace;
-  const intent = personalSetupIntent(releaseBytes, workspaceParent, hostPort, postgresPort);
+  const intent = personalSetupIntent(releaseBytes, hostPort, postgresPort);
   await writeFile(path.join(data, "personal-deployment.v1.json"), JSON.stringify(intent), {
     mode: 0o600,
   });
@@ -275,7 +266,6 @@ try {
   killCaptured();
   if (installed) await command("sudo", ["-n", "rm", "-rf", installed], 10_000);
   // Preserve evidence when the caller did not provide an external artifacts directory.
-  if (ownedWorkspace) await rm(ownedWorkspace, { recursive: true, force: true });
   if (values["artifacts-dir"]) await rm(scratch, { recursive: true, force: true });
   clearTimeout(hardDeadline);
 }

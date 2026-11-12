@@ -21,7 +21,7 @@ import {
   type WebSocketClient,
 } from "../packages/client/src/host/host-session-client.js";
 import { placeList } from "../packages/client/src/host/places.js";
-import { createId, UserIdSchema } from "../packages/core/src/index.js";
+import { createId, ModelSelectionSchema, UserIdSchema } from "../packages/core/src/index.js";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
@@ -30,6 +30,7 @@ import {
   addCleanup,
   browserAvailable,
   deployment,
+  enrollBrowserComputer,
   killChromium,
   run,
   startBrowser,
@@ -132,7 +133,7 @@ run("Browser Sessions through a whole deployment", () => {
       const replay = await stack.api["commands.dispatch"](command);
       const record = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       const rows = await stack.host.store.database
-        .selectFrom("workspaceTabs")
+        .selectFrom("personalTabs")
         .select(["id", "closedAt", "state"])
         .where("sessionId", "=", sessionId)
         .orderBy("id")
@@ -173,7 +174,7 @@ run("Browser Sessions through a whole deployment", () => {
       expect(replay).toEqual(opening);
       expect(
         await stack.host.store.database
-          .selectFrom("workspaceTabs")
+          .selectFrom("personalTabs")
           .select(["id", "closedAt", "state"])
           .where("sessionId", "=", sessionId)
           .orderBy("id")
@@ -677,14 +678,14 @@ run("Browser Sessions through a whole deployment", () => {
       await closing;
       const after = await stack.host.store.getBrowserSessionForOwner(sessionId, owner.id);
       expect(after?.state).toBe("closed");
-      const endedMessage = `Browser Session ${sessionId} has ended. Open a new one with browser_session_open.`;
+      const endedMessage =
+        "This Browser Session has ended or is unavailable. Open a session with browser_session_open.";
       await expect(
         stack.host.browser.attachCdpForAgent(
           {
             agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
-            workspaceId: stack.mainWorkspaceId,
           },
           () => undefined,
         ),
@@ -753,12 +754,11 @@ run("Browser Sessions through a whole deployment", () => {
             agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
-            workspaceId: stack.mainWorkspaceId,
           },
           () => undefined,
         ),
       ).rejects.toThrow(
-        `Browser Session ${sessionId} has ended. Open a new one with browser_session_open.`,
+        "This Browser Session has ended or is unavailable. Open a session with browser_session_open.",
       );
       await writeViewReport("closed-session-delayed-closing", { before, after, sessionId, writes });
     } finally {
@@ -779,11 +779,18 @@ run("Browser Sessions through a whole deployment", () => {
       );
       const owner = await stack.host.store.firstUser();
       if (!owner) throw new Error("The deployment has no owner");
+      const threadId = await stack.createThread({
+        title: "Observe browser close",
+        modelSelection: ModelSelectionSchema.parse({
+          modelId: "gpt-5.6-sol",
+          providerId: "openai",
+          options: {},
+        }),
+      });
       const agent = {
-        agentBindingId: `trigger:${createId("triggerOccurrence")}`,
+        agentBindingId: `thread:${threadId}`,
         ownerId: owner.id,
         sessionId,
-        workspaceId: stack.mainWorkspaceId,
       };
       const consumerClosed = vi.fn();
       const attachment = await stack.host.browser.attachCdpForAgent(
@@ -1205,11 +1212,11 @@ run("Browser Sessions through a whole deployment", () => {
         // Closing the popup returns them to the opener, which is as it was.
         const closedFrom = viewer.entries.length;
         const closed = await stack.api["commands.dispatch"]({
-          type: "workspace.tab.close",
+          type: "tab.close",
           tabId: popup,
           idempotencyKey: randomUUID(),
         });
-        expect(closed).toMatchObject({ ok: true });
+        expect(closed, JSON.stringify(closed)).toMatchObject({ ok: true });
         control.socket.send(JSON.stringify({ surfaceId: opener, type: "stream.subscribe" }));
         await waitFor(async () => viewer.entries.slice(closedFrom).some(frameOf(opener)), 10_000);
         const surfacesAfterClose = (await browserInventory(stack, sessionId)).tabs.map(
@@ -1525,28 +1532,16 @@ run("Browser Sessions through a whole deployment", () => {
     const startView = { height: 777, width: 1_111 };
     const journey = async () => {
       const stack = await deployment(undefined);
-      const enrollment = await stack.api["commands.dispatch"]({
-        allowedModules: ["browser"],
-        idempotencyKey: randomUUID(),
-        name: "Browser computer",
-        type: "runner.enrollment.createLocal",
-      });
-      if (!enrollment.ok || enrollment.data.type !== "runner.enrollment.createLocal") {
-        throw new Error("Could not enroll the browser computer");
-      }
+      const enrollmentToken = await enrollBrowserComputer(stack, "Browser computer");
       const releasedDialog = {
         message: "Continue?",
         surfaceId: "page-integration",
         type: "confirm",
       };
-      const runtime = await startBrowserRuntime(
-        Number(stack.hostOrigin.port),
-        enrollment.data.token,
-        {
-          agentReady: true,
-          initialDialog: { ...releasedDialog, id: randomUUID() },
-        },
-      );
+      const runtime = await startBrowserRuntime(Number(stack.hostOrigin.port), enrollmentToken, {
+        agentReady: true,
+        initialDialog: { ...releasedDialog, id: randomUUID() },
+      });
       addCleanup("protocol runtime", () => runtime.close());
       const forwarded: Record<string, unknown>[] = [];
       void (async () => {
@@ -1570,7 +1565,10 @@ run("Browser Sessions through a whole deployment", () => {
         }
       })();
       await browserAvailable(stack);
-      const sessionId = await startPersonBrowser(stack, { viewport: startView });
+      const sessionId = await startPersonBrowser(stack, {
+        placement: { kind: "runner", runnerId: runtime.runnerId },
+        viewport: startView,
+      });
       const ticketViewport = runtime.lastClaims()?.viewport ?? null;
       const control = await openBrowserView(stack, sessionId, "control");
       addCleanup("control viewer", async () => control.socket.terminate());
@@ -1672,27 +1670,18 @@ run("Browser Sessions through a whole deployment", () => {
 
   it("requires dialog ids from a computer advertising shared control", async () => {
     const stack = await deployment(undefined);
-    const enrollment = await stack.api["commands.dispatch"]({
-      allowedModules: ["browser"],
-      idempotencyKey: randomUUID(),
-      name: "Malformed current browser",
-      type: "runner.enrollment.createLocal",
+    const enrollmentToken = await enrollBrowserComputer(stack, "Malformed current browser");
+    const runtime = await startBrowserRuntime(Number(stack.hostOrigin.port), enrollmentToken, {
+      agentReady: true,
+      initialDialog: { message: "Continue?", surfaceId: "page-integration", type: "confirm" },
     });
-    if (!enrollment.ok || enrollment.data.type !== "runner.enrollment.createLocal") {
-      throw new Error("Could not enroll the browser computer");
-    }
-    const runtime = await startBrowserRuntime(
-      Number(stack.hostOrigin.port),
-      enrollment.data.token,
-      {
-        agentReady: true,
-        initialDialog: { message: "Continue?", surfaceId: "page-integration", type: "confirm" },
-      },
-    );
     addCleanup("protocol runtime", () => runtime.close());
     await browserAvailable(stack);
     await expect(
-      startPersonBrowser(stack, { viewport: { height: 777, width: 1_111 } }),
+      startPersonBrowser(stack, {
+        placement: { kind: "runner", runnerId: runtime.runnerId },
+        viewport: { height: 777, width: 1_111 },
+      }),
     ).rejects.toThrow();
     expect(runtime.streamOpen()).toBe(true);
     await writeViewReport("current-runtime-requires-dialog-id", { refused: true });

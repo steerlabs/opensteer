@@ -10,14 +10,14 @@ final class CardTests: BrokerTestCase {
     try await broker.saveCard(CardDraft(number: "4242424242424242", expiryMonth: 3, expiryYear: 2030, cvc: "123"))
     return try unwrap(try await broker.listCards().first)
   }
-  func client(_ version: Int64 = 7) async throws -> TestClient {
+  func client(_ version: Int64 = 10) async throws -> TestClient {
     let client = try await harness.client(greet: false)
     _ = try await client.hello(version: version)
     return client
   }
   func requestCard(_ client: TestClient, _ id: String) async throws -> JSONValue {
     try unwrap(try await client.call("card.request", Fixtures.request(id,
-      extra: ["protocolVersion": .integer(7), "permissionVersion": .integer(7)])).result)
+      extra: ["protocolVersion": .integer(10), "permissionVersion": .integer(7)])).result)
   }
   func approval(_ id: String, _ card: Wire.CardChoice, remember: Bool = false) -> JSONValue {
     var fields: [String: JSONValue] = ["transactionId": .string(id), "cardId": .string(card.id),
@@ -32,7 +32,7 @@ final class CardTests: BrokerTestCase {
 
   func testConsentCommitDestinationsRevocationAndActivity() async throws {
     let card = try await ready()
-    let desktop = try await client(8)
+    let desktop = try await client()
     let other = try await client()
     let id = UUID().uuidString.lowercased()
     let offered = try await requestCard(desktop, id)
@@ -73,13 +73,8 @@ final class CardTests: BrokerTestCase {
     XCTAssertTrue(try harness.savedGrants().isEmpty)
   }
 
-  func testLegacyAndCrossKindRefusedAndPANNeedsPresence() async throws {
+  func testCrossKindRefusedAndPANNeedsPresence() async throws {
     let card = try await ready()
-    for version: Int64 in [4, 5, 6] {
-      let legacy = try await harness.client(greet: false)
-      _ = try await legacy.hello(version: version)
-      same(try await legacy.call("card.probe").errorCode, "invalid")
-    }
     let desktop = try await client()
     _ = try await broker.addLogin(Fixtures.login())
     let id = UUID().uuidString.lowercased()
@@ -91,7 +86,7 @@ final class CardTests: BrokerTestCase {
     let cardID = UUID().uuidString.lowercased()
     same(try await requestCard(desktop, cardID)["decision"], .string("approve"))
     same(try await desktop.call("card.request", Fixtures.request(id,
-      extra: ["protocolVersion": .integer(7), "permissionVersion": .integer(7)])).errorCode, "invalid")
+      extra: ["protocolVersion": .integer(10), "permissionVersion": .integer(7)])).errorCode, "invalid")
     var draft = try await broker.cardForEditing(id: card.id).draft
     draft.number = "5555555555554444"
     let before = presence.askCount
@@ -104,7 +99,7 @@ final class CardTests: BrokerTestCase {
     let id = UUID().uuidString.lowercased()
     let start = Date()
     _ = try await desktop.call("card.request", Fixtures.request(id, expiresIn: 7200,
-      extra: ["protocolVersion": .integer(7), "permissionVersion": .integer(7)]))
+      extra: ["protocolVersion": .integer(10), "permissionVersion": .integer(7)]))
     let deadline = try unwrap(broker.deadlines[id])
     XCTAssertGreaterThanOrEqual(deadline.timeIntervalSince(start), 1800)
     XCTAssertLessThanOrEqual(deadline.timeIntervalSinceNow, 1800)

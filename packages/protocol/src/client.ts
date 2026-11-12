@@ -1,9 +1,12 @@
+import { NeedsYouPageSchema } from "./needs-you.js";
+import { AppTabsSchema } from "./bootstrap.js";
+import { HostedBrowserBootstrapSchema } from "./browser.js";
+import { DeploymentIdSchema, DeploymentResumeCursorSchema } from "@opensteer/core";
 import { BrowserGroupStreamSchema, BrowserClientTabStreamSchema } from "./browser-tabs.js";
 import { ComputerViewChangedSchema, ComputerViewRemovedSchema } from "./computer-view.js";
 import {
   AgentEventViewSchema,
   PlaceEnteredEventViewSchema,
-  EnvironmentIdSchema,
   LiveRunProgressViewSchema,
   MessageViewSchema,
   NotificationViewSchema,
@@ -14,12 +17,6 @@ import {
   ThreadIdSchema,
   ThreadViewSchema,
   ThreadReadStateSchema,
-  WorkspaceNotificationPreferenceSchema,
-  WorkspaceIconNameSchema,
-  MarkColorSchema,
-  WorkspaceIdSchema,
-  WorkspaceKindSchema,
-  type Workspace,
 } from "@opensteer/core";
 import {
   BrowserProfileIdSchema,
@@ -40,12 +37,12 @@ import { ShellCloseReasonSchema, ShellSessionSummarySchema } from "./shell.js";
 
 const clientMessageBase = {} as const;
 
-export const workspaceSnapshotMaxThreads = 100;
-export const workspaceSnapshotMaxMessages = 500;
-export const workspaceSnapshotMaxPendingRequests = 32;
+export const deploymentSnapshotMaxThreads = 100;
+export const deploymentSnapshotMaxMessages = 500;
+export const deploymentSnapshotMaxPendingRequests = 32;
 /** Transport bound only; PostgreSQL enforces the per-Thread active and queued Run limits. */
-export const workspaceSnapshotMaxRunQueueEntries = 500;
-export const workspaceSnapshotMaxSerializedBytes = 900 * 1_024;
+export const deploymentSnapshotMaxRunQueueEntries = 500;
+export const deploymentSnapshotMaxSerializedBytes = 900 * 1_024;
 export const threadPageMaxItems = 100;
 export const messagePageMaxItems = 100;
 export const eventPageMaxItems = 200;
@@ -55,7 +52,7 @@ export const eventPageMaxItems = 200;
  */
 export const turnPageMaxItems = 1_000;
 export const turnPageMaxTurns = 20;
-export const workspacePageMaxItems = 100;
+export const deploymentPageMaxItems = 100;
 export const durableWindowCursorMaxCharacters = 512;
 
 export const DurableWindowCursorSchema = z
@@ -65,7 +62,7 @@ export const DurableWindowCursorSchema = z
   .regex(/^[A-Za-z0-9_-]+$/);
 
 export const DurableWindowSchema = z.object({
-  byteCount: z.number().int().nonnegative().max(workspaceSnapshotMaxSerializedBytes),
+  byteCount: z.number().int().nonnegative().max(deploymentSnapshotMaxSerializedBytes),
   hasMore: z.boolean(),
   itemCount: z.number().int().nonnegative(),
   nextBefore: DurableWindowCursorSchema.nullable(),
@@ -77,74 +74,6 @@ export const ThreadMessageWindowSchema = DurableWindowSchema.extend({
   threadId: ThreadIdSchema,
 });
 export type ThreadMessageWindow = z.infer<typeof ThreadMessageWindowSchema>;
-
-export const WorkspaceViewSchema = z.object({
-  homeThreadId: ThreadIdSchema.nullable(),
-  voiceThreadId: ThreadIdSchema.nullable(),
-  capacity: z.object({ kind: z.literal("host-filesystem") }),
-  createdAt: z.iso.datetime({ offset: true }),
-  icon: WorkspaceIconNameSchema.nullable(),
-  /** The colour its mark is drawn in; absent from older Hosts, and a colour a newer Host added reads as none. */
-  color: MarkColorSchema.optional().catch(undefined),
-  id: WorkspaceIdSchema,
-  kind: WorkspaceKindSchema,
-  // A local directory lives on one identified machine, which is not
-  // necessarily the reader's. `name` is presentation only: the Host fills it in
-  // when it serves the view, and it stays null where that machine is unknown.
-  location: z.object({
-    environmentId: EnvironmentIdSchema,
-    kind: z.literal("machine"),
-    name: z.string().trim().min(1).max(120).nullable(),
-  }),
-  name: z.string().trim().min(1).max(160),
-  restoreProgressPermille: z.number().int().min(0).max(1_000).optional(),
-  status: z.enum([
-    "provisioning",
-    "ready",
-    "archiving",
-    "archived",
-    "unavailable",
-    "failed",
-    "deleting",
-    "deleted",
-  ]),
-  storageIssue: z
-    .object({
-      code: z.string().trim().min(1).max(120),
-      message: z.string().trim().min(1).max(500),
-      occurredAt: z.iso.datetime({ offset: true }),
-      retryable: z.boolean(),
-    })
-    .nullable(),
-  updatedAt: z.iso.datetime({ offset: true }),
-});
-export type WorkspaceView = z.infer<typeof WorkspaceViewSchema>;
-
-/**
- * Project the internal Workspace aggregate onto its public client shape.
- *
- * Storage binding identities and quota values are authority-bearing details;
- * this is the single protocol-level boundary that deliberately omits them.
- */
-export function workspaceViewFromWorkspace(workspace: Workspace): WorkspaceView {
-  return WorkspaceViewSchema.parse({
-    homeThreadId: workspace.homeThreadId,
-    voiceThreadId: workspace.voiceThreadId,
-    capacity: {
-      kind: "host-filesystem",
-    },
-    createdAt: workspace.createdAt,
-    icon: workspace.icon,
-    color: workspace.color,
-    id: workspace.id,
-    kind: workspace.kind,
-    location: { environmentId: workspace.backing.ownerEnvironmentId, kind: "machine", name: null },
-    name: workspace.name,
-    status: workspace.status,
-    storageIssue: workspace.storageIssue,
-    updatedAt: workspace.updatedAt,
-  });
-}
 
 /**
  * The close code that means "these two do not speak the same protocol".
@@ -169,7 +98,7 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.subscribe"),
-    afterSequence: SequenceSchema,
+    cursor: DeploymentResumeCursorSchema,
     // Optional on the wire so that a frame from a client predating negotiation
     // is answered with the epoch refusal a person can act on, rather than
     // rejected as malformed JSON. The Host requires it either way.
@@ -181,13 +110,11 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     /** Requires `person-show-v1`; old subscribers receive no navigation requests. */
     personShow: z.literal("accept").optional(),
     threadId: ThreadIdSchema.nullable(),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     ...clientMessageBase,
     type: z.literal("client.ack"),
     sequence: SequenceSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
   z.strictObject({
     ...clientMessageBase,
@@ -203,24 +130,29 @@ export const ClientToHostMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("client.watch-node"),
     nodeId: ExecutionNodeIdSchema.nullable(),
-    workspaceId: WorkspaceIdSchema,
   }),
 ]);
 
-export const WorkspaceSnapshotSchema = z
+export const DeploymentSnapshotSchema = z
   .object({
-    readStates: z.array(ThreadReadStateSchema).max(workspaceSnapshotMaxThreads),
-    notificationPreferences: z.array(WorkspaceNotificationPreferenceSchema).max(1),
-    messages: z.array(MessageViewSchema).max(workspaceSnapshotMaxMessages),
-    messageWindows: z.array(ThreadMessageWindowSchema).max(workspaceSnapshotMaxThreads),
+    tasks: z.object({
+      recent: z.lazy(() => TaskPageSchema),
+      active: z.lazy(() => TaskPageSchema),
+      done: z.lazy(() => TaskPageSchema),
+    }),
+    needsYou: z.lazy(() => NeedsYouPageSchema),
+    resources: z.object({ appTabs: AppTabsSchema, browser: HostedBrowserBootstrapSchema }),
+    readStates: z.array(ThreadReadStateSchema).max(deploymentSnapshotMaxThreads),
+    messages: z.array(MessageViewSchema).max(deploymentSnapshotMaxMessages),
+    messageWindows: z.array(ThreadMessageWindowSchema).max(deploymentSnapshotMaxThreads),
     /** History was not loaded; the empty arrays do not mean an empty conversation. */
     messagesOmitted: z.literal(true).optional(),
     pendingRequests: readableRequestList(
       PendingRequestViewSchema,
-      workspaceSnapshotMaxPendingRequests,
+      deploymentSnapshotMaxPendingRequests,
     ),
     pendingRequestWindow: DurableWindowSchema,
-    runQueue: z.array(ThreadRunQueueEntryViewSchema).max(workspaceSnapshotMaxRunQueueEntries),
+    runQueue: z.array(ThreadRunQueueEntryViewSchema).max(deploymentSnapshotMaxRunQueueEntries),
     /**
      * Each nonterminal Run's newest `place.entered`, whatever the transcript
      * window holds. Sent only to a subscriber that asked for place events;
@@ -228,13 +160,13 @@ export const WorkspaceSnapshotSchema = z
      */
     runPlaces: z
       .array(PlaceEnteredEventViewSchema)
-      .max(workspaceSnapshotMaxRunQueueEntries)
+      .max(deploymentSnapshotMaxRunQueueEntries)
       .optional(),
     sequence: SequenceSchema,
-    serializedBytes: z.number().int().positive().max(workspaceSnapshotMaxSerializedBytes),
+    serializedBytes: z.number().int().positive().max(deploymentSnapshotMaxSerializedBytes),
     threadWindow: DurableWindowSchema,
-    threads: z.array(ThreadViewSchema).max(workspaceSnapshotMaxThreads),
-    workspace: WorkspaceViewSchema,
+    threads: z.array(ThreadViewSchema).max(deploymentSnapshotMaxThreads),
+    deploymentId: DeploymentIdSchema,
   })
   .refine(
     (snapshot) =>
@@ -245,7 +177,7 @@ export const WorkspaceSnapshotSchema = z
       path: ["messagesOmitted"],
     },
   );
-export type WorkspaceSnapshot = z.infer<typeof WorkspaceSnapshotSchema>;
+export type DeploymentSnapshot = z.infer<typeof DeploymentSnapshotSchema>;
 
 /** The most characters of a task's last reply or failure a task list carries. */
 export const taskLineMaxLength = 280;
@@ -262,26 +194,12 @@ export const TaskEntryViewSchema = z.object({
 });
 export type TaskEntryView = z.infer<typeof TaskEntryViewSchema>;
 
-/**
- * A page of the reader's tasks across every Workspace they belong to: listed,
- * unarchived Threads, most recently updated first, with this reader's read
- * state for each.
- */
 export const TaskPageSchema = z.object({
   readStates: z.array(ThreadReadStateSchema).max(threadPageMaxItems),
   tasks: z.array(TaskEntryViewSchema).max(threadPageMaxItems),
   window: DurableWindowSchema,
 });
 export type TaskPage = z.infer<typeof TaskPageSchema>;
-
-export const WorkspaceCatalogPageSchema = z.object({
-  notificationPreferences: z
-    .array(WorkspaceNotificationPreferenceSchema)
-    .max(workspacePageMaxItems + 1),
-  window: DurableWindowSchema,
-  workspaces: z.array(WorkspaceViewSchema).max(workspacePageMaxItems),
-});
-export type WorkspaceCatalogPage = z.infer<typeof WorkspaceCatalogPageSchema>;
 
 export const ThreadMessagePageSchema = z.object({
   messages: z.array(MessageViewSchema).max(messagePageMaxItems),
@@ -337,27 +255,25 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   ComputerViewRemovedSchema,
   z.object({
     type: z.literal("host.read-states"),
-    workspaceId: WorkspaceIdSchema,
+
     states: z.array(ThreadReadStateSchema).max(100),
   }),
   z.object({
     type: z.literal("host.read-markers"),
-    workspaceId: WorkspaceIdSchema,
+
     markers: z.array(z.object({ threadId: ThreadIdSchema, readSequence: SequenceSchema })).max(100),
   }),
-  z.object({
-    type: z.literal("host.notification-preferences"),
-    preferences: z.array(WorkspaceNotificationPreferenceSchema).max(100),
-  }),
+
   z.object({
     ...clientMessageBase,
     type: z.literal("host.snapshot"),
-    snapshot: WorkspaceSnapshotSchema,
+    snapshot: DeploymentSnapshotSchema,
   }),
   z.object({
     ...clientMessageBase,
     type: z.literal("host.events"),
-    events: z.array(AgentEventViewSchema).min(1).max(2_000),
+    throughSequence: SequenceSchema,
+    events: z.array(AgentEventViewSchema).max(2_000),
   }),
   /**
    * A Run's streams before they complete. It follows every durable event
@@ -370,13 +286,11 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     afterSequence: SequenceSchema,
     progress: LiveRunProgressViewSchema,
     type: z.literal("host.live"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.object({
     ...clientMessageBase,
     type: z.literal("host.synchronized"),
     sequence: SequenceSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
   /**
    * Answers `client.watch-node`. Every event of the subagent's own after
@@ -388,12 +302,10 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.node-watched"),
     nodeId: ExecutionNodeIdSchema.nullable(),
     sequence: SequenceSchema,
-    workspaceId: WorkspaceIdSchema,
   }),
   z.object({
     ...clientMessageBase,
     type: z.literal("host.triggers-changed"),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.object({ ...clientMessageBase, type: z.literal("host.app-tabs-changed") }),
   ThreadPlaceChangedSchema,
@@ -412,7 +324,6 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     ...clientMessageBase,
     type: z.literal("host.browser-sessions-changed"),
-    workspaceId: WorkspaceIdSchema,
   }),
   // These conversations gained a browser page in their durable usage record:
   // a Run used a new session or tab, or a person opened one there. A client
@@ -421,7 +332,6 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     threadIds: z.array(ThreadIdSchema).min(1).max(100),
     type: z.literal("host.browser-usage-changed"),
-    workspaceId: WorkspaceIdSchema,
   }),
   // Which apps on a Mac an agent is acting in now, for each changed computer
   // use session. Sent only to the Mac's owner, whose machines list carries the
@@ -449,8 +359,8 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   }),
   z.object({ ...clientMessageBase, type: z.literal("host.plugins-changed") }),
   // A pending Request opened, changed or ended somewhere on this Host. It names
-  // nothing: every client rereads `requests.list`, which is where it is asked
-  // whom each Request waits on, including in Workspaces it is not subscribed to.
+  // nothing: clients reread the deployment Needs-you page.
+
   z.object({
     ...clientMessageBase,
     type: z.literal("host.requests-changed"),
@@ -468,7 +378,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
   // A listed Thread was created or changed what a task list shows of it — its
   // title, status, last reply or failure — somewhere on this Host, or this
   // reader placed a task. It names nothing: every client rereads
-  // `tasks.list`, which is where membership decides what each reader sees.
+  // `tasks.list`.
   z.object({
     ...clientMessageBase,
     type: z.literal("host.tasks-changed"),
@@ -481,7 +391,7 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     type: z.literal("host.browser-history-changed"),
   }),
   // Sent once, to each socket of the person it is for, as it is decided: the
-  // Host has already checked their membership, mute and read position. Nothing
+  // Host has already checked their notification preference and read position. Nothing
   // replays it — what it points at stays unread in its Thread.
   z.object({
     ...clientMessageBase,
@@ -507,7 +417,6 @@ export const HostToClientMessageSchema = z.discriminatedUnion("type", [
     ...clientMessageBase,
     type: z.literal("host.resync-required"),
     reason: z.enum(["cursor-ahead", "cursor-expired", "slow-consumer", "buffer-overflow"]),
-    workspaceId: WorkspaceIdSchema,
   }),
   z.object({
     ...clientMessageBase,

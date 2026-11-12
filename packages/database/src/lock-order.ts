@@ -10,8 +10,33 @@
  * ordered, and it refuses MERGE and data-modifying WITH, whose locks it cannot see.
  */
 export const databaseLockOrder = [
-  "advisory:access-writer",
-  "access_state",
+  "deployment_event_state",
+  "personal_settings",
+  // BEGIN team authority and content lock order.
+  "team_access_state",
+  "team_channels",
+  "team_members",
+  "team_groups",
+  "team_invites",
+  "team_invite_uses",
+  "team_group_people",
+  "team_group_edges",
+  "team_channel_members",
+  "team_channel_member_state",
+  "team_topic_grants",
+  "team_channel_topics",
+  "team_links",
+  "team_messages",
+  "team_blobs",
+  "team_message_attachments",
+  "team_mentions",
+  "team_message_pins",
+  "team_agent_requests",
+  "team_audit",
+  "team_notices",
+  "team_outbox",
+  // END team authority and content lock order.
+
   // Disjoint creation identities are reserved before any materialized authority.
   "advisory:identity",
   "advisory:adoption-proof",
@@ -21,7 +46,6 @@ export const databaseLockOrder = [
   "advisory:runner-enrollment",
   "advisory:trigger-create",
   "advisory:attachment-upload",
-  "advisory:workspace-invitation",
   "advisory:channel-identity",
   "advisory:notification-devices",
   "advisory:notification",
@@ -53,29 +77,25 @@ export const databaseLockOrder = [
   "channel_ingress_events",
   "advisory:lane",
   "advisory:command-idempotency",
-  "advisory:plugin-owner-consent",
   // Run admission and control precede Occurrences and browser execution state.
   "agent_connections",
   "runs",
   "agent_control_requests",
   "trigger_control_requests",
   "trigger_occurrences",
-  "advisory:workspace-tab-reopen",
+  "advisory:personal-tab-reopen",
   "browser_sessions",
-  // Reserve the complete Workspace set by ascending ID before membership or placement.
-  "workspaces",
-  "workspace_tabs",
+  "personal_tabs",
   "browser_tab_layouts",
   "browser_tab_groups",
   "browser_tab_group_members",
-  // Workspace-scoped reservations serialize browser and installation creation.
+  // Personal reservations serialize browser and installation creation.
   "advisory:browser-sign-in",
   "advisory:browser-site-grants",
   "advisory:integration-catalog-definition",
   // Plugin updates reconcile their MCP installation while holding the package row.
   "plugins",
   "plugin_versions",
-  "plugin_activations",
   "advisory:integration-installation",
   // Enrollment and Runner ownership precede integration and execution authority.
   "runner_enrollments",
@@ -85,23 +105,15 @@ export const databaseLockOrder = [
   "advisory:installation",
   "integration_installations",
   "integration_servers",
-  // Membership authority precedes placement and Thread mutation.
-  "workspace_memberships",
-  "access_groups",
-  "access_group_members",
-  "access_entries",
   // Environment and profile fences prevent rebinding or catalog adoption across Thread work.
   "execution_environments",
+  "folder_skill_inventory",
   "harness_instances",
-  "project_runtime_settings",
-  "workspace_skill_inventory",
   // Independent lifecycle rows retain their position when no observed edge constrains them.
   "request_continuations",
   "advisory:grant",
-  "workspace_events",
-  "agent_notification_mutes",
+  "deployment_events",
   "auth_admissions",
-  "team_invitations",
   "auth_jwks",
   "auth_rate_limits",
   "auth_sso_providers",
@@ -139,7 +151,6 @@ export const databaseLockOrder = [
   "principals",
   "channel_access_grants",
   "channel_conversations",
-  "channel_conversation_contexts",
   // Threads precede Trigger/watch selection and provider-session projection.
   "threads",
   "triggers",
@@ -171,18 +182,20 @@ export const databaseLockOrder = [
   "commands",
   "thread_inputs",
   "messages",
+  "personal_team_requests",
   "integration_request_details",
   // Tool/skill projections follow complete authority and Request settlement.
   "integration_tools",
   "integration_tool_definitions",
   "integration_skills",
   "thread_state_pending",
-  "browser_profile_grants",
   // Erasure acknowledgements follow profile archival, history cleanup and grant revocation.
   "browser_profile_deletions",
   "browser_site_grants",
   // Independent credential and access lifecycles have no earlier observed dependencies.
   "credentials",
+  "personal_team_links",
+  "personal_team_channel_folders",
   "machine_access_events",
   "machine_access_sessions",
   "advisory:personal-remote-access",
@@ -195,16 +208,12 @@ export const databaseLockOrder = [
   "personal_remote_account_link",
   "personal_remote_sessions",
   "security_audit",
-  "security_effects",
   "thread_read_markers",
   "trigger_revisions",
-  "user_execution_preferences",
   // Host User fences precede auth sessions, adoption proofs and account reconciliation.
   "users",
-  "user_background_model_preferences",
   "account_directory_projections",
   "auth_sessions",
-  "agent_connections",
   "personal_remote_administration",
   "personal_desktop_update",
   "notification_preview_keys",
@@ -214,8 +223,6 @@ export const databaseLockOrder = [
   "personal_remote_pairing_codes",
   "personal_remote_session_grant_uses",
   "watch_control_requests",
-  "workspace_invitations",
-  "workspace_mounts",
   // Only paths already holding the Run write its nodes, attempts and grants, last.
   "execution_nodes",
   "run_attempts",
@@ -223,7 +230,7 @@ export const databaseLockOrder = [
   // A message's included pages are credited after everything that kept the message.
   "advisory:browser-session-use",
   "browser_session_uses",
-  // Consent revisions follow placement mutations, before their authority invalidation.
+  // Personal plugin policy changes follow their resource mutations.
   "plugin_settings_revision_pending",
   "plugin_owner_settings",
   // Deferred invalidations and sorted generation updates follow all source mutations.
@@ -289,7 +296,7 @@ export function advisoryLockResource(key: string, seed: number): string {
     if (key.startsWith(prefix)) return `advisory:${domain}`;
   const prefixes = [
     "plugin-owner-consent",
-    "workspace-tab-reopen",
+    "personal-tab-reopen",
     "browser-source-pairing",
     "browser-sources-owner",
     "browser-profile-session",
@@ -332,7 +339,6 @@ export function advisoryLockResource(key: string, seed: number): string {
   }
   if (!Array.isArray(value)) return "advisory:identity";
   if (value[1] === "runner-enrollment-idempotency") return "advisory:runner-enrollment";
-  if (value[1] === "workspace-invitation") return "advisory:workspace-invitation";
   for (const name of [
     "command-idempotency",
     "trigger-create",

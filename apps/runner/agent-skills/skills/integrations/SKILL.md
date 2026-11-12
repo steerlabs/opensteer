@@ -12,7 +12,7 @@ Select accounts by `connectionId`, never display name. Search shows each operati
 Credentials belong in the Request UI. Except for SMS/email codes for a sign-in the person asked for (see boundaries), never collect or retrieve service secrets yourself, and never bypass denied access with another account or transport. Mac apps and Android phones use `app()` and `phone()` in the `computer` tool (opensteer:computer-use), never with `integration_call`.
 
 Use `integration_manage` to list, disconnect, uninstall or revoke grants directly within
-full-access and reach. `channel_manage` lists/revokes bindings or pauses/resumes existing
+full-access. `channel_manage` lists/revokes bindings or pauses/resumes existing
 connections. These tools cannot create accounts, enter credentials or grant access.
 
 Read only the reference needed for the work:

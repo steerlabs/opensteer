@@ -37,6 +37,7 @@ const artifactDirectory = path.resolve(
   process.env.OPENSTEER_START_PAGE_COMPUTERS_E2E_ARTIFACT_DIR ??
     path.join(tmpdir(), "opensteer-start-page-computers-e2e"),
 );
+const taskPath = "/tasks/thr_00000000-0000-4000-8000-000000000002";
 const away = ".start-apps__away .start-apps__row";
 const keynote = ".start-tile[aria-label^='Keynote on']";
 const pixel = ".start-tile[aria-label^='Pixel 7']";
@@ -51,6 +52,8 @@ const { browser, origin } = web;
 
 try {
   const context = await browser.newContext({ viewport: { height: 900, width: 1280 } });
+  context.setDefaultTimeout(5_000);
+  context.setDefaultNavigationTimeout(10_000);
   // Nothing leaves the machine: anything outside the app answers here.
   await context.route(
     (url) => url.origin !== origin,
@@ -61,7 +64,7 @@ try {
 
   /** A fresh mock world on the New tab, counting the views the page asks the Host for. */
   const openStartPage = async () => {
-    await page.goto(`${origin}/?panel=browser`);
+    await page.goto(`${origin}${taskPath}?panel=browser`);
     await page.locator(keynote).waitFor();
     await page.evaluate(() => {
       const client = Reflect.get(window, "opensteerMock") as MockHostClient;
@@ -251,7 +254,6 @@ try {
       const url = page.url();
       // It is aria-disabled, which Playwright won't click; a person's pointer still can.
       await keynoteRow.click({ force: true });
-      await page.waitForTimeout(300);
       const observed = {
         rows,
         highlighted,
@@ -492,8 +494,10 @@ try {
           });
         `,
       });
+      restarting.setDefaultTimeout(5_000);
+      restarting.setDefaultNavigationTimeout(10_000);
       const reopened = await restarting.newPage();
-      await reopened.goto(`${origin}/?panel=browser`);
+      await reopened.goto(`${origin}${taskPath}?panel=browser`);
       const appeared = await reopened
         .locator(keynote)
         .waitFor({ timeout: 15_000 })

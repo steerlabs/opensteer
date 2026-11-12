@@ -11,9 +11,7 @@ import { sql, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 import { resolveChannelAuthority } from "./channel-authority.js";
 
-/** Callers own the complete Workspace set; pending input identities are stable under it.
- * Fence all queued channel authority before Thread/projection rows (./lock-order.ts).
- */
+/** Fence queued Messaging authority before task/projection rows (./lock-order.ts). */
 export async function lockThreadChannelAuthorities(
   transaction: Transaction<DatabaseSchema>,
   threadIds: readonly ThreadId[],
@@ -170,7 +168,15 @@ export async function channelInputAuthorityIsCurrent(
     .executeTakeFirst();
   if (!row || row.status !== "active" || row.revision !== source.bindingRevision) return false;
   const binding = ChannelBindingSchema.parse({
-    ...row,
+    id: row.id,
+    accountId: row.accountId,
+    createdBy: row.createdBy,
+    selector: row.selector,
+    executionPolicy: row.executionPolicy,
+    accessPolicy: row.accessPolicy,
+    revision: row.revision,
+    status: row.status,
+    folder: { computerId: row.folderComputerId, path: row.folderPath },
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   });
@@ -194,7 +200,6 @@ export async function channelInputAuthorityIsCurrent(
   return (
     authority !== null &&
     authority.userId === input.requestedBy &&
-    authority.membershipGeneration === Number(input.membershipGeneration) &&
     isDeepStrictEqual(authority.source, source.access)
   );
 }

@@ -29,7 +29,7 @@ describe("BrowserRuntime", () => {
       runtimeId: "runtime_test",
       sessionFilesRoot: testSessionFilesRoot(),
       ticketVerifier: new FakeTicketVerifier(
-        freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 }),
+        freshClaims({ tabRestoreVersion: 1, surfaceState: 1 }),
       ),
     });
     const sink = new FakeSink();
@@ -58,7 +58,7 @@ describe("BrowserRuntime", () => {
   it("receives Host session state before releasing an agent's page and drops its timer on detach", async () => {
     vi.useFakeTimers();
     const context = new FakeContext([new FakePage()]);
-    const claims = freshClaims({ workspaceTabRestoreVersion: 1, surfaceState: 1 });
+    const claims = freshClaims({ tabRestoreVersion: 1, surfaceState: 1 });
     const runtime = new BrowserRuntime({
       launcher: new FakeLauncher(new FakeLaunchedBrowser(context)),
       runtimeId: "runtime_test",
@@ -116,7 +116,7 @@ describe("BrowserRuntime", () => {
       const root = new FakePage();
       const context = new FakeContext([root]);
       const claims = freshClaims({
-        workspaceTabRestoreVersion: 1,
+        tabRestoreVersion: 1,
         surfaceState: 1,
         creationOrigin,
       });

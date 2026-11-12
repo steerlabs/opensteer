@@ -39,8 +39,8 @@ export function placeSuccessor(
   if (at < 0) return null;
   const previous = order[at]!;
   const listed = new Map(after.map((place) => [place.key, place]));
-  const openerId = previous.workspaceTab?.openerId;
-  const opener = order.filter((place) => openerId && place.workspaceTab?.id === openerId);
+  const openerId = previous.personalTab?.openerId;
+  const opener = order.filter((place) => openerId && place.personalTab?.id === openerId);
   for (const candidate of [...opener, ...order.slice(at + 1), ...order.slice(0, at).reverse()]) {
     const place = listed.get(candidate.key);
     if (
@@ -96,7 +96,7 @@ export function usePlaceSuccession(hostClient: HostClient): void {
   const legacy = source.browserSessions.some(
     (session) =>
       session.id === selectedSessionId &&
-      session.workspaceTabRestoreVersion !== 1 &&
+      session.tabRestoreVersion !== 1 &&
       session.state !== "closed" &&
       session.state !== "failed",
   );
@@ -104,15 +104,15 @@ export function usePlaceSuccession(hostClient: HostClient): void {
     if (
       !known ||
       !selectedSessionId ||
-      source.workspaceTabRestoreVersion !== 1 ||
+      source.tabRestoreVersion !== 1 ||
       whole ||
       (!groupId && legacy) ||
-      !hostClient.readWorkspaceTabs
+      !hostClient.readPersonalTabs
     )
       return;
     let cancelled = false;
     void hostClient
-      .readWorkspaceTabs(selectedSessionId)
+      .readPersonalTabs(selectedSessionId)
       .then((recovered) => {
         if (
           cancelled ||
@@ -134,7 +134,7 @@ export function usePlaceSuccession(hostClient: HostClient): void {
   }, [
     known,
     selectedSessionId,
-    source.workspaceTabRestoreVersion,
+    source.tabRestoreVersion,
     groupId,
     whole,
     legacy,

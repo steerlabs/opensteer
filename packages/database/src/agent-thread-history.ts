@@ -1,3 +1,5 @@
+import { requirePersonalOwner } from "./personal-settings-store.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   MessageIdSchema,
   OpensteerError,
@@ -12,13 +14,12 @@ import {
   type UserId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
-import { withDatabaseTransaction } from "./connection.js";
-import type { DatabaseSchema, WorkspaceEventRow } from "./schema.js";
+import "./connection.js";
+import type { DatabaseSchema, DeploymentEventRow } from "./schema.js";
 import { eventFromRow } from "./store-primitives.js";
 import { messageFromRow } from "./thread-row-mappers.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import { databaseOperationOptions } from "./operation-budget.js";
-
 type MessageMarker = "message.created" | "message.placed";
 type ActivityEvent = Extract<
   AgentEvent,
@@ -57,7 +58,6 @@ const types = [
   "node.started",
   "node.completed",
 ] as const;
-
 const emptyActivity = {
   items: [],
   starts: [],
@@ -66,22 +66,18 @@ const emptyActivity = {
   hasMore: false,
   nextBefore: null,
 };
-
 async function canRead(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
   ownerId: UserId,
 ) {
+  await requirePersonalOwner(transaction, ownerId);
   return transaction
     .selectFrom("threads")
-    .innerJoin("workspaceMemberships", "workspaceMemberships.workspaceId", "threads.workspaceId")
     .select("threads.id")
     .where("threads.id", "=", threadId)
-    .where("workspaceMemberships.userId", "=", ownerId)
-    .where("workspaceMemberships.state", "=", "active")
     .executeTakeFirst();
 }
-
 export async function readAgentThreadRecent(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -90,7 +86,7 @@ export async function readAgentThreadRecent(
     readonly runLimit: number;
   },
 ) {
-  return withDatabaseTransaction(
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       if (!(await canRead(tx, input.threadId, input.ownerId))) return null;
@@ -122,9 +118,9 @@ export async function readAgentThreadRecent(
         .innerJoinLateral(
           (eb) =>
             eb
-              .selectFrom("workspaceEvents")
+              .selectFrom("deploymentEvents")
               .selectAll()
-              .whereRef("workspaceEvents.runId", "=", "recent.id")
+              .whereRef("deploymentEvents.runId", "=", "recent.id")
               .where("type", "=", "place.entered")
               .orderBy("sequence", "desc")
               .limit(8)
@@ -141,17 +137,21 @@ export async function readAgentThreadRecent(
           startedAt: r.startedAt?.toISOString() ?? null,
           completedAt: r.completedAt?.toISOString() ?? null,
         })),
-        places: places
-          .map(eventFromRow)
-          .filter(
-            (e): e is Extract<AgentEvent, { type: "place.entered" }> => e.type === "place.entered",
-          ),
+        places: places.map(eventFromRow).filter(
+          (
+            e,
+          ): e is Extract<
+            AgentEvent,
+            {
+              type: "place.entered";
+            }
+          > => e.type === "place.entered",
+        ),
       };
     },
     "repeatable read",
   );
 }
-
 export async function readAgentThreadActivity(
   database: Kysely<DatabaseSchema>,
   input: {
@@ -164,8 +164,11 @@ export async function readAgentThreadActivity(
 ) {
   const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
   if (before && (!before.success || BigInt(before.data) > maximumEventSequence))
-    throw new OpensteerError({ code: "bad_request", message: "Activity cursor is invalid" });
-  return withDatabaseTransaction(
+    throw new OpensteerError({
+      code: "bad_request",
+      message: "Activity cursor is invalid",
+    });
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       if (!(await canRead(tx, input.threadId, input.ownerId))) return null;
@@ -173,7 +176,7 @@ export async function readAgentThreadActivity(
       const sequence = input.itemId ? SequenceSchema.safeParse(input.itemId) : null;
       const markerId = sql<MessageId>`e.data->'message'->>'id'`;
       let candidates = tx
-        .selectFrom("workspaceEvents as e")
+        .selectFrom("deploymentEvents as e")
         .where("e.threadId", "=", input.threadId)
         .where("e.type", "in", types)
         .where((eb) =>
@@ -224,7 +227,7 @@ export async function readAgentThreadActivity(
       }
       if (!selected.length) return emptyActivity;
       const rows = await tx
-        .selectFrom("workspaceEvents as e")
+        .selectFrom("deploymentEvents as e")
         .selectAll("e")
         .select(projected.as("data"))
         .where("e.sequence", "in", selected)
@@ -233,7 +236,13 @@ export async function readAgentThreadActivity(
         .execute();
       const markerRows = rows.filter((r) => markers.includes(r.type as MessageMarker));
       const ids = markerRows.map((r) =>
-        MessageIdSchema.parse((r.data as { messageId: unknown }).messageId),
+        MessageIdSchema.parse(
+          (
+            r.data as {
+              messageId: unknown;
+            }
+          ).messageId,
+        ),
       );
       const messages = ids.length
         ? await tx
@@ -249,7 +258,7 @@ export async function readAgentThreadActivity(
       // A queued message is placed again later, and sits where it was last placed.
       const placed = ids.length
         ? await tx
-            .selectFrom("workspaceEvents as e")
+            .selectFrom("deploymentEvents as e")
             .select([markerId.as("id"), sql<Sequence>`max(e.sequence)`.as("sequence")])
             .where("e.threadId", "=", input.threadId)
             .where("e.type", "=", "message.placed")
@@ -260,12 +269,24 @@ export async function readAgentThreadActivity(
       const lastPlaced = new Map(placed.map((row) => [row.id, row.sequence]));
       const items: AgentThreadActivityItem[] = rows.flatMap<AgentThreadActivityItem>((row) => {
         if (markers.includes(row.type as MessageMarker)) {
-          const id = MessageIdSchema.parse((row.data as { messageId: unknown }).messageId);
+          const id = MessageIdSchema.parse(
+            (
+              row.data as {
+                messageId: unknown;
+              }
+            ).messageId,
+          );
           const message = byId.get(id);
           const sequence = SequenceSchema.parse(row.sequence);
           const moved = lastPlaced.get(id);
           return message && (!moved || compareSequence(moved, sequence) <= 0)
-            ? [{ type: "message" as const, sequence, message }]
+            ? [
+                {
+                  type: "message" as const,
+                  sequence,
+                  message,
+                },
+              ]
             : [];
         }
         return [eventFromRow(row) as ActivityEvent];
@@ -289,9 +310,13 @@ export async function readAgentThreadActivity(
       const completions = rows.filter((r) => r.type === "tool.completed").map((r) => r.sequence);
       const starts = completions.length
         ? (
-            await sql<WorkspaceEventRow & { completionSequence: Sequence }>`
+            await sql<
+              DeploymentEventRow & {
+                completionSequence: Sequence;
+              }
+            >`
       select distinct on (c.sequence) c.sequence as completion_sequence, s.*, s.data - 'arguments' || '{"arguments":null}'::jsonb as data
-      from workspace_events c join workspace_events s on s.run_id = c.run_id
+      from deployment_events c join deployment_events s on s.run_id = c.run_id
         and s.type = 'tool.started' and s.sequence < c.sequence
         and s.runner_binding_generation is not distinct from c.runner_binding_generation
         and s.data->>'callId' = c.data->>'callId'
@@ -301,7 +326,12 @@ export async function readAgentThreadActivity(
     `.execute(tx, databaseOperationOptions())
           ).rows.map((row) => ({
             completionSequence: row.completionSequence,
-            start: eventFromRow(row) as Extract<AgentEvent, { type: "tool.started" }>,
+            start: eventFromRow(row) as Extract<
+              AgentEvent,
+              {
+                type: "tool.started";
+              }
+            >,
           }))
         : [];
       return {

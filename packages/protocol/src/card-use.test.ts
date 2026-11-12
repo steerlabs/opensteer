@@ -16,15 +16,15 @@ const card = {
 describe("card broker isolation", () => {
   it("accepts strict v7 requests without widening legacy login shapes", () => {
     const request = {
-      protocolVersion: 7,
+      protocolVersion: 10,
       permissionVersion: 7,
       transactionId,
       expiresAt: "2030-01-01T00:00:00.000Z",
       site: "https://example.com",
-      workspaceId: "wsp_00000000-0000-4000-8000-000000000002",
-      deploymentId: "test",
+
+      deploymentId: "dep_11111111-1111-4111-8111-111111111111",
       deploymentName: "Test",
-      workspaceName: "Main",
+
       threadTitle: "Checkout",
       reason: "Fill checkout",
     };
@@ -55,7 +55,7 @@ describe("card broker isolation", () => {
         transactionId,
         loginId: transactionId,
         revision: 1,
-        permissionVersion: 5,
+        permissionVersion: 6,
         remember: false,
       }).success,
     ).toBe(false);

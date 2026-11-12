@@ -50,7 +50,8 @@ export function testDeploymentConnection(input: {
   readonly route?: { readonly generation?: number; readonly kind?: "connect" | "private" };
   readonly source?: DeploymentConnection["source"];
 }): DeploymentConnection {
-  const kind = input.kind ?? "self-hosted";
+  // A phone attaches to a personal computer; a team is the other kind of row.
+  const kind = input.kind ?? "personal";
   const personal = kind === "personal";
   const document = testDiscoveryDocument({
     canonicalOrigin: personal ? personalCanonicalOrigin : serverCanonicalOrigin,
@@ -125,10 +126,7 @@ function testDiscoveryDocument(input: {
   return HostDiscoveryDocumentSchema.parse({
     canonicalOrigin: input.canonicalOrigin,
     deploymentId: DeploymentIdSchema.parse(input.deploymentId),
-    deploymentShape: {
-      defaultWorkspaceBacking: input.personal ? "local-directory" : "local-directory",
-      kind: input.personal ? "personal" : "server",
-    },
+    deploymentShape: { kind: input.personal ? "personal" : "team" },
     hostInstanceId: HostInstanceIdSchema.parse("hst_0192f4a1-2222-4000-8000-000000000002"),
     hostKey: { algorithm: "Ed25519" },
   });

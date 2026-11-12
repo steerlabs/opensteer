@@ -26,7 +26,6 @@ describe("signed-in MCP connection consent", () => {
           redirectUri: "https://example.agent/callback",
           resource: "https://host.example/internal/v1/mcp",
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          workspaces: [],
         },
       })),
       configurable: true,
@@ -90,7 +89,6 @@ describe("signed-in MCP connection consent", () => {
           redirectUri: "https://example.agent/callback",
           resource: "https://host.example/internal/v1/mcp",
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          workspaces: [],
         },
       })),
       configurable: true,
@@ -149,7 +147,6 @@ describe("signed-in MCP connection consent", () => {
         redirectUri: "http://127.0.0.1:4999/cb",
         resource: "http://127.0.0.1:4310/internal/v1/mcp",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        workspaces: [],
       },
     });
     const openExternalUrl = vi.fn(async () => ({ opened: true as const }));
@@ -176,9 +173,8 @@ describe("signed-in MCP connection consent", () => {
     });
     expect(onClose).toHaveBeenCalledOnce();
   });
-  it("requires a deliberate approval and defaults to one Workspace with an approval ceiling", async () => {
+  it("requires a deliberate approval and defaults to an approval ceiling", async () => {
     host = new MockHostClient({ latencyMs: 0 });
-    const workspaceId = createId("workspace");
     Object.defineProperty(host.rpc, "connections.authorization.get", {
       value: vi.fn(async () => ({
         ok: true,
@@ -188,7 +184,6 @@ describe("signed-in MCP connection consent", () => {
           redirectUri: "https://example.agent/callback",
           resource: "https://host.example/internal/v1/mcp",
           expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          workspaces: [{ id: workspaceId, name: "Research" }],
         },
       })),
       configurable: true,
@@ -206,7 +201,6 @@ describe("signed-in MCP connection consent", () => {
     expect(container.querySelector<HTMLInputElement>('input[type="radio"]:checked')!.value).toBe(
       "approval-required",
     );
-    expect(container.querySelector("select")!.value).toBe(workspaceId);
     const allow = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Allow",
     )!;
@@ -218,7 +212,6 @@ describe("signed-in MCP connection consent", () => {
           kind: "approve",
           label: "Example agent",
           accessMode: "approval-required",
-          reach: { kind: "workspace", workspaceId },
         },
       }),
     );

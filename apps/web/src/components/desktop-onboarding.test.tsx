@@ -132,7 +132,7 @@ function deployment(
     activeOrigin: `https://${id}.opensteer.test`,
     canonicalOrigin: `https://${id}.opensteer.test`,
     id,
-    kind: "self-hosted",
+    kind: "personal",
     lastUsedAt: null,
     name: "Opensteer",
     onThisComputer: false,

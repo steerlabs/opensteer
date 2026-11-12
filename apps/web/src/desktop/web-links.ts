@@ -9,7 +9,7 @@ import type {
   BrowserIdentityChoice,
   HostClient,
   HostSnapshot,
-  WorkspaceSurfaceDestination,
+  PersonalSurfaceDestination,
   PendingBrowserTabDestination,
 } from "@opensteer/client/host";
 
@@ -18,7 +18,7 @@ export async function openDesktopWebLink(
   value: unknown,
   client: HostClient,
   identity: BrowserIdentityChoice,
-  show: (destination: WorkspaceSurfaceDestination | PendingBrowserTabDestination) => void,
+  show: (destination: PersonalSurfaceDestination | PendingBrowserTabDestination) => void,
   acknowledge: (id: string) => Promise<void>,
 ): Promise<void> {
   const link = DesktopWebLinkSchema.parse(value);
@@ -69,7 +69,7 @@ export function receiveDesktopWebLinks(
       ready: true,
       ...input,
     });
-  const unsubscribe = bridge.onWorkspaceTabCommand((command) => {
+  const unsubscribe = bridge.onPersonalTabCommand((command) => {
     if (
       !active ||
       command.type !== "open-web-url" ||
@@ -166,7 +166,7 @@ export interface WebLinkView {
  */
 export function webLinkSelection(
   view: () => WebLinkView,
-): <Destination extends WorkspaceSurfaceDestination | PendingBrowserTabDestination>(
+): <Destination extends PersonalSurfaceDestination | PendingBrowserTabDestination>(
   show: (destination: Destination) => void,
 ) => (receivedAt: number | undefined) => (destination: Destination) => void {
   let leftAt = Number.NEGATIVE_INFINITY;

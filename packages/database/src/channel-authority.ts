@@ -6,14 +6,14 @@ import {
   type ChannelIdentityId,
   type ChannelIngressId,
 } from "@opensteer/channel-core";
-import type { UserId } from "@opensteer/core";
+import { OpensteerError, type UserId } from "@opensteer/core";
+import { assertPersonalOwner } from "./private-resource-owner.js";
 import type { Selectable, Transaction } from "kysely";
 import type { ChannelAccessGrantTable, DatabaseSchema } from "./schema.js";
 
 type ChannelConversationType = "dm" | "group" | "channel";
 
 export interface ResolvedChannelAuthority {
-  readonly membershipGeneration: number;
   readonly source: Readonly<Record<string, unknown>>;
   readonly userId: UserId;
 }
@@ -100,8 +100,6 @@ export async function ensureChannelAccessGrant(
   return { created: true, grant: channelAccessGrantFromRow(row) };
 }
 
-/** Resolve current authority while the caller holds the Workspace fence (./lock-order.ts).
- * All membership writers take that fence, so membership reads need no additional row lock. */
 export async function resolveChannelAuthority(
   transaction: Transaction<DatabaseSchema>,
   binding: ChannelBinding,
@@ -120,28 +118,11 @@ export async function resolveChannelAuthority(
     return null;
   }
 
-  const linkedMembership = identity.linkedUserId
-    ? await transaction
-        .selectFrom("workspaceMemberships")
-        .select(["generation", "state"])
-        .where("workspaceId", "=", binding.workspaceId)
-        .where("userId", "=", identity.linkedUserId)
-        .executeTakeFirst()
-    : null;
-  const linked =
-    linkedMembership?.state === "active" && identity.linkedUserId ? identity.linkedUserId : null;
-
-  if (sender.mode === "linked-members") {
-    return linked
-      ? {
-          membershipGeneration: Number(linkedMembership?.generation),
-          source: {
-            kind: "linked-membership",
-            membershipGeneration: Number(linkedMembership?.generation),
-          },
-          userId: linked,
-        }
-      : null;
+  try {
+    await assertPersonalOwner(transaction, binding.createdBy);
+  } catch (error) {
+    if (error instanceof OpensteerError) return null;
+    throw error;
   }
   if (sender.mode === "owner" && identity.linkedUserId !== binding.createdBy) return null;
   let approvedGrantRevision: number | null = null;
@@ -157,19 +138,10 @@ export async function resolveChannelAuthority(
     approvedGrantRevision = grant.revision;
   }
 
-  const ownerMembership = await transaction
-    .selectFrom("workspaceMemberships")
-    .select(["generation", "state"])
-    .where("workspaceId", "=", binding.workspaceId)
-    .where("userId", "=", binding.createdBy)
-    .executeTakeFirst();
-  if (!ownerMembership || ownerMembership.state !== "active") return null;
   return {
-    membershipGeneration: Number(ownerMembership.generation),
     source: {
       kind: "binding-owner",
       ...(approvedGrantRevision === null ? {} : { grantRevision: approvedGrantRevision }),
-      membershipGeneration: Number(ownerMembership.generation),
       mode: sender.mode,
     },
     userId: binding.createdBy,

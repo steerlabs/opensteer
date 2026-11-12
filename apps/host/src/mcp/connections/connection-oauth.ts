@@ -238,7 +238,7 @@ export class ConnectionOAuth {
       });
     return pending;
   }
-  async consent(requestId: string, userId: UserId) {
+  async consent(requestId: string, _userId: UserId) {
     const pending = this.#consent(requestId);
     return {
       requestId,
@@ -246,7 +246,6 @@ export class ConnectionOAuth {
       redirectUri: pending.authorization.redirect_uri,
       resource: pending.authorization.resource,
       expiresAt: new Date(pending.expiresAt).toISOString(),
-      workspaces: await this.store.workspaces(userId),
     };
   }
   async decide(
@@ -282,7 +281,6 @@ export class ConnectionOAuth {
                 label: command.decision.label,
                 clientName: pending.client.name,
                 accessMode: command.decision.accessMode,
-                reach: command.decision.reach,
                 resource: pending.authorization.resource,
                 expiresAt: new Date(this.#now() + connectionTtl),
               });

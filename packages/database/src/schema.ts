@@ -1,6 +1,24 @@
+import type {
+  KnowledgeTopicId,
+  TaskPurpose,
+  TeamAgentRequestId,
+  TeamChannelId,
+  TeamMessageId,
+  TeamSource,
+  TeamGroupId,
+  TeamInviteId,
+  TeamLinkId,
+  TeamBlobId,
+  TeamNoticeId,
+  TeamAgentRequestState,
+  TeamChannelKind,
+  TeamHandle,
+} from "@opensteer/core";
+import type { TeamStatusStepSchema } from "@opensteer/core";
+import type { z } from "zod";
 import type { AutomaticModelConfig } from "@opensteer/core";
 import type { ThreadCallerAuthority } from "./thread-caller.js";
-import type { BrowserProfileAccess } from "@opensteer/browser-profile/grant";
+
 import type {
   ChannelAccountId,
   ChannelBindingId,
@@ -24,7 +42,6 @@ import type {
   AuthAdmissionId,
   AuthSessionId,
   AuthVerificationId,
-  BrowserProfileGrantId,
   BrowserProfileId,
   BrowserSourceId,
   BrowserTabGroupColor,
@@ -60,7 +77,6 @@ import type {
   RunId,
   RunnerId,
   SecurityAuditId,
-  SecurityEffectId,
   ThreadAccessMode,
   ThreadDoneReason,
   QuietTaskDays,
@@ -68,19 +84,13 @@ import type {
   ThreadId,
   ThreadInputPolicy,
   ThreadInputState,
-  ThreadRole,
   ThreadTitleSource,
   TriggerId,
   TriggerOccurrenceId,
   TriggerRevisionId,
   TriggerWatchActivationId,
   UserId,
-  Workspace,
-  WorkspaceBacking,
-  WorkspaceIconName,
-  WorkspaceId,
-  WorkspaceInvitationId,
-  WorkspaceMembershipId,
+  IconName,
 } from "@opensteer/core";
 import type {
   ComputerAppIdentity,
@@ -128,10 +138,7 @@ export type NullableTimestamp = ColumnType<
 >;
 export type JsonColumn<T> = ColumnType<T, T, T>;
 
-/** Threads never hold the Trigger profile, which belongs to Trigger occurrences. */
-
 export interface DeploymentTable {
-  authorityModelVersion: Generated<number>;
   id: DeploymentId;
   singletonKey: "primary";
   activeHostInstanceId: HostInstanceId;
@@ -143,23 +150,15 @@ export interface DeploymentTable {
 }
 
 export interface UserTable {
-  memberKind: Generated<"full" | "guest">;
-  memberState: Generated<"active" | "suspended" | "removed">;
-  authorityGeneration: ColumnType<string, number | string | undefined, number | string>;
-  admittedAt: NullableTimestamp;
-  memberStateChangedAt: Timestamp;
-  memberStateChangedBy: Generated<UserId | null>;
   id: UserId;
   displayName: string;
   email: string;
   emailVerified: boolean;
   image: string | null;
-  instanceRole: "administrator" | "user";
+
   disabledAt: NullableTimestamp;
   /** The IANA zone this person's clients last reported; null until one does. */
-  timeZone: Generated<string | null>;
   /** Days untouched before this person's tasks move to Done; 0 never. */
-  quietTaskDays: Generated<QuietTaskDays>;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -408,7 +407,7 @@ interface HostOAuthRefreshTokenTable {
   rotatedAt: NullableTimestamp;
   rotationReplayResponse: Generated<string | null>;
   rotationReplayExpiresAt: NullableTimestamp;
-  confirmation: Generated<unknown>;
+  confirmation: Generated<unknown | null>;
 }
 
 interface HostOAuthAccessTokenTable {
@@ -426,7 +425,7 @@ interface HostOAuthAccessTokenTable {
   resources: Generated<readonly string[] | null>;
   requestedUserInfoClaims: Generated<readonly string[] | null>;
   revoked: NullableTimestamp;
-  confirmation: Generated<unknown>;
+  confirmation: Generated<unknown | null>;
 }
 
 interface HostOAuthConsentTable {
@@ -683,163 +682,18 @@ interface HarnessCatalogTable {
  * model and access mode against live catalogs when it starts, so a stale row
  * costs a person one re-pick, never a wrong placement.
  */
-interface UserExecutionPreferenceTable {
-  userId: UserId;
-  preferences: JsonColumn<ExecutionPreferences>;
-  updatedAt: Timestamp;
-}
-
-export interface ProjectRuntimeSettingsTable {
-  workspaceId: WorkspaceId;
-  harnessInstanceId: HarnessInstanceId;
-  modelSelection: JsonColumn<ModelSelection>;
-  accessMode: ThreadAccessMode;
-  instructions: Generated<string>;
-  timeZone: Generated<string>;
-  revision: ColumnType<string, number | string | undefined, number | string>;
-  updatedBy: UserId;
-  updatedAt: Timestamp;
-}
-
-export interface WorkspaceTable {
-  slug: Generated<string | null>;
-  color: MarkColor;
-  homeThreadId: Generated<ThreadId | null>;
-  voiceThreadId: Generated<ThreadId | null>;
-  relocationSource: Generated<NonNullable<Workspace["relocationSource"]> | null>;
-  backing: JsonColumn<WorkspaceBacking>;
-  deletedAt: NullableTimestamp;
-  deletionRequestedAt: NullableTimestamp;
-  deletionRequestedBy: UserId | null;
-  icon: ColumnType<string | null, string | null | undefined, string | null>;
-  id: WorkspaceId;
-  kind: "main" | "project";
-  lastActivityAt: Timestamp;
-  name: string;
-  /** Generated from the backing so the owning machine is a real reference the
-   * database can enforce. It is never written directly. */
-  ownerEnvironmentId: ColumnType<EnvironmentId | null, never, never>;
-  purgeAfter: NullableTimestamp;
-  status:
-    | "provisioning"
-    | "ready"
-    | "archiving"
-    | "archived"
-    | "unavailable"
-    | "failed"
-    | "deleting"
-    | "deleted";
-  storageErrorAt: NullableTimestamp;
-  storageErrorCode: ColumnType<string | null, string | null | undefined, string | null>;
-  storageErrorMessage: ColumnType<string | null, string | null | undefined, string | null>;
-  storageErrorRetryable: Generated<boolean>;
-  eventSequence: Generated<string>;
-  createdBy: UserId;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-export interface WorkspaceMembershipTable {
-  id: WorkspaceMembershipId;
-  workspaceId: WorkspaceId;
-  userId: UserId;
-  role: "owner" | "collaborator";
-  state: "active" | "revoked";
-  generation: ColumnType<string, number | string, number | string>;
-  invitedBy: UserId | null;
-  joinedAt: Timestamp;
-  revokedAt: NullableTimestamp;
-  revokedBy: UserId | null;
-  updatedAt: Timestamp;
-}
-
-export interface AccessGroupTable {
-  id: string;
-  name: string;
-  builtin: "everyone" | null;
-  createdBy: UserId;
-  createdAt: Timestamp;
-  deletedAt: NullableTimestamp;
-}
-
-export interface AccessGroupMemberTable {
-  groupId: string;
-  memberKind: "user" | "group";
-  memberId: string;
-  addedBy: UserId;
-  addedAt: Timestamp;
-}
-
-export interface AccessEntryTable {
-  id: string;
-  subjectKind: "user" | "group" | "project";
-  subjectId: string;
-  targetKind: "project" | "topic" | "team-account";
-  targetId: string;
-  level: "use" | "manage" | "read" | "write";
-  grantedBy: UserId;
-  grantedAt: Timestamp;
-  revokedAt: NullableTimestamp;
-  revokedBy: UserId | null;
-}
-
-export interface AccessStateTable {
-  singletonKey: "primary";
-  revision: ColumnType<string, number | string, number | string>;
-}
-
-export interface WorkspaceInvitationTable {
-  id: WorkspaceInvitationId;
-  workspaceId: WorkspaceId;
-  selector: string;
-  tokenHash: string;
-  type: "email" | "link";
-  intendedEmail: string | null;
-  role: "owner" | "collaborator";
-  createdBy: UserId;
-  idempotencyKey: string;
-  requestFingerprint: string;
-  expiresAt: Timestamp;
-  acceptedAt: NullableTimestamp;
-  acceptedBy: UserId | null;
-  revokedAt: NullableTimestamp;
-  revokedBy: UserId | null;
-  createdAt: Timestamp;
-}
 
 interface SecurityAuditTable {
   id: SecurityAuditId;
   actorUserId: UserId | null;
   actorSessionId: AuthSessionId | null;
-  workspaceId: WorkspaceId | null;
+
   action: string;
   targetType: string;
   targetId: string | null;
   requestId: string | null;
   metadata: JsonColumn<Readonly<Record<string, unknown>>>;
   createdAt: Timestamp;
-}
-
-interface SecurityEffectTable {
-  membershipGenerationCutoff: ColumnType<string, number | string | undefined, number | string>;
-  causeId: Generated<string | null>;
-  id: SecurityEffectId;
-  workspaceId: WorkspaceId;
-  userId: UserId;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
-  kind:
-    | "close-realtime"
-    | "stop-runs"
-    | "revoke-mounts"
-    | "revoke-browser"
-    | "revoke-credentials"
-    | "revoke-triggers";
-  status: "pending" | "processing" | "completed" | "failed";
-  attempts: Generated<number>;
-  nextAttemptAt: Timestamp;
-  lastError: string | null;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
 }
 
 export interface ThreadTable {
@@ -853,16 +707,21 @@ export interface ThreadTable {
   inputQueuePausedBy: Generated<UserId | null>;
   accessMode: Generated<ThreadAccessMode>;
   specialistId: Generated<string | null>;
-  inheritsMain: boolean;
-  role: Generated<ThreadRole>;
+
+  purpose: TaskPurpose;
+  folderComputerId: RunnerId;
+  folderPath: string;
+  teamId: DeploymentId | null;
+  channelId: TeamChannelId | null;
+  threadRootId: TeamMessageId | null;
   id: ThreadId;
   lineageRootThreadId: ThreadId;
-  workspaceId: WorkspaceId;
+
   parentThreadId: ThreadId | null;
   listed: boolean;
   title: string;
   titleSource: Generated<ThreadTitleSource>;
-  icon: WorkspaceIconName | null;
+  icon: IconName | null;
   iconSource: ThreadIconSource;
   color: MarkColor;
   environmentId: EnvironmentId;
@@ -893,7 +752,7 @@ export interface MessageTable {
 
 export interface AttachmentTable {
   id: string;
-  workspaceId: WorkspaceId;
+
   uploaderId: UserId;
   name: string;
   mediaType: string;
@@ -912,6 +771,8 @@ export interface AttachmentTable {
 }
 
 export interface ThreadInputTable {
+  teamRequestId: TeamAgentRequestId | null;
+  teamSource: JsonColumn<TeamSource | null>;
   assignmentId: Generated<AssignmentId | null>;
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -919,7 +780,7 @@ export interface ThreadInputTable {
   causalChainId: CausalChainId;
   deliveredAt: NullableTimestamp;
   idempotencyKey: string;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
+
   messageId: MessageId;
   policy: ThreadInputPolicy;
   /** Where waiting work stands in line; admission takes the lowest first. */
@@ -962,6 +823,7 @@ export interface RunInitialContext {
 }
 
 export interface RunTable {
+  teamRequestId: TeamAgentRequestId | null;
   personWaited: Generated<boolean>;
   doneWhenFinished: Generated<boolean>;
   assignmentId: Generated<AssignmentId | null>;
@@ -970,7 +832,7 @@ export interface RunTable {
     RunInitialContext | null | undefined,
     RunInitialContext | null
   >;
-  /** Nullable only for historical Runs whose session cannot be established safely. */
+
   providerSessionId: ProviderSessionId | null;
   reportContext: ColumnType<
     RunReportContext | null,
@@ -988,7 +850,7 @@ export interface RunTable {
   modelSelection: JsonColumn<ModelSelection>;
   replyTarget: JsonColumn<ReplyTarget | null>;
   requestedBy: UserId;
-  membershipGeneration: ColumnType<string, number | string, number | string>;
+
   actorPrincipalId: PrincipalId;
   authoritySource: JsonColumn<Readonly<Record<string, unknown>>>;
   runOrdinal: number;
@@ -1112,12 +974,11 @@ export interface GrantTable {
 }
 
 export interface DelegationTable {
-  /** Historical table name retained for existing installations. */
-  initialInputMessageId: Generated<MessageId>;
-  objective: Generated<string>;
-  origin: Generated<AssignmentOrigin>;
+  initialInputMessageId: MessageId;
+  objective: string;
+  origin: AssignmentOrigin;
   parentAssignmentId: Generated<AssignmentId | null>;
-  status: Generated<AssignmentStatus>;
+  status: AssignmentStatus;
   resultText: Generated<string | null>;
   resultWaits: Generated<
     readonly {
@@ -1160,7 +1021,7 @@ export interface RequestTable {
   kind: Request["kind"];
   mode: Request["mode"];
   status: Request["status"];
-  originatingWorkspaceId: WorkspaceId;
+
   originatingThreadId: ThreadId;
   /** Exactly one origin is present; a Trigger Occurrence creates no Run row. */
   originatingRunId: RunId | null;
@@ -1168,7 +1029,7 @@ export interface RequestTable {
   /** The subagent of the originating Run that asked, if not its own agent. */
   originatingNodeId: Generated<ExecutionNodeId | null>;
   callId: string;
-  targetWorkspaceId: WorkspaceId;
+
   requestedBy: UserId;
   requiredActor: Request["requiredActor"];
   presentation: JsonColumn<Request["presentation"]>;
@@ -1213,7 +1074,7 @@ interface RequestContinuationTable {
 interface TriggerTable {
   systemRole: Generated<"memory-light" | "memory-nightly" | null>;
   id: TriggerId;
-  workspaceId: WorkspaceId;
+
   anchorThreadId: ThreadId;
   createdBy: UserId;
   createdByThreadId: ThreadId | null;
@@ -1249,7 +1110,7 @@ export interface TriggerWatchActivationTable {
   triggerId: TriggerId;
   revisionId: TriggerRevisionId;
   environmentId: EnvironmentId;
-  workspaceId: WorkspaceId;
+
   anchorThreadId: ThreadId;
   createdBy: UserId;
   desired: "active" | "stopped";
@@ -1299,6 +1160,7 @@ export interface TriggerOccurrenceTable {
 }
 
 export interface ProviderSessionTable {
+  personalContext: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
   id: ProviderSessionId;
@@ -1367,9 +1229,8 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "project.create"
-    | "environment.list"
-    | "project.list";
+    | "environment.list";
+
   actionClass:
     | "person.show"
     | "assignment.cancel"
@@ -1392,9 +1253,8 @@ export interface AgentControlRequestTable {
     | "thread.write"
     | "trigger.read"
     | "trigger.write"
-    | "project.create"
-    | "environment.list"
-    | "project.list";
+    | "environment.list";
+
   requestFingerprint: string;
   createdAt: Timestamp;
 }
@@ -1413,16 +1273,8 @@ interface TriggerControlRequestTable {
   createdAt: Timestamp;
 }
 
-/**
- * Streaming deltas that earlier Hosts stored as durable events. They are kept
- * rather than deleted, because removing rows would leave holes a replay could
- * not tell from lost events, and nothing reads them: every read of the log
- * skips them and reports how far it scanned.
- */
-export const legacyLiveEventTypes = ["assistant.delta", "reasoning.delta", "tool.delta"] as const;
-export type LegacyLiveEventType = (typeof legacyLiveEventTypes)[number];
-
-export interface WorkspaceEventTable {
+export interface DeploymentEventTable {
+  deploymentId: DeploymentId;
   nodeDetailId: ColumnType<
     ExecutionNodeId | null,
     ExecutionNodeId | null | undefined,
@@ -1430,15 +1282,15 @@ export interface WorkspaceEventTable {
   >;
   sequence: string;
   eventId: EventId;
-  workspaceId: WorkspaceId;
-  threadId: ThreadId;
+
+  threadId: ThreadId | null;
   runId: RunId | null;
-  environmentId: EnvironmentId;
+  environmentId: EnvironmentId | null;
   runnerOrdinal: number | null;
   runnerId: RunnerId | null;
   runnerBootId: string | null;
   runnerBindingGeneration: number | null;
-  type: AgentEvent["type"] | LegacyLiveEventType;
+  type: AgentEvent["type"];
   data: JsonColumn<unknown>;
   createdAt: Timestamp;
 }
@@ -1465,14 +1317,6 @@ export interface ThreadReadMarkerTable {
   threadId: ThreadId;
   userId: UserId;
   sequence: ColumnType<string, number | string, number | string>;
-  updatedAt: Timestamp;
-}
-
-export interface AgentNotificationMuteTable {
-  workspaceId: WorkspaceId;
-  userId: UserId;
-  muted: boolean;
-  revision: Generated<string>;
   updatedAt: Timestamp;
 }
 
@@ -1544,7 +1388,7 @@ interface BrowserHistoryIconTable {
   favicon: string;
 }
 
-interface WorkspaceTabTable {
+interface PersonalTabTable {
   id: string;
   createdAt: Timestamp;
   groupId: BrowserSessionId;
@@ -1564,14 +1408,14 @@ interface WorkspaceTabTable {
 }
 
 interface BrowserSessionTable {
-  tabGroupId: Generated<BrowserSessionId>;
+  tabGroupId: BrowserSessionId;
   tabRevision: Generated<number>;
   opener: JsonColumn<BrowserSessionOpenerRecord | null>;
   id: BrowserSessionId;
-  origin: "agent" | "trigger" | "workspace";
+  origin: "agent" | "trigger" | "person";
   /** Null for a fresh session: no identity, and therefore no state lease. */
   profileId: BrowserProfileId | null;
-  workspaceId: WorkspaceId;
+
   placementKey: string;
   runnerId: RunnerId;
   runtimeId: string;
@@ -1585,7 +1429,7 @@ interface BrowserSessionAttachmentTable {
   agentBindingId: string;
   ownerId: UserId;
   sessionId: BrowserSessionId;
-  workspaceId: WorkspaceId;
+
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -1600,16 +1444,6 @@ interface BrowserSessionUseTable {
   pageSite: ColumnType<string | null, string | null | undefined, string | null>;
   firstUsedAt: Timestamp;
   lastUsedAt: Timestamp;
-}
-
-interface BrowserProfileGrantTable {
-  access: BrowserProfileAccess;
-  id: BrowserProfileGrantId;
-  workspaceId: WorkspaceId;
-  createdBy: UserId;
-  profileId: BrowserProfileId;
-  createdAt: Timestamp;
-  revokedAt: NullableTimestamp;
 }
 
 interface BrowserSourceTable {
@@ -1636,9 +1470,10 @@ interface BrowserSourcePairingTable {
 }
 
 interface BrowserSiteGrantTable {
+  deploymentId: DeploymentId;
   id: string;
   ownerId: UserId;
-  workspaceId: WorkspaceId;
+
   site: string;
   preferredSourceId: BrowserSourceId | null;
   createdAt: Timestamp;
@@ -1649,7 +1484,7 @@ interface BrowserSiteGrantTable {
 interface BrowserSignInTable {
   ownerId: UserId;
   id: string;
-  workspaceId: WorkspaceId;
+
   site: string;
   sourceId: BrowserSourceId;
   sourceName: string;
@@ -1657,20 +1492,6 @@ interface BrowserSignInTable {
   profileName: string | null;
   requestId: RequestId | null;
   actor: "agent" | "owner" | "request";
-  createdAt: Timestamp;
-}
-
-/** Legacy: copies of a Chrome login into new profiles, before live sign-ins. */
-interface BrowserSourceImportTable {
-  id: string;
-  sourceId: BrowserSourceId;
-  workspaceId: WorkspaceId;
-  ownerId: UserId;
-  site: string;
-  profileName: string;
-  remember: boolean;
-  profileId: BrowserProfileId;
-  requestId: RequestId | null;
   createdAt: Timestamp;
 }
 
@@ -1885,7 +1706,7 @@ export interface IntegrationToolDefinitionsTable {
 export interface IntegrationGrantTable {
   access: IntegrationAccess;
   id: IntegrationGrantId;
-  workspaceId: WorkspaceId;
+
   ownerUserId: UserId;
   installationId: IntegrationInstallationId;
   connectionId: IntegrationConnectionId | null;
@@ -1913,9 +1734,11 @@ export interface ChannelAccountTable {
 }
 
 export interface ChannelBindingTable {
+  folderComputerId: RunnerId;
+  folderPath: string;
   id: ChannelBindingId;
   accountId: ChannelAccountId;
-  workspaceId: WorkspaceId;
+
   createdBy: UserId;
   selector: JsonColumn<Readonly<Record<string, unknown>>>;
   executionPolicy: JsonColumn<Readonly<Record<string, unknown>>>;
@@ -1953,13 +1776,14 @@ interface ChannelIdentityTable {
 }
 
 interface ChannelConversationTable {
+  personalContext: Generated<boolean>;
   id: ChannelConversationId;
   accountId: ChannelAccountId;
   provider: ChannelProvider;
   externalAccountId: string;
   bindingId: ChannelBindingId;
   bindingRevision: number;
-  workspaceId: WorkspaceId;
+
   externalScopeId: string | null;
   externalConversationId: string;
   externalThreadId: string | null;
@@ -1967,15 +1791,6 @@ interface ChannelConversationTable {
   displayName: string | null;
   activeThreadId: ThreadId | null;
   providerState: JsonColumn<Readonly<Record<string, unknown>>>;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-interface ChannelConversationContextTable {
-  conversationId: ChannelConversationId;
-  authorityUserId: UserId;
-  bindingRevision: number;
-  activeThreadId: ThreadId | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -2066,8 +1881,7 @@ interface ComputerAppSetupRequestTable {
   kind: "app" | "policy" | "server";
   policyAppApproval: "automatic" | null;
   threadId: ThreadId | null;
-  workspaceId: WorkspaceId | null;
-  workspaceName: string | null;
+
   reason: string | null;
   threadTitle: string | null;
   id: string;
@@ -2089,7 +1903,7 @@ interface ComputerAppSetupRequestTable {
 export interface AppTable {
   tabOpenedAt: ColumnType<Date | null, Date | string | null | undefined, Date | string | null>;
   id: string;
-  workspaceId: WorkspaceId;
+
   threadId: ThreadId;
   runId: RunId;
   title: string;
@@ -2098,6 +1912,8 @@ export interface AppTable {
   updatedAt: Timestamp;
 }
 export interface AppVersionTable {
+  folderComputerId: RunnerId | null;
+  folderPath: string | null;
   appId: string;
   version: number;
   sha256: string | null;
@@ -2109,14 +1925,12 @@ export interface AppVersionTable {
 }
 
 export interface AgentConnectionTable {
-  memberGeneration: ColumnType<string | null, string | null | undefined, string | null>;
-  membershipGeneration: ColumnType<string | null, string | null | undefined, string | null>;
   id: string;
   userId: UserId;
   label: string;
   clientName: string;
   accessMode: ThreadAccessMode;
-  workspaceId: WorkspaceId | null;
+
   resource: string;
   tokenHash: string | null;
   createdAt: Timestamp;
@@ -2125,29 +1939,50 @@ export interface AgentConnectionTable {
   revokedAt: NullableTimestamp;
 }
 
-export interface TeamInvitationTable {
-  id: string;
-  selector: string;
-  tokenHash: string;
-  intendedEmail: string;
-  memberKind: "full" | "guest";
-  createdBy: UserId;
-  createdAt: Timestamp;
-  expiresAt: Timestamp;
-  acceptedAt: NullableTimestamp;
-  acceptedBy: UserId | null;
-  revokedAt: NullableTimestamp;
-  revokedBy: UserId | null;
-  commandId: string;
-  requestFingerprint: string;
-}
-
 export interface DatabaseSchema extends KnowledgeTables {
-  teamInvitations: TeamInvitationTable;
-  accessGroups: AccessGroupTable;
-  accessGroupMembers: AccessGroupMemberTable;
-  accessEntries: AccessEntryTable;
-  accessState: AccessStateTable;
+  folderSkillInventory: {
+    folderComputerId: RunnerId;
+    folderPath: string;
+    environmentId: EnvironmentId;
+    bootId: string;
+    connectionGeneration: number;
+    connectionId: string;
+    connectionLeaseId: string;
+    bindingGeneration: number;
+    scanSequence: number;
+    scannedAt: Timestamp;
+    scanStatus: "complete" | "failed";
+    metadata: JsonColumn<readonly { fullName: string; description: string; digest: string }[]>;
+  };
+  teamMembers: TeamMemberTable;
+  teamAccessState: TeamAccessStateTable;
+  teamGroups: TeamGroupTable;
+  teamGroupPeople: TeamGroupPersonTable;
+  teamGroupEdges: TeamGroupEdgeTable;
+  teamInvites: TeamInviteTable;
+  teamInviteUses: TeamInviteUseTable;
+  teamAudit: TeamAuditTable;
+  teamNotices: TeamNoticeTable;
+  teamChannels: TeamChannelTable;
+  teamChannelMembers: TeamChannelMemberTable;
+  teamChannelMemberState: TeamChannelMemberStateTable;
+  teamMessages: TeamMessageTable;
+  teamMentions: TeamMentionTable;
+  teamMessagePins: TeamMessagePinTable;
+  teamBlobs: TeamBlobTable;
+  teamMessageAttachments: TeamMessageAttachmentTable;
+  teamTopicGrants: TeamTopicGrantTable;
+  teamChannelTopics: TeamChannelTopicTable;
+  teamOutbox: TeamOutboxTable;
+  teamLinks: TeamLinkTable;
+  teamAgentRequests: TeamAgentRequestTable;
+  personalTeamLinks: PersonalTeamLinkTable;
+  personalTeamChannelFolders: PersonalTeamChannelFolderTable;
+  personalTeamRequests: PersonalTeamRequestTable;
+
+  personalSettings: PersonalSettingsTable;
+  deploymentEventState: DeploymentEventStateTable;
+
   agentConnections: AgentConnectionTable;
   apps: AppTable;
   appVersions: AppVersionTable;
@@ -2221,18 +2056,9 @@ export interface DatabaseSchema extends KnowledgeTables {
   executionEnvironments: ExecutionEnvironmentTable;
   harnessInstances: HarnessInstanceTable;
   harnessCatalogs: HarnessCatalogTable;
-  projectRuntimeSettings: ProjectRuntimeSettingsTable;
-  userBackgroundModelPreferences: {
-    userId: UserId;
-    preferences: JsonColumn<AutomaticModelConfig>;
-    updatedAt: Timestamp;
-  };
-  userExecutionPreferences: UserExecutionPreferenceTable;
-  workspaces: WorkspaceTable;
-  workspaceMemberships: WorkspaceMembershipTable;
-  workspaceInvitations: WorkspaceInvitationTable;
+
   securityAudit: SecurityAuditTable;
-  securityEffects: SecurityEffectTable;
+
   threadStatePending: { threadId: ThreadId; requestedAt: Timestamp };
   threads: ThreadTable;
   messages: MessageTable;
@@ -2261,10 +2087,10 @@ export interface DatabaseSchema extends KnowledgeTables {
   commands: CommandTable;
   agentControlRequests: AgentControlRequestTable;
   triggerControlRequests: TriggerControlRequestTable;
-  workspaceEvents: WorkspaceEventTable;
+  deploymentEvents: DeploymentEventTable;
   automationFailureNotices: AutomationFailureNoticeTable;
   threadReadMarkers: ThreadReadMarkerTable;
-  agentNotificationMutes: AgentNotificationMuteTable;
+
   credentials: CredentialTable;
   credentialVaultCanaries: CredentialVaultCanaryTable;
   browserProfiles: BrowserProfileTable;
@@ -2272,7 +2098,7 @@ export interface DatabaseSchema extends KnowledgeTables {
   browserHistoryEntries: BrowserHistoryEntryTable;
   browserHistoryIcons: BrowserHistoryIconTable;
   browserSessions: BrowserSessionTable;
-  workspaceTabs: WorkspaceTabTable;
+  personalTabs: PersonalTabTable;
   browserTabLayouts: {
     ownerId: UserId;
     revision: Generated<string | number | bigint>;
@@ -2300,12 +2126,11 @@ export interface DatabaseSchema extends KnowledgeTables {
   };
   browserSessionAttachments: BrowserSessionAttachmentTable;
   browserSessionUses: BrowserSessionUseTable;
-  browserProfileGrants: BrowserProfileGrantTable;
+
   browserSources: BrowserSourceTable;
   browserSourcePairings: BrowserSourcePairingTable;
   browserSiteGrants: BrowserSiteGrantTable;
   browserSignIns: BrowserSignInTable;
-  browserSourceImports: BrowserSourceImportTable;
   credentialAccessAudit: CredentialAccessAuditTable;
   principals: PrincipalTable;
   integrationProviderApplications: IntegrationProviderApplicationTable;
@@ -2324,17 +2149,14 @@ export interface DatabaseSchema extends KnowledgeTables {
     targetKey: string;
     target: JsonColumn<import("@opensteer/protocol").PluginTarget>;
     enabled: boolean;
-    mainIncluded: boolean;
+
     revision: number;
-    personalEverywhereAccounts: JsonColumn<
-      readonly { connectionId: IntegrationConnectionId; access: IntegrationAccess }[]
-    > | null;
   };
   plugins: {
     id: string;
     name: string;
-    scope: "deployment" | "workspace";
-    workspaceId: string | null;
+    scope: "deployment";
+
     source: JsonColumn<Readonly<Record<string, unknown>>>;
     installedBy: UserId | null;
     currentVersionId: string | null;
@@ -2351,7 +2173,7 @@ export interface DatabaseSchema extends KnowledgeTables {
   specialists: {
     removedAt: Generated<Date | null>;
     id: string;
-    workspaceId: WorkspaceId;
+
     pluginId: string;
     pluginVersionId: string;
     ownerUserId: UserId;
@@ -2368,12 +2190,7 @@ export interface DatabaseSchema extends KnowledgeTables {
     specialistManifest: JsonColumn<Readonly<Record<string, unknown>>> | null;
     createdAt: Timestamp;
   };
-  pluginActivations: {
-    workspaceId: WorkspaceId;
-    pluginId: string;
-    createdBy: UserId | null;
-    createdAt: Timestamp;
-  };
+
   integrationGrants: IntegrationGrantTable;
   mcpOAuthCredentials: McpOAuthCredentialTable;
   channelAccounts: ChannelAccountTable;
@@ -2381,14 +2198,13 @@ export interface DatabaseSchema extends KnowledgeTables {
   channelBindings: ChannelBindingTable;
   channelIdentities: ChannelIdentityTable;
   channelConversations: ChannelConversationTable;
-  channelConversationContexts: ChannelConversationContextTable;
   channelIngressEvents: ChannelIngressEventTable;
   channelDeliveries: ChannelDeliveryTable;
   channelLinkCodes: ChannelLinkCodeTable;
 }
 
 export type DeploymentRow = Selectable<DeploymentTable>;
-export type WorkspaceRow = Selectable<WorkspaceTable>;
+
 export type ThreadRow = Selectable<ThreadTable>;
 export type RunRow = Selectable<RunTable>;
 export type RequestRow = Selectable<RequestTable>;
@@ -2397,4 +2213,277 @@ export type CommandRow = Selectable<CommandTable>;
 export type PendingCommandRow = CommandRow & {
   readonly runHarnessInstanceId: HarnessInstanceId | null;
 };
-export type WorkspaceEventRow = Selectable<WorkspaceEventTable>;
+export type DeploymentEventRow = Selectable<DeploymentEventTable>;
+
+export interface PersonalSettingsTable {
+  singletonKey: "personal";
+  ownerId: UserId;
+  agentHomeComputerId: RunnerId;
+  agentHomePath: string;
+  voiceThreadId: ThreadId | null;
+  timeZone: string | null;
+  quietTaskDays: QuietTaskDays;
+  executionPreferences: JsonColumn<ExecutionPreferences>;
+  backgroundModelPreferences: JsonColumn<AutomaticModelConfig>;
+}
+export interface DeploymentEventStateTable {
+  deploymentId: DeploymentId;
+  sequence: Generated<string>;
+}
+export interface TeamMemberTable {
+  userId: UserId;
+  handle: TeamHandle;
+  role: "owner" | "admin" | "member";
+  state: "active" | "removed";
+  generation: Generated<string>;
+  joinedAt: Timestamp;
+  changedAt: Timestamp;
+  changedBy: UserId | null;
+}
+export interface TeamAccessStateTable {
+  singletonKey: "team";
+  revision: Generated<string>;
+  directoryRevision: Generated<string>;
+  updatedAt: Timestamp;
+}
+export interface TeamGroupTable {
+  id: TeamGroupId;
+  name: string;
+  normalizedName: string;
+  createdBy: UserId;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: NullableTimestamp;
+}
+export interface TeamGroupPersonTable {
+  groupId: TeamGroupId;
+  userId: UserId;
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+export interface TeamGroupEdgeTable {
+  parentGroupId: TeamGroupId;
+  childGroupId: TeamGroupId;
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+export interface TeamInviteTable {
+  id: TeamInviteId;
+  selector: string;
+  verifierHash: string;
+  maxUses: number;
+  usedCount: Generated<number>;
+  expiresAt: Timestamp;
+  revokedAt: NullableTimestamp;
+  createdBy: UserId;
+  createdAt: Timestamp;
+}
+export interface TeamInviteUseTable {
+  inviteId: TeamInviteId;
+  userId: UserId;
+  acceptedAt: Timestamp;
+  memberGeneration: string;
+}
+export interface TeamAuditTable {
+  id: Generated<string>;
+  occurredAt: Timestamp;
+  actorUserId: UserId | null;
+  actorKind: "human" | "agent" | "system";
+  linkId: TeamLinkId | null;
+  agentRequestId: TeamAgentRequestId | null;
+  action: string;
+  resourceKind: string;
+  resourceId: string | null;
+  channelId: TeamChannelId | null;
+  outcome: "allowed" | "denied";
+  metadata: JsonColumn<Readonly<Record<string, unknown>>>;
+}
+export interface TeamNoticeTable {
+  id: TeamNoticeId;
+  recipientUserId: UserId;
+  kind: "admin-self-added";
+  resourceKind: "channel" | "topic";
+  resourceId: string;
+  auditId: string;
+  dedupeKey: string;
+  createdAt: Timestamp;
+  readAt: NullableTimestamp;
+}
+export interface TeamChannelTable {
+  id: TeamChannelId;
+  kind: TeamChannelKind;
+  name: string | null;
+  normalizedName: string | null;
+  createdBy: UserId;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  archivedAt: NullableTimestamp;
+  peopleOnly: boolean;
+  instructionsMarkdown: string;
+  instructionsRevision: Generated<string>;
+  changeSeq: Generated<string>;
+  latestMessageId: TeamMessageId | null;
+  dmKey: string | null;
+}
+export interface TeamChannelMemberTable {
+  channelId: TeamChannelId;
+  subjectKind: "person" | "group";
+  subjectId: string;
+  level: "read" | "post";
+  manage: boolean;
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+export interface TeamChannelMemberStateTable {
+  channelId: TeamChannelId;
+  userId: UserId;
+  lastReadMessageId: TeamMessageId | null;
+  notificationLevel: "mentions" | "all" | "muted";
+  updatedAt: Timestamp;
+}
+export interface TeamMessageTable {
+  id: Generated<TeamMessageId>;
+  channelId: TeamChannelId;
+  threadRootId: TeamMessageId | null;
+  authorUserId: UserId;
+  authorKind: "human" | "agent";
+  agentRequestId: TeamAgentRequestId | null;
+  clientMessageId: string;
+  bodyMarkdown: string;
+  plainText: string;
+  searchDocument: Generated<string>;
+  createdAt: Timestamp;
+  editedAt: NullableTimestamp;
+  deletedAt: NullableTimestamp;
+  changeSeq: string;
+}
+export interface TeamMentionTable {
+  messageId: TeamMessageId;
+  channelId: TeamChannelId;
+  targetUserId: UserId;
+  targetKind: "person" | "agent";
+  createdAt: Timestamp;
+}
+export interface TeamMessagePinTable {
+  messageId: TeamMessageId;
+  channelId: TeamChannelId;
+  pinnedBy: UserId;
+  pinnedAt: Timestamp;
+}
+export interface TeamBlobTable {
+  id: TeamBlobId;
+  channelId: TeamChannelId;
+  uploaderUserId: UserId;
+  uploaderKind: "human" | "agent";
+  agentRequestId: TeamAgentRequestId | null;
+  clientUploadId: string;
+  storageKey: string;
+  filename: string;
+  declaredType: string;
+  verifiedType: string | null;
+  sizeBytes: number;
+  sha256: string | null;
+  state: "uploading" | "ready" | "deleting";
+  receivedBytes: Generated<number>;
+  previewStorageKey: string | null;
+  previewMediaType: string | null;
+  previewSizeBytes: number | null;
+  createdAt: Timestamp;
+  expiresAt: Timestamp;
+  completedAt: NullableTimestamp;
+}
+export interface TeamMessageAttachmentTable {
+  messageId: TeamMessageId;
+  position: number;
+  blobId: TeamBlobId;
+  channelId: TeamChannelId;
+  createdAt: Timestamp;
+}
+export interface TeamTopicGrantTable {
+  topicId: KnowledgeTopicId;
+  subjectKind: "person" | "group";
+  subjectId: string;
+  level: "read" | "write" | "manage";
+  addedBy: UserId;
+  addedAt: Timestamp;
+}
+export interface TeamChannelTopicTable {
+  channelId: TeamChannelId;
+  topicId: KnowledgeTopicId;
+  attachedBy: UserId;
+  attachedAt: Timestamp;
+}
+export interface TeamOutboxTable {
+  id: Generated<string>;
+  kind: "message" | "agent-status" | "notice";
+  channelId: TeamChannelId | null;
+  messageId: TeamMessageId | null;
+  noticeId: TeamNoticeId | null;
+  createdAt: Timestamp;
+}
+export interface TeamLinkTable {
+  id: TeamLinkId;
+  ownerUserId: UserId;
+  personalDeploymentId: DeploymentId | null;
+  installationLabel: string | null;
+  state: "pending" | "active" | "revoked";
+  codeHash: string;
+  codeExpiresAt: Timestamp;
+  credentialHash: string | null;
+  lastSeenAt: NullableTimestamp;
+  createdAt: Timestamp;
+  revokedAt: NullableTimestamp;
+}
+export interface TeamAgentRequestTable {
+  id: TeamAgentRequestId;
+  ownerUserId: UserId;
+  channelId: TeamChannelId;
+  threadRootId: TeamMessageId;
+  triggerMessageId: TeamMessageId;
+  linkId: TeamLinkId;
+  state: TeamAgentRequestState;
+  steps: JsonColumn<readonly z.infer<typeof TeamStatusStepSchema>[]>;
+  createdAt: Timestamp;
+  acceptedAt: NullableTimestamp;
+  expiresAt: NullableTimestamp;
+  finishedAt: NullableTimestamp;
+  replyMessageId: TeamMessageId | null;
+  failureCode: string | null;
+  changeSeq: string;
+}
+export interface PersonalTeamLinkTable {
+  id: string;
+  teamDeploymentId: DeploymentId;
+  teamHostInstanceId: HostInstanceId;
+  hostKeyFingerprint: string;
+  approvedOrigin: string;
+  authorityEnvelope: JsonColumn<Readonly<Record<string, unknown>>>;
+  remoteLinkId: TeamLinkId | null;
+  remoteOwnerUserId: UserId | null;
+  state: "joining" | "active" | "unreachable" | "leaving" | "revoked" | "needs_update";
+  credentialReference: string | null;
+  createdAt: Timestamp;
+  lastContactAt: NullableTimestamp;
+}
+export interface PersonalTeamChannelFolderTable {
+  teamDeploymentId: DeploymentId;
+  channelId: TeamChannelId;
+  computerId: RunnerId;
+  folderPath: string;
+  updatedAt: Timestamp;
+}
+export interface PersonalTeamRequestTable {
+  teamDeploymentId: DeploymentId;
+  requestId: TeamAgentRequestId;
+  triggerMessageId: TeamMessageId;
+  localTaskId: ThreadId;
+  localInputId: MessageId;
+  runId: RunId | null;
+  publicationState: "pending" | "accepted" | "blocked";
+  terminalState: "done" | "failed" | "stopped" | "cancelled" | null;
+  acceptedMessageId: TeamMessageId | null;
+  explicitReply: Generated<boolean>;
+  source: JsonColumn<TeamSource>;
+  createdAt: Timestamp;
+  finishedAt: NullableTimestamp;
+}

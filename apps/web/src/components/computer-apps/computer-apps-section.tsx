@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { ComputerSetupApprovals } from "./computer-app-approval.js";
 import { Icon } from "../icon.js";
 import { IntegrationIcon } from "../integrations/integration-icon.js";
-import { ComputerAppWorkspaceAccess } from "./computer-app-workspace-access.js";
+import { ComputerAppAgentAccess } from "./computer-app-agent-access.js";
 import { ComputerUseBlock } from "./computer-use-section.js";
 
 import type {
@@ -27,12 +27,7 @@ import {
   isIphone,
   type ComputerAppRow,
 } from "@opensteer/client/integrations";
-import {
-  mutationIdempotencyKey,
-  unwrapRpcResult,
-  type HostClient,
-  type WorkspaceSummary,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, unwrapRpcResult, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { actionErrorMessage } from "../../ui-utils.js";
 
@@ -150,7 +145,6 @@ export function ComputerAppsSection({
   owned,
   platform,
   setupRequests = [],
-  workspaces,
 }: {
   /** What the desktop on this very Mac can do for computer use; null elsewhere. */
   readonly computerUseLocal?: ComputerUseLocalActions | null;
@@ -168,7 +162,6 @@ export function ComputerAppsSection({
   readonly owned: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
   readonly setupRequests?: readonly ComputerAppSetupRequest[];
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const [pending, setPending] = useState<ReadonlyMap<string, PendingChange>>(() => new Map());
   const pendingIds = useRef(new Set<string>());
@@ -407,7 +400,6 @@ export function ComputerAppsSection({
                 request={request}
                 row={row}
                 setupTarget={setupTarget}
-                workspaces={workspaces}
               />
             );
           })}
@@ -454,7 +446,6 @@ function AppRow({
   request,
   row,
   setupTarget,
-  workspaces,
 }: {
   readonly approvedChoice: boolean;
   readonly error: string | null;
@@ -479,7 +470,6 @@ function AppRow({
   readonly request: ComputerAppSetupRequest | null;
   readonly row: ComputerAppRow;
   readonly setupTarget: IntegrationAccess;
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const anchor = useRef<HTMLDivElement>(null);
   const expanded = panel !== "overview";
@@ -605,7 +595,6 @@ function AppRow({
               pending={pending}
               request={request}
               row={row}
-              workspaces={workspaces}
             />
           ) : panel === "setup" ? (
             <SetupPanel
@@ -748,7 +737,6 @@ function ManagePanel({
   pending,
   request,
   row,
-  workspaces,
 }: {
   readonly hostClient: HostClient;
   readonly installationId: string | null;
@@ -763,7 +751,6 @@ function ManagePanel({
   readonly pending: boolean;
   readonly request: ComputerAppSetupRequest | null;
   readonly row: ComputerAppRow;
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const onlineLocal = localApproval !== null && machine.status === "online";
   const canWrite = row.presentation.accessLevels.length === 2;
@@ -813,7 +800,7 @@ function ManagePanel({
       </div>
 
       {row.access !== null && row.connectionId ? (
-        <ComputerAppWorkspaceAccess
+        <ComputerAppAgentAccess
           access={row.access}
           appName={row.definition.name}
           connectionId={row.connectionId}
@@ -822,11 +809,8 @@ function ManagePanel({
           installationId={installationId}
           machineName={machine.name}
           presentation={row.presentation}
-          workspaces={workspaces}
         />
-      ) : (
-        <p className="computer-apps__workspace-lead">No Workspaces have access.</p>
-      )}
+      ) : null}
 
       {iphone ? null : (
         <details className="computer-apps__os-details">

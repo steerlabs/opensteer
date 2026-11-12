@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { establishedCookieSession, testDiscoveryEnvelope } from "../test-support/index.js";
 import {
   DeploymentConnectionSchema,
+  DeploymentCatalogSchema,
   type AccountDeploymentConnectionSource,
   type DeploymentCatalog,
   type DeploymentConnection,
@@ -186,7 +187,7 @@ describe("HostSession", () => {
   });
 
   it("starts Host-native OAuth only for self-hosted attachments and publishes its exact key", async () => {
-    const connection = connectionOfKind("self-hosted");
+    const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
     const observations: unknown[] = [];
     fixture.sessions.subscribe((observation) => observations.push(observation));
@@ -210,7 +211,7 @@ describe("HostSession", () => {
   });
 
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
-    const connection = connectionOfKind("self-hosted");
+    const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
     const first = deferred<HostOAuthState>();
     fixture.oauth.beginHostSignIn.mockImplementationOnce(() => first.promise);
@@ -285,7 +286,7 @@ describe("HostSession", () => {
       ...remotePersonalConnection("private", 1),
       source,
     } as DeploymentConnection;
-    const selfHosted = connectionOfKind("self-hosted");
+    const selfHosted = connectionOfKind("team");
     const deployments = [connect, privateConnection, selfHosted];
     const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
     const removeAccountDeployments = vi.fn(async () => catalogFor(selfHosted, [selfHosted]));
@@ -445,7 +446,7 @@ function localHostRuntime(connection: DeploymentConnection): LocalHostRuntime {
   };
 }
 
-function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
+function connectionOfKind(kind: "team"): DeploymentConnection {
   const origin = `https://${kind}.opensteer.test`;
   return DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
@@ -454,8 +455,7 @@ function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
+        kind: "team" as const,
       },
     }),
     bootstrapMethods: ["password"],
@@ -471,7 +471,7 @@ function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
 }
 
 function localPersonalConnection(): DeploymentConnection {
-  const base = connectionOfKind("self-hosted");
+  const base = connectionOfKind("team");
   const origin = "http://127.0.0.1:4310";
   return DeploymentConnectionSchema.parse({
     ...base,
@@ -479,7 +479,6 @@ function localPersonalConnection(): DeploymentConnection {
       ...base.authority.document,
       canonicalOrigin: origin,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     }),
@@ -516,7 +515,7 @@ function catalogFor(
   return {
     deployments: [...deployments],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: selected.authority.document.deploymentId,
     updatedAt: "2026-08-22T10:00:00.000Z",
   };

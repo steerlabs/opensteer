@@ -12,7 +12,11 @@ it.each(["run", "program", "connection"] as const)(
       name: string;
       inputSchema: Record<string, unknown>;
     }[];
-    const specs = agentTools.filter((t) => t.callers.some((c) => c === kind));
+    const specs = agentTools.filter(
+      (t) =>
+        t.callers.some((c) => c === kind) &&
+        !["team_read", "team_search", "team_reply", "sql"].includes(t.name),
+    );
     expect(listed.map((t) => t.name)).toEqual(specs.map((t) => t.name));
     for (const spec of specs) {
       const schema = listed.find((t) => t.name === spec.name)!.inputSchema;

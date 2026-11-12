@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,7 +34,7 @@ import {
   addCleanup,
   browserAvailable,
   deployment,
-  grantedProfile,
+  createProfile,
   run,
   startBrowser,
   waitFor,
@@ -136,7 +136,7 @@ function equal(evidence: Evidence, label: string, actual: unknown, expected: unk
 async function profileDeployment() {
   const browser = await startBrowser();
   addCleanup("profile journey Browser Runtime", () => browser.close());
-  const stack = await deployment(browser, undefined, {
+  const stack = await deployment(browser, {
     scenario: "browser-profiles",
     maxConcurrentRuns: 2,
   });
@@ -178,13 +178,14 @@ async function profileTurn(
   evidence: Evidence,
   plan: Record<string, unknown>,
   threadId?: ThreadId,
-  workspaceId = stack.mainWorkspaceId,
+  folder = stack.agentHome,
   onQueued?: Parameters<VerticalStack["sendMessage"]>[0]["onQueued"],
 ): Promise<{ report: Report; threadId: ThreadId }> {
   threadId ??= await stack.createThread({
     idempotencyKey: randomUUID(),
     title: "Browser profile journey",
-    workspaceId,
+    folder,
+
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
       providerId: "openai",
@@ -194,11 +195,11 @@ async function profileTurn(
   const result = await stack.sendMessage({
     ...(onQueued ? { onQueued } : {}),
     threadId,
-    workspaceId,
+
     text: `BROWSER_PROFILE_JOURNEY:${JSON.stringify(plan)}`,
   });
   const raw: unknown = JSON.parse(result.assistantText);
-  evidence.observations.push({ threadId, workspaceId, runId: result.runId, report: raw });
+  evidence.observations.push({ threadId, runId: result.runId, report: raw });
   const report = reportSchema.parse(raw);
   if (report.error) throw new Error(report.error);
   return { report, threadId };
@@ -238,20 +239,8 @@ async function fulfillNewProfile(
   people?: HttpHostClient[],
   laterWake = false,
 ) {
-  const workspace = await stack.createWorkspace("Brex project workspace");
-  expect(
-    (
-      await stat(
-        path.join(
-          path.dirname(stack.mountedWorkspacePath),
-          "local-workspaces",
-          "main",
-          "Projects",
-          "brex-project-workspace",
-        ),
-      )
-    ).isDirectory(),
-  ).toBe(true);
+  const folder = await stack.createFolder("Brex folder");
+
   let requestId!: RequestId;
   const originalWait = RequestHold.prototype.wait;
   const limit = laterWake
@@ -269,7 +258,7 @@ async function fulfillNewProfile(
       evidence,
       { request: true },
       undefined,
-      workspace.id,
+      folder,
       async (runId) => {
         const request = await vi.waitFor(
           async () => {
@@ -352,7 +341,7 @@ async function fulfillNewProfile(
       });
     }
   }
-  return { ...first, workspaceId: workspace.id, profile, requestId };
+  return { ...first, profile, requestId };
 }
 
 run("Browser profiles through a whole deployment", () => {
@@ -363,10 +352,10 @@ run("Browser profiles through a whole deployment", () => {
       stack,
       evidence,
       {
-        request: { replay: true, workspaceId: stack.mainWorkspaceId },
+        request: { replay: true },
       },
       undefined,
-      stack.mainWorkspaceId,
+      stack.agentHome,
       async (runId) => {
         const request = await vi.waitFor(
           async () => {
@@ -410,12 +399,6 @@ run("Browser profiles through a whole deployment", () => {
     );
     equal(evidence, "approval opened no session", bootstrap.data.browser.groups.rows.length, 0);
     const profile = bootstrap.data.browser.profiles[0]!;
-    const grants = await stack.host.store.database
-      .selectFrom("browserProfileGrants")
-      .selectAll()
-      .where("workspaceId", "=", stack.mainWorkspaceId)
-      .execute();
-    equal(evidence, "Main has no grant rows", grants, []);
     await waitFor(
       async () =>
         people.every((client) =>
@@ -463,22 +446,17 @@ run("Browser profiles through a whole deployment", () => {
   });
 
   journey(
-    "J2-authority current Main Workspace and delegated tool inventories",
+    "J2-authority home-folder, explicit-folder and delegated tool inventories",
     async (evidence) => {
       const { stack } = await profileDeployment();
-      const workspace = await stack.createWorkspace("Project authority");
+      const folder = await stack.createFolder("Folder authority");
       const main = await profileTurn(stack, evidence, {});
-      const project = await profileTurn(stack, evidence, {}, undefined, workspace.id);
-      const delegated = await profileTurn(
-        stack,
-        evidence,
-        { delegate: workspace.id },
-        main.threadId,
-      );
+      const project = await profileTurn(stack, evidence, {}, undefined, folder);
+      const delegated = await profileTurn(stack, evidence, { delegate: folder }, main.threadId);
       const childId = delegated.report.delegated!.threadId;
       let child: Report | undefined;
       await waitFor(async () => {
-        const snapshot = await stack.host.store.workspaceSnapshot(workspace.id);
+        const snapshot = await stack.host.store.deploymentSnapshot();
         const text = snapshot.messages
           .filter((message) => message.threadId === childId && message.kind === "assistant")
           .flatMap((message) => message.content)
@@ -492,13 +470,13 @@ run("Browser profiles through a whole deployment", () => {
       evidence.observations.push({
         inventories: {
           main: main.report.tools,
-          workspace: project.report.tools,
+          folder: project.report.tools,
           delegated: child!.tools,
         },
       });
       for (const [kind, report] of [
         ["main", main.report],
-        ["workspace", project.report],
+        ["folder", project.report],
         ["delegated", child!],
       ] as const) {
         equal(
@@ -538,7 +516,7 @@ run("Browser profiles through a whole deployment", () => {
       await browserAvailable(stack);
       let continuation: Report | undefined;
       await waitFor(async () => {
-        const snapshot = await stack.host.store.workspaceSnapshot(result.workspaceId);
+        const snapshot = await stack.host.store.deploymentSnapshot();
         for (const message of snapshot.messages.filter(
           (message) => message.threadId === result.threadId && message.kind === "assistant",
         )) {
@@ -568,15 +546,14 @@ run("Browser profiles through a whole deployment", () => {
         continuation!.profiles!.profiles.map((profile) => ({ id: profile.id, name: profile.name })),
         [{ id: result.profile.id, name: "Brex Ops" }],
       );
-      const grants = await stack.host.store.database
-        .selectFrom("browserProfileGrants")
-        .select(["profileId", "workspaceId", "access"])
-        .where("workspaceId", "=", result.workspaceId)
-        .where("revokedAt", "is", null)
-        .execute();
-      equal(evidence, "Project approval retains its grant across restart", grants, [
-        { profileId: result.profile.id, workspaceId: result.workspaceId, access: "read-write" },
-      ]);
+      const retained = await stack.api["bootstrap.get"]({});
+      equal(
+        evidence,
+        "Personal approval retains the profile across restart",
+        retained.ok &&
+          retained.data.browser.profiles.some((profile) => profile.id === result.profile.id),
+        true,
+      );
       const request = await stack.host.store.database
         .selectFrom("requests")
         .select("response")
@@ -598,9 +575,9 @@ run("Browser profiles through a whole deployment", () => {
       },
     });
     addCleanup("tab identity Browser Runtime", () => browser.close());
-    const stack = await deployment(browser, undefined, { scenario: "browser-profiles" });
+    const stack = await deployment(browser, { scenario: "browser-profiles" });
     await browserAvailable(stack);
-    const profileId = await grantedProfile(stack, stack.mainWorkspaceId);
+    const profileId = await createProfile(stack);
     const origin = await fixtureAccount();
     const profiled = await profileTurn(stack, evidence, {
       open: { profileId },
@@ -699,56 +676,53 @@ run("Browser profiles through a whole deployment", () => {
   );
 
   journey(
-    "J5-grant two live clients see a direct grant and its revocation without reload",
+    "J5 two live clients see profile creation and deletion without reload",
     async (evidence) => {
       const { stack } = await profileDeployment();
       const people = await connectedPeople(stack);
-      const workspace = await stack.createWorkspace("Granted specialist");
       const created = await stack.api["commands.dispatch"]({
-        idempotencyKey: randomUUID(),
-        input: { name: "Shared work" },
         type: "browser.profile.create",
+        idempotencyKey: randomUUID(),
+        input: { name: "Work" },
       });
       if (!created.ok || created.data.type !== "browser.profile.create")
-        throw new Error(JSON.stringify(created));
+        throw new Error("Profile was not created");
       const profileId = created.data.profile.id;
-      const grantsFor = (client: HttpHostClient) =>
-        client
-          .getSnapshot()
-          .browserProfileGrants.filter(
-            (grant) => grant.profileId === profileId && grant.workspaceId === workspace.id,
-          );
-      const granted = await stack.api["commands.dispatch"]({
+      await waitFor(
+        async () =>
+          people.every((client) =>
+            client.getSnapshot().browserProfiles.some((profile) => profile.id === profileId),
+          ),
+        10000,
+      );
+      for (const client of people)
+        equal(
+          evidence,
+          "created profile arrives without reload",
+          client.getSnapshot().browserProfiles.some((profile) => profile.id === profileId),
+          true,
+        );
+      const removed = await stack.api["commands.dispatch"]({
+        type: "browser.profile.delete",
         idempotencyKey: randomUUID(),
         profileId,
-        type: "browser.profile.grant",
-        workspaceId: workspace.id,
       });
-      if (!granted.ok || granted.data.type !== "browser.profile.grant")
-        throw new Error(JSON.stringify(granted));
-      try {
-        await waitFor(async () => people.every((client) => grantsFor(client).length === 1), 10_000);
-      } finally {
-        evidence.observations.push({ afterGrant: people.map(grantsFor) });
-      }
+      if (!removed.ok) throw new Error(removed.error.message);
+      await waitFor(
+        async () =>
+          people.every(
+            (client) =>
+              !client.getSnapshot().browserProfiles.some((profile) => profile.id === profileId),
+          ),
+        10000,
+      );
       for (const client of people)
-        equal(evidence, "direct grant arrived without reload", grantsFor(client).length, 1);
-      const revoked = await stack.api["commands.dispatch"]({
-        grantId: granted.data.grant.id,
-        idempotencyKey: randomUUID(),
-        type: "browser.profileGrant.revoke",
-      });
-      if (!revoked.ok) throw new Error(JSON.stringify(revoked));
-      try {
-        await waitFor(async () => people.every((client) => grantsFor(client).length === 0), 10_000);
-      } finally {
-        evidence.observations.push({ afterRevoke: people.map(grantsFor) });
-      }
-      for (const client of people)
-        equal(evidence, "revocation arrived without reload", grantsFor(client).length, 0);
-      const bootstrap = await stack.api["bootstrap.get"]({});
-      if (!bootstrap.ok) throw new Error(bootstrap.error.message);
-      equal(evidence, "grants opened no session", bootstrap.data.browser.groups.rows.length, 0);
+        equal(
+          evidence,
+          "deleted profile disappears without reload",
+          client.getSnapshot().browserProfiles.some((profile) => profile.id === profileId),
+          false,
+        );
     },
   );
 });

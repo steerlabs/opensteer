@@ -3,7 +3,7 @@
 Saved logins let agents fill websites or type into permitted Mac and Android apps, and let the
 person fill Opensteer browser pages themselves ([Filling for people](#filling-for-people)) and keep
 a login they typed there ([Saving for people](#saving-for-people)); saved cards work only in
-websites. Website fills work only in the Personal main computer's browser, never
+websites. Website fills work only in the personal hosting computer's browser, never
 a browser on another computer or phone; the Host refuses an agent's fill there with
 `main-browser-required`. The Personal Mac
 owns the vault; the requester can approve a sign-in from any signed-in device. Cookie reuse is
@@ -32,12 +32,13 @@ retained. This does not authorize approving an Opensteer Request or granting acc
 ## Authority
 
 The broker owns keys, grants and release; desktop main owns browser checks and sealing; the Host
-owns Workspace admission and memory-only leases and stores neither vault data nor released values.
-Only Personal's local Host can name a Workspace to the vault.
+owns personal admission and memory-only leases and stores neither vault data nor released values.
+Only the local personal Host can present the per-person consent key to the vault; team IDs and
+task folders never become consent identities.
 
 Agents use `sign_in` for logins and `use_card` for checkout. Probes never prompt. For login
 requests given a Browser Session, the Host checks
-access to it first; a Chrome grant for the session's Workspace goes first, then a saved login if
+access to it first; the person's Chrome site consent goes first, then a saved login if
 that Chrome has no sign-in. Without a grant a saved login selects Passwords, and Chrome can fill in
 when Passwords has none. Every path refuses loopback and the
 Deployment's own sites before creating a Request. A login reference never grants access to a
@@ -46,7 +47,7 @@ browser, phone or Mac app: each use still needs the Run's current authority over
 `sign_in` and `use_card` report what Passwords still needs instead of a separate tool suggesting it, so the
 suggestion can't depend on a model remembering to call anything. Clients show it from that result
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
-(a server Deployment or an unsupported Mac) and nothing offers it.
+(a team server or an unsupported Mac) and nothing offers it.
 
 Setup happens in a window agents cannot observe. The Host tracks an outstanding offer and wakes
 its Thread when a login becomes available; the person must not have to report completion. A
@@ -56,24 +57,22 @@ this lifecycle.
 
 ## Grants and consent
 
-A remembered grant in the signed vault maps Deployment, Workspace and site to a login revision. The
-calling Workspace owns the consent, even when it drives a Browser Session that belongs to another
-Workspace. Allow remembers access; Only this time creates no grant. Both pin the login ID, revision
+A remembered grant in the signed vault maps Deployment, person and site to a login revision.
+The per-person consent key remains stable across tasks and Browser Sessions. Allow remembers access; Only this time creates no grant. Both pin the login ID, revision
 and consent version on the broker transaction, and the mobile app asks for device-owner
 authentication before either. The person sees the full username; the agent gets it masked.
 
 Current consent covers "websites and apps your agents use" and warns that a tricked agent could
-expose the password. Older origin-only grants stay valid for legacy browser transactions but never
-authorize app release; unversioned grants authorize nothing and disappear on the next vault commit.
+expose the password. Only current per-person consent authorizes release; old scope keys or protocol versions
+never become new consent.
 Each release rechecks the pinned revision and, for remembered access, the current grant. Editing a
 login needs approval again; changing its websites, login page or username, or deleting it, removes
 its grants. Removals send no push, so `sign_in` can return `ready` until a release notices.
 
 ## The login lease
 
-A memory-only opaque reference binds the calling Workspace and site to a live broker operation with
-the pinned login. Any Run in that Workspace, including delegated work, can reuse it with its own
-surface authority; other Workspaces cannot. One absolute deadline covers approval and lease, with no
+A memory-only opaque reference binds the person and site to a live broker operation with
+the pinned login. The person's Runs may reuse it only with their own current surface authority. One absolute deadline covers approval and lease, with no
 extension on reuse. Closing the browser does not end it; restart, cancellation, expiry, turning off,
 a lost connection or a changed login or grant does. Joining pending work never makes a Run the
 approver.
@@ -120,7 +119,7 @@ tab, site, login revision and presence. Activity records credential release, not
 
 ## Saving for people
 
-When a person signs in by hand on a page in the Personal main computer's browser, the viewer they
+When a person signs in by hand on a page in the personal hosting computer's browser, the viewer they
 typed from offers to keep that login. Saving follows fill's locality: a page on any other browser
 is never read, so a saved login is always one Opensteer can fill. Version 1 adds new logins only;
 a changed password, a different username for a saved one, and a form with two different
@@ -138,7 +137,7 @@ Sign-ins from a phone may save while the vault Mac is locked, as remembered sign
 
 ## Typing in apps
 
-The Host resolves saved references for the calling Workspace and seals every field before any action
+The Host resolves saved references for the calling person and seals every field before any action
 in a batch runs; agents cannot supply sealed envelopes. Android sets text without readback. Mac
 writes the selected text or, for a secure field, its value, else types Unicode keystrokes, and
 refuses CR, LF and tab before that action. Receipts name only the field kind, never value, label or
@@ -164,8 +163,8 @@ from the live registry, never historical Request data.
 ## Runtime and compatibility
 
 Each hop negotiates the sign-in features; an unknown version or a missing hop or receiver key
-disables the feature. The broker negotiates its protocol per connection, echoes it and never
-silently upgrades. App release needs an explicit app kind, never inferred from a missing origin, and
+disables the feature. Only broker protocol 10 is accepted; each connection echoes that exact version and refuses
+older protocols without downgrade. App release needs an explicit app kind, never inferred from a missing origin, and
 never falls back to the legacy session-bound protocol; browser release needs an exact HTTPS origin
 on the saved site. Historical Request and result shapes stay readable and never create a live lease. Cards reuse the
 existing sign-in Request kind with a credential discriminator; older clients can only decline a

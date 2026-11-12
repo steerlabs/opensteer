@@ -5,11 +5,9 @@ import {
   PasswordsBrokerSignInDecisionSchema,
   PasswordsBrokerSignInApproveResultSchema,
   PasswordsBrokerSignInRequestParamsSchema,
-  PasswordsBrokerSignInRequestV6ParamsSchema,
   PasswordsBrokerSignInReleaseParamsSchema,
-  PasswordsBrokerSignInReleaseV6ParamsSchema,
-  passwordsBrokerLatestProtocolVersion,
-  type PasswordsBrokerSignInRequestV6Params,
+  passwordsBrokerProtocolVersion,
+  type PasswordsBrokerSignInRequestParams,
   type PasswordsBrokerLogin,
   type PasswordsBrokerSignInDecision,
   type PasswordsBrokerSignInApproveResult,
@@ -118,12 +116,12 @@ export class FakePasswordsBroker {
   readonly #held: HeldCall[] = [];
   readonly #sessions = new Map<Socket, FakePasswordsBrokerSession>();
   readonly #versions = new Map<Socket, number>();
-  readonly #v5 = new Map<
+  readonly #transactions = new Map<
     Socket,
     Map<
       string,
       {
-        params: PasswordsBrokerSignInRequestV6Params;
+        params: PasswordsBrokerSignInRequestParams;
         login: PasswordsBrokerLogin | null;
         remembered: boolean;
       }
@@ -152,7 +150,11 @@ export class FakePasswordsBroker {
 
   constructor(options: FakePasswordsBrokerOptions) {
     this.#options = options;
-    this.#status = options.status ?? { agentSignIns: "on", vault: "ready" };
+    this.#status = {
+      personFill: "off",
+      personSave: "off",
+      ...(options.status ?? { agentSignIns: "on", vault: "ready" }),
+    };
   }
 
   get connections(): number {
@@ -211,9 +213,9 @@ export class FakePasswordsBroker {
 
   /** The status the broker reports, pushed to every connection as `status.changed`. */
   setStatus(status: PasswordsBrokerStatus): void {
-    this.#status = status;
+    this.#status = { ...status };
     for (const session of this.#sessions.values()) session.status = status;
-    this.broadcast({ event: "status.changed", params: status });
+    this.broadcast({ event: "status.changed", params: this.#status });
   }
 
   broadcast(frame: unknown): void {
@@ -253,7 +255,7 @@ export class FakePasswordsBroker {
           parsed.data,
           method === "signin.request" || call.params.remember === true,
         );
-      this.#applyV5Decision(
+      this.#applyDecision(
         call.socket,
         call.params.transactionId,
         parsed.data,
@@ -317,7 +319,7 @@ export class FakePasswordsBroker {
       this.#sessions.get(socket)?.dropConnection();
       this.#sessions.delete(socket);
       this.#versions.delete(socket);
-      this.#v5.delete(socket);
+      this.#transactions.delete(socket);
       for (let index = this.#held.length - 1; index >= 0; index -= 1) {
         if (this.#held[index]?.socket === socket) this.#held.splice(index, 1);
       }
@@ -374,18 +376,15 @@ export class FakePasswordsBroker {
       return;
     }
     if (method === "signin.request") {
-      if ((this.#versions.get(socket) ?? 0) >= 5) {
-        const input = PasswordsBrokerSignInRequestV6ParamsSchema.parse(params);
-        if (input.permissionVersion !== 5) throw new Error("Protocol 5 requires current consent");
-        let transactions = this.#v5.get(socket);
+      {
+        const input = PasswordsBrokerSignInRequestParamsSchema.parse(params);
+        if (input.permissionVersion !== 6) throw new Error("Personal consent is required");
+        let transactions = this.#transactions.get(socket);
         if (!transactions) {
           transactions = new Map();
-          this.#v5.set(socket, transactions);
+          this.#transactions.set(socket, transactions);
         }
         transactions.set(input.transactionId, { params: input, login: null, remembered: false });
-      } else {
-        const input = PasswordsBrokerSignInRequestParamsSchema.parse(params);
-        await this.#sessions.get(socket)?.request(input, new AbortController().signal);
       }
     }
     const custom = this.#handlers.get(method);
@@ -405,7 +404,7 @@ export class FakePasswordsBroker {
               parsed.data,
               method === "signin.request" || params.remember === true,
             );
-          this.#applyV5Decision(
+          this.#applyDecision(
             socket,
             params.transactionId,
             parsed.data,
@@ -419,18 +418,9 @@ export class FakePasswordsBroker {
     switch (method) {
       case "hello": {
         const requested = params.protocolVersion;
-        if (
-          requested !== 4 &&
-          requested !== 5 &&
-          requested !== 6 &&
-          requested !== 7 &&
-          requested !== 8 &&
-          requested !== 9
-        )
-          throw new Error("Unsupported protocol");
+        if (requested !== 10) throw new Error("Unsupported protocol");
         const negotiated =
-          this.#options.protocolVersion ??
-          Math.min(requested, passwordsBrokerLatestProtocolVersion);
+          this.#options.protocolVersion ?? Math.min(requested, passwordsBrokerProtocolVersion);
         this.#versions.set(socket, negotiated);
         this.#write(socket, connection, {
           id,
@@ -470,9 +460,9 @@ export class FakePasswordsBroker {
         const held = this.#nextRelease;
         this.#nextRelease = null;
         await held;
-        if ((this.#versions.get(socket) ?? 0) >= 5) {
-          const input = PasswordsBrokerSignInReleaseV6ParamsSchema.parse(params);
-          const transaction = this.#v5.get(socket)?.get(input.transactionId);
+        {
+          const input = PasswordsBrokerSignInReleaseParamsSchema.parse(params);
+          const transaction = this.#transactions.get(socket)?.get(input.transactionId);
           const login = transaction?.login;
           const item = login && this.#logins.get(login.id);
           let reason: "ended" | "revoked" | "wrong-site" | "no-totp" | "passwords-off" | undefined;
@@ -484,12 +474,8 @@ export class FakePasswordsBroker {
           else if (
             transaction.remembered &&
             this.#grants.get(
-              JSON.stringify([
-                transaction.params.deploymentId,
-                transaction.params.workspaceId,
-                transaction.params.site,
-              ]),
-            )?.permissionVersion !== 5
+              JSON.stringify([transaction.params.deploymentId, transaction.params.site]),
+            )?.permissionVersion !== 6
           )
             reason = "revoked";
           else if (
@@ -504,14 +490,10 @@ export class FakePasswordsBroker {
           this.#write(socket, connection, { id, result });
           return;
         }
-        const input = PasswordsBrokerSignInReleaseParamsSchema.parse(params);
-        const result = await this.#sessions.get(socket)?.release(input);
-        this.#write(socket, connection, { id, result });
-        return;
       }
       case "signin.cancel": {
         if (typeof params.transactionId === "string")
-          this.#v5.get(socket)?.delete(params.transactionId);
+          this.#transactions.get(socket)?.delete(params.transactionId);
         if (typeof params.transactionId === "string")
           await this.#sessions.get(socket)?.cancel(params.transactionId);
         // Withdrawal ends every held call for the transaction with a v4 error.
@@ -536,25 +518,22 @@ export class FakePasswordsBroker {
     }
   }
 
-  #applyV5Decision(
+  #applyDecision(
     socket: Socket,
     transactionId: string,
     decision: PasswordsBrokerSignInDecision | PasswordsBrokerSignInApproveResult,
     remembered: boolean,
   ): void {
-    const transaction = this.#v5.get(socket)?.get(transactionId);
+    const transaction = this.#transactions.get(socket)?.get(transactionId);
     if (!transaction || decision.decision !== "authorized") return;
     transaction.login = decision.login;
     transaction.remembered = remembered;
     if (remembered)
-      this.#grants.set(
-        JSON.stringify([
-          transaction.params.deploymentId,
-          transaction.params.workspaceId,
-          transaction.params.site,
-        ]),
-        { id: decision.login.id, revision: decision.login.revision, permissionVersion: 5 },
-      );
+      this.#grants.set(JSON.stringify([transaction.params.deploymentId, transaction.params.site]), {
+        id: decision.login.id,
+        revision: decision.login.revision,
+        permissionVersion: 6,
+      });
   }
 
   #write(socket: Socket, connection: number, frame: unknown): void {

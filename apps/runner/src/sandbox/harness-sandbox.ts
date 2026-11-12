@@ -55,11 +55,8 @@ export interface HarnessSandboxOptions {
   /** Where harness profiles live under the data directory; the boot proof stages its fixture there. */
   readonly stateDirectory: string;
   /**
-   * Every Workspace backing root this Runner shares between users (the
-   * local-directory root when it is owner-scoped). Other
-   * users' Workspaces live under them, so they are masked like the data
-   * directory and only this Run's roots are re-exposed. A single-owner root is
-   * one person's and is not listed.
+   * Roots masked like the private data directory; only the current Run's
+   * admitted folders are re-exposed.
    */
   readonly workspaceRoots: readonly string[];
 }
@@ -385,9 +382,8 @@ export class HarnessSandbox implements HarnessProcessSandbox {
   }
 
   /**
-   * A Trigger or Watch program runs arbitrary code a Workspace member wrote, so
-   * on a shared Runner it gets the same confinement as an engine: its own
-   * Workspace, its own private files read-only, and nothing of other Runs.
+   * Trigger and Watch programs use the engine's confinement: their task folder
+   * and private files, with other Runs' data masked.
    */
   async planProgram(program: ProgramSandboxPlan): Promise<HarnessProcessLaunchWrapper> {
     return this.#wrapper(await programSandboxMounts(this.#layout, program), program);

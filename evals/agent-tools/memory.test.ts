@@ -8,7 +8,7 @@ import {
   ThreadUpdateOutputSchema,
 } from "../../packages/agent-tools/src/tools/outputs.js";
 import { toolsFor } from "@opensteer/agent-tools";
-import { CaseSchema, caseReach, inputForCaseTurn, parseCases } from "./cases.js";
+import { CaseSchema, inputForCaseTurn, parseCases } from "./cases.js";
 import { grade, gradeWorkspaceFiles, gradeToolBoundary } from "./grader.js";
 
 const memoryCases = async () =>
@@ -77,17 +77,23 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
     (await Promise.all(files.map((name) => readFile(new URL(name, directory), "utf8")))).join("\n"),
   );
   const cases = corpus.filter((c) => c.area === "memory");
-  expect(cases).toHaveLength(41);
+  expect(cases.map((entry) => entry.id)).toEqual(
+    expect.arrayContaining([
+      "memory-remember-fact",
+      "memory-from-other-folder",
+      "memory-trivial-task-wake",
+    ]),
+  );
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(
     inputForCaseTurn(cases.find((c) => c.id === "memory-nothing-new")!.turns[0]!).author.kind,
   ).toBe("trigger");
   expect(
-    inputForCaseTurn(cases.find((c) => c.id === "memory-trivial-chat-wake")!.turns[0]!).author.kind,
+    inputForCaseTurn(cases.find((c) => c.id === "memory-trivial-task-wake")!.turns[0]!).author.kind,
   ).toBe("agent");
 });
 
-it("uses the production wake text for worker evals and keeps Chat silence strict", async () => {
+it("uses the production wake text for worker evals and keeps quiet task wakes silent", async () => {
   let wakes = 0;
   for (const c of await memoryCases()) {
     for (const turn of c.turns) {
@@ -106,11 +112,11 @@ it("uses the production wake text for worker evals and keeps Chat silence strict
     }
   }
   expect(wakes).toBeGreaterThan(0);
-  const chat = (await memoryCases()).find((c) => c.id === "memory-trivial-chat-wake")!;
+  const chat = (await memoryCases()).find((c) => c.id === "memory-trivial-task-wake")!;
   expect(grade(chat.expect, [], "", "Done.").every((c) => c.pass)).toBe(false);
 });
 
-it("requires quiet home delivery and queued important items rather than report-only or invalid attempts", async () => {
+it("requires quiet background work and one valid notification for important news", async () => {
   const cases = await memoryCases();
   const quiet = cases.find((c) => c.id === "memory-nothing-new")!.expect;
   const mail = { tool: "integration_call", args: quiet.calls[0]!.args, valid: true };
@@ -120,24 +126,18 @@ it("requires quiet home delivery and queued important items rather than report-o
     grade(quiet, [mail, { tool: "thread_send", args: {}, valid: false }], "").every((c) => c.pass),
   ).toBe(false);
   const important = cases.find((c) => c.id === "memory-important-item")!.expect;
-  const message = {
-    tool: "thread_send",
-    args: { threadId: "home", delivery: "queue" },
-    valid: true,
-  };
+  const message = { tool: "person_message", args: { message: "Important news" }, valid: true };
   expect(grade(important, [mail, message], "").every((c) => c.pass)).toBe(true);
-  for (const changed of [
-    { ...message, args: { ...message.args, delivery: "report" } },
-    { ...message, valid: false },
-  ])
-    expect(grade(important, [mail, changed], "").every((c) => c.pass)).toBe(false);
+  expect(grade(important, [mail, { ...message, valid: false }], "").every((c) => c.pass)).toBe(
+    false,
+  );
 });
 
 it("offers every expected call and uses production-shaped control fixtures", async () => {
   const cases = await memoryCases();
   for (const c of cases) {
     const offered = new Set<string>(
-      toolsFor({ kind: c.caller, accessMode: "full-access", reach: { kind: caseReach(c) } }).map(
+      toolsFor({ kind: c.caller, accessMode: "full-access", teamBound: c.teamBound }).map(
         ({ name }) => name,
       ),
     );
@@ -381,7 +381,7 @@ it("rejects erasure that drops standing instructions outside the Memory section"
     expect((await gradeWorkspaceFiles(c.expect, root)).some((check) => !check.pass)).toBe(true);
     await writeFile(
       join(root, "AGENTS.md"),
-      "# Main\n\n## Standing instructions\nUse metric units.\n\n## Memory\nMemory: off at the person's request.\n",
+      "# Agent home\n\n## Standing instructions\nUse metric units.\n\n## Memory\nMemory: off at the person's request.\n",
     );
     expect((await gradeWorkspaceFiles(c.expect, root)).every((check) => check.pass)).toBe(true);
   } finally {

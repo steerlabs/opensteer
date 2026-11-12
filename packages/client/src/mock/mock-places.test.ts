@@ -79,7 +79,7 @@ it("closes a sleeping mock tab from its keyed record", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   try {
     const dormant = client.scriptDormantBrowser({ profileName: "Saved" });
-    const result = await client.closeWorkspaceTabs([dormant.tabId]);
+    const result = await client.closePersonalTabs([dormant.tabId]);
     expect(result.failed).toEqual([]);
     expect(result.closed).toEqual([dormant.tabId]);
     expect(client.browserTabs.sessionTab(dormant.sessionId, dormant.tabId)).toBeUndefined();
@@ -96,7 +96,7 @@ it("activates an existing mock surface without replacing its document or duplica
       .browserSessions.find((held) => client.browserTabs.sessionTabs(held.id).length)!;
     const tab = client.browserTabs.sessionTabs(session.id)[0]!;
     const response = await client.rpc["commands.dispatch"]({
-      type: "workspace.tab.activate",
+      type: "tab.activate",
       tabId: BrowserSurfaceIdSchema.parse(tab.id),
       idempotencyKey: "existing-surface",
     });
@@ -179,9 +179,9 @@ describe("moving mock workspace", () => {
         throw new Error("Missing mock tab");
       const { sessionId, tabId } = browser.destination;
       const snapshot = client.getSnapshot();
-      const homeThreadId = snapshot.homeThreadId!;
+      const homeThreadId = browser.occupants.find(({ acting }) => acting)!.threadId;
       const homeRun = snapshot.runQueue.find((run) => run.threadId === homeThreadId)!;
-      const homePlace = places.find((place) => place.title === "Weekend ideas")!;
+      const homePlace = browser;
       expect(homeRun.status).toBe("running");
       expect(client.runPlace(homeRun.id)).toMatchObject({
         runId: homeRun.id,
@@ -191,9 +191,10 @@ describe("moving mock workspace", () => {
       expect(runPages(snapshot.browserUses, snapshot.browserSessions, [homeRun.id])).toEqual([
         expect.objectContaining({
           destination: homePlace.destination,
-          title: "Weekend ideas",
+          title: homePlace.title,
           acting: true,
         }),
+        expect.objectContaining({ title: "Friday dinner", acting: true }),
       ]);
       const actingRun = snapshot.runQueue.find(
         (run) => run.threadId === browser.occupants.find((occupant) => occupant.acting)?.threadId,
@@ -291,7 +292,7 @@ describe("moving mock workspace", () => {
       const loading = client.load();
       await vi.advanceTimersByTimeAsync(0);
       await loading;
-      const threadId = client.getSnapshot().homeThreadId!;
+      const threadId = client.getSnapshot().threads[0]!.id!;
       const runId = client.getSnapshot().runQueue.find((run) => run.threadId === threadId)!.id;
       const latest = client.runPlace(runId)!;
       expect(latest.runId).toBeTruthy();
@@ -329,14 +330,14 @@ describe("moving mock workspace", () => {
       const { sessionId, tabId } = page.destination;
       const run = snapshot.runQueue.find(
         (candidate) =>
-          candidate.status === "running" && candidate.threadId !== snapshot.homeThreadId,
+          candidate.status === "running" && candidate.threadId !== snapshot.threads[0]!.id,
       )!;
       script.apply({
         type: "host.place-activity",
         activity: {
           place: { kind: "browser", sessionId, surfaceId: tabId },
           threadId: run.threadId,
-          home: false,
+
           runId: run.id,
           generation: 1,
           seq: 1,
@@ -377,7 +378,7 @@ it("moves durable mock tabs through the same personal order and group operations
     const places = browserTabStrip(placeList(snapshot), snapshot.browserTabGroups).ordered.filter(
       (p) => p.kind === "browser",
     );
-    expect(places.every((p) => p.workspaceTab)).toBe(true);
+    expect(places.every((p) => p.personalTab)).toBe(true);
     const ids = places.map((p) => {
       if (p.destination.kind !== "browser" || !p.destination.tabId) throw new Error("Missing tab");
       return p.destination.tabId;
@@ -401,7 +402,7 @@ it("moves durable mock tabs through the same personal order and group operations
     expect(order.indexOf(BrowserSurfaceIdSchema.parse(ids[1]))).toBe(
       order.indexOf(BrowserSurfaceIdSchema.parse(ids[0])) + 1,
     );
-    const closed = await client.closeWorkspaceTabs([ids[0]!]);
+    const closed = await client.closePersonalTabs([ids[0]!]);
     expect(closed.closed).toEqual([ids[0]]);
     expect(client.getSnapshot().browserTabGroups?.order).not.toContain(ids[0]);
   } finally {

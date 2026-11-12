@@ -16,7 +16,7 @@ import type { ReservedRegion } from "react-native-reserved-regions";
  * - an unmeasured fold is straddled because the column showed before the
  *   regions arrived;
  * - choosing a task or a tab from the docked sidebar piles screens up behind
- *   Back, or rebuilds Chat instead of returning to the mounted one;
+ *   Back, or rebuilds Home instead of returning to the mounted one;
  * - a page in front keeps the docked sidebar, so the page and its agent's
  *   Thread make three panes;
  * - a page is handed different folds depending on how it was reached, so one
@@ -41,18 +41,15 @@ const harness = vi.hoisted(() => ({
   },
   panels: [] as {
     docked: boolean;
-    openDraftId: string | null;
     selectedThreadId: string | null;
     openThreadId: string | null;
     visible: boolean;
     actions: {
-      onNewTask: (deploymentId: string, workspaceId: string) => void;
-      onOpenDraft: (deploymentId: string, workspaceId: string, draftId: string) => void;
       onOpenPlace: (destination: object) => void;
       onOpenTask: (deploymentId: string, threadId: string) => void;
       onTabs: () => void;
       onSchedules: () => void;
-      onChat: () => void;
+      onHome: () => void;
     };
     scroll: { offset: number };
     shelves: { list: unknown };
@@ -171,7 +168,7 @@ vi.mock("./sidebar-panel.js", () => ({
         <button onClick={() => props.actions.onOpenPlace(tabB)}>Tab B</button>
         <button onClick={props.actions.onTabs}>Tabs</button>
         <button onClick={props.actions.onSchedules}>Schedules</button>
-        <button onClick={props.actions.onChat}>Chat</button>
+        <button onClick={props.actions.onHome}>Home</button>
       </nav>
     );
   },
@@ -184,7 +181,7 @@ const tabB = { kind: "browser", sessionId: "session-b", tabId: "tab-b" } as cons
 /** Tab B as a route names it. */
 const tabBRoute = {
   deploymentId: "deployment-a",
-  scope: "workspace",
+  scope: "tabs",
   sessionId: tabB.sessionId,
   tabId: tabB.tabId,
 };
@@ -307,11 +304,11 @@ describe("the sidebar as the window changes shape", () => {
       type: "REPLACE",
       payload: { name: "Tabs", params: { deploymentId: "deployment-a" } },
     });
-    press(container, "Chat");
+    press(container, "Home");
     expect(harness.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
   });
 
-  it("replaces Tabs with Schedules and resets deep screens to Chat plus Schedules", async () => {
+  it("replaces Tabs with Schedules and resets deep screens to Home plus Schedules", async () => {
     const { container } = await mount([
       home,
       { key: "tabs", name: "Tabs", params: { deploymentId: "deployment-a" } },
@@ -390,7 +387,7 @@ describe("the sidebar as the window changes shape", () => {
     expect(harness.drawer.lock).toBe("locked-closed");
   });
 
-  it("puts a task chosen from the docked sidebar over the same mounted Chat, never behind another task", async () => {
+  it("puts a task chosen from the docked sidebar over the same mounted Home, never behind another task", async () => {
     harness.bounds = { height: 1133, width: 744 };
     const { container } = await mount([home, threadA]);
     press(container, "Task B");
@@ -485,7 +482,7 @@ describe("the sidebar as the window changes shape", () => {
     expect(harness.dispatch).not.toHaveBeenCalled();
   });
 
-  it("puts a tab chosen from the docked sidebar over the mounted Chat in place of a task, naming no conversation", async () => {
+  it("puts a tab chosen from the docked sidebar over the mounted Home in place of a task, naming no conversation", async () => {
     harness.bounds = { height: 1133, width: 744 };
     const { container } = await mount([home, threadA]);
     press(container, "Tab B");
@@ -527,39 +524,6 @@ describe("the sidebar as the window changes shape", () => {
       name: "Tabs",
       params: { deploymentId: "deployment-a" },
     });
-  });
-});
-
-describe("New task and the drafts beside it", () => {
-  const workspaceId = "workspace-main";
-  const params = { deploymentId: "deployment-a", draftId: "draft-open", workspaceId };
-  const newTask = { key: "new-task-key", name: "NewTask", params };
-  const opened = () =>
-    (harness.dispatch.mock.calls.at(-1)![0] as { payload: { routes: { params: object }[] } })
-      .payload.routes[1]!.params as typeof params;
-
-  it("stays on a blank draft, and never reopens one with words", async () => {
-    harness.bounds = { height: 1133, width: 744 };
-    await mount([home, newTask]);
-    expect(lastPanel().openDraftId).toBe("draft-open");
-    act(() => lastPanel().actions.onNewTask("deployment-a", workspaceId));
-    expect(harness.dispatch).not.toHaveBeenCalled();
-
-    harness.drafts.readDraft.mockReturnValueOnce({ text: "Words" });
-    act(() => lastPanel().actions.onNewTask("deployment-a", workspaceId));
-    expect(opened()).toMatchObject({ deploymentId: "deployment-a", workspaceId });
-    expect(opened().draftId).not.toBe("draft-open");
-  });
-
-  it("opens a blank draft in the Workspace asked for, and exactly the draft chosen", async () => {
-    harness.bounds = { height: 1133, width: 744 };
-    await mount([home, newTask]);
-    act(() => lastPanel().actions.onNewTask("deployment-a", "workspace-project"));
-    expect(opened().workspaceId).toBe("workspace-project");
-    expect(opened().draftId).not.toBe("draft-open");
-
-    act(() => lastPanel().actions.onOpenDraft("deployment-a", workspaceId, "draft-waiting"));
-    expect(opened()).toEqual({ ...params, draftId: "draft-waiting" });
   });
 });
 

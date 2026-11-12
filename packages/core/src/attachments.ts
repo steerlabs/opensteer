@@ -1,11 +1,5 @@
 import { z } from "zod";
-import {
-  AttachmentIdSchema,
-  MessageIdSchema,
-  ThreadIdSchema,
-  UserIdSchema,
-  WorkspaceIdSchema,
-} from "./ids.js";
+import { AttachmentIdSchema, MessageIdSchema, ThreadIdSchema, UserIdSchema } from "./ids.js";
 
 export const attachmentMaxBytes = 25 * 1_024 * 1_024;
 export const attachmentMessageMaxBytes = 50 * 1_024 * 1_024;
@@ -110,7 +104,6 @@ const attachmentShape = {
   threadId: ThreadIdSchema.nullable(),
   uploaderId: UserIdSchema,
   width: z.number().int().positive().nullable(),
-  workspaceId: WorkspaceIdSchema,
 } as const;
 
 export const AttachmentSchema = z.object(attachmentShape);

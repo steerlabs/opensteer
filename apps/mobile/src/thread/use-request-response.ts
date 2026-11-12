@@ -240,7 +240,7 @@ export function useRequestResponse(input: {
                   loginId: approval.account.id,
                   revision: approval.account.revision,
                   remember: approval.remember,
-                  permissionVersion: 5,
+                  permissionVersion: 6,
                 }
             : { kind: "decline" },
         });

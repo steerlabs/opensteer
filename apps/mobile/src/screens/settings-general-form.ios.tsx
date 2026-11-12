@@ -32,7 +32,6 @@ import {
 import type { SettingsFormProps } from "./settings-form.types.js";
 import {
   privacyPolicyUrl,
-  projectNotificationsFooter,
   quietTaskChoices,
   quietTasksFooter,
   quietTasksTitle,
@@ -47,11 +46,9 @@ export function GeneralSettingsForm(
     | "desktopUpdate"
     | "notifications"
     | "notificationError"
-    | "agents"
     | "onDeploymentAction"
     | "onNotificationAction"
     | "onPreferenceChange"
-    | "onAgentMuteChange"
     | "storageError"
     | "quietTasks"
     | "version"
@@ -152,21 +149,6 @@ export function GeneralSettingsForm(
             ))}
           </Picker>
           <ErrorText detail={quietTasks.error} />
-        </Section>
-      )}
-      {notifications === null || props.agents.length === 0 ? null : (
-        <Section
-          footer={<Footer text={projectNotificationsFooter} />}
-          title="Notifications from projects"
-        >
-          {props.agents.map((agent) => (
-            <Toggle
-              isOn={!agent.muted}
-              key={agent.workspaceId}
-              label={agent.name}
-              onIsOnChange={(enabled) => props.onAgentMuteChange(agent.workspaceId, !enabled)}
-            />
-          ))}
         </Section>
       )}
       {

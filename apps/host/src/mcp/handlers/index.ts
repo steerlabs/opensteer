@@ -1,32 +1,16 @@
 import { administrationToolHandlers, type AdministrationToolHandlers } from "./administration.js";
-import type { AgentTool } from "@opensteer/agent-tools";
-import type { z } from "zod";
-import type { AgentCaller } from "../agent-caller.js";
 import type { AppService } from "../../apps/app-service.js";
 import type { RunToolScope } from "../../agents/run-tool-tokens.js";
 import { requireRun } from "../operations.js";
 import type { ProductToolHandlers } from "./product.js";
 import type { IntegrationToolHandlers } from "./integrations.js";
 import type { TriggerToolHandlers } from "./triggers.js";
-import type { KnowledgeManager } from "../../knowledge/knowledge-manager.js";
-import { OpensteerError } from "@opensteer/core";
+import type { TeamToolPort } from "../team-tool-port.js";
+import { teamToolHandlers } from "./team.js";
+import type { RunId, TeamAgentRequestId, ThreadId } from "@opensteer/core";
 
-type ToolByName = { [T in AgentTool as T["name"]]: T };
-export type ToolInput<Name extends AgentTool["name"]> = z.output<ToolByName[Name]["input"]>;
-export type ToolCall<Name extends AgentTool["name"]> = {
-  readonly caller: AgentCaller;
-  readonly input: ToolInput<Name>;
-  readonly operationKey: string;
-  readonly signal?: AbortSignal;
-  readonly checkLive?: () => Promise<void>;
-};
-// Domains may return richer records; callTool validates and projects the wire output once.
-export type AgentToolHandlers = {
-  [T in AgentTool as T["name"]]: ((call: ToolCall<T["name"]>) => Promise<unknown>) & {
-    readonly targets?: (call: ToolCall<T["name"]>) => Promise<readonly string[]>;
-    readonly authorize?: (call: ToolCall<T["name"]>) => Promise<void>;
-  };
-};
+export type { AgentToolHandlers, ToolCall, ToolInput } from "./types.js";
+import type { AgentToolHandlers, ToolCall } from "./types.js";
 export function agentToolHandlers(options: {
   readonly administration: AdministrationToolHandlers;
   readonly product: ProductToolHandlers;
@@ -37,7 +21,11 @@ export function agentToolHandlers(options: {
     scope: RunToolScope,
     directory: string,
   ) => Promise<Record<string, unknown>>;
-  readonly knowledge?: Pick<KnowledgeManager, "sql"> | undefined;
+  readonly team?: TeamToolPort;
+  readonly teamRequestForRun: (
+    runId: RunId,
+    threadId: ThreadId,
+  ) => Promise<TeamAgentRequestId | null>;
 }): AgentToolHandlers {
   const p = options.product,
     i = options.integrations,
@@ -46,15 +34,12 @@ export function agentToolHandlers(options: {
     ...administrationToolHandlers(options.administration),
     app_publish: async (c) =>
       await options.apps.publish(requireRun(c.caller).claims, c.operationKey, c.input),
-    app_list: async (c) =>
-      await options.apps.listForCaller({ requestedBy: c.caller.userId, reach: c.caller.reach }),
+    app_list: async (c) => await options.apps.listForCaller({ requestedBy: c.caller.userId }),
     app_fetch: async (c) => await options.apps.fetch(requireRun(c.caller).claims, c.input),
     plugin_install: async (c) =>
       await options.pluginInstall(requireRun(c.caller).claims, c.input.directory),
     orchestrator_capabilities: async (c) => await p.orchestrator_capabilities(c),
     environment_list: async (c) => await p.environment_list(c),
-    project_list: async (c) => await p.project_list(c),
-    project_create: async (c) => await p.project_create(c),
     thread_read: async (c) => await p.thread_read(c),
     thread_list: async (c) => await p.thread_list(c),
     delegate_task: Object.assign(async (c: ToolCall<"delegate_task">) => await p.delegate_task(c), {
@@ -107,19 +92,7 @@ export function agentToolHandlers(options: {
     computer: async (c) => await i.computer(c),
     integration_request: async (c) => await i.integration_request(c),
     integration_propose: async (c) => await i.integration_propose(c),
-    sql: async (c) => {
-      if (!options.knowledge)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This tool is unavailable to this caller",
-        });
-      return await options.knowledge.sql({
-        caller: c.caller,
-        input: c.input,
-        operationKey: c.operationKey,
-        ...(c.checkLive ? { checkLive: c.checkLive } : {}),
-      });
-    },
+    ...teamToolHandlers({ port: options.team, requestForRun: options.teamRequestForRun }),
   };
   return handlers;
 }

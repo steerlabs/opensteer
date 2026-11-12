@@ -1312,7 +1312,6 @@ class PiHarnessSession implements HarnessSession {
       originatingOccurrenceId: null,
       originatingRunId: active.runId,
       originatingThreadId: this.#context.threadId,
-      originatingWorkspaceId: this.#context.workspaceId,
       payload: { kind: "harness.approval" },
       presentation: piApprovalPresentation(request),
       requestedBy: active.requestedBy,
@@ -1321,7 +1320,6 @@ class PiHarnessSession implements HarnessSession {
       resolvedBy: null,
       response: null,
       status: "pending",
-      targetWorkspaceId: this.#context.workspaceId,
     };
   }
 

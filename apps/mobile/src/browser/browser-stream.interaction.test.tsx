@@ -169,7 +169,6 @@ function session(viewerState: BrowserSessionSummary["viewerState"]): BrowserSess
       viewerState,
       watchViewerError: null,
       watchViewerState: "synchronized",
-      workspaceId: "workspace-a",
     },
     undefined,
     [{ active: true, id: surfaceId, title: "A page", url: "https://example.com" }],

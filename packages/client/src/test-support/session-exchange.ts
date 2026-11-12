@@ -23,7 +23,6 @@ export function establishedCookieSession(): SessionExchangeResponse {
         emailVerified: true,
         id: createId("user"),
         image: null,
-        instanceRole: "administrator",
       },
     }),
   });

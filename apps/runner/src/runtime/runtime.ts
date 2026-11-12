@@ -7,9 +7,9 @@ import { systemClock, type Clock } from "@opensteer/shared/clock";
 import { setPrivateDirectoryMode } from "@opensteer/shared/privateFiles";
 import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
-import { platform } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
@@ -42,7 +42,7 @@ import {
   type ThreadId,
   type TriggerOccurrenceId,
   type TriggerWatchActivationId,
-  type WorkspaceId,
+  type TaskFolder,
 } from "@opensteer/core";
 import {
   assertFreshProviderSessionContext,
@@ -62,7 +62,6 @@ import {
   type HarnessProcessLaunchWrapper,
   type HarnessRuntimeBoundary,
   type HarnessSession,
-  type HarnessSkillPlan,
   type ResolvedAttachment,
 } from "@opensteer/harness";
 import {
@@ -86,20 +85,17 @@ import {
 import type { TriggerExecutionOutput } from "@opensteer/triggers";
 import type { ProviderContinuationIdentityProjector } from "@opensteer/runner-client";
 import { CommandLedger, type CommandDecision } from "../agent/command-ledger.js";
-import type { RunWorkspace, WorkspaceAccessManager } from "../workspace/mount-manager.js";
+import type { RunFolder, FolderAccessManager } from "../folders/task-folder.js";
 import { planAgentSkills, type AgentSkillBundle } from "../skills/agent-skills.js";
 import type { RunnerLogger } from "../host/host-connection.js";
 import { cacheRunPlugins } from "../skills/plugin-cache.js";
 import { resolveSkillPlan } from "../skills/skill-plan.js";
-import {
-  type DiscoveredWorkspaceSkills,
-  discoverWorkspaceSkills,
-} from "../skills/workspace-skills.js";
+import { type DiscoveredFolderSkills, discoverFolderSkills } from "../skills/folder-skills.js";
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
 import { RunCredentials } from "../credentials/run-credentials.js";
 import { ExecutionContainment, type TerminationProof } from "./execution-containment.js";
-import { WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
+import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
 import { WatchSupervisor } from "../triggers/watch-supervisor.js";
@@ -153,9 +149,7 @@ export interface RunnerRuntimeOptions {
   readonly executionClock?: Clock;
   /** Schedules credential refresh only; leases, sockets and engine timers stay real. */
   readonly credentialRefreshClock?: Pick<Clock, "schedule">;
-  readonly resolveAppWorkspaceRoot?: ConstructorParameters<
-    typeof AppServerManager
-  >[0]["resolveRoot"];
+  readonly resolveAppFolder?: ConstructorParameters<typeof AppServerManager>[0]["resolveRoot"];
   readonly attachmentCache?: AttachmentCache;
   readonly agentSkills: AgentSkillBundle;
   readonly browserHarnessExecutable: string;
@@ -192,7 +186,7 @@ export interface RunnerRuntimeOptions {
   readonly privateStateDirectory: string;
   readonly projectContinuationIdentity: ProviderContinuationIdentityProjector;
   readonly programExecutor?: Pick<TriggerProgramExecutor, "execute">;
-  readonly workspaceManager: WorkspaceAccessManager;
+  readonly folderManager: FolderAccessManager;
   readonly watchSupervisor?: Pick<
     WatchSupervisor,
     "activeActivationIds" | "close" | "connectionLost" | "reconcile"
@@ -275,7 +269,7 @@ interface ActiveRun {
   readonly saturatedToolDeltaCallIds: Set<string>;
   readonly toolDeltaBytes: Map<string, number>;
   readonly toolNodeIds: Map<string, ExecutionNodeId>;
-  primaryWorkspace?: RunWorkspace;
+  primaryFolder?: RunFolder;
   /**
    * What the engine reaches the Host and the browser through, while this Run
    * holds them; cut on interrupt. A Run that hands its engine on lets go of
@@ -300,7 +294,6 @@ interface ActiveRun {
   readonly fileAbort: AbortController;
   readonly steerTasks: Set<Promise<CommandDecision>>;
   task?: Promise<void>;
-  readonly workspaceIds: Set<WorkspaceId>;
 }
 
 interface ActiveTriggerProgram {
@@ -308,7 +301,6 @@ interface ActiveTriggerProgram {
   readonly command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>;
   readonly sink: RunnerMessageSink;
   task?: Promise<void>;
-  readonly workspaceIds: Set<WorkspaceId>;
 }
 
 // Durable events only: streaming text travels as live progress and counts
@@ -355,6 +347,7 @@ export class RunnerRuntime {
   readonly #agentSkills: AgentSkillBundle;
   readonly #browserHarnessExecutable: string;
   readonly #dataDirectory: string;
+  #messagingWorkRoot: Promise<string> | undefined;
   readonly #deploymentShape: RunnerConfig["deploymentShape"];
   readonly #environmentId: RunnerCommand["environmentId"];
   readonly #harnesses: HarnessRegistry;
@@ -394,7 +387,6 @@ export class RunnerRuntime {
   readonly #runs = new Map<RunId, ActiveRun>();
   readonly #containment: ExecutionContainment;
   /** Engines kept running between a Thread's Runs. */
-  readonly #relocating = new Set<WorkspaceId>();
   readonly #removedSpecialists = new Set<string>();
   readonly #warm: WarmEnginePool;
   /**
@@ -419,31 +411,37 @@ export class RunnerRuntime {
   readonly #sessions: LiveSessionDirectory;
   readonly #threads = new Map<ThreadId, RunId>();
   readonly #triggerPrograms = new Map<TriggerOccurrenceId, ActiveTriggerProgram>();
-  readonly #workspaceManager: WorkspaceAccessManager;
+  readonly #folderManager: FolderAccessManager;
   #skillObserver:
-    | ((workspaceId: WorkspaceId, scan: DiscoveredWorkspaceSkills | undefined) => Promise<void>)
+    | ((
+        folder: TaskFolder,
+        bindingGeneration: number,
+        scan: DiscoveredFolderSkills | undefined,
+      ) => Promise<void>)
     | undefined;
-
-  observeWorkspaceSkills(
+  observeFolderSkills(
     observer:
-      | ((workspaceId: WorkspaceId, scan: DiscoveredWorkspaceSkills | undefined) => Promise<void>)
+      | ((
+          folder: TaskFolder,
+          bindingGeneration: number,
+          scan: DiscoveredFolderSkills | undefined,
+        ) => Promise<void>)
       | undefined,
   ): void {
     this.#skillObserver = observer;
   }
-
-  async #scanWorkspaceSkills(
-    workspaceId: WorkspaceId,
-    path: string,
-  ): Promise<DiscoveredWorkspaceSkills> {
-    let scan: DiscoveredWorkspaceSkills;
+  async #scanFolderSkills(
+    folder: TaskFolder,
+    bindingGeneration: number,
+  ): Promise<DiscoveredFolderSkills> {
+    let scan: DiscoveredFolderSkills;
     try {
-      scan = await discoverWorkspaceSkills(path);
+      scan = await discoverFolderSkills(folder.path);
     } catch (error) {
-      await this.#skillObserver?.(workspaceId, undefined).catch(() => undefined);
+      await this.#skillObserver?.(folder, bindingGeneration, undefined).catch(() => undefined);
       throw error;
     }
-    await this.#skillObserver?.(workspaceId, scan).catch(() => undefined);
+    await this.#skillObserver?.(folder, bindingGeneration, scan).catch(() => undefined);
     return scan;
   }
 
@@ -506,7 +504,7 @@ export class RunnerRuntime {
     this.#projectContinuationIdentity = options.projectContinuationIdentity;
     this.#programExecutor =
       options.programExecutor ?? programExecutorFor(options, this.#privateStateDirectory);
-    this.#workspaceManager = options.workspaceManager;
+    this.#folderManager = options.folderManager;
     this.#watchSupervisor =
       options.watchSupervisor ??
       new WatchSupervisor({
@@ -516,7 +514,7 @@ export class RunnerRuntime {
         privateStateDirectory: this.#privateStateDirectory,
         terminate: (executionId) => this.#containment.terminate(executionId),
         transport: { mode: this.#mode },
-        workspaceManager: options.workspaceManager,
+        folderManager: options.folderManager,
       });
     this.#sessions = new LiveSessionDirectory(options.bootId);
     this.#containment =
@@ -525,9 +523,9 @@ export class RunnerRuntime {
     this.appServers = new AppServerManager({
       privateDirectory: join(options.dataDirectory, "private", "app-servers"),
       resolveRoot:
-        options.resolveAppWorkspaceRoot ??
+        options.resolveAppFolder ??
         (async () => {
-          throw new Error("App servers need a local Workspace");
+          throw new Error("App servers need a task folder");
         }),
       planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
@@ -537,27 +535,6 @@ export class RunnerRuntime {
 
   voice(userId: UserId, command: RunnerVoiceCommand): Promise<RunnerVoiceResult> {
     return this.#voice.handle(userId, command);
-  }
-
-  async relocateWorkspace(workspaceId: WorkspaceId, move: () => Promise<void>): Promise<void> {
-    if (
-      this.#relocating.has(workspaceId) ||
-      [...this.#runs.values()].some((run) => run.command.context.workspaceId === workspaceId) ||
-      [...this.#triggerPrograms.values()].some(
-        (program) => program.command.context.workspaceId === workspaceId,
-      )
-    )
-      throw new OpensteerError({
-        code: "workspace_unavailable",
-        message: "Project relocation is waiting for its active Runs to finish",
-        retryable: true,
-      });
-    this.#relocating.add(workspaceId);
-    try {
-      await move();
-    } finally {
-      this.#relocating.delete(workspaceId);
-    }
   }
 
   async removeSpecialist(specialistId: string, remove: () => Promise<void>): Promise<void> {
@@ -733,7 +710,7 @@ export class RunnerRuntime {
       active.settling ||
       active.abort.signal.aborted ||
       active.command.context.bindingGeneration !== execution.bindingGeneration ||
-      !active.primaryWorkspace
+      !active.primaryFolder
     )
       return Promise.reject(
         new RunFileError("This task execution has ended; retry from the current task."),
@@ -742,13 +719,8 @@ export class RunnerRuntime {
     if (!this.#canDeliverMessageAttachments(context.harness.driverKind) || !this.#attachmentCache)
       return Promise.reject(new RunFileError("This engine or machine cannot receive files."));
     const cache = this.#attachmentCache;
-    const workspacePath = active.primaryWorkspace.path;
-    const roots = this.#workspaceManager.writableRoots({
-      plan: context.workspaceAccess,
-      requestedBy: context.requestedBy,
-      workspaceKind: context.workspaceKind,
-      workspacePath,
-    });
+    const workspacePath = active.primaryFolder.path;
+    const roots = this.#folderManager.writableRoots(active.primaryFolder);
     const lifetime = new AbortController();
     const linked = AbortSignal.any([
       signal,
@@ -1598,10 +1570,6 @@ export class RunnerRuntime {
           return this.#resolveRequest(command.runId, command.requestId, command.response);
         case "run.steer":
           return this.#steer(command);
-        case "workspace.mount":
-          return this.#mountWorkspace(command);
-        case "workspace.detach":
-          return this.#detachWorkspace(command);
         case "harness.update":
           return this.#startHarnessUpdate(command.driverKind, sink);
       }
@@ -1903,7 +1871,6 @@ export class RunnerRuntime {
       runId: active.command.context.runId,
       terminal: active.journal.terminal,
       threadId: active.command.context.threadId,
-      workspaceId: active.command.context.workspaceId,
     }));
   }
 
@@ -2157,6 +2124,8 @@ export class RunnerRuntime {
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
     await this.#harnesses.close();
+    if (this.#messagingWorkRoot)
+      await rm(await this.#messagingWorkRoot, { recursive: true, force: true });
   }
 
   activeWatchActivationIds(): readonly TriggerWatchActivationId[] {
@@ -2167,8 +2136,6 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "run.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
-    if (this.#relocating.has(command.context.workspaceId))
-      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#harnessMaintenance.has(command.context.harnessInstanceId)) {
       return reject("conflict", "AI engine profile maintenance is in progress", true);
@@ -2204,13 +2171,6 @@ export class RunnerRuntime {
     }
     if (command.context.environmentId !== command.environmentId) {
       return reject("forbidden", "Run context targets a different execution environment", false);
-    }
-    if (
-      command.context.workspaceAccess.workspaceId !== command.context.workspaceId ||
-      (command.context.workspaceAccess.kind === "local-directory" &&
-        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId)
-    ) {
-      return reject("forbidden", "Run Workspace access plan does not match its context", false);
     }
     if (!this.#harnesses.canRunDriver(command.context.harness.driverKind)) {
       return reject(
@@ -2274,7 +2234,6 @@ export class RunnerRuntime {
               items: [...items],
               runId: context.runId,
               threadId: context.threadId,
-              workspaceId: context.workspaceId,
             },
             type: "runner.live",
           });
@@ -2290,7 +2249,6 @@ export class RunnerRuntime {
       steerTasks: new Set(),
       toolDeltaBytes: new Map(),
       toolNodeIds: new Map(),
-      workspaceIds: new Set([context.workspaceId]),
     };
     this.#watchLeases();
     // The Host dispatches a Run's next attempt only once it has committed the
@@ -2323,8 +2281,6 @@ export class RunnerRuntime {
     command: Extract<RunnerCommand, { readonly type: "trigger.execute" }>,
     sink: RunnerMessageSink,
   ): CommandDecision {
-    if (this.#relocating.has(command.context.workspaceId))
-      return reject("conflict", "Project relocation is in progress", true);
     if (this.#draining) return reject("conflict", "Runner is draining", true);
     if (this.#triggerPrograms.has(command.context.occurrenceId)) {
       return reject("conflict", "Trigger occurrence is already active", false);
@@ -2332,18 +2288,10 @@ export class RunnerRuntime {
     if (this.#triggerPrograms.size >= this.#maxConcurrentTriggerPrograms) {
       return reject("conflict", "Runner Trigger program concurrency limit is saturated", true);
     }
-    if (
-      command.context.workspaceAccess.workspaceId !== command.context.workspaceId ||
-      (command.context.workspaceAccess.kind === "local-directory" &&
-        command.context.workspaceAccess.ownerEnvironmentId !== command.environmentId)
-    ) {
-      return reject("forbidden", "Trigger Workspace access plan does not match its context", false);
-    }
     const active: ActiveTriggerProgram = {
       abort: new AbortController(),
       command,
       sink,
-      workspaceIds: new Set([command.context.workspaceId]),
     };
     this.#triggerPrograms.set(command.context.occurrenceId, active);
     active.task = new Promise<void>((resolvePromise) => {
@@ -2356,16 +2304,15 @@ export class RunnerRuntime {
 
   async #executeTriggerProgram(active: ActiveTriggerProgram): Promise<void> {
     const { context } = active.command;
-    let workspace: RunWorkspace | undefined;
+    let workspace: RunFolder | undefined;
     let output: TriggerExecutionOutput | undefined;
     let endpoints: ProgramEndpointSet | undefined;
     // An interrupted occurrence loses its tools at once, not when its process exits.
     const endAccess = () => endpoints?.revoke();
     active.abort.signal.addEventListener("abort", endAccess, { once: true });
     try {
-      workspace = await this.#workspaceManager.prepare({
-        instructionsPath: null,
-        plan: context.workspaceAccess,
+      workspace = await this.#folderManager.prepare({
+        location: active.command.location,
         signal: active.abort.signal,
       });
       endpoints = await startProgramEndpoints({
@@ -2438,7 +2385,7 @@ export class RunnerRuntime {
   async #execute(active: ActiveRun): Promise<void> {
     const { command } = active;
     const { context } = command;
-    let workspace: RunWorkspace | undefined;
+    let workspace: RunFolder | undefined;
     let browserCdpRelay: BrowserCdpRelay | undefined;
     let credentialProxy: CredentialProxy | undefined;
     let machineAccessSetup: MachineAccessSetup | undefined;
@@ -2474,12 +2421,12 @@ export class RunnerRuntime {
         active.abort.abort(new Error("The Run's execution lease ran out without the Host"));
       }
       signal.throwIfAborted();
-      workspace = await this.#workspaceManager.prepare({
-        instructionsPath: context.workspaceInstructionsPath,
-        plan: context.workspaceAccess,
+      workspace = await this.#folderManager.prepare({
+        location: command.location,
+        personalContext: context.personalContext,
         signal: active.abort.signal,
       });
-      active.primaryWorkspace = workspace;
+      active.primaryFolder = workspace;
       const adapter = await this.#harnesses.adapter(context.harnessInstanceId);
       const transport = { deploymentShape: this.#deploymentShape, mode: this.#mode };
       const credentials = new RunCredentials(context);
@@ -2533,12 +2480,17 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      const writableRoots = this.#workspaceManager.writableRoots({
-        plan: context.workspaceAccess,
-        requestedBy: context.requestedBy,
-        workspaceKind: context.workspaceKind,
-        workspacePath: workspace.path,
-      });
+      // Shared Messaging must not trigger native discovery of the owner's home instructions.
+      const workingDirectory = context.personalContext
+        ? workspace.path
+        : join(
+            await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
+            context.providerSessionId,
+          );
+      if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
+      const writableRoots = [
+        ...new Set([...this.#folderManager.writableRoots(workspace), workingDirectory]),
+      ];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       if (
@@ -2563,7 +2515,7 @@ export class RunnerRuntime {
         if (!plugin || context.plugins.versions.length !== 1)
           throw new Error("Specialist requires exactly one pinned plugin");
         const pluginRoot = join(this.#privateStateDirectory, "plugins", plugin.digest);
-        const parent = join(workspace.path, ".specialists");
+        const parent = join(workspace.agentHomePath, ".specialists");
         await mkdir(parent, { recursive: true });
         if ((await lstat(parent)).isSymbolicLink())
           throw new Error("Specialist directory cannot be a symlink");
@@ -2585,22 +2537,32 @@ export class RunnerRuntime {
             .join("\n\n"),
         };
       }
-      const workspaceSkills = await this.#scanWorkspaceSkills(context.workspaceId, workspace.path);
-      for (const warning of workspaceSkills.warnings) {
+      const homeSkills = context.personalContext
+        ? await this.#scanFolderSkills(command.location.agentHome, context.bindingGeneration)
+        : { skills: [], warnings: [], digest: "personal-context-disabled" };
+      const folderSkills =
+        workspace.path === workspace.agentHomePath
+          ? homeSkills
+          : await this.#scanFolderSkills(command.location.folder, context.bindingGeneration);
+      for (const warning of new Set([...homeSkills.warnings, ...folderSkills.warnings])) {
         this.#logger?.info(warning, {
           runId: context.runId,
-          workspaceId: context.workspaceId,
         });
       }
-      const skills = resolveSkillPlan({
-        bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
+      const skills = await resolveSkillPlan({
+        bundled: planAgentSkills(
+          this.#agentSkills,
+          context.agentTools.skills.filter(
+            (skill) => context.personalContext || skill !== "opensteer:memory",
+          ),
+        ),
         integration: runSkills.skills,
-        workspace: context.specialistId
-          ? []
-          : workspaceSkills.skills.filter(
-              (skill) =>
-                !context.plugins.workspaceSkillPolicy?.disabledFullNames.includes(skill.fullName),
-            ),
+        home: homeSkills.skills.filter(
+          (skill) => !context.plugins.skillPolicy?.disabledFullNames.includes(skill.fullName),
+        ),
+        folder: folderSkills.skills.filter(
+          (skill) => !context.plugins.skillPolicy?.disabledFullNames.includes(skill.fullName),
+        ),
       });
       // An engine that outlives its Run serves the Thread's next one only when
       // everything it was started with is the same, the launch directory it
@@ -2629,7 +2591,7 @@ export class RunnerRuntime {
           machineAccessLaunch,
           providerSessionReference,
           skills,
-          workspaceSkillsDigest: workspaceSkills.digest,
+          folderSkillsDigest: `${homeSkills.digest}:${folderSkills.digest}`,
           runtimeBoundary: this.#harnessRuntimeBoundary.kind,
           workspacePath,
           writableRoots,
@@ -2727,7 +2689,7 @@ export class RunnerRuntime {
         providerState,
         threadStateDirectory,
         ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
-        workspacePath: workspace.path,
+        workspacePath: workingDirectory,
         writableRoots,
       } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
       let machineAccessUnavailable: MachineAccessUnavailableReason | undefined =
@@ -2745,7 +2707,7 @@ export class RunnerRuntime {
             environment: baseEnvironment,
             providerState,
             runtimeBoundary: this.#harnessRuntimeBoundary,
-            workspacePath: workspace.path,
+            workspacePath: workingDirectory,
             writableRoots,
           },
         );
@@ -2763,7 +2725,7 @@ export class RunnerRuntime {
           },
           // The setup probe runs where the harness will run, so what it
           // proves is what the harness finds.
-          workspacePath: workspace.path,
+          workspacePath: workingDirectory,
           wrapModelCommand,
           wrapProcessLaunch: async (launchDirectory) =>
             this.#containment.wrap(
@@ -2792,7 +2754,7 @@ export class RunnerRuntime {
                 "plugins",
                 context.plugins.versions[0]!.digest,
               ),
-              PLUGIN_DATA: join(workspace.path, ".specialists", context.specialistId),
+              PLUGIN_DATA: join(workspace.agentHomePath, ".specialists", context.specialistId),
             }
           : {}),
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
@@ -2848,8 +2810,7 @@ export class RunnerRuntime {
         skills,
         threadId: context.threadId,
         threadStateDirectory,
-        workspaceId: context.workspaceId,
-        workspacePath: workspace.path,
+        workspacePath: workingDirectory,
         wrapProcessLaunch,
         writableRoots,
       };
@@ -2891,7 +2852,6 @@ export class RunnerRuntime {
             scope: warmScope,
             session: active.session,
             threadId: context.threadId,
-            workspaceId: context.workspaceId,
           };
         }
       }
@@ -2993,7 +2953,9 @@ export class RunnerRuntime {
           : failureEvent(safeMessage(error, safeMessageOptions), "runner_execution_error");
     } finally {
       if (workspace && this.#skillObserver) {
-        await this.#scanWorkspaceSkills(context.workspaceId, workspace.path).catch(() => undefined);
+        await this.#scanFolderSkills(command.location.folder, context.bindingGeneration).catch(
+          () => undefined,
+        );
       }
       // Naming owns another process in this containment scope. It must exit
       // before stop, the single-tree warm check, or credential teardown.
@@ -3038,7 +3000,7 @@ export class RunnerRuntime {
           threadId: internalBinding.threadId,
         });
       }
-      delete active.primaryWorkspace;
+      delete active.primaryFolder;
       terminal ??= failureEvent("Runner execution ended unexpectedly", "runner_internal_error");
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
@@ -3284,7 +3246,6 @@ export class RunnerRuntime {
       runId: context.runId,
       threadId: context.threadId,
       type: event.type,
-      workspaceId: context.workspaceId,
     });
     const bytes = Buffer.byteLength(JSON.stringify(pending), "utf8");
     const terminal = terminalEventTypes.has(event.type);
@@ -3534,49 +3495,6 @@ export class RunnerRuntime {
     }
   }
 
-  async #mountWorkspace(
-    command: Extract<RunnerCommand, { readonly type: "workspace.mount" }>,
-  ): Promise<CommandDecision> {
-    const active = this.#runs.get(command.runId);
-    if (!active || !active.primaryWorkspace) {
-      return reject("not_found", "Active Main run was not found", false);
-    }
-    const { context } = active.command;
-    if (context.threadId !== command.threadId || context.workspaceKind !== "main") {
-      return reject("forbidden", "Workspace mount does not belong to this Main run", false);
-    }
-    if (command.workspaceId === context.workspaceId) {
-      return reject("forbidden", "Workspace mount path is not the assigned Main path", false);
-    }
-    if (
-      command.plan.workspaceId !== command.workspaceId ||
-      (command.plan.kind === "local-directory" &&
-        command.plan.ownerEnvironmentId !== command.environmentId)
-    ) {
-      return reject("forbidden", "Workspace access plan is not assigned to this Main run", false);
-    }
-    if (active.abort.signal.aborted) {
-      return reject("conflict", "Main run is stopping", true);
-    }
-    try {
-      const workspace = await this.#workspaceManager.prepare({
-        instructionsPath: null,
-        plan: command.plan,
-        signal: active.abort.signal,
-      });
-      active.workspaceIds.add(command.workspaceId);
-      return { status: "accepted", workspacePath: workspace.path };
-    } catch (error) {
-      return reject("conflict", safeMessage(error, safeMessageOptions), true);
-    }
-  }
-
-  async #detachWorkspace(
-    _command: Extract<RunnerCommand, { readonly type: "workspace.detach" }>,
-  ): Promise<CommandDecision> {
-    return reject("conflict", "Workspace storage is unavailable: relocation-required", false);
-  }
-
   /**
    * Everything the Runner needs to resolve one profile's private storage. The
    * environment is part of it because a `native-user` Runner's store is the
@@ -3692,63 +3610,6 @@ async function withinStopGrace(work: Promise<unknown> | undefined): Promise<void
     }),
   ]);
   clearTimeout(timer);
-}
-
-/**
- * Everything a warm engine was started with, as one key: a Run whose key
- * differs gets an engine of its own. Per-Run facts — its tokens, its history,
- * its machine notice — are not in it; the session is rebound with them.
- */
-export function warmEngineKey(input: {
-  readonly attachmentRoot: string | null;
-  readonly baseEnvironment: Readonly<Record<string, string>>;
-  readonly context: Extract<RunnerCommand, { readonly type: "run.execute" }>["context"];
-  readonly instructions: string | null;
-  /** What the engine's launch directory for other computers was written from. */
-  readonly machineAccessLaunch: string;
-  readonly providerSessionReference: string | null;
-  readonly runtimeBoundary: string;
-  /** The skill catalog the engine was started with; an engine reads it at startup. */
-  readonly skills: HarnessSkillPlan | undefined;
-  readonly workspaceSkillsDigest: string;
-  readonly workspacePath: string;
-  readonly writableRoots: readonly string[];
-}): string {
-  const { context } = input;
-  return createHash("sha256")
-    .update(
-      JSON.stringify([
-        context.threadId,
-        context.requestedBy,
-        context.membershipGeneration,
-        context.harnessInstanceId,
-        context.harness,
-        context.providerSessionId,
-        input.providerSessionReference,
-        context.providerSessionStateLayout,
-        context.workspaceId,
-        input.workspacePath,
-        input.instructions,
-        context.accessMode,
-        input.writableRoots,
-        context.specialistId ?? null,
-        // Names the Host's whole tool inventory, guide and skills.
-        context.agentTools.toolsRevision,
-        context.threadRole,
-        context.modelSelection,
-        [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
-        input.skills,
-        input.workspaceSkillsDigest,
-        context.plugins.workspaceSkillPolicy ?? null,
-        context.agentTools.url,
-        context.browserCdp.url,
-        input.attachmentRoot,
-        input.baseEnvironment,
-        input.runtimeBoundary,
-        input.machineAccessLaunch,
-      ]),
-    )
-    .digest("base64url");
 }
 
 /**

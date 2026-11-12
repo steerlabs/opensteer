@@ -1,3 +1,4 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { OpensteerError, type BrowserProfileId, type RunnerId, type UserId } from "@opensteer/core";
 import {
@@ -11,7 +12,7 @@ import {
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import { randomUUID } from "node:crypto";
 import { deleteBrowserProfileInTransaction } from "./browser-session-store.js";
-import { withDatabaseTransaction } from "./connection.js";
+
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { BrowserProfileDeletionTable, BrowserProfileTable, DatabaseSchema } from "./schema.js";
 
@@ -195,7 +196,7 @@ export async function acknowledgeBrowserProfileDeletion(
   database: Kysely<DatabaseSchema>,
   input: { binding: LocalProfileBinding; deletionId: string; state: "pending-restart" | "deleted" },
 ) {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     await lockBrowserProfile(transaction, input.binding.profileId);
     const row = await transaction
       .selectFrom("browserProfileDeletions")
@@ -225,7 +226,7 @@ export async function reconcileBrowserProfileInventory(
   database: Kysely<DatabaseSchema>,
   claim: HeldLocalProfile,
 ) {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     await lockBrowserProfile(transaction, claim.binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")
@@ -287,7 +288,7 @@ export async function bindBrowserProfile(
   database: Kysely<DatabaseSchema>,
   binding: LocalProfileBinding,
 ) {
-  return withDatabaseTransaction(database, async (transaction) => {
+  return withPersonalTransaction(database, async (transaction) => {
     await lockBrowserProfile(transaction, binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")
@@ -328,7 +329,7 @@ export async function acknowledgeBrowserProfileReady(
   database: Kysely<DatabaseSchema>,
   binding: LocalProfileBinding,
 ): Promise<void> {
-  await withDatabaseTransaction(database, async (transaction) => {
+  await withPersonalTransaction(database, async (transaction) => {
     await lockBrowserProfile(transaction, binding.profileId);
     const row = await transaction
       .selectFrom("browserProfiles")

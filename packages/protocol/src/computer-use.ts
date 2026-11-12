@@ -509,7 +509,7 @@ export const ComputerUseSessionSummarySchema = z
   .object({
     actionCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     actingDisplay: z.boolean().optional(),
-    actor: z.object({ threadId: ThreadIdSchema, home: z.boolean() }).nullable().optional(),
+    actor: z.object({ threadId: ThreadIdSchema }).nullable().optional(),
     /** Apps with accepted activity inside the acting window; presence patches keep it current. */
     actingAppKeys: z.array(z.string().min(1).max(255)).max(computerUseMaxSessionApps).default([]),
     apps: z.array(ComputerAppIdentityViewSchema).max(computerUseMaxSessionApps),
@@ -667,14 +667,6 @@ export const ComputerUsePermissionsRequestParamsSchema = z.strictObject({
   pane: ComputerUsePermissionPaneSchema,
 });
 
-/**
- * The macOS privacy grants the helper holds for apps agents use through a
- * bounded API rather than their interface. They are separate from computer
- * use's two: reading a contact needs no Accessibility, and observing an app
- * needs no Contacts. The helper holds them rather than Opensteer.app because
- * every command an agent runs descends from Opensteer.app, and a grant held
- * there would be every agent's, whatever its Workspace was granted.
- */
 /**
  * The macOS grants the helper holds for apps it serves. `automation` is its
  * Automation permission for Messages; `full-disk-access` is its own Full Disk

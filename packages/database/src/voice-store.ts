@@ -1,3 +1,5 @@
+import { personalSettings } from "./personal-settings-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   nonTerminalRunStatuses,
   OpensteerError,
@@ -13,15 +15,13 @@ import {
 } from "@opensteer/core";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
-import { withDatabaseTransaction } from "./connection.js";
+import "./connection.js";
 import { createThreadInTransaction } from "./thread-store.js";
 import { enqueueThreadInputInTransaction } from "./thread-inbox.js";
 import { enqueueRunnerControlInTransaction } from "./command-store.js";
-import { lockCommandIdempotency, lockWorkspaceRow, type ChannelLinks } from "./store-primitives.js";
+import { lockCommandIdempotency, type ChannelLinks } from "./store-primitives.js";
 import type { RevokedRunGrant } from "./run-grants.js";
-
 const liveRunStatuses: readonly string[] = nonTerminalRunStatuses;
-
 export function resolveVoiceCall(
   database: Kysely<DatabaseSchema>,
   ownerId: UserId,
@@ -32,7 +32,6 @@ export function resolveVoiceCall(
     .innerJoin("threads", "threads.id", "runs.threadId")
     .select([
       "threads.id as threadId",
-      "threads.workspaceId",
       "threads.environmentId",
       "runs.voiceSessionId as sessionId",
       "runs.id as runId",
@@ -60,25 +59,19 @@ async function ensureVoiceThread(
   readonly harnessInstanceId: HarnessInstanceId;
   readonly events: readonly AgentEvent[];
 }> {
-  const workspace = await tx
-    .selectFrom("workspaces")
-    .select(["id", "voiceThreadId"])
-    .where("createdBy", "=", input.ownerId)
-    .where("kind", "=", "main")
-    .executeTakeFirst();
-  if (!workspace)
+  const settings = await personalSettings(tx);
+  if (settings.ownerId !== input.ownerId)
     throw new OpensteerError({
-      code: "conflict",
-      reason: "voice-account-unavailable",
-      message: "Voice needs your Main Workspace.",
+      code: "forbidden",
+      message: "Voice belongs to the personal owner.",
     });
-  if (workspace.voiceThreadId) {
+  if (settings.voiceThreadId) {
     const thread = await tx
       .selectFrom("threads")
       .select(["environmentId", "harnessInstanceId"])
-      .where("id", "=", workspace.voiceThreadId)
+      .where("id", "=", settings.voiceThreadId)
       .executeTakeFirstOrThrow();
-    return { threadId: workspace.voiceThreadId, ...thread, events: [] };
+    return { threadId: settings.voiceThreadId, ...thread, events: [] };
   }
   const catalog = await tx
     .selectFrom("harnessCatalogs")
@@ -99,14 +92,20 @@ async function ensureVoiceThread(
       createdBy: input.ownerId,
       environmentId: input.environmentId,
       harnessInstanceId: input.harnessInstanceId,
-      ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+      ...(input.accessMode
+        ? {
+            accessMode: input.accessMode,
+          }
+        : {}),
       idempotencyKey: `voice-thread:${input.ownerId}`,
       modelSelection,
       title: "Voice",
-      voice: true,
-      workspaceId: workspace.id,
+      purpose: "voice",
+      folder: settings.agentHome,
     },
-    { unlisted: true },
+    {
+      unlisted: true,
+    },
   );
   return {
     threadId: created.thread.id,
@@ -121,7 +120,7 @@ export async function openVoiceThread(
   database: Kysely<DatabaseSchema>,
   input: Parameters<typeof ensureVoiceThread>[1],
 ) {
-  return withDatabaseTransaction(database, async (tx) => {
+  return withPersonalTransaction(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${input.ownerId}`}, 0))`.execute(
       tx,
     );
@@ -145,18 +144,24 @@ export async function startVoiceCall(
     accessMode?: ThreadAccessMode;
   },
 ) {
-  return withDatabaseTransaction(database, async (tx) => {
+  return withPersonalTransaction(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${input.ownerId}`}, 0))`.execute(
       tx,
     );
     const existing = await resolveVoiceCall(tx, input.ownerId, input.sessionId);
-    if (existing) return { busy: false as const, ...existing, revokedGrants: [], events: [] };
+    if (existing)
+      return {
+        busy: false as const,
+        ...existing,
+        revokedGrants: [],
+        events: [],
+      };
     await lockCommandIdempotency(tx, input.ownerId, `voice-seed:${input.sessionId}`);
     const opened = await ensureVoiceThread(tx, input);
     const events: AgentEvent[] = [...opened.events];
     const thread = await tx
       .selectFrom("threads")
-      .select(["id", "workspaceId", "environmentId", "harnessInstanceId"])
+      .select(["id", "environmentId", "harnessInstanceId"])
       .where("id", "=", opened.threadId)
       .executeTakeFirstOrThrow();
     if (
@@ -182,14 +187,24 @@ export async function startVoiceCall(
         revokedGrants.push(...stopped.revokedGrants);
         events.push(...stopped.events);
       }
-      return { busy: true as const, revokedGrants, events };
+      return {
+        busy: true as const,
+        revokedGrants,
+        events,
+      };
     }
-    await lockWorkspaceRow(tx, thread.workspaceId);
     const seed = await enqueueThreadInputInTransaction(tx, {
       threadId: thread.id,
       requestedBy: input.ownerId,
-      source: { kind: "human" },
-      content: [{ type: "text", text: voiceCallSeed }],
+      source: {
+        kind: "human",
+      },
+      content: [
+        {
+          type: "text",
+          text: voiceCallSeed,
+        },
+      ],
       policy: "queue",
       idempotencyKey: `voice-seed:${input.sessionId}`,
     });
@@ -208,7 +223,9 @@ export async function startVoiceCall(
       });
     await tx
       .updateTable("runs")
-      .set({ voiceSessionId: input.sessionId })
+      .set({
+        voiceSessionId: input.sessionId,
+      })
       .where("id", "=", queued.id)
       .execute();
     return {
@@ -219,7 +236,6 @@ export async function startVoiceCall(
     };
   });
 }
-
 function stopRun(
   tx: Transaction<DatabaseSchema>,
   links: ChannelLinks,
@@ -235,7 +251,6 @@ function stopRun(
     idempotencyKey: `voice-stop:${runId}`,
   });
 }
-
 async function stopLiveRun(
   tx: Transaction<DatabaseSchema>,
   links: ChannelLinks,
@@ -250,17 +265,20 @@ async function stopLiveRun(
     .where("id", "=", runId)
     .forNoKeyUpdate()
     .executeTakeFirstOrThrow();
-  if (!liveRunStatuses.includes(run.status)) return { revokedGrants: [], events: [] };
+  if (!liveRunStatuses.includes(run.status))
+    return {
+      revokedGrants: [],
+      events: [],
+    };
   return stopRun(tx, links, ownerId, threadId, runId);
 }
-
 export async function stopVoiceCall(
   database: Kysely<DatabaseSchema>,
   links: ChannelLinks,
   ownerId: UserId,
   sessionId: string,
 ) {
-  return withDatabaseTransaction(database, async (tx) => {
+  return withPersonalTransaction(database, async (tx) => {
     await sql`select pg_advisory_xact_lock(hashtextextended(${`voice:${ownerId}`}, 0))`.execute(tx);
     const call = await resolveVoiceCall(tx, ownerId, sessionId);
     if (!call) return;

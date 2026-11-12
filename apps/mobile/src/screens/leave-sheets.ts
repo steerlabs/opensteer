@@ -1,17 +1,19 @@
-import { mainWorkspace, type HostClient } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
-import { newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { threadReturn } from "../navigation-state.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 
 /** The full screens of a Deployment's stack, as opposed to the sheets over them. */
 const screenRoutes: ReadonlySet<string> = new Set([
+  "AllTasks",
   "Home",
-  "NewTask",
-  "Project",
-  "Projects",
   "Tabs",
+  "TeamChannel",
+  "TeamHome",
+  "TeamThread",
   "TaskSearch",
   "Thread",
   "WorkspaceBrowser",
@@ -19,16 +21,16 @@ const screenRoutes: ReadonlySet<string> = new Set([
 
 /**
  * Leaving the sheets stacked over a Deployment's work, such as Settings, for
- * one of its Threads or a new task: back to the screen the sheets were opened
- * over, then forward, so its Back returns there and nothing is pushed over a
- * sheet.
+ * one of its Threads, back to the screen the sheets were opened over and then
+ * forward, so its Back returns there and nothing is pushed over a sheet; or
+ * for a new task, which is Home's.
  */
 export function useLeaveSheets(
   deploymentId: string | null,
   hostClient: HostClient | null,
 ): {
   readonly openThread: (threadId: string) => void;
-  /** A new task in Main with `text` already in its composer. */
+  /** Home, with `text` as its new task's words. */
   readonly openNewTask: (text: string) => Promise<void>;
 } {
   const navigation = useNavigation();
@@ -43,11 +45,6 @@ export function useLeaveSheets(
     (threadId: string) => {
       if (deploymentId === null || hostClient === null) return;
       const destination = { deploymentId, threadId };
-      // Chat is the root under every sheet, and only ever shown there.
-      if (hostClient.getSnapshot().homeThreadId === threadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-        return;
-      }
       if (threadReturn(navigation.getState()?.routes ?? [], destination) === "pop-to") {
         navigation.dispatch(StackActions.popTo("Thread", destination));
         return;
@@ -62,15 +59,11 @@ export function useLeaveSheets(
       if (deploymentId === null || hostClient === null) return;
       const snapshot = hostClient.getSnapshot();
       const userId = snapshot.user?.id;
-      const workspaceId = mainWorkspace(snapshot)?.id;
-      if (userId === undefined || workspaceId === undefined) return;
-      const draftId = newTaskDraftId();
-      drafts.placeNewTaskDraft(deploymentId, userId, draftId, workspaceId);
-      await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(draftId), text);
-      popSheets();
-      navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId, workspaceId }));
+      if (userId === undefined) return;
+      await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(homeDraftId), text);
+      navigation.dispatch(StackActions.popToTop());
     },
-    [deploymentId, drafts, hostClient, navigation, popSheets],
+    [deploymentId, drafts, hostClient, navigation],
   );
   return useMemo(() => ({ openNewTask, openThread }), [openNewTask, openThread]);
 }

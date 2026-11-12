@@ -22,14 +22,22 @@ import {
   type AccessibilityActionEvent,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, material, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  headerFontScaleLimit,
+  material,
+  radius,
+  space,
+  touchTarget,
+} from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { useReducedMotion } from "react-native-reanimated";
 import { Symbol } from "../ui/symbol.js";
 
 /**
- * One of the reader's tasks, as the sidebar, search and a project's page
+ * One of the reader's tasks, as the sidebar, search and All tasks
  * all draw it, from the shared task list (`taskList` in `@opensteer/client/host`)
  * and nothing else, on one line: its subject mark, title, and state — "Needs you", a spinner,
  * waiting or failure words, with a separate unread dot and finished time.
@@ -49,6 +57,10 @@ export const taskTextInset = space[12] + markColumn + space[12];
 export type TaskShelf = "open" | "done";
 
 export interface TaskRowProps {
+  /** A live row's one second line: the amber ask of a task that needs the reader. */
+  readonly ask?: string | null;
+  /** All tasks' second line: where it came from (`#support · Dana's thread`) or its folder, and what it is doing. */
+  readonly detail?: string | null;
   /** The reader has an unsent reply here. */
   readonly drafted?: boolean;
   readonly onOpen: (threadId: string) => void;
@@ -105,14 +117,35 @@ export const TaskRowView = memo(function TaskRowView(props: TaskRowProps): React
       ]}
     >
       <TaskMark mark={taskMark(row)} quiet={taskMarkQuiet(row, props.shelf === "done")} />
-      <AppText
-        maxFontSizeMultiplier={controlFontScaleLimit}
-        numberOfLines={1}
-        role="secondary"
-        style={[styles.grow, titleStyle(row, props.shelf)]}
-      >
-        {row.title}
-      </AppText>
+      {props.ask == null && props.detail == null ? (
+        <AppText
+          maxFontSizeMultiplier={controlFontScaleLimit}
+          numberOfLines={1}
+          role="secondary"
+          style={[styles.grow, titleStyle(row, props.shelf)]}
+        >
+          {row.title}
+        </AppText>
+      ) : (
+        <View style={styles.grow}>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={1}
+            role="secondary"
+            style={titleStyle(row, props.shelf)}
+          >
+            {row.title}
+          </AppText>
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            numberOfLines={1}
+            role="caption"
+            {...(props.ask == null ? { tone: "muted" as const } : { style: styles.ask })}
+          >
+            {props.ask ?? props.detail}
+          </AppText>
+        </View>
+      )}
       <TaskRowState drafted={props.drafted === true} row={row} shelf={props.shelf} time={time} />
     </Pressable>
   );
@@ -188,9 +221,11 @@ export function TaskRowState(
 
 /** The one loud thing a list says: a question only the reader can answer. */
 export function NeedsYouTag(): ReactNode {
+  // It grows only as far as a bar's label: past that it would crowd out the
+  // title, and the amber ask under the title already says it.
   return (
     <View style={styles.tag}>
-      <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.tagText}>
+      <AppText maxFontSizeMultiplier={headerFontScaleLimit} role="caption" style={styles.tagText}>
         Needs you
       </AppText>
     </View>
@@ -279,6 +314,7 @@ export function setTaskDone(hostClient: HostClient, threadId: string, done: bool
 
 const styles = StyleSheet.create({
   bright: { color: color.text },
+  ask: { color: color.amber },
   grow: { flex: 1, minWidth: 0 },
   state: { alignItems: "center", flexDirection: "row", gap: space[8], flexShrink: 0 },
   needsYou: {

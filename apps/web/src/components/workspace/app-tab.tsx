@@ -8,14 +8,13 @@ import {
   type PlaceItem,
 } from "@opensteer/client/host";
 import { useAppView, useHostSelector } from "@opensteer/client/react";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import { AppFrame, AppLoadFailure, AppLoading, useAppTheme } from "../apps/app-frame.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { placeEnded } from "./place-succession.js";
 import { useTabCloser } from "./tab-closer.js";
-import { conversationAt, homeThreadKind, type TaskDirectory } from "./task-directory.js";
-import { ChatOrb, TaskMark } from "./task-mark.js";
+import { conversationAt, type TaskDirectory } from "./task-directory.js";
+import { TaskMark } from "./task-mark.js";
 import { useWorkspace } from "./workspace-context.js";
 
 export function AppTab({
@@ -102,7 +101,7 @@ function AppTabBar({
   );
 }
 
-/** Only while another conversation is out: the bar's Chat toggle already reaches the current one. */
+/** Only while another task is open: the bar's toggle already reaches the current one. */
 function AppOrigin({
   directory,
   place,
@@ -113,13 +112,11 @@ function AppOrigin({
   const { dock, nav, phone } = useWorkspace();
   const { pathname } = useLocation();
   const threadId = place.opensteerApp?.threadId;
-  if (!threadId || conversationAt(pathname, directory.homeThreadId) === threadId) return null;
-  const home = homeThreadKind(threadId, directory.snapshot) === "main";
-  const title = home
-    ? CHAT_THREAD_TITLE
-    : (directory.rows.get(threadId)?.title ??
-      directory.snapshot.threads.find((thread) => thread.id === threadId)?.title ??
-      "Conversation");
+  if (!threadId || conversationAt(pathname) === threadId) return null;
+  const title =
+    directory.rows.get(threadId)?.title ??
+    directory.snapshot.threads.find((thread) => thread.id === threadId)?.title ??
+    "Task";
   return (
     <button
       aria-label={`Go to the conversation that made this app: ${title}`}
@@ -135,11 +132,7 @@ function AppOrigin({
       title="Go to the conversation that made this app"
       type="button"
     >
-      {home ? (
-        <ChatOrb size={16} />
-      ) : (
-        <TaskMark size={16} mark={threadMark(threadId, directory.snapshot)} />
-      )}
+      <TaskMark size={16} mark={threadMark(threadId, directory.snapshot)} />
       <span>{title}</span>
     </button>
   );

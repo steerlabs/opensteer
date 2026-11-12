@@ -38,9 +38,8 @@ export function LocalPhoneTab(props: {
     let cancelled = false;
     void (async () => {
       if (!liveSession) {
-        if (!hostClient.activateWorkspaceTab)
-          throw new Error("This Host cannot reopen saved tabs.");
-        const activated = await hostClient.activateWorkspaceTab(admission.surfaceId);
+        if (!hostClient.activatePersonalTab) throw new Error("This Host cannot reopen saved tabs.");
+        const activated = await hostClient.activatePersonalTab(admission.surfaceId);
         if (!activated) throw new Error("This tab could not reopen.");
       }
       if (cancelled) return;

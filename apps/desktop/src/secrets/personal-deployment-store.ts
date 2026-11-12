@@ -34,6 +34,7 @@ import {
   type DesktopDeploymentPaths,
 } from "../app/application-paths.js";
 import { snapshotDatabase } from "../supervisor/personal-database-snapshot.js";
+import { PersonalOldDatabaseError } from "../supervisor/personal-data-reset.js";
 import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 
 const RuntimeVersionSchema = z
@@ -100,7 +101,6 @@ const personalDeploymentManifestFields = {
   runnerId: RunnerIdSchema,
   setupIntentId: z.uuid(),
   updatedAt: IsoDateTimeSchema,
-  workspaceRoot: z.string().min(1).max(4_096),
 };
 
 export const PersonalDeploymentManifestSchema = z
@@ -118,17 +118,9 @@ function refinePersonalDeploymentManifest(
     readonly hostPort: number;
     readonly postgresPort: number;
     readonly updatedAt: string;
-    readonly workspaceRoot: string;
   },
   context: z.RefinementCtx,
 ): void {
-  if (!path.isAbsolute(manifest.workspaceRoot)) {
-    context.addIssue({
-      code: "custom",
-      message: "Personal Workspace root must be absolute",
-      path: ["workspaceRoot"],
-    });
-  }
   if (manifest.hostPort === manifest.postgresPort) {
     context.addIssue({
       code: "custom",
@@ -153,8 +145,6 @@ export interface PersonalDeploymentPreparedPaths extends DesktopDeploymentPaths 
   /** The messaging service's own Runner identity and data directory lease. */
   readonly messagingDataDirectory: string;
   readonly postgresLogPath: string;
-  readonly workspaceRegistryPath: string;
-  readonly workspaceRoot: string;
 }
 
 export interface PersonalDeploymentFilesystemPort {
@@ -419,10 +409,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     manifestInput: PersonalDeploymentManifest,
   ): Promise<PersonalDeploymentPreparedPaths> {
     const manifest = PersonalDeploymentManifestSchema.parse(manifestInput);
-    const workspaceRoot = path.resolve(manifest.workspaceRoot);
-    if (workspaceRoot !== manifest.workspaceRoot) {
-      throw new Error("Personal Workspace root must already be normalized.");
-    }
     const paths = this.#privateFiles
       ? await preparePrivateDesktopDeploymentDirectories(
           this.#privateFiles,
@@ -437,8 +423,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
     const messagingDataDirectory = path.join(paths.rootDirectory, "channel-runtime");
     await ensurePersonalDirectory(messagingDataDirectory);
     await ensurePersonalDirectory(paths.logsDirectory);
-    await ensurePersonalDirectory(path.dirname(workspaceRoot));
-    await ensurePersonalDirectory(workspaceRoot);
     const available = await availableBytes(paths.rootDirectory);
     if (available < this.#minimumFreeBytes) {
       throw new PersonalFilesystemError(
@@ -458,10 +442,6 @@ export class NativePersonalDeploymentFilesystem implements PersonalDeploymentFil
       hostPublicKeyPath: path.join(paths.hostDataDirectory, "host-public.pem"),
       messagingDataDirectory,
       postgresLogPath: path.join(paths.logsDirectory, "postgresql.log"),
-      // The protected registry belongs to the process that owns the disk,
-      // which is now the co-located Runner rather than the Host.
-      workspaceRegistryPath: path.join(paths.runnerDataDirectory, "workspace-bindings.v1.json"),
-      workspaceRoot,
     };
   }
 }
@@ -471,8 +451,20 @@ function parsePersonalDeploymentManifest(
 ): { readonly manifest: PersonalDeploymentManifest; readonly migrated: boolean } | null {
   try {
     const value: unknown = JSON.parse(serialized);
-    const current = PersonalDeploymentManifestSchema.safeParse(value);
-    if (current.success) return { manifest: current.data, migrated: false };
+    const obsolete = z
+      .looseObject({
+        workspaceRoot: z.string().min(1).max(4_096).refine(path.isAbsolute),
+      })
+      .safeParse(value);
+    // Read the retired field only to recognize identity for the rename-aside reset.
+    const identity = obsolete.success
+      ? Object.fromEntries(Object.entries(obsolete.data).filter(([key]) => key !== "workspaceRoot"))
+      : value;
+    const current = PersonalDeploymentManifestSchema.safeParse(identity);
+    if (current.success) {
+      if (obsolete.success) throw new PersonalOldDatabaseError(current.data.deploymentId);
+      return { manifest: current.data, migrated: false };
+    }
     const prior = z
       .strictObject({
         ...personalDeploymentManifestFields,
@@ -481,13 +473,15 @@ function parsePersonalDeploymentManifest(
         schemaVersion: z.literal(2),
       })
       .superRefine(refinePersonalDeploymentManifest)
-      .parse(value);
-    const { authorityEpoch: _authorityEpoch, ...identity } = prior;
+      .parse(identity);
+    if (obsolete.success) throw new PersonalOldDatabaseError(prior.deploymentId);
+    const { authorityEpoch: _authorityEpoch, ...fields } = prior;
     return {
-      manifest: PersonalDeploymentManifestSchema.parse({ ...identity, schemaVersion: 3 }),
+      manifest: PersonalDeploymentManifestSchema.parse({ ...fields, schemaVersion: 3 }),
       migrated: true,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof PersonalOldDatabaseError) throw error;
     return null;
   }
 }
@@ -517,7 +511,6 @@ function assertStableIdentity(
     "runnerId",
     "schemaVersion",
     "setupIntentId",
-    "workspaceRoot",
   ] as const) {
     if (previous[key] !== next[key]) {
       throw new Error(`Personal deployment identity field ${key} is immutable.`);

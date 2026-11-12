@@ -1,4 +1,5 @@
-import { TransactionScopeChanged } from "./connection.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
+
 import { revokeRunGrants, type RevokedRunGrant } from "./run-grants.js";
 import {
   AssignmentSummarySchema,
@@ -6,7 +7,6 @@ import {
   OpensteerError,
   assignmentResultMaxBytes,
   createId,
-  threadInReach,
   nonTerminalRunStatuses,
   utf8Prefix,
   type AgentEvent,
@@ -15,19 +15,16 @@ import {
   type RunId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import { sql, type Kysely, type Selectable, type Transaction } from "kysely";
 import type { CommandRow, DatabaseSchema, DelegationTable } from "./schema.js";
 import { threadInputFromRow } from "./thread-row-mappers.js";
-import { appendHostWorkspaceEvent } from "./workspace-events.js";
+import { appendHostDeploymentEvent } from "./deployment-events.js";
 import {
   idempotencyConflict,
   jsonValue,
   lockCommandIdempotency,
   principalIdForUser,
-  requireActiveWorkspaceMembership,
-  threadExecutionIsAvailableToUser,
   type ChannelLinks,
 } from "./store-primitives.js";
 import { isDeepStrictEqual } from "node:util";
@@ -35,10 +32,8 @@ import { cancelPending } from "./request-store.js";
 import { finalizeRunTransaction } from "./run-finalization.js";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { runReply } from "./run-reply.js";
-
 const assignmentResultPreviewMaxBytes = 8 * 1_024;
 const truncatedReplyNote = "\n\n[Reply truncated. The full reply is in the task Thread.]";
-
 export async function assignmentSummaryInTransaction(
   transaction: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
@@ -47,11 +42,12 @@ export async function assignmentSummaryInTransaction(
     .selectFrom("threads")
     .select([
       "environmentId",
+      "folderComputerId",
+      "folderPath",
       "id",
       "title",
       "icon",
       "color",
-      "workspaceId",
       "status",
       "pendingRequestCount",
     ])
@@ -94,10 +90,11 @@ export async function assignmentSummaryInTransaction(
     resultPreview:
       row.resultText === null ? null : utf8Prefix(row.resultText, assignmentResultPreviewMaxBytes),
     returnStatus: row.resultStatus,
-    revision: row.revision,
+    revision: Number(row.revision),
     status: row.status,
     updatedAt: row.updatedAt.toISOString(),
     workerThread: {
+      folder: { computerId: worker.folderComputerId, path: worker.folderPath },
       environmentId: worker.environmentId,
       id: worker.id,
       pendingRequests: worker.pendingRequestCount,
@@ -105,16 +102,10 @@ export async function assignmentSummaryInTransaction(
       title: worker.title,
       icon: worker.icon,
       color: worker.color,
-      workspaceId: worker.workspaceId,
     },
   });
 }
 
-/**
- * The worker Workspace's copy of an Assignment's summary. Transactions that
- * hold only the worker Workspace publish here and nowhere else: appending to
- * the parent Workspace would lock a second Workspace out of order.
- */
 async function assignmentWorkerEventInTransaction(
   transaction: Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
@@ -128,107 +119,50 @@ async function assignmentWorkerEventInTransaction(
     runId,
   );
 }
-
 function appendAssignmentWorkerEvent(
   transaction: Transaction<DatabaseSchema>,
   assignment: AssignmentSummary,
   type: "assignment.created" | "assignment.updated",
   runId: RunId | null,
 ): Promise<AgentEvent> {
-  return appendHostWorkspaceEvent(transaction, {
-    data: { assignment },
+  return appendHostDeploymentEvent(transaction, {
+    data: {
+      assignment,
+    },
     environmentId: assignment.workerThread.environmentId,
     runId,
     threadId: assignment.workerThread.id,
     type,
-    workspaceId: assignment.workerThread.workspaceId,
   });
 }
 
-/**
- * The summary in both the worker and the parent Workspace. Only creation,
- * cancellation, return delivery and title changes call this; each already
- * holds both Workspaces, locked in id order.
- */
 export async function assignmentEventsInTransaction(
   transaction: Transaction<DatabaseSchema>,
   row: Selectable<DelegationTable>,
   type: "assignment.created" | "assignment.updated",
   runId: RunId | null = null,
-  parentRunId: RunId | null = row.parentRunId,
 ): Promise<readonly AgentEvent[]> {
-  const assignment = await assignmentSummaryInTransaction(transaction, row);
-  const events = [await appendAssignmentWorkerEvent(transaction, assignment, type, runId)];
-  const [parent, requester] = await Promise.all([
-    transaction
-      .selectFrom("threads")
-      .select(["environmentId", "workspaceId"])
-      .where("id", "=", row.parentThreadId)
-      .executeTakeFirstOrThrow(),
-    transaction
-      .selectFrom("runs")
-      .select("requestedBy")
-      .where("id", "=", row.childRunId)
-      .executeTakeFirstOrThrow(),
-  ]);
-  // A parent Workspace keeps its history after the requester loses worker
-  // access. New worker details and result text must not reach it.
-  if (
-    (await threadExecutionIsAvailableToUser(
+  return [
+    await appendAssignmentWorkerEvent(
       transaction,
-      row.childThreadId,
-      requester.requestedBy,
-    )) &&
-    (await threadExecutionIsAvailableToUser(transaction, row.parentThreadId, requester.requestedBy))
-  ) {
-    events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { assignment },
-        environmentId: parent.environmentId,
-        runId: parentRunId,
-        threadId: row.parentThreadId,
-        type,
-        workspaceId: parent.workspaceId,
-      }),
-    );
-  }
-  return events;
+      await assignmentSummaryInTransaction(transaction, row),
+      type,
+      runId,
+    ),
+  ];
 }
 
 /** Reserve every summary destination before a name or symbol writer takes its Thread lock. */
-export async function lockThreadNameWorkspaces(
+export async function lockThreadNameDestinations(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
-): Promise<WorkspaceId | null> {
+): Promise<ThreadId | null> {
   const worker = await transaction
     .selectFrom("threads")
-    .select("workspaceId")
+    .select("id")
     .where("id", "=", threadId)
     .executeTakeFirst();
-  if (!worker) return null;
-  const parents = () =>
-    transaction
-      .selectFrom("delegations")
-      .innerJoin("threads", "threads.id", "delegations.parentThreadId")
-      .select("threads.workspaceId")
-      .where("delegations.childThreadId", "=", threadId)
-      .execute();
-  const workspaceIds = [
-    ...new Set([worker.workspaceId, ...(await parents()).map((row) => row.workspaceId)]),
-  ];
-  const locked = await transaction
-    .selectFrom("workspaces")
-    .select("id")
-    .where("id", "in", workspaceIds)
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  if (!locked.some(({ id }) => id === worker.workspaceId)) return null;
-  // Delegation creation also holds the worker Workspace. A new parent may have
-  // committed while this writer waited; rediscover it in a fresh transaction.
-  if ((await parents()).some(({ workspaceId }) => !locked.some(({ id }) => id === workspaceId)))
-    throw new TransactionScopeChanged();
-  return worker.workspaceId;
+  return worker?.id ?? null;
 }
 
 export async function assignmentNameEventsForThread(
@@ -246,19 +180,21 @@ export async function assignmentNameEventsForThread(
   for (const assignment of assignments) {
     const row = await transaction
       .updateTable("delegations")
-      .set((expression) => ({ revision: expression("revision", "+", 1), updatedAt: new Date() }))
+      .set((expression) => ({
+        revision: expression("revision", "+", 1),
+        updatedAt: new Date(),
+      }))
       .where("id", "=", assignment.id)
       .returningAll()
       .executeTakeFirstOrThrow();
     // Name writers hold no Run lock; null attribution keeps the event's
     // foreign-key check from acquiring one after the Assignment lock.
     events.push(
-      ...(await assignmentEventsInTransaction(transaction, row, "assignment.updated", null, null)),
+      ...(await assignmentEventsInTransaction(transaction, row, "assignment.updated", null)),
     );
   }
   return events;
 }
-
 async function touchAssignment(
   transaction: Transaction<DatabaseSchema>,
   assignmentId: AssignmentId,
@@ -266,7 +202,10 @@ async function touchAssignment(
 ): Promise<readonly AgentEvent[]> {
   const row = await transaction
     .updateTable("delegations")
-    .set((expression) => ({ revision: expression("revision", "+", 1), updatedAt: new Date() }))
+    .set((expression) => ({
+      revision: expression("revision", "+", 1),
+      updatedAt: new Date(),
+    }))
     .where("id", "=", assignmentId)
     .returningAll()
     .executeTakeFirstOrThrow();
@@ -280,7 +219,10 @@ export async function assignmentStateEventsForThread(
 ): Promise<readonly AgentEvent[]> {
   const rows = await transaction
     .updateTable("delegations")
-    .set((expression) => ({ revision: expression("revision", "+", 1), updatedAt: new Date() }))
+    .set((expression) => ({
+      revision: expression("revision", "+", 1),
+      updatedAt: new Date(),
+    }))
     .where("childThreadId", "=", threadId)
     .where("status", "=", "open")
     .returningAll()
@@ -327,7 +269,6 @@ export async function runAssignmentAcceptsRequests(
     .executeTakeFirst();
   return !assignment || assignment.status === "open";
 }
-
 export const assignmentClosedToRequestsMessage =
   "This task is no longer open, so it cannot ask for anything new";
 
@@ -338,7 +279,13 @@ export const assignmentClosedToRequestsMessage =
  */
 export async function threadOrAssignmentHasPendingWork(
   transaction: Transaction<DatabaseSchema>,
-  scope: { readonly assignmentId: AssignmentId } | { readonly threadId: ThreadId },
+  scope:
+    | {
+        readonly assignmentId: AssignmentId;
+      }
+    | {
+        readonly threadId: ThreadId;
+      },
 ): Promise<boolean> {
   const [request, input, child, run] = await Promise.all([
     transaction
@@ -421,7 +368,6 @@ export async function threadOrAssignmentHasPendingWork(
     run !== undefined
   );
 }
-
 function boundedResult(text: string): string {
   if (Buffer.byteLength(text, "utf8") <= assignmentResultMaxBytes) return text;
   const budget = assignmentResultMaxBytes - Buffer.byteLength(truncatedReplyNote, "utf8");
@@ -431,7 +377,10 @@ function boundedResult(text: string): string {
 /** The text of the last message the Run wrote: its reply when it completed. */
 async function finalReplyOfRun(
   transaction: Transaction<DatabaseSchema>,
-  run: { readonly id: RunId; readonly threadId: ThreadId },
+  run: {
+    readonly id: RunId;
+    readonly threadId: ThreadId;
+  },
 ): Promise<string | null> {
   const message = await runReply(transaction, run);
   if (!message) return null;
@@ -455,7 +404,10 @@ export async function settleAssignmentAfterRun(
     readonly assignmentId: AssignmentId;
     readonly failureSummary: string | null;
     readonly finishedAt: Date;
-    readonly run: { readonly id: RunId; readonly threadId: ThreadId };
+    readonly run: {
+      readonly id: RunId;
+      readonly threadId: ThreadId;
+    };
     readonly status: "completed" | "failed" | "interrupted";
   },
 ): Promise<readonly AgentEvent[]> {
@@ -469,7 +421,9 @@ export async function settleAssignmentAfterRun(
   if (
     outcome === "interrupted" ||
     row.status !== "open" ||
-    (await threadOrAssignmentHasPendingWork(transaction, { assignmentId: input.assignmentId }))
+    (await threadOrAssignmentHasPendingWork(transaction, {
+      assignmentId: input.assignmentId,
+    }))
   ) {
     return touchAssignment(transaction, input.assignmentId, input.run.id);
   }
@@ -503,20 +457,17 @@ export async function settleAssignmentAfterRun(
     ),
   ];
 }
-
 export interface AssignmentMutationResult {
   readonly assignment: AssignmentSummary;
   readonly events: readonly AgentEvent[];
   readonly wasDuplicate: boolean;
 }
-
 export interface CancelAssignmentInput {
   readonly actorRunId?: RunId;
   readonly assignmentId: AssignmentId;
   readonly idempotencyKey: string;
   readonly requestedBy: UserId;
 }
-
 export interface CancelAssignmentResult extends AssignmentMutationResult {
   readonly interruptCommands: readonly CommandRow[];
   /** The grants of the Runs the cancellation interrupts. */
@@ -525,34 +476,20 @@ export interface CancelAssignmentResult extends AssignmentMutationResult {
 
 /** The tree gained work between its snapshot and its locks; retry the whole transaction. */
 export const assignmentTreeChangedReason = "assignment-tree-changed";
-
 interface ObservedAssignment {
   readonly createdBy: UserId;
-  readonly workspaceId: WorkspaceId;
 }
 
-/** A person may stop a task they started a worker for, or any task in a Workspace they own. */
-async function requireCancelMembership(
+/** The personal owner may stop any task. */
+async function requireCancelOwner(
   transaction: Transaction<DatabaseSchema>,
-  observed: ObservedAssignment,
+  _observed: ObservedAssignment,
   requestedBy: UserId,
-  lock: boolean,
+  _lock: boolean,
 ): Promise<void> {
-  const membership = await requireActiveWorkspaceMembership(
-    transaction,
-    observed.workspaceId,
-    requestedBy,
-    lock,
-  );
-  if (observed.createdBy !== requestedBy && membership.role !== "owner") {
-    throw new OpensteerError({
-      code: "forbidden",
-      message: "Only the owner can stop another member's task",
-    });
-  }
+  await requirePersonalOwner(transaction, requestedBy);
 }
 
-/** Agent reach never replaces the person's membership and task ownership. */
 async function requireCancelScope(
   transaction: Transaction<DatabaseSchema>,
   input: CancelAssignmentInput,
@@ -565,10 +502,8 @@ async function requireCancelScope(
       "runs.requestedBy",
       "runs.status",
       "runs.threadId",
-      "threads.inheritsMain",
       "threads.specialistId",
       "threads.lineageRootThreadId",
-      "threads.workspaceId",
     ])
     .where("runs.id", "=", input.actorRunId)
     .executeTakeFirst();
@@ -577,20 +512,18 @@ async function requireCancelScope(
     actor.requestedBy !== input.requestedBy ||
     !["running", "waiting"].includes(actor.status)
   ) {
-    throw new OpensteerError({ code: "forbidden", message: "Cancelling Run is no longer active" });
+    throw new OpensteerError({
+      code: "forbidden",
+      message: "Cancelling Run is no longer active",
+    });
   }
   const worker = await transaction
     .selectFrom("delegations")
     .innerJoin("threads", "threads.id", "delegations.childThreadId")
-    .select([
-      "threads.inheritsMain",
-      "threads.specialistId",
-      "threads.lineageRootThreadId",
-      "threads.workspaceId",
-    ])
+    .select(["threads.specialistId", "threads.lineageRootThreadId"])
     .where("delegations.id", "=", input.assignmentId)
     .executeTakeFirst();
-  if (!worker || !threadInReach(actor, worker)) {
+  if (!worker) {
     throw new OpensteerError({
       code: "forbidden",
       message: "This task is outside the agent's consent scope",
@@ -607,7 +540,9 @@ export async function assignmentTreeThreadIds(
   database: Kysely<DatabaseSchema>,
   assignmentId: AssignmentId,
 ): Promise<readonly ThreadId[]> {
-  const result = await sql<{ childThreadId: ThreadId }>`
+  const result = await sql<{
+    childThreadId: ThreadId;
+  }>`
     with recursive tree as (
       select id, child_thread_id from public.delegations
         where id = ${assignmentId} and status = 'open'
@@ -619,7 +554,6 @@ export async function assignmentTreeThreadIds(
   `.execute(database);
   return result.rows.map(({ childThreadId }) => childThreadId);
 }
-
 export async function cancelAssignmentInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: CancelAssignmentInput,
@@ -628,20 +562,23 @@ export async function cancelAssignmentInTransaction(
   const observed = await transaction
     .selectFrom("delegations")
     .innerJoin("threads", "threads.id", "delegations.childThreadId")
-    .select([
-      "delegations.childThreadId",
-      "threads.createdBy",
-      "threads.environmentId",
-      "threads.workspaceId",
-    ])
+    .select(["delegations.childThreadId", "threads.createdBy", "threads.environmentId"])
     .where("delegations.id", "=", input.assignmentId)
     .executeTakeFirst();
-  if (!observed) throw new OpensteerError({ code: "not_found", message: "Assignment not found" });
-  await requireCancelMembership(transaction, observed, input.requestedBy, false);
+  if (!observed)
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Assignment not found",
+    });
+  await requireCancelOwner(transaction, observed, input.requestedBy, false);
   await requireCancelScope(transaction, input);
   await lockCommandIdempotency(transaction, input.requestedBy, input.idempotencyKey);
   const payload = {
-    ...(input.actorRunId ? { actorRunId: input.actorRunId } : {}),
+    ...(input.actorRunId
+      ? {
+          actorRunId: input.actorRunId,
+        }
+      : {}),
     assignmentId: input.assignmentId,
     type: "assignment.cancel",
   } as const;
@@ -672,7 +609,9 @@ export async function cancelAssignmentInTransaction(
   // queue work into it, including the actor, as one ordered set. Admission
   // revalidates the actor after cancellation, within this same transaction.
   const openTree = async (): Promise<AssignmentId[]> => {
-    const result = await sql<{ id: AssignmentId }>`
+    const result = await sql<{
+      id: AssignmentId;
+    }>`
       with recursive tree as (
         select id from public.delegations where id = ${input.assignmentId} and status = 'open'
         union all
@@ -693,7 +632,10 @@ export async function cancelAssignmentInTransaction(
       .orderBy("id", "asc");
   const ids = await openTree();
   if (!ids.includes(input.assignmentId)) {
-    throw new OpensteerError({ code: "conflict", message: "Assignment is already terminal" });
+    throw new OpensteerError({
+      code: "conflict",
+      message: "Assignment is already terminal",
+    });
   }
   const discoveredRunIds = (await treeRuns(ids).execute()).map(({ id }) => id);
   const fenceRunIds = [
@@ -715,28 +657,14 @@ export async function cancelAssignmentInTransaction(
     ({ id, status }) =>
       id !== input.actorRunId && (nonTerminalRunStatuses as readonly string[]).includes(status),
   );
-
   const linked = await transaction
     .selectFrom("delegations")
     .innerJoin("threads as worker", "worker.id", "delegations.childThreadId")
     .innerJoin("threads as parent", "parent.id", "delegations.parentThreadId")
-    .select([
-      "worker.id as workerThreadId",
-      "worker.workspaceId as workerWorkspaceId",
-      "parent.workspaceId as parentWorkspaceId",
-    ])
+    .select(["worker.id as workerThreadId"])
     .where("delegations.id", "in", ids)
     .execute();
-  await transaction
-    .selectFrom("workspaces")
-    .select("id")
-    .where("id", "in", [
-      ...new Set(linked.flatMap((row) => [row.workerWorkspaceId, row.parentWorkspaceId])),
-    ])
-    .orderBy("id", "asc")
-    .forNoKeyUpdate()
-    .execute();
-  await requireCancelMembership(transaction, observed, input.requestedBy, true);
+  await requireCancelOwner(transaction, observed, input.requestedBy, true);
   // Holding the worker Threads means no Run can be queued into the tree now.
   await transaction
     .selectFrom("threads")
@@ -780,7 +708,11 @@ export async function cancelAssignmentInTransaction(
   const events: AgentEvent[] = [];
   const cancelledInputs = await transaction
     .updateTable("threadInputs")
-    .set({ cancelReason: "assignment-cancelled", state: "cancelled", updatedAt: now })
+    .set({
+      cancelReason: "assignment-cancelled",
+      state: "cancelled",
+      updatedAt: now,
+    })
     .where("assignmentId", "in", ids)
     .where("state", "=", "pending")
     .returningAll()
@@ -788,17 +720,18 @@ export async function cancelAssignmentInTransaction(
   for (const row of cancelledInputs) {
     const thread = await transaction
       .selectFrom("threads")
-      .select(["environmentId", "workspaceId"])
+      .select(["environmentId"])
       .where("id", "=", row.threadId)
       .executeTakeFirstOrThrow();
     events.push(
-      await appendHostWorkspaceEvent(transaction, {
-        data: { input: threadInputFromRow(row) },
+      await appendHostDeploymentEvent(transaction, {
+        data: {
+          input: threadInputFromRow(row),
+        },
         environmentId: thread.environmentId,
         runId: null,
         threadId: row.threadId,
         type: "thread-input.updated",
-        workspaceId: thread.workspaceId,
       }),
     );
   }
@@ -847,13 +780,20 @@ export async function cancelAssignmentInTransaction(
       .insertInto("commands")
       .values({
         actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-        authoritySource: jsonValue({ assignmentId: input.assignmentId, kind: "assignment-cancel" }),
+        authoritySource: jsonValue({
+          assignmentId: input.assignmentId,
+          kind: "assignment-cancel",
+        }),
         dispatcherId: null,
         environmentId: run.environmentId,
         id: createId("command"),
         idempotencyKey: `assignment-cancel:${input.assignmentId}:${run.id}`,
         lastError: null,
-        payload: jsonValue({ runId: run.id, threadId: run.threadId, type: "run.interrupt" }),
+        payload: jsonValue({
+          runId: run.id,
+          threadId: run.threadId,
+          type: "run.interrupt",
+        }),
         requestedBy: input.requestedBy,
         runId: run.id,
         status: "pending",
@@ -868,7 +808,10 @@ export async function cancelAssignmentInTransaction(
     .insertInto("commands")
     .values({
       actorPrincipalId: await principalIdForUser(transaction, input.requestedBy),
-      authoritySource: jsonValue({ kind: "assignment-cancel", userId: input.requestedBy }),
+      authoritySource: jsonValue({
+        kind: "assignment-cancel",
+        userId: input.requestedBy,
+      }),
       dispatcherId: null,
       environmentId: observed.environmentId,
       id: createId("command"),
@@ -904,7 +847,10 @@ export async function cancelAssignmentInTransaction(
   }
   const target = terminalRows.find(({ id }) => id === input.assignmentId);
   if (!target)
-    throw new OpensteerError({ code: "internal", message: "Cancelled Assignment is missing" });
+    throw new OpensteerError({
+      code: "internal",
+      message: "Cancelled Assignment is missing",
+    });
   const assignment = await assignmentSummaryInTransaction(transaction, target);
   // Cancelled work loses its tools now, while its interrupts are delivered.
   const revokedGrants = await revokeRunGrants(
@@ -912,7 +858,13 @@ export async function cancelAssignmentInTransaction(
     interruptCommands.flatMap(({ runId }) => (runId ? [runId] : [])),
     "assignment-cancelled",
   );
-  return { assignment, events, interruptCommands, revokedGrants, wasDuplicate: false };
+  return {
+    assignment,
+    events,
+    interruptCommands,
+    revokedGrants,
+    wasDuplicate: false,
+  };
 }
 
 /** The caller reserves the complete Assignment tree before mutating it. */

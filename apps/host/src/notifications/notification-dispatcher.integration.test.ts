@@ -18,16 +18,17 @@ import {
 } from "@opensteer/database";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
 import { NotificationDispatcher } from "./notification-dispatcher.js";
 import { NotificationPublicationClient } from "./notification-publication-client.js";
-
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
 const modelSelection = ModelSelectionSchema.parse({
   modelId: "gpt-5.6-sol",
-  options: { effort: "low" },
+  options: {
+    effort: "low",
+  },
   providerId: "openai",
 });
 const evidence: {
@@ -36,7 +37,6 @@ const evidence: {
   readonly posts: number;
   readonly skip: string;
 }[] = [];
-
 integration("notification rechecks against committed PostgreSQL facts", () => {
   let stack: VerticalStack;
   let recipientId: UserId;
@@ -75,29 +75,11 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     });
     const database = stack.host.store.database;
-    const member = await database
-      .selectFrom("workspaceMemberships")
-      .select("userId")
-      .where("workspaceId", "=", stack.mainWorkspaceId)
+    const owner = await database
+      .selectFrom("personalSettings")
+      .select("ownerId")
       .executeTakeFirstOrThrow();
-    recipientId = member.userId;
-    const coOwner = await stack.host.store.createUser("Co-owner for revocation checks");
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: stack.mainWorkspaceId,
-        userId: coOwner,
-        role: "owner",
-        state: "active",
-        generation: 1,
-        invitedBy: member.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(),
-      })
-      .execute();
+    recipientId = owner.ownerId;
     await new AccountDirectoryStore(database).configureProvider({
       issuer: "https://accounts.invalid",
       providerId: "oidc:notifications",
@@ -106,7 +88,7 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       .insertInto("authAccounts")
       .values({
         id: createId("authAccount"),
-        userId: member.userId,
+        userId: recipientId,
         accountId: `acct_${randomUUID()}`,
         providerId: "oidc:notifications",
         password: null,
@@ -128,14 +110,11 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
     await writeFile(path, JSON.stringify(evidence, null, 2) + "\n");
     console.info(`Notification recheck artifact: ${path}`);
   }, 60_000);
-
   it.each([
     ["read", "readiness"],
-    ["mute", "readiness"],
     ["revoke", "readiness"],
     ["answer", "readiness"],
     ["read", "retry"],
-    ["mute", "retry"],
     ["revoke", "retry"],
     ["answer", "retry"],
   ] as const)(
@@ -145,42 +124,42 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       const threadId = await stack.createThread({
         modelSelection,
         title: `Recheck ${change} ${stage}`,
-        workspaceId: stack.mainWorkspaceId,
       });
       const queued =
         change === "answer"
-          ? await stack.queueMessage({ text: "Need approval [[ask]]", threadId })
+          ? await stack.queueMessage({
+              text: "Need approval [[ask]]",
+              threadId,
+            })
           : await stack.sendMessage({
               text: "Reply [[reply Recheck this reply]]",
               threadId,
-              workspaceId: stack.mainWorkspaceId,
             });
       const runId = queued.runId;
       if (!runId) throw new Error("Expected a Run");
-      let row;
-      const deadline = Date.now() + 20_000;
-      while (!row) {
-        row = await database
-          .selectFrom("workspaceEvents")
-          .selectAll()
-          .where("runId", "=", runId)
-          .where("type", "=", change === "answer" ? "request.opened" : "run.completed")
-          .executeTakeFirst();
-        if (Date.now() >= deadline)
-          throw new Error("Producer did not commit its notification event");
-        if (!row) await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const event = AgentEventSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
-      const member = await database
-        .selectFrom("workspaceMemberships")
-        .selectAll()
-        .where("workspaceId", "=", stack.mainWorkspaceId)
-        .where("userId", "=", recipientId)
-        .executeTakeFirstOrThrow();
+      const row = await vi.waitFor(
+        async () => {
+          const observed = await database
+            .selectFrom("deploymentEvents")
+            .selectAll()
+            .where("runId", "=", runId)
+            .where("type", "=", change === "answer" ? "request.opened" : "run.completed")
+            .executeTakeFirst();
+          expect(observed, "Producer did not commit its notification event").toBeDefined();
+          return observed!;
+        },
+        { timeout: 20_000, interval: 50 },
+      );
+      const event = AgentEventSchema.parse({
+        ...row,
+        createdAt: row.createdAt.toISOString(),
+      });
       const state = new NotificationStateStore(database);
       const clock = new ManualClock(Date.parse(event.createdAt));
       const now = () => new Date(clock.now());
-      const notifications = new NotificationStore(database, { now });
+      const notifications = new NotificationStore(database, {
+        now,
+      });
       let authorityReady!: () => void;
       const ready = new Promise<void>((resolve) => {
         authorityReady = resolve;
@@ -208,20 +187,14 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
           await state.markRead({
             threadId,
             throughSequence: message.sequence,
-            userId: member.userId,
+            userId: recipientId,
           });
         }
-        if (change === "mute")
-          await state.setAgentNotificationMute({
-            muted: true,
-            userId: member.userId,
-            workspaceId: stack.mainWorkspaceId,
-          });
         if (change === "revoke")
           await database
-            .updateTable("workspaceMemberships")
-            .set({ state: "revoked", revokedBy: member.userId, revokedAt: new Date() })
-            .where("id", "=", member.id)
+            .updateTable("users")
+            .set({ disabledAt: new Date() })
+            .where("id", "=", recipientId)
             .execute();
         if (change === "answer") await stack.host.store.requests.cancelForRun(runId, "run-ended");
       };
@@ -242,7 +215,9 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
           fetch: async () => {
             posts++;
             await mutate();
-            return new Response("", { status: 503 });
+            return new Response("", {
+              status: 503,
+            });
           },
         }),
         ready,
@@ -280,16 +255,10 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         await dispatcher.close();
         if (change === "revoke")
           await database
-            .updateTable("workspaceMemberships")
-            .set({ state: "active", revokedAt: null, revokedBy: null })
-            .where("id", "=", member.id)
+            .updateTable("users")
+            .set({ disabledAt: null })
+            .where("id", "=", recipientId)
             .execute();
-        if (change === "mute")
-          await state.setAgentNotificationMute({
-            muted: false,
-            userId: member.userId,
-            workspaceId: stack.mainWorkspaceId,
-          });
         if (change === "answer") await stack.interruptRun(threadId, runId);
       }
       expect(posts).toBe(stage === "retry" ? 1 : 0);
@@ -297,37 +266,43 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       expect(skip).toBe(
         {
           read: "Reply was read before publication",
-          mute: "Workspace was muted before publication",
           revoke: "Recipient can no longer open this Thread",
           answer: "Request was answered before the notification was published",
         }[change],
       );
-      evidence.push({ change, stage, posts, skip });
+      evidence.push({
+        change,
+        stage,
+        posts,
+        skip,
+      });
     },
     60_000,
   );
-
   it("shares the notification expiry boundary between the store and dispatcher", async () => {
     const threadId = await stack.createThread({
       modelSelection,
       title: "Shared notification expiry",
-      workspaceId: stack.mainWorkspaceId,
     });
     const turn = await stack.sendMessage({
       text: "Expiry boundary [[reply Expire this reply]]",
       threadId,
-      workspaceId: stack.mainWorkspaceId,
     });
     const row = await stack.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("runId", "=", turn.runId)
       .where("type", "=", "run.completed")
       .executeTakeFirstOrThrow();
-    const event = AgentEventSchema.parse({ ...row, createdAt: row.createdAt.toISOString() });
+    const event = AgentEventSchema.parse({
+      ...row,
+      createdAt: row.createdAt.toISOString(),
+    });
     const clock = new ManualClock(Date.parse(event.createdAt));
     const now = () => new Date(clock.now());
-    const store = new NotificationStore(stack.host.store.database, { now });
+    const store = new NotificationStore(stack.host.store.database, {
+      now,
+    });
     const live: string[] = [];
     const errors: unknown[] = [];
     const dispatcher = new NotificationDispatcher({
@@ -355,7 +330,6 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       dispatcher.dispatch(event);
       await dispatcher.drain();
       expect(live).toEqual(decisions.map(({ view }) => view.id));
-
       clock.advanceBy(1);
       await expect(store.decide(event)).resolves.toEqual([]);
       await expect(store.publicationSkipReason(entry)).resolves.toBe(
