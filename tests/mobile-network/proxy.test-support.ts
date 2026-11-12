@@ -15,6 +15,7 @@ export interface LinkProfile {
 }
 
 export const linkProfiles = {
+  "cell-target": { latencyUpMs: 100, latencyDownMs: 100, upBps: 1_000_000, downBps: 1_000_000 },
   lan: { latencyUpMs: 0, latencyDownMs: 0, upBps: 0, downBps: 0 },
   "4g": { latencyUpMs: 50, latencyDownMs: 50, upBps: 3_000_000, downBps: 9_000_000 },
   "weak-cell": { latencyUpMs: 200, latencyDownMs: 200, upBps: 384_000, downBps: 1_000_000 },

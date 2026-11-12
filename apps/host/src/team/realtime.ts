@@ -26,7 +26,7 @@ interface Subscription {
 interface Peer {
   actor: TeamActor;
   socket: TeamSocket;
-  subscription: Subscription | null;
+  subscriptions: Map<string, Subscription>;
   visible: boolean;
   watched: UserId[];
   seen: number;
@@ -40,6 +40,8 @@ export class TeamRealtimeHub {
     { userId: UserId; channelId: TeamChannelId; rootId: string | null; sent: number; until: number }
   >();
   readonly #dirty = new Set<TeamChannelId>();
+  readonly #snapshots = new Map<string, Promise<TeamConsistentCut>>();
+  readonly #sidebars = new Map<string, Promise<Awaited<ReturnType<TeamChatStore["directory"]>>>>();
   readonly #unsubscribeChange: () => void;
   readonly #unsubscribeAccess: () => void;
   readonly #timer: ReturnType<typeof setInterval>;
@@ -62,13 +64,10 @@ export class TeamRealtimeHub {
         try {
           await access.database.transaction().execute(async (t) => {
             await access.member(t, peer.actor.userId);
-            if (peer.subscription?.scope) {
-              const channel = await chat.channelView(
-                t,
-                peer.actor,
-                peer.subscription.scope.channelId,
-              );
-              peer.subscription.can = channel.can;
+            for (const subscription of peer.subscriptions.values()) {
+              if (!subscription.scope) continue;
+              const channel = await chat.channelView(t, peer.actor, subscription.scope.channelId);
+              subscription.can = channel.can;
             }
           });
           this.#send(peer, { type: "team.access.changed", accessRevision: access.revision });
@@ -82,12 +81,48 @@ export class TeamRealtimeHub {
     this.#timer = setInterval(() => this.#expire(), 1000);
     this.#timer.unref();
   }
+  #snapshot(actor: TeamActor, subscription: Subscription) {
+    const key = JSON.stringify([
+      actor,
+      subscription.scope,
+      subscription.since,
+      this.access.revision,
+    ]);
+    let pending = this.#snapshots.get(key);
+    if (!pending) {
+      pending = this.chat
+        .resume(actor, {
+          subscriptionId: subscription.id,
+          generation: subscription.generation,
+          scope: subscription.scope!,
+          sinceSeq: subscription.since,
+        })
+        .finally(() => this.#snapshots.delete(key));
+      this.#snapshots.set(key, pending);
+    }
+    return pending.then((cut) => ({
+      ...cut,
+      subscriptionId: subscription.id,
+      generation: subscription.generation,
+    }));
+  }
+  #sidebar(actor: TeamActor) {
+    const key = JSON.stringify([actor, this.access.revision]);
+    let pending = this.#sidebars.get(key);
+    if (!pending) {
+      pending = this.chat
+        .directory(actor, undefined, true)
+        .finally(() => this.#sidebars.delete(key));
+      this.#sidebars.set(key, pending);
+    }
+    return pending;
+  }
   visible(userId: UserId, channelId: TeamChannelId) {
     return [...this.#peers].some(
       (p) =>
         p.actor.userId === userId &&
         p.visible &&
-        p.subscription?.scope?.channelId === channelId &&
+        [...p.subscriptions.values()].some((s) => s.scope?.channelId === channelId) &&
         Date.now() - p.seen < 90000,
     );
   }
@@ -97,7 +132,7 @@ export class TeamRealtimeHub {
     const peer: Peer = {
       actor,
       socket,
-      subscription: null,
+      subscriptions: new Map(),
       visible: false,
       watched: [],
       seen: Date.now(),
@@ -129,21 +164,22 @@ export class TeamRealtimeHub {
             since: frame.sinceSeq,
             can: null,
           };
-          peer.subscription = subscription;
-          if (frame.sidebar) {
+          if (!peer.subscriptions.has(subscription.id) && peer.subscriptions.size >= 3)
+            throw new OpensteerError({
+              code: "resource_exhausted",
+              message: "Too many team subscriptions",
+            });
+          const hadSidebar = [...peer.subscriptions.values()].some((s) => s.sidebar);
+          peer.subscriptions.set(subscription.id, subscription);
+          if (frame.sidebar && !hadSidebar) {
             const revision = this.access.revision;
-            const sidebar = await this.chat.directory(actor, undefined, true);
+            const sidebar = await this.#sidebar(actor);
             await this.#handoff(peer, { type: "team.sidebar", sidebar }, revision);
           }
           if (frame.scope) {
             const revision = this.access.revision;
-            const cut = await this.chat.resume(actor, {
-              subscriptionId: frame.subscriptionId,
-              generation: frame.generation,
-              scope: frame.scope,
-              sinceSeq: frame.sinceSeq,
-            });
-            if (peer.subscription !== subscription || peer.closed) return;
+            const cut = await this.#snapshot(actor, subscription);
+            if (peer.subscriptions.get(subscription.id) !== subscription || peer.closed) return;
             subscription.can = cut.channel.can;
             await this.#handoff(peer, { type: "team.cut", cut }, revision);
             subscription.since = cut.throughSeq;
@@ -189,9 +225,14 @@ export class TeamRealtimeHub {
         this.access.database.transaction().execute(async (t) => {
           await this.access.member(t, peer.actor.userId);
           return (
-            !peer.subscription?.scope ||
-            (await this.access.channel(t, peer.actor, peer.subscription.scope.channelId)).read
-          );
+            await Promise.all(
+              [...peer.subscriptions.values()]
+                .filter((s) => s.scope)
+                .map(
+                  async (s) => (await this.access.channel(t, peer.actor, s.scope!.channelId)).read,
+                ),
+            )
+          ).every(Boolean);
         }),
       () => this.#send(peer, frame),
     );
@@ -203,42 +244,36 @@ export class TeamRealtimeHub {
       while (this.#dirty.size) {
         const dirty = [...this.#dirty];
         this.#dirty.clear();
-        const groups = new Map<string, Peer[]>();
+        const groups = new Map<string, { peer: Peer; subscription: Subscription }[]>();
         for (const peer of this.#peers) {
-          const s = peer.subscription;
-          if (!s) continue;
-          if (s.sidebar)
+          if ([...peer.subscriptions.values()].some((s) => s.sidebar))
             this.#send(peer, {
               type: "team.sidebar.dirty",
               channelIds: dirty.slice(0, 200),
               accessRevision: this.access.revision,
             });
-          if (!s.scope || !dirty.includes(s.scope.channelId)) continue;
-          const key = JSON.stringify([s.scope, s.since]);
-          const list = groups.get(key) ?? [];
-          list.push(peer);
-          groups.set(key, list);
+          for (const subscription of peer.subscriptions.values()) {
+            if (!subscription.scope || !dirty.includes(subscription.scope.channelId)) continue;
+            const key = JSON.stringify([subscription.scope, subscription.since]);
+            const list = groups.get(key) ?? [];
+            list.push({ peer, subscription });
+            groups.set(key, list);
+          }
         }
-        for (const peers of groups.values()) {
-          const first = peers[0]!,
-            subscription = first.subscription!;
+        for (const viewers of groups.values()) {
+          const first = viewers[0]!,
+            subscription = first.subscription;
           if (!subscription.scope) continue;
           try {
             const revision = this.access.revision;
-            const cut = await this.chat.resume(first.actor, {
+            const cut = await this.chat.resume(first.peer.actor, {
               subscriptionId: subscription.id,
               generation: subscription.generation,
               scope: subscription.scope,
               sinceSeq: subscription.since,
             });
-            for (const peer of peers) {
-              const current = peer.subscription;
-              if (
-                !current?.scope ||
-                JSON.stringify(current.scope) !== JSON.stringify(cut.scope) ||
-                !current.can
-              )
-                continue;
+            for (const { peer, subscription: current } of viewers) {
+              if (peer.subscriptions.get(current.id) !== current || !current.can) continue;
               await this.#handoff(
                 peer,
                 {
@@ -255,7 +290,7 @@ export class TeamRealtimeHub {
               current.since = cut.throughSeq;
             }
           } catch {
-            for (const peer of peers) this.#close(peer, "Team subscription unavailable");
+            for (const { peer } of viewers) this.#close(peer, "Team subscription unavailable");
           }
         }
       }
@@ -272,7 +307,7 @@ export class TeamRealtimeHub {
       ),
     ].slice(0, 50);
     for (const peer of this.#peers)
-      if (peer.subscription?.scope?.channelId === channelId)
+      if ([...peer.subscriptions.values()].some((s) => s.scope?.channelId === channelId))
         this.#send(peer, {
           type: "team.typing",
           channelId,
