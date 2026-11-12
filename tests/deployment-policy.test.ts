@@ -18,6 +18,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
+  "packages/browser-source-wire/src/frozen/personal-access-route.ts": {
+    counts: {
+      "authority.deploymentShape.kind": 1,
+    },
+    reason:
+      "A frozen copy of what shipped extensions verify; it cannot call the evolving policy and must never change.",
+  },
   "apps/control-plane/src/portal/pages.ts": {
     counts: {
       "input.kind": 1,

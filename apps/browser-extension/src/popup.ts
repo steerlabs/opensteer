@@ -1,4 +1,4 @@
-import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
+import { browserSiteDomain } from "@opensteer/browser-source-wire/site";
 import {
   StatusSchema,
   askWorker,
@@ -16,6 +16,7 @@ let problem: string | null = null;
 let lastRendered = "";
 
 const stateLabels: Record<ConnectionState, { label: string; tone: string }> = {
+  "different-opensteer": { label: "Connect again", tone: "warn" },
   connected: { label: "Connected", tone: "ok" },
   connecting: { label: "Connecting…", tone: "wait" },
   ended: { label: "Disconnected by Opensteer", tone: "bad" },
@@ -151,7 +152,7 @@ function fix(connection: ConnectionView): HTMLElement | null {
           h(
             "p",
             {},
-            `This Opensteer needs an update before Chrome can connect. Update Opensteer on the computer that runs ${name}, then choose Try again.`,
+            `This Opensteer needs an update before Chrome can connect. Update Opensteer on the computer that runs ${name}; this reconnects by itself once it has.`,
           ),
           h(
             "div.notice__actions",
@@ -164,6 +165,16 @@ function fix(connection: ConnectionView): HTMLElement | null {
               "reload",
             ),
           ),
+        ),
+      );
+    case "different-opensteer":
+      return h(
+        "div.notice.notice--warn",
+        {},
+        h(
+          "p",
+          {},
+          "A different Opensteer answered at this address. If yours was reset, connect again from Opensteer; otherwise this reconnects by itself.",
         ),
       );
     case "route-changed":
@@ -407,6 +418,15 @@ function render(force = false, focusKey?: string): void {
   const children: HTMLElement[] = current.connections.length
     ? current.connections.map(deployment)
     : [empty()];
+  for (const id of current.quarantined)
+    children.push(
+      h(
+        "section.notice.notice--warn",
+        {},
+        h("p", {}, "A saved connection couldn't be read. Connect again."),
+        button("btn.btn--small", "Forget", () => void act({ type: "ui.quarantine.forget", id })),
+      ),
+    );
   if (problem) {
     children.unshift(
       h("p.notice.notice--bad.popup__problem", { role: "alert" }, icon("alert-circle"), problem),
@@ -429,7 +449,7 @@ async function refresh(): Promise<void> {
     current = result.value;
     render();
   } else if (!current) {
-    current = { connections: [] };
+    current = { connections: [], quarantined: [] };
     problem = "Opensteer's extension isn't responding. Close this and try again.";
     render(true);
   }

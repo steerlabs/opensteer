@@ -70,7 +70,7 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
 describe("fresh personal/team lineage", () => {
   it("upgrades existing queued inputs with fresh context disabled in the table and work view", async () => {
     const migrations = await migrationProvider().getMigrations();
-    delete migrations["0004_thread_input_fresh_context"];
+    delete migrations["0005_thread_input_fresh_context"];
     await migrateToLatest(database, { getMigrations: async () => migrations });
     const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
     const store = new OpensteerStore(database);
@@ -221,7 +221,11 @@ describe("fresh personal/team lineage", () => {
     await migrateToLatest(database);
     expect(await catalog()).toEqual(before);
     expect(
-      (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
+      (
+        await sql<{ name: string }>`select name from kysely_migration order by name`.execute(
+          database,
+        )
+      ).rows,
     ).toEqual(Object.keys(await migrationProvider().getMigrations()).map((name) => ({ name })));
   });
   it.each([

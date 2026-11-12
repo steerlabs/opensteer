@@ -4,7 +4,7 @@ import { PERSONAL_TEAM_BASELINE_SQL } from "./baseline-schema.js";
 import type { DatabaseSchema } from "./schema.js";
 
 export const personalTeamBaselineName = "0002_personal_team_baseline";
-export const threadVisitsMigrationName = "0003_thread_visits";
+export const threadVisitsMigrationName = "0004_thread_visits";
 export function migrationProvider(): MigrationProvider {
   return {
     async getMigrations() {
@@ -12,6 +12,14 @@ export function migrationProvider(): MigrationProvider {
         [personalTeamBaselineName]: {
           async up(database) {
             await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
+          },
+        },
+        "0003_browser_source_binding": {
+          /** The destination a source paired on; null until a source paired before this binds. */
+          async up(database) {
+            await sql`alter table browser_sources add column paired_origin text, add column paired_route_generation integer`.execute(
+              database,
+            );
           },
         },
         [threadVisitsMigrationName]: {
@@ -51,7 +59,7 @@ export function migrationProvider(): MigrationProvider {
             await sql`drop table thread_read_markers`.execute(database);
           },
         },
-        "0004_thread_input_fresh_context": {
+        "0005_thread_input_fresh_context": {
           async up(database) {
             await sql`alter table thread_inputs add column fresh_context boolean not null default false`.execute(
               database,

@@ -115,6 +115,7 @@ COPY packages/apple-dictation/package.json ./packages/apple-dictation/package.js
 COPY packages/browser-core/package.json ./packages/browser-core/package.json
 COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
 COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json
+COPY packages/browser-source-wire/package.json ./packages/browser-source-wire/package.json
 COPY packages/channel-core/package.json ./packages/channel-core/package.json
 COPY packages/channel-imessage/package.json ./packages/channel-imessage/package.json
 COPY packages/channel-protocol/package.json ./packages/channel-protocol/package.json
@@ -252,6 +253,7 @@ COPY packages/apple-dictation/package.json ./packages/apple-dictation/package.js
 COPY packages/browser-core/package.json ./packages/browser-core/package.json
 COPY packages/browser-profile/package.json ./packages/browser-profile/package.json
 COPY packages/browser-runtime-core/package.json ./packages/browser-runtime-core/package.json
+COPY packages/browser-source-wire/package.json ./packages/browser-source-wire/package.json
 COPY packages/channel-core/package.json ./packages/channel-core/package.json
 COPY packages/channel-imessage/package.json ./packages/channel-imessage/package.json
 COPY packages/channel-protocol/package.json ./packages/channel-protocol/package.json

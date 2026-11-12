@@ -180,6 +180,7 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_HOSTING_ENVIRONMENT_ID: EnvironmentIdSchema.optional(),
   OPENSTEER_AGENT_HOME: optionalPath,
   OPENSTEER_NATIVE_FS_HELPER: optionalPath,
+  OPENSTEER_BROWSER_EXTENSION_DIRECTORY: optionalPath,
   OPENSTEER_NATIVE_OAUTH_ENABLED: optionalBooleanValue,
   OPENSTEER_DEPLOYMENT_KIND: DeploymentKindSchema.optional(),
   OPENSTEER_HOST_INSTANCE_ID: HostInstanceIdSchema.optional(),
@@ -227,6 +228,8 @@ export interface HostConfig {
     readonly environmentId: EnvironmentId;
     readonly agentHome: string;
     readonly nativeFsHelperPath?: string;
+    /** The unpacked extension folder the desktop app keeps current on this computer. */
+    readonly browserExtensionDirectory?: string;
   };
   readonly accountBundlePath: string;
   readonly authSecret: string;
@@ -342,7 +345,9 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (
     config.personal &&
     (!isAbsolute(config.personal.agentHome) ||
-      (config.personal.nativeFsHelperPath && !isAbsolute(config.personal.nativeFsHelperPath)))
+      (config.personal.nativeFsHelperPath && !isAbsolute(config.personal.nativeFsHelperPath)) ||
+      (config.personal.browserExtensionDirectory &&
+        !isAbsolute(config.personal.browserExtensionDirectory)))
   ) {
     throw new Error("Agent home must be an absolute path");
   }
@@ -580,6 +585,9 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
             environmentId: environmentId!,
             ...(parsed.OPENSTEER_NATIVE_FS_HELPER
               ? { nativeFsHelperPath: parsed.OPENSTEER_NATIVE_FS_HELPER }
+              : {}),
+            ...(parsed.OPENSTEER_BROWSER_EXTENSION_DIRECTORY
+              ? { browserExtensionDirectory: parsed.OPENSTEER_BROWSER_EXTENSION_DIRECTORY }
               : {}),
             agentHome:
               parsed.OPENSTEER_AGENT_HOME ??

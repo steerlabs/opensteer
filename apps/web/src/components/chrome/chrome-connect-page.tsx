@@ -51,7 +51,7 @@ export function ChromeConnectCard({ state }: { readonly state: ChromeConnectLink
     );
   }
 
-  const { deploymentName, invitation } = state.link;
+  const { deploymentName, extensionDirectory, invitation } = state.link;
   const otherBrowser = environment.place !== "chromium";
   return (
     <OnboardingCard
@@ -61,7 +61,12 @@ export function ChromeConnectCard({ state }: { readonly state: ChromeConnectLink
       titleId="chrome-connect-title"
     >
       <div className="chrome-connect-page">
-        <ConnectChrome client={null} environment={environment} invitation={invitation} />
+        <ConnectChrome
+          client={null}
+          environment={environment}
+          invitation={invitation}
+          linkExtensionDirectory={extensionDirectory}
+        />
         {otherBrowser && environment.place !== "phone" ? (
           <div className="chrome-connect-page__copy">
             <button

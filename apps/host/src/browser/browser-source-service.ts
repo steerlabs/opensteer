@@ -28,19 +28,27 @@ import {
   BrowserSignInRequestResponseSchema,
   BrowserSourceClientMessageSchema,
   BrowserSourcePairInputSchema,
-  browserSourceProtocolVersion,
+  browserSourceWireCurrent,
+  browserSourceWireFloor,
   maxBrowserSourceFrameBytes,
+  negotiateWire,
+  parseWireQuery,
+  readClientMessage,
   type AgentBrowserSignInResult,
   type BrowserSignInDecision,
   type BrowserSignInOutcome,
   type BrowserSignInPasswords,
   type BrowserSignInProblem,
   type BrowserSignInRequestResponse,
+  type BrowserSourceClientFrame,
   type BrowserSourceClientMessage,
+  type BrowserSourceHostFrame,
   type BrowserSourceHostMessage,
   type BrowserSourceInspection,
   type BrowserSourceStatus,
   type BrowserSourcesState,
+  type UnknownMessage,
+  type WireNegotiation,
 } from "@opensteer/protocol/browser-sources";
 import type {
   BrowserSignInActor,
@@ -78,6 +86,8 @@ const maxCallsPerRun = 30;
 const pairChallengeWindowMs = 60_000;
 const maxPairChallengesPerAddress = 30;
 const drainPageSize = 64;
+/** The first wire whose peers read frames tolerantly; wire-4 peers keep today's strict schemas. */
+const tolerantWire = 5;
 
 type AgentSignInInput = {
   readonly ownerId: UserId;
@@ -93,7 +103,9 @@ type AgentSignInInput = {
   readonly targetId?: string;
 };
 
-type SourceReply = Extract<BrowserSourceClientMessage, { operationId: string }>;
+/** A wire-4 peer's frames parse strictly; a newer peer's tolerantly. */
+type ClientMessage = BrowserSourceClientMessage | BrowserSourceClientFrame;
+type SourceReply = Extract<ClientMessage, { operationId: string }>;
 type SourceSocket = {
   readonly sourceId: BrowserSourceId;
   readonly ownerId: UserId;
@@ -170,6 +182,7 @@ export class BrowserSourceService {
   /** Signs with the Host identity key the invitation's authority names. */
   readonly #sign: (bytes: Uint8Array) => string;
   readonly #canonicalOrigin: string;
+  readonly #extensionDirectory: string | null;
   readonly #currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
   readonly #onDeploymentEvent: (event: AgentEvent) => void;
   readonly #onRequestResolved: () => void;
@@ -178,6 +191,8 @@ export class BrowserSourceService {
   readonly #connections = new Map<BrowserSourceId, SourceSocket>();
   readonly #sockets = new Set<WebSocket>();
   readonly #pendingHandshakes = new Set<WebSocket>();
+  /** Authenticated sources not yet ready; they replace a live connection only once ready. */
+  readonly #authenticating = new Set<SourceSocket>();
   readonly #pendingByAddress = new Map<string, number>();
   readonly #turns = new Map<string, Promise<unknown>>();
   readonly #signIns = new Map<string, Promise<void>>();
@@ -198,6 +213,8 @@ export class BrowserSourceService {
     readonly browser: Pick<BrowserService, "applySiteCookies" | "signInTarget">;
     readonly sign: (bytes: Uint8Array) => string;
     readonly canonicalOrigin: string;
+    /** The unpacked extension folder the desktop app keeps current, when there is one. */
+    readonly extensionDirectory?: string | null;
     readonly currentRoute: () => Promise<PersonalHostAccessRouteEnvelope | null>;
     readonly onDeploymentEvent: (event: AgentEvent) => void;
     /** A sign-in Request was fulfilled or declined, so its continuation can be sent. */
@@ -220,6 +237,7 @@ export class BrowserSourceService {
     this.#browser = options.browser;
     this.#sign = options.sign;
     this.#canonicalOrigin = options.canonicalOrigin;
+    this.#extensionDirectory = options.extensionDirectory ?? null;
     this.#currentRoute = options.currentRoute;
     this.#onDeploymentEvent = options.onDeploymentEvent;
     this.#onRequestResolved = options.onRequestResolved;
@@ -260,7 +278,7 @@ export class BrowserSourceService {
     ingressOrigin: string,
   ): Promise<{ readonly sourceId: BrowserSourceId; readonly token: string }> {
     const parsed = BrowserSourcePairInputSchema.parse(input);
-    if (parsed.version !== browserSourceProtocolVersion) {
+    if (parsed.version < browserSourceWireFloor || parsed.version > browserSourceWireCurrent) {
       throw new OpensteerError({
         code: "bad_request",
         reason: "unsupported-version",
@@ -279,10 +297,7 @@ export class BrowserSourceService {
         ? { sourceId: parsed.replaces.sourceId, tokenHash: digest(parsed.replaces.token) }
         : null,
     });
-    if (parsed.replaces) {
-      const previous = this.#connections.get(parsed.replaces.sourceId);
-      if (previous?.ownerId === source.ownerId) this.#sourceUnauthorized(previous.socket);
-    }
+    if (parsed.replaces) this.#endConnections(parsed.replaces.sourceId, source.ownerId);
     return { sourceId: source.id, token };
   }
 
@@ -307,12 +322,28 @@ export class BrowserSourceService {
     return { signature: this.#sign(browserSourcePairChallengeBytes(challenge)) };
   }
 
-  /** Accepts an upgraded source socket; only its first bounded frame may authenticate it. */
-  acceptSocket(socket: WebSocket, ingressOrigin: string, address: string): void {
+  /**
+   * Accepts an upgraded source socket; only its first bounded frame may
+   * authenticate it. `query` is the upgrade URL's: a wire-4 extension states no
+   * `wire`, a newer one states the highest it speaks.
+   */
+  acceptSocket(
+    socket: WebSocket,
+    ingressOrigin: string,
+    address: string,
+    query: URLSearchParams,
+  ): void {
     if (this.#closed) {
       socket.close(1012, "Host stopping");
       return;
     }
+    const stated = parseWireQuery(query);
+    if (stated.kind === "invalid") {
+      socket.close(1008, "Invalid wire version");
+      return;
+    }
+    const wire = negotiateWire(stated.kind === "valid" ? stated.wire : null);
+    const tolerant = wire.kind === "negotiated" && wire.wire >= tolerantWire;
     if ((this.#pendingByAddress.get(address) ?? 0) >= maxPendingSourceConnections) {
       socket.close(1013, "Source connection capacity reached");
       return;
@@ -346,11 +377,13 @@ export class BrowserSourceService {
         socket.close(1009, "Frame too large");
         return;
       }
-      let message: BrowserSourceClientMessage;
-      try {
-        message = BrowserSourceClientMessageSchema.parse(JSON.parse(bytes.toString("utf8")));
-      } catch {
+      const message = readSourceMessage(bytes.toString("utf8"), tolerant);
+      if (!message) {
         socket.close(1007, "Invalid source frame");
+        return;
+      }
+      if (message.type === "unknown") {
+        if (!peer) socket.close(1008, "Verify Host before authentication");
         return;
       }
       if (!peer) {
@@ -370,11 +403,20 @@ export class BrowserSourceService {
               const signature = this.#sign(browserSourceChallengeBytes(challenged));
               challengeAdmitted = true;
               socket.send(
-                JSON.stringify({
-                  type: "source.proof",
-                  nonce: message.nonce,
-                  signature,
-                } satisfies BrowserSourceHostMessage),
+                JSON.stringify(
+                  tolerant && wire.kind === "negotiated"
+                    ? ({
+                        type: "source.proof",
+                        nonce: message.nonce,
+                        signature,
+                        wire: wire.wire,
+                      } satisfies BrowserSourceHostFrame)
+                    : ({
+                        type: "source.proof",
+                        nonce: message.nonce,
+                        signature,
+                      } satisfies BrowserSourceHostMessage),
+                ),
               );
             })
             .catch((error: unknown) => this.#rejectHandshake(socket, error, challenged));
@@ -390,20 +432,10 @@ export class BrowserSourceService {
           socket.close(1008, "Verify Host before authentication");
           return;
         }
-        if (message.version !== browserSourceProtocolVersion) {
-          socket.send(
-            JSON.stringify({
-              type: "source.error",
-              code: "unsupported-version",
-              supportedVersion: browserSourceProtocolVersion,
-            } satisfies BrowserSourceHostMessage),
-          );
-          socket.close(1008, "Browser extension update required");
-          return;
-        }
         authenticating = true;
-        void this.#authenticateSocket(socket, message, destination, ingressOrigin)
+        void this.#authenticateSocket(socket, message, destination, ingressOrigin, wire)
           .then((connected) => {
+            if (!connected) return;
             peer = connected;
             clearPending();
             clearTimeout(helloTimer);
@@ -454,6 +486,7 @@ export class BrowserSourceService {
     ]);
     const active = new Set(sources.map((source) => source.id));
     return {
+      extensionDirectory: this.#extensionDirectory,
       sources: sources.map((source) => ({
         connected: this.#isConnected(source.id),
         createdAt: source.createdAt.toISOString(),
@@ -509,10 +542,7 @@ export class BrowserSourceService {
     readonly sourceId: BrowserSourceId;
   }): Promise<boolean> {
     const revoked = await this.#store.revoke(input);
-    if (revoked) {
-      const peer = this.#connections.get(input.sourceId);
-      if (peer) this.#sourceUnauthorized(peer.socket);
-    }
+    if (revoked) this.#endConnections(input.sourceId, input.ownerId);
     return revoked;
   }
 
@@ -1008,8 +1038,16 @@ export class BrowserSourceService {
   }
 
   disconnectRouteAdmittedSources(): void {
-    for (const peer of this.#connections.values()) {
+    for (const peer of [...this.#connections.values(), ...this.#authenticating]) {
       if (peer.routeGeneration !== null) this.#routeChanged(peer.socket);
+    }
+  }
+
+  /** Ends the source's live connection and any connection still authenticating for it. */
+  #endConnections(sourceId: BrowserSourceId, ownerId: UserId): void {
+    for (const peer of [this.#connections.get(sourceId), ...this.#authenticating]) {
+      if (peer?.sourceId === sourceId && peer.ownerId === ownerId)
+        this.#sourceUnauthorized(peer.socket);
     }
   }
 
@@ -1427,7 +1465,7 @@ export class BrowserSourceService {
     try {
       cookies = validateBrowserSourceSnapshot(site, reply.result.snapshot).cookies;
     } catch {
-      peer.socket.close(1008, "Invalid site state");
+      // One site Chrome and the Host scope differently fails alone; the connection stays.
       return problem("unsupported", site, source.name);
     }
     // Every check below runs after the last round trip before the import, so
@@ -1613,22 +1651,38 @@ export class BrowserSourceService {
     socket.close(1011, "Source temporarily unavailable");
   }
 
+  /**
+   * Authenticates the token, its owner and the destination it was paired on
+   * before checking the version, so an unauthenticated hello learns nothing and
+   * changes nothing; a live connection is replaced only once this one is ready.
+   * Null when the version was refused.
+   */
   async #authenticateSocket(
     socket: WebSocket,
-    message: Extract<BrowserSourceClientMessage, { type: "source.hello" }>,
+    message: Extract<ClientMessage, { type: "source.hello" }>,
     destination: { readonly origin: string; readonly routeGeneration: number | null },
     ingressOrigin: string,
-  ): Promise<SourceSocket> {
+    wire: WireNegotiation,
+  ): Promise<SourceSocket | null> {
     await this.#admitDestination(destination, ingressOrigin);
     const source = await this.#store.authenticate(digest(message.token));
     if (!source || source.id !== message.sourceId)
       throw new OpensteerError({ code: "forbidden", message: "Invalid source credential" });
-    const previous = this.#connections.get(source.id);
-    if (previous) {
-      rejectPending(previous, new Error("Browser source superseded"));
-      previous.socket.close(1008, "New connection");
+    if (!(await this.#store.claimDestination({ sourceId: source.id, ...destination })))
+      throw new OpensteerError({ code: "forbidden", message: "Browser source route changed" });
+    if (wire.kind !== "negotiated" || message.version !== wire.wire) {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            type: "source.error",
+            code: "unsupported-version",
+            supportedVersion: wire.kind === "negotiated" ? wire.wire : wire.supportedVersion,
+          } satisfies BrowserSourceHostMessage),
+        );
+      }
+      socket.close(1008, "Browser extension update required");
+      return null;
     }
-    if (socket.readyState !== WebSocket.OPEN) throw new Error("Source socket closed");
     const peer: SourceSocket = {
       sourceId: source.id,
       ownerId: source.ownerId,
@@ -1640,16 +1694,23 @@ export class BrowserSourceService {
       lastPongAt: this.#now(),
       pending: new Map(),
     };
-    this.#connections.set(source.id, peer);
+    // Registered before the re-check, so a revoke that lands meanwhile ends it.
+    this.#authenticating.add(peer);
     try {
       const stillAuthorized = await this.#store.get(source.id, source.ownerId);
       if (!stillAuthorized || stillAuthorized.generation !== peer.generation)
         throw new OpensteerError({ code: "forbidden", message: "Invalid source credential" });
       if (!(await this.#destinationIsCurrent(destination)))
         throw new OpensteerError({ code: "forbidden", message: "Browser source route changed" });
-      if (this.#connections.get(source.id) !== peer || socket.readyState !== WebSocket.OPEN) {
+      if (socket.readyState !== WebSocket.OPEN) {
         throw new Error("Browser source changed during authentication");
       }
+      const previous = this.#connections.get(source.id);
+      if (previous) {
+        rejectPending(previous, new Error("Browser source superseded"));
+        previous.socket.close(1008, "New connection");
+      }
+      this.#connections.set(source.id, peer);
       peer.ready = true;
       socket.send(
         JSON.stringify({
@@ -1658,9 +1719,8 @@ export class BrowserSourceService {
         } satisfies BrowserSourceHostMessage),
       );
       return peer;
-    } catch (error) {
-      if (this.#connections.get(source.id) === peer) this.#connections.delete(source.id);
-      throw error;
+    } finally {
+      this.#authenticating.delete(peer);
     }
   }
 
@@ -1900,6 +1960,15 @@ function invocationUuid(identity: string): string {
 
 function digest(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function readSourceMessage(raw: string, tolerant: boolean): ClientMessage | UnknownMessage | null {
+  if (tolerant) return readClientMessage(raw);
+  try {
+    return BrowserSourceClientMessageSchema.parse(JSON.parse(raw));
+  } catch {
+    return null;
+  }
 }
 
 function rejectPending(peer: SourceSocket, error: Error): void {

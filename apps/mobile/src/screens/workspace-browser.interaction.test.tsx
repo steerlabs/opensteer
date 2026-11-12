@@ -1547,7 +1547,7 @@ describe("mobile pages", () => {
       expect.objectContaining({ sourceId: "bsr_work", type: "browser.session.sign-in" }),
     );
     expect(container.textContent).toContain("Work Chrome is offline");
-    expect(container.textContent).toContain("Open Chrome on that computer.");
+    expect(container.textContent).toContain("Open that browser on its computer.");
     expect(sendBrowserCommand).not.toHaveBeenCalled();
   });
 
