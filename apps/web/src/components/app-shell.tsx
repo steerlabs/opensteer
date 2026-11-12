@@ -71,6 +71,7 @@ import {
   type ThreadSummary,
   taskAttention,
   heldThread,
+  taskDoneConfirmation,
   taskUnderWay,
 } from "@opensteer/client/host";
 import { Dialog } from "./dialog.js";
@@ -1056,7 +1057,7 @@ export function AppShell({
               </>
             }
           >
-            This stops its work and the tasks it handed out, and pauses its schedules.
+            {taskDoneConfirmation}
           </Dialog>
         ) : null}
         <DownloadFeedback />

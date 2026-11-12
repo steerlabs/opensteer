@@ -260,14 +260,19 @@ export interface ThreadSummary {
 }
 
 /**
- * An automation anchored to a conversation, as much of it as that
- * conversation shows: an archived one is gone, so it is never held.
+ * An automation in a conversation's family, as much of it as that
+ * conversation shows: one anchored to it, or one running in its own task
+ * linked under it. An archived one is held only in the second case, so its
+ * task stays reachable.
  */
 export interface ThreadAutomation {
   readonly id: string;
   readonly name: string;
   readonly kind: "schedule" | "webhook" | "watch";
   readonly paused: boolean;
+  readonly ended: boolean;
+  /** Its own task, linked under the conversation; null when it runs in the conversation itself. */
+  readonly taskId: string | null;
   /** When a schedule next fires; null for a watch, a webhook or a paused one. */
   readonly nextFireAt: string | null;
 }

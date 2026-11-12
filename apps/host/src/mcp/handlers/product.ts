@@ -111,7 +111,8 @@ export interface AgentExecution {
   canExecute(environmentId: EnvironmentId): boolean;
 }
 
-interface ConnectionTask {
+/** A task started on its own: no parent and no Assignment, so nothing returns. */
+interface StandaloneTask {
   readonly thread: Thread;
   readonly expectedHarnessRevision?: number;
 }
@@ -1067,10 +1068,12 @@ export class ProductToolHandlers {
     return { existingThread, specialist, environment, placement };
   }
   async authorizeDelegation(call: ToolCall<"delegate_task">) {
-    if (call.caller.kind === "connection") {
-      if (!(await this.#priorConnectionTask(call.caller, call.input, call.operationKey)))
-        await this.#prepareConnectionDelegation(call.caller, call.input);
-    } else await this.prepareDelegation(call);
+    if (call.caller.kind !== "connection" && !call.input.standalone)
+      await this.prepareDelegation(call);
+    else if (!(await this.#priorStandaloneTask(call.caller, call.input, call.operationKey)))
+      await (call.caller.kind === "connection"
+        ? this.#prepareConnectionDelegation(call.caller, call.input)
+        : this.prepareDelegation(call));
   }
   /**
    * The task an earlier call under this operationKey already created. Its
@@ -1078,11 +1081,11 @@ export class ProductToolHandlers {
    * it rather than resolving today's defaults; only what the caller itself
    * specified must still match.
    */
-  async #priorConnectionTask(
-    caller: Extract<AgentCaller, { kind: "connection" }>,
+  async #priorStandaloneTask(
+    caller: AgentCaller,
     input: ToolCall<"delegate_task">["input"],
     operationKey: string,
-  ): Promise<ConnectionTask | null> {
+  ): Promise<StandaloneTask | null> {
     if (input.threadId) return null;
     const requestId = operationId(caller, operationKey, "delegate_task");
     const key = idempotencyKey(caller, requestId, "create");
@@ -1125,7 +1128,7 @@ export class ProductToolHandlers {
     caller: Extract<AgentCaller, { kind: "connection" }>,
     input: ToolCall<"delegate_task">["input"],
     requestId: string,
-  ): Promise<ConnectionTask> {
+  ): Promise<StandaloneTask> {
     const {
       existing,
       environmentId,
@@ -1156,6 +1159,34 @@ export class ProductToolHandlers {
     );
     return { thread, ...expected };
   }
+  /** A Run or program's standalone task, placed as its own delegation would be. */
+  async #createRunStandaloneTask(
+    call: ToolCall<"delegate_task">,
+    requestId: string,
+  ): Promise<StandaloneTask> {
+    const { caller, input } = call;
+    const { specialist, environment, placement } = await this.prepareDelegation(call);
+    const expected =
+      placement.harnessRevision === undefined
+        ? {}
+        : { expectedHarnessRevision: placement.harnessRevision };
+    const specialistId = specialist?.id ?? callerThread(caller).specialistId;
+    const { thread } = await this.#threads.create(
+      caller,
+      {
+        type: "thread.create",
+        environmentId: environment.id,
+        harnessInstanceId: placement.harnessInstanceId,
+        modelSelection: placement.modelSelection,
+        accessMode: caller.accessMode,
+        title: input.title ?? provisionalThreadTitle(input.task),
+        ...(!input.title ? { generateTitle: true } : {}),
+        idempotencyKey: idempotencyKey(caller, requestId, "create"),
+      },
+      { ...(specialistId ? { specialistId } : {}), ...expected },
+    );
+    return { thread, ...expected };
+  }
   async delegate_task(call: ToolCall<"delegate_task">) {
     const task = await this.#delegate(call);
     if (call.input.mode !== "wait") return task;
@@ -1168,22 +1199,34 @@ export class ProductToolHandlers {
     });
     return { ...(wait.task ?? task), wait };
   }
-  async #delegate({ caller, input, operationKey }: ToolCall<"delegate_task">) {
-    if (caller.kind === "connection") {
+  async #delegate(call: ToolCall<"delegate_task">) {
+    const { caller, operationKey } = call;
+    let { input } = call;
+    // A connection's task always stands alone; a Run or program asks for one.
+    if (caller.kind === "connection" || input.standalone) {
       const requestId = operationId(caller, operationKey, "delegate_task");
+      // The receipt first: a retry keeps the task and placement it already has.
       const { thread: created, expectedHarnessRevision } =
-        (await this.#priorConnectionTask(caller, input, operationKey)) ??
-        (await this.#createConnectionTask(caller, input, requestId));
-      const delivered = await this.#threads.sendInput(caller, {
-        ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
-        threadId: created.id,
-        requestedBy: caller.userId,
-        content: [{ type: "text", text: input.task }],
-        policy: "queue",
-        requireUnassigned: true,
-        source: messageSource(caller, requestId),
-        idempotencyKey: idempotencyKey(caller, requestId, "message"),
-      });
+        (await this.#priorStandaloneTask(caller, input, operationKey)) ??
+        (caller.kind === "connection"
+          ? await this.#createConnectionTask(caller, input, requestId)
+          : await this.#createRunStandaloneTask(call, requestId));
+      const delivered = await this.#threads.sendInput(
+        caller,
+        {
+          ...(expectedHarnessRevision === undefined ? {} : { expectedHarnessRevision }),
+          threadId: created.id,
+          requestedBy: caller.userId,
+          content: [{ type: "text", text: input.task }],
+          policy: "queue",
+          requireUnassigned: true,
+          source: messageSource(caller, input.observationId ?? requestId),
+          idempotencyKey: idempotencyKey(caller, requestId, "message"),
+        },
+        caller.kind === "connection"
+          ? undefined
+          : mutationAdmission(caller, "thread_send", input, requestId, [created.id]),
+      );
       const thread = (await this.#store.getThreadForOwner(created.id, caller.userId))!;
       return {
         assignmentId: null,

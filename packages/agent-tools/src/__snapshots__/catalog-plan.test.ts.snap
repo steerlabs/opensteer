@@ -1320,6 +1320,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "minLength": 1,
           "type": "string",
         },
+        "standalone": {
+          "const": true,
+          "description": "Start a separate listed task with no parent or Assignment; nothing returns. Not with threadId or places.",
+          "type": "boolean",
+        },
         "task": {
           "maxLength": 65536,
           "minLength": 1,
@@ -2318,6 +2323,10 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "maxLength": 128,
           "minLength": 1,
           "type": "string",
+        },
+        "ownTask": {
+          "const": true,
+          "type": "boolean",
         },
         "payload": {},
         "program": {

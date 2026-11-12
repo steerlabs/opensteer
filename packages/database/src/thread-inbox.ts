@@ -44,7 +44,6 @@ import {
   ReplyTargetSchema,
   ThreadAccessModeSchema,
   ThreadInputPolicySchema,
-  agentDelegationMaxDepth,
   causalChainMaxDelegations,
   causalChainMaxAutonomousRuns,
   createId,
@@ -130,6 +129,11 @@ import type {
 } from "./store.js";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { appendDoneState, requireThreadWriteAuthority } from "./task-done.js";
+import {
+  assertDelegationDepth,
+  descendsByParentLink,
+  nearestListedThread,
+} from "./thread-lineage.js";
 import {
   revokeRunGrants,
   runHasActiveGrant,
@@ -1995,6 +1999,8 @@ async function lockThreadInputPreconditions(
 ): Promise<{
   readonly executionValid: boolean;
   readonly prelockedActiveRunId: RunId | null;
+  /** The source may bring this Done task back without the person: see `sourceReopensDoneTask`. */
+  readonly reopensDone: boolean;
   readonly thread: ThreadRow;
 }> {
   await requirePersonalOwner(transaction, input.requestedBy);
@@ -2086,11 +2092,15 @@ async function lockThreadInputPreconditions(
       .where("id", "=", input.source.activationId)
       .forNoKeyUpdate()
       .executeTakeFirst();
+  const reopensDone =
+    thread.doneAt !== null &&
+    (await sourceReopensDoneTask(transaction, input.source, input.policy, thread.id));
   if (
     thread.doneAt &&
     input.policy !== "report" &&
     input.source.kind !== "human" &&
     !input.teamRequest &&
+    !reopensDone &&
     !(
       input.source.kind === "trigger" &&
       (await isMemoryPassWake(transaction, thread.id, {
@@ -2101,6 +2111,7 @@ async function lockThreadInputPreconditions(
   )
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
   return {
+    reopensDone,
     thread,
     prelockedActiveRunId: active?.id ?? null,
     executionValid:
@@ -2408,21 +2419,22 @@ export async function enqueueThreadInputInTransaction(
   if (thread.doneAt && request.policy !== "report") {
     // Writing to a Done task reopens it for whoever could reopen it by hand.
     const reopens =
-      (request.source.kind === "human" || Boolean(request.teamRequest)) &&
-      (await requireThreadWriteAuthority(
-        transaction,
-        thread,
-        {
-          requestedBy: request.requestedBy,
-        },
-        "reopen",
-      ).then(
-        () => true,
-        (error: unknown) => {
-          if (error instanceof OpensteerError && error.code === "forbidden") return false;
-          throw error;
-        },
-      ));
+      preconditions.reopensDone ||
+      ((request.source.kind === "human" || Boolean(request.teamRequest)) &&
+        (await requireThreadWriteAuthority(
+          transaction,
+          thread,
+          {
+            requestedBy: request.requestedBy,
+          },
+          "reopen",
+        ).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof OpensteerError && error.code === "forbidden") return false;
+            throw error;
+          },
+        )));
     if (!reopens)
       throw new OpensteerError({
         code: "conflict",
@@ -3275,16 +3287,17 @@ async function resolveThreadInputFacts(
       .select(["anchorThreadId", "createdBy"])
       .where("id", "=", source.triggerId)
       .executeTakeFirst();
-    if (
-      !trigger ||
-      trigger.createdBy !== input.requestedBy ||
-      trigger.anchorThreadId !== input.targetThread.id
-    ) {
+    if (!trigger || trigger.createdBy !== input.requestedBy) {
       throw new OpensteerError({
         code: "forbidden",
         message: "Automation source is invalid",
       });
     }
+    await assertAutomationNoticeDestination(
+      transaction,
+      trigger.anchorThreadId,
+      input.targetThread.id,
+    );
     return {
       actorPrincipalId: systemPrincipalId,
       author: MessageAuthorSchema.parse({
@@ -4839,48 +4852,65 @@ function canonicalDelegateThreadRequest(
     type: "thread.delegate",
   };
 }
-async function assertDelegationDepth(
+/**
+ * An automation's notice goes where its owner finds it: its anchor, or the
+ * nearest listed task above an anchor that runs in its own linked task.
+ */
+async function assertAutomationNoticeDestination(
   transaction: Transaction<DatabaseSchema>,
-  parentThreadId: ThreadId,
+  anchorThreadId: ThreadId,
+  targetThreadId: ThreadId,
 ): Promise<void> {
-  let currentId: ThreadId | null = parentThreadId;
-  const visited = new Set<ThreadId>();
-  let childDepth = 0;
-  while (currentId) {
-    if (visited.has(currentId)) {
-      throw new OpensteerError({
-        code: "internal",
-        message: "Thread lineage contains a cycle",
-      });
-    }
-    visited.add(currentId);
-    childDepth += 1;
-    if (childDepth > agentDelegationMaxDepth) {
-      throw new OpensteerError({
-        code: "conflict",
-        details: {
-          maxDelegationDepth: agentDelegationMaxDepth,
-        },
-        message: `Agent delegation cannot exceed ${agentDelegationMaxDepth} parent-child levels`,
-      });
-    }
-    const current:
-      | {
-          readonly parentThreadId: ThreadId | null;
-        }
-      | undefined = await transaction
-      .selectFrom("threads")
-      .select("parentThreadId")
-      .where("id", "=", currentId)
-      .executeTakeFirst();
-    if (!current) {
-      throw new OpensteerError({
-        code: "internal",
-        message: "Thread lineage is incomplete",
-      });
-    }
-    currentId = current.parentThreadId;
-  }
+  if ((await nearestListedThread(transaction, anchorThreadId))?.threadId === targetThreadId) return;
+  // An anchor above may have become listed since the notice was addressed; the
+  // sender reads the destination again.
+  if (await descendsByParentLink(transaction, anchorThreadId, targetThreadId))
+    throw new OpensteerError({
+      code: "conflict",
+      message: "The automation's task moved; address its notice again",
+      retryable: true,
+    });
+  throw new OpensteerError({ code: "forbidden", message: "Automation source is invalid" });
+}
+
+/**
+ * Work that may reopen a Done task without the person: an automation's notice
+ * addressed to it, or queued work from a task linked under it, such as a
+ * monitor that runs in its own task and reports what it found.
+ */
+async function sourceReopensDoneTask(
+  transaction: Transaction<DatabaseSchema>,
+  source: ThreadInputSource,
+  policy: "report" | "queue" | "steer",
+  threadId: ThreadId,
+): Promise<boolean> {
+  if (policy !== "queue") return false;
+  if (source.kind === "automation") return true;
+  const sourceThread =
+    source.kind === "agent"
+      ? await transaction
+          .selectFrom("runs")
+          .select("threadId")
+          .where("id", "=", source.runId)
+          .executeTakeFirst()
+      : source.kind === "trigger"
+        ? await transaction
+            .selectFrom("triggerOccurrences")
+            .innerJoin("triggers", "triggers.id", "triggerOccurrences.triggerId")
+            .select("triggers.anchorThreadId as threadId")
+            .where("triggerOccurrences.id", "=", source.occurrenceId)
+            .executeTakeFirst()
+        : source.kind === "watch"
+          ? await transaction
+              .selectFrom("triggerWatchActivations")
+              .innerJoin("triggers", "triggers.id", "triggerWatchActivations.triggerId")
+              .select("triggers.anchorThreadId as threadId")
+              .where("triggerWatchActivations.id", "=", source.activationId)
+              .executeTakeFirst()
+          : undefined;
+  return (
+    sourceThread !== undefined && descendsByParentLink(transaction, sourceThread.threadId, threadId)
+  );
 }
 async function findCommandByIdempotency(
   database: Kysely<DatabaseSchema> | Transaction<DatabaseSchema>,

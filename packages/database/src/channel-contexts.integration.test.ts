@@ -314,6 +314,39 @@ describeStore("personal Messaging conversation contexts", (it) => {
       .execute();
     expect(await runAllowsPersonalContext(f.database, first.run.id)).toBe(false);
   });
+  it("keeps a group conversation's restriction in a task linked under it", async ({
+    storeFixture: f,
+  }) => {
+    const p = await setup(f, "linked");
+    await p.link("owner", p.userId);
+    const linkedUnder = async (parentThreadId: typeof p.thread.id, key: string) =>
+      (
+        await f.store.createThread({
+          createdBy: p.userId,
+          environmentId: p.environmentId,
+          harnessInstanceId: p.harnessInstance.id,
+          idempotencyKey: key,
+          modelSelection: testModelSelection,
+          parentThreadId,
+          title: key,
+        })
+      ).thread.id;
+    const group = await p.adopt("group-asks-for-monitor", "owner", "group");
+    expect(
+      await threadAllowsPersonalContext(
+        f.database,
+        await linkedUnder(group.input.threadId, "group-monitor"),
+        p.userId,
+      ),
+    ).toBe(false);
+    expect(
+      await threadAllowsPersonalContext(
+        f.database,
+        await linkedUnder(p.thread.id, "personal-monitor"),
+        p.userId,
+      ),
+    ).toBe(true);
+  });
   for (const conversation of ["channel", "group", "dm", "owner-dm"] as const) {
     it(`keeps ${conversation} personal context through delegation and later worker turns`, async ({
       storeFixture: f,

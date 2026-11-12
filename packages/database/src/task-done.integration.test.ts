@@ -16,6 +16,8 @@ import { afterAll, beforeEach, afterEach, describe, expect, it } from "vitest";
 import { OpensteerStore } from "./index.js";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 import { TriggerStore } from "./trigger-store.js";
+import { AutomationFailureStore, recordAutomationFailure } from "./automation-failure-store.js";
+import { withPersonalTransaction } from "./personal-transaction.js";
 
 /**
  * Stage 1 fault matrix, database side: every way a Stop, an answer, a steer or
@@ -324,6 +326,113 @@ integration.sequential("Shared task Done", () => {
       assignmentId: child.assignment.id,
       triggerId: trigger.trigger.id,
     };
+  });
+  it("keeps an own-task automation running past its Done parent, which its reports and notices reopen", async () => {
+    const f = await fixture("own-task");
+    const triggers = new TriggerStore(database);
+    const monitor = await triggers.create({
+      actorThreadId: null,
+      anchorThreadId: f.thread.id,
+      createdBy: f.userId,
+      idempotencyKey: "own-task-monitor",
+      name: "Deal monitor",
+      ownTask: true,
+      program: {
+        toolContractVersion: 3,
+        language: "typescript",
+        source: "export default async () => null;",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { kind: "cron", expression: "*/30 * * * *", timezone: "UTC" },
+      },
+    });
+    const ownTask = monitor.trigger.anchorThreadId;
+    const runIn = async (threadId: typeof ownTask, key: string) => {
+      const sent = await store.enqueueThreadInput({
+        content: [{ type: "text", text: key }],
+        idempotencyKey: key,
+        policy: "queue",
+        requestedBy: f.userId,
+        source: { kind: "human" },
+        threadId,
+      });
+      await database
+        .updateTable("runs")
+        .set({ status: "running" })
+        .where("id", "=", sent.run!.id)
+        .execute();
+      return sent.run!.id;
+    };
+    const { thread: unrelated } = await store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harness.id,
+      idempotencyKey: "own-task-unrelated",
+      modelSelection,
+      title: "Unrelated",
+    });
+    const [monitorRun, unrelatedRun] = [
+      await runIn(ownTask, "own-task-check"),
+      await runIn(unrelated.id, "own-task-unrelated-work"),
+    ];
+    const isDone = async () =>
+      (await store.getThreadForOwner(f.thread.id, f.userId))?.doneAt != null;
+    await setDone(f, true, "own-task-done");
+    expect(
+      await database
+        .selectFrom("triggers")
+        .select("status")
+        .where("id", "=", monitor.trigger.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ status: "active" });
+
+    // A stopped automation is reported where its owner finds it: the Done parent.
+    await withPersonalTransaction(database, (transaction) =>
+      recordAutomationFailure(transaction, {
+        detail: "Site changed",
+        reason: "paused",
+        triggerId: monitor.trigger.id,
+      }),
+    );
+    const [notice] = await new AutomationFailureStore(database).listDue();
+    expect(notice).toMatchObject({
+      anchorThreadId: ownTask,
+      anchorThreadTitle: "Deal monitor",
+      destinationThreadId: f.thread.id,
+    });
+    const deliverNotice = (threadId: typeof ownTask) =>
+      store.enqueueThreadInput({
+        content: [{ type: "text", text: "The automation stopped." }],
+        idempotencyKey: `automation-failure:${notice!.id}:${threadId}`,
+        policy: "queue",
+        requestedBy: f.userId,
+        source: { kind: "automation", noticeId: notice!.id, triggerId: monitor.trigger.id },
+        threadId,
+      });
+    await expect(deliverNotice(unrelated.id)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(deliverNotice(ownTask)).rejects.toMatchObject({ code: "forbidden" });
+    await deliverNotice(f.thread.id);
+    expect(await isDone()).toBe(false);
+
+    // Queued work reopens it only from a task linked under it.
+    await setDone(f, true, "own-task-done-again");
+    const report = (sourceRunId: typeof monitorRun, key: string) =>
+      store.enqueueThreadInput({
+        content: [{ type: "text", text: "Found a deal" }],
+        idempotencyKey: key,
+        policy: "queue",
+        requestedBy: f.userId,
+        source: { kind: "agent", runId: sourceRunId },
+        threadId: f.thread.id,
+      });
+    await expect(report(unrelatedRun, "own-task-unrelated-report")).rejects.toMatchObject({
+      code: "conflict",
+      message: "This task is Done. Reopen it first.",
+    });
+    expect(await isDone()).toBe(true);
+    expect((await report(monitorRun, "own-task-report")).input.state).toBe("pending");
+    expect(await isDone()).toBe(false);
   });
   it("delivers a completed child's return to a Done parent as a report", async () => {
     const f = await fixture("return");

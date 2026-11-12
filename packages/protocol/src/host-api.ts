@@ -2103,7 +2103,10 @@ export const hostApi = defineRpc({
     z.strictObject({
       systemRole: z.enum(["memory-light", "memory-nightly"]).optional(),
 
-      /** Only those that run in this conversation. Needs `task-family-v1`. */
+      /**
+       * This conversation's family: what runs in it, then what runs in tasks
+       * linked under it, ended ones included and listed last. Needs `task-family-v1`.
+       */
       anchorThreadId: ThreadIdSchema.optional(),
     }),
     z.object({ triggers: z.array(TriggerSummaryViewSchema).max(100) }),

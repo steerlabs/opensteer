@@ -358,6 +358,210 @@ integration.sequential("Trigger failure auto-pause", () => {
     },
   });
 
+  it("creates an automation's own linked task with its Trigger, once per receipt", async ({
+    storeFixture,
+  }) => {
+    const { database, triggers, createFixture } = storeFixture;
+    const f = await createFixture("own-task");
+    await database
+      .updateTable("threads")
+      .set({ accessMode: "full-access" })
+      .where("id", "=", f.threadId)
+      .execute();
+    const input = {
+      actorThreadId: f.threadId,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: "own-task-monitor",
+      name: "Price monitor",
+      ownTask: true,
+      program: {
+        toolContractVersion: 3,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: {
+        kind: "schedule",
+        schedule: { expression: "*/30 * * * *", kind: "cron", timezone: "UTC" },
+      },
+    } as const;
+    const children = () =>
+      database.selectFrom("threads").selectAll().where("parentThreadId", "=", f.threadId).execute();
+    const created = await Promise.all([triggers.create(input), triggers.create(input)]);
+    expect(created.map(({ wasDuplicate }) => wasDuplicate).sort()).toEqual([false, true]);
+    const [child, ...extra] = await children();
+    expect(extra).toEqual([]);
+    expect(created.map(({ trigger }) => trigger.anchorThreadId)).toEqual([child!.id, child!.id]);
+    expect(child).toMatchObject({
+      accessMode: "full-access",
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstanceId,
+      lineageRootThreadId: f.threadId,
+      listed: false,
+      modelSelection,
+      purpose: "task",
+      title: "Price monitor",
+    });
+    expect(created.find(({ wasDuplicate }) => !wasDuplicate)).toMatchObject({
+      event: { type: "thread.created", threadId: child!.id },
+    });
+    expect(
+      await database
+        .selectFrom("delegations")
+        .select("id")
+        .where("childThreadId", "=", child!.id)
+        .execute(),
+    ).toEqual([]);
+    const replay = await triggers.create(input);
+    expect(replay).toMatchObject({ wasDuplicate: true, trigger: { anchorThreadId: child!.id } });
+    await expect(triggers.create({ ...input, name: "Another monitor" })).rejects.toMatchObject({
+      code: "conflict",
+    });
+    // The receipt is the caller's intent: the same key without ownTask is another command.
+    await expect(
+      triggers.create({ ...input, ownTask: undefined } as unknown as Parameters<
+        typeof triggers.create
+      >[0]),
+    ).rejects.toMatchObject({ code: "conflict" });
+    expect(await children()).toHaveLength(1);
+  });
+  it("creates nothing when the caller may not define it or the anchor is Done", async ({
+    storeFixture,
+  }) => {
+    const { database, store, triggers, createFixture } = storeFixture;
+    const f = await createFixture("own-task-refused");
+    const { thread: lower } = await store.createThread({
+      accessMode: "auto",
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstanceId,
+      idempotencyKey: "own-task-lower-caller",
+      modelSelection,
+      title: "Lower caller",
+    });
+    const input = {
+      actorThreadId: lower.id,
+      anchorThreadId: f.threadId,
+      createdBy: f.userId,
+      idempotencyKey: "own-task-refused",
+      name: "Refused monitor",
+      ownTask: true,
+      program: {
+        toolContractVersion: 3,
+        language: "javascript",
+        source: "export default async () => null",
+      },
+      source: { kind: "watch" },
+    } as const;
+    const counts = async () => ({
+      threads: (await database.selectFrom("threads").select("id").execute()).length,
+      triggers: (await database.selectFrom("triggers").select("id").execute()).length,
+    });
+    const before = await counts();
+    await expect(triggers.create(input)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await counts()).toEqual(before);
+    await database
+      .updateTable("threads")
+      .set({ doneAt: new Date() })
+      .where("id", "=", f.threadId)
+      .execute();
+    await expect(
+      triggers.create({ ...input, actorThreadId: null, idempotencyKey: "own-task-done" }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    expect(await counts()).toEqual(before);
+  });
+  it("lists a conversation's family: its live automations, then its own tasks' ones, ended last", async ({
+    storeFixture,
+  }) => {
+    const { database, store, triggers, createFixture } = storeFixture;
+    const f = await createFixture("family");
+    const program = {
+      toolContractVersion: 3,
+      language: "javascript",
+      source: "export default async () => null",
+    } as const;
+    const create = (name: string, anchorThreadId = f.threadId, ownTask?: true) =>
+      triggers.create({
+        actorThreadId: null,
+        anchorThreadId,
+        createdBy: f.userId,
+        idempotencyKey: `family-${name}`,
+        name,
+        ...(ownTask ? { ownTask } : {}),
+        program,
+        source: { kind: "webhook" },
+        webhookRouteKey: `wh_${randomUUID().replaceAll("-", "")}`,
+        webhookSecretHash: "0".repeat(64),
+      });
+    const archive = (triggerId: TriggerId) =>
+      triggers.setStatus({ actorThreadId: null, ownerId: f.userId, status: "archived", triggerId });
+    const own = await create("Own live");
+    await archive((await create("Own archived")).trigger.id);
+    const monitor = await create("Monitor", f.threadId, true);
+    const ended = await create("Ended", f.threadId, true);
+    await archive(ended.trigger.id);
+    // A worker handed work has its own family; its automations stay there.
+    const { thread: worker } = await store.createThread({
+      createdBy: f.userId,
+      environmentId: f.environmentId,
+      harnessInstanceId: f.harnessInstanceId,
+      idempotencyKey: "family-worker",
+      modelSelection,
+      parentThreadId: f.threadId,
+      title: "Worker",
+    });
+    const handed = await store.enqueueThreadInput({
+      content: [{ text: "Work", type: "text" }],
+      idempotencyKey: "family-worker-input",
+      policy: "queue",
+      requestedBy: f.userId,
+      source: { kind: "human" },
+      threadId: worker.id,
+    });
+    await database
+      .insertInto("delegations")
+      .values({
+        id: createId("delegation"),
+        childRunId: handed.run!.id,
+        childThreadId: worker.id,
+        initialInputMessageId: handed.message.id,
+        objective: "Work",
+        origin: "run",
+        parentAssignmentId: null,
+        parentRunId: null,
+        parentThreadId: f.threadId,
+        parentOccurrenceId: null,
+        parentWatchActivationId: null,
+        status: "open",
+        revision: 1,
+        resultStatus: "pending",
+        resultText: null,
+        finishedAt: null,
+        completedAt: null,
+        replyTarget: null,
+        resultAttemptedAt: null,
+        resultMessageId: null,
+        resultReason: null,
+      })
+      .execute();
+    await create("Worker's", worker.id);
+    const family = await triggers.listForOwner({ anchorThreadId: f.threadId, ownerId: f.userId });
+    expect(family.map(({ name, status }) => [name, status])).toEqual([
+      ["Monitor", "active"],
+      ["Own live", "active"],
+      ["Ended", "archived"],
+    ]);
+    expect(family[0]).toMatchObject({
+      anchorThreadId: monitor.trigger.anchorThreadId,
+      anchorThreadTitle: "Monitor",
+    });
+    // Ended ones never crowd out a live one.
+    expect(
+      (
+        await triggers.listForOwner({ anchorThreadId: f.threadId, limit: 2, ownerId: f.userId })
+      ).map(({ id }) => id),
+    ).toEqual([monitor.trigger.id, own.trigger.id]);
+  });
   it("orders occurrence completion before its Trigger fence", async ({ storeFixture }) => {
     const { createFixture, createScheduleTrigger, triggers, store, stagedTriggerEdge, detail } =
       storeFixture;

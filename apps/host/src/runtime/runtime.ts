@@ -2056,6 +2056,7 @@ export async function createHostRuntime(
     const triggers = new TriggerService({
       runnerStore: store,
       onChanged: () => realtime.publishTriggersChanged(),
+      onDeploymentEvent: publishDeploymentEvent,
       onOccurrenceQueued: () => {
         coordinator.wake();
       },

@@ -197,6 +197,10 @@ export function taskCanBeDone(
   return thread.purpose === "task";
 }
 
+/** What marking an under-way task Done stops, as the confirmation says it on every surface. */
+export const taskDoneConfirmation =
+  "This stops its work and the tasks it handed out, and pauses its schedules. Automations running in their own tasks keep going.";
+
 /** Work that marking the task Done would stop, which a person confirms first. */
 export function taskUnderWay(thread: Pick<ThreadSummary, "doneAt" | "status">): boolean {
   return thread.doneAt === null && (thread.status === "running" || thread.status === "waiting");
