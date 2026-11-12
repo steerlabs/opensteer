@@ -403,7 +403,7 @@ async function desktopApp(
         verifiedAt: now,
       },
     ],
-    kind: "self-hosted",
+    kind: "personal",
     lastUsedAt: null,
     name: "Home",
     reachability: "canonical",
