@@ -221,6 +221,7 @@ function hostRequest(origin, request, response) {
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify({
+        kind: "personal",
         apiVersion: hostApiVersion,
         authority: authority(keysAt(origin).discovery),
         bootstrapMethods: ["pairing-code"],
