@@ -12,6 +12,7 @@ import {
   HostDescriptorSchema,
   hostApiVersion,
   hostApiVersionHeader,
+  minimumTeamApiVersion,
   teamApiVersion,
   teamApiVersionHeader,
   verifyHostDiscoveryEnvelope,
@@ -261,7 +262,10 @@ integration("team configuration conformance", () => {
     const descriptor = HostDescriptorSchema.parse(
       (await runtime.app.inject({ url: "/.well-known/opensteer" })).json(),
     );
-    expect(descriptor.apiVersion).toBe(teamApiVersion);
+    expect(descriptor).toMatchObject({
+      apiVersion: teamApiVersion,
+      minimumApiVersion: minimumTeamApiVersion,
+    });
     expect(descriptor.authority.document.deploymentShape).toEqual({ kind: "team" });
     expect(runtime.kind).toBe("team");
     expect(await team.database.selectFrom("runners").select("id").execute()).toEqual([]);
@@ -296,7 +300,7 @@ integration("team configuration conformance", () => {
       url,
       method: "POST",
       payload: {},
-      headers: { [teamApiVersionHeader]: String(teamApiVersion + 1) },
+      headers: { [teamApiVersionHeader]: String(minimumTeamApiVersion - 1) },
     });
     expect(refused.statusCode).toBe(409);
     expect(refused.json()).toMatchObject({

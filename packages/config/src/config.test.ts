@@ -4,6 +4,7 @@ import {
   opensteerHostNativeOAuthClients,
   opensteerMobileHostOAuthCallback,
 } from "@opensteer/core";
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -613,22 +614,71 @@ describe("configuration", () => {
   });
 
   it("accepts an operator-held first-owner code only where enrollment establishes the owner", () => {
+    const team = {
+      ...hostEnvironment,
+      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
+      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_DEPLOYMENT_KIND: "team",
+    };
+    const expected = { lifetimeSeconds: 24 * 60 * 60, tokenDigest: digestSecret(token) };
+    expect(
+      parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token }).identity
+        .initialOwnerEnrollment,
+    ).toEqual(expected);
     expect(
       parseHostConfig({
-        ...hostEnvironment,
-        OPENSTEER_BIND_ADDRESS: "0.0.0.0",
-        OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
-        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
-        OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
-        OPENSTEER_DEPLOYMENT_KIND: "team",
+        ...team,
+        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digestSecret(token),
       }).identity.initialOwnerEnrollment,
-    ).toEqual({ lifetimeSeconds: 24 * 60 * 60, token });
+    ).toEqual(expected);
+    const directory = mkdtempSync(join(tmpdir(), "opensteer-config-owner-digest-"));
+    temporaryDirectories.push(directory);
+    const digestFile = join(directory, "digest");
+    writeFileSync(digestFile, `${digestSecret(token)}\n`, { mode: 0o600 });
+    expect(
+      parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: digestFile })
+        .identity.initialOwnerEnrollment,
+    ).toEqual(expected);
+    expect(() =>
+      parseHostConfig({
+        ...team,
+        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
+        OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST_FILE: digestFile,
+      }),
+    ).toThrow(/exactly one/u);
+    for (const digest of [token, digestSecret(token).toUpperCase()])
+      expect(() =>
+        parseHostConfig({ ...team, OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST: digest }),
+      ).toThrow();
     expect(() =>
       parseHostConfig({
         ...localHostEnvironment,
         OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: token,
       }),
     ).toThrow(/Personal Host uses the app-held local owner claim/u);
+  });
+
+  it("bounds team file storage only on a team Host", () => {
+    const team = {
+      ...hostEnvironment,
+      OPENSTEER_BIND_ADDRESS: "0.0.0.0",
+      OPENSTEER_CANONICAL_ORIGIN: "https://opensteer.example.com",
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: createId("environment"),
+      OPENSTEER_DEPLOYMENT_KIND: "team",
+    };
+    expect(
+      parseHostConfig({ ...team, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: "1073741824" })
+        .teamStorageLimitBytes,
+    ).toBe(1_073_741_824);
+    expect(parseHostConfig(team).teamStorageLimitBytes).toBeUndefined();
+    for (const limit of ["0", "-1", "1.5", "lots"])
+      expect(() =>
+        parseHostConfig({ ...team, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: limit }),
+      ).toThrow();
+    expect(() =>
+      parseHostConfig({ ...localHostEnvironment, OPENSTEER_TEAM_STORAGE_LIMIT_BYTES: "1024" }),
+    ).toThrow(/only to a team Host/u);
   });
 
   it("rejects a portal origin that is not a bare, secure origin", () => {

@@ -96,7 +96,8 @@ export interface IdentityServiceOptions {
      * same-machine owner path permanently unclaimable.
      */
     readonly renewable?: boolean;
-    readonly token: string;
+    /** `digestSecret` of the setup code: the Host never needs the code itself. */
+    readonly tokenDigest: string;
   };
   readonly localPasswordEnabled: boolean;
   /** Called after a durable Host session has ended. */

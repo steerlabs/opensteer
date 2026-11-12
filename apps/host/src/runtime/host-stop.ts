@@ -1,3 +1,4 @@
+import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import type { HostRuntime } from "./runtime.js";
 
 /** Often enough that a hung step is named well before the supervisor kills the Host. */
@@ -28,4 +29,26 @@ export async function stopHost(
   }
   log.info({ elapsedMs: Math.round(performance.now() - started) }, "Opensteer Host stopped");
   exit(code);
+}
+
+/**
+ * Without its session lock this Host no longer fences its Deployment database
+ * against a second Host, so it stops and exits non-zero, even if a close step
+ * hangs on the same lost database.
+ */
+export async function stopHostOnAuthorityLoss(
+  runtime: Pick<HostRuntime, "app" | "close" | "closingStep">,
+  error: Error,
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
+  runtime.app.log.fatal({ err: error }, "Opensteer Host lost its Deployment database lock");
+  let exited = false;
+  const fail = () => {
+    if (exited) return;
+    exited = true;
+    clearTimeout(deadline);
+    exit(1);
+  };
+  const deadline = setTimeout(fail, processStopTimeoutMs);
+  await stopHost(runtime, "deployment authority lost", fail);
 }

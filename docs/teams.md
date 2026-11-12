@@ -50,18 +50,41 @@ The team audits agent reads, searches, posts and knowledge queries as well as ad
 
 A team Host checks only `teamApiVersion`, before authentication and parsing on every team
 surface, including bootstrap, subscriptions, binary routes and the link. Personal Hosts check
-only the personal Host epoch. A mismatch tells whichever side is behind to update. Team updates
-use [deploy/team](../deploy/team/README.md); desktop supervision updates personal Opensteer.
+only the personal Host epoch. Team updates use [deploy/team](../deploy/team/README.md); desktop
+supervision updates personal Opensteer.
+
+Team servers, apps and personal Opensteer update on their own schedules, so the team API is a
+window, not an exact match ([authority.ts](../packages/deployment-authority/src/authority.ts)):
+
+- Each side states its own `teamApiVersion` and serves any peer at or above its own
+  `minimumTeamApiVersion`. A newer peer is admitted, because it learns this side's version from
+  discovery or the link's `ready` frame and enforces its own minimum. Discovery also advertises
+  the team's minimum, so an app below it is told to update before it sends anything.
+- Changes are additive by default and keep the version: new commands, reads and optional
+  fields. The team Host parses inputs strictly, so a client uses a new input only when the team
+  advertises a capability for it. Readers tolerate new fields only where their schema is not
+  strict; realtime and link frames are strict in both directions.
+- Bump `teamApiVersion` only for a change an older peer would misread or refuse. Whoever bumps
+  decides `minimumTeamApiVersion`: keep the old version and speak it to older peers, or raise
+  the minimum and strand them with an update message.
+- A refusal names the side that is behind: the app or personal Opensteer says "Update
+  Opensteer", and a team older than the peer's minimum says the team server needs an update.
+
+[The team wire guard](../packages/protocol/src/team-wire.test.ts) holds a snapshot of every team
+schema and fails on a non-additive change unless the version moves.
 
 First-owner setup expires after 24 hours; restarting with the same token does not renew it.
 Rotating only that token and recreating the Host opens a fresh setup window while no owner exists.
-Once claimed, token rotation cannot reopen setup. Account adoption requires a publicly reachable HTTPS origin at first-owner setup, such as a
+Once claimed, token rotation cannot reopen setup. The Host keeps only the token's digest, so a
+provisioner that must never hold the token configures `OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_DIGEST`
+instead. Account adoption requires a publicly reachable HTTPS origin at first-owner setup, such as a
 public hostname or Tailscale Funnel. Private-only tailnet access works for members after setup;
 it cannot satisfy Account's pinned public proof fetch. Keep that SSRF boundary intact.
 Teams have no Connect routes in v1. Native apps combine personal and team views; web stays
 per-origin and opens the team at its own address.
 
 Files use authenticated routes that recheck access, with fixed byte limits and cancellation on
-revocation. Link credentials and request IDs belong in headers, never URLs. Mobile push uses
+revocation. An optional team storage limit counts every stored or unfinished upload; an upload
+reserves its bytes before any are written, so concurrent uploads cannot overshoot it. Link credentials and request IDs belong in headers, never URLs. Mobile push uses
 generic text and sealed previews through Account; no plaintext team content enters the push
 provider. Desktop notifications come from team sidebar sockets; there is no Web Push.

@@ -1,17 +1,24 @@
 import {
   createId,
+  OpensteerError,
   type TeamActor,
   type TeamAgentRequestId,
   type TeamBlobId,
   type TeamChannelId,
   type TeamMessageId,
 } from "@opensteer/core";
-import { TeamFileSchema, TeamBinaryUploadMetadataSchema } from "@opensteer/protocol";
-import type { Selectable, Transaction } from "kysely";
+import {
+  TeamFileSchema,
+  TeamBinaryUploadMetadataSchema,
+  teamPreviewMaxBytes,
+} from "@opensteer/protocol";
+import { sql, type Selectable, type Transaction } from "kysely";
 import type { z } from "zod";
 import type { DatabaseSchema, TeamBlobTable, TeamMessageTable } from "./schema.js";
 import { TeamAccessStore, requireTeam } from "./team-access-store.js";
 import { appendTeamAudit } from "./team-audit-store.js";
+
+export const teamStorageFullReason = "team-storage-full";
 
 export function teamFileView(row: Selectable<TeamBlobTable>) {
   return TeamFileSchema.parse({
@@ -95,8 +102,11 @@ async function activeUploadRequest(
 
 export class TeamFilesStore {
   readonly access: TeamAccessStore;
-  constructor(access: TeamAccessStore) {
+  /** Bytes every team file may hold together, previews and unfinished uploads included. */
+  readonly #storageLimitBytes: number | undefined;
+  constructor(access: TeamAccessStore, options: { storageLimitBytes?: number | undefined } = {}) {
     this.access = access;
+    this.#storageLimitBytes = options.storageLimitBytes;
   }
   async begin(
     actor: TeamActor,
@@ -127,6 +137,26 @@ export class TeamFilesStore {
           "Upload identity already names different bytes",
         );
         return prior;
+      }
+      if (this.#storageLimitBytes !== undefined) {
+        // A row reserves its bytes from begin until garbage collection removes
+        // it; an unfinished image holds the largest preview it may still send.
+        await sql`select pg_advisory_xact_lock(hashtextextended('team-storage', 0))`.execute(t);
+        const { used } = await t
+          .selectFrom("teamBlobs")
+          .select(
+            sql<string>`coalesce(sum(${sql.ref("sizeBytes")} + coalesce(${sql.ref("previewSizeBytes")}, case when ${sql.ref("state")} = 'uploading' and ${sql.ref("declaredType")} like 'image/%' then ${teamPreviewMaxBytes} else 0 end)), 0)`.as(
+              "used",
+            ),
+          )
+          .executeTakeFirstOrThrow();
+        if (Number(used) + metadata.sizeBytes + metadata.previewSizeBytes > this.#storageLimitBytes)
+          throw new OpensteerError({
+            code: "resource_exhausted",
+            reason: teamStorageFullReason,
+            message: "This team's file storage is full.",
+            details: { limitBytes: this.#storageLimitBytes },
+          });
       }
       const id = createId("teamBlob");
       return t

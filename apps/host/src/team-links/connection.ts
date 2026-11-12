@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DeploymentId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
-import { teamApiVersion } from "@opensteer/deployment-authority";
+import { acceptsTeamApiVersion, teamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamLinkClientFrameSchema,
   TeamLinkServerFrameSchema,
@@ -16,6 +16,7 @@ import {
   type TeamLinkResult,
   type TeamLinkRpc,
 } from "../team-link-endpoint/contracts.js";
+import { teamLinkVersionError } from "./discovery.js";
 
 export interface TeamLinkConnectionOptions {
   readonly teamId: DeploymentId;
@@ -130,18 +131,11 @@ export class TeamLinkConnection implements TeamLinkRpc {
             if (this.#lifetime.signal.aborted || this.#socket !== socket) return;
             if (frame.type === "ready") {
               if (this.#ready) throw linkError("bad_request");
-              if (frame.teamApiVersion !== teamApiVersion) {
+              if (!acceptsTeamApiVersion(frame.teamApiVersion)) {
                 paused = true;
                 await this.options.onState(
                   "needs_update",
-                  new OpensteerError({
-                    code: "bad_request",
-                    reason: "unsupported-version",
-                    message: "Team API version mismatch",
-                    details: {
-                      behind: frame.teamApiVersion > teamApiVersion ? "personal" : "team",
-                    },
-                  }),
+                  teamLinkVersionError(frame.teamApiVersion),
                 );
                 socket.terminate();
                 return;

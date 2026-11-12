@@ -1,3 +1,4 @@
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import { createHmac, randomBytes } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -97,7 +98,10 @@ export async function startTeamSystem(name = "Acme") {
       publicOrigin: new URL(canonicalOrigin),
       secret,
       signupPolicy: "invite-only",
-      initialOwnerEnrollment: { token, expiresAt: new Date(Date.now() + 86400000) },
+      initialOwnerEnrollment: {
+        tokenDigest: digestSecret(token),
+        expiresAt: new Date(Date.now() + 86400000),
+      },
     });
     const clients: TeamSessionClient[] = [];
     const webSockets = new Set<WebSocket>();

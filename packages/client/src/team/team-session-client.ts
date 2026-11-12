@@ -73,6 +73,8 @@ export interface TeamSessionOptions {
   ) => Promise<Blob>;
   readonly uploadFile?: (input: TeamFileUpload) => Promise<z.infer<typeof TeamFileSchema>>;
   readonly notify?: (entry: TeamSidebar["channels"][number]) => void;
+  /** Spreads reconnects; tests pin it. */
+  readonly random?: () => number;
 }
 function refusedSend(error: unknown): error is OpensteerError {
   return (
@@ -81,6 +83,8 @@ function refusedSend(error: unknown): error is OpensteerError {
     ["bad_request", "conflict", "forbidden", "not_found", "resource_exhausted"].includes(error.code)
   );
 }
+
+const healthyConnectionMs = 30_000;
 
 export class TeamSessionClient {
   readonly rpc: HostApiClient;
@@ -199,9 +203,10 @@ export class TeamSessionClient {
     this.#update({ connection: "connecting", error: null });
     const socket = this.#options.connect();
     this.#socket = socket;
+    let openedAt: number | undefined;
     socket.addEventListener("open", () => {
       if (this.#socket !== socket) return;
-      this.#attempt = 0;
+      openedAt = Date.now();
       this.#update({ connection: "connected" });
       this.#subscribe(null);
       if (this.#snapshot.channel) this.#subscribe(this.#snapshot.channel);
@@ -223,8 +228,8 @@ export class TeamSessionClient {
           thread: this.#fresh(this.#snapshot.thread),
           error: "Team synchronization needs a fresh snapshot.",
         });
-        this.disconnect();
-        this.connect();
+        socket.close();
+        closed();
       }
     });
     const closed = () => {
@@ -233,23 +238,9 @@ export class TeamSessionClient {
       this.#connectionGeneration++;
       this.#update({ connection: "offline", typing: {}, presence: {} });
       if (!this.#connected || this.#removed) return;
-      const generation = this.#connectionGeneration;
-      void this.#revalidate().finally(() => {
-        if (
-          generation !== this.#connectionGeneration ||
-          !this.#connected ||
-          this.#removed ||
-          this.#disposed
-        )
-          return;
-        this.#reconnectTimer = setTimeout(
-          () => {
-            this.#reconnectTimer = null;
-            this.connect();
-          },
-          Math.min(12000, 300 * 2 ** Math.min(this.#attempt++, 6)),
-        );
-      });
+      // A socket that opens and fails at once keeps backing off.
+      if (openedAt !== undefined && Date.now() - openedAt >= healthyConnectionMs) this.#attempt = 0;
+      this.#reconnectLater();
     };
     socket.addEventListener("close", closed);
     socket.addEventListener("error", () => {
@@ -257,22 +248,48 @@ export class TeamSessionClient {
       closed();
     });
   }
+  /**
+   * Jittered, and before revalidating: a restarted team server must not receive
+   * every member's bootstrap and socket in the same instant. A failed
+   * revalidation waits for the next step rather than opening a doomed socket.
+   */
+  #reconnectLater(): void {
+    const generation = this.#connectionGeneration;
+    const current = () =>
+      generation === this.#connectionGeneration &&
+      this.#connected &&
+      !this.#removed &&
+      !this.#disposed;
+    const ceiling = Math.min(12_000, 300 * 2 ** Math.min(this.#attempt++, 6));
+    this.#reconnectTimer = setTimeout(
+      () => {
+        this.#reconnectTimer = null;
+        void this.#revalidate().then((revalidated) => {
+          if (!current()) return;
+          if (revalidated) this.connect();
+          else this.#reconnectLater();
+        });
+      },
+      (ceiling * (1 + (this.#options.random ?? Math.random)())) / 2,
+    );
+  }
   async #authorizationFailure(error: unknown): Promise<void> {
     if (!(error instanceof OpensteerError)) return;
     if (error.code === "unauthorized") await this.remove("sign-in");
     else if (error.code === "forbidden" || error.code === "not_found") await this.remove("removed");
   }
-  async #revalidate(): Promise<void> {
+  /** Whether the viewer still belongs here; a failed check settles false. */
+  async #revalidate(): Promise<boolean> {
     const lifetime = this.#lifetime;
     try {
       const bootstrap = await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
-      if (lifetime !== this.#lifetime) return;
+      if (lifetime !== this.#lifetime) return false;
       if (
         bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
         bootstrap.member.userId !== this.#options.scope.userId
       ) {
         await this.remove("viewer-changed");
-        return;
+        return false;
       }
       if (this.#snapshot.sidebar?.accessRevision !== bootstrap.sidebar.accessRevision) {
         this.receive({
@@ -286,7 +303,7 @@ export class TeamSessionClient {
               unwrapRpcResult,
             );
           } catch (error) {
-            if (lifetime !== this.#lifetime) return;
+            if (lifetime !== this.#lifetime) return false;
             if (
               !(error instanceof OpensteerError) ||
               !["forbidden", "not_found"].includes(error.code)
@@ -316,8 +333,10 @@ export class TeamSessionClient {
           bootstrap,
           sidebar: monotonicTeamSidebar(this.#snapshot.sidebar, bootstrap.sidebar),
         });
+      return true;
     } catch (error) {
       if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
+      return false;
     }
   }
   #fresh(view: TeamTimeline | null): TeamTimeline | null {

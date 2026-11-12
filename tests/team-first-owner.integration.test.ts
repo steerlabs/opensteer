@@ -1,9 +1,11 @@
+import { digestSecret } from "@opensteer/shared/secretDigest";
 import Fastify from "fastify";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { registerTeamSetupRoutes } from "../apps/host/src/team/setup-routes.js";
 import {
   teamApiVersion,
   teamApiVersionHeader,
+  teamApiVersionRefusal,
 } from "../packages/deployment-authority/src/index.js";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -100,7 +102,10 @@ it("uses a setup admission to adopt an empty team, provisions Account OIDC, admi
     publicOrigin: new URL(authority.canonicalOrigin),
     secret: "s".repeat(40),
     signupPolicy: "invite-only" as const,
-    initialOwnerEnrollment: { token, expiresAt: new Date(Date.now() + 86400000) },
+    initialOwnerEnrollment: {
+      tokenDigest: digestSecret(token),
+      expiresAt: new Date(Date.now() + 86400000),
+    },
     team: admission,
   };
   const identity = new IdentityService(fixture.database, options);
@@ -312,7 +317,10 @@ it("expires a setup capability across restart and rotates unfinished setup witho
   };
   const identity = new IdentityService(fixture.database, {
     ...common,
-    initialOwnerEnrollment: { token, expiresAt: new Date(Date.now() + 86400000) },
+    initialOwnerEnrollment: {
+      tokenDigest: digestSecret(token),
+      expiresAt: new Date(Date.now() + 86400000),
+    },
   });
   await identity.initialize();
   const http = Fastify();
@@ -336,7 +344,7 @@ it("expires a setup capability across restart and rotates unfinished setup witho
       5000,
       { timeoutError: () => new Error("Setup version gate never completed") },
     );
-    expect(gate.json().message).toBe("Team API version mismatch");
+    expect(gate.json().message).toBe(teamApiVersionRefusal);
     const exchanged = await withTimeout(
       http.inject({
         method: "POST",
@@ -361,13 +369,19 @@ it("expires a setup capability across restart and rotates unfinished setup witho
   await expect(
     new IdentityService(fixture.database, {
       ...common,
-      initialOwnerEnrollment: { token, expiresAt: new Date(Date.now() + 86400000) },
+      initialOwnerEnrollment: {
+        tokenDigest: digestSecret(token),
+        expiresAt: new Date(Date.now() + 86400000),
+      },
     }).exchangeInitialOwnerEnrollment(token),
   ).rejects.toThrow();
   const next = randomBytes(32).toString("base64url");
   const rotated = new IdentityService(fixture.database, {
     ...common,
-    initialOwnerEnrollment: { token: next, expiresAt: new Date(Date.now() + 86400000) },
+    initialOwnerEnrollment: {
+      tokenDigest: digestSecret(next),
+      expiresAt: new Date(Date.now() + 86400000),
+    },
   });
   await rotated.initialize();
   await expect(rotated.exchangeInitialOwnerEnrollment(next)).resolves.toMatchObject({

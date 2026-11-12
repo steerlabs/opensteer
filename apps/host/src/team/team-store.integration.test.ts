@@ -533,6 +533,34 @@ describe("team transaction authority", () => {
       }),
     ).rejects.toThrow();
   });
+  it("reserves team storage atomically and refuses an upload past the limit", async () => {
+    const c = await channel();
+    const preview = 64 * 1024;
+    const files = new TeamFilesStore(access, { storageLimitBytes: preview + 100 });
+    const metadata = (sizeBytes: number, mediaType = "text/plain") => ({
+      clientUploadId: randomUUID(),
+      filename: "a",
+      mediaType,
+      sizeBytes,
+      sha256: "0".repeat(64),
+      previewSizeBytes: mediaType.startsWith("image/") ? 10 : 0,
+    });
+    const first = metadata(30, "image/png");
+    await files.begin(owner, c.id, first);
+    const racing = await Promise.allSettled([
+      files.begin(owner, c.id, metadata(50)),
+      files.begin(owner, c.id, metadata(50)),
+    ]);
+    expect(racing.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(racing.find((result) => result.status === "rejected")).toMatchObject({
+      reason: { code: "resource_exhausted", reason: "team-storage-full" },
+    });
+    await expect(files.begin(owner, c.id, metadata(21))).rejects.toMatchObject({
+      reason: "team-storage-full",
+    });
+    await files.begin(owner, c.id, metadata(20));
+    await expect(files.begin(owner, c.id, first)).resolves.toMatchObject({ sizeBytes: "30" });
+  });
   it("consumes a one-use invite atomically and never revives an old membership generation", async () => {
     const member = await person("Invitee");
     await fixture.database.deleteFrom("teamMembers").where("userId", "=", member.userId).execute();
