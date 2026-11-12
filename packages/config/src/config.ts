@@ -42,7 +42,7 @@ export type { RuntimeMode } from "@opensteer/core";
 
 /**
  * A Host reachable only from its own machine may bootstrap itself: it mints its
- * own first-owner code and its own deployment-owned Main Runner enrollment.
+ * own first-owner code and its own hosting Runner enrollment.
  * Every other Host is network-reachable and keeps operator-held credentials.
  *
  * Both the browser-visible origin and the listener must be loopback. Requiring
@@ -872,7 +872,7 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   ) {
     throw new Error("OPENSTEER_HOST_URL must be an uncredentialed HTTP(S) origin");
   }
-  // The Main Runner is the one that shares a computer with its Personal Host,
+  // The hosting Runner is the one that shares a computer with its Personal Host,
   // so only it must reach that Host over loopback. Every other computer on a
   // Personal Deployment is reachable-only and connects to the signed access
   // route, which is an HTTPS origin (`docs/computers.md#enrollment`).

@@ -108,8 +108,8 @@ interface PersonalDeploymentSupervisorOptions {
   readonly baseEnvironment?: Readonly<Record<string, string>>;
   readonly catalog: Pick<DeploymentCatalogStore, "upsertAndSelect">;
   /**
-   * The computer-use bridge for this Deployment's Main Runner, or null where
-   * computer use does not exist. The Main Runner is this Mac's own Runner, so
+   * The computer-use bridge for this Deployment's hosting Runner, or null where
+   * computer use does not exist. The hosting Runner is this Mac's own Runner, so
    * it reaches the helper the same way a lent slot's Runner does.
    */
   readonly computerUse?: {
@@ -688,7 +688,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       step: "starting-local-agents",
     });
     const userEnvironment = await this.#userEnvironment.resolve();
-    // Computer use reaches the Main Runner too: it is this Mac's own Runner,
+    // Computer use reaches the hosting Runner too: it is this Mac's own Runner,
     // and a Personal Deployment is the shape where that Mac and this app are
     // the same computer.
     const computerUse =

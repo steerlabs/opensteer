@@ -57,7 +57,7 @@ interface Listener {
   close(): Promise<void>;
 }
 
-/** A realtime socket that keeps every message, following a Workspace when one is named. */
+/** A personal realtime socket that keeps every message. */
 async function listen(
   host: MachineAccessHost,
   headers: Record<string, string>,
@@ -602,7 +602,7 @@ integration("Browser presence and conversation usage", () => {
     });
     if (call.busy) throw new Error("Expected an idle Voice Thread");
     const executing = waitForExecute(caller.primary.socket, call.runId);
-    // Direct store admission has no server wake callback. A normal queued Chat
+    // Direct store admission has no server wake callback. A normal queued Voice
     // input wakes the real coordinator, which dispatches both Threads.
     await testRpcData(
       host.origin,
@@ -611,7 +611,7 @@ integration("Browser presence and conversation usage", () => {
         type: "thread.sendMessage",
         threadId: chat.thread.id,
         idempotencyKey: "wake-voice",
-        content: [{ type: "text", text: "Keep this follow-up in Chat" }],
+        content: [{ type: "text", text: "Keep this follow-up in Voice" }],
       },
       { headers: host.ownerHeaders },
     );
@@ -2059,7 +2059,7 @@ integration("Browser presence and conversation usage", () => {
 
     const owner = await listen(host, host.ownerHeaders, true);
     cleanups.push(() => owner.close());
-    // The same person on a socket that follows no Workspace: the catalog is theirs.
+    // Another socket for the same person also receives their catalog.
     const ownerElsewhere = await listen(host, host.ownerHeaders);
     cleanups.push(() => ownerElsewhere.close());
     const stranger = { headers: { origin: host.origin.origin } };
@@ -2092,7 +2092,7 @@ integration("Browser presence and conversation usage", () => {
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed")[0]);
     const device = await reader(host);
     cleanups.push(async () => device.dispose());
-    // Its default socket follows Main, while this browser belongs to the Project.
+    // Its personal socket also receives changes to this browser.
 
     // A. The page changes. Viewers are patched; nothing is reread.
     const beforeNavigation = owner.messages.length;
@@ -2303,7 +2303,7 @@ integration("Browser presence and conversation usage", () => {
     ).toMatchObject({ acting: false, attachedRunIds: [] });
 
     // E. Closing a browser while an agent acts clears every viewer, including a
-    // client following only Main with bootstrap polling disabled.
+    // client with bootstrap polling disabled.
     const beforeMainUse = ownerElsewhere.messages.length;
     const closingRun = await dispatchCallerRun(host, caller, {
       key: "closing",
@@ -2317,8 +2317,7 @@ integration("Browser presence and conversation usage", () => {
       },
       () => undefined,
     );
-    // Catalog invalidation names the conversation's Main Workspace, but its
-    // audience comes from the specialist browser's session.
+    // Catalog invalidation reaches every personal client viewing the browser.
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed", beforeMainUse)[0]);
     const sent = closingCdp.request({ method: "Target.getTargets", parameters: {} });
     const relayed = await browserComputer.nextCommand();
@@ -2429,7 +2428,7 @@ integration("Browser presence and conversation usage", () => {
     const owner = await listen(host, host.ownerHeaders, true);
     cleanups.push(() => owner.close());
 
-    // A browser the person opens in the Workspace, from no conversation.
+    // A browser the person opens without a task.
     const opened = await testRpcData(
       host.origin,
       "commands.dispatch",

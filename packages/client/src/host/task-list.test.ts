@@ -126,9 +126,9 @@ describe("taskList", () => {
     expect(heldThread(source, completed.thread.id)).toEqual(completed.thread);
   });
   it.each([false, true])(
-    "rolls an unlisted worker's question to its nearest listed ancestor (Chat: %s)",
+    "rolls an unlisted worker's question to its nearest listed ancestor (alternate title: %s)",
     (chat) => {
-      const ancestor = entry(1, chat ? "Chat" : "My task", "idle", 2, 1);
+      const ancestor = entry(1, chat ? "Trip planning" : "My task", "idle", 2, 1);
       const worker = entry(2, "Hidden worker", "waiting", 1, 0);
       const waiting = asking(2, "Choose an option");
       const source = snapshot(
@@ -388,7 +388,9 @@ describe("taskRowLabel", () => {
     const list = taskList(
       snapshot(
         [
-          entry(1, "Chat", "idle", 400, 0, { lastReply: "The best one is the down blend." }),
+          entry(1, "Trip planning", "idle", 400, 0, {
+            lastReply: "The best one is the down blend.",
+          }),
           entry(2, "Reply to Ana", "waiting", 3, 0),
           entry(3, "Check prices", "running", 2, 0),
           entry(4, "Name this sign-in", "failed", 30, 26, { failure: "Couldn’t open the page" }),
@@ -398,7 +400,7 @@ describe("taskRowLabel", () => {
         { chat: 1, unread: [4], waiting: [asking(2, "Approve sending the reply")] },
       ),
     );
-    expect(taskRowLabel(list.ready.find(({ title }) => title === "Chat")!)).toContain(
+    expect(taskRowLabel(list.ready.find(({ title }) => title === "Trip planning")!)).toContain(
       "The best one is the down blend.",
     );
     expect(list.working.map((row) => taskRowLabel(row))).toEqual([
@@ -409,7 +411,7 @@ describe("taskRowLabel", () => {
     expect(list.ready.map((row) => taskRowLabel(row))).toEqual([
       "Amazon orders, finished: Both arrive Thursday.",
       "Name this sign-in, unread, couldn’t finish: Couldn’t open the page",
-      "Chat, finished: The best one is the down blend.",
+      "Trip planning, finished: The best one is the down blend.",
     ]);
   });
 });
@@ -449,7 +451,7 @@ describe("listedRowThreadId", () => {
     threads: [...threads],
   });
 
-  it("stands a helper's nearest listed ancestor, or Chat, in for it", () => {
+  it("stands a helper's nearest listed ancestor in for it", () => {
     const snapshot = held([
       thread(task, chat, true),
       thread(helper, task, false),
@@ -476,8 +478,7 @@ describe("listedRowThreadId", () => {
 
 // Failure modes: a helper's way back names whoever handed it its latest task
 // instead of the task it lives under (so the header and the sidebar disagree),
-// calls the reader's own Chat by its Thread title, or links a conversation this
-// reader cannot open.
+// or links a task this reader cannot open.
 describe("threadRequester", () => {
   const chat = threadId(80);
   const task = threadId(81);
@@ -513,7 +514,7 @@ describe("threadRequester", () => {
       threadId: chat,
       title: "Trip planning",
     });
-    // An automation anchored on Chat hands the helper its current task; it still lives under the trip.
+    // An automation on the parent task retasks the helper; it still lives under the trip.
     const retasked = snapshot(tasks, {
       [assignment.id]: {
         ...assignment,

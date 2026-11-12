@@ -1685,8 +1685,7 @@ export async function createHostServer(
         });
         const thread = await dependencies.store.getThreadForOwner(command.threadId, userId);
         if (thread) dependencies.realtime.publishReadState(userId, state);
-        // A task read here is no longer bold on the reader's other clients,
-        // which may follow other Workspaces than this Thread's.
+        // A task read here is no longer bold on the reader's other clients.
         dependencies.realtime.publishViewerTasksChanged(userId);
         return { type: command.type, state };
       }

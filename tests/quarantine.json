@@ -619,7 +619,7 @@
     "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
     "name": [
       "Runs that outlive their connection",
-      "delivers an answer while a sibling Run in the same Workspace streams, without dropping the Runner"
+      "delivers an answer while a sibling Run in the same personal Host streams, without dropping the Runner"
     ],
     "area": "Agent orchestration",
     "owner": "Host/Runner maintainers",

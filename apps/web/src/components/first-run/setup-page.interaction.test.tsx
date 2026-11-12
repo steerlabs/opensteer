@@ -184,7 +184,7 @@ async function render() {
     <MemoryRouter initialEntries={["/get-started"]}>
       <Routes>
         <Route element={<SetupPage />} path="/get-started" />
-        <Route element={<p>Chat home</p>} path="/" />
+        <Route element={<p>Task home</p>} path="/" />
         <Route element={<p>AI settings</p>} path="/settings/ai" />
       </Routes>
     </MemoryRouter>
@@ -287,7 +287,7 @@ function onThisMac(bridge: unknown, access: unknown) {
   shell.deploymentAccess = access;
 }
 
-it("starts Chat on the ready AI, named for the plan, with one press", async () => {
+it("starts the first task on the ready AI, named for the plan, with one press", async () => {
   await mount();
   expect(container.textContent).toContain("Claude");
   expect(container.textContent).toContain("Signed in");
@@ -302,7 +302,7 @@ it("starts Chat on the ready AI, named for the plan, with one press", async () =
       modelSelection: expect.objectContaining({ modelId: "model", providerId: "anthropic" }),
     },
   });
-  expect(container.textContent).toContain("Chat home");
+  expect(container.textContent).toContain("Task home");
 });
 
 it("lets the person pick another ready AI", async () => {
@@ -407,7 +407,7 @@ it("walks a Mac through AI, permissions and phone, remembering the step until Fi
   expect(container.textContent).toContain("Permissions");
   await act(async () => button("Continue").click());
   await act(async () => button("Finish").click());
-  expect(container.textContent).toContain("Chat home");
+  expect(container.textContent).toContain("Task home");
   expect(localStorage.getItem(key)).toBeNull();
 });
 

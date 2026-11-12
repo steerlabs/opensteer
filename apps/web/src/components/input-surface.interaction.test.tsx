@@ -289,7 +289,7 @@ describe("request surface connectivity", () => {
 });
 
 it.each(["live", "durable"] as const)(
-  "docks an unassigned hidden worker’s %s Request on Chat and answers its Request",
+  "docks an unassigned hidden worker’s %s Request on Home and answers its Request",
   async (mode) => {
     const node = document.createElement("div");
     document.body.append(node);
