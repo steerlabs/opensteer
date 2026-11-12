@@ -109,13 +109,28 @@ test("team images build natively per architecture and expose digests to later jo
     { platform: "linux/amd64", runner: "ubuntu-latest" },
     { platform: "linux/arm64", runner: "ubuntu-24.04-arm" },
   ]);
-  // Stable promotes the insider's images, so both channels resolve them.
-  assert.equal(build.if, "needs.preflight.outputs.superseded != 'true'");
+  // Stable promotes the insider's images, so both channels resolve them; an insider built
+  // before team images existed promotes without them rather than failing Stable.
+  assert.equal(
+    build.if,
+    "needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.team_images == 'true'",
+  );
+  const detect = workflow.jobs.preflight.steps.find((step) => step.id === "team");
+  assert.match(detect.run, /git cat-file -e "\$SHA:\.github\/scripts\/team-images\.sh"/);
+  assert.equal(workflow.jobs.preflight.outputs.team_images, "${{ steps.team.outputs.images }}");
   const images = workflow.jobs["team-images"];
   assert.deepEqual(images.needs, ["preflight", "team-image-build"]);
+  assert.equal(images.if, "needs.preflight.outputs.team_images == 'true'");
   assert.deepEqual(Object.keys(images.outputs).sort(), ["gateway_image", "host_image"]);
-  for (const job of ["publish-insider", "publish-stable"])
+  for (const job of ["publish-insider", "publish-stable"]) {
     assert.ok(workflow.jobs[job].needs.includes("team-images"), job);
+    assert.ok(
+      workflow.jobs[job].if.includes(
+        "(needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false')",
+      ),
+      job,
+    );
+  }
 });
 test("signing puts its ephemeral keychain on the user search list before building", () => {
   const run = workflow.jobs.build.steps.find(

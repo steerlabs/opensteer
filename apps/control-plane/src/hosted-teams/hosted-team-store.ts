@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { createPublicHttpsFetch } from "@opensteer/access/host";
 import type { ControlPlaneAccountId } from "@opensteer/control-plane-protocol";
 import {
   hostedTeamOrigin,
@@ -11,7 +12,9 @@ import {
   type HostedTeamState,
   type HostedTeamStatusReport,
 } from "@opensteer/control-plane-protocol/hosted-teams";
+import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { digestSecret } from "@opensteer/shared/secretDigest";
+import { z } from "zod";
 import { sql, type Kysely, type Transaction } from "kysely";
 import type { ControlPlaneDatabaseSchema } from "../database/schema.js";
 import { ControlPlaneError } from "../server/errors.js";
@@ -45,8 +48,14 @@ export interface IssuedSetupLink {
 export class HostedTeamStore {
   readonly #database: Database;
 
-  constructor(database: Database) {
+  readonly #hostSetupComplete: (origin: string) => Promise<boolean>;
+
+  constructor(
+    database: Database,
+    options: { readonly hostSetupComplete?: (origin: string) => Promise<boolean> } = {},
+  ) {
     this.#database = database;
+    this.#hostSetupComplete = options.hostSetupComplete ?? teamHostSetupComplete();
   }
 
   async create(accountId: ControlPlaneAccountId, slug: HostedTeamSlug): Promise<IssuedSetupLink> {
@@ -121,17 +130,20 @@ export class HostedTeamStore {
   }
 
   /**
-   * Replaces the setup token. The Host restarts with the new digest and, while nobody has
-   * claimed it, opens a fresh setup window; after a claim it ignores the token entirely.
+   * Replaces the setup token, restarting the Host with the new digest, unless the Host says an
+   * owner already finished setup: then a new link could do nothing, so the team just opens.
    */
-  async newSetupLink(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<IssuedSetupLink> {
+  async newSetupLink(
+    accountId: ControlPlaneAccountId,
+    id: HostedTeamId,
+  ): Promise<IssuedSetupLink | { readonly setupComplete: true; readonly origin: string }> {
     const current = await this.forAccount(accountId, id);
     if (!current) throw new ControlPlaneError("not_found", "Hosted team was not found");
     if (current.state !== "active") {
       throw new ControlPlaneError("conflict", "This team is suspended.");
     }
-    if (current.claimed) {
-      throw new ControlPlaneError("conflict", "This team already has an owner.");
+    if (await this.#hostSetupComplete(current.origin)) {
+      return { setupComplete: true, origin: current.origin };
     }
     const setupToken = newSetupToken();
     const updated = await this.#database
@@ -328,5 +340,30 @@ function toView(row: {
       row.observedSetupGeneration >= row.setupGeneration,
     claimed: row.claimed,
     statusMessage: row.statusMessage,
+  };
+}
+
+/**
+ * Whether the team's own Host reports first-owner setup finished. Account's record only shows
+ * adoption, which comes before the owner signs in. An unreachable Host counts as unfinished: it
+ * still refuses any setup token once an owner exists.
+ */
+export function teamHostSetupComplete(
+  fetch: typeof globalThis.fetch = createPublicHttpsFetch({
+    maxResponseBytes: 4 * 1024,
+    timeoutMs: 5_000,
+  }),
+): (origin: string) => Promise<boolean> {
+  return async (origin) => {
+    try {
+      const response = await fetch(`${origin}/v1/team/setup/state`, {
+        headers: { [teamApiVersionHeader]: String(teamApiVersion) },
+        redirect: "error",
+      });
+      if (!response.ok) return false;
+      return z.object({ complete: z.boolean() }).parse(await response.json()).complete;
+    } catch {
+      return false;
+    }
   };
 }

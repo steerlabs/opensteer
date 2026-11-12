@@ -52,3 +52,38 @@ export async function stopHostOnAuthorityLoss(
   const deadline = setTimeout(fail, processStopTimeoutMs);
   await stopHost(runtime, "deployment authority lost", fail);
 }
+
+/**
+ * Starts at most one stop. Losing the lock during a stop that is already under way still
+ * bounds it and fails the exit, since the Host may no longer do that work unfenced.
+ */
+export function hostStopper(
+  runtime: Pick<HostRuntime, "app" | "close" | "closingStep">,
+  exit: (code: number) => void = (code) => process.exit(code),
+): { signal(name: string): void; authorityLost(error: Error): void } {
+  let stopping = false;
+  let lost = false;
+  let exited = false;
+  const once = (code: number) => {
+    if (exited) return;
+    exited = true;
+    exit(lost ? 1 : code);
+  };
+  return {
+    signal(name) {
+      if (stopping) return;
+      stopping = true;
+      void stopHost(runtime, name, once);
+    },
+    authorityLost(error) {
+      lost = true;
+      if (!stopping) {
+        stopping = true;
+        void stopHostOnAuthorityLoss(runtime, error, once);
+        return;
+      }
+      runtime.app.log.fatal({ err: error }, "Opensteer Host lost its Deployment database lock");
+      setTimeout(() => once(1), processStopTimeoutMs);
+    },
+  };
+}

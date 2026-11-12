@@ -69,7 +69,10 @@ integration("Hosted teams", () => {
     maxConnections: 4,
   });
   const store = new ControlPlaneStore(database, publicOrigin, { portalOrigin });
-  const hostedTeams = new HostedTeamStore(database);
+  const setupCompleteAt = new Set<string>();
+  const hostedTeams = new HostedTeamStore(database, {
+    hostSetupComplete: async (origin) => setupCompleteAt.has(origin),
+  });
   const portalSessions = new PortalSessionStore(database);
   const connectLifecycle = new ConnectLifecycleService(database, {
     delete: async () => undefined,
@@ -105,6 +108,7 @@ integration("Hosted teams", () => {
   });
 
   beforeEach(async () => {
+    setupCompleteAt.clear();
     await sql`truncate table users, hosted_teams cascade`.execute(database);
     await store.ensureOfficialPortalClient({
       clientId: portalOAuthClientId,
@@ -240,9 +244,17 @@ integration("Hosted teams", () => {
     await report(team!.id, { phase: "ready", observedSetupGeneration: 2 });
     expect(await status()).toMatchObject({ ready: true });
 
+    // Adoption alone does not finish setup: until an owner signs in, a lost link stays recoverable.
     await claim("https://waiting.teams.opensteer.com");
-    const afterClaim = await postForm(cookie, `/teams/${team!.id}/setup-link`);
-    expect(afterClaim.statusCode).toBe(409);
+    const adopted = await postForm(cookie, `/teams/${team!.id}/setup-link`);
+    expect(adopted.statusCode).toBe(200);
+    expect((await desiredTeams())[0]).toMatchObject({ setupGeneration: 3 });
+
+    setupCompleteAt.add("https://waiting.teams.opensteer.com");
+    const owned = await postForm(cookie, `/teams/${team!.id}/setup-link`);
+    expect(owned.statusCode).toBe(303);
+    expect(owned.headers.location).toBe("https://waiting.teams.opensteer.com/");
+    expect((await desiredTeams())[0]).toMatchObject({ setupGeneration: 3 });
   });
 
   it("suspends, resumes and deletes through the operator path", async () => {

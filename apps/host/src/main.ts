@@ -1,6 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { parseHostConfig } from "@opensteer/config";
-import { stopHost, stopHostOnAuthorityLoss } from "./runtime/host-stop.js";
+import { hostStopper } from "./runtime/host-stop.js";
 import { createHostRuntime } from "./runtime/runtime.js";
 
 export async function main(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
@@ -38,15 +38,10 @@ export async function main(environment: NodeJS.ProcessEnv = process.env): Promis
   const address = await runtime.listen();
   runtime.app.log.info({ address }, "Opensteer Host listening");
 
-  let closing = false;
-  const close = (stop: () => Promise<void>) => {
-    if (closing) return;
-    closing = true;
-    void stop();
-  };
+  const stopper = hostStopper(runtime);
   for (const signal of ["SIGINT", "SIGBREAK", "SIGTERM"] as const)
-    process.once(signal, () => close(() => stopHost(runtime, signal)));
-  void runtime.authorityLost.then((error) => close(() => stopHostOnAuthorityLoss(runtime, error)));
+    process.once(signal, () => stopper.signal(signal));
+  void runtime.authorityLost.then((error) => stopper.authorityLost(error));
 }
 
 function safeRequestLog(request: { readonly method?: unknown; readonly url?: unknown }) {

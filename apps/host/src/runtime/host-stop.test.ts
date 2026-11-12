@@ -1,6 +1,6 @@
 import { processStopTimeoutMs } from "@opensteer/shared/processControl";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { stopHost, stopHostOnAuthorityLoss } from "./host-stop.js";
+import { hostStopper, stopHost, stopHostOnAuthorityLoss } from "./host-stop.js";
 
 beforeEach(() => void vi.useFakeTimers());
 afterEach(() => void vi.useRealTimers());
@@ -58,5 +58,36 @@ it("does not let a close step hung on the lost database keep an unfenced Host al
   const { exit, lose } = fixture(() => new Promise(() => undefined));
   void lose();
   await vi.advanceTimersByTimeAsync(processStopTimeoutMs);
+  expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+});
+
+it("still exits non-zero when the lock is lost during a shutdown that hangs", async () => {
+  const { exit, log } = fixture(() => new Promise(() => undefined));
+  const runtime = {
+    app: { log },
+    close: () => new Promise<void>(() => undefined),
+    closingStep: () => "HTTP server",
+  };
+  const stopper = hostStopper(runtime as unknown as Parameters<typeof stopHost>[0], exit);
+  stopper.signal("SIGTERM");
+  stopper.authorityLost(new Error("session ended"));
+  await vi.advanceTimersByTimeAsync(processStopTimeoutMs);
+  expect(exit).toHaveBeenCalledExactlyOnceWith(1);
+  expect(log.fatal).toHaveBeenCalledOnce();
+});
+
+it("fails the exit when the lock is lost during a shutdown that then finishes", async () => {
+  let finish!: () => void;
+  const { exit, log } = fixture(() => Promise.resolve());
+  const runtime = {
+    app: { log },
+    close: () => new Promise<void>((resolve) => (finish = resolve)),
+    closingStep: () => "HTTP server",
+  };
+  const stopper = hostStopper(runtime as unknown as Parameters<typeof stopHost>[0], exit);
+  stopper.signal("SIGTERM");
+  stopper.authorityLost(new Error("session ended"));
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
   expect(exit).toHaveBeenCalledExactlyOnceWith(1);
 });

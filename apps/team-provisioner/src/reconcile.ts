@@ -2,6 +2,8 @@ import type {
   DesiredHostedTeam,
   HostedTeamStatusReport,
 } from "@opensteer/control-plane-protocol/hosted-teams";
+import { AccountRequestError } from "./account.js";
+import { KubernetesRequestError } from "./kubernetes.js";
 import {
   appliedHashAnnotation,
   newTeamSecret,
@@ -89,6 +91,7 @@ export class Reconciler {
     let rolling = plans.some(
       ({ team, set, hash }) => team.state === "active" && set?.appliedHash === hash && !set.settled,
     );
+    let refused: Error | undefined;
     for (const { team, set, objects, hash } of plans) {
       try {
         if (team.state === "deleted") {
@@ -120,8 +123,11 @@ export class Reconciler {
           team: team.slug,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (refusesProvisioner(error)) refused ??= error;
       }
     }
+    // One team's own failure is that team's; a refusal of this identity fails every team alike.
+    if (refused) throw refused;
   }
 
   #render(team: DesiredHostedTeam) {
@@ -209,4 +215,11 @@ export class Reconciler {
     this.#reported.set(team.id, key);
     if (report.phase === "failed") this.#log("team.unready", { team: team.slug });
   }
+}
+
+function refusesProvisioner(error: unknown): error is Error {
+  return (
+    (error instanceof KubernetesRequestError || error instanceof AccountRequestError) &&
+    (error.status === 401 || error.status === 403)
+  );
 }

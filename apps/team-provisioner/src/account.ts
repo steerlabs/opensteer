@@ -79,7 +79,21 @@ export class AccountClient implements AccountApi {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-    if (!response.ok) throw new Error(`Account answered ${method} ${path} with ${response.status}`);
+    if (!response.ok)
+      throw new AccountRequestError(
+        response.status,
+        `Account answered ${method} ${path} with ${response.status}`,
+      );
     return response;
+  }
+}
+
+export class AccountRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "AccountRequestError";
+    this.status = status;
   }
 }

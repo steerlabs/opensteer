@@ -59,6 +59,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       tag: ${{ steps.resolve.outputs.tag }}
       superseded: ${{ steps.resolve.outputs.superseded }}
+      team_images: ${{ steps.team.outputs.images }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -75,6 +76,16 @@ jobs:
           INSIDER_TAG: ${{ inputs.insider_tag }}
           EVENT: ${{ github.event_name }}
         run: node .github/scripts/release-plan.mjs preflight
+      # An insider published before team images existed promotes without them.
+      - id: team
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+        run: |
+          if [ -n "$SHA" ] && git cat-file -e "$SHA:.github/scripts/team-images.sh" 2>/dev/null; then
+            echo images=true >> "$GITHUB_OUTPUT"
+          else
+            echo images=false >> "$GITHUB_OUTPUT"
+          fi
   discover:
     if: needs.preflight.outputs.superseded != 'true'
     needs: preflight
@@ -326,7 +337,7 @@ jobs:
   team-image-build:
     # Insiders publish the team images; Stable reuses that version's images unchanged.
     needs: preflight
-    if: needs.preflight.outputs.superseded != 'true'
+    if: needs.preflight.outputs.superseded != 'true' && needs.preflight.outputs.team_images == 'true'
     strategy:
       matrix:
         include:
@@ -367,6 +378,7 @@ jobs:
           if-no-files-found: error
   team-images:
     needs: [preflight, team-image-build]
+    if: needs.preflight.outputs.team_images == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -423,7 +435,7 @@ jobs:
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
     needs: [preflight, discover, draft, account, team-images]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && needs['team-images'].result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -448,7 +460,7 @@ jobs:
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   publish-stable:
     needs: [preflight, discover, draft, team-images]
-    if: ${{ !cancelled() && needs['team-images'].result == 'success' && needs.preflight.outputs.channel == 'stable' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') && inputs.publish }}
+    if: ${{ !cancelled() && (needs['team-images'].result == 'success' || needs.preflight.outputs.team_images == 'false') && needs.preflight.outputs.channel == 'stable' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') && inputs.publish }}
     runs-on: ubuntu-latest
     environment: publish
     permissions:

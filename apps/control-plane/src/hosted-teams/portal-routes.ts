@@ -114,7 +114,9 @@ export function registerHostedTeamPortal(
     const session = await readSession(request, reply);
     if (!session) return signIn(reply, "/");
     const { id } = TeamParamsSchema.parse(request.params);
-    return renderStarting(reply, await hostedTeams.newSetupLink(accountOf(session), id));
+    const issued = await hostedTeams.newSetupLink(accountOf(session), id);
+    if ("setupComplete" in issued) return reply.redirect(`${issued.origin}/`, 303);
+    return renderStarting(reply, issued);
   });
 
   app.post(`${portalHostedTeamsPath}/:id/delete`, async (request, reply) => {
@@ -194,8 +196,7 @@ export function hostedTeamRows(teams: readonly HostedTeamView[]): readonly strin
       id: team.id,
       origin: team.origin,
       phase: team.phase,
-      setupLinkAction:
-        team.state === "active" && !team.claimed ? `${hostedTeamPath(team.id)}/setup-link` : null,
+      setupLinkAction: team.state === "active" ? `${hostedTeamPath(team.id)}/setup-link` : null,
       state: team.state,
     }),
   );

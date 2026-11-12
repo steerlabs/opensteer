@@ -12,6 +12,8 @@ import {
   type ManagedNamespace,
   type ManagedStatefulSet,
 } from "./reconcile.js";
+import { AccountRequestError } from "./account.js";
+import { KubernetesRequestError } from "./kubernetes.js";
 import {
   appliedHashAnnotation,
   setupGenerationAnnotation,
@@ -324,6 +326,23 @@ describe("Reconciler", () => {
       hostImage: null,
       observedSetupGeneration: 0,
     });
+  });
+
+  it("fails the pass when the cluster or Account refuses this provisioner, after trying every team", async () => {
+    const forbidden = setup();
+    forbidden.account.teams = [team("first"), team("second")];
+    forbidden.cluster.apply = async () => {
+      throw new KubernetesRequestError(403, "forbidden");
+    };
+    await expect(forbidden.reconciler.pass()).rejects.toMatchObject({ status: 403 });
+    expect(forbidden.account.last(teamId("second"))).toBeUndefined();
+
+    const refused = setup();
+    refused.account.teams = [team("first")];
+    refused.account.report = async () => {
+      throw new AccountRequestError(401, "unauthorized");
+    };
+    await expect(refused.reconciler.pass()).rejects.toMatchObject({ status: 401 });
   });
 
   it("keeps reconciling other teams when one fails", async () => {
