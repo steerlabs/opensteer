@@ -362,8 +362,7 @@ integration("MCP servers on a computer", () => {
       expect(reasked).toEqual([]);
       record("installed again", { reasked });
 
-      // 11. Installed with a changed launch: what ran ends, and the new launch
-      // runs only once the Mac is asked about it and allows it.
+      // The Personal owner's update keeps approval on the same computer and ends the old launch.
       const previous = Number(said(await call("pid", {})));
       expect(alive(previous)).toBe(true);
       await fixture.changeLaunch();
@@ -387,25 +386,16 @@ integration("MCP servers on a computer", () => {
       const changed = await serverRow(host);
       const changedLaunch = (changed.transport as { readonly launch: LocalMcpLaunch }).launch;
       expect(changedLaunch).not.toEqual(launch);
-      expect(changed.status).toBe("needs-attention");
-      const askedChanged = await waitingRequest(host, server.id);
-      expect(askedChanged.definitionDigest).toBe(localMcpLaunchDigest(changedLaunch));
+      await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
       expect(
         await host.store.database
-          .selectFrom("integrationTools")
-          .select("name")
-          .where("serverId", "=", server.id)
-          .where("status", "=", "active")
+          .selectFrom("computerAppSetupRequests")
+          .select("id")
+          .where("kind", "=", "server")
           .execute(),
       ).toEqual([]);
-      const allowedChange = await computer.answer(askedChanged.id, {
-        setupRequestId: askedChanged.id,
-        kind: "allow",
-      });
-      expect(allowedChange.kind).toBe("allowed");
-      await waitForCondition(async () => (await serverRow(host)).status === "active", 30_000);
       expect(said(await call("echo", { text: "changed" }))).toBe("echo: changed");
-      record("installed with a changed launch", { previous, request: askedChanged.id });
+      record("installed with a changed launch", { previous });
 
       // 12. Uninstalled: nothing waits on the Mac and nothing runs.
       const last = Number(said(await call("pid", {})));

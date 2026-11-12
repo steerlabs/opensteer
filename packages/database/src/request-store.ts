@@ -1,6 +1,6 @@
 import { getBrowserSessionForOwner } from "./browser-session-store.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import { lockBrowserHomeRunner } from "./browser-home-store.js";
 import { assertActiveGrant } from "./execution-authority.js";
 import { ReplyTargetSchema } from "@opensteer/core";
@@ -1435,7 +1435,7 @@ export class RequestStore {
     const limit = clampLimit(input.limit);
     const scope = `waiting:${input.userId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    return withPersonalTransaction(
+    return withPersonalReadTransaction(
       this.#database,
       async (transaction) => {
         await requirePersonalOwner(transaction, input.userId);
@@ -1526,7 +1526,7 @@ export class RequestStore {
     const limit = clampLimit(input.limit);
     const scope = `visible:${input.originatingThreadId}`;
     const anchor = input.before ? decodeRequestCursor(input.before, scope) : null;
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
       const visible = (builder: ReturnType<typeof transaction.selectFrom<"requests">>) =>
         builder.where("originatingThreadId", "=", input.originatingThreadId);
       let pageQuery = visible(transaction.selectFrom("requests"))
@@ -2353,7 +2353,7 @@ export class RequestStore {
     readonly ownerId: UserId;
     readonly requestId: RequestId;
   }): Promise<boolean> {
-    return withPersonalTransaction(this.#database, async (transaction) => {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
       const row = await transaction
         .selectFrom("requests")
         .selectAll()
@@ -2383,26 +2383,17 @@ export class RequestStore {
     readonly originatingThreadId: ThreadId;
     readonly requestedBy: UserId;
   }): Promise<boolean> {
-    return withPersonalTransaction(this.#database, async (personalTransaction) => {
-      await ((transaction) => lockRequestOrigin(transaction, input))(personalTransaction);
-      return (async (transaction) => {
-        const origin = await lockRequestOrigin(transaction, input);
-        if (
-          !origin?.running ||
-          origin.threadId !== input.originatingThreadId ||
-          origin.requestedBy !== input.requestedBy ||
-          !(await runHasActiveGrant(transaction, input.originatingRunId))
-        )
-          return false;
-
-        await requirePersonalOwner(transaction, input.requestedBy);
-        try {
-          return true;
-        } catch (error) {
-          if (error instanceof OpensteerError) return false;
-          throw error;
-        }
-      })(personalTransaction);
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      const origin = await lockRequestOrigin(transaction, input, false);
+      if (
+        !origin?.running ||
+        origin.threadId !== input.originatingThreadId ||
+        origin.requestedBy !== input.requestedBy ||
+        !(await runHasActiveGrant(transaction, input.originatingRunId))
+      )
+        return false;
+      await requirePersonalOwner(transaction, input.requestedBy);
+      return true;
     });
   }
 

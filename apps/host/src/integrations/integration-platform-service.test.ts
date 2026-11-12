@@ -3104,7 +3104,16 @@ describe("IntegrationPlatformService personal access Request fulfillment", () =>
       providerAuthorizations: {},
       requestId: pending.id,
       resolvedBy: pending.requestedBy,
-      response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+      response: {
+        kind: "external",
+        value: {
+          connectionId,
+          decision: "fulfilled",
+          access: "read",
+          alias: connectionId,
+          isDefault: false,
+        },
+      },
     });
     expect(onDeploymentEvent).toHaveBeenCalledWith(event);
   });
@@ -3158,7 +3167,16 @@ describe("IntegrationPlatformService personal access Request fulfillment", () =>
     });
     expect(resolveIntegrationAccessRequest).toHaveBeenCalledWith(
       expect.objectContaining({
-        response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+        response: {
+          kind: "external",
+          value: {
+            connectionId,
+            decision: "fulfilled",
+            access: "read",
+            alias: connectionId,
+            isDefault: false,
+          },
+        },
       }),
     );
   });
@@ -4694,6 +4712,7 @@ function platform(input: {
       ? {
           connections: { assertOwner: vi.fn(async () => undefined) },
           computerAppRunner: vi.fn(async () => null),
+          listGrants: vi.fn(async () => []),
           ...input.store,
         }
       : {

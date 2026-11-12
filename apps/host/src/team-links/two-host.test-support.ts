@@ -180,7 +180,7 @@ export async function createTwoHostLinkFixture() {
       return { read: false, write: false, manage: false, peopleOnly: false };
     },
   };
-  const links = new TeamEndpointLinks(team.database, access, "Fixture team");
+  const links = new TeamEndpointLinks(team.database, access, "Acme");
   const code = randomBytes(32).toString("base64url");
   const linkId = createId("teamLink");
   const secret = `ost_link_${randomBytes(32).toString("base64url")}`;

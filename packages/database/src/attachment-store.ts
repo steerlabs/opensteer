@@ -1,6 +1,10 @@
 import { assertActiveGrant, type ActiveExecutionBindingInput } from "./execution-authority.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  lockDeploymentEvents,
+  withPersonalReadTransaction,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import "./connection.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -133,7 +137,7 @@ export class AttachmentStore {
       .executeTakeFirst();
   }
   async getForUser(attachmentId: string, userId: UserId): Promise<AttachmentRow> {
-    return withPersonalTransaction(this.database, async (transaction) => {
+    return withPersonalReadTransaction(this.database, async (transaction) => {
       await requirePersonalOwner(transaction, userId);
       const row = await transaction
         .selectFrom("attachments")
