@@ -493,11 +493,18 @@ export async function recoverCommandsAfterHostRestart(
         .executeTakeFirst();
       if (run?.status !== "starting") return null;
       await lockThreadRow(transaction, run.threadId);
+      // A Thread can hold several sessions (fresh context, engine switches): lock them in ID order.
+      await transaction
+        .selectFrom("providerSessions")
+        .select("id")
+        .where("threadId", "=", run.threadId)
+        .orderBy("id", "asc")
+        .forNoKeyUpdate()
+        .execute();
       const session = await transaction
         .selectFrom("providerSessions")
         .select(["bindingGeneration", "runnerId"])
         .where("id", "=", run.providerSessionId)
-        .forNoKeyUpdate()
         .executeTakeFirst();
       if (
         session &&

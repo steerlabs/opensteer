@@ -1183,7 +1183,7 @@ export class ProductToolHandlers {
         ...(!input.title ? { generateTitle: true } : {}),
         idempotencyKey: idempotencyKey(caller, requestId, "create"),
       },
-      { ...(specialistId ? { specialistId } : {}), ...expected },
+      { ...(specialistId ? { specialistId } : {}), ...expected, placed: true },
     );
     return { thread, ...expected };
   }

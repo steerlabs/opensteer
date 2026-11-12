@@ -624,7 +624,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ).toEqual([{ policy: "queue" }]);
     await expect(
       delegate({ ...briefing, threadId: f.unrelated.id }, "briefing-into-another"),
-    ).rejects.toMatchObject({ code: "bad_request" });
+    ).rejects.toThrow("omit threadId and places");
   });
   it("A5: program Trigger controls use current anchor authority", async () => {
     const f = await fixture();
