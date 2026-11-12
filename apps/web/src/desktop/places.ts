@@ -82,12 +82,7 @@ function placeRow(
   return {
     current,
     detail: placeDetail(deployment, context),
-    icon:
-      deployment.kind === "personal"
-        ? "laptop"
-        : deployment.kind === "development"
-          ? "code"
-          : "server",
+    icon: deployment.kind === "personal" ? "laptop" : "server",
     id: deployment.id,
     name: deployment.name,
     opens: current || deployment.availableActions.includes("select"),
@@ -103,7 +98,6 @@ function placeRow(
 
 function placeDetail(deployment: DeploymentAccessDeployment, context: PlaceRowContext): string {
   if (deployment.onThisComputer) return context.thisComputer;
-  if (deployment.kind === "development") return "Development";
   if (deployment.accountAccess === "member") return "Shared with you";
   if (deployment.kind === "personal") {
     return deployment.source === "account" ? "Your computer" : "Computer · added here";

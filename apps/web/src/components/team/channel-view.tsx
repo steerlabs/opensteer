@@ -1,9 +1,10 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { AgentCardRow, type AgentCardActions } from "./agent-status-card.js";
 import { MessageRow, type MessageActions } from "./message-row.js";
-import { joins, itemId, SystemRow } from "./message-list.js";
+import { joins, itemId, SystemRow, useStableItems } from "./message-list.js";
+import { useStableActions } from "../use-stable-actions.js";
 import { ChannelGlyph, PeopleOnlyBadge, PersonAvatar } from "./team-marks.js";
 import {
   channelLabel,
@@ -98,18 +99,26 @@ function ChannelHeader({
       </span>
       {dm ? null : (
         <button
-          aria-label={`${plural(channel.memberCount, "member")}`}
-          className="channel__faces"
+          aria-label={
+            channel.memberCount === null ? "Members" : plural(channel.memberCount, "member")
+          }
+          className={channel.faces.length > 0 ? "channel__faces" : "icon-btn"}
           onClick={menu.onOpenMembers}
           title="Members"
           type="button"
         >
-          <span aria-hidden className="face-stack face-stack--20">
-            {channel.faces.slice(0, 3).map((person) => (
-              <PersonAvatar key={person.id} person={person} size={20} />
-            ))}
-          </span>
-          <span className="channel__count">{channel.memberCount}</span>
+          {channel.faces.length > 0 ? (
+            <span aria-hidden className="face-stack face-stack--20">
+              {channel.faces.slice(0, 3).map((person) => (
+                <PersonAvatar key={person.id} person={person} size={20} />
+              ))}
+            </span>
+          ) : (
+            <Icon name="users" />
+          )}
+          {channel.memberCount === null ? null : (
+            <span className="channel__count">{channel.memberCount}</span>
+          )}
         </button>
       )}
       {menu.onSearch ? (
@@ -228,17 +237,31 @@ export function ChannelMessages({
 /** A pane's head: what it is, where, and the way to close it. */
 export function PaneHeader({
   action,
+  back,
   detail,
   onClose,
   title,
 }: {
   readonly action?: ReactNode;
+  /** Docked beside a page, the way back to what this pane replaced. */
+  readonly back?: { readonly label: string; readonly onBack: () => void } | undefined;
   readonly detail?: ReactNode;
   readonly onClose: () => void;
   readonly title: string;
 }) {
   return (
     <header className="team-pane__head">
+      {back ? (
+        <button
+          aria-label={`Back to ${back.label}`}
+          className="icon-btn team-pane__back"
+          onClick={back.onBack}
+          title={`Back to ${back.label}`}
+          type="button"
+        >
+          <Icon name="chevron-left" />
+        </button>
+      ) : null}
       <h2 className="team-pane__title">
         {title}
         {detail ? <span className="team-pane__detail">{detail}</span> : null}
@@ -268,12 +291,15 @@ export function ThreadPane({
   channel,
   composer,
   editingId = null,
+  onBack,
   onClose,
   onEditingChange,
   replies,
   root,
 }: {
   readonly actions?: MessageActions | undefined;
+  /** Docked, the thread stands in the channel's place and ‹ goes back to it. */
+  readonly onBack?: (() => void) | undefined;
   readonly cardActions?: AgentCardActions | undefined;
   readonly channel: Channel;
   readonly composer: ReactNode;
@@ -283,6 +309,15 @@ export function ThreadPane({
   readonly replies: readonly TimelineItem[];
   readonly root: MessageView;
 }) {
+  const stable = useStableItems(replies);
+  const rowActions = useStableActions(actions ?? {});
+  const rowCardActions = useStableActions(cardActions ?? {});
+  const editingLatest = useRef(onEditingChange);
+  editingLatest.current = onEditingChange;
+  const onEditing = useCallback(
+    (messageId: string, editing: boolean) => editingLatest.current?.(editing ? messageId : null),
+    [],
+  );
   const replyCount = replies.filter((item) => item.kind === "message").length;
   const scroller = useRef<HTMLDivElement | null>(null);
   const atEnd = useRef(true);
@@ -293,7 +328,12 @@ export function ThreadPane({
   }, [replies]);
   return (
     <div className="thread-pane">
-      <PaneHeader detail={channelLabel(channel)} onClose={onClose} title="Thread" />
+      <PaneHeader
+        back={onBack ? { label: channelLabel(channel), onBack } : undefined}
+        detail={channelLabel(channel)}
+        onClose={onClose}
+        title="Thread"
+      />
       <div
         aria-label="Thread"
         className="thread-pane__scroll"
@@ -305,30 +345,30 @@ export function ThreadPane({
         role="log"
       >
         <MessageRow
-          actions={actions}
+          actions={rowActions}
           editing={editingId === root.id}
           inThread
           message={root}
-          onEditingChange={(editing) => onEditingChange?.(editing ? root.id : null)}
+          onEditingChange={onEditing}
         />
         <div className="thread-pane__rule" role="separator">
           <span>{replyCount > 0 ? plural(replyCount, "reply", "replies") : "No replies yet"}</span>
         </div>
-        {replies.map((item, index) => {
+        {stable.map((item, index) => {
           const id = itemId(item);
           return (
             <div className="tlist__row" data-row-id={id} key={id}>
               {item.kind === "message" ? (
                 <MessageRow
-                  actions={actions}
+                  actions={rowActions}
                   editing={editingId === id}
-                  grouped={joins(replies[index - 1], item.message)}
+                  grouped={joins(stable[index - 1], item.message)}
                   inThread
                   message={item.message}
-                  onEditingChange={(editing) => onEditingChange?.(editing ? id : null)}
+                  onEditingChange={onEditing}
                 />
               ) : item.kind === "card" ? (
-                <AgentCardRow actions={cardActions} request={item.request} />
+                <AgentCardRow actions={rowCardActions} request={item.request} />
               ) : (
                 <SystemRow at={item.at} icon={item.icon} text={item.text} />
               )}

@@ -12,14 +12,15 @@ import {
 } from "../components/team/team-sidebar.js";
 import { useToast } from "../components/toast.js";
 import { actionErrorMessage } from "../ui-utils.js";
-import { useTeamSession, useTeams, type TeamAttachment } from "./team-attachments.js";
+import { useTeamSessionValue, useTeams, type TeamAttachment } from "./team-attachments.js";
+import { useStableActions } from "../components/use-stable-actions.js";
 import { teamTile } from "./team-people.js";
 import { channelPath, teamPath } from "./team-paths.js";
 import { sidebarView } from "./team-view-models.js";
 
 export function teamConnection(
   team: TeamAttachment,
-  snapshot: TeamSessionSnapshot | null,
+  snapshot: Pick<TeamSessionSnapshot, "connection"> | null,
 ): TeamConnection {
   if (team.link?.state === "revoked") return "removed";
   if (team.link?.state === "needs_update") return "update-app";
@@ -28,11 +29,20 @@ export function teamConnection(
   return "offline";
 }
 
-/** Every team session's snapshot, read together; a change in one redraws only what reads this. */
-function useTeamSnapshots(
-  clients: readonly (TeamSessionClient | null)[],
-): readonly (TeamSessionSnapshot | null)[] {
-  const cache = useRef<readonly (TeamSessionSnapshot | null)[]>([]);
+/** What a team's segment says. */
+interface SegmentFacts {
+  readonly name: string | null;
+  readonly mentions: number;
+  readonly invites: boolean;
+}
+
+/**
+ * Each team's name, mention total and invite right, read together. Only a
+ * change in those redraws the switch; a new message, typing or presence
+ * does not, and the lists below never redraw for a badge.
+ */
+function useSegmentFacts(clients: readonly (TeamSessionClient | null)[]): readonly SegmentFacts[] {
+  const cache = useRef<readonly SegmentFacts[]>([]);
   const subscribe = useCallback(
     (listener: () => void) => {
       const stops = clients.map((client) => client?.subscribe(listener));
@@ -43,18 +53,32 @@ function useTeamSnapshots(
     [clients],
   );
   const read = useCallback(() => {
-    const next = clients.map((client) => client?.getSnapshot() ?? null);
+    const next = clients.map((client): SegmentFacts => {
+      const snapshot = client?.getSnapshot() ?? null;
+      return {
+        name: snapshot?.bootstrap?.teamName ?? null,
+        mentions: (snapshot?.sidebar?.channels ?? []).reduce(
+          (sum, row) => sum + row.mentionCount,
+          0,
+        ),
+        invites: snapshot?.bootstrap?.can.manageInvites ?? false,
+      };
+    });
     const held = cache.current;
-    if (held.length === next.length && held.every((value, index) => value === next[index]))
+    if (
+      held.length === next.length &&
+      held.every(
+        (value, index) =>
+          value.name === next[index]!.name &&
+          value.mentions === next[index]!.mentions &&
+          value.invites === next[index]!.invites,
+      )
+    )
       return held;
     cache.current = next;
     return next;
   }, [clients]);
   return useSyncExternalStore(subscribe, read, read);
-}
-
-function mentions(snapshot: TeamSessionSnapshot | null): number {
-  return (snapshot?.sidebar?.channels ?? []).reduce((sum, row) => sum + row.mentionCount, 0);
 }
 
 /**
@@ -74,7 +98,7 @@ export function TeamSwitch({
 }) {
   const { teams } = useTeams();
   const clients = useStableClients(teams);
-  const snapshots = useTeamSnapshots(clients);
+  const facts = useSegmentFacts(clients);
   const navigate = useNavigate();
   const [leaving, setLeaving] = useState<TeamAttachment | null>(null);
   if (teams.length === 0) return null;
@@ -82,11 +106,9 @@ export function TeamSwitch({
     onNavigate();
     void navigate(path);
   };
-  const menu = (team: TeamAttachment, snapshot: TeamSessionSnapshot | null): TeamMenuActions => ({
+  const menu = (team: TeamAttachment, invites: boolean): TeamMenuActions => ({
     onKnowledge: team.client ? () => go(teamPath(team.teamId, "knowledge")) : undefined,
-    onInvite: snapshot?.bootstrap?.can.manageInvites
-      ? () => go(`/settings/teams/${team.teamId}/invites`)
-      : undefined,
+    onInvite: invites ? () => go(`/settings/teams/${team.teamId}/invites`) : undefined,
     onSettings: team.client ? () => go(`/settings/teams/${team.teamId}/profile`) : undefined,
     onLeave: team.link ? () => setLeaving(team) : undefined,
   });
@@ -98,14 +120,14 @@ export function TeamSwitch({
         segments={[
           { id: "tasks", label: "Tasks", badge: tasksBadge },
           ...teams.map((team, index) => {
-            const snapshot = snapshots[index] ?? null;
-            const name = snapshot?.bootstrap?.teamName ?? team.name;
+            const fact = facts[index];
+            const name = fact?.name ?? team.name;
             return {
               id: team.teamId,
               label: name,
               tile: teamTile(team.teamId, name),
-              badge: { kind: "mentions" as const, count: mentions(snapshot) },
-              menu: menu(team, snapshot),
+              badge: { kind: "mentions" as const, count: fact?.mentions ?? 0 },
+              menu: menu(team, fact?.invites ?? false),
             };
           }),
         ]}
@@ -184,10 +206,30 @@ export function TeamSideFor({
 }) {
   const { teams, leave } = useTeams();
   const team = teams.find((candidate) => candidate.teamId === teamId) ?? null;
-  const snapshot = useTeamSession(team?.client ?? null);
+  const client = team?.client ?? null;
+  // Only what the side draws: a message, typing or presence elsewhere never redraws it.
+  const sidebar = useTeamSessionValue(client, selectSidebar);
+  const teamName = useTeamSessionValue(client, selectTeamName);
+  const canCreate = useTeamSessionValue(client, selectCanCreate);
+  const connection = useTeamSessionValue(client, selectConnection);
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const toast = useToast();
+  const go = (path: string) => {
+    onNavigate();
+    void navigate(path);
+  };
+  const actions = useStableActions({
+    onOpenChannel: (channelId: string) => go(channelPath(teamId, channelId)),
+    onBrowseChannels: () => go(teamPath(teamId, "browse")),
+    onNewChannel: canCreate ? () => go(teamPath(teamId, "browse?new=1")) : undefined,
+    onNewMessage: () => go(teamPath(teamId, "people")),
+    onMoreDms: () => go(teamPath(teamId, "people")),
+    onRemoveFromSidebar: () =>
+      void leave(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
+    onRetry: () => client?.connect(),
+  });
+  const hrefFor = useCallback((channelId: string) => channelPath(teamId, channelId), [teamId]);
   if (!team) return null;
   if (!team.client)
     return (
@@ -205,32 +247,25 @@ export function TeamSideFor({
   const open = pathname.startsWith(`/teams/${team.teamId}/c/`)
     ? (pathname.split("/")[4] ?? null)
     : null;
-  const go = (path: string) => {
-    onNavigate();
-    void navigate(path);
-  };
   return (
     <TeamSide
-      actions={{
-        onOpenChannel: (channelId) => go(channelPath(team.teamId, channelId)),
-        hrefFor: (channelId) => channelPath(team.teamId, channelId),
-        onBrowseChannels: () => go(teamPath(team.teamId, "browse")),
-        onNewChannel: snapshot?.bootstrap?.can.createChannel
-          ? () => go(teamPath(team.teamId, "browse?new=1"))
-          : undefined,
-        onNewMessage: () => go(teamPath(team.teamId, "people")),
-        onMoreDms: () => go(teamPath(team.teamId, "people")),
-        onRemoveFromSidebar: () =>
-          void leave(team.teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
-        onRetry: () => team.client?.connect(),
-      }}
+      actions={actions}
+      hrefFor={hrefFor}
       openChannelId={open}
       team={sidebarView({
         teamId: team.teamId,
-        tile: teamTile(team.teamId, snapshot?.bootstrap?.teamName ?? team.name),
-        connection: teamConnection(team, snapshot),
-        sidebar: snapshot?.sidebar ?? null,
+        tile: teamTile(team.teamId, teamName ?? team.name),
+        connection: teamConnection(team, { connection }),
+        sidebar,
       })}
     />
   );
 }
+
+const selectSidebar = (snapshot: TeamSessionSnapshot | null) => snapshot?.sidebar ?? null;
+const selectTeamName = (snapshot: TeamSessionSnapshot | null) =>
+  snapshot?.bootstrap?.teamName ?? null;
+const selectCanCreate = (snapshot: TeamSessionSnapshot | null) =>
+  snapshot?.bootstrap?.can.createChannel ?? false;
+const selectConnection = (snapshot: TeamSessionSnapshot | null) =>
+  snapshot?.connection ?? "offline";

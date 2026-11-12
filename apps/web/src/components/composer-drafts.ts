@@ -60,6 +60,9 @@ export type ComposerDraft = Omit<z.infer<typeof DraftSchema>, "files" | "places"
   readonly places?: readonly PlaceContentPart[] | undefined;
 };
 
+/** Home's own unsent draft: the one new task it keeps until sent. */
+export const homeDraftId = "home";
+
 export type ComposerDraftTarget =
   | { readonly kind: "task"; readonly draftId: string }
   | { readonly kind: "thread"; readonly threadId: string };

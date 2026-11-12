@@ -125,15 +125,15 @@ export interface ShellContext {
   clearActionError: () => void;
   /**
    * Starts a task in a folder and keeps its first message, words and files,
-   * for that task's composer to send when it opens. Null when either failed;
-   * the reason is in `actionError`.
+   * for that task's composer to send when it opens. A refusal throws the
+   * Host's reason, for the composer that asked to show.
    */
   createThreadAndSend: (
     folder: TaskFolder,
     message: PendingSubmission,
     selection: ExecutionSelection,
     accessMode: ThreadAccessMode,
-  ) => Promise<ThreadSummary | null>;
+  ) => Promise<ThreadSummary>;
   defaultPlacement: ThreadPlacementOption | undefined;
   /**
    * The Desktop's deployment-access state, already filtered by one revision
@@ -711,20 +711,13 @@ export function AppShell({
       message: PendingSubmission,
       selection: ExecutionSelection,
       accessMode: ThreadAccessMode,
-    ): Promise<ThreadSummary | null> => {
-      setActionError(null);
+    ): Promise<ThreadSummary> => {
       // The first message is kept before anything sends it, under the
       // deployment and user the Host confirmed; without either, no Thread is
       // started for a message that could not be kept.
       const { deploymentId, user } = hostClient.getSnapshot();
-      if (!deploymentId || !user) {
-        setActionError(pendingScopeUnavailable);
-        return null;
-      }
-      if (!pendingStorageAvailable()) {
-        setActionError(pendingStorageUnavailable);
-        return null;
-      }
+      if (!deploymentId || !user) throw new Error(pendingScopeUnavailable);
+      if (!pendingStorageAvailable()) throw new Error(pendingStorageUnavailable);
       try {
         const thread = await hostClient.createThread({
           accessMode,
@@ -740,8 +733,7 @@ export function AppShell({
         claimFirstMessage({ deploymentId, threadId: thread.id, userId: user.id }, message);
         return thread;
       } catch (error) {
-        setActionError(actionErrorMessage(error));
-        return null;
+        throw new Error(actionErrorMessage(error));
       }
     },
     [hostClient],

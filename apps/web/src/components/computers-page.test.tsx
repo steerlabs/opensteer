@@ -738,7 +738,7 @@ function pageElement(input: PageInput) {
   const context: ShellContext = {
     actionError: null,
     clearActionError: noOp,
-    createThreadAndSend: async () => null,
+    createThreadAndSend: () => Promise.reject(new Error("Not in this test.")),
     defaultPlacement: undefined,
     deploymentAccess: null,
     desktopBridge: input.desktopBridge ?? null,

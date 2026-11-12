@@ -185,7 +185,7 @@ export function ChannelDetails({
           {dm ? null : (
             <button className="btn btn--small" onClick={actions.onOpenMembers} type="button">
               <Icon name="users" />
-              {plural(channel.memberCount, "member")}
+              {channel.memberCount === null ? "Members" : plural(channel.memberCount, "member")}
             </button>
           )}
           {actions.onLeave ? (
@@ -468,7 +468,7 @@ export function MembersPane({
             </button>
           ) : null
         }
-        detail={String(channel.memberCount)}
+        detail={channel.memberCount === null ? undefined : String(channel.memberCount)}
         onClose={actions.onClose}
         title="Members"
       />

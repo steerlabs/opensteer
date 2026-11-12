@@ -337,7 +337,7 @@ export class MobileTeams {
         deploymentConnectionFromVerifiedEndpoints({
           accountAccess: null,
           endpoints: [verified],
-          kind: "self-hosted",
+          kind: "team",
           name: team.name,
           source: { kind: "manual" },
         }),
@@ -530,7 +530,7 @@ export class MobileTeams {
       const input = deploymentConnectionFromVerifiedEndpoints({
         accountAccess: null,
         endpoints: [verified],
-        kind: "self-hosted",
+        kind: "team",
         name: new URL(intent.origin).hostname,
         source: { kind: "manual" },
       });

@@ -60,7 +60,7 @@ html.electron-shell .sidebar__header {
   padding-block: 0;
 }
 
-html.electron-shell .sidebar__header :is(.brand-link, .brand-lockup) {
+html.electron-shell .sidebar__header :is(.brand-link, .brand-lockup, .sidebar__title) {
   margin-left: var(--desktop-titlebar-leading-inset);
 }
 

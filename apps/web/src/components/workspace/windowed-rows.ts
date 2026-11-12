@@ -60,16 +60,19 @@ interface Measured {
  * children, keyed as `keys`: it draws the rows in view and `pinned` (the
  * active and focused rows, so neither is ever unmounted under the person),
  * or every row while `all` (a drag measures them all). Rows are measured as
- * they are drawn; one never drawn counts at `estimate`.
+ * they are drawn; one never drawn counts at `estimate`. A list that scrolls
+ * one element and holds its rows in another inside it names that one `rows`.
  */
 export function useWindowedRows(input: {
   readonly list: RefObject<HTMLElement | null>;
+  readonly rows?: RefObject<HTMLElement | null>;
   readonly keys: readonly string[];
   readonly estimate: (index: number) => number;
   readonly pinned: readonly string[];
   readonly all: boolean;
 }): readonly WindowItem[] {
   const { all, keys, list } = input;
+  const rows = input.rows ?? list;
   const measured = useRef(new Map<string, Measured>());
   // Where the list stands; a scroll that keeps the same rows drawn renders nothing.
   const scroll = useRef({ top: 0, height: 0 });
@@ -92,7 +95,7 @@ export function useWindowedRows(input: {
   latest.current = { plan, sizes, gap: view.gap };
 
   useLayoutEffect(() => {
-    const node = list.current;
+    const node = rows.current;
     if (!node) return;
     const gap = parseFloat(getComputedStyle(node).rowGap) || 0;
     let changed = false;
@@ -117,7 +120,8 @@ export function useWindowedRows(input: {
     let frame = 0;
     const read = () => {
       frame = 0;
-      const top = node.scrollTop;
+      const inner = rows.current;
+      const top = node.scrollTop - (inner && inner !== node ? inner.offsetTop : 0);
       const height = node.clientHeight;
       const before = scroll.current;
       scroll.current = { top, height };
@@ -139,7 +143,7 @@ export function useWindowedRows(input: {
       node.removeEventListener("scroll", schedule);
       resize?.disconnect();
     };
-  }, [list]);
+  }, [list, rows]);
   return plan;
 }
 

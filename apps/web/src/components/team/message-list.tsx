@@ -1,13 +1,15 @@
 import {
-  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
 } from "react";
 import { Icon } from "../icon.js";
+import { useStableActions } from "../use-stable-actions.js";
+import { useWindowedRows } from "../workspace/windowed-rows.js";
 import { AgentCardRow, type AgentCardActions } from "./agent-status-card.js";
 import { MessageRow, type MessageActions } from "./message-row.js";
 import type { AuthorView, MessageView, TimelineItem } from "./team-models.js";
@@ -18,11 +20,19 @@ const followDistance = 80;
 const groupWindowMs = 5 * 60_000;
 const readAfterMs = 1000;
 
+const noActions = {};
+/** A message row's size before it is drawn; drawn rows are measured. */
+const rowEstimate = 64;
+/** The newest rows are always drawn, so the first paint at the end is whole. */
+const newestDrawn = 12;
+
 /**
  * A channel's or DM's timeline. It opens at the first unread message, with
  * its NEW line a third of the way down, or at the end; it follows new rows
  * only while the reader is at the end, and keeps the row under their eye
- * still while history loads above or a card changes.
+ * still while history loads above, a card changes or a row is first drawn.
+ * Only the rows in view are drawn, and a row that did not change never
+ * redraws.
  */
 export function MessageList({
   actions,
@@ -62,7 +72,17 @@ export function MessageList({
   readonly openThreadId?: string | null;
 }) {
   const scroller = useRef<HTMLDivElement | null>(null);
+  const rowsRef = useRef<HTMLDivElement | null>(null);
   const atEnd = useRef(true);
+  const stable = useStableItems(items);
+  const rowActions = useStableActions(actions ?? noActions);
+  const rowCardActions = useStableActions(cardActions ?? noActions);
+  const editingLatest = useRef(onEditingChange);
+  editingLatest.current = onEditingChange;
+  const onEditing = useCallback(
+    (messageId: string, editing: boolean) => editingLatest.current?.(editing ? messageId : null),
+    [],
+  );
   const anchor = useRef<{ readonly id: string; readonly top: number } | null>(null);
   const lastId = useRef<string | null>(null);
   const [newBelow, setNewBelow] = useState(0);
@@ -131,6 +151,44 @@ export function MessageList({
     lastId.current = newest;
   }, [items]);
 
+  // A row drawn or grown above the reader (history, a picture, a card) never moves what they read.
+  useLayoutEffect(() => {
+    const list = scroller.current;
+    const rows = rowsRef.current;
+    if (!list || !rows || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (atEnd.current) {
+        list.scrollTop = list.scrollHeight;
+        return;
+      }
+      const held = anchor.current;
+      const row = held
+        ? list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(held.id)}"]`)
+        : null;
+      if (!held || !row) return;
+      const drift = row.getBoundingClientRect().top - list.getBoundingClientRect().top - held.top;
+      if (Math.abs(drift) > 0.5) list.scrollTop += drift;
+    });
+    observer.observe(rows);
+    return () => observer.disconnect();
+  }, []);
+
+  const keys = useMemo(() => stable.map(itemId), [stable]);
+  const plan = useWindowedRows({
+    list: scroller,
+    rows: rowsRef,
+    keys,
+    estimate: (index) => (stable[index]?.kind === "card" ? 82 : rowEstimate),
+    pinned: [
+      ...keys.slice(-newestDrawn),
+      firstUnreadId ?? "",
+      flashId ?? "",
+      openThreadId ?? "",
+      editingId ?? "",
+    ],
+    all: false,
+  });
+
   // Read: the newest message on screen for a second while the window has focus.
   const newest = items.at(-1);
   const newestId = newest ? itemId(newest) : null;
@@ -155,9 +213,7 @@ export function MessageList({
     };
   }, [newestId, onReadThrough]);
 
-  const firstUnreadIndex = firstUnreadId
-    ? items.findIndex((item) => itemId(item) === firstUnreadId)
-    : -1;
+  const firstUnreadIndex = firstUnreadId ? keys.indexOf(firstUnreadId) : -1;
   const unreadCount =
     firstUnreadIndex < 0 ? 0 : items.slice(firstUnreadIndex).filter(isMessage).length;
   const firstUnread = firstUnreadIndex >= 0 ? items[firstUnreadIndex] : undefined;
@@ -197,20 +253,31 @@ export function MessageList({
         role="log"
         tabIndex={-1}
       >
-        <div className="tlist__rows">
+        <div className="tlist__rows" ref={rowsRef}>
           {loadingOlder ? (
             <p className="tlist__older">Loading earlier messages…</p>
           ) : hasOlder ? null : (
             intro
           )}
-          {items.map((item, index) => {
-            const previous = index > 0 ? items[index - 1] : undefined;
+          {plan.map((entry, order) => {
+            if ("spacer" in entry)
+              return (
+                <div
+                  aria-hidden
+                  className="tlist__spacer"
+                  key={`spacer:${order}`}
+                  style={{ height: entry.spacer }}
+                />
+              );
+            const index = entry.index;
+            const item = stable[index]!;
+            const previous = index > 0 ? stable[index - 1] : undefined;
             const at = itemAt(item);
             const newDay = !previous || !sameDay(itemAt(previous), at);
             const newLine = index === firstUnreadIndex;
             const id = itemId(item);
             return (
-              <Fragment key={id}>
+              <div className="tlist__row" data-motion-key={id} data-row-id={id} key={id}>
                 {newDay ? (
                   <div className="tlist__day" role="separator">
                     <span>{dayLabel(at)}</span>
@@ -221,24 +288,22 @@ export function MessageList({
                     <span>New</span>
                   </div>
                 ) : null}
-                <div className="tlist__row" data-row-id={id}>
-                  {item.kind === "message" ? (
-                    <MessageRow
-                      actions={actions}
-                      editing={editingId === id}
-                      flash={flashId === id}
-                      grouped={!newDay && !newLine && joins(previous, item.message)}
-                      message={item.message}
-                      onEditingChange={(editing) => onEditingChange?.(editing ? id : null)}
-                      open={openThreadId === id}
-                    />
-                  ) : item.kind === "card" ? (
-                    <AgentCardRow actions={cardActions} request={item.request} />
-                  ) : (
-                    <SystemRow icon={item.icon} text={item.text} at={item.at} />
-                  )}
-                </div>
-              </Fragment>
+                {item.kind === "message" ? (
+                  <MessageRow
+                    actions={rowActions}
+                    editing={editingId === id}
+                    flash={flashId === id}
+                    grouped={!newDay && !newLine && joins(previous, item.message)}
+                    message={item.message}
+                    onEditingChange={onEditing}
+                    open={openThreadId === id}
+                  />
+                ) : item.kind === "card" ? (
+                  <AgentCardRow actions={rowCardActions} request={item.request} />
+                ) : (
+                  <SystemRow icon={item.icon} text={item.text} at={item.at} />
+                )}
+              </div>
             );
           })}
         </div>
@@ -275,6 +340,27 @@ export function SystemRow({
       </span>
     </div>
   );
+}
+
+/**
+ * The same row object for a row that has not changed, so its memoised row is
+ * not drawn again when another row changes or a timeline is rebuilt.
+ */
+export function useStableItems(items: readonly TimelineItem[]): readonly TimelineItem[] {
+  const held = useRef(new Map<string, { readonly item: TimelineItem; readonly json: string }>());
+  return useMemo(() => {
+    const next = new Map<string, { readonly item: TimelineItem; readonly json: string }>();
+    const kept = items.map((item) => {
+      const id = itemId(item);
+      const json = JSON.stringify(item);
+      const before = held.current.get(id);
+      const same = before?.json === json ? before.item : item;
+      next.set(id, { item: same, json });
+      return same;
+    });
+    held.current = next;
+    return kept;
+  }, [items]);
 }
 
 export function itemId(item: TimelineItem): string {
