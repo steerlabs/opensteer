@@ -5803,6 +5803,7 @@ function executeCommand(
     commandId: createId("command"),
     context: {
       accessMode: "full-access",
+      personalContext: true,
       assignment: null,
       agentTools: {
         tools: agentTools.filter((tool) => tool.callers.includes("run")).map(({ name }) => name),

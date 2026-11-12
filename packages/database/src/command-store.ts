@@ -182,6 +182,14 @@ async function claimObservedCommand(
       .whereRef("predecessor.threadId", "=", "candidate.threadId")
       .where("predecessor.type", "in", runnerControlCommandTypes)
       .where("predecessor.status", "in", ["pending", "dispatched"])
+      .$if(observed.type === "run.interrupt" && observed.runId !== null, (query) =>
+        query.where((expression) =>
+          expression.or([
+            expression("predecessor.type", "!=", "run.steer"),
+            expression("predecessor.runId", "is distinct from", observed.runId),
+          ]),
+        ),
+      )
       .where(
         sql<boolean>`(predecessor.created_at, predecessor.id) < (candidate.created_at, candidate.id)`,
       )

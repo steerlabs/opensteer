@@ -614,5 +614,23 @@
     "evidence": [
       "Reproduced locally while diagnosing A15-deadline-soak-1: expected /element was not found/, received a 300 ms timeout waiting for CDP Runtime.getProperties. Same cause and acceptance as A15-deadline-soak-1."
     ]
+  },
+  {
+    "file": "apps/host/src/agents/runner-reattach.integration.test.ts",
+    "name": [
+      "Runs that outlive their connection",
+      "delivers an answer while a sibling Run in the same Workspace streams, without dropping the Runner"
+    ],
+    "area": "Agent orchestration",
+    "owner": "Host/Runner maintainers",
+    "status": "quarantined",
+    "firstSeen": "2026-11-12T05:21:36Z",
+    "deadline": "2026-11-19T05:21:36Z",
+    "sha": "14aafc12719d3e35fb6ab3fbcc47aaa6baa4dd1f",
+    "evidence": [
+      "F4's 21-file agents batch at 14aafc12719d3e35fb6ab3fbcc47aaa6baa4dd1f failed only this reattach case waiting for exactly one backend blocked by the held deployment-event fence (plus two independent delayed-turn Stop failures). /tmp/f4-agents-settled.log; run record 20261112T051834661Z-37feae06. The one unchanged focused rerun at that SHA passed in 9.96 s: /tmp/f4-sibling-rerun.log, run record 20261112T052539982Z-60ea311c.",
+      "R2 focused diagnosis at d3daa185923c66524e0557cb78af10b16f7b2aac with its Runner admission patch passed the sibling case in 4.43 s and process-restart recovery in 16.98 s (2 passed, 9 filtered): OPENSTEER_LOCK_ORDER_MODE=enforce pnpm test:integration -- --config vitest.integration.config.ts apps/host/src/agents/runner-reattach.integration.test.ts -t 'delivers an answer while a sibling Run|recovers the same turn at once when its Runner process restarts'. /tmp/r2-reattach-focused.log. No failure reproduced; no timeout, assertion or exemption changed.",
+      "Hypothesis only: unrelated Personal transaction writers can also wait on deploymentEventState, so a global blocked-backend count can jump past exactly one before the sibling is released. Acceptance: reproduce under the full agents workload, identify the answer transaction and sibling-event transaction rather than inferring their identities from the global count, and retain proof that the answer queues before the sibling event, both Runs complete, and the Runner connection generation stays unchanged. This register never skips the test or grants a passing gate."
+    ]
   }
 ]

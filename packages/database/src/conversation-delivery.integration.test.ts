@@ -1363,8 +1363,7 @@ integration.sequential("conversation delivery", () => {
       const inFlight = await send(f, `in-flight-${outcome}`);
       const waiting = await send(f, `behind-${outcome}`);
       const command = await steerCommand(inFlight.message.id);
-      // Dispatched to the Runner before the person pressed Stop; one control
-      // command per Thread is in flight at a time, so the next one waits.
+      // This hand-off reached the Runner before the person pressed Stop.
       expect(await store.claimCommand(command.id, "stop-receipts-dispatcher")).not.toBeNull();
       await stop(f, runId, `stop-${outcome}`);
       expect(await input(waiting.message.id)).toMatchObject({
@@ -1388,6 +1387,56 @@ integration.sequential("conversation delivery", () => {
       await receipt(`stop-late-receipt-${outcome}`, f);
     },
   );
+  it("claims Stop ahead of a pending or dispatched steer only for the same Run", async ({
+    storeFixture,
+  }) => {
+    const { fixture, running, send, steerCommand, stop, database, store } = storeFixture;
+    for (const status of ["pending", "dispatched"] as const) {
+      const f = await fixture(`stop-claim-${status}`);
+      const runId = await running(f, `initial-stop-claim-${status}`);
+      const input = await send(f, `held-steer-${status}`);
+      const steer = await steerCommand(input.message.id);
+      const interrupt = await stop(f, runId, `stop-claim-${status}`);
+      await database.updateTable("commands").set({ status }).where("id", "=", steer.id).execute();
+
+      await database
+        .updateTable("commands")
+        .set({ type: "run.restart" })
+        .where("id", "=", interrupt.command.id)
+        .execute();
+      expect(await store.claimCommand(interrupt.command.id, "claim-order")).toBeNull();
+      await database
+        .updateTable("commands")
+        .set({ type: "run.interrupt" })
+        .where("id", "=", interrupt.command.id)
+        .execute();
+
+      for (const predecessor of [{ type: "node.stop" as const }, { runId: null }]) {
+        await database
+          .updateTable("commands")
+          .set(predecessor)
+          .where("id", "=", steer.id)
+          .execute();
+        expect(await store.claimCommand(interrupt.command.id, "claim-order")).toBeNull();
+        await database
+          .updateTable("commands")
+          .set({ type: "run.steer", runId })
+          .where("id", "=", steer.id)
+          .execute();
+      }
+
+      expect(await store.claimCommand(interrupt.command.id, "claim-order")).toMatchObject({
+        command: { id: interrupt.command.id, type: "run.interrupt", status: "dispatched" },
+      });
+      expect(
+        await database
+          .selectFrom("commands")
+          .select("status")
+          .where("id", "=", steer.id)
+          .executeTakeFirstOrThrow(),
+      ).toEqual({ status });
+    }
+  });
   it("cancels follow-ups a Stop finds waiting for a restart that never reached the Runner", async ({
     storeFixture,
   }) => {
