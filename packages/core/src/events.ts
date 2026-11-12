@@ -272,6 +272,7 @@ const eventDataSchemas = {
    * `doneReason` says the Host moved it there; absent before it could.
    */
   "thread.state-changed": z.strictObject({
+    latestRunCompletedAt: IsoDateTimeSchema.nullable().optional(),
     status: ThreadStatusSchema,
     inputQueuePaused: z.boolean(),
     pendingRequests: z.number().int().nonnegative(),

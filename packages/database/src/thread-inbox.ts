@@ -96,6 +96,8 @@ import {
   runFromRow,
   threadFromRow,
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadInputFromRow,
@@ -3793,7 +3795,7 @@ export async function ensureQueuedRun(
       type: "run.queued",
     }),
   );
-  events.push(...(await projectThreadState(transaction, thread.id)));
+  events.push(...(await projectThreadState(transaction, thread.id, new Date(), true)));
   if (seed.teamRequestId)
     await transaction
       .updateTable("personalTeamRequests")
@@ -4989,6 +4991,8 @@ async function replayDelegatedThread(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])
@@ -5385,6 +5389,7 @@ export async function delegateThreadInTransaction(
     ? await transaction
         .selectFrom("threads")
         .selectAll()
+        .select([threadVisitSelection, threadLatestRunCompletedAtSelection])
         .where("id", "=", threadId)
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow()
@@ -5473,6 +5478,8 @@ export async function delegateThreadInTransaction(
     .executeTakeFirstOrThrow();
   const thread = threadFromRow({
     ...threadRow,
+    lastVisitedAt: reusedRow?.lastVisitedAt ?? null,
+    latestRunCompletedAt: reusedRow?.latestRunCompletedAt ?? null,
     continuationIdentity: selectedSession.continuationIdentity,
     providerSessionId: selectedSession.id,
     pendingRequests: threadRow.pendingRequestCount,

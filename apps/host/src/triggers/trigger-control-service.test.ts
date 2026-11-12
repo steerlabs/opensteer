@@ -406,6 +406,8 @@ function harness(
 }
 function thread(): Thread {
   return {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     accessMode: "full-access",
     continuationIdentity: null,
     doneAt: null,

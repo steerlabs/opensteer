@@ -7,10 +7,3 @@ export function publishedMessagePredicate(inputAlias: string): RawBuilder<boolea
     or ${field("state")} = 'delivered'
     or (${field("policy")} = 'report' and ${field("state")} <> 'cancelled'))`;
 }
-
-/** Keep the unread lookup's clauses identical to its partial index predicate. */
-export function conversationUnreadPredicate(messageAlias?: string): RawBuilder<boolean> {
-  const field = (name: string) => sql.ref(messageAlias ? `${messageAlias}.${name}` : name);
-  return sql<boolean>`(${field("kind")} in ('assistant', 'run-result')
-    or (${field("kind")} = 'input' and ${field("author")}->>'kind' = 'human'))`;
-}

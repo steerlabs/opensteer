@@ -94,7 +94,8 @@ import {
   ThreadInputPolicySchema,
   ThreadInputQueueViewSchema,
   ThreadInputViewSchema,
-  ThreadReadStateSchema,
+  ThreadVisitSchema,
+  IsoDateTimeSchema,
   ThreadTitleSchema,
   ThreadViewSchema,
   TimeZoneSchema,
@@ -446,10 +447,10 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("thread.inputQueue.resume"),
   }),
   z.strictObject({
-    type: z.literal("thread.read.mark"),
+    type: z.literal("thread.visit"),
     idempotencyKey: idempotencyKeySchema,
     threadId: ThreadIdSchema,
-    throughSequence: SequenceSchema,
+    visitedAt: IsoDateTimeSchema,
   }),
   // The epoch-48 personal-placement command is accepted only to return a typed
   // update-required refusal. It must never reach shared Done or receipt lookup.
@@ -1145,8 +1146,13 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     thread: ThreadViewSchema,
     type: z.literal("thread.execution.update"),
   }),
-  z.object({ type: z.literal("thread.read.mark"), state: ThreadReadStateSchema }),
-  z.object({ type: z.literal("thread.done.set"), state: ThreadReadStateSchema }),
+  z.object({ type: z.literal("thread.visit"), ...ThreadVisitSchema.shape }),
+  z.object({
+    type: z.literal("thread.done.set"),
+    thread: ThreadViewSchema,
+    asOfSequence: SequenceSchema,
+    wasDuplicate: z.boolean(),
+  }),
 
   z.object({
     type: z.literal("notification.preview.register"),
@@ -2059,11 +2065,6 @@ export const hostApi = defineRpc({
         "An anchored read cannot also search or page",
       ),
     ThreadMessagePageSchema,
-  ),
-  "thread.readState.get": declaration(
-    "GET",
-    z.strictObject({ threadId: ThreadIdSchema }),
-    ThreadReadStateSchema,
   ),
   "thread.requests.list": declaration(
     "GET",

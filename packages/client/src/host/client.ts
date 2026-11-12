@@ -43,7 +43,6 @@ import type {
   QuietTaskDays,
   ThreadInputPolicy,
   ThreadInputQueue,
-  ThreadReadState,
   ThreadStatus,
   ToolIdentity,
   ToolOutput,
@@ -227,6 +226,8 @@ export interface HarnessSummary {
 }
 
 export interface ThreadSummary {
+  lastVisitedAt: string | null;
+  latestRunCompletedAt: string | null;
   /** When a person last asked for work; task lists order by this time. */
   askedAt: string;
   doneAt: string | null;
@@ -860,7 +861,7 @@ export interface HostSnapshot {
   harnesses: HarnessSummary[];
   /** The person's Voice Thread, once it exists: their spoken manager. */
   voiceThreadId: string | null;
-  threadReadStates: Record<string, ThreadReadState>;
+  threadVisits: Record<string, string>;
 
   tasks: TaskListState | null;
 
@@ -1148,7 +1149,7 @@ export interface HostClient {
   /** Told when this person approves or revokes a connected agent on any device. */
   subscribeConnectionsChanged(listener: () => void): () => void;
   subscribePersonShow(listener: (message: PersonShowMessage) => void): () => void;
-  markThreadRead(threadId: string, throughSequence: string): Promise<void>;
+  visitThread(threadId: string, visitedAt: string): Promise<void>;
   /** Sets shared Done or reopens the task. */
   setTaskDone(threadId: string, done: boolean): Promise<void>;
 

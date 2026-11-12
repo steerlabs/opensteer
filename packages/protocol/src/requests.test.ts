@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { createId, SequenceSchema } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import {
   ClientToHostMessageSchema,
@@ -40,6 +40,8 @@ describe("Request protocol", () => {
   it("uses Request naming in Deployment snapshots", () => {
     const request = pendingRequest();
     const thread = {
+      lastVisitedAt: null,
+      latestRunCompletedAt: null,
       accessMode: "full-access",
 
       continuationIdentity: null,
@@ -71,7 +73,7 @@ describe("Request protocol", () => {
       nextBefore: null,
       totalItems: 0,
     } as const;
-    const emptyPage = { readStates: [], tasks: [], window: emptyWindow };
+    const emptyPage = { asOfSequence: SequenceSchema.parse("0"), tasks: [], window: emptyWindow };
     const snapshot = {
       tasks: { recent: emptyPage, active: emptyPage, done: emptyPage },
       needsYou: { count: 1, entries: [], window: emptyWindow },
@@ -85,7 +87,6 @@ describe("Request protocol", () => {
           tabs: [],
         },
       },
-      readStates: [],
       messageWindows: [],
       messages: [],
       pendingRequests: [request],

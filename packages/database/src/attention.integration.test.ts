@@ -45,6 +45,20 @@ describeStore("personal computer attention", (it) => {
         data: { messageId: createId("message"), content: [{ type: "text", text: "Result ready" }] },
       }),
     });
+    await f.store.commitRunnerEvent({
+      environmentId: task.environmentId,
+      runnerId: task.runnerId,
+      runnerBootId: task.runnerBootId,
+      event: pendingEvent({
+        type: "run.completed",
+        environmentId: task.environmentId,
+        threadId: task.thread.id,
+        runId: task.run.id,
+        bindingGeneration: task.bindingGeneration,
+        ordinal: 2,
+        data: { status: "completed" },
+      }),
+    });
     await f.store.createThread({
       createdBy: task.userId,
       environmentId: task.environmentId,
@@ -66,14 +80,15 @@ describeStore("personal computer attention", (it) => {
           unread: true,
         });
       });
-    const state = await f.store.notificationState.getReadState({
+    const completed = await f.database
+      .selectFrom("runs")
+      .select("completedAt")
+      .where("id", "=", task.run.id)
+      .executeTakeFirstOrThrow();
+    await f.store.notificationState.visit({
       threadId: task.thread.id,
       userId: task.userId,
-    });
-    await f.store.notificationState.markRead({
-      threadId: task.thread.id,
-      userId: task.userId,
-      throughSequence: state.unreadSequence!,
+      visitedAt: completed.completedAt!.toISOString(),
     });
     expect(await attention()).toEqual({ needsYou: 3, unread: false });
     const stranger = await f.store.createUser("Other person");

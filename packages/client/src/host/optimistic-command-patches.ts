@@ -356,6 +356,9 @@ export function withThreadNames(
     const name = nameOf(thread);
     return name.title === thread.title &&
       name.icon === thread.icon &&
+      (name.lastVisitedAt === undefined || name.lastVisitedAt === thread.lastVisitedAt) &&
+      (name.latestRunCompletedAt === undefined ||
+        name.latestRunCompletedAt === thread.latestRunCompletedAt) &&
       (name.doneAt === undefined || name.doneAt === thread.doneAt)
       ? thread
       : { ...thread, ...name };

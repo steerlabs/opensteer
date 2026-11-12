@@ -45,7 +45,7 @@ async function fixture(count: number, fetchOverride?: (host: MockPersonalHost) =
   });
   return { mock, host, client };
 }
-it("installs consistent task windows and read states before readiness, then pages the recent prefix", async () => {
+it("installs consistent task windows and completion state before readiness, then pages the recent prefix", async () => {
   const f = await fixture(103),
     seen: number[] = [];
   f.client.subscribe(() => {
@@ -53,7 +53,9 @@ it("installs consistent task windows and read states before readiness, then page
     if (snapshot.savedViewReadiness?.tasksReady) {
       const entries = snapshot.tasks!.entries;
       expect(
-        entries.every(({ thread }) => snapshot.threadReadStates[thread.id] !== undefined),
+        entries.every(
+          ({ thread }) => thread.lastVisitedAt === null && thread.latestRunCompletedAt === null,
+        ),
       ).toBe(true);
       seen.push(entries.length);
     }
@@ -158,5 +160,62 @@ it("discards a task page that finishes after logout and follows the Host's Done 
   await loading;
   expect(f.client.getSnapshot().tasks).toBeNull();
   expect(f.client.getSnapshot().activeTasks).toEqual([]);
-  expect(f.client.getSnapshot().threadReadStates).toEqual({});
+  expect(f.client.getSnapshot().threadVisits).toEqual({});
+});
+
+it("keeps a visit and a newer active projection when an older task page arrives late", async () => {
+  const gate = Promise.withResolvers<Response>();
+  let held = false;
+  let waiting = false;
+  const f = await fixture(1, (host) => async (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (held && url.pathname.endsWith("/tasks.list")) {
+      waiting = true;
+      return gate.promise;
+    }
+    return host.fetch(input, init);
+  });
+  await f.client.load();
+  await vi.waitFor(() => expect(f.client.getSnapshot().tasks?.entries).toHaveLength(1));
+  const thread = f.client.getSnapshot().tasks!.entries[0]!.thread;
+  const stale = await f.mock.rpc["tasks.list"]({});
+  if (!stale.ok) throw new Error("Task fixture is missing");
+  stale.data.tasks[0]!.thread.latestRunCompletedAt = "2026-01-02T00:00:00.000Z";
+  held = true;
+  const socket = [...f.host.sockets][0]!;
+  socket.deliver({ type: "host.tasks-changed" });
+  await vi.waitFor(() => expect(waiting, "Task read never reached its gate").toBe(true));
+  socket.deliver({
+    type: "host.thread-visits",
+    visits: [{ threadId: thread.id as never, lastVisitedAt: "2026-01-03T00:00:00.000Z" }],
+  });
+  f.host.publish(
+    [
+      AgentEventViewSchema.parse({
+        type: "thread.state-changed",
+        threadId: thread.id,
+        eventId: createId("event"),
+        environmentId: thread.environmentId,
+        runId: null,
+        sequence: "1000",
+        createdAt: "2026-01-04T00:00:00.000Z",
+        data: {
+          status: "running",
+          inputQueuePaused: false,
+          pendingRequests: 0,
+          latestRunCompletedAt: null,
+        },
+      }),
+    ],
+    "1000",
+  );
+  gate.resolve(Response.json(stale));
+  await vi.waitFor(() =>
+    expect(f.client.getSnapshot().tasks!.entries[0]!.thread).toMatchObject({
+      lastVisitedAt: "2026-01-03T00:00:00.000Z",
+      latestRunCompletedAt: null,
+      status: "running",
+    }),
+  );
+  expect(f.client.getSnapshot().threadVisits[thread.id]).toBe("2026-01-03T00:00:00.000Z");
 });

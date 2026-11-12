@@ -421,8 +421,10 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     await personalClient.load();
     await teamCondition(
       personalClient,
-      () => personalClient!.getSnapshot().threadReadStates[local.localTaskId],
-      "Personal read state never arrived before the visible reply read",
+      () =>
+        personalClient!.getSnapshot().threads.find((thread) => thread.id === local.localTaskId)
+          ?.latestRunCompletedAt,
+      "Personal completion never arrived before the visible reply visit",
     );
     const unresolved = Promise.withResolvers<void>();
     const originalReplyTask = PersonalTeamRequestsStore.prototype.replyTask;
@@ -444,20 +446,23 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       timeoutError: () =>
         new Error("Visible reply never attempted to read before receipt persistence"),
     });
-    const beforeReceipt = personalClient.getSnapshot().threadReadStates[local.localTaskId];
-    expect(beforeReceipt?.readSequence).not.toBe(beforeReceipt?.unreadSequence);
+    const completedAt = personalClient
+      .getSnapshot()
+      .threads.find((thread) => thread.id === local.localTaskId)!.latestRunCompletedAt!;
+    expect((personalClient.getSnapshot().threadVisits[local.localTaskId] ?? "") < completedAt).toBe(
+      true,
+    );
     releasePublication.resolve();
     await teamCondition(
       personalClient,
       () => {
-        const state = personalClient!.getSnapshot().threadReadStates[local.localTaskId];
-        return state?.readSequence === state?.unreadSequence ? true : undefined;
+        return (personalClient!.getSnapshot().threadVisits[local.localTaskId] ?? "") >= completedAt
+          ? true
+          : undefined;
       },
       "Durable publication did not retry the visible reply read",
     );
-    expect(personalClient.getSnapshot().threadReadStates[local.localTaskId]?.readSequence).toBe(
-      personalClient.getSnapshot().threadReadStates[local.localTaskId]?.unreadSequence,
-    );
+    expect(personalClient.getSnapshot().threadVisits[local.localTaskId]).toBe(completedAt);
 
     console.info("Z4: SQL continuation");
     engineArguments.splice(

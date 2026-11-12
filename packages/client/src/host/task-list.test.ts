@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import {
   createId,
   ThreadIdSchema,
-  ThreadReadStateSchema,
   WaitingRequestSchema,
   type ThreadStatus,
   type WaitingRequest,
@@ -93,19 +92,19 @@ function snapshot(
 
     voiceThreadId: null,
     machines: [],
-    tasks: { entries, window: base.tasks!.window },
+    tasks: {
+      entries: entries.map((entry) => ({
+        ...entry,
+        thread: {
+          ...entry.thread,
+          latestRunCompletedAt: "2026-01-02T00:00:00.000Z",
+          lastVisitedAt: unread.has(entry.thread.id) ? null : "2026-01-02T00:00:00.000Z",
+        },
+      })),
+      window: base.tasks!.window,
+    },
     threads: [],
-    threadReadStates: Object.fromEntries(
-      entries.map(({ thread }) => [
-        thread.id,
-        ThreadReadStateSchema.parse({
-          asOfSequence: "20",
-          readSequence: "10",
-          threadId: thread.id,
-          unreadSequence: unread.has(thread.id) ? "12" : "8",
-        }),
-      ]),
-    ),
+    threadVisits: {},
     waitingRequests: options.waiting ?? [],
   };
 }
@@ -565,7 +564,7 @@ describe("doneTaskList", () => {
       ...held,
       quietTasksAvailable: true,
       tasks: { entries: [], window: base.tasks!.window },
-      doneTasks: { [mainDoneTasks]: { entries, window: base.tasks!.window } },
+      doneTasks: { [mainDoneTasks]: { entries: held.tasks!.entries, window: base.tasks!.window } },
     };
     expect(titles(doneTaskList(state)!.rows)).toEqual([
       "Asked long ago, Done just now",

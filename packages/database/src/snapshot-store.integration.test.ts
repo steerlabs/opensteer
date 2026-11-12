@@ -556,7 +556,10 @@ describeStore("Deployment snapshot history", (it) => {
       viewerId: f.userId,
       omitMessages: true,
     });
-    expect(omittedWithViewer.readStates).toHaveLength(1);
+    expect(omittedWithViewer.threads[0]).toMatchObject({
+      lastVisitedAt: null,
+      latestRunCompletedAt: null,
+    });
     expect(metadata(omittedWithViewer)).toEqual(metadata(withViewer));
     expect(omittedWithViewer.pendingRequests).toContainEqual(
       expect.objectContaining({

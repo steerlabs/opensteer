@@ -1,6 +1,7 @@
 import { deploymentEventsAfter } from "./deployment-events.js";
 import { needsYouPage } from "./needs-you-store.js";
 import { personalSettings } from "./personal-settings-store.js";
+import { deploymentHead } from "./deployment-events.js";
 export { deploymentHead } from "./deployment-events.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { DeploymentId } from "@opensteer/core";
@@ -58,6 +59,8 @@ import { type DatabaseSchema } from "./schema.js";
 import { NotificationStateStore } from "./notification-state.js";
 import {
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   threadsFromRows,
@@ -101,7 +104,6 @@ export interface EventReplayWindow {
   readonly scannedThrough: Sequence;
 }
 function buildDeploymentSnapshot(input: {
-  readonly readStates: DeploymentSnapshot["readStates"];
   readonly messageTotals: ReadonlyMap<ThreadId, number>;
   readonly omitMessages: boolean;
   readonly messagesDesc: readonly MessageView[];
@@ -139,7 +141,6 @@ function buildDeploymentSnapshot(input: {
   const hasMoreThreads = input.threadTotal > input.threads.length;
   const oldestThread = input.threads.at(-1);
   let snapshot: DeploymentSnapshot = {
-    readStates: input.readStates,
     messages,
     messageWindows,
     ...(input.omitMessages
@@ -288,6 +289,8 @@ export async function deploymentSnapshot(
           .selectAll()
           .select([
             threadPendingRequestsSelection,
+            threadVisitSelection,
+            threadLatestRunCompletedAtSelection,
             threadProviderSessionSelection,
             threadContinuationIdentitySelection,
           ])
@@ -386,17 +389,7 @@ export async function deploymentSnapshot(
         Math.min(600 * 1_024, maxSerializedBytes),
       ).items;
       const runQueue = threadRunQueueEntriesFromRows(runQueueRows);
-      const readStates = options.viewerId
-        ? [
-            ...(await notificationState.listReadStates({
-              database: transaction,
-              userId: options.viewerId,
-              threadIds,
-            })),
-          ]
-        : [];
       let snapshot = buildDeploymentSnapshot({
-        readStates,
         messageTotals,
         omitMessages: options.omitMessages === true,
         messagesDesc,
@@ -415,7 +408,6 @@ export async function deploymentSnapshot(
       while (snapshot.serializedBytes > maxSerializedBytes && messagesDesc.length > 0) {
         messagesDesc = messagesDesc.slice(0, -1);
         snapshot = buildDeploymentSnapshot({
-          readStates,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -435,7 +427,6 @@ export async function deploymentSnapshot(
       while (snapshot.serializedBytes > maxSerializedBytes && pendingRequestsDesc.length > 0) {
         pendingRequestsDesc = pendingRequestsDesc.slice(0, -1);
         snapshot = buildDeploymentSnapshot({
-          readStates,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -455,7 +446,6 @@ export async function deploymentSnapshot(
       if (runPlaces !== undefined && snapshot.serializedBytes > maxSerializedBytes) {
         runPlaces = undefined;
         snapshot = buildDeploymentSnapshot({
-          readStates,
           messageTotals,
           omitMessages: options.omitMessages === true,
           messagesDesc,
@@ -493,7 +483,7 @@ const taskLineSourceCharacters = 2_048;
 
 export async function taskPageForUser(
   database: Kysely<DatabaseSchema>,
-  notificationState: NotificationStateStore,
+  _notificationState: NotificationStateStore,
   input: {
     readonly active?: boolean;
     readonly before?: string;
@@ -529,6 +519,7 @@ export async function taskPageForUser(
         .selectAll("threads")
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ]);
@@ -554,7 +545,10 @@ export async function taskPageForUser(
         threads.map((thread) => ({
           failure: lines.get(thread.id)?.failure ?? null,
           lastReply: lines.get(thread.id)?.lastReply ?? null,
-          thread,
+          thread: {
+            ...thread,
+            latestRunCompletedAt: lines.get(thread.id)?.latestRunCompletedAt ?? null,
+          },
         })),
         maxItems,
         maxBytes,
@@ -562,13 +556,7 @@ export async function taskPageForUser(
       const hasMore = rows.length > window.items.length;
       const oldest = window.items.at(-1)?.thread;
       return {
-        readStates: [
-          ...(await notificationState.listReadStates({
-            database: transaction,
-            userId: input.userId,
-            threadIds: window.items.map(({ thread }) => thread.id),
-          })),
-        ],
+        asOfSequence: await deploymentHead(transaction),
         tasks: [...window.items],
         window: {
           byteCount: window.byteCount,
@@ -606,6 +594,7 @@ async function taskLines(
     {
       lastReply: string | null;
       failure: string | null;
+      latestRunCompletedAt: string | null;
     }
   >
 > {
@@ -617,8 +606,10 @@ async function taskLines(
     threadId: ThreadId;
     reply: string | null;
     failure: string | null;
+    latestRunCompletedAt: Date | null;
   }>`
     select thread.id as thread_id,
+      case when latest_run.status in ('completed', 'failed', 'interrupted') then latest_run.completed_at end as latest_run_completed_at,
       left(
         regexp_replace(
           regexp_replace(left(reply.text, ${8 * taskLineSourceCharacters}), '\\s*\\n\\s*', E'\\n', 'g'),
@@ -650,7 +641,7 @@ async function taskLines(
       limit 1
     ) reply on true
     left join lateral (
-      select run.status, run.failure
+      select run.status, run.failure, run.completed_at
       from public.runs run
       where run.thread_id = thread.id
       order by run.run_ordinal desc
@@ -664,6 +655,7 @@ async function taskLines(
       {
         failure: row.failure === null ? null : plainTextExcerpt(row.failure, taskLineMaxLength),
         lastReply: row.reply === null ? null : plainTextExcerpt(row.reply, taskLineMaxLength),
+        latestRunCompletedAt: row.latestRunCompletedAt?.toISOString() ?? null,
       },
     ]),
   );
@@ -731,7 +723,7 @@ function historyPageLength(
 }
 export async function threadEventPageForOwner(
   database: Kysely<DatabaseSchema>,
-  notificationState: NotificationStateStore,
+  _notificationState: NotificationStateStore,
   input: {
     readonly placeEvents?: "include";
     readonly aroundMessageId?: MessageId;
@@ -773,6 +765,8 @@ export async function threadEventPageForOwner(
         .selectAll("threads")
         .select([
           threadPendingRequestsSelection,
+          threadVisitSelection,
+          threadLatestRunCompletedAtSelection,
           threadProviderSessionSelection,
           threadContinuationIdentitySelection,
         ])
@@ -805,11 +799,7 @@ export async function threadEventPageForOwner(
       const { events, hasMore } = page;
       const oldest = events.at(0);
       return {
-        readState: await notificationState.getReadState({
-          database: transaction,
-          userId: input.ownerId,
-          threadId: input.threadId,
-        }),
+        asOfSequence: await deploymentHead(transaction),
         events,
         thread: threadFromRow(thread),
         threadId: input.threadId,

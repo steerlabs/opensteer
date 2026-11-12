@@ -2386,10 +2386,9 @@ export async function createHostRuntime(
           credentialVault: teamLinkVault,
           admission: taskAdmission,
           runs: personalTeamRunPort(database),
-          onPublished: async (threadId) => {
+          onPublished: async () => {
             const ownerId = service.options.ownerId;
-            const state = await store.notificationState.getReadState({ threadId, userId: ownerId });
-            realtime.publishReadState(ownerId, state);
+            realtime.publishViewerTasksChanged(ownerId);
           },
           attachments: new PersonalTeamAttachments({
             store,

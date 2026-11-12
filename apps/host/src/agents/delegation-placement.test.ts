@@ -408,6 +408,8 @@ function catalog(
 function thread(): Thread {
   const threadId = createId("thread");
   return {
+    lastVisitedAt: null,
+    latestRunCompletedAt: null,
     accessMode: "full-access",
     teamOrigin: null,
     continuationIdentity: null,
