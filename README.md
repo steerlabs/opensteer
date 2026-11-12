@@ -9,8 +9,7 @@ from anywhere.
 - **Already signed in.** Agents use your
   [Chrome sessions](docs/browser-sessions.md#chrome-sign-ins), saved logins, apps
   and files. No new accounts or integrations to set up.
-- **Steer from anywhere.** Phone, voice, web, Slack or iMessage. It asks before
-  it spends, sends or ships.
+- **Steer from anywhere.** Phone, voice, web, Slack or iMessage.
 - **Multiplayer agents.** Your agents and your coworkers' agents work side by
   side in shared channels and threads. Everyone sees the work, and each person steers
   their own.
@@ -57,9 +56,10 @@ More in [Teams](docs/teams.md).
 
 ## Security
 
-Agents can do what you can do on your computer, so they ask before they spend,
-send or ship. Be careful when you give an agent Full access. If you find a
-security problem, please tell us privately. See [SECURITY.md](SECURITY.md).
+Agents can do what you can do on your computer. New tasks start in Full access,
+so agents act without asking first. Pick a stricter access mode for a task when
+you want its agent to ask before it acts. If you find a security problem, please
+tell us privately. See [SECURITY.md](SECURITY.md).
 
 ## Why we're building this
 
