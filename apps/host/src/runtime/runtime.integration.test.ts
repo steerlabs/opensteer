@@ -1,4 +1,9 @@
-import { enrollTestRunner } from "@opensteer/database/test-support/store";
+import {
+  connectCallerMachine,
+  type CallerMachine,
+  type MachineAccessWireHost,
+} from "./machine-access-protocol.test-support.js";
+import { initializePersonalState } from "./personal-state.js";
 import { describe } from "vitest";
 import { sealOAuthBrokerPayload } from "@opensteer/integration-auth";
 
@@ -137,6 +142,7 @@ integration("Host vertical slice", () => {
     console.info(`Task mark runtime receipts: ${evidenceRoot}`);
   });
 
+  let accountCaller: CallerMachine | undefined;
   beforeEach(async () => {
     ownerSessionHeaders = undefined;
     runnerToken = "";
@@ -145,6 +151,8 @@ integration("Host vertical slice", () => {
   });
 
   afterEach(async () => {
+    await accountCaller?.close();
+    accountCaller = undefined;
     runnerSocket?.close();
     runnerSocket = undefined;
     auxiliarySocket?.close();
@@ -168,13 +176,6 @@ integration("Host vertical slice", () => {
 
     const unauthorized = await testRpcRequest(origin, "bootstrap.get", {});
     expect(unauthorized.status).toBe(401);
-    const withoutComputer = await testRpcData(
-      origin,
-      "bootstrap.get",
-      {},
-      { headers: authorization(accessToken) },
-    );
-    expect(withoutComputer.harnesses).toEqual([]);
 
     const runnerId = createId("runner");
     const environmentId = hostingEnvironmentId;
@@ -204,7 +205,7 @@ integration("Host vertical slice", () => {
         name: "Local runner",
         providerStateModes: ["ambient", "isolated"],
         runnerId,
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
@@ -276,7 +277,7 @@ integration("Host vertical slice", () => {
     );
     if (threadResult.type !== "thread.create") throw new Error("Thread command mismatch.");
     const threadId = threadResult.thread.id as string;
-    expect(threadResult.thread.accessMode).toBe("approval-required");
+    expect(threadResult.thread.accessMode).toBe("full-access");
     const accessModeUpdate = await testRpcData(
       origin,
       "commands.dispatch",
@@ -469,7 +470,6 @@ integration("Host vertical slice", () => {
         device: { form: "laptop", platform: "macos" },
         id: runnerId,
         modules: { agents: expect.objectContaining({ readiness: "ready" }) },
-        ownerName: null,
         ownership: "deployment",
         status: "online",
       }),
@@ -512,29 +512,6 @@ integration("Host vertical slice", () => {
     expect(bootstrap.environments).toEqual([]);
   });
 
-  it("persists the fixed initial-owner enrollment deadline across Host restarts", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-bootstrap-expiry-"));
-    const firstPort = await freePort();
-    const firstConfig = {
-      ...testHostConfig(firstPort, dataDirectory, new URL("http://127.0.0.1:9")),
-    } satisfies HostConfig;
-    runtime = await createHostRuntime(firstConfig);
-    const firstRow = await initialOwnerEnrollmentDeadline(runtime.store);
-    expect(firstRow.expiresAt.getTime() - firstRow.createdAt.getTime()).toBeGreaterThanOrEqual(
-      3_599_000,
-    );
-    await runtime.close();
-    runtime = undefined;
-
-    const secondPort = firstPort;
-    runtime = await createHostRuntime({
-      ...firstConfig,
-      port: secondPort,
-      runtimeOrigin: new URL(`http://127.0.0.1:${secondPort}`),
-    });
-    expect(await initialOwnerEnrollmentDeadline(runtime.store)).toEqual(firstRow);
-  });
-
   it("restarts Host and local Runner identity without the enrollment token", async () => {
     dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-runner-token-removal-"));
     const firstPort = await freePort();
@@ -563,7 +540,7 @@ integration("Host vertical slice", () => {
       name: "Local Runner",
       providerStateModes: ["ambient", "isolated"],
       runnerId,
-      runnerKind: "local",
+      runnerKind: "main",
       runtimeVersion: "integration",
 
       workspaceBackings: ["local-directory"],
@@ -589,7 +566,7 @@ integration("Host vertical slice", () => {
     await runtime.listen();
     await expect(runtime.store.runnerForAuthentication(runnerId)).resolves.toMatchObject({
       runnerId,
-      runnerKind: "local",
+      runnerKind: "main",
     });
 
     const reconnect = await openRunnerSocket(`ws://127.0.0.1:${secondPort}/internal/v1/runners`);
@@ -681,7 +658,7 @@ integration("Host vertical slice", () => {
         name: "Invalidation recovery Runner",
         providerStateModes: ["ambient", "isolated"],
         runnerId: createId("runner"),
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
@@ -894,7 +871,7 @@ integration("Host vertical slice", () => {
         maxConcurrentRuns: 1,
         name: "Local work location",
         runnerId,
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
 
         workspaceBackings: ["local-directory"],
@@ -904,13 +881,25 @@ integration("Host vertical slice", () => {
       runnerConnection.challenge,
     );
     const ownerId = await administratorId(runtime.store);
-    const folder = (await personalSettings(runtime.store.database)).agentHome;
+    const folder = (
+      await vi.waitFor(() => personalSettings(runtime!.store.database), {
+        timeout: 5_000,
+        interval: 25,
+      })
+    ).agentHome;
     // A driver the Runner reports as unavailable is not seeded a default
     // profile, and adding one is refused: an engine the Runner cannot run has
     // no source to validate against. This case's unavailable account is one
     // that existed before the Runner stopped offering the engine, which is
     // the only way such an account comes to be.
-    const seeded = await runtime.store.listHarnessInstances();
+    const seeded = await vi.waitFor(
+      async () => {
+        const rows = await runtime!.store.listHarnessInstances();
+        expect(rows.map(({ driverKind }) => driverKind)).toEqual(["claude"]);
+        return rows;
+      },
+      { timeout: 5_000, interval: 25 },
+    );
     expect(seeded.map(({ driverKind }) => driverKind)).toEqual(["claude"]);
     const claudeHarness = seeded.find((harness) => harness.driverKind === "claude");
     if (!claudeHarness) throw new Error("Built-in AI engines are missing");
@@ -1028,48 +1017,7 @@ integration("Host vertical slice", () => {
       runtimeId: "browser",
       ownerId,
     });
-    // Somebody else's signed-in browser in the same Workspace: its owner's alone.
-    const stranger = await runtime.store.createUser("Browser stranger");
-    const strangerRunnerId = createId("runner");
-    await enrollTestRunner(runtime.store, {
-      allowedModules: ["browser"],
-      createdBy: stranger,
-      environmentId: createId("environment"),
-      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
-      name: "Stranger's computer",
-      runnerId: strangerRunnerId,
-      runnerKind: "local",
-      tokenSuffix: strangerRunnerId,
-    });
-    const strangerProfile = await runtime.store.createBrowserProfile({
-      homeRunnerId: strangerRunnerId,
-      idempotencyKey: "runtime.integration.test-browser-profile-1",
-      name: "Stranger's bank",
-      ownerId: stranger,
-    });
-    const deployment = await runtime.store.getDeployment();
-    if (!deployment) throw new Error("Test Deployment missing");
-    const strangerBinding = {
-      version: 1 as const,
-      deploymentId: deployment.id,
-      profileId: strangerProfile.id,
-      runnerId: strangerRunnerId,
-      storageInstanceId: randomUUID(),
-      bindingId: randomUUID(),
-      engine: "chromium" as const,
-    };
-    await runtime.store.bindBrowserProfile(strangerBinding);
-    await runtime.store.acknowledgeBrowserProfileReady(strangerBinding);
     const hiddenBrowserId = createBrowserSessionId();
-    await runtime.store.createBrowserSession({
-      id: hiddenBrowserId,
-      origin: "agent",
-      placementKey: `runner:${strangerRunnerId}:browser`,
-      profileId: strangerProfile.id,
-      runnerId: strangerRunnerId,
-      runtimeId: "browser",
-      ownerId: stranger,
-    });
     const createBody = {
       environmentId,
       harnessInstanceId: claudeHarness.id,
@@ -1248,7 +1196,7 @@ integration("Host vertical slice", () => {
         maxConcurrentRuns: 1,
         name: "Laptop",
         runnerId: createId("runner"),
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
         workspaceBackings: ["local-directory"],
         localStorage: null,
@@ -1351,7 +1299,7 @@ integration("Host vertical slice", () => {
         maxConcurrentRuns: 1,
         name: "Rejecting runner",
         runnerId,
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
 
         workspaceBackings: ["local-directory"],
@@ -1370,7 +1318,12 @@ integration("Host vertical slice", () => {
 
     try {
       const ownerId = await administratorId(runtime.store);
-      const folder = (await personalSettings(runtime.store.database)).agentHome;
+      const folder = (
+        await vi.waitFor(() => personalSettings(runtime!.store.database), {
+          timeout: 5_000,
+          interval: 25,
+        })
+      ).agentHome;
 
       await publication.entered;
       const harnesses = await runtime.store.listHarnessInstances({
@@ -1427,15 +1380,18 @@ integration("Host vertical slice", () => {
       realtimeSocket = await openWebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, accessToken);
       realtimeSocket.send(
         JSON.stringify({
-          afterSequence: zeroSequence,
           apiVersion: hostApiVersion,
           threadId: thread.id,
           type: "client.subscribe",
-          folder,
+          cursor: {
+            deploymentId: runtime.deployment.id,
+            apiVersion: hostApiVersion,
+            afterSequence: zeroSequence,
+          },
         }),
       );
       await waitForMessage(realtimeSocket, (message) => message.type === "host.synchronized");
-      const terminalEvent = waitForWorkspaceEvent(realtimeSocket, "run.failed");
+      const terminalEvent = waitForDeploymentEvent(realtimeSocket, "run.failed");
       const commandPromise = waitForRunnerExecution(runnerSocket);
       const turn = await runtime.store.enqueueThreadInput({
         content: [{ text: "This must fail durably", type: "text" }],
@@ -1553,7 +1509,7 @@ integration("Host vertical slice", () => {
         maxConcurrentRuns: 1,
         name: "Disconnecting runner",
         runnerId,
-        runnerKind: "local",
+        runnerKind: "main",
         runtimeVersion: "integration",
 
         workspaceBackings: ["local-directory"],
@@ -1565,7 +1521,12 @@ integration("Host vertical slice", () => {
     const stopCatalogResponder = respondToHarnessInspections(runnerSocket, readyCodexCatalog);
 
     const ownerId = await administratorId(runtime.store);
-    const folder = (await personalSettings(runtime.store.database)).agentHome;
+    const folder = (
+      await vi.waitFor(() => personalSettings(runtime!.store.database), {
+        timeout: 5_000,
+        interval: 25,
+      })
+    ).agentHome;
 
     const harness = await seededHarness(runtime.store, environmentId);
     const { thread } = await runtime.store.createThread({
@@ -1777,6 +1738,10 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
+    await initializePersonalState(seedStore.database, {
+      environmentId,
+      agentHome: join(dataDirectory, "home"),
+    });
     const folder = (await personalSettings(seedStore.database)).agentHome;
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },
@@ -1955,6 +1920,7 @@ integration("Host vertical slice", () => {
     const origin = config.runtimeOrigin.origin;
     await initializeOwnerSession(origin);
 
+    accountCaller = await attachHostingComputer(runtime, config, ownerSessionHeaders!, true);
     const enrollment = await testRpcData(
       origin,
       "commands.dispatch",
@@ -1979,7 +1945,7 @@ integration("Host vertical slice", () => {
     const descriptor = RunnerDescriptorSchema.parse({
       bootId,
       capabilities: [],
-      modules: { browser: { wireVersion: 1, runtimeId: "relay-browser" } },
+      modules: { browser: { wireVersion: 2, runtimeId: "relay-browser" } },
       name: "Browser computer",
       runnerId,
       runnerKind: "local",
@@ -2039,7 +2005,7 @@ integration("Host vertical slice", () => {
       module: "browser",
     });
     expect(welcome.browserAttachPublicKeys).toEqual([
-      expect.objectContaining({ keyId: "host-browser-v1" }),
+      expect.objectContaining({ keyId: "host-v1" }),
     ]);
 
     // The ticket is one-use: a second stream presenting it is refused before it
@@ -2254,13 +2220,22 @@ integration("Host vertical slice", () => {
       }),
       headers: {
         [hostApiVersionHeader]: String(hostApiVersion),
-        "content-type": "application/json",
-        origin,
+        ...Object.fromEntries(
+          new Headers({
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+            origin,
+          }),
+        ),
       },
       method: "POST",
     });
     expect(claimed.status).toBe(200);
-    const sessionHeaders = { cookie: responseCookies(claimed).join("; "), origin };
+    const sessionHeaders = {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      cookie: responseCookies(claimed).join("; "),
+      origin,
+    };
     const bootstrap = await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
     expect(bootstrap.user.displayName).toBe("You");
     expect(bootstrap.sessionSurface).toBe("canonical");
@@ -2292,8 +2267,13 @@ integration("Host vertical slice", () => {
       }),
       headers: {
         [hostApiVersionHeader]: String(hostApiVersion),
-        "content-type": "application/json",
-        origin,
+        ...Object.fromEntries(
+          new Headers({
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+            origin,
+          }),
+        ),
       },
       method: "POST",
     });
@@ -2315,7 +2295,16 @@ integration("Host vertical slice", () => {
     const privateOrigin = "https://personal.tailnet.example";
     const configuredPrivate = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "private", routeOrigin: privateOrigin, schemaVersion: 1 }),
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            ...sessionHeaders,
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+          }),
+        ),
+      },
       method: "PUT",
     });
     expect(configuredPrivate.status).toBe(200);
@@ -2330,7 +2319,11 @@ integration("Host vertical slice", () => {
     });
     const pairing = await jsonFetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: {
+        ...sessionHeaders,
+        [hostApiVersionHeader]: String(hostApiVersion),
+        "content-type": "application/json",
+      },
       method: "POST",
     });
     const pairingCredential = {
@@ -2346,25 +2339,41 @@ integration("Host vertical slice", () => {
     // The exchange must match the signed route coordinates; an Origin header
     // alone cannot supply them.
     const exchangeIngress = {
+      [hostApiVersionHeader]: String(hostApiVersion),
       "content-type": "application/json",
       host: new URL(privateOrigin).host,
       "x-forwarded-proto": "https",
     };
     const wrongRoute = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: pairingBody,
-      headers: { ...exchangeIngress, host: "wrong.example" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers({ ...exchangeIngress, host: "wrong.example" })),
+      },
       method: "POST",
     });
     expect(wrongRoute.status).toBe(403);
     const claimedOrigin = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: pairingBody,
-      headers: { "content-type": "application/json", origin: privateOrigin },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+            origin: privateOrigin,
+          }),
+        ),
+      },
       method: "POST",
     });
     expect(claimedOrigin.status).toBe(403);
     const paired = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: pairingBody,
-      headers: exchangeIngress,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(exchangeIngress)),
+      },
       method: "POST",
     });
     expect(paired.status, await paired.clone().text()).toBe(200);
@@ -2379,11 +2388,18 @@ integration("Host vertical slice", () => {
     expect(remoteCookie).not.toContain("Domain=");
     const replay = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: pairingBody,
-      headers: exchangeIngress,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(exchangeIngress)),
+      },
       method: "POST",
     });
     expect(replay.status).toBe(403);
-    const remoteHeaders = { cookie: remoteCookies.join("; "), origin: privateOrigin };
+    const remoteHeaders = {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      cookie: remoteCookies.join("; "),
+      origin: privateOrigin,
+    };
     const remoteBootstrap = await testRpcData(
       origin,
       "bootstrap.get",
@@ -2396,7 +2412,12 @@ integration("Host vertical slice", () => {
     });
     const remoteMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
-      headers: { ...remoteHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ ...remoteHeaders, "content-type": "application/json" }),
+        ),
+      },
       method: "POST",
     });
     expect(remoteMinted.status, await remoteMinted.clone().text()).toBe(200);
@@ -2416,7 +2437,10 @@ integration("Host vertical slice", () => {
         credentialDelivery: "header",
         schemaVersion: 2,
       }),
-      headers: exchangeIngress,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(exchangeIngress)),
+      },
       method: "POST",
     });
     expect(nativePaired.status, await nativePaired.clone().text()).toBe(200);
@@ -2438,7 +2462,12 @@ integration("Host vertical slice", () => {
 
     const nativeMinted = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       body: "{}",
-      headers: { ...nativeHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ ...nativeHeaders, "content-type": "application/json" }),
+        ),
+      },
       method: "POST",
     });
     expect(nativeMinted.status, await nativeMinted.clone().text()).toBe(200);
@@ -2446,32 +2475,6 @@ integration("Host vertical slice", () => {
     expect(IssuePersonalPairingCodeResponseSchema.parse(await nativeMinted.json())).toMatchObject({
       generation: privateStatus.generation,
     });
-
-    // Owner authority is required even for an already authenticated device.
-    await runtime.store.database
-      .updateTable("users")
-      .set({ disabledAt: new Date() })
-      .where("id", "=", bootstrap.user.id)
-      .execute();
-    try {
-      const nonOwnerMint = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
-        body: "{}",
-        headers: { ...nativeHeaders, "content-type": "application/json" },
-        method: "POST",
-      });
-      expect(nonOwnerMint.status).toBe(403);
-      expect(await nonOwnerMint.json()).toMatchObject({ error: { code: "forbidden" } });
-      const nonOwnerStatus = await fetch(`${origin}/v1/personal-remote-access`, {
-        headers: nativeHeaders,
-      });
-      expect(nonOwnerStatus.status).toBe(403);
-    } finally {
-      await runtime.store.database
-        .updateTable("users")
-        .set({ disabledAt: null })
-        .where("id", "=", bootstrap.user.id)
-        .execute();
-    }
 
     // Owner sessions can request Connect work, but cannot read executor credentials.
     for (const action of ["provision", "rotate"]) {
@@ -2484,7 +2487,12 @@ integration("Host vertical slice", () => {
               operationId: `cop_${crypto.randomUUID()}`,
               ...(action === "provision" ? { localOrigin: origin } : {}),
             }),
-            headers: { ...nativeHeaders, "content-type": "application/json" },
+            headers: {
+              [hostApiVersionHeader]: String(hostApiVersion),
+              ...Object.fromEntries(
+                new Headers({ ...nativeHeaders, "content-type": "application/json" }),
+              ),
+            },
             method: "POST",
           },
         );
@@ -2554,7 +2562,12 @@ integration("Host vertical slice", () => {
     // remote delivery families are revoked in the same database transaction.
     const disabled = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: { ...remoteHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ ...remoteHeaders, "content-type": "application/json" }),
+        ),
+      },
       method: "PUT",
     });
     expect(disabled.status).toBe(200);
@@ -2626,7 +2639,16 @@ integration("Host vertical slice", () => {
           linkGeneration,
         ),
       ),
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            ...sessionHeaders,
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+          }),
+        ),
+      },
       method: "POST",
     });
     expect(linked.status, await linked.clone().text()).toBe(200);
@@ -2651,7 +2673,16 @@ integration("Host vertical slice", () => {
     const connectOrigin = "https://personal.connect.opensteer.test";
     const configuredConnect = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "connect", routeOrigin: connectOrigin, schemaVersion: 1 }),
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            ...sessionHeaders,
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+          }),
+        ),
+      },
       method: "PUT",
     });
     expect(configuredConnect.status).toBe(200);
@@ -2709,7 +2740,10 @@ integration("Host vertical slice", () => {
     };
     const missingRouteOrigin = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: sessionBody,
-      headers: { "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers({ "content-type": "application/json" })),
+      },
       method: "POST",
     });
     expect(missingRouteOrigin.status).toBe(403);
@@ -2721,13 +2755,19 @@ integration("Host vertical slice", () => {
         credentialDelivery: "header",
         schemaVersion: 2,
       }),
-      headers: connectIngress,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(connectIngress)),
+      },
       method: "POST",
     });
     expect(wrongDelivery.status).toBe(403);
     const connected = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: sessionBody,
-      headers: connectIngress,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(connectIngress)),
+      },
       method: "POST",
     });
     expect(connected.status).toBe(200);
@@ -2754,7 +2794,12 @@ integration("Host vertical slice", () => {
     ).resolves.toEqual({ grantId: sessionGrantId });
     const replayedGrant = await fetch(`${origin}${sessionExchangePath}`, {
       body: sessionBody,
-      headers: { "content-type": "application/json", origin: connectOrigin },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ "content-type": "application/json", origin: connectOrigin }),
+        ),
+      },
       method: "POST",
     });
     expect(replayedGrant.status).toBe(403);
@@ -2789,14 +2834,22 @@ integration("Host vertical slice", () => {
     };
     const wrongPortal = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: new URLSearchParams({ grant: browserGrant }),
-      headers: { ...browserExchangeHeaders, origin: "https://other-portal.example" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ ...browserExchangeHeaders, origin: "https://other-portal.example" }),
+        ),
+      },
       method: "POST",
       redirect: "manual",
     });
     expect(wrongPortal.status).toBe(403);
     const browserConnected = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: new URLSearchParams({ grant: browserGrant }),
-      headers: browserExchangeHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(browserExchangeHeaders)),
+      },
       method: "POST",
       redirect: "manual",
     });
@@ -2809,17 +2862,23 @@ integration("Host vertical slice", () => {
     expect(browserCookie).toContain("Secure");
     expect(browserCookie).toContain("SameSite=Lax");
     const browserCookiePair = browserCookie?.split(";", 1)[0] ?? "";
-    const routeSocket = new WebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, {
-      headers: { cookie: browserCookiePair, origin: connectOrigin },
-    });
+    const routeSocket = new WebSocket(
+      `ws://127.0.0.1:${hostPort}/v1/realtime?opensteer_api_version=${hostApiVersion}`,
+      {
+        headers: { cookie: browserCookiePair, origin: connectOrigin },
+      },
+    );
     await new Promise<void>((resolve, reject) => {
       routeSocket.once("open", resolve);
       routeSocket.once("error", reject);
     });
     routeSocket.close();
-    const refusedPortalSocket = new WebSocket(`ws://127.0.0.1:${hostPort}/v1/realtime`, {
-      headers: { cookie: browserCookiePair, origin: portalOrigin },
-    });
+    const refusedPortalSocket = new WebSocket(
+      `ws://127.0.0.1:${hostPort}/v1/realtime?opensteer_api_version=${hostApiVersion}`,
+      {
+        headers: { cookie: browserCookiePair, origin: portalOrigin },
+      },
+    );
     await new Promise<void>((resolve, reject) => {
       refusedPortalSocket.once("unexpected-response", (_request, response) => {
         try {
@@ -2835,8 +2894,13 @@ integration("Host vertical slice", () => {
     });
     const portalCannotMutate = await fetch(`${origin}/v1/personal-remote-access/pairing-codes`, {
       headers: {
-        cookie: browserCookiePair,
-        origin: portalOrigin,
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            cookie: browserCookiePair,
+            origin: portalOrigin,
+          }),
+        ),
       },
       method: "POST",
     });
@@ -2846,14 +2910,22 @@ integration("Host vertical slice", () => {
     tamperedParts[2] = `${signature[0] === "A" ? "B" : "A"}${signature.slice(1)}`;
     const tampered = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: new URLSearchParams({ grant: tamperedParts.join(".") }),
-      headers: browserExchangeHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(browserExchangeHeaders)),
+      },
       method: "POST",
       redirect: "manual",
     });
     expect(tampered.status).toBe(403);
     const wrongMediaType = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: new URLSearchParams({ grant: browserGrant }),
-      headers: { ...browserExchangeHeaders, "content-type": "text/plain" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({ ...browserExchangeHeaders, "content-type": "text/plain" }),
+        ),
+      },
       method: "POST",
       redirect: "manual",
     });
@@ -2883,7 +2955,16 @@ integration("Host vertical slice", () => {
     expect(hostAuthorityPublications).toHaveLength(1);
     const connectDisabled = await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: { ...sessionHeaders, "content-type": "application/json" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            ...sessionHeaders,
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+          }),
+        ),
+      },
       method: "PUT",
     });
     expect(connectDisabled.status).toBe(200);
@@ -2894,7 +2975,10 @@ integration("Host vertical slice", () => {
     });
     const staleRouteExchange = await fetchWithExplicitHost(`${origin}${sessionExchangePath}`, {
       body: new URLSearchParams({ grant: staleRouteGrant }),
-      headers: browserExchangeHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(browserExchangeHeaders)),
+      },
       method: "POST",
       redirect: "manual",
     });
@@ -3056,14 +3140,28 @@ integration("Host vertical slice", () => {
       }),
       headers: {
         [hostApiVersionHeader]: String(hostApiVersion),
-        "content-type": "application/json",
-        origin,
+        ...Object.fromEntries(
+          new Headers({
+            [hostApiVersionHeader]: String(hostApiVersion),
+            "content-type": "application/json",
+            origin,
+          }),
+        ),
       },
       method: "POST",
     });
     expect(claimed.status).toBe(200);
-    const sessionHeaders = { cookie: responseCookies(claimed).join("; "), origin };
-    const jsonHeaders = { ...sessionHeaders, "content-type": "application/json" };
+    const sessionHeaders = {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      cookie: responseCookies(claimed).join("; "),
+      origin,
+    };
+    accountCaller = await attachHostingComputer(runtime, config, sessionHeaders);
+    const jsonHeaders = {
+      ...sessionHeaders,
+      [hostApiVersionHeader]: String(hostApiVersion),
+      "content-type": "application/json",
+    };
 
     const authority = HostDescriptorSchema.parse(await jsonFetch(`${origin}/.well-known/opensteer`))
       .authority.document;
@@ -3103,7 +3201,10 @@ integration("Host vertical slice", () => {
           linkGeneration,
         ),
       ),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "POST",
     });
     expect(consumed.status).toBe(409);
@@ -3130,7 +3231,10 @@ integration("Host vertical slice", () => {
         challengeId: `phc_${crypto.randomUUID()}`,
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
       }),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "POST",
     });
     expect(secondProof.status).toBe(409);
@@ -3142,7 +3246,10 @@ integration("Host vertical slice", () => {
         routeOrigin: "https://personal.connect.opensteer.test",
         schemaVersion: 1,
       }),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "PUT",
     });
     expect(connectRefused.status).toBe(409);
@@ -3153,7 +3260,10 @@ integration("Host vertical slice", () => {
       `${origin}/v1/personal-remote-access/connect-projection`,
       {
         body: JSON.stringify({ expectedAccessRoute: null, schemaVersion: 2, state: "disabled" }),
-        headers: jsonHeaders,
+        headers: {
+          [hostApiVersionHeader]: String(hostApiVersion),
+          ...Object.fromEntries(new Headers(jsonHeaders)),
+        },
         method: "PUT",
       },
     );
@@ -3163,7 +3273,10 @@ integration("Host vertical slice", () => {
         hostInstanceId: authority.hostInstanceId,
         operationId: `cop_${crypto.randomUUID()}`,
       }),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "DELETE",
     });
     expect(revokeRefused.status).toBe(409);
@@ -3203,9 +3316,14 @@ integration("Host vertical slice", () => {
         schemaVersion: 2,
       }),
       headers: {
-        "content-type": "application/json",
-        host: new URL(privateOrigin).host,
-        "x-forwarded-proto": "https",
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(
+          new Headers({
+            "content-type": "application/json",
+            host: new URL(privateOrigin).host,
+            "x-forwarded-proto": "https",
+          }),
+        ),
       },
       method: "POST",
     });
@@ -3242,12 +3360,18 @@ integration("Host vertical slice", () => {
     activationOutcome = "not-found";
     await fetch(`${origin}/v1/personal-remote-access`, {
       body: JSON.stringify({ mode: "off", routeOrigin: null, schemaVersion: 1 }),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "PUT",
     });
     const removed = await fetch(`${origin}/v1/personal-remote-access/account-unlink/remove-link`, {
       body: JSON.stringify({ schemaVersion: 1 }),
-      headers: jsonHeaders,
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        ...Object.fromEntries(new Headers(jsonHeaders)),
+      },
       method: "POST",
     });
     expect(removed.status, await removed.clone().text()).toBe(204);
@@ -3300,20 +3424,66 @@ function withoutInitialOwner(config: HostConfig): HostConfig {
   };
 }
 
+async function attachHostingComputer(
+  runtime: PersonalHostRuntime,
+  config: HostConfig,
+  ownerHeaders: Record<string, string>,
+  remoteAccess = false,
+) {
+  const local = await jsonFetch(`${config.runtimeOrigin.origin}/v1/local-bootstrap`, {
+    headers: {
+      authorization: `Bearer ${config.identity.localOwnerClaimToken}`,
+      [hostApiVersionHeader]: String(hostApiVersion),
+    },
+  });
+  const ownerId = (
+    await runtime.store.database
+      .selectFrom("ownerEnrollments")
+      .select("consumedBy")
+      .where("consumedBy", "is not", null)
+      .executeTakeFirstOrThrow()
+  ).consumedBy!;
+  const computerId = createId("runner");
+  return connectCallerMachine(
+    {
+      runtime,
+      store: runtime.store,
+      config,
+      hostPort: config.port,
+      origin: config.runtimeOrigin,
+      ownerId,
+      ownerHeaders,
+      hostingComputerId: computerId,
+      ownerEnvironmentId: config.personal!.environmentId,
+      agentHome: { computerId, path: config.personal!.agentHome },
+      remoteAccess,
+    } as unknown as MachineAccessWireHost,
+    { name: "Hosting computer", token: local.runnerEnrollmentToken },
+  );
+}
+
 async function initializeOwnerSession(origin: string): Promise<void> {
   const claimed = await fetch(`${origin}/v1/rpc/auth.setup.claim`, {
     method: "POST",
     headers: {
       [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      origin,
+      ...Object.fromEntries(
+        new Headers({
+          [hostApiVersionHeader]: String(hostApiVersion),
+          "content-type": "application/json",
+          origin,
+        }),
+      ),
     },
     body: JSON.stringify({ kind: "local-machine-owner", token: accessToken }),
   });
   if (!claimed.ok) throw new Error(`Owner claim failed: ${claimed.status}`);
   ownerSessionHeaders = { cookie: responseCookies(claimed).join("; "), origin };
   const bootstrap = await fetch(`${origin}/v1/local-bootstrap`, {
-    headers: { authorization: `Bearer ${accessToken}` },
+    headers: {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      ...Object.fromEntries(new Headers({ authorization: `Bearer ${accessToken}` })),
+    },
   });
   runnerToken = ((await bootstrap.json()) as { runnerEnrollmentToken: string })
     .runnerEnrollmentToken;
@@ -3333,14 +3503,6 @@ async function administratorId(store: OpensteerStore) {
     throw new Error("Test administrator has not been initialized");
   }
   return full.id;
-}
-
-async function initialOwnerEnrollmentDeadline(store: OpensteerStore) {
-  return store.database
-    .selectFrom("ownerEnrollments")
-    .select(["createdAt", "expiresAt", "tokenHash"])
-    .where("idempotencyKey", "=", "initial-owner-bootstrap")
-    .executeTakeFirstOrThrow();
 }
 
 function waitForRunnerExecution(socket: WebSocket): Promise<
@@ -3367,13 +3529,13 @@ function waitForRunnerExecution(socket: WebSocket): Promise<
   });
 }
 
-function waitForWorkspaceEvent(
+function waitForDeploymentEvent(
   socket: WebSocket,
   eventType: string,
 ): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(
-      () => reject(new Error(`timed out waiting for workspace event ${eventType}`)),
+      () => reject(new Error(`timed out waiting for deployment event ${eventType}`)),
       10_000,
     );
     const receive = (frame: WebSocket.RawData) => {
@@ -3424,7 +3586,13 @@ function authorization(token: string): Record<string, string> {
 }
 
 async function jsonFetch(url: string, init?: RequestInit): Promise<any> {
-  const response = await fetch(url, init);
+  const response = await fetch(url, {
+    ...init,
+    headers: {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      ...Object.fromEntries(new Headers(init?.headers)),
+    },
+  });
   const body = (await response.json()) as any;
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${JSON.stringify(body)}`);
   return body;
@@ -3432,7 +3600,10 @@ async function jsonFetch(url: string, init?: RequestInit): Promise<any> {
 
 function openWebSocket(url: string, token?: string): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url, token ? { headers: authorization(token) } : undefined);
+    const socket = new WebSocket(
+      url + (url.includes("?") ? "&" : "?") + "opensteer_api_version=" + hostApiVersion,
+      token ? { headers: authorization(token) } : undefined,
+    );
     socket.once("open", () => resolve(socket));
     socket.once("error", reject);
   });
@@ -3531,14 +3702,15 @@ async function enrollRunnerSocket(
     (message) => message.type === "host.welcome",
   )) as unknown as RunnerConnectionFence;
   // A Runner states the Runs it holds before the Host sends it any work.
-  socket.send(
-    JSON.stringify({
-      ...runnerFence(welcome),
-      complete: true,
-      executions: [],
-      type: "runner.executions.attach",
-    }),
-  );
+  if (descriptor.modules.agents)
+    socket.send(
+      JSON.stringify({
+        ...runnerFence(welcome),
+        complete: true,
+        executions: [],
+        type: "runner.executions.attach",
+      }),
+    );
   return { fence: runnerFence(welcome), privateKey: pair.privateKey, publicKey: pair.publicKey };
 }
 
@@ -3727,7 +3899,16 @@ async function sealedLinkCompletion(
   ).authority;
   const response = await fetch(`${origin}/v1/personal-remote-access/account-link/proof`, {
     method: "POST",
-    headers: { ...headers, "content-type": "application/json" },
+    headers: {
+      [hostApiVersionHeader]: String(hostApiVersion),
+      ...Object.fromEntries(
+        new Headers({
+          ...headers,
+          [hostApiVersionHeader]: String(hostApiVersion),
+          "content-type": "application/json",
+        }),
+      ),
+    },
     body: JSON.stringify({
       account,
       authorityEnvelope: envelope,

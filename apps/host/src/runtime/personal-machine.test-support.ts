@@ -30,7 +30,7 @@ export async function configurePersonalRemoteAccess(
   const response = await host.runtime.app.inject({
     method: "PUT",
     url: "/v1/personal-remote-access",
-    headers: host.ownerHeaders,
+    headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(hostApiVersion) },
     payload: input,
   });
   if (response.statusCode !== 200)

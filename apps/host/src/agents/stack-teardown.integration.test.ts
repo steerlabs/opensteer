@@ -63,7 +63,7 @@ integration("Vertical stack teardown", () => {
       release.resolve();
       if (saveEntered)
         await expect(finished).rejects.toThrow(
-          "The account reported unavailable: Harness driver missing is not installed",
+          "unavailable: Harness driver missing is not installed",
         );
       await stack?.close();
     }

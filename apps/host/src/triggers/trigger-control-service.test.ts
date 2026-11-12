@@ -208,6 +208,7 @@ describe("TriggerControlService", () => {
       }),
       threadId,
       {
+        accessMode: "full-access",
         operationKey: `trigger:${occurrenceId}:${mcpToolCallId(`trigger:${occurrenceId}`, requestId, "operation", "trigger_write")}:trigger.write`,
       },
     );

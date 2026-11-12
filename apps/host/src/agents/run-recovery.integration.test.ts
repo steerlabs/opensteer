@@ -118,13 +118,14 @@ interface Evidence {
 integration.sequential("Run recovery acceptance", () => {
   let fixtureState: Fixture | undefined;
   const runs: RunId[] = [];
+  const companionRuns = new Map<RunId, VerticalStack>();
   const checkpoints: unknown[] = [];
   const artifacts: Evidence[] = [];
   afterEach(async (context) => {
     const current = fixtureState;
     try {
       const snapshots = current
-        ? await Promise.all(runs.map((id) => snapshot(current.active, id)))
+        ? await Promise.all(runs.map((id) => snapshot(companionRuns.get(id) ?? current.active, id)))
         : [];
       artifacts.push({
         name: context.task.name,
@@ -252,6 +253,7 @@ integration.sequential("Run recovery acceptance", () => {
           });
         fixtureState = undefined;
         runs.splice(0);
+        companionRuns.clear();
         checkpoints.splice(0);
       }
     }
@@ -1600,6 +1602,7 @@ integration.sequential("Run recovery acceptance", () => {
     if (!queued.runId) throw new Error("No healthy Run");
     const healthyId = queued.runId;
     runs.push(healthyId);
+    companionRuns.set(healthyId, companion);
     await waitFor(
       async () => (await row(companion, healthyId)).startedAt !== null,
       "second Runner working",

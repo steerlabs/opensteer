@@ -1,3 +1,5 @@
+import { slackChannelProviderManifest } from "@opensteer/channel-core";
+import { createId } from "@opensteer/core";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,10 +23,13 @@ import {
   createMachineAccessDatabase,
   dispatchCallerRun,
   connectCallerMachine,
+  connectPrimary,
+  closed as waitForClose,
   startMachineAccessWireHost,
   type MachineAccessWireHost,
   type CallerMachine,
 } from "./machine-access-protocol.test-support.js";
+import { RunnerDescriptorSchema, RunnerBootIdSchema } from "@opensteer/protocol";
 import { createHostRuntime, type HostRuntime } from "./runtime.js";
 
 const integration = process.env.OPENSTEER_TEST_DATABASE_URL ? describe : describe.skip;
@@ -33,9 +38,13 @@ integration("Personal configuration conformance", () => {
   let clone: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
   let host: MachineAccessWireHost;
   let caller: CallerMachine;
+  const messagingToken = randomUUID().repeat(2);
   beforeAll(async () => {
     clone = await createMachineAccessDatabase(process.env.OPENSTEER_TEST_DATABASE_URL!);
-    host = await startMachineAccessWireHost(clone.url, { manualRunner: true });
+    host = await startMachineAccessWireHost(clone.url, {
+      manualRunner: true,
+      messagingEnrollmentToken: messagingToken,
+    });
     expect(await host.store.database.selectFrom("runners").select("id").execute()).toEqual([]);
     caller = await connectCallerMachine(host, {
       name: "Hosting computer",
@@ -51,7 +60,7 @@ integration("Personal configuration conformance", () => {
   it("advertises its signed identity and Personal epoch without a removed backing axis", async () => {
     const response = await host.runtime.app.inject({ url: "/.well-known/opensteer" });
     const descriptor = HostDescriptorSchema.parse(response.json());
-    await expect(verifyHostDiscoveryEnvelope(descriptor.authority)).resolves.toBeDefined();
+    expect(verifyHostDiscoveryEnvelope(descriptor.authority)).toBeDefined();
     expect(descriptor.apiVersion).toBe(hostApiVersion);
     expect(descriptor.authority.document.deploymentShape).toEqual({ kind: "personal" });
     expect(descriptor.authority.document.deploymentId).toBe(host.runtime.deployment.id);
@@ -123,6 +132,59 @@ integration("Personal configuration conformance", () => {
     ).toEqual({ status: "completed" });
   });
 
+  it("reconnects the supervised Messaging service with its enrolled identity and original grant", async () => {
+    const descriptor = RunnerDescriptorSchema.parse({
+      bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+      capabilities: [],
+      modules: {
+        integrations: { platform: "darwin" },
+        messaging: {
+          capabilities: [
+            {
+              manifest: slackChannelProviderManifest,
+              provider: "slack",
+              transportKinds: ["socket"],
+            },
+          ],
+        },
+      },
+      name: "Messaging service",
+      runnerId: createId("runner"),
+      runnerKind: "managed",
+      runtimeVersion: "integration",
+    });
+    let primary = await connectPrimary(host.hostPort, descriptor, { token: messagingToken });
+    try {
+      const record = await host.store.runnerForAuthentication(descriptor.runnerId);
+      expect(record).toMatchObject({
+        allowedModules: ["integrations", "messaging"],
+        runnerKind: "managed",
+        environmentIds: [],
+      });
+      const privateKey = primary.privateKey;
+      const closed = waitForClose(primary.socket);
+      primary.socket.close();
+      await closed;
+      primary = await connectPrimary(
+        host.hostPort,
+        { ...descriptor, bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`) },
+        { privateKey },
+      );
+      expect(await host.store.runnerForAuthentication(descriptor.runnerId)).toMatchObject({
+        allowedModules: record!.allowedModules,
+        publicKeyFingerprint: record!.publicKeyFingerprint,
+        connectionGeneration: record!.connectionGeneration + 1,
+      });
+      expect((await host.store.listEnvironmentsForUser(host.ownerId)).map(({ id }) => id)).toEqual([
+        host.ownerEnvironmentId,
+      ]);
+    } finally {
+      const closed = waitForClose(primary.socket);
+      primary.socket.close();
+      await closed;
+    }
+  });
+
   it("admits the pairing-code arm only on the current route and consumes the proof once", async () => {
     const routeOrigin = "https://personal.conformance.test";
     await configurePersonalRemoteAccess(host, { schemaVersion: 1, mode: "private", routeOrigin });
@@ -139,7 +201,11 @@ integration("Personal configuration conformance", () => {
     const request = {
       method: "POST" as const,
       url: sessionExchangePath,
-      headers: { host: new URL(routeOrigin).host, "x-forwarded-proto": "https" },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        host: new URL(routeOrigin).host,
+        "x-forwarded-proto": "https",
+      },
       payload: {
         schemaVersion: 2,
         credentialDelivery: "cookie",
@@ -217,6 +283,8 @@ integration("team configuration conformance", () => {
       (
         await runtime.app.inject({
           url,
+          method: "POST",
+          payload: {},
           headers: {
             [teamApiVersionHeader]: String(teamApiVersion),
             [hostApiVersionHeader]: String(hostApiVersion - 1),
@@ -226,12 +294,14 @@ integration("team configuration conformance", () => {
     ).toBe(401);
     const refused = await runtime.app.inject({
       url,
+      method: "POST",
+      payload: {},
       headers: { [teamApiVersionHeader]: String(teamApiVersion + 1) },
     });
-    expect(refused.statusCode).toBe(400);
+    expect(refused.statusCode).toBe(409);
     expect(refused.json()).toMatchObject({
       ok: false,
-      error: { reason: "unsupported-version", retryable: false },
+      error: { code: "conflict", reason: "api-version-mismatch", retryable: false },
     });
   });
 });

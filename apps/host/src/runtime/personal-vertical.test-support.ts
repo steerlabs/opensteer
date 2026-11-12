@@ -46,9 +46,6 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       async () => {
         socket?.terminate();
       },
-      async () => {
-        if (runtime) await options.beforeHostClose?.(runtime.host);
-      },
       async () => runtime?.close(),
       () => database.drop(),
       () => rm(directory, { recursive: true, force: true }),

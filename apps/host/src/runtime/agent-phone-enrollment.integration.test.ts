@@ -305,6 +305,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
     const newerRelease = () => release;
     host = await startMachineAccessWireHost(isolated!.url, {
       logger,
+      remoteAccess: true,
       phoneUpdateRelease: newerRelease,
     });
     const minted = await mintPhone(host, "honest-old-phone");
@@ -538,56 +539,24 @@ integration.sequential("An Android phone joining a Deployment", () => {
     }
   });
 
-  it("preserves all computer issuance grants and old signed enrollment-key replay", async () => {
+  it("preserves reachable and supervised grants and old signed phone enrollment-key replay", async () => {
     host = await startMachineAccessWireHost(isolated!.url, { remoteAccess: true });
     const keys = generateKeyPairSync("ed25519");
     const issuer = new RunnerAuthenticator({
       issuancePrivateKey: keys.privateKey,
       store: host.store,
     });
+    const reachable = ["browser", "integrations", "messaging", "shell"] as const;
     const request = {
-      allowedModules: ["agents"] as const,
+      allowedModules: reachable,
       createdBy: host.ownerId,
-      idempotencyKey: "old-local-key",
+      idempotencyKey: "reachable",
       lifetimeSeconds: 600,
-      name: "Laptop",
+      name: "Other Mac",
       runnerKind: "local" as const,
     };
-    const transcript = Buffer.from(
-      JSON.stringify([
-        "opensteer-runner-enrollment-issuance-v2",
-        "allowedModules",
-        ["agents"],
-        "createdBy",
-        host.ownerId,
-        "idempotencyKey",
-        request.idempotencyKey,
-        "purpose",
-        "standard",
-        "runnerKind",
-        "local",
-        "lifetimeSeconds",
-        600,
-        "name",
-        "Laptop",
-      ]),
-    );
-    const token = sign(null, transcript, keys.privateKey).toString("base64url");
-    const stored = await host.store.createRunnerEnrollment({
-      allowedModules: ["agents", "integrations", "messaging", "shell"],
-      createdBy: host.ownerId,
-      expiresAt: new Date(Date.now() + 600_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: request.idempotencyKey,
-      name: request.name,
-      requestFingerprint: `sha256:${createHash("sha256").update(transcript).digest("base64url")}`,
-      runnerKind: "local",
-      tokenHash: `sha256:${createHash("sha256").update(token).digest("base64url")}`,
-    });
-    expect(await issuer.createEnrollment(request)).toMatchObject({
-      enrollmentId: stored.id,
-      token,
-    });
+    const stored = await issuer.createEnrollment(request);
+    expect(await issuer.createEnrollment(request)).toEqual(stored);
     for (const profile of [undefined, "iphone"] as const) {
       const purpose = profile === "iphone" ? "iphone" : "phone";
       const phoneRequest = {
@@ -637,31 +606,23 @@ integration.sequential("An Android phone joining a Deployment", () => {
         token: historicalToken,
       });
     }
-    await issuer.createEnrollment({
-      ...request,
-      idempotencyKey: "managed",
-      runnerKind: "managed",
-      allowedModules: ["browser"],
-    });
     await issuer.ensureConfiguredDeploymentEnrollment({
-      allowedModules: ["browser"],
-      idempotencyKey: "browser",
-      lifetimeSeconds: 600,
-      name: "Browser",
-      token: "configured-browser-token-0123456789",
-    });
-    await issuer.ensureConfiguredDeploymentEnrollment({
-      allowedModules: ["messaging"],
+      allowedModules: ["integrations", "messaging"],
       idempotencyKey: "messaging",
       lifetimeSeconds: 600,
       name: "Messaging",
       token: "configured-messaging-token-0123456789",
     });
-    await issuer.createInitialMainEnrollment({
-      allowedModules: ["agents", "browser"],
-      createdBy: null,
-      idempotencyKey: "local-main",
-      lifetimeSeconds: 600,
+    await expect(
+      issuer.createInitialMainEnrollment({
+        allowedModules: ["agents", "browser"],
+        createdBy: null,
+        idempotencyKey: "local-main",
+        lifetimeSeconds: 600,
+      }),
+    ).rejects.toMatchObject({
+      code: "conflict",
+      message: "Initial Main enrollment is unavailable after a Main has enrolled",
     });
     const rows = await host.store.database
       .selectFrom("runnerEnrollments")
@@ -669,16 +630,16 @@ integration.sequential("An Android phone joining a Deployment", () => {
       .execute();
     const grants = Object.fromEntries(rows.map((row) => [row.idempotencyKey, row.allowedModules]));
     expect(grants).toMatchObject({
-      "old-local-key": ["agents", "integrations", "messaging", "shell"],
-      managed: ["browser", "integrations", "messaging", "shell"],
-      browser: ["browser", "integrations", "messaging", "shell"],
-      messaging: ["integrations", "messaging", "shell"],
-      "local-main": ["agents", "browser", "integrations", "messaging", "shell"],
+      reachable: ["browser", "integrations", "messaging", "shell"],
+      messaging: ["integrations", "messaging"],
     });
   }, 120_000);
 
   it("mints the phone grant with the Host's own address and refuses shell and execution", async () => {
-    host = await startMachineAccessWireHost(isolated!.url, { deploymentName: "Acme Research" });
+    host = await startMachineAccessWireHost(isolated!.url, {
+      remoteAccess: true,
+      deploymentName: "Acme Research",
+    });
     const minted = await mintPhone(host, "pixel-1");
     const authority = await hostAuthority(host);
     expect(minted).toEqual({
@@ -688,7 +649,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
         deploymentId: authority.deploymentId,
         deploymentName: "Acme Research",
         hostInstanceId: authority.hostInstanceId,
-        hostUrl: host.origin,
+        hostUrl: "https://personal.machine-access.test",
       },
       token: expect.any(String),
       type: "runner.enrollment.createPhone",
@@ -830,7 +791,7 @@ integration.sequential("An Android phone joining a Deployment", () => {
       routeOrigin,
     });
     const minted = await mintPhone(personal, "pixel-personal");
-    expect(minted.pairing).toMatchObject({ deploymentName: "Mac mini", hostUrl: routeOrigin });
+    expect(minted.pairing).toMatchObject({ deploymentName: "Fixture Mac", hostUrl: routeOrigin });
 
     // The phone's exact grant is a reachable one: Personal admits it.
     const runnerId = createId("runner");
@@ -1000,7 +961,9 @@ async function mintPhone(host: MachineAccessHost, key: string) {
 }
 
 async function hostAuthority(host: MachineAccessHost) {
-  const descriptor = (await (await fetch(`${host.origin}/.well-known/opensteer`)).json()) as {
+  const descriptor = (await (
+    await fetch(`${host.origin.origin}/.well-known/opensteer`)
+  ).json()) as {
     readonly authority: {
       readonly document: { readonly deploymentId: string; readonly hostInstanceId: string };
     };

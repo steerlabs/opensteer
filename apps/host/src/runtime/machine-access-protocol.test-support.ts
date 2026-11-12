@@ -87,6 +87,7 @@ export async function startMachineAccessWireHost(
   databaseUrl: string,
   options: {
     readonly remoteAccess?: boolean;
+    readonly messagingEnrollmentToken?: string;
     readonly manualRunner?: boolean;
     readonly logger?: import("./runtime.js").HostRuntimeOptions["logger"];
     readonly phoneUpdateRelease?: import("./runtime.js").HostRuntimeOptions["phoneUpdateRelease"];
@@ -106,6 +107,9 @@ export async function startMachineAccessWireHost(
     await (await import("node:fs/promises")).mkdir(agentHome.path);
     const config = parseHostConfig({
       OPENSTEER_DEPLOYMENT_NAME: options.deploymentName ?? "Fixture Mac",
+      ...(options.messagingEnrollmentToken
+        ? { OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: options.messagingEnrollmentToken }
+        : {}),
       OPENSTEER_MODE: "development",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_DATABASE_URL: databaseUrl,
@@ -299,14 +303,15 @@ export async function connectPrimary(
     socket,
   };
   // A Runner states the Runs it holds before the Host sends it any work.
-  socket.send(
-    JSON.stringify({
-      ...connection.fence,
-      complete: true,
-      executions: [],
-      type: "runner.executions.attach",
-    }),
-  );
+  if (descriptor.modules.agents)
+    socket.send(
+      JSON.stringify({
+        ...connection.fence,
+        complete: true,
+        executions: [],
+        type: "runner.executions.attach",
+      }),
+    );
   // The Host renews the connection lease — and every provider-session lease the
   // heartbeat names — only while the Runner keeps saying it is here.
   const timer = setInterval(() => {
@@ -1463,7 +1468,9 @@ export function waitForMessage(
 
 export function closed(socket: WebSocket): Promise<void> {
   if (socket.readyState === WebSocket.CLOSED) return Promise.resolve();
-  return new Promise((resolve) => socket.once("close", () => resolve()));
+  return withTimeout(new Promise<void>((resolve) => socket.once("close", () => resolve())), 5_000, {
+    timeoutError: () => new Error("Machine stream never closed"),
+  });
 }
 
 export async function waitForCondition(
@@ -1512,8 +1519,7 @@ export async function openRealtime(
   socket.on("message", (frame: WebSocket.RawData) => {
     messages.push(JSON.parse(frame.toString()) as Record<string, unknown>);
   });
-  // Machine notifications are addressed to a person, not to a Workspace, so an
-  // authenticated connection is all this needs.
+  // Machine notifications belong to the authenticated owner session.
   return {
     close: async () => {
       socket.close();

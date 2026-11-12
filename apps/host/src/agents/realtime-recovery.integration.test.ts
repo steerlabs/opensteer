@@ -382,7 +382,6 @@ async function desktopApp(
       canonicalOrigin,
       deploymentId,
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "server",
       },
       hostInstanceId: createId("hostInstance"),

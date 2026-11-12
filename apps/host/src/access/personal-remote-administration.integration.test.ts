@@ -58,7 +58,6 @@ const authority = {
   hostKey: { algorithm: "Ed25519" as const },
   deploymentShape: {
     kind: "personal" as const,
-    defaultWorkspaceBacking: "local-directory" as const,
   },
 };
 function service(

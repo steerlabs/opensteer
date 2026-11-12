@@ -35,7 +35,7 @@ import {
   type ThreadAccessMode,
   type UserId,
 } from "@opensteer/core";
-import type { OpensteerStore } from "@opensteer/database";
+import { IntegrationConnectionAuthStore, type OpensteerStore } from "@opensteer/database";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
@@ -61,8 +61,6 @@ import {
 } from "@opensteer/client/host";
 import { HostAuthenticator } from "../identity/auth.js";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
-import * as core from "@opensteer/core";
-import { ConnectionOAuth, mcpServerMetadataPath } from "../mcp/connections/connection-oauth.js";
 
 type StringDriverKind<T> = T extends { readonly driverKind: unknown }
   ? Omit<T, "driverKind"> & { readonly driverKind: string }
@@ -115,6 +113,10 @@ afterAll(async () => {
 function createHostServer(dependencies: HostServerTestOverrides) {
   const complete = hostServerTestDependencies(dependencies);
   const authenticator = complete.authenticator;
+  const partialAuthenticator = authenticator as Pick<
+    HostAuthenticator,
+    "authenticateSession" | "authenticateUser" | "identity"
+  >;
   const runners = Object.assign(
     {
       identityForRunner: () => undefined,
@@ -143,17 +145,22 @@ function createHostServer(dependencies: HostServerTestOverrides) {
       assertAvailable: async () => undefined,
       admit: async (folder: import("@opensteer/core").TaskFolder) => folder,
     } as never,
-    authenticator: {
-      ...authenticator,
-      authenticateSessionContext: async (headers, options) => ({
-        credentialKind: "browser-cookie" as const,
-        session:
-          typeof authenticator.authenticateSession === "function"
-            ? await authenticator.authenticateSession(headers, options)
-            : testAuthenticatedSession(await authenticator.authenticateUser(headers, options)),
-        surface: "canonical" as const,
-      }),
-    } as HostAuthenticator,
+    authenticator:
+      authenticator instanceof HostAuthenticator
+        ? authenticator
+        : ({
+            ...partialAuthenticator,
+            authenticateSessionContext: async (headers, options) => ({
+              credentialKind: "browser-cookie" as const,
+              session:
+                typeof partialAuthenticator.authenticateSession === "function"
+                  ? await partialAuthenticator.authenticateSession(headers, options)
+                  : testAuthenticatedSession(
+                      await partialAuthenticator.authenticateUser(headers, options),
+                    ),
+              surface: "canonical" as const,
+            }),
+          } as HostAuthenticator),
     runners,
     store,
   });
@@ -238,39 +245,6 @@ const personalDiscovery = signHostDiscovery(testDiscoveryKeys, {
 });
 
 describe("public Runner challenge admission", () => {
-  it.each([true, false])(
-    "uses loopback alias policy independently of remote access: %s",
-    async (loopbackOriginAliases) => {
-      const actual = core.deploymentPolicy({
-        kind: personalDiscovery.document.deploymentShape.kind,
-      });
-      vi.spyOn(core, "deploymentPolicy").mockReturnValue({
-        ...actual,
-        loopbackOnly: loopbackOriginAliases,
-        personalRemoteAccess: !loopbackOriginAliases,
-      });
-      const app = await createHostServer({
-        discovery: personalDiscovery,
-        connections: new ConnectionOAuth({
-          deploymentId: personalDiscovery.document.deploymentId,
-          store: {} as never,
-          signingKey: testDiscoveryKeys.privateKey,
-          verificationKey: testDiscoveryKeys.publicKey,
-        }),
-      });
-      try {
-        const response = await app.inject({
-          method: "GET",
-          url: mcpServerMetadataPath,
-          headers: { host: "localhost:47821" },
-        });
-        expect(response.statusCode, response.body).toBe(loopbackOriginAliases ? 200 : 403);
-      } finally {
-        await app.close();
-      }
-    },
-  );
-
   it("bounds unauthenticated sockets and releases each slot exactly once", () => {
     const admission = new RunnerChallengeAdmission(2);
     const first = admission.acquire();
@@ -414,15 +388,16 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(52);
+      expect(discovery.json().apiVersion).toBe(53);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
+        kind: "personal",
         apiVersion: hostApiVersion,
         authority: testDiscovery,
         bootstrapMethods: ["password"],
         capabilities: [
           "automatic-models-v1",
-          "chat-attachments",
+          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "task-marks-v1",
@@ -433,7 +408,6 @@ describe("Host signing keys", () => {
           "tool-output-detail-v1",
           "place-events-v1",
           "person-show-v1",
-          "shared-task-done-v1",
           "quiet-tasks-v1",
           "harness-update-v1",
           "iphone-apps-v1",
@@ -446,14 +420,18 @@ describe("Host signing keys", () => {
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
           "browser-search-suggestions-v1",
-          "workspace-tab-reopen-v1",
+          "tab-reopen-v1",
           "browser-profile-manage-v1",
         ],
       });
       await app.inject({
-        headers: { cookie: "opensteer_session=test", origin: "https://opensteer.example" },
+        headers: {
+          [hostApiVersionHeader]: String(hostApiVersion),
+          cookie: "opensteer_session=test",
+          origin: "https://opensteer.example",
+        },
         method: "GET",
-        url: "/v1/realtime",
+        url: `/v1/realtime?opensteer_api_version=${hostApiVersion}`,
       });
       expect(authenticateSession).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -510,7 +488,7 @@ describe("Host signing keys", () => {
           const publicResponse = await app.inject({
             method: "POST",
             url: `/v1/personal-remote-access/${path}`,
-            headers: { authorization },
+            headers: { authorization, [hostApiVersionHeader]: String(hostApiVersion) },
             payload,
           });
           expect(publicResponse.statusCode, publicResponse.body).toBe(404);
@@ -518,7 +496,7 @@ describe("Host signing keys", () => {
           const privateResponse = await app.inject({
             method: "POST",
             url: `/v1/personal-remote-access/executor/${path}`,
-            headers: { authorization },
+            headers: { authorization, [hostApiVersionHeader]: String(hostApiVersion) },
             payload,
           });
           expect(privateResponse.statusCode).toBe(403);
@@ -528,7 +506,10 @@ describe("Host signing keys", () => {
         const local = await app.inject({
           method: "POST",
           url: `/v1/personal-remote-access/executor/${path}`,
-          headers: { authorization: `Bearer ${capability}` },
+          headers: {
+            authorization: `Bearer ${capability}`,
+            [hostApiVersionHeader]: String(hostApiVersion),
+          },
           payload,
         });
         expect(local.statusCode, local.body).toBe(200);
@@ -566,7 +547,7 @@ describe("Host signing keys", () => {
         apiVersion: hostApiVersion,
         capabilities: [
           "automatic-models-v1",
-          "chat-attachments",
+          "task-attachments",
           "voice-run-v1",
           "thread-titles-v1",
           "task-marks-v1",
@@ -577,7 +558,6 @@ describe("Host signing keys", () => {
           "tool-output-detail-v1",
           "place-events-v1",
           "person-show-v1",
-          "shared-task-done-v1",
           "quiet-tasks-v1",
           "harness-update-v1",
           "iphone-apps-v1",
@@ -590,7 +570,7 @@ describe("Host signing keys", () => {
           "browser-raster-demand-v1",
           "browser-capture-region-v1",
           "browser-search-suggestions-v1",
-          "workspace-tab-reopen-v1",
+          "tab-reopen-v1",
           "browser-profile-manage-v1",
           "native-oauth",
           "personal-session-header",
@@ -662,11 +642,11 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
-      expect(hostApiVersion).toBe(52);
+      expect(hostApiVersion).toBe(53);
       for (const legacyHostApiVersion of [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
-        49, 50, 51, 53,
+        49, 50, 51, 52,
       ]) {
         const legacyEpoch = await injectRpcRequest(
           app,
@@ -792,13 +772,13 @@ describe("rpc envelope", () => {
         ],
       });
       expect(listRunners).toHaveBeenCalledWith({
-        includeDeployment: false,
-        includeOtherOwners: false,
+        includeDeployment: true,
+        includeOtherOwners: true,
         limit: 100,
         ownerId,
       });
       expect(listPendingRunnerEnrollments).toHaveBeenCalledWith({
-        includeDeployment: false,
+        includeDeployment: true,
         limit: 100,
         ownerId,
       });
@@ -842,8 +822,8 @@ describe("rpc envelope", () => {
       });
       expect(response.statusCode, response.body).toBe(200);
       expect(revokeRunner).toHaveBeenCalledWith(runnerId, ownerId, {
-        allowDeployment: false,
-        allowOtherOwners: false,
+        allowDeployment: true,
+        administration: undefined,
       });
       expect(revokeLiveRunner).toHaveBeenCalledWith(runnerId);
     } finally {
@@ -876,7 +856,7 @@ describe("rpc envelope", () => {
       expect(revoke).toHaveBeenCalledWith(ownerId, connectionId);
       expect(publishConnectionsChanged).toHaveBeenCalledExactlyOnceWith(ownerId);
       const approved = await injectRpcRequest(app, "commands.dispatch", {
-        decision: { kind: "approve", label: "Agent", accessMode: "auto", reach: { kind: "user" } },
+        decision: { kind: "approve", label: "Agent", accessMode: "auto" },
         idempotencyKey: "approve-agent",
         requestId: "r".repeat(43),
         type: "connection.authorize",
@@ -1433,7 +1413,7 @@ describe("rpc envelope", () => {
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
     );
     const command = {
@@ -1487,7 +1467,7 @@ describe("rpc envelope", () => {
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
     );
     try {
@@ -1522,7 +1502,7 @@ describe("rpc envelope", () => {
       },
       publicUrl: new URL("https://opensteer.example"),
     });
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
     );
     try {
@@ -1567,7 +1547,7 @@ describe("rpc envelope", () => {
       } as never,
       publicUrl: new URL("https://opensteer.example"),
     });
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({ authenticator, discovery: testDiscovery }),
     );
     try {
@@ -1672,7 +1652,7 @@ describe("rpc envelope", () => {
       cancelledRequests: 1,
       removedConnections: 2,
     }));
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({
         authenticator,
         discovery: testDiscovery,
@@ -1682,7 +1662,10 @@ describe("rpc envelope", () => {
           dashboard: {} as never,
           mcpOauth: {} as never,
           platform: {
-            store: { settings: { affectedViewers: async () => [] } },
+            store: {
+              connections: new IntegrationConnectionAuthStore(personalFixture.database),
+              settings: { affectedViewers: async () => [] },
+            },
             uninstallIntegration,
           } as never,
           service: {} as never,
@@ -1742,7 +1725,7 @@ describe("rpc envelope", () => {
       removedConnections: 0,
     }));
     const disconnect = vi.fn(async () => ({ notice: null, revokedUpstream: true }));
-    const app = await createProductionHostServer(
+    const app = await createHostServer(
       hostServerTestDependencies({
         authenticator,
         discovery: testDiscovery,
@@ -1753,6 +1736,7 @@ describe("rpc envelope", () => {
           mcpOauth: {} as never,
           platform: {
             store: {
+              connections: new IntegrationConnectionAuthStore(personalFixture.database),
               getConnectionKind: async () => "oauth",
               settings: { affectedViewers: async () => [] },
             },
@@ -2033,7 +2017,12 @@ describe("Optional subsystem registration", () => {
         "/v1/personal-remote-access/account-session",
         "/v1/personal-remote-access/pair",
       ]) {
-        const response = await app.inject({ method: "POST", payload: {}, url });
+        const response = await app.inject({
+          method: "POST",
+          payload: {},
+          url,
+          headers: { [hostApiVersionHeader]: String(hostApiVersion) },
+        });
         expect(response.statusCode, url).toBe(404);
       }
     } finally {
@@ -2109,9 +2098,6 @@ describe("thread event history route", () => {
           sequence: "1",
           threadId,
           type: "request.resolved" as const,
-          folder: personalFolder,
-          purpose: "task" as const,
-          teamOrigin: null,
         },
       ],
       threadId,
@@ -2263,9 +2249,6 @@ describe("browser start command attribution", () => {
     try {
       const response = await injectRpcRequest(app, "commands.dispatch", {
         type: "browser.session.start",
-        folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
         idempotencyKey: "person-browser-start",
         input: { profileId, initialUrl: "https://person.example/" },
       });
@@ -2273,9 +2256,6 @@ describe("browser start command attribution", () => {
       expect(start).toHaveBeenCalledExactlyOnceWith(
         {
           ownerId,
-          folder: personalFolder,
-          purpose: "task",
-          teamOrigin: null,
           profileId,
           initialUrl: "https://person.example/",
           reuseExisting: false,
@@ -2335,6 +2315,8 @@ describe("Thread input command boundary", () => {
         messageId,
         policy,
         replyTarget: null,
+        teamRequestId: null,
+        teamSource: null,
         runId: null,
         state: "pending" as const,
         threadId,
@@ -2911,7 +2893,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
       inspectHarnesses: async () => [gatewayCatalog],
     });
     const app = await fixture.server;
@@ -2945,7 +2927,6 @@ describe("durable harness catalogs", () => {
       visibleToUser: true,
       expected: 409,
     },
-    { connected: true, instanceRole: "user" as const, visibleToUser: true, expected: 403 },
     {
       connected: true,
       visibleToUser: false,
@@ -2955,7 +2936,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       ...scenario,
       catalog: readyCatalog,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await fixture.server;
     try {
@@ -2975,7 +2956,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
       inspectHarnesses: async () => {
         throw new Error("Runner stopped");
       },
@@ -2998,7 +2979,7 @@ describe("durable harness catalogs", () => {
       accessModes: ["approval-required", "full-access"],
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3011,8 +2992,6 @@ describe("durable harness catalogs", () => {
         title: "Auto on an engine that cannot",
         type: "thread.create",
         folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
       });
 
       expect(refused.statusCode).toBe(400);
@@ -3030,7 +3009,7 @@ describe("durable harness catalogs", () => {
       accessModes: ["approval-required", "full-access"],
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3043,8 +3022,6 @@ describe("durable harness catalogs", () => {
         title: "Supervised",
         type: "thread.create",
         folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
       });
 
       expect(created.statusCode).toBe(200);
@@ -3061,7 +3038,7 @@ describe("durable harness catalogs", () => {
       accessModes: ["approval-required", "full-access"],
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3089,7 +3066,7 @@ describe("durable harness catalogs", () => {
       accessModes: ["approval-required"],
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3117,7 +3094,7 @@ describe("durable harness catalogs", () => {
     const { server, updateThreadAccessMode } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3137,11 +3114,11 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("refuses a disconnected managed work location despite its durable catalog", async () => {
+  it("refuses a disconnected hosting computer despite its durable catalog", async () => {
     const { createThread, server } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3153,8 +3130,6 @@ describe("durable harness catalogs", () => {
         title: "Disconnected Runner",
         type: "thread.create",
         folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
       });
       expect(created.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3163,10 +3138,10 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("refuses a managed work location that has never reported a catalog", async () => {
+  it("refuses a hosting computer that has never reported a catalog", async () => {
     const { createThread, server } = harnessCatalogServer({
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3178,8 +3153,6 @@ describe("durable harness catalogs", () => {
         title: "Never seen",
         type: "thread.create",
         folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
       });
       expect(refused.statusCode).toBe(409);
       expect(createThread).not.toHaveBeenCalled();
@@ -3188,11 +3161,11 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("keeps a self-hosted work location closed while its Runner is away", async () => {
+  it("keeps the hosting computer closed while its Runner is away", async () => {
     const { createThread, server } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "local",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3204,8 +3177,6 @@ describe("durable harness catalogs", () => {
         title: "Laptop is closed",
         type: "thread.create",
         folder: personalFolder,
-        purpose: "task",
-        teamOrigin: null,
       });
       expect(refused.statusCode).toBe(409);
       expect(refused.json()).toMatchObject({ error: { retryable: true } });
@@ -3219,7 +3190,7 @@ describe("durable harness catalogs", () => {
     const { listHarnessCatalogs, server } = harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await server;
     try {
@@ -3245,7 +3216,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       harnessDrivers: [
         {
           accessModes: [...ThreadAccessModeSchema.options],
@@ -3290,13 +3261,13 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("keeps a self-hosted work location's status two-valued", async () => {
+  it("keeps the hosting computer's status two-valued", async () => {
     // No lifecycle service exists on a self-hosted Host, so an away Runner is
     // exactly what it looks like: disconnected.
     const away = await harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "local",
+      environmentKind: "main",
     }).server;
     try {
       expect(rpcData(await injectRpcRequest(away, "bootstrap.get", {}))).toMatchObject({
@@ -3310,7 +3281,7 @@ describe("durable harness catalogs", () => {
     const unmanaged = await harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     }).server;
     try {
       expect(rpcData(await injectRpcRequest(unmanaged, "bootstrap.get", {}))).toMatchObject({
@@ -3325,7 +3296,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: authenticationRequiredCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await fixture.server;
     try {
@@ -3382,7 +3353,7 @@ describe("durable harness catalogs", () => {
       activeRun: true,
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       runnerOwner: ownerId,
     });
     const app = await fixture.server;
@@ -3410,7 +3381,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       runnerOwner: ownerId,
     });
     const app = await fixture.server;
@@ -3433,7 +3404,7 @@ describe("durable harness catalogs", () => {
   it("admits an account only against the source its engine declared", async () => {
     const fixture = harnessCatalogServer({
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       harnessDrivers: [
         {
           accessModes: [...ThreadAccessModeSchema.options],
@@ -3589,7 +3560,7 @@ describe("durable harness catalogs", () => {
     };
     const idle = harnessCatalogServer({
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       harnessDrivers: [driver],
       runnerOwner: ownerId,
     });
@@ -3623,7 +3594,7 @@ describe("durable harness catalogs", () => {
     const busy = harnessCatalogServer({
       activeRun: true,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       harnessDrivers: [driver],
       runnerOwner: ownerId,
     });
@@ -3646,7 +3617,7 @@ describe("durable harness catalogs", () => {
     const coldCatalog = Promise.withResolvers<readonly HarnessInstanceCatalog[]>();
     const fixture = harnessCatalogServer({
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       harnessDrivers: [
         {
           accessModes: [...ThreadAccessModeSchema.options],
@@ -3697,7 +3668,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       runnerOwner: ownerId,
     });
     const app = await fixture.server;
@@ -3725,7 +3696,7 @@ describe("durable harness catalogs", () => {
       activeRun: true,
       catalog: signedInCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       runnerOwner: ownerId,
     });
     const app = await fixture.server;
@@ -3748,7 +3719,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: signedInCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       reconcileHarnesses: async () => {
         throw new Error("Runner went away");
       },
@@ -3775,7 +3746,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "local",
+      environmentKind: "main",
       runnerOwner: ownerId,
       stateKind: "ambient",
     });
@@ -3803,7 +3774,7 @@ describe("durable harness catalogs", () => {
       const fixture = harnessCatalogServer({
         catalog,
         connected: true,
-        environmentKind: "managed",
+        environmentKind: "main",
       });
       const app = await fixture.server;
       try {
@@ -3839,7 +3810,7 @@ describe("durable harness catalogs", () => {
             : { status: "not-started" },
       catalog: authenticationRequiredCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
       reconcileHarnesses: async () => [readyCatalog],
     });
     const app = await fixture.server;
@@ -3894,59 +3865,18 @@ describe("durable harness catalogs", () => {
     }
   });
 
-  it("tells bootstrap who may sign an AI engine in, under the route's own rule", async () => {
-    const administrator = await harnessCatalogServer({
+  it("lets the Personal owner sign an AI engine in on the hosting computer", async () => {
+    const app = await harnessCatalogServer({
       catalog: readyCatalog,
       connected: false,
-      environmentKind: "managed",
+      environmentKind: "main",
     }).server;
     try {
-      expect(rpcData(await injectRpcRequest(administrator, "bootstrap.get", {}))).toMatchObject({
+      expect(rpcData(await injectRpcRequest(app, "bootstrap.get", {}))).toMatchObject({
         environments: [{ harnessAuthenticationAllowed: true }],
       });
     } finally {
-      await administrator.close();
-    }
-
-    const owner = await harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: false,
-      environmentKind: "managed",
-      runnerOwner: ownerId,
-    }).server;
-    try {
-      expect(rpcData(await injectRpcRequest(owner, "bootstrap.get", {}))).toMatchObject({
-        environments: [{ harnessAuthenticationAllowed: true }],
-      });
-    } finally {
-      await owner.close();
-    }
-
-    const unbound = await harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: false,
-      environmentKind: "managed",
-    }).server;
-    try {
-      expect(rpcData(await injectRpcRequest(unbound, "bootstrap.get", {}))).toMatchObject({
-        environments: [{ harnessAuthenticationAllowed: false }],
-      });
-    } finally {
-      await unbound.close();
-    }
-
-    // An administrator can set up an engine on their connected or reconnectable laptop too.
-    const laptop = await harnessCatalogServer({
-      catalog: readyCatalog,
-      connected: false,
-      environmentKind: "local",
-    }).server;
-    try {
-      expect(rpcData(await injectRpcRequest(laptop, "bootstrap.get", {}))).toMatchObject({
-        environments: [{ harnessAuthenticationAllowed: true }],
-      });
-    } finally {
-      await laptop.close();
+      await app.close();
     }
   });
 
@@ -3956,7 +3886,7 @@ describe("durable harness catalogs", () => {
     const fixture = harnessCatalogServer({
       catalog: readyCatalog,
       connected: true,
-      environmentKind: "managed",
+      environmentKind: "main",
     });
     const app = await fixture.server;
     try {
@@ -4108,7 +4038,7 @@ it("registers phone previews as a session mutation without durable command admis
   const previews = {
     register,
   } as unknown as import("../notifications/notification-preview-service.js").NotificationPreviewService;
-  const app = await createProductionHostServer(
+  const app = await createHostServer(
     hostServerTestDependencies({
       authenticator,
       discovery: testDiscovery,

@@ -42,9 +42,6 @@ integration("production startup migrations", () => {
       });
       await sql`create database ${sql.id(name)} template template0`.execute(admin);
       const names = Object.keys(await migrations.migrationProvider().getMigrations()).sort();
-      await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
-        database,
-      );
       const port = await freePort();
       const config = parseHostConfig({
         OPENSTEER_MODE: "development",
@@ -61,13 +58,17 @@ integration("production startup migrations", () => {
         OPENSTEER_AGENT_HOME: join(dataDirectory, "home"),
       });
       if (state === "old-lineage") {
+        await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
+          database,
+        );
+
         const result = await new Migrator({
           db: database,
           provider: { getMigrations: async () => ({ "0001_baseline": { up: async () => {} } }) },
         }).migrateToLatest();
         expect(result.error).toBeUndefined();
         await expect(createHostRuntime(config)).rejects.toMatchObject({
-          name: "MigrationLineageError",
+          cause: expect.objectContaining({ name: "MigrationLineageError" }),
         });
         expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
           { value: "preserved" },
@@ -78,6 +79,9 @@ integration("production startup migrations", () => {
         return;
       }
       runtime = await createHostRuntime(config);
+      await sql`create table startup_sentinel (value text); insert into startup_sentinel values ('preserved')`.execute(
+        database,
+      );
       const first = await sql<{
         name: string;
         timestamp: string;
@@ -86,7 +90,7 @@ integration("production startup migrations", () => {
       expect((await sql`select value from startup_sentinel`.execute(database)).rows).toEqual([
         { value: "preserved" },
       ]);
-      // The knowledge trial is off: nothing about it may exist in this database.
+      // Personal startup must not provision team knowledge.
       expect(
         (
           await sql<{ trace: string }>`

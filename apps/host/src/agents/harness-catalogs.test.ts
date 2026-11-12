@@ -384,7 +384,7 @@ describe("mutation-owned harness catalog reconciliation", () => {
     owner.schedule(harnessEnvironmentId, [harness.id]);
     first.resolve([readyCatalog()]);
     await vi.waitFor(() => expect(reconcileHarnesses).toHaveBeenCalledTimes(2));
-    expect(reconcileHarnesses.mock.calls.map(([desired]) => desired)).toEqual([
+    expect(reconcileHarnesses.mock.calls.map(([, desired]) => desired)).toEqual([
       [
         expect.objectContaining({
           id: harnessInstanceId,

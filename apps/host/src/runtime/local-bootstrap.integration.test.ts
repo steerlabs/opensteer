@@ -1,17 +1,21 @@
 import { OpensteerError } from "@opensteer/core";
 import type { OpensteerStore } from "@opensteer/database";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalBootstrapService } from "./local-bootstrap.js";
 import type { RunnerAuthenticator } from "../agents/runner-authenticator.js";
 
-function service(options: {
-  readonly hasAdministrator: boolean;
+async function service(options: {
+  readonly hasOwner: boolean;
   readonly hasMainRunner: boolean;
   readonly mainRunnerState?: "absent" | "active" | "revoked";
   readonly createInitialMainEnrollment?: RunnerAuthenticator["createInitialMainEnrollment"];
   readonly requireSetupCredential?: boolean;
   readonly setupToken?: string;
 }) {
+  const owner = await (
+    await import("./personal-owner.test-support.js")
+  ).createPersonalOwnerFixture(undefined, options.hasOwner);
+  fixtures.push(owner);
   const createInitialMainEnrollment =
     options.createInitialMainEnrollment ??
     vi.fn(async () => ({
@@ -32,9 +36,9 @@ function service(options: {
   ) as unknown as RunnerAuthenticator;
   const upgradeLegacyPersonalMainRunnerBrowserGrant = vi.fn(async () => false);
   const store = {
+    database: owner.database,
     deploymentMainRunnerState: async () =>
       options.mainRunnerState ?? (options.hasMainRunner ? "active" : "absent"),
-    hasInstanceAdministrator: async () => options.hasAdministrator,
     upgradeLegacyPersonalMainRunnerBrowserGrant,
   } as unknown as OpensteerStore;
   return {
@@ -50,9 +54,15 @@ function service(options: {
   };
 }
 
+const fixtures: Awaited<
+  ReturnType<typeof import("./personal-owner.test-support.js").createPersonalOwnerFixture>
+>[] = [];
+afterEach(async () => {
+  for (const fixture of fixtures.splice(0)) await fixture.close();
+});
 describe("local bootstrap", () => {
   it("carries the first-owner code in the fragment so it never reaches a request line", async () => {
-    const { bootstrap } = service({ hasAdministrator: false, hasMainRunner: false });
+    const { bootstrap } = await service({ hasOwner: false, hasMainRunner: false });
     const { setupUrl } = await bootstrap.describe();
     expect(setupUrl).toBe("http://localhost:43100/setup#token=setup-token-with-enough-entropy");
     const url = new URL(setupUrl!);
@@ -63,22 +73,26 @@ describe("local bootstrap", () => {
   });
 
   it.each([false, true])(
-    "offers setup exactly until an administrator exists with credential requirement %s",
+    "offers setup exactly until the owner exists with credential requirement %s",
     async (requireSetupCredential) => {
       const setupToken = "owner-claim-token".padEnd(32, "x");
       const authorization = requireSetupCredential ? `Bearer ${setupToken}` : undefined;
-      const unclaimed = service({
-        hasAdministrator: false,
-        hasMainRunner: false,
-        requireSetupCredential,
-        setupToken,
-      }).bootstrap;
-      const claimed = service({
-        hasAdministrator: true,
-        hasMainRunner: false,
-        requireSetupCredential,
-        setupToken,
-      }).bootstrap;
+      const unclaimed = (
+        await service({
+          hasOwner: false,
+          hasMainRunner: false,
+          requireSetupCredential,
+          setupToken,
+        })
+      ).bootstrap;
+      const claimed = (
+        await service({
+          hasOwner: true,
+          hasMainRunner: false,
+          requireSetupCredential,
+          setupToken,
+        })
+      ).bootstrap;
 
       await expect(unclaimed.describe(authorization)).resolves.toMatchObject({
         setupUrl: expect.any(String),
@@ -89,8 +103,8 @@ describe("local bootstrap", () => {
 
   it("does not expose Personal bootstrap material without the Desktop capability", async () => {
     const token = "owner-claim-token".padEnd(32, "x");
-    const { bootstrap } = service({
-      hasAdministrator: false,
+    const { bootstrap } = await service({
+      hasOwner: false,
       hasMainRunner: false,
       requireSetupCredential: true,
       setupToken: token,
@@ -105,22 +119,9 @@ describe("local bootstrap", () => {
     });
   });
 
-  it("repairs the legacy Personal Main browser grant after authenticating Desktop", async () => {
-    const token = "owner-claim-token".padEnd(32, "x");
-    const { bootstrap, upgradeLegacyPersonalMainRunnerBrowserGrant } = service({
-      hasAdministrator: true,
-      hasMainRunner: true,
-      requireSetupCredential: true,
-      setupToken: token,
-    });
-
-    await bootstrap.describe(`Bearer ${token}`);
-    expect(upgradeLegacyPersonalMainRunnerBrowserGrant).toHaveBeenCalledOnce();
-  });
-
   it("reuses one idempotency key so a restarted supervisor cannot stack enrollments", async () => {
-    const { bootstrap, createInitialMainEnrollment } = service({
-      hasAdministrator: false,
+    const { bootstrap, createInitialMainEnrollment } = await service({
+      hasOwner: false,
       hasMainRunner: false,
     });
     await bootstrap.describe();
@@ -134,8 +135,8 @@ describe("local bootstrap", () => {
   });
 
   it("replays the identity-bound token after a Main Runner exists", async () => {
-    const { bootstrap, createInitialMainEnrollment } = service({
-      hasAdministrator: true,
+    const { bootstrap, createInitialMainEnrollment } = await service({
+      hasOwner: true,
       hasMainRunner: true,
     });
     await expect(bootstrap.describe()).resolves.toEqual({
@@ -146,8 +147,8 @@ describe("local bootstrap", () => {
   });
 
   it("does not replay a token for a revoked Main Runner", async () => {
-    const { bootstrap, createInitialMainEnrollment } = service({
-      hasAdministrator: true,
+    const { bootstrap, createInitialMainEnrollment } = await service({
+      hasOwner: true,
       hasMainRunner: true,
       mainRunnerState: "revoked",
     });
@@ -158,8 +159,8 @@ describe("local bootstrap", () => {
   it("reports no token rather than failing when replacement needs an operator", async () => {
     // A revoked Main Runner must be replaced deliberately, so the Host declines
     // to mint one for itself without taking the rest of the response down.
-    const { bootstrap } = service({
-      hasAdministrator: false,
+    const { bootstrap } = await service({
+      hasOwner: false,
       hasMainRunner: false,
       createInitialMainEnrollment: (async () => {
         throw new OpensteerError({ code: "conflict", message: "Initial Main is unavailable" });
@@ -169,8 +170,8 @@ describe("local bootstrap", () => {
   });
 
   it("propagates unexpected failures instead of reporting a healthy bootstrap", async () => {
-    const { bootstrap } = service({
-      hasAdministrator: false,
+    const { bootstrap } = await service({
+      hasOwner: false,
       hasMainRunner: false,
       createInitialMainEnrollment: (async () => {
         throw new Error("database is unavailable");

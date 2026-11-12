@@ -271,6 +271,7 @@ describe("HostCommandDispatcher specialist admission", () => {
       },
       store: {
         loadRunDispatchContext: async () => ({
+          providerSessionStateLayout: "session",
           run: {
             requestedBy,
           },
@@ -845,7 +846,7 @@ describe("HostCommandDispatcher model selection", () => {
       const command = dispatch.mock.calls[0]![0];
       if (command.type !== "run.execute") throw new Error("Expected run.execute");
       expect(command.context.specialistId).toBe("registration");
-      expect(RunExecutionContextSchema.safeParse(command.context).success).toBe(true);
+      expect(RunExecutionContextSchema.parse(command.context)).toEqual(command.context);
     } finally {
       admit.mockRestore();
     }
@@ -896,11 +897,17 @@ describe("HostCommandDispatcher model selection", () => {
       } as never,
       requestResponseVault: {} as never,
       runToolTokens: {
+        lifetimeSeconds: 120,
         issue: () => "agent-token",
       } as never,
       browser: {} as never,
       egress: {
-        issue: () => "egress-token",
+        issue: () => ({
+          relayToken: "egress-token",
+          relayUrl: "https://host.example/internal/v1/egress",
+          maxRequestBytes: 1024,
+          maxResponseBytes: 1024,
+        }),
       } as never,
       skillPolicy: async () => input.skillPolicy,
       pluginVersions: async () => [],
@@ -941,7 +948,7 @@ describe("HostCommandDispatcher model selection", () => {
         acquireExecutionBinding: async () => ({
           bindingGeneration: 1,
           continuationEvent: null,
-          providerSessionId: "provider-session",
+          providerSessionId: createId("providerSession"),
           providerSessionReference: null,
         }),
         assertActiveGrant: async () => undefined,
@@ -954,6 +961,7 @@ describe("HostCommandDispatcher model selection", () => {
           environmentId,
           id: harnessInstanceId,
           name: "Codex",
+          sourceId: "openai",
           runtimeRevision: 1,
           stateKind: "ambient",
         }),
@@ -962,6 +970,7 @@ describe("HostCommandDispatcher model selection", () => {
           previousRun: null,
         }),
         loadRunDispatchContext: async () => ({
+          providerSessionStateLayout: "session",
           personalContext: true,
           location: {
             folder: { computerId, path: "/tmp/dispatcher" },
@@ -996,6 +1005,7 @@ describe("HostCommandDispatcher model selection", () => {
             id: threadId,
             purpose: input.purpose ?? "task",
             teamOrigin: null,
+            accessMode: "full-access",
           },
         }),
         notificationState: {
@@ -1080,11 +1090,17 @@ describe("HostCommandDispatcher folder admission", () => {
         },
         requestResponseVault: {} as never,
         runToolTokens: {
+          lifetimeSeconds: 120,
           issue: () => "agent-token",
         } as never,
         browser: {} as never,
         egress: {
-          issue: () => "egress-token",
+          issue: () => ({
+            relayToken: "egress-token",
+            relayUrl: "https://host.example/internal/v1/egress",
+            maxRequestBytes: 1024,
+            maxResponseBytes: 1024,
+          }),
         } as never,
         pluginVersions: async () => [],
         pluginsTokens: {
@@ -1117,7 +1133,7 @@ describe("HostCommandDispatcher folder admission", () => {
           acquireExecutionBinding: async () => ({
             bindingGeneration: 2,
             continuationEvent: null,
-            providerSessionId: "provider-session",
+            providerSessionId: createId("providerSession"),
             providerSessionReference,
           }),
           assertActiveGrant: async () => undefined,
@@ -1139,6 +1155,7 @@ describe("HostCommandDispatcher folder admission", () => {
             previousRun: null,
           }),
           loadRunDispatchContext: async () => ({
+            providerSessionStateLayout: "session",
             personalContext: true,
             location,
             history: [

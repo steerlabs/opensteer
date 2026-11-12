@@ -999,12 +999,16 @@ describeStore("shaped agent Thread tools", (it) => {
     expect(oldest.hasMore).toBe(false);
     const outside: AgentCaller = {
       ...s.caller,
+      userId: createId("user"),
     };
     const refusal = await read({}, outside).catch((error: unknown) => error);
     const missing = await read({ subagentId: createId("executionNode") }).catch(
       (error: unknown) => error,
     );
-    expect(refusal).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
+    expect(refusal).toMatchObject({
+      code: "forbidden",
+      message: "The personal owner is required.",
+    });
     expect(missing).toMatchObject({ code: "forbidden", message: "Subagent is unavailable" });
     await expect(
       s.product.task_cancel({

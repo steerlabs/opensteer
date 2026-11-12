@@ -1,18 +1,43 @@
 import { generateKeyPairSync } from "node:crypto";
 import { createId, HostInstanceIdSchema } from "@opensteer/core";
 import type { IdentityService } from "@opensteer/identity";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { PersonalRemoteAccessService } from "./personal-remote-access-service.js";
 import type { AuthenticatedHostSession, HostCredentialKind } from "../identity/auth.js";
 import { signHostDiscovery } from "../identity/host-keys.js";
 
+const ownerId = createId("user");
+let owner: Awaited<
+  ReturnType<typeof import("../runtime/personal-owner.test-support.js").createPersonalOwnerFixture>
+>;
+beforeAll(async () => {
+  owner = await (
+    await import("../runtime/personal-owner.test-support.js")
+  ).createPersonalOwnerFixture(ownerId);
+});
+afterAll(async () => {
+  await owner?.close();
+});
+function ownerAuthority<Value extends { selectFrom: (table: string) => unknown }>(
+  database: Value,
+): Value {
+  return new Proxy(database, {
+    get(target, key, receiver) {
+      if (key === "selectFrom")
+        return (table: string) =>
+          table === "personalSettings"
+            ? owner.database.selectFrom("personalSettings")
+            : target.selectFrom(table);
+      return Reflect.get(target, key, receiver);
+    },
+  });
+}
 const authority = {
   canonicalOrigin: "http://127.0.0.1:4310",
   deploymentId: createId("deployment"),
   hostInstanceId: HostInstanceIdSchema.parse(`hst_${crypto.randomUUID()}`),
   hostKey: { algorithm: "Ed25519" as const },
   deploymentShape: {
-    defaultWorkspaceBacking: "local-directory" as const,
     kind: "personal" as const,
   },
 };
@@ -25,7 +50,7 @@ describe("PersonalRemoteAccessService", () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json({}));
     const service = new PersonalRemoteAccessService({
       authority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       identity: fakeIdentity(),
       keys: generateKeyPairSync("ed25519"),
@@ -47,7 +72,7 @@ describe("PersonalRemoteAccessService", () => {
       const fixture = configureDatabase({ generation: 0, mode: "off", routeOrigin: null });
       const service = new PersonalRemoteAccessService({
         authority,
-        database: fixture.database as never,
+        database: ownerAuthority(fixture.database) as never,
         identity: fakeIdentity(),
         keys: generateKeyPairSync("ed25519"),
       });
@@ -65,13 +90,14 @@ describe("PersonalRemoteAccessService", () => {
     const fixture = configureDatabase({ generation: 0, mode: "off", routeOrigin: null });
     const service = new PersonalRemoteAccessService({
       authority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       identity: fakeIdentity(),
       keys: generateKeyPairSync("ed25519"),
     });
     const caller = ownerSession("personal-remote-header");
     const session = {
       ...caller.session,
+      user: { ...caller.session.user, id: createId("user") },
     };
     await expect(
       service.configure({ session }, { mode: "off", routeOrigin: null, schemaVersion: 1 }),
@@ -88,7 +114,7 @@ describe("PersonalRemoteAccessService", () => {
     const fixture = configureDatabase({ generation: 4, mode: "off", routeOrigin: null });
     const service = new PersonalRemoteAccessService({
       authority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       disconnectRunners,
       identity: fakeIdentity(),
       keys,
@@ -141,7 +167,9 @@ describe("PersonalRemoteAccessService", () => {
     });
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: projectionDatabase("https://accounts.opensteer.test", hostCredential) as never,
+      database: ownerAuthority(
+        projectionDatabase("https://accounts.opensteer.test", hostCredential),
+      ) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
@@ -205,7 +233,7 @@ describe("PersonalRemoteAccessService", () => {
     const identity = fakeIdentity();
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity,
@@ -277,7 +305,7 @@ describe("PersonalRemoteAccessService", () => {
     });
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: {
         issuer: link.issuer,
@@ -322,7 +350,7 @@ describe("PersonalRemoteAccessService", () => {
       const fixture = accountMutationDatabase(link);
       const service = new PersonalRemoteAccessService({
         authority: pinnedAuthority,
-        database: fixture.database as never,
+        database: ownerAuthority(fixture.database) as never,
         fetch: vi.fn<typeof globalThis.fetch>(),
         grantVerifier: { issuer: link.issuer } as never,
         identity: fakeIdentity(),
@@ -373,7 +401,7 @@ describe("PersonalRemoteAccessService", () => {
     );
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
@@ -395,7 +423,7 @@ describe("PersonalRemoteAccessService", () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
@@ -426,7 +454,7 @@ describe("PersonalRemoteAccessService", () => {
     );
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
@@ -468,10 +496,8 @@ describe("PersonalRemoteAccessService", () => {
     });
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: projectionDatabase(
-        "https://accounts.opensteer.test",
-        hostCredential,
-        privateState,
+      database: ownerAuthority(
+        projectionDatabase("https://accounts.opensteer.test", hostCredential, privateState),
       ) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
@@ -512,7 +538,7 @@ describe("PersonalRemoteAccessService", () => {
     });
     const service = new PersonalRemoteAccessService({
       authority: pinnedAuthority,
-      database: fixture.database as never,
+      database: ownerAuthority(fixture.database) as never,
       fetch,
       grantVerifier: { issuer: "https://accounts.opensteer.test" } as never,
       identity: fakeIdentity(),
@@ -553,7 +579,7 @@ function ownerSession(
         displayName: "You",
         email: "owner@personal.opensteer.invalid",
         emailVerified: true,
-        id: createId("user"),
+        id: ownerId,
         image: null,
       },
     },

@@ -1,6 +1,7 @@
 import { createId, emptyExecutionPreferences, type Thread } from "@opensteer/core";
+import { IntegrationConnectionAuthStore } from "@opensteer/database";
 import { createIntegrationId } from "@opensteer/integration-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   AdministrationService,
   type AdministrationDependencies,
@@ -13,9 +14,20 @@ import type { AgentToolHandlers } from "./handlers/types.js";
 import type { AgentCaller } from "./agent-caller.js";
 import { OpensteerMcpService } from "./opensteer-mcp-service.js";
 
+const userId = createId("user");
+let owner: Awaited<
+  ReturnType<typeof import("../runtime/personal-owner.test-support.js").createPersonalOwnerFixture>
+>;
+beforeAll(async () => {
+  owner = await (
+    await import("../runtime/personal-owner.test-support.js")
+  ).createPersonalOwnerFixture(userId);
+});
+afterAll(async () => {
+  await owner?.close();
+});
 function fixture() {
-  const userId = createId("user"),
-    environmentId = createId("environment"),
+  const environmentId = createId("environment"),
     harnessInstanceId = createId("harnessInstance"),
     machineId = createId("runner"),
     profileId = createId("browserProfile"),
@@ -44,6 +56,11 @@ function fixture() {
   const realtime = { broadcast: vi.fn(), publish: vi.fn(), publishNotificationPreference: vi.fn() };
   const platform = {
     store: {
+      connections: new IntegrationConnectionAuthStore(owner.database),
+      settings: {
+        detail: vi.fn(async () => ({ row: { placement: { revision: 0 } } })),
+        setEnabled: vi.fn(),
+      },
       getConnectionKind: vi.fn(async () => "provider-account"),
       listGrants: vi.fn(async () => []),
       listInstallations: vi.fn(async () => []),
@@ -63,8 +80,8 @@ function fixture() {
     uninstallIntegration: vi.fn(),
   };
   const store = {
+    database: owner.database,
     replayAdministrationCommand: vi.fn(async () => undefined),
-    userById: vi.fn(async () => ({ instanceRole: "administrator", disabledAt: null })),
 
     listEnvironmentsForUser: vi.fn(async () => [{ id: environmentId, kind: "local" }]),
     listHarnessInstances: vi.fn(async () => [harness]),

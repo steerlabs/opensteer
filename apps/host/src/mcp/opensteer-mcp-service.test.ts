@@ -891,13 +891,18 @@ describe("Opensteer MCP spine", () => {
       await f.service.close();
     }
   });
-  it("filters settings and user-wide tools from the advertised inventory", async () => {
+  it("advertises personal owner tools for a full-access connection", async () => {
     const f = await httpFixture();
+    f.options.callers.authenticate.mockImplementation(async (token) => {
+      const caller = f.callers.get(token);
+      if (!caller) throw new Error("Unknown caller");
+      return { ...caller, accessMode: "full-access" };
+    });
     const client = await connect(f.url, "connection");
     try {
       const names = (await client.listTools()).tools.map((t) => t.name);
-      expect(names).not.toContain("settings_write");
-      expect(names).not.toContain("computer_list");
+      expect(names).toContain("settings_write");
+      expect(names).toContain("computer_list");
       expect(names).toContain("pending_request");
     } finally {
       await client.close();

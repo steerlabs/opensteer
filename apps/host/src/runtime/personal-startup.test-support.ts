@@ -122,6 +122,9 @@ export async function startPersonalRuntime(input: {
         : {}),
       OPENSTEER_NATIVE_FS_HELPER: resolve("apps/runner/native-fs-helper/opensteer-native-fs"),
     }),
+    ...(vertical?.personalAccountIssuer
+      ? { personalAccountIssuer: vertical.personalAccountIssuer }
+      : {}),
     ...(input.webDistribution
       ? { mode: "production" as const, webDistribution: input.webDistribution }
       : {}),
@@ -613,9 +616,11 @@ export async function startPersonalRuntime(input: {
         if (closed) return;
         closed = true;
         lifetime.abort(new Error("Vertical stack closed"));
+        const hadRunner = runner !== undefined || child !== undefined;
         try {
           await stopRunner();
           for (const stop of childStops) await stop();
+          if (hadRunner && host) await vertical?.beforeHostClose?.(host);
         } finally {
           try {
             await host?.close();
@@ -627,10 +632,18 @@ export async function startPersonalRuntime(input: {
       },
     };
   } catch (error) {
-    await stopRunner();
-    await host?.close();
-    await network?.close();
-    await rm(directory, { recursive: true, force: true });
+    const hadRunner = runner !== undefined || child !== undefined;
+    try {
+      await stopRunner();
+      if (hadRunner && host) await vertical?.beforeHostClose?.(host);
+    } finally {
+      try {
+        await host?.close();
+      } finally {
+        await network?.close();
+        await rm(directory, { recursive: true, force: true });
+      }
+    }
     throw error;
   }
 }

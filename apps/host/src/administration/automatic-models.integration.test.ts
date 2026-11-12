@@ -1,12 +1,20 @@
 import { expect, it } from "vitest";
-import { createId } from "@opensteer/core";
 import {
   AdministrationService,
   type AdministrationDependencies,
 } from "./administration-service.js";
-it("refuses automatic model settings from agents before consulting account authority", async () => {
-  const service = new AdministrationService({} as unknown as AdministrationDependencies, () => {});
-  const userId = createId("user");
+it("refuses automatic model settings from an agent owner while allowing the person", async ({
+  onTestFinished,
+}) => {
+  const owner = await (
+    await import("../runtime/personal-owner.test-support.js")
+  ).createPersonalOwnerFixture();
+  onTestFinished(() => owner.close());
+  const service = new AdministrationService(
+    { store: owner.store } as unknown as AdministrationDependencies,
+    () => {},
+  );
+  const userId = owner.ownerId;
   const command = {
     type: "automaticModels.set" as const,
     idempotencyKey: "automatic-test",

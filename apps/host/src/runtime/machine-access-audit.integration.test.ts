@@ -409,7 +409,7 @@ integration("Machine access audit, transfer and realtime", () => {
           String(message.type).startsWith("host.machine.access."),
         ),
       ).toHaveLength(2);
-      await expect(openRealtime(host, {})).rejects.toThrow("401");
+      await expect(openRealtime(host, {})).rejects.toThrow("403");
     } finally {
       await ownerFeed.close();
       await bystanderFeed.close();

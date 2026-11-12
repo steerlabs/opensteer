@@ -124,8 +124,8 @@ integration.sequential("iPhone integrations Host contract", () => {
   afterAll(async () => {
     await database?.drop();
   }, 120_000);
-  const start = async () => {
-    host = await startMachineAccessWireHost(database.url, { remoteAccess: true });
+  const start = async (manualRunner = false) => {
+    host = await startMachineAccessWireHost(database.url, { remoteAccess: true, manualRunner });
     closers.unshift(() => host.close());
     return host;
   };
@@ -244,7 +244,9 @@ integration.sequential("iPhone integrations Host contract", () => {
         })
       ).status,
     ).toBe(409);
-    const discovery = (await (await fetch(`${host.origin}/.well-known/opensteer`)).json()) as {
+    const discovery = (await (
+      await fetch(`${host.origin.origin}/.well-known/opensteer`)
+    ).json()) as {
       capabilities: string[];
       apiVersion: number;
     };
@@ -655,7 +657,13 @@ integration.sequential("iPhone integrations Host contract", () => {
   }, 120_000);
 
   it("H10 H11 H12 H14 H15 enforces access and arguments; loses a write once without retransmission or Mac failover; exports raw mixed responses", async () => {
-    await start();
+    await start(true);
+    const caller = keep(
+      await connectCallerMachine(host, {
+        name: "Caller",
+        token: host.hostingRunnerEnrollmentToken,
+      }),
+    );
     const realtime = keep(await openRealtime(host, host.ownerHeaders));
     const macCalls: unknown[] = [];
     const mac = keep(
@@ -674,12 +682,6 @@ integration.sequential("iPhone integrations Host contract", () => {
       ),
     );
     const phone = keep(await connectPhone(host, (await mint(host, "gateway")).token));
-    const caller = keep(
-      await connectCallerMachine(host, {
-        name: "Caller",
-        token: host.hostingRunnerEnrollmentToken,
-      }),
-    );
     const setup = await requestComputerAppSetup(
       host,
       phone.runnerId,
