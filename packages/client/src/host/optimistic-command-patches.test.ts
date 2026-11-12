@@ -281,6 +281,7 @@ function baseSnapshot(): HostSnapshot {
     voiceThreadId: null,
 
     threadVisits: {},
+    publishedReplyAt: {},
     tasks: null,
     activeTasks: [],
 

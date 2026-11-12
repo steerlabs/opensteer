@@ -1558,6 +1558,9 @@ integration("notification decision boundary", () => {
       } = storeFixture;
       const fixture = await createFixture("grace", true);
       const read = await appendCompletedReply(fixture, text("You saw this one."));
+      // A row written before millisecond stamps keeps its microseconds.
+      await sql`update messages set created_at = date_trunc('milliseconds', created_at) + interval '500 microseconds'
+        where id = ${read.id}`.execute(database);
       const unread = await appendCompletedReply(fixture, text("You did not see this one."));
       const active = await addThread(fixture, {
         suffix: "addressed-grace",

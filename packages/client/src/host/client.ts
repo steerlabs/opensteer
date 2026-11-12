@@ -867,6 +867,8 @@ export interface HostSnapshot {
   /** The person's Voice Thread, once it exists: their spoken manager. */
   voiceThreadId: string | null;
   threadVisits: Record<string, string>;
+  /** Per loaded transcript, the Host time of its newest published, settled assistant reply. */
+  publishedReplyAt: Record<string, string>;
 
   tasks: TaskListState | null;
 

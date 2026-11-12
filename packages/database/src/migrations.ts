@@ -19,17 +19,6 @@ export function migrationProvider(): MigrationProvider {
             await sql`update runs set completed_at = least(date_trunc('milliseconds', completed_at), date_trunc('milliseconds', now())) where completed_at is not null`.execute(
               database,
             );
-            await sql`update messages set created_at = least(date_trunc('milliseconds', created_at), date_trunc('milliseconds', now()))`.execute(
-              database,
-            );
-            await sql`update deployment_events event set created_at = message.created_at
-              from messages message where event.type = 'assistant.message' and event.data->>'messageId' = message.id`.execute(
-              database,
-            );
-            await sql`update deployment_events event set data = jsonb_set(event.data, '{message,createdAt}', to_jsonb(to_char(message.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')))
-              from messages message where event.type in ('message.created', 'message.placed') and event.data->'message'->>'id' = message.id`.execute(
-              database,
-            );
             await sql`alter table messages alter column created_at set default date_trunc('milliseconds', clock_timestamp())`.execute(
               database,
             );
@@ -44,7 +33,7 @@ export function migrationProvider(): MigrationProvider {
                   select 1 from messages message
                   left join thread_inputs inbox on inbox.message_id = message.id
                   where message.thread_id = thread.id and message.sequence > coalesce(marker.sequence, -1)
-                    and message.created_at <= latest.completed_at
+                    and date_trunc('milliseconds', message.created_at) <= latest.completed_at
                     and message.kind in ('input', 'assistant', 'run-result')
                     and (inbox.message_id is null or inbox.state = 'delivered' or (inbox.policy = 'report' and inbox.state <> 'cancelled'))
                     and (message.author->>'kind' <> 'human'

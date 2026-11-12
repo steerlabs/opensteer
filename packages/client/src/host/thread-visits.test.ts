@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { MockHostClient } from "../mock/mock-host-client.js";
-import { trackThreadVisits } from "./thread-visits.js";
+import { trackThreadVisits, withPublishedReplies } from "./thread-visits.js";
 import type { HostSnapshot, MessageEntry } from "./client.js";
 
 const disposers: (() => void)[] = [];
@@ -18,6 +18,7 @@ function fixture() {
   snapshot = {
     ...snapshot,
     threadVisits: {},
+    publishedReplyAt: {},
     threads: [{ ...thread, latestRunCompletedAt: null, lastVisitedAt: null }],
     transcripts: { [id]: [] },
   };
@@ -33,8 +34,8 @@ function fixture() {
     },
     visitThread,
   };
-  const change = (patch: Partial<HostSnapshot>) => {
-    snapshot = { ...snapshot, ...patch };
+  const change = (patch: Partial<HostSnapshot>, liveThreadId?: string) => {
+    snapshot = withPublishedReplies(snapshot, { ...snapshot, ...patch }, liveThreadId);
     for (const fn of listeners) fn();
   };
   return { id, thread, client, change, visitThread, snapshot: () => snapshot };
@@ -131,4 +132,32 @@ it("coalesces a newer completion while a visit is pending, including its echo", 
   await vi.advanceTimersByTimeAsync(0);
   expect(f.visitThread).toHaveBeenCalledTimes(2);
   expect(f.visitThread).toHaveBeenLastCalledWith(f.id, "2026-01-03T00:00:00.000Z");
+});
+
+it("sends when a streamed reply is published in place, never on its deltas", async () => {
+  const f = fixture();
+  disposers.push(trackThreadVisits(f.client, f.id));
+  const streaming: MessageEntry = {
+    kind: "message",
+    id: "reply",
+    body: "Re",
+    createdAt: "2026-01-03T00:00:00.000Z",
+    messageKind: "assistant",
+    streaming: true,
+    author: { kind: "platform", cause: "test" },
+    runId: null,
+  };
+  f.change({ transcripts: { [f.id]: [streaming] } });
+  const watermarks = f.snapshot().publishedReplyAt;
+  for (const body of ["Rea", "Read", "Ready"])
+    f.change({ transcripts: { [f.id]: [{ ...streaming, body }] } }, f.id);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.snapshot().publishedReplyAt).toBe(watermarks);
+  expect(f.visitThread).not.toHaveBeenCalled();
+  const published = { ...streaming, body: "Ready", streaming: false, published: true };
+  f.change({ transcripts: { [f.id]: [published] } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.visitThread).toHaveBeenCalledExactlyOnceWith(f.id, published.createdAt);
+  f.change({ transcripts: {} });
+  expect(f.snapshot().publishedReplyAt).toEqual({});
 });
