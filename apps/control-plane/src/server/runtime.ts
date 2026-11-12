@@ -12,6 +12,7 @@ import { HostedOAuthBrokerStore } from "../auth/hosted-oauth-broker-store.js";
 import { migrateControlPlaneToLatest } from "../database/migrations.js";
 import { PersonalAccountLinkOperationCipher } from "../account/personal-account-link-operation-crypto.js";
 import { PersonalRemoteAccountService } from "../account/personal-remote-account.js";
+import { TeamIdentityGrantService } from "../account/team-identity-grants.js";
 import { portalCallbackUri, portalOAuthClientId, portalOAuthScopes } from "../portal/portal.js";
 import { PortalSessionStore } from "../portal/portal-sessions.js";
 import { createControlPlaneServer } from "./server.js";
@@ -150,6 +151,11 @@ export async function startControlPlane(config: ControlPlaneConfig): Promise<{
         personalRemoteAccount,
         portalSessions,
         store,
+        teamIdentityGrants: new TeamIdentityGrantService({
+          auth,
+          database,
+          issuer: config.publicOrigin,
+        }),
       },
       { logger: config.environment !== "test" },
     );

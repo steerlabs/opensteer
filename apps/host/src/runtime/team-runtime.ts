@@ -50,6 +50,7 @@ import {
   RemoteAccountAdoptionGrantVerifier,
   RemoteHostedTeamOwnerCheckVerifier,
 } from "../access/account-adoption-grant-verifier.js";
+import { RemoteTeamIdentityAssertionVerifier } from "../access/team-identity-assertion-verifier.js";
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
@@ -58,6 +59,7 @@ import { startTeamKnowledge, type TeamKnowledge } from "../knowledge/team-knowle
 import { startTeamServices, assertTeamApiVersion } from "../team/services.js";
 import { registerTeamBinaryRoutes } from "../team/binary-routes.js";
 import { registerTeamSetupRoutes } from "../team/setup-routes.js";
+import { registerTeamSessionExchangeRoute } from "../team/session-exchange-routes.js";
 import { createTeamMachineAdapters } from "../team/machine-adapters.js";
 import { createTeamPushPublisher } from "../team/push.js";
 import {
@@ -242,6 +244,11 @@ export async function createTeamHostRuntime(input: {
           return (assertion: unknown) => verifier.verify(assertion);
         })(),
       },
+      identityVerifier: new RemoteTeamIdentityAssertionVerifier({
+        audience: deployment.canonicalOrigin,
+        issuer,
+        ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
+      }),
       installAccountBundle: async (bundle) => {
         await persistAccountBundle(config.accountBundlePath, bundle);
         account = {
@@ -338,7 +345,7 @@ export async function createTeamHostRuntime(input: {
         authority: envelope,
         bootstrapMethods: ["oidc"],
         capabilities: [
-          ...(config.identity.nativeOAuth ? ["native-oauth"] : []),
+          ...(config.identity.nativeOAuth ? ["native-oauth", "team-session-exchange-v1"] : []),
           "notification-preview-v1",
           "team-hosted-bootstrap-v1",
         ],
@@ -369,6 +376,8 @@ export async function createTeamHostRuntime(input: {
       hosted: admission,
       accountPortalOrigin: config.portalOrigin?.origin ?? "https://app.opensteer.com",
     });
+    if (config.identity.nativeOAuth)
+      registerTeamSessionExchangeRoute(app, { identity, members: team.members });
     registerTeamBinaryRoutes(app, {
       files: team.files,
       access,
