@@ -10,12 +10,19 @@ import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-auth
 import {
   TeamFileResultSchema,
   TeamBinaryUploadMetadataSchema,
+  teamPreviewMaxBytes,
+  teamUploadMaxBytes,
   teamBinaryRoutes,
   type TeamFileSchema,
 } from "@opensteer/protocol";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
-import { basename, win32 } from "node:path";
+import { basename, join, win32 } from "node:path";
+import sharp from "sharp";
 import type { z } from "zod";
 import { boundedTeamStream } from "../team-link-endpoint/binary.js";
 import { linkError } from "../team-link-endpoint/contracts.js";
@@ -116,9 +123,33 @@ export class TeamRunFileTransfers {
     signal: AbortSignal = AbortSignal.timeout(60_000),
   ) {
     const { request, link, headers } = await this.#authority(runId);
+    const sizeBytes = TeamBinaryUploadMetadataSchema.shape.sizeBytes.parse(attachment.sizeBytes);
     const exported = await this.#attachments.export(runId, attachment);
     let body: Readable | undefined;
+    let original = exported.bytes;
+    let directory: string | undefined;
     try {
+      let preview: Buffer | undefined;
+      if (attachment.mediaType?.startsWith("image/")) {
+        directory = await mkdtemp(join(tmpdir(), "opensteer-team-preview-"));
+        const path = join(directory, "original");
+        await pipeline(
+          boundedTeamStream(exported.bytes, teamUploadMaxBytes, signal, {
+            size: sizeBytes,
+            sha256: exported.sha256,
+          }),
+          createWriteStream(path, { flags: "wx", mode: 0o600 }),
+          { signal },
+        );
+        preview = await sharp(path)
+          .rotate()
+          .resize({ width: 256, height: 256, fit: "inside", withoutEnlargement: true })
+          .flatten({ background: "#ffffff" })
+          .jpeg({ quality: 60 })
+          .toBuffer();
+        if (preview.length > teamPreviewMaxBytes) throw linkError("resource_exhausted");
+        original = createReadStream(path);
+      }
       const identity = createHash("sha256")
         .update(
           JSON.stringify([
@@ -126,7 +157,7 @@ export class TeamRunFileTransfers {
             request.requestId,
             basename(win32.basename(attachment.name)),
             attachment.mediaType,
-            attachment.sizeBytes,
+            sizeBytes,
             exported.sha256,
           ]),
         )
@@ -138,9 +169,9 @@ export class TeamRunFileTransfers {
         clientUploadId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
         filename: basename(win32.basename(attachment.name)),
         mediaType: attachment.mediaType,
-        sizeBytes: attachment.sizeBytes,
+        sizeBytes,
         sha256: exported.sha256,
-        previewSizeBytes: 0,
+        previewSizeBytes: preview?.length ?? 0,
       });
       const boundary = `opensteer-${randomUUID()}`;
       const contentType = `multipart/form-data; boundary=${boundary}`;
@@ -149,11 +180,17 @@ export class TeamRunFileTransfers {
           yield Buffer.from(
             `--${boundary}\r\nContent-Disposition: form-data; name="original"; filename="original"\r\nContent-Type: application/octet-stream\r\n\r\n`,
           );
-          for await (const chunk of boundedTeamStream(exported.bytes, metadata.sizeBytes, signal, {
+          for await (const chunk of boundedTeamStream(original, metadata.sizeBytes, signal, {
             size: metadata.sizeBytes,
             sha256: metadata.sha256,
           }))
             yield chunk;
+          if (preview) {
+            yield Buffer.from(
+              `\r\n--${boundary}\r\nContent-Disposition: form-data; name="preview"; filename="preview"\r\nContent-Type: image/jpeg\r\n\r\n`,
+            );
+            yield preview;
+          }
           yield Buffer.from(`\r\n--${boundary}--\r\n`);
         })(),
       );
@@ -183,7 +220,9 @@ export class TeamRunFileTransfers {
       return result;
     } finally {
       exported.bytes.destroy();
+      original.destroy();
       body?.destroy();
+      if (directory) await rm(directory, { recursive: true, force: true });
     }
   }
 

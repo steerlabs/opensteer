@@ -706,7 +706,7 @@ export async function startTeamKnowledge(options: {
       case "team.knowledge.topic.rename":
       case "team.knowledge.topic.archive":
       case "team.knowledge.topic.restore":
-        await inTransaction(async (transaction) => {
+        await change([command.topicId], [], async (transaction) => {
           await managedSharedTopic(transaction, person, command.topicId);
           await updateTeamTopic(
             transaction,

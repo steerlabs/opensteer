@@ -1569,6 +1569,10 @@ export async function createHostServer(
       await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
       return rpcSuccess({ taskId: await (await dependencies.teamLinks()).task(input) });
     },
+    "teams.replyTask.get": async (input, context) => {
+      const ownerId = requireRpcSession(context).user.id;
+      return rpcSuccess(await (await dependencies.teamLinks()).replyTask(ownerId, input));
+    },
     "tasks.list": async (input, context) =>
       rpcSuccess(
         hostApi["tasks.list"].success.parse(
@@ -1603,6 +1607,7 @@ export async function createHostServer(
     | "teams.links.list"
     | "teams.channelFolder.get"
     | "teams.threadTask.get"
+    | "teams.replyTask.get"
     | "bootstrap.get"
     | "harness.authentication.get"
     | "automaticModels.get"

@@ -175,6 +175,7 @@ export const TeamSidebarEntrySchema = z.strictObject({
 });
 export const TeamSidebarSchema = z.strictObject({
   channels: z.array(TeamSidebarEntrySchema).max(50),
+  totalMentionCount: z.number().int().nonnegative(),
   nextCursor: TeamChannelIdSchema.nullable(),
   accessRevision: SequenceSchema,
 });
@@ -191,6 +192,7 @@ export const TeamSearchInputSchema = z.strictObject({
   authorUserId: UserIdSchema.optional(),
   threadRootId: TeamMessageIdSchema.optional(),
   hasFile: z.boolean().optional(),
+  threadsOnly: z.boolean().optional(),
   before: TeamMessageIdSchema.optional(),
 });
 export const TeamSearchPageSchema = z.strictObject({

@@ -4,6 +4,7 @@ import {
   type TeamActor,
   type TeamAgentRequestId,
   type TeamLinkId,
+  type UserId,
 } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
@@ -35,6 +36,7 @@ export interface TeamLinkEndpointOptions {
   readonly access: TeamAccessLockPort;
   readonly lifetimes: TeamLinkLifetimes;
   readonly resolver: TeamAccessResolver;
+  readonly onPresence?: (ownerUserId: UserId, online: boolean) => void;
 }
 interface MachineResult {
   readonly result: TeamLinkResult;
@@ -44,9 +46,15 @@ class TeamSqlFailure extends OpensteerError {}
 
 export class TeamLinkEndpoint {
   readonly options: TeamLinkEndpointOptions;
+  readonly #online = new Map<UserId, number>();
   readonly #sockets = new Map<
     TeamLinkId,
-    Set<{ deliver(): Promise<void>; cancel(id: TeamAgentRequestId): void }>
+    Set<{
+      ownerUserId: UserId;
+      online: boolean;
+      deliver(): Promise<void>;
+      cancel(id: TeamAgentRequestId): void;
+    }>
   >();
   constructor(options: TeamLinkEndpointOptions) {
     this.options = options;
@@ -59,10 +67,21 @@ export class TeamLinkEndpoint {
     let hello = false;
     let work = Promise.resolve();
     let queued = 0;
-    const close = () => {
+    const offline = () => {
+      if (!subscriber.online) return;
+      subscriber.online = false;
+      const count = (this.#online.get(link.ownerUserId) ?? 1) - 1;
+      if (count) this.#online.set(link.ownerUserId, count);
+      else {
+        this.#online.delete(link.ownerUserId);
+        this.options.onPresence?.(link.ownerUserId, false);
+      }
+    };
+    const close = (revoked = false) => {
       if (!active) return;
       active = false;
-      socket.close(1008, "Team link ended");
+      offline();
+      socket.close(revoked ? 1008 : 1012, "Team link ended");
       const deadline = setTimeout(() => socket.terminate(), 1000);
       deadline.unref();
       socket.once("close", () => clearTimeout(deadline));
@@ -93,6 +112,8 @@ export class TeamLinkEndpoint {
       );
     };
     const subscriber = {
+      ownerUserId: link.ownerUserId,
+      online: false,
       deliver: async () => {
         if (!hello || !active) return;
         const revision = access.revision;
@@ -110,7 +131,7 @@ export class TeamLinkEndpoint {
         }
       },
       cancel: (requestId: TeamAgentRequestId) => {
-        void send({ type: "cancel", requestId }).catch(close);
+        void send({ type: "cancel", requestId }).catch(() => close());
       },
     };
     const sockets = this.#sockets.get(linkId) ?? new Set();
@@ -118,11 +139,12 @@ export class TeamLinkEndpoint {
     this.#sockets.set(linkId, sockets);
     socket.once("close", () => {
       active = false;
+      offline();
       unregister();
       sockets.delete(subscriber);
       if (!sockets.size) this.#sockets.delete(linkId);
     });
-    socket.on("error", close);
+    socket.on("error", () => close());
     const deadline = setTimeout(() => {
       if (!hello) close();
     }, 10_000);
@@ -149,6 +171,12 @@ export class TeamLinkEndpoint {
               link: links.view(link),
               accessRevision: access.revision,
             });
+            if (active) {
+              const count = this.#online.get(link.ownerUserId) ?? 0;
+              subscriber.online = true;
+              this.#online.set(link.ownerUserId, count + 1);
+              if (!count) this.options.onPresence?.(link.ownerUserId, true);
+            }
             // Personal reconciles these even when they are absent from pending().
             for (const terminal of frame.terminalRequests) {
               if (terminal.terminalState && terminal.publicationState === "pending")
@@ -203,6 +231,10 @@ export class TeamLinkEndpoint {
 
   async deliver(linkId: TeamLinkId): Promise<void> {
     await Promise.all([...(this.#sockets.get(linkId) ?? [])].map((socket) => socket.deliver()));
+  }
+
+  isOnline(ownerUserId: UserId): boolean {
+    return this.#online.has(ownerUserId);
   }
 
   cancel(linkId: TeamLinkId, requestId: TeamAgentRequestId): void {

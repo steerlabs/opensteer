@@ -1573,6 +1573,11 @@ export const hostApi = defineRpc({
     teamReadSchemas["teams.threadTask.get"].input,
     teamReadViews["teams.threadTask.get"],
   ),
+  "teams.replyTask.get": declaration(
+    "POST",
+    teamReadSchemas["teams.replyTask.get"].input,
+    teamReadViews["teams.replyTask.get"],
+  ),
   "team.mentions.page": declaration(
     "POST",
     teamReadSchemas["team.mentions.page"].input,

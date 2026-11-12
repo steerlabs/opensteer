@@ -342,10 +342,9 @@ export function hydrateTeamTaskInput(
       .forNoKeyUpdate()
       .executeTakeFirstOrThrow();
     const inbox = await transaction
-      .updateTable("threadInputs")
-      .set({ teamSource: source })
+      .selectFrom("threadInputs")
+      .selectAll()
       .where("messageId", "=", run.seedInputId)
-      .returningAll()
       .executeTakeFirstOrThrow();
     const message = await transaction
       .updateTable("messages")
