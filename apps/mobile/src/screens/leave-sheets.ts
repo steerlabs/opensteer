@@ -8,7 +8,7 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 
 /** The full screens of a Deployment's stack, as opposed to the sheets over them. */
 const screenRoutes: ReadonlySet<string> = new Set([
-  "AllTasks",
+  "DoneTasks",
   "Home",
   "Tabs",
   "TeamChannel",

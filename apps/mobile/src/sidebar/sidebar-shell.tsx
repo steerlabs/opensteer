@@ -84,7 +84,7 @@ import {
  * and unfolding keep every screen, draft, scroll position and stream exactly
  * where it was.
  *
- * The drawer can be dragged open only from Home, All tasks, Tabs and
+ * The drawer can be dragged open only from Home, Tabs and
  * Automations — the screens that carry the Menu and have no Back of their own —
  * so it never competes with a task's edge-swipe back or a sheet's gestures.
  */
@@ -93,7 +93,6 @@ const sidebarMinimumWidth = 260;
 
 const destinations: ReadonlySet<string> = new Set<SidebarDestination>([
   "Home",
-  "AllTasks",
   "Schedules",
   "Tabs",
 ]);
@@ -349,7 +348,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         ? home.params["deploymentId"]
         : null;
     };
-    const show = (target: SidebarDestination, extra: object = {}): void => {
+    const show = (target: SidebarDestination): void => {
       leave();
       const state = latest.current;
       const deployment = homeDeployment();
@@ -358,7 +357,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         if (state.index > 0) navigation.dispatch(StackActions.popToTop());
         return;
       }
-      const params = { deploymentId: deployment, ...extra };
+      const params = { deploymentId: deployment };
       if (same(target, params)) return;
       // Home stays mounted underneath, untouched, so its draft is exactly
       // where it was. One destination replaces another in place.
@@ -375,7 +374,17 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     return {
       close,
       onHome: () => show("Home"),
-      onOpenAllTasks: (_deploymentId, filter) => show("AllTasks", { filter }),
+      onOpenDone: (targetDeploymentId) => {
+        leave();
+        if (same("DoneTasks", { deploymentId: targetDeploymentId })) return;
+        go("DoneTasks", { deploymentId: targetDeploymentId }, false);
+      },
+      onOpenQuietlyMoved: (targetDeploymentId) => {
+        leave();
+        navigation.dispatch(
+          StackActions.push("QuietlyMoved", { deploymentId: targetDeploymentId }),
+        );
+      },
       onOpenPlace: (destination: PersonalSurfaceDestination) => {
         leave();
         const deployment = homeDeployment();
@@ -384,10 +393,15 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
         // whom it talks to.
         go("WorkspaceBrowser", tabsRoute(deployment, destination), false);
       },
-      onOpenTask: (targetDeploymentId, threadId) => {
+      onOpenTask: (targetDeploymentId, threadId, requestId) => {
         leave();
-        if (same("Thread", { deploymentId: targetDeploymentId, threadId })) return;
-        go("Thread", { deploymentId: targetDeploymentId, threadId }, false);
+        const params = {
+          deploymentId: targetDeploymentId,
+          threadId,
+          ...(requestId === undefined ? {} : { requestId }),
+        };
+        if (same("Thread", params)) return;
+        go("Thread", params, false);
       },
       onOpenTeam: (teamId) => {
         leave();
