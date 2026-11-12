@@ -29,7 +29,7 @@ import {
   testReadyHarnessCatalog,
   pendingEvent,
 } from "@opensteer/database/test-support/store";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { personalTestFolders } from "./personal-folder.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -106,10 +106,24 @@ async function serveMcp(
       maxQueuedCommands: 100,
     }),
     onExecutionQueued: () => {},
-    onWorkspaceEvent: (event) => realtime.publish(event),
+    onDeploymentEvent: (event) => realtime.publish(event),
   });
+  const settings = await store.database
+    .selectFrom("personalSettings")
+    .selectAll()
+    .executeTakeFirstOrThrow();
+  const environment = await store.database
+    .selectFrom("executionEnvironments")
+    .select("id")
+    .where("runnerId", "=", settings.agentHomeComputerId)
+    .executeTakeFirstOrThrow();
   const threads = new ThreadService({
     store,
+    folders: personalTestFolders(store, {
+      userId: settings.ownerId,
+      environmentId: environment.id,
+      agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
+    }),
     commands,
     runners: {
       canRunHarness: () => true,
@@ -122,12 +136,18 @@ async function serveMcp(
     browser: unavailable as never,
   });
   const product = new ProductToolHandlers({
+    onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
+    folders: personalTestFolders(store, {
+      userId: settings.ownerId,
+      environmentId: environment.id,
+      agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
+    }),
     deploymentId: (
       await store.database.selectFrom("deployments").select("id").executeTakeFirstOrThrow()
     ).id,
     store,
     threads,
-    realtime: observations,
+    realtime: { ...observations, sendToUsers: realtime.sendToUsers.bind(realtime) },
     commands,
     browser: {
       readablePlaces: async (_owner: unknown, references: readonly unknown[]) => [...references],
@@ -135,7 +155,6 @@ async function serveMcp(
     isEnvironmentConnected: options.connected ?? (() => true),
     canRunHarness: () => true,
     harnessAccessModes: () => ThreadAccessModeSchema.options,
-    environmentWorkspaceBackings: () => ["local-directory"],
   } as unknown as ConstructorParameters<typeof ProductToolHandlers>[0]);
   let service!: OpensteerMcpService;
   const server = createServer((request, response) => {
@@ -172,8 +191,7 @@ async function serveMcp(
   const integrationStore = new IntegrationPlatformStore(store.database);
   const integrations = new IntegrationToolHandlers({
     definitions: [],
-    getWorkspaceForOwner: store.getWorkspaceForOwner.bind(store),
-    onWorkspaceEvent: (event) => realtime.publish(event),
+    onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
     platform: {
       store: integrationStore,
       listDiscoveryInventory: (input: IntegrationDiscoveryRequester) =>
@@ -215,14 +233,8 @@ async function serveMcp(
         } as unknown as ConstructorParameters<typeof TriggerService>[0]),
       ),
       apps: {
-        listForCaller: async (scope: {
-          requestedBy: import("@opensteer/core").UserId;
-          reach: import("@opensteer/core").ThreadReachScope;
-        }) => ({
-          apps: await new AppStore(store.database).listReachable({
-            userId: scope.requestedBy,
-            reach: scope.reach,
-          }),
+        listForCaller: async (scope: { requestedBy: import("@opensteer/core").UserId }) => ({
+          apps: await new AppStore(store.database).listOwned(scope.requestedBy),
         }),
       } as never,
       pluginInstall: async () => {
@@ -242,7 +254,6 @@ async function connection(
   input: {
     readonly userId: Parameters<AgentConnectionStore["create"]>[0]["userId"];
     readonly accessMode: ThreadAccessMode;
-    readonly reach: Parameters<AgentConnectionStore["create"]>[0]["reach"];
   },
 ) {
   const connections = new AgentConnectionStore(store.database);
@@ -286,7 +297,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const listed = (await agent.client.listTools()).tools.map(({ name }) => name);
     expect(listed).toEqual(
@@ -308,7 +318,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     ).rejects.toThrow("Agent tools authorization is invalid or expired");
   });
 
-  it("keeps a Workspace connection inside it and an approval-required one out of full-access changes", async ({
+  it("keeps an approval-required connection out of full-access changes", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-reach");
@@ -320,53 +330,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       idempotencyKey: "connection-full-access",
       modelSelection: testModelSelection,
       title: "Full access",
-      workspaceId: f.workspace.id,
-    });
-    const project = await createTestWorkspace(storeFixture.store, {
-      createdBy: f.userId,
-      name: "Client",
-      kind: "project",
-      idempotencyKey: "connection-project",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        ownerEnvironmentId: f.environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-      },
+      folder: f.folder,
     });
     const url = await serveMcp(storeFixture.store);
-
-    const scoped = await connection(storeFixture.store, url, {
-      userId: f.userId,
-      accessMode: "full-access",
-      reach: { kind: "workspace", workspaceId: project.id },
-    });
-    expect(
-      errorText(
-        await scoped.client.callTool({
-          name: "thread_read",
-          arguments: { threadId: f.thread.id },
-        }),
-      ),
-    ).toBe("Target Thread is outside the caller's reach");
-    const listed = await scoped.client.callTool({ name: "thread_list", arguments: {} });
-    expect(listed.isError).not.toBe(true);
-    expect(JSON.stringify(listed.structuredContent)).not.toContain(f.thread.id);
-    expect(
-      errorText(
-        await scoped.client.callTool({
-          name: "thread_list",
-          arguments: { workspaceId: f.workspace.id },
-        }),
-      ),
-    ).toBe("Caller can list Threads only in its Workspace");
-
     const cautious = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "user" },
     });
     expect(
       errorText(
@@ -376,17 +345,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         }),
       ),
     ).toContain("stronger access mode");
-    expect(
-      errorText(
-        await cautious.client.callTool({ name: "project_create", arguments: { name: "Sneaky" } }),
-      ),
-    ).toContain("not found");
     expect((await storeFixture.store.getThreadForOwner(fullAccess.id, f.userId))?.title).toBe(
       "Full access",
     );
   });
 
-  it("delegates independent connection work within its approved Workspace and preserves connection authorship", async ({
+  it("delegates independent personal work and preserves connection authorship", async ({
     storeFixture,
   }) => {
     const f = await storeFixture.startRunFixture("connection-delegate");
@@ -394,13 +358,10 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "workspace", workspaceId: f.workspace.id },
     });
     const result = await agent.client.callTool({
       name: "delegate_task",
       arguments: {
-        workspaceId: f.workspace.id,
-
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -412,7 +373,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     expect(result.structuredContent).toMatchObject({
       assignmentId: null,
       parentThreadId: null,
-      workspaceId: f.workspace.id,
       status: "open",
     });
     const threadId = ThreadIdSchema.parse(
@@ -438,8 +398,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const replay = await agent.client.callTool({
       name: "delegate_task",
       arguments: {
-        workspaceId: f.workspace.id,
-
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -451,8 +409,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const conflicting = await agent.client.callTool({
       name: "delegate_task",
       arguments: {
-        workspaceId: f.workspace.id,
-
         harnessInstanceId: f.harnessInstance.id,
         model: { ...testModelSelection, options: {} },
         title: "External work",
@@ -514,34 +470,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       arguments: { threadId, operationKey: "stop-independent" },
     });
     expect(stopReplay.structuredContent).toEqual(stopped.structuredContent);
-    const other = await createTestWorkspace(storeFixture.store, {
-      createdBy: f.userId,
-      name: "Outside",
-      kind: "project",
-      status: "ready",
-      idempotencyKey: "outside-connection",
-      backing: {
-        kind: "local-directory",
-        ownerEnvironmentId: f.environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-      },
-    });
-    expect(
-      errorText(
-        await agent.client.callTool({
-          name: "delegate_task",
-          arguments: {
-            workspaceId: other.id,
-            task: "Escalate",
-
-            harnessInstanceId: f.harnessInstance.id,
-            model: { ...testModelSelection, options: {} },
-          },
-        }),
-      ),
-    ).toContain("outside the caller's reach");
   });
 
   it("returns a connection's original task on retry after the person's defaults change", async ({
@@ -552,7 +480,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "workspace", workspaceId: f.workspace.id },
     });
     const catalog = testReadyHarnessCatalog(f.harnessInstance.id);
     await storeFixture.store.recordHarnessCatalogs({
@@ -592,8 +519,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       agent.client.callTool({
         name: "delegate_task",
         arguments: {
-          workspaceId: f.workspace.id,
-
           harnessInstanceId: f.harnessInstance.id,
           title,
           task: "Inspect the project",
@@ -617,7 +542,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "workspace", workspaceId: f.workspace.id },
     });
     const second = await storeFixture.store.createHarnessInstance({
       config: {},
@@ -640,8 +564,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       agent.client.callTool({
         name: "delegate_task",
         arguments: {
-          workspaceId: f.workspace.id,
-
           title: "Automatic work",
           task: "Inspect the project",
           operationKey,
@@ -671,7 +593,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     for (const name of [
       "environment_list",
@@ -721,7 +642,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const unavailableModel = { providerId: "openai", modelId: "not-offered", options: {} };
     const result = await agent.client.callTool({
@@ -765,7 +685,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const cautious = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "user" },
     });
     for (const name of ["thread_configure", "thread_interrupt"]) {
       expect(
@@ -791,7 +710,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const send = async (message: string) => {
       const result = await agent.client.callTool({
@@ -806,7 +724,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const other = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     expect(
       errorText(
@@ -873,7 +790,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "user" },
     });
     const timed = await agent.client.callTool({
       name: "thread_wait",
@@ -936,7 +852,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         runId: f.run.id,
         threadId: f.thread.id,
         type: "run.completed",
-        workspaceId: f.workspace.id,
       }),
     });
     if (terminal.event) publish.current?.(terminal.event);
@@ -950,14 +865,12 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
 
   it("returns a pending Request without granting approval authority", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("connection-wait-request");
-    const project = await storeFixture.createProjectWorkspace(f.userId, "wait-request-target");
     const subscribed = vi.fn();
     const publish: { current?: (event: import("@opensteer/core").AgentEvent) => void } = {};
     const url = await serveMcp(storeFixture.store, { subscribed, publish });
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "approval-required",
-      reach: { kind: "user" },
     });
     const waiting = agent.client.callTool({
       name: "thread_wait",
@@ -981,8 +894,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       mode: "durable",
       originatingRunId: f.run.id,
       originatingThreadId: f.thread.id,
-      originatingWorkspaceId: f.workspace.id,
-      targetWorkspaceId: project.id,
       requestedBy: f.userId,
       requiredActor: "requester",
       payload: {
@@ -993,7 +904,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       presentation: {
         kind: "external",
         title: "Browser access",
-        subject: { kind: "workspace", id: project.id },
+        subject: { kind: "thread", id: f.thread.id },
       },
     });
     for (const event of created.events) publish.current?.(event);
@@ -1019,7 +930,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const send = (message: string) =>
       agent.client.callTool({
@@ -1061,13 +971,11 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
         jti: "self-interrupt",
         bindingGeneration: f.bindingGeneration,
         environmentId: f.environmentId,
-        membershipGeneration: 1,
         requestedBy: f.userId,
         runId: f.run.id,
         runnerBootId: f.runnerBootId,
         runnerId: f.runnerId,
         threadId: f.thread.id,
-        workspaceId: f.workspace.id,
       },
     });
     const client = new Client({ name: "self", version: "1" });
@@ -1118,7 +1026,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
     const agent = await connection(storeFixture.store, url, {
       userId: f.userId,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const waiting = agent.client.callTool({
       name: "thread_wait",

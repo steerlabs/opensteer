@@ -1,4 +1,4 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { createId, type UserId } from "@opensteer/core";
 import {
   AttachmentStore,
@@ -40,10 +40,7 @@ integration.sequential("Host attachment originals", () => {
     });
   });
   beforeEach(async () => {
-    await sql`truncate table messages, runs, threads, harness_catalogs, harness_instances,
-      runner_enrollments, workspaces, execution_environments, runners, deployments, users restart identity cascade`.execute(
-      database,
-    );
+    await sql`truncate table deployments, users restart identity cascade`.execute(database);
   });
   afterAll(async () => {
     await database.destroy();
@@ -53,32 +50,9 @@ integration.sequential("Host attachment originals", () => {
     });
   });
   async function fixture(suffix: string) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server",
-      },
-      hostInstanceId: createId("hostInstance"),
-    });
-    const userId = await store.createUser(`Attachment uploader ${suffix}`);
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      createdBy: userId,
-      idempotencyKey: `attachment-workspace-${suffix}`,
-      name: `Attachments ${suffix}`,
-      status: "ready",
-    });
-    if (workspace.kind !== "main") throw new Error("Expected main workspace");
-    return {
-      userId,
-    };
+    const path = join(directory, suffix);
+    await mkdir(path, { recursive: true });
+    return seedPersonalFixture(database, path);
   }
   it("stores and verifies exact binary bytes above the former 1 MiB text limit", async () => {
     const f = await fixture("large");
@@ -118,21 +92,8 @@ integration.sequential("Host attachment originals", () => {
     });
     expect((await service.contentForUser(reserved.id, f.userId)).bytes).toEqual(bytes);
   });
-  it("returns a conflict when concurrent workspaces reuse one uploader's upload key", async () => {
+  it("returns a conflict when concurrent uploads reuse a key with different intent", async () => {
     const first = await fixture("cross-workspace-key");
-    const second = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      createdBy: first.userId,
-      idempotencyKey: "attachment-workspace-cross-workspace-key-second",
-      name: "Other attachments",
-      status: "ready",
-    });
     const input = {
       idempotencyKey: "same-key",
       mediaType: "text/plain",
@@ -165,6 +126,7 @@ integration.sequential("Host attachment originals", () => {
         }),
         attachments.reserve({
           ...input,
+          name: "different.txt",
         }),
       ]);
     } finally {

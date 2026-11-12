@@ -8,12 +8,10 @@ import {
   type RunId,
   type Thread,
 } from "@opensteer/core";
-import { createMemoryPass, type MemoryPassExecution } from "@opensteer/database";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createMemoryPass, needsYouPage, type MemoryPassExecution } from "@opensteer/database";
 import { HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import {
   describeStore,
-  enrollTestRunner,
   testContinuationIdentity,
   testReadyHarnessCatalog,
   type StoreFixture,
@@ -32,86 +30,21 @@ async function fixture(
   f: StoreFixture,
   suffix: string,
   options: {
-    home?: boolean;
     light?: boolean;
     zone?: boolean;
     accessMode?: Thread["accessMode"];
   } = {},
 ) {
-  const base = await (async () => {
-    if (!(await f.database.selectFrom("runners").select("id").executeTakeFirst()))
-      return f.createRunFixture(suffix);
-    const userId = await f.store.createUser("Another person");
-    const environmentId = createId("environment");
-    const runnerId = createId("runner");
-    await enrollTestRunner(f.store, {
-      createdBy: userId,
-      ownerUserId: userId,
-      environmentId,
-      runnerId,
-      runnerKind: "managed",
-      name: suffix,
-      tokenSuffix: suffix,
-    });
-    const workspace = await createTestWorkspace(f.store, {
-      createdBy: userId,
-      kind: "main",
-      name: "Main",
-      status: "ready",
-      idempotencyKey: `main-${suffix}`,
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
-    const harnessInstance = await f.store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const thread = (
-      await f.store.createThread({
-        createdBy: userId,
-        environmentId,
-        harnessInstanceId: harnessInstance.id,
-        idempotencyKey: `thread-${suffix}`,
-        modelSelection: ModelSelectionSchema.parse({
-          providerId: "openai",
-          modelId: "gpt-5.6-sol",
-          options: {},
-        }),
-        title: suffix,
-      })
-    ).thread;
-    return {
-      userId,
-      environmentId,
-      runnerId,
-      workspace,
-      harnessInstance,
-      thread,
-    };
-  })();
-  const chat =
-    options.home === false
-      ? null
-      : (
-          await f.store.createThread({
-            createdBy: base.userId,
-            environmentId: base.environmentId,
-            harnessInstanceId: base.harnessInstance.id,
-            home: true,
-            idempotencyKey: `chat-${suffix}`,
-            modelSelection: base.thread.modelSelection,
-            accessMode: options.accessMode ?? "full-access",
-            title: "Chat",
-          })
-        ).thread;
+  const base = await f.createRunFixture(suffix);
+  await f.store.rememberExecutionChoice(base.userId, {
+    selection: {
+      environmentId: base.environmentId,
+      harnessInstanceId: base.harnessInstance.id,
+      modelSelection: base.thread.modelSelection,
+    },
+  });
+  if (options.zone === false)
+    await f.database.updateTable("personalSettings").set({ timeZone: null }).execute();
   if (options.zone !== false)
     await f.store.notificationState.setTimeZone({
       userId: base.userId,
@@ -154,7 +87,6 @@ async function fixture(
   });
   return {
     ...base,
-    chat,
     catalog,
   };
 }
@@ -162,19 +94,11 @@ function service(
   f: StoreFixture,
   options: {
     off?: boolean;
-    batchSize?: number;
   } = {},
 ) {
-  const preview = vi.fn(async () => ({
-    bytes: Buffer.from(options.off ? "## Memory\nMemory: off at the person's request\n" : ""),
-    metadata: {
-      contentType: "text/markdown",
-      etag: '"1"',
-      modifiedAt: null,
-      sizeBytes: 0,
-      truncated: false,
-    },
-  }));
+  const preview = vi.fn(async () =>
+    options.off ? "## Memory\nMemory: off at the person's request\n" : "",
+  );
   const onError = vi.fn();
   const runners = {
     isAvailable: vi.fn(() => true),
@@ -184,17 +108,10 @@ function service(
   const instance = new MemoryPassService({
     store: f.store,
     runners,
-    files: {
-      preview,
-    },
+    readAgentInstructions: preview,
     onEvent: vi.fn(),
     onChanged: vi.fn(),
     onError,
-    ...(options.batchSize
-      ? {
-          batchSize: options.batchSize,
-        }
-      : {}),
   });
   return {
     instance,
@@ -204,9 +121,7 @@ function service(
   };
 }
 async function detail(f: StoreFixture, ownerId: Trigger["createdBy"], id: Trigger["id"]) {
-  const result = await f.triggers.getForOwner(id, ownerId, 25, {
-    kind: "user",
-  });
+  const result = await f.triggers.getForOwner(id, ownerId, 25);
   if (!result) throw new Error("Managed Trigger detail missing");
   return result;
 }
@@ -218,9 +133,6 @@ async function role(
   const found = await f.triggers.listForOwner({
     ownerId,
     systemRole,
-    scope: {
-      kind: "user",
-    },
   });
   if (!found[0]) throw new Error("Managed role missing");
   return detail(f, ownerId, found[0].id);
@@ -303,7 +215,7 @@ async function claudeAccount(f: StoreFixture, base: Awaited<ReturnType<typeof fi
 /** Holds a row so `work` can stop an admission at a known lock, then releases it. */
 async function holdingRow(
   f: StoreFixture,
-  table: "threads" | "workspaces",
+  table: "threads" | "personalSettings",
   id: string,
   work: (release: () => void) => Promise<void>,
 ) {
@@ -312,9 +224,11 @@ async function holdingRow(
   let held!: () => void;
   const holding = new Promise<void>((resolve) => (held = resolve));
   const blocker = f.database.transaction().execute(async (transaction) => {
-    await sql`select id from ${sql.table(table)} where id = ${id} for no key update`.execute(
-      transaction,
-    );
+    if (table === "personalSettings")
+      await sql`select singleton_key from personal_settings where singleton_key = 'personal' for no key update`.execute(
+        transaction,
+      );
+    else await sql`select id from threads where id = ${id} for no key update`.execute(transaction);
     held();
     await released;
   });
@@ -430,38 +344,33 @@ function wakeText(admitted: Awaited<ReturnType<typeof wake>>) {
   return admitted.message.content.flatMap((part) => (part.type === "text" ? [part.text] : []));
 }
 describeStore("managed memory passes", (it) => {
-  it("creates exactly one atomic pair under concurrent provisioning on Chat's placement, and never recreates paused/Done identities", async ({
+  it("creates exactly one atomic pair under concurrent provisioning in the personal agent home, and never recreates paused/Done identities", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "concurrent", {
       accessMode: "approval-required",
     });
     const s = service(f);
-    await Promise.all([
-      s.instance.ensureForMain(base.workspace.id),
-      s.instance.ensureForMain(base.workspace.id),
-    ]);
+    await Promise.all([s.instance.ensureForPersonal(), s.instance.ensureForPersonal()]);
     const rows = await f.triggers.listForOwner({
       ownerId: base.userId,
-      scope: {
-        kind: "user",
-      },
     });
     expect(rows).toHaveLength(2);
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
     expect(light.anchorThread).toMatchObject({
-      accessMode: "approval-required",
+      accessMode: "full-access",
       createdBy: base.userId,
       environmentId: base.environmentId,
       harnessInstanceId: base.harnessInstance.id,
-      parentThreadId: base.chat!.id,
-      lineageRootThreadId: base.chat!.lineageRootThreadId,
-      purpose: "task",
+      parentThreadId: null,
+      lineageRootThreadId: light.trigger.anchorThreadId,
+      purpose: "background-job",
+      folder: base.agentHome,
       listed: false,
-      modelSelection: base.chat!.modelSelection,
+      modelSelection: base.thread.modelSelection,
     });
-    expect(nightly.anchorThread?.modelSelection).toEqual(base.chat?.modelSelection);
+    expect(nightly.anchorThread?.modelSelection).toEqual(base.thread.modelSelection);
     expect(light.revision.source).toEqual({
       kind: "schedule",
       schedule: {
@@ -493,7 +402,7 @@ describeStore("managed memory passes", (it) => {
       threadId: nightly.trigger.anchorThreadId,
     });
     s.preview.mockClear();
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     expect(s.preview).not.toHaveBeenCalled();
     expect((await role(f, base.userId)).trigger).toMatchObject({
       id: light.trigger.id,
@@ -517,7 +426,11 @@ describeStore("managed memory passes", (it) => {
       );
     const input = {
       ownerId: base.userId,
-      chat: base.chat!,
+      execution: {
+        environmentId: base.environmentId,
+        harnessInstanceId: base.harnessInstance.id,
+        modelSelection: base.thread.modelSelection,
+      },
       systemRole: "memory-light" as const,
       program: memoryPassProgram("memory-light"),
       source: {
@@ -556,7 +469,7 @@ describeStore("managed memory passes", (it) => {
         },
       }),
     ).rejects.toThrow();
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     expect((await role(f, base.userId)).trigger).toMatchObject({
       id: light.trigger.id,
       status: "paused",
@@ -564,46 +477,32 @@ describeStore("managed memory passes", (it) => {
     });
     expect((await role(f, base.userId, "memory-nightly")).trigger.status).toBe("active");
   });
-  it("defers no Chat, no zone and unreadable files, but never waits on a model", async ({
+  it("defers missing owner setup, no zone and unreadable files, but never waits on a model", async ({
     storeFixture: f,
   }) => {
+    await service(f).instance.ensureForPersonal();
     const base = await fixture(f, "prerequisites", {
-      home: false,
       zone: false,
       light: false,
     });
     const s = service(f);
-    await s.instance.ensureForMain(base.workspace.id);
-    const created = await f.store.createThread({
-      createdBy: base.userId,
-      environmentId: base.environmentId,
-      harnessInstanceId: base.harnessInstance.id,
-      home: true,
-      idempotencyKey: "chat-later",
-      modelSelection: base.thread.modelSelection,
-      title: "Chat",
-    });
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     expect(s.preview).not.toHaveBeenCalled();
     await f.store.notificationState.setTimeZone({
       userId: base.userId,
       timeZone: TimeZoneSchema.parse("UTC"),
     });
     s.preview.mockRejectedValueOnce(new Error("Storage unreadable"));
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     expect(
       await f.triggers.listForOwner({
         ownerId: base.userId,
-        scope: {
-          kind: "user",
-        },
       }),
     ).toEqual([]);
-    expect(created.thread.role).toBe("conversation");
     // An offline computer or an account without a light model does not
     // defer creation: each pass chooses its model when it is admitted.
     s.runners.isAvailable.mockReturnValue(false);
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     expect((await role(f, base.userId)).trigger).toMatchObject({
       status: "active",
       pauseReason: null,
@@ -618,12 +517,9 @@ describeStore("managed memory passes", (it) => {
     });
     await service(f, {
       off: true,
-    }).instance.ensureForMain(base.workspace.id);
+    }).instance.ensureForPersonal();
     const rows = await f.triggers.listForOwner({
       ownerId: base.userId,
-      scope: {
-        kind: "user",
-      },
     });
     expect(rows).toHaveLength(2);
     for (const row of rows)
@@ -633,35 +529,11 @@ describeStore("managed memory passes", (it) => {
         pauseReason: "Memory is off at your request.",
       });
   });
-  it("makes fair keyset progress past ineligible people and isolates a failed person's provisioning", async ({
-    storeFixture: f,
-  }) => {
-    const people = [
-      await fixture(f, "fair-a"),
-      await fixture(f, "fair-b"),
-      await fixture(f, "fair-c"),
-    ];
-    people.sort((a, b) => a.workspace.id.localeCompare(b.workspace.id));
-    const s = service(f, {
-      batchSize: 1,
-    });
-    const original = f.store.admitWorkspaceFiles.bind(f.store);
-    vi.spyOn(f.store, "admitWorkspaceFiles").mockImplementation(async (workspaceId, userId) => {
-      if (workspaceId === people[0]!.workspace.id) throw new Error("One person's broken storage");
-      if (workspaceId === people[1]!.workspace.id) return null;
-      return original(workspaceId, userId);
-    });
-    await s.instance.reconcileMissing();
-    await s.instance.reconcileMissing();
-    await s.instance.reconcileMissing();
-    expect(s.onError).toHaveBeenCalledTimes(1);
-    expect((await role(f, people[2]!.userId)).trigger.status).toBe("active");
-  });
   it("skips a pending offline tick after Pause on reconnect without recording a failure", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "late-pause");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     await f.database
       .updateTable("triggers")
@@ -710,7 +582,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "wake-race");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     const first = await tick(f, base, light);
     const second = await tick(f, base, light);
@@ -764,7 +636,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "unusable");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     const started = await tick(f, base, light);
     for (const patch of [
@@ -832,11 +704,9 @@ describeStore("managed memory passes", (it) => {
       MANAGED_MEMORY_WAKE_SKIPPED,
     );
   });
-  it("enforces managed lifetime, allows cron CAS while paused and preserves revocation cancellation", async ({
-    storeFixture: f,
-  }) => {
+  it("enforces managed lifetime and allows cron CAS while paused", async ({ storeFixture: f }) => {
     const base = await fixture(f, "guards");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const common = {
       actorThreadId: null,
@@ -895,7 +765,7 @@ describeStore("managed memory passes", (it) => {
       nextFireAt,
       status: "active",
     });
-    const started = await tick(f, base, light.trigger);
+    await tick(f, base, light.trigger);
     expect(
       await f.triggers.cancelPendingOccurrences(base.userId, {
         actorThreadId: null,
@@ -931,68 +801,17 @@ describeStore("managed memory passes", (it) => {
         source: updated.revision.source,
       }),
     ).rejects.toThrow("revision changed");
-    const remainingOwner = await f.store.createUser("Remaining owner");
-    const membership = await f.database
-      .selectFrom("workspaceMemberships")
-      .selectAll()
-      .where("userId", "=", base.userId)
-      .executeTakeFirstOrThrow();
-    await f.database
-      .insertInto("workspaceMemberships")
-      .values({
-        ...membership,
-        id: createId("workspaceMembership"),
-        userId: remainingOwner,
-      })
-      .execute();
-    await f.database
-      .updateTable("workspaceMemberships")
-      .set({
-        state: "revoked",
-        generation: 2,
-        revokedAt: new Date(),
-        revokedBy: remainingOwner,
-      })
-      .where("userId", "=", base.userId)
-      .execute();
-    await f.triggers.revokeForMembershipRevocation({
-      userId: base.userId,
-    });
-    expect(
-      await f.database
-        .selectFrom("triggers")
-        .select(["status", "nextFireAt"])
-        .where("id", "=", light.trigger.id)
-        .executeTakeFirst(),
-    ).toEqual({
-      status: "paused",
-      nextFireAt: null,
-    });
-    expect(
-      await f.database
-        .selectFrom("triggerOccurrences")
-        .select("status")
-        .where("id", "=", started.occurrence.id)
-        .executeTakeFirst(),
-    ).toEqual({
-      status: "failed",
-    });
-    expect(
-      await f.triggers.getForOwner(light.trigger.id, base.userId, 1, {
-        kind: "user",
-      }),
-    ).toBeNull();
   });
   it("discovers roles before LIMIT beyond 100 ordinary Triggers and authorizes hidden anchor detail", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "discovery");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = await role(f, base.userId);
     for (let index = 0; index < 101; index++)
       await f.triggers.create({
         actorThreadId: null,
-        anchorThreadId: base.chat!.id,
+        anchorThreadId: base.thread.id,
         createdBy: base.userId,
         idempotencyKey: `ordinary-${index}`,
         name: `Ordinary ${index}`,
@@ -1004,9 +823,6 @@ describeStore("managed memory passes", (it) => {
         await f.triggers.listForOwner({
           ownerId: base.userId,
           systemRole: "memory-light",
-          scope: {
-            kind: "user",
-          },
           limit: 1,
         })
       )[0]?.id,
@@ -1015,28 +831,12 @@ describeStore("managed memory passes", (it) => {
       (
         await f.triggers.listForOwner({
           ownerId: base.userId,
-          scope: {
-            kind: "user",
-          },
           limit: 100,
         })
       ).filter(({ systemRole }) => systemRole),
     ).toHaveLength(2);
     expect(
-      await f.triggers.getForOwner(light.trigger.id, base.userId, 1, {
-        kind: "lineage",
-        lineageRootThreadId: createId("thread"),
-      }),
-    ).toBeNull();
-    expect(
-      await f.triggers.getForOwner(
-        light.trigger.id,
-        await f.store.createUser("Another person"),
-        1,
-        {
-          kind: "user",
-        },
-      ),
+      await f.triggers.getForOwner(light.trigger.id, await f.store.createUser("Another person"), 1),
     ).toBeNull();
     expect(light.anchorThread?.id).toBe(light.trigger.anchorThreadId);
   });
@@ -1044,7 +844,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "reuse");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const parent = await f.enqueueHumanTrigger({
       content: [
@@ -1055,10 +855,10 @@ describeStore("managed memory passes", (it) => {
       ],
       idempotencyKey: "reuse-parent",
       requestedBy: base.userId,
-      threadId: base.chat!.id,
+      threadId: base.thread.id,
     });
     await f.store.claimCommand(parent.command.id, "reuse-parent-dispatcher");
-    await f.bindAgentControlRun(base, parent.run.id, "reuse-parent", base.chat!.id);
+    await f.bindAgentControlRun(base, parent.run.id, "reuse-parent", base.thread.id);
     await f.database
       .updateTable("runs")
       .set({
@@ -1076,7 +876,7 @@ describeStore("managed memory passes", (it) => {
       origin: {
         kind: "run",
         parentRunId: parent.run.id,
-        parentThreadId: base.chat!.id,
+        parentThreadId: base.thread.id,
       },
       task: [
         {
@@ -1090,11 +890,11 @@ describeStore("managed memory passes", (it) => {
     expect(delegated.thread.listed).toBe(false);
   });
   for (const mode of ["live", "durable"] as const)
-    it(`presents an unassigned hidden worker's ${mode} Request on Chat, preserving worker authority and denying other readers`, async ({
+    it(`presents an unassigned hidden worker's ${mode} Request in Needs you, preserving worker authority and denying other readers`, async ({
       storeFixture: f,
     }) => {
       const base = await fixture(f, `request-${mode}`);
-      await service(f).instance.ensureForMain(base.workspace.id);
+      await service(f).instance.ensureForPersonal();
       const light = (await role(f, base.userId)).trigger;
       const occurrence = await tick(f, base, light);
       const admitted = await wake(f, light, occurrence.occurrence.id, `request-wake-${mode}`);
@@ -1161,40 +961,24 @@ describeStore("managed memory passes", (it) => {
               },
       });
       const waiting = (
-        await f.store.requests.waitingOnUserPage({
-          userId: base.userId,
-          limit: 100,
-        })
-      ).requests.find(({ request }) => request.id === opened.request.id)!;
+        await needsYouPage(f.database, { userId: base.userId, limit: 100 })
+      ).entries.find(({ request }) => request.id === opened.request.id)!;
       expect(waiting).toMatchObject({
-        assignments: [],
-        presentation: {
-          threadId: base.chat!.id,
-          workerThread: {
-            id: light.anchorThreadId,
-            title: "Memory light pass",
-          },
-        },
-        request: {
-          originatingThreadId: light.anchorThreadId,
-          originatingRunId: admitted.run.id,
-        },
+        originThreadId: light.anchorThreadId,
+        navigationThreadId: light.anchorThreadId,
+        purpose: "background-job",
+        request: { originatingThreadId: light.anchorThreadId, originatingRunId: admitted.run.id },
       });
-      expect(
-        (
-          await f.store.requests.waitingOnUserPage({
-            userId: await f.store.createUser("Denied"),
-            limit: 100,
-          })
-        ).requests,
-      ).toEqual([]);
+      await expect(
+        needsYouPage(f.database, { userId: await f.store.createUser("Denied"), limit: 100 }),
+      ).rejects.toMatchObject({ code: "forbidden" });
       expect(binding.requestedBy).toBe(base.userId);
     });
   it("starts each admitted pass in a fresh native session on its own model, and never reroutes an active pass", async ({
     storeFixture: f,
   }) => {
     const base = await fixture(f, "fresh-pass");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     const sessions = () =>
       f.database
@@ -1250,7 +1034,7 @@ describeStore("managed memory passes", (it) => {
       wake(f, light, second.occurrence.id, "while-active-other-model", {
         harnessInstanceId: base.harnessInstance.id,
         harnessRevision: base.harnessInstance.runtimeRevision,
-        modelSelection: base.chat!.modelSelection,
+        modelSelection: base.thread.modelSelection,
       }),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
     expect((await role(f, base.userId)).anchorThread?.modelSelection).toEqual(lightModel);
@@ -1272,12 +1056,12 @@ describeStore("managed memory passes", (it) => {
       })
       .where("messageId", "=", firstRun!.seedInputId)
       .execute();
-    await delivered(f, base, base.chat!.id, "chat-before-next-pass");
+    await delivered(f, base, base.thread.id, "chat-before-next-pass");
     const third = await tick(f, base, light);
     await wake(f, light, third.occurrence.id, "next-pass", {
       harnessInstanceId: base.harnessInstance.id,
       harnessRevision: base.harnessInstance.runtimeRevision,
-      modelSelection: base.chat!.modelSelection,
+      modelSelection: base.thread.modelSelection,
     });
     const [frozen, next] = await runs();
     const nextSession = (await sessions()).find(({ active }) => active);
@@ -1286,7 +1070,7 @@ describeStore("managed memory passes", (it) => {
       providerSessionId: firstSession!.id,
     });
     expect(next).toMatchObject({
-      modelSelection: base.chat!.modelSelection,
+      modelSelection: base.thread.modelSelection,
       providerSessionId: nextSession?.id,
     });
     expect(nextSession).toMatchObject({
@@ -1299,7 +1083,7 @@ describeStore("managed memory passes", (it) => {
     storeFixture: f,
   }) => {
     const base = await fixture(f, "activity");
-    await service(f).instance.ensureForMain(base.workspace.id);
+    await service(f).instance.ensureForPersonal();
     const light = (await role(f, base.userId)).trigger;
     const thread = async (
       title: string,
@@ -1312,10 +1096,10 @@ describeStore("managed memory passes", (it) => {
         environmentId: base.environmentId,
         harnessInstanceId: base.harnessInstance.id,
         idempotencyKey: `activity-${title}`,
-        modelSelection: base.chat!.modelSelection,
+        modelSelection: base.thread.modelSelection,
+        folder: base.folder,
         title,
       });
-      // Consent is immutable; a real shared route creates its Thread without Main.
       if (Object.keys(patch).length === 0) return thread;
       await f.database.transaction().execute(async (transaction) => {
         await sql`set local session_replication_role = replica`.execute(transaction);
@@ -1335,7 +1119,7 @@ describeStore("managed memory passes", (it) => {
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
     await delivered(f, base, voice.id, "activity-voice");
     await delivered(f, base, shared.id, "activity-shared");
-    await delivered(f, base, base.chat!.id, "activity-chat");
+    await delivered(f, base, base.thread.id, "activity-chat");
     await f.enqueueHumanTrigger({
       content: [
         {
@@ -1351,8 +1135,8 @@ describeStore("managed memory passes", (it) => {
     const second = await wake(f, light, next.occurrence.id, "activity-2");
     const text = wakeText(second).join("\n");
     expect(text).toContain(`"Voice": threadId ${voice.id}, 1 new messages`);
-    expect(text).toContain(`threadId home, 1 new messages`);
-    expect(text).not.toContain(shared.id);
+    expect(text).toContain(`threadId ${base.thread.id}, 1 new messages`);
+    expect(text).toContain(shared.id);
     expect(text).not.toContain("Waiting");
     expect(text).not.toContain(light.anchorThreadId);
     await f.store.claimCommand(second.command!.id, "activity-dispatcher");
@@ -1420,7 +1204,7 @@ describeStore("managed memory passes", (it) => {
   }) => {
     const base = await fixture(f, "accepted-replay");
     const s = service(f);
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const worker = light.anchorThread!;
     const { occurrence } = await tick(f, base, light.trigger);
@@ -1503,15 +1287,15 @@ describeStore("managed memory passes", (it) => {
   }) => {
     const base = await fixture(f, "in-flight");
     const s = service(f);
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
     await f.store.setAutomaticModelConfig(base.userId, {
       roles: {},
       excludedAccounts: [base.harnessInstance.id],
     });
-    // Admission holds the occurrence, then stops here until the Workspace row frees.
-    await holdingRow(f, "workspaces", base.workspace.id, async (release) => {
+    // Admission holds the occurrence until the personal mutation fence is released.
+    await holdingRow(f, "personalSettings", "personal", async (release) => {
       const admission = wake(f, light.trigger, occurrence.id, "in-flight");
       await lockWaiters(f, 1);
       const retry = s.instance.admissionSelection(occurrence.id, light.anchorThread!);
@@ -1527,7 +1311,7 @@ describeStore("managed memory passes", (it) => {
   }) => {
     const base = await fixture(f, "waiting-first");
     const s = service(f);
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const { occurrence } = await tick(f, base, light.trigger);
     await f.store.setAutomaticModelConfig(base.userId, {
@@ -1546,7 +1330,7 @@ describeStore("managed memory passes", (it) => {
   }) => {
     const base = await fixture(f, "endpoint-fence");
     const s = service(f);
-    await s.instance.ensureForMain(base.workspace.id);
+    await s.instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const worker = light.anchorThread!;
     const { occurrence } = await tick(f, base, light.trigger);
@@ -1606,7 +1390,7 @@ describeStore("managed memory passes", (it) => {
       light: false,
     });
     const { account: claude } = await claudeAccount(f, base);
-    // Chat's model as its account's catalog lists it, options included.
+    // The remembered model retains the person's explicit options.
     const chatModel = ModelSelectionSchema.parse({
       providerId: "openai",
       modelId: "gpt-5.6-sol",
@@ -1617,21 +1401,19 @@ describeStore("managed memory passes", (it) => {
       .set({
         modelSelection: sql`${JSON.stringify(chatModel)}::jsonb`,
       })
-      .where("id", "=", base.chat!.id)
+      .where("id", "=", base.thread.id)
       .execute();
     const s = service(f);
     const onChanged = vi.fn();
     const instance = new MemoryPassService({
       store: f.store,
       runners: s.runners,
-      files: {
-        preview: s.preview,
-      },
+      readAgentInstructions: s.preview,
       onEvent: vi.fn(),
       onChanged,
       onError: vi.fn(),
     });
-    await instance.ensureForMain(base.workspace.id);
+    await instance.ensureForPersonal();
     const light = await role(f, base.userId);
     const nightly = await role(f, base.userId, "memory-nightly");
     const exclude = (...excludedAccounts: HarnessInstanceId[]) =>
@@ -1640,14 +1422,14 @@ describeStore("managed memory passes", (it) => {
         excludedAccounts,
       });
 
-    // The Trigger's creator, Main's owner, is the principal. Light has no Chat
+    // The Trigger's creator, personal owner, is the principal. Light has no remembered
     // fallback: with Claude excluded by them, it waits.
     await exclude(claude.id);
     const lightTick = await tick(f, base, light.trigger);
     await expect(
       instance.admissionSelection(lightTick.occurrence.id, light.anchorThread!),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
-    expect(onChanged).toHaveBeenCalledWith(base.workspace.id);
+    expect(onChanged).toHaveBeenCalledWith();
     expect((await role(f, base.userId)).trigger).toMatchObject({
       status: "active",
       pauseReason: null,
@@ -1658,9 +1440,6 @@ describeStore("managed memory passes", (it) => {
         await f.triggers.listForOwner({
           ownerId: base.userId,
           systemRole: "memory-light",
-          scope: {
-            kind: "user",
-          },
         })
       )[0]?.waitingReason,
     ).toBe(memoryPassWaitingReason);
@@ -1699,18 +1478,18 @@ describeStore("managed memory passes", (it) => {
       }),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
 
-    // Nightly ranks no usable deep model here, so it ends with Chat's model.
+    // Nightly ranks no usable deep model here, so it ends with the remembered model.
     const nightlyTick = await tick(f, base, nightly.trigger);
     expect(
       await instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
     ).toEqual({
-      harnessInstanceId: base.chat!.harnessInstanceId,
+      harnessInstanceId: base.thread.harnessInstanceId,
       harnessRevision: base.harnessInstance.runtimeRevision,
       modelSelection: chatModel,
     });
     expect((await role(f, base.userId, "memory-nightly")).trigger.waitingReason).toBeNull();
-    // Chat's model is an original, never an override: excluding its account drops it.
-    await exclude(base.chat!.harnessInstanceId);
+    // the remembered model is an original, never an override: excluding its account drops it.
+    await exclude(base.thread.harnessInstanceId);
     await expect(
       instance.admissionSelection(nightlyTick.occurrence.id, nightly.anchorThread!),
     ).rejects.toThrow(MANAGED_MEMORY_WAKE_SKIPPED);
@@ -1718,7 +1497,7 @@ describeStore("managed memory passes", (it) => {
       memoryPassWaitingReason,
     );
     await exclude();
-    // A person's deep list replaces the maintained one and comes before Chat.
+    // A person's deep list replaces the maintained one and comes before the remembered choice.
     await f.store.setAutomaticModelConfig(base.userId, {
       roles: {
         deep: [

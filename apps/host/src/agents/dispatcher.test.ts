@@ -48,6 +48,10 @@ describe("HostCommandDispatcher Request responses", () => {
       },
     );
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -61,7 +65,7 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         dispatch: runnersDispatch,
@@ -71,8 +75,6 @@ describe("HostCommandDispatcher Request responses", () => {
       } as never,
       triggerControlTokens: {} as never,
       triggers: {} as never,
-      workspaces: {} as never,
-      workspaceAccess: {} as never,
     });
     const command = requestCommand({
       encryptedRequestResponse: sealed.envelope,
@@ -104,6 +106,10 @@ describe("HostCommandDispatcher Request responses", () => {
     const runId = createId("run");
     const threadId = createId("thread");
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -121,7 +127,7 @@ describe("HostCommandDispatcher Request responses", () => {
       egress: {} as never,
       pluginVersions: async () => [],
       pluginsTokens: {} as never,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         dispatch: runnersDispatch,
@@ -136,8 +142,6 @@ describe("HostCommandDispatcher Request responses", () => {
       } as never,
       triggerControlTokens: {} as never,
       triggers: {} as never,
-      workspaces: {} as never,
-      workspaceAccess: {} as never,
     });
     await expect(
       dispatcher.dispatch(
@@ -192,9 +196,9 @@ describe("HostCommandDispatcher steering", () => {
       } as never;
       const refuseSteer = vi.fn(async () => [requeuedEvent]);
       const succeedCommand = vi.fn(async () => []);
-      const onWorkspaceEvent = vi.fn();
+      const onDeploymentEvent = vi.fn();
       const dispatcher = steerDispatcher({
-        onWorkspaceEvent,
+        onDeploymentEvent,
         refuseSteer,
         runnersDispatch: vi.fn(async () => {
           throw new CommandDispatchError(
@@ -223,7 +227,7 @@ describe("HostCommandDispatcher steering", () => {
         "Harness does not support steering",
         reason,
       );
-      expect(onWorkspaceEvent).toHaveBeenCalledWith(requeuedEvent);
+      expect(onDeploymentEvent).toHaveBeenCalledWith(requeuedEvent);
       expect(succeedCommand).not.toHaveBeenCalled();
     },
   );
@@ -254,9 +258,12 @@ describe("HostCommandDispatcher specialist admission", () => {
       .spyOn(SpecialistStore.prototype, "assertRunnable")
       .mockRejectedValue(new Error(message));
     const send = vi.fn();
-    const workspaceId = createId("workspace");
     const requestedBy = createId("user");
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90000,
       publicUrl: new URL("https://host.example"),
       runners: {
@@ -269,9 +276,6 @@ describe("HostCommandDispatcher specialist admission", () => {
           },
           thread: {
             specialistId: "registration",
-          },
-          workspace: {
-            id: workspaceId,
           },
         }),
       },
@@ -292,83 +296,12 @@ describe("HostCommandDispatcher specialist admission", () => {
         message,
         disposition: "failed",
       });
-      expect(admit).toHaveBeenCalledWith("registration", workspaceId, requestedBy);
+      expect(admit).toHaveBeenCalledWith("registration", requestedBy);
       expect(send).not.toHaveBeenCalled();
     } finally {
       admit.mockRestore();
     }
   });
-});
-describe("HostCommandDispatcher archived Workspace demand", () => {
-  // A Workspace claimed by the archive sweep is as wakeable as a sealed one:
-  // the Manager's wake cancels a cycle that has not sealed yet.
-  it.each(["archiving", "archived"] as const)(
-    "starts a wake for a %s Workspace and returns a retryable dispatch error",
-    async (status) => {
-      const workspaceId = createId("workspace");
-      const dispatcher = new HostCommandDispatcher({
-        executionLeaseMs: 90_000,
-        attachmentRunTokens: {
-          issue: () => "attachment-token",
-        } as never,
-        attachments: {
-          listForRun: async () => [],
-        },
-        requestResponseVault: {} as never,
-        runToolTokens: {} as never,
-        browser: {} as never,
-        egress: {} as never,
-        pluginVersions: async () => [],
-        pluginsTokens: {} as never,
-        onWorkspaceEvent: vi.fn(),
-        publicUrl: new URL("https://host.example"),
-        runners: {
-          identityForEnvironment: () => ({
-            capabilities: [
-              "native-session-continuation-v1",
-              "assignments-v1",
-              "thread-state-v1",
-              "requester-time-zone-v1",
-              "execution-plane-v2",
-              "agent-tools-plan-v1",
-            ],
-            connectionGeneration: 7,
-            name: "Runner",
-          }),
-        } as never,
-        store: {
-          loadRunDispatchContext: async () => ({
-            run: {
-              assignmentId: null,
-            },
-            thread: {
-              purpose: "task",
-            },
-            workspace: {
-              id: workspaceId,
-              status,
-            },
-          }),
-        } as never,
-        triggerControlTokens: {} as never,
-        triggers: {} as never,
-        workspaceAccess: {} as never,
-        workspaces: {} as never,
-      });
-      const command = {
-        ...steerCommand(),
-        payload: {
-          type: "run.execute",
-        },
-        type: "run.execute" as const,
-      };
-      await expect(
-        dispatcher.dispatch(command, new AbortController().signal),
-      ).rejects.toMatchObject({
-        disposition: "retry",
-      });
-    },
-  );
 });
 describe("HostCommandDispatcher model selection", () => {
   const gpt5 = {
@@ -753,76 +686,6 @@ describe("HostCommandDispatcher model selection", () => {
       }),
     );
   });
-  it.each([
-    {
-      reach: "user",
-      owner: "requester",
-      advertised: true,
-      offered: true,
-    },
-    {
-      reach: "workspace",
-      owner: "requester",
-      advertised: true,
-      offered: false,
-    },
-    {
-      reach: "user",
-      owner: "another",
-      advertised: true,
-      offered: false,
-    },
-    {
-      reach: "user",
-      owner: "none",
-      advertised: true,
-      offered: false,
-    },
-    {
-      reach: "user",
-      owner: "requester",
-      advertised: false,
-      offered: false,
-    },
-  ] as const)(
-    "plans knowledge exactly where Main's memory goes, for the owner on a Runner that advertises it: %o",
-    async ({ reach, owner, advertised, offered }) => {
-      const planFor = async (
-        knowledge: NonNullable<Parameters<typeof dispatchRun>[0]["knowledge"]>,
-      ) => {
-        const { dispatch, run } = dispatchRun({
-          models: [gpt5],
-          modelSelection: {
-            modelId: "gpt-5",
-            options: {},
-            providerId: "openai",
-          },
-          knowledge,
-        });
-        await run();
-        const command = dispatch.mock.lastCall![0];
-        if (command.type !== "run.execute") throw new Error("Expected run.execute");
-        return RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools);
-      };
-      const plan = await planFor({
-        enabled: true,
-        reach,
-        owner,
-        advertised,
-      });
-      expect(plan.skills.includes("opensteer:knowledge")).toBe(offered);
-      expect(plan.tools.includes("sql")).toBe(offered);
-      if (owner === "requester" && advertised)
-        expect(plan.skills.includes("opensteer:memory")).toBe(offered);
-      const off = await planFor({
-        enabled: false,
-        reach,
-        owner,
-        advertised,
-      });
-      expect(plan.toolsRevision === off.toolsRevision).toBe(!offered);
-    },
-  );
   it("refuses the new tool plan on an old Runner with a visible update reason", async () => {
     const { dispatch, run } = dispatchRun({
       capabilities: [
@@ -928,7 +791,7 @@ describe("HostCommandDispatcher model selection", () => {
         options: {},
         providerId: "openai",
       },
-      workspaceSkillPolicy: {
+      skillPolicy: {
         revision: 3,
         disabledFullNames: ["release"],
       },
@@ -936,7 +799,7 @@ describe("HostCommandDispatcher model selection", () => {
     const older = dispatchRun(input);
     await expect(older.run()).rejects.toMatchObject({
       disposition: "failed",
-      message: "Update this Runner to enforce Workspace skill settings.",
+      message: "Update this Runner to enforce skill settings.",
     });
     expect(older.dispatch).not.toHaveBeenCalled();
     const current = dispatchRun({
@@ -956,7 +819,7 @@ describe("HostCommandDispatcher model selection", () => {
       expect.objectContaining({
         context: expect.objectContaining({
           plugins: expect.objectContaining({
-            workspaceSkillPolicy: input.workspaceSkillPolicy,
+            skillPolicy: input.skillPolicy,
           }),
         }),
       }),
@@ -982,9 +845,7 @@ describe("HostCommandDispatcher model selection", () => {
       const command = dispatch.mock.calls[0]![0];
       if (command.type !== "run.execute") throw new Error("Expected run.execute");
       expect(command.context.specialistId).toBe("registration");
-      expect(
-        RunExecutionContextSchema.shape.agentTools.parse(command.context.agentTools).instructions,
-      ).toContain("specialist lineage");
+      expect(RunExecutionContextSchema.safeParse(command.context).success).toBe(true);
     } finally {
       admit.mockRestore();
     }
@@ -992,23 +853,18 @@ describe("HostCommandDispatcher model selection", () => {
   function dispatchRun(input: {
     readonly specialistId?: string;
     readonly capabilities?: readonly string[];
-    readonly workspaceSkillPolicy?: import("@opensteer/protocol").RunPluginsPlan["workspaceSkillPolicy"];
-    readonly role?: "conversation" | "work";
+    readonly skillPolicy?: import("@opensteer/protocol").RunPluginsPlan["skillPolicy"];
+    readonly purpose?: "task" | "voice";
     readonly supportsAttachments?: boolean;
     readonly hasHistoricalAttachments?: boolean;
     readonly models: readonly unknown[];
     readonly modelSelection: unknown;
     readonly requesterTimeZone?: string | null;
-    readonly knowledge?: {
-      readonly enabled: boolean;
-      readonly reach: "user" | "workspace";
-      readonly owner: "requester" | "another" | "none";
-      readonly advertised: boolean;
-    };
   }) {
     const models = input.models.map((model) => HarnessModelDescriptorSchema.parse(model));
     const modelSelection = ModelSelectionSchema.parse(input.modelSelection);
     const environmentId = createId("environment");
+    const computerId = createId("runner");
     const harnessInstanceId = createId("harnessInstance");
     const requestedBy = createId("user");
     const runId = createId("run");
@@ -1027,6 +883,10 @@ describe("HostCommandDispatcher model selection", () => {
       }),
     };
     const dispatcher = new HostCommandDispatcher({
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
+      },
+      folders: { assertAvailable: async () => {} },
       executionLeaseMs: 90_000,
       attachmentRunTokens: {
         issue: () => "attachment-token",
@@ -1042,12 +902,12 @@ describe("HostCommandDispatcher model selection", () => {
       egress: {
         issue: () => "egress-token",
       } as never,
-      workspaceSkillPolicy: async () => input.workspaceSkillPolicy,
+      skillPolicy: async () => input.skillPolicy,
       pluginVersions: async () => [],
       pluginsTokens: {
         issue: () => "skills-token",
       } as never,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://host.example"),
       runners: {
         supportsMessageAttachments: () => input.supportsAttachments ?? false,
@@ -1065,14 +925,8 @@ describe("HostCommandDispatcher model selection", () => {
             "agent-tools-plan-v1",
           ],
           name: "Run computer",
-          runnerId: createId("runner"),
-          modules: {
-            agents: input.knowledge?.advertised
-              ? {
-                  knowledgeSkill: 1,
-                }
-              : {},
-          },
+          runnerId: computerId,
+          modules: { agents: {} },
         }),
         inspectHarnesses: async () => [
           {
@@ -1108,6 +962,11 @@ describe("HostCommandDispatcher model selection", () => {
           previousRun: null,
         }),
         loadRunDispatchContext: async () => ({
+          personalContext: true,
+          location: {
+            folder: { computerId, path: "/tmp/dispatcher" },
+            agentHome: { computerId, path: "/tmp/dispatcher" },
+          },
           history: [],
           historyWindow: {
             byteCount: 0,
@@ -1135,12 +994,8 @@ describe("HostCommandDispatcher model selection", () => {
                 }
               : {}),
             id: threadId,
-            role: input.role ?? "work",
-          },
-          workspace: {
-            id: createId("workspace"),
-            kind: "project",
-            status: "ready",
+            purpose: input.purpose ?? "task",
+            teamOrigin: null,
           },
         }),
         notificationState: {
@@ -1152,26 +1007,6 @@ describe("HostCommandDispatcher model selection", () => {
       } as never,
       triggerControlTokens: {} as never,
       triggers: {} as never,
-      workspaces: {
-        ensureExecutionReady: async () => undefined,
-      } as never,
-      workspaceAccess: {
-        plan: async () => ({
-          kind: "test-plan",
-        }),
-      } as never,
-      ...(input.knowledge?.enabled
-        ? {
-            knowledge: {
-              owner: async () =>
-                input.knowledge?.owner === "requester"
-                  ? requestedBy
-                  : input.knowledge?.owner === "another"
-                    ? createId("user")
-                    : null,
-            },
-          }
-        : {}),
     });
     const command = {
       ...steerCommand(),
@@ -1191,7 +1026,7 @@ describe("HostCommandDispatcher model selection", () => {
     };
   }
 });
-describe("HostCommandDispatcher Workspace planning", () => {
+describe("HostCommandDispatcher folder admission", () => {
   it.each([null, "native-conversation"])(
     "plans a Run using its proven provider session (%s)",
     async (providerSessionReference) => {
@@ -1199,7 +1034,6 @@ describe("HostCommandDispatcher Workspace planning", () => {
       const requestedBy = createId("user");
       const runId = createId("run");
       const threadId = createId("thread");
-      const workspaceId = createId("workspace");
       const harnessInstanceId = createId("harnessInstance");
       const identity = {
         bootId: "boot-run",
@@ -1215,14 +1049,11 @@ describe("HostCommandDispatcher Workspace planning", () => {
         name: "Run computer",
         runnerId: createId("runner"),
       };
-      const workspace = {
-        id: workspaceId,
-        kind: "project",
-        status: "ready",
+      const location = {
+        folder: { computerId: identity.runnerId, path: "/tmp/dispatcher/task" },
+        agentHome: { computerId: identity.runnerId, path: "/tmp/dispatcher/home" },
       };
-      const plan = vi.fn(async () => ({
-        kind: "test-plan",
-      }));
+      const assertAvailable = vi.fn(async () => {});
       const dispatch = vi.fn(async () => undefined);
       const command = {
         ...steerCommand(),
@@ -1236,6 +1067,10 @@ describe("HostCommandDispatcher Workspace planning", () => {
         type: "run.execute" as const,
       };
       const dispatcher = new HostCommandDispatcher({
+        teamRequestContext: async () => {
+          throw new Error("Unexpected team request");
+        },
+        folders: { assertAvailable },
         executionLeaseMs: 90_000,
         attachmentRunTokens: {
           issue: () => "attachment-token",
@@ -1255,7 +1090,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
         pluginsTokens: {
           issue: () => "skills-token",
         } as never,
-        onWorkspaceEvent: vi.fn(),
+        onDeploymentEvent: vi.fn(),
         publicUrl: new URL("https://host.example"),
         runners: {
           supportsMessageAttachments: () => false,
@@ -1304,6 +1139,8 @@ describe("HostCommandDispatcher Workspace planning", () => {
             previousRun: null,
           }),
           loadRunDispatchContext: async () => ({
+            personalContext: true,
+            location,
             history: [
               {
                 id: "old-failed-input",
@@ -1340,8 +1177,9 @@ describe("HostCommandDispatcher Workspace planning", () => {
             },
             thread: {
               id: threadId,
+              purpose: "task",
+              teamOrigin: null,
             },
-            workspace,
           }),
           notificationState: {
             timeZoneFor: async () => null,
@@ -1352,20 +1190,9 @@ describe("HostCommandDispatcher Workspace planning", () => {
         } as never,
         triggerControlTokens: {} as never,
         triggers: {} as never,
-        workspaces: {
-          ensureExecutionReady: async () => undefined,
-        } as never,
-        workspaceAccess: {
-          plan,
-        } as never,
       });
       await dispatcher.dispatch(command, new AbortController().signal);
-      expect(plan).toHaveBeenCalledWith({
-        environmentId,
-        requestedBy,
-        runnerIdentity: identity,
-        workspace,
-      });
+      expect(assertAvailable).toHaveBeenCalledWith(location.folder);
       expect(dispatch).toHaveBeenLastCalledWith(
         expect.objectContaining({
           context: expect.objectContaining({
@@ -1392,9 +1219,6 @@ describe("HostCommandDispatcher Workspace planning", () => {
               itemCount: providerSessionReference ? 1 : 0,
               hasEarlier: false,
             },
-            workspaceAccess: {
-              kind: "test-plan",
-            },
             // One Host credential: the tool plan's.
             agentTools: expect.objectContaining({
               token: "agent-token",
@@ -1404,6 +1228,7 @@ describe("HostCommandDispatcher Workspace planning", () => {
             },
           }),
           type: "run.execute",
+          location,
         }),
         expect.any(AbortSignal),
         expect.objectContaining({
@@ -1420,13 +1245,17 @@ describe("HostCommandDispatcher Workspace planning", () => {
   );
 });
 function steerDispatcher(input: {
-  readonly onWorkspaceEvent?: () => void;
+  readonly onDeploymentEvent?: () => void;
   readonly dispatchChannelCommand?: OpensteerStore["dispatchChannelCommand"];
   readonly refuseSteer: () => Promise<readonly never[]>;
   readonly runnersDispatch: () => Promise<undefined>;
   readonly succeedCommand: () => Promise<readonly never[]>;
 }): HostCommandDispatcher {
   return new HostCommandDispatcher({
+    teamRequestContext: async () => {
+      throw new Error("Unexpected team request");
+    },
+    folders: { assertAvailable: async () => {} },
     executionLeaseMs: 90_000,
     attachmentRunTokens: {
       issue: () => "attachment-token",
@@ -1440,7 +1269,7 @@ function steerDispatcher(input: {
     egress: {} as never,
     pluginVersions: async () => [],
     pluginsTokens: {} as never,
-    onWorkspaceEvent: input.onWorkspaceEvent ?? vi.fn(),
+    onDeploymentEvent: input.onDeploymentEvent ?? vi.fn(),
     publicUrl: new URL("https://host.example"),
     runners: {
       dispatch: input.runnersDispatch,
@@ -1457,8 +1286,6 @@ function steerDispatcher(input: {
     } as never,
     triggerControlTokens: {} as never,
     triggers: {} as never,
-    workspaces: {} as never,
-    workspaceAccess: {} as never,
   });
 }
 function steerCommand(): CommandRow {
@@ -1499,7 +1326,6 @@ function steerMessage(): Message {
       kind: "agent",
       runId: createId("run"),
       threadId: createId("thread"),
-      workspaceName: "Client",
     },
     content: [
       {
@@ -1528,7 +1354,7 @@ function requestCommand(input: {
     actorPrincipalId: "pri_00000000-0000-4000-8000-000000000099" as CommandRow["actorPrincipalId"],
     attempts: 1,
     authoritySource: {
-      kind: "workspace-membership",
+      kind: "user-session",
     },
     createdAt: now,
     dispatcherId: "test",

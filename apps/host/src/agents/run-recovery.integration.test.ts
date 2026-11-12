@@ -715,10 +715,9 @@ integration.sequential("Run recovery acceptance", () => {
         // The fake executed the user's requested write before the start receipt.
         await waitFor(
           async () =>
-            (await readFile(
-              join(current.active.mountedWorkspacePath, "recovery-effect"),
-              "utf8",
-            ).catch(() => "")) === "effect\n",
+            (await readFile(join(current.active.agentHome.path, "recovery-effect"), "utf8").catch(
+              () => "",
+            )) === "effect\n",
           "effect before run.started",
         );
       }
@@ -762,9 +761,9 @@ integration.sequential("Run recovery acceptance", () => {
       });
       expect(receipts).toHaveLength(1);
       if (effect)
-        expect(
-          await readFile(join(current.active.mountedWorkspacePath, "recovery-effect"), "utf8"),
-        ).toBe("effect\n");
+        expect(await readFile(join(current.active.agentHome.path, "recovery-effect"), "utf8")).toBe(
+          "effect\n",
+        );
     }, 120_000);
   }
   it("4. describes unfinished tools and contains their real processes", async () => {
@@ -1579,10 +1578,10 @@ integration.sequential("Run recovery acceptance", () => {
       }
     }, 120_000);
   }
-  it("18. leaves a healthy second Runner's Run and binding untouched", async () => {
+  it("18. leaves a healthy second Personal Deployment's Run and binding untouched", async () => {
     const current = await start();
-    const companion = await current.active.startAdditionalRunner();
-    const created = await current.active.api["commands.dispatch"]({
+    const companion = await current.active.startAdditionalPersonal();
+    const created = await companion.api["commands.dispatch"]({
       type: "thread.create",
       idempotencyKey: randomUUID(),
       title: "Healthy companion task",
@@ -1594,7 +1593,7 @@ integration.sequential("Run recovery acceptance", () => {
       throw new Error("Companion thread creation failed");
     const healthyThreadId = created.data.thread.id;
     const { runId } = await held(current);
-    const queued = await current.active.queueMessage({
+    const queued = await companion.queueMessage({
       threadId: healthyThreadId,
       text: "Keep the healthy task running.",
     });
@@ -1602,10 +1601,10 @@ integration.sequential("Run recovery acceptance", () => {
     const healthyId = queued.runId;
     runs.push(healthyId);
     await waitFor(
-      async () => (await row(current.active, healthyId)).startedAt !== null,
+      async () => (await row(companion, healthyId)).startedAt !== null,
       "second Runner working",
     );
-    const before = await row(current.active, healthyId);
+    const before = await row(companion, healthyId);
     const initialTurns = (await current.captures()).flatMap((entry) =>
       entry.recoveryTurn ? [entry.recoveryTurn] : [],
     );
@@ -1626,7 +1625,7 @@ integration.sequential("Run recovery acceptance", () => {
       true,
     );
     await recovery(current, runId);
-    const after = await row(current.active, healthyId);
+    const after = await row(companion, healthyId);
     expect(alive(companionEngine.pid), "companion PID survives primary recovery dispatch").toBe(
       true,
     );
@@ -1646,11 +1645,11 @@ integration.sequential("Run recovery acceptance", () => {
       bindingGeneration: before.bindingGeneration,
       nextRunnerOrdinal: before.nextRunnerOrdinal,
     });
-    expect(await attempts(current.active, healthyId)).toHaveLength(1);
-    expect(await recoveryMessages(current.active, healthyThreadId)).toEqual([]);
+    expect(await attempts(companion, healthyId)).toHaveLength(1);
+    expect(await recoveryMessages(companion, healthyThreadId)).toEqual([]);
     await current.release();
     await waitFor(
-      async () => (await row(current.active, healthyId)).status === "completed",
+      async () => (await row(companion, healthyId)).status === "completed",
       "healthy Runner completes",
     );
     await finish(current, runId);
@@ -1674,7 +1673,7 @@ integration.sequential("Run recovery acceptance", () => {
     expect(alive(engine.pid)).toBe(true);
     expect(alive(child.pid)).toBe(true);
     await writeFile(
-      join(current.active.mountedWorkspacePath, "recovery-prior-pids.json"),
+      join(current.active.agentHome.path, "recovery-prior-pids.json"),
       JSON.stringify([engine.pid, child.pid]),
     );
     await current.active.crashRunner(async () => {

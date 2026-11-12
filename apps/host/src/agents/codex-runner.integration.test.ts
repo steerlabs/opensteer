@@ -139,8 +139,8 @@ integration("Host, Runner, and Codex harness integration", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
       runTimeoutMs: 15_000,
     });
-    const { host, mountCalls } = stack;
-    const workspace = await stack.createWorkspace("Vertical client workspace");
+    const { host } = stack;
+    const workspace = await stack.createFolder("Vertical client workspace");
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
@@ -150,6 +150,7 @@ integration("Host, Runner, and Codex harness integration", () => {
         providerId: "openai",
       }),
       title: "Complete the request",
+      folder: workspace,
     });
     const turn = await stack.sendMessage({
       text: "Complete this deterministic integration request.",
@@ -161,7 +162,7 @@ integration("Host, Runner, and Codex harness integration", () => {
       expect.arrayContaining(["run.started", "assistant.message", "run.completed"]),
     );
     expect(turn.assistantText).toBe("Completed by Codex.");
-    const snapshot = await host.store.workspaceSnapshot(workspace.id);
+    const snapshot = await host.store.deploymentSnapshot();
     expect(snapshot.threads).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -216,15 +217,11 @@ integration("Host, Runner, and Codex harness integration", () => {
       nodes: [],
     });
 
-    // The owner's Main Workspace is provisioned on first bootstrap, and this
-    // test then creates one project Workspace of its own.
-    expect(await host.store.listWorkspaces()).toHaveLength(2);
-    expect(workspace.kind).toBe("project");
-    expect(mountCalls).toHaveLength(1);
-    expect(mountCalls[0]?.plan).toMatchObject({
-      ...(await host.store.getWorkspace(workspace.id))?.backing,
-    });
-    expect(stack.mountCleanupCalls()).toBe(0);
+    expect(stack.folderPreparations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ location: expect.objectContaining({ folder: workspace }) }),
+      ]),
+    );
   });
   it("records what a Codex turn's own responses consumed, once each", async () => {
     const { active, captureFile, threadId } = await startUsageStack("vertical");

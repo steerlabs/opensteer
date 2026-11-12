@@ -1,7 +1,6 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 
 import { prepareThreadInsertion } from "./thread-insertion.js";
-import { setTimeout as delay } from "node:timers/promises";
 import { takeTransactionConflicts } from "./lock-order-checker.test-support.js";
 
 import { cancelPending } from "./request-cancellation.js";
@@ -9,7 +8,7 @@ import { HarnessIdSchema, createId, type AgentEvent, type RunnerId } from "@open
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
 import type { DatabaseSchema } from "./schema.js";
-import { describe, expect } from "vitest";
+import { describe, expect, vi } from "vitest";
 import { OpensteerStore, TriggerStore } from "./index.js";
 import {
   describeStore,
@@ -216,7 +215,7 @@ describeStore("PostgreSQL store", (it) => {
         presentation: {
           kind: "external" as const,
           subject: {
-            id: fixture.workspace.id,
+            id: fixture.threadId,
             kind: "task" as const,
           },
           title: "Browser",
@@ -1189,7 +1188,7 @@ describeStore("PostgreSQL store", (it) => {
         kind: "external" as const,
         subject: {
           id: targetWorkspace.id,
-          kind: "workspace",
+          kind: "thread",
         },
         title: "Choose browser access",
       },
@@ -1346,7 +1345,7 @@ describeStore("PostgreSQL store", (it) => {
           title: "Choose browser access",
           subject: {
             id: target.id,
-            kind: "workspace",
+            kind: "thread",
           },
         },
       });
@@ -1639,11 +1638,13 @@ describeStore("PostgreSQL store", (it) => {
       and wait_event_type = 'Lock'`.execute(database)
         ).rows;
       const waitForPhase = async (ready: () => Promise<boolean>) => {
-        while (!(await ready()))
-          await delay(10, undefined, {
-            signal: signal,
-          });
-        signal.throwIfAborted();
+        await vi.waitFor(
+          async () => {
+            signal.throwIfAborted();
+            expect(await ready(), "Thread lock phase was never observed").toBe(true);
+          },
+          { timeout: 5_000, interval: 10 },
+        );
       };
       let cleanup: Promise<void> | undefined;
       const dispose = () =>
@@ -2017,7 +2018,7 @@ describeStore("PostgreSQL store", (it) => {
         title: "Choose browser access",
         subject: {
           id: target.id,
-          kind: "workspace",
+          kind: "thread",
         },
       },
     });

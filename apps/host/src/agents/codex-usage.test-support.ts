@@ -165,7 +165,7 @@ export async function recordedUsage(active: VerticalStack, runId: RunId): Promis
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
   const events = await database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .select(["data", "type"])
     .where("runId", "=", runId)
     .orderBy("sequence", "asc")

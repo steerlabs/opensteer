@@ -1,3 +1,4 @@
+import { findActiveBrowserSessionForPerson } from "./browser-session-store.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { sql } from "kysely";
 import type { ChannelStore } from "./channel-store.js";
@@ -1015,3 +1016,19 @@ export const testChannelNotices = {
 export const reachOnlyModules: RunnerDescriptor["modules"] = {
   shell: { hostPublicKey: `ssh-ed25519 ${"A".repeat(68)}`, platform: "darwin" },
 };
+
+export { seedPersonalOwnerResources } from "./personal-fixture.test-support.js";
+
+export function personalBrowserRepository(store: OpensteerStore) {
+  return Object.assign(store, {
+    findActiveBrowserSessionForPerson: (ownerId: import("@opensteer/core").UserId) =>
+      findActiveBrowserSessionForPerson(store.database, ownerId),
+  });
+}
+
+export {
+  messageFromRow,
+  runFromRow,
+  threadFromRow,
+  threadInputFromRow,
+} from "./thread-row-mappers.js";

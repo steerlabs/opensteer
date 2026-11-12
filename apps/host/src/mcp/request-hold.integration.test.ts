@@ -11,13 +11,9 @@ import { ContinuationService } from "../agents/continuation-service.js";
 import type { RunCaller } from "./agent-caller.js";
 import { RequestHold } from "./request-hold.js";
 
-async function setup(
-  storeFixture: StoreFixture,
-  suffix: string,
-  workspaceKind: "main" | "project" = "main",
-) {
+async function setup(storeFixture: StoreFixture, suffix: string) {
   const { store, database } = storeFixture;
-  const fixture = await storeFixture.startRunFixture(suffix, workspaceKind);
+  const fixture = await storeFixture.startRunFixture(suffix);
   const claims = (await store.runCapabilityScope(fixture.run.id))!;
   const opened = await store.requests.create({
     callId: "held",
@@ -25,15 +21,13 @@ async function setup(
     mode: "durable",
     originatingRunId: fixture.run.id,
     originatingThreadId: fixture.thread.id,
-    originatingWorkspaceId: fixture.workspace.id,
-    targetWorkspaceId: fixture.workspace.id,
     requestedBy: fixture.userId,
     requiredActor: "requester",
     payload: { kind: "browser.access", reason: "Read mail", suggestion: { kind: "user_choice" } },
     presentation: {
       kind: "external",
       title: "Choose a profile",
-      subject: { kind: "workspace", id: fixture.workspace.id },
+      subject: { kind: "thread", id: fixture.thread.id },
     },
   });
   const continuations = new ContinuationService({
@@ -105,7 +99,6 @@ async function setup(
         environmentId: fixture.environmentId,
         runId: fixture.run.id,
         threadId: fixture.thread.id,
-        workspaceId: fixture.workspace.id,
         ordinal: run.nextRunnerOrdinal,
         type,
         data,
@@ -196,7 +189,6 @@ describeStore("Held Request lifecycle", (it) => {
           environmentId: f.environmentId,
           runId: f.run.id,
           threadId: f.thread.id,
-          workspaceId: f.workspace.id,
           ordinal: 1,
           type: "request.opened",
           data: {
@@ -206,7 +198,6 @@ describeStore("Held Request lifecycle", (it) => {
               requestedBy: f.userId,
               runId: f.run.id,
               threadId: f.thread.id,
-              workspaceId: f.workspace.id,
               presentation: {
                 kind: "choice",
                 title: "Native question",
@@ -290,7 +281,7 @@ describeStore("Held Request lifecycle", (it) => {
     it(`stops for ${kind}, preserves the open Request and allows its later wake-up`, async ({
       storeFixture,
     }) => {
-      const f = await setup(storeFixture, `stop-${kind}`, kind === "queued" ? "project" : "main");
+      const f = await setup(storeFixture, `stop-${kind}`);
       if (kind === "limit") f.input.admittedAt -= f.input.limitMs;
       else
         await f.store.enqueueThreadInput({
