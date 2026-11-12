@@ -78,11 +78,6 @@ export const NativeDirectoryIdentitySchema = z.strictObject({
   volumeId: z.string().regex(/^(0|[1-9][0-9]*)$/u),
 });
 export type NativeDirectoryIdentity = z.infer<typeof NativeDirectoryIdentitySchema>;
-const EnsureRootResultSchema = z.strictObject({
-  created: z.boolean(),
-  identity: NativeDirectoryIdentitySchema,
-});
-type NativeEnsureRootResult = z.infer<typeof EnsureRootResultSchema>;
 export const NativeFileMetadataSchema = LocalFileMetadataSchema;
 export type NativeFileMetadata = z.infer<typeof NativeFileMetadataSchema>;
 export const NativeFilesListResultSchema = LocalDirectoryListingSchema;
@@ -138,14 +133,6 @@ export interface NativeFilesystem {
     input: { readonly path: string; readonly root: string },
     signal: AbortSignal,
   ): Promise<NativeDirectoryIdentity>;
-  ensureDirectory(
-    input: { readonly path: string; readonly resume: boolean; readonly root: string },
-    signal: AbortSignal,
-  ): Promise<NativeDirectoryIdentity>;
-  ensureRoot(
-    input: { readonly root: string },
-    signal: AbortSignal,
-  ): Promise<NativeEnsureRootResult>;
   list(
     input: {
       readonly maxDepth: number;
@@ -287,29 +274,6 @@ export class NativeFsHelper implements NativeFilesystem, NativeFilesAuthority {
     );
     assertNativeIdentityPlatform(identity);
     return identity;
-  }
-
-  async ensureDirectory(
-    input: Parameters<NativeFilesystem["ensureDirectory"]>[0],
-    signal: AbortSignal,
-  ) {
-    const identity = await this.#request(
-      { ...input, operation: "ensure-directory" },
-      NativeDirectoryIdentitySchema,
-      signal,
-    );
-    assertNativeIdentityPlatform(identity);
-    return identity;
-  }
-
-  async ensureRoot(input: Parameters<NativeFilesystem["ensureRoot"]>[0], signal: AbortSignal) {
-    const result = await this.#request(
-      { ...input, operation: "ensure-root" },
-      EnsureRootResultSchema,
-      signal,
-    );
-    assertNativeIdentityPlatform(result.identity);
-    return result;
   }
 
   list(input: Parameters<NativeFilesystem["list"]>[0], signal: AbortSignal) {

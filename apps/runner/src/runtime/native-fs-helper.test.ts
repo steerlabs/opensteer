@@ -50,40 +50,23 @@ describe("NativeFsHelper", () => {
     });
   });
 
-  it("pins directory identities and creates managed directories through the native boundary", async () => {
+  it("pins task folder identities through the native boundary", async () => {
     const parent = await realpath(await temporaryDirectory("directory-authority"));
-    const root = join(parent, "managed", "workspaces");
+    const root = join(parent, "task-folder");
     const helper = new NativeFsHelper({ binary: builtHelper, rootPolicy: "managed-local" });
     const signal = new AbortController().signal;
 
-    const rootCreation = await helper.ensureRoot({ root }, signal);
-    expect(rootCreation.created).toBe(true);
-    await expect(helper.ensureRoot({ root }, signal)).resolves.toEqual({
-      created: false,
-      identity: rootCreation.identity,
-    });
-
+    await mkdir(root);
     const rootIdentity = await helper.directoryIdentity({ path: ".", root }, signal);
-    expect(rootIdentity).toEqual(rootCreation.identity);
     expect(rootIdentity).toMatchObject({
       kind: process.platform === "win32" ? "windows" : "posix",
     });
     expect(rootIdentity.fileId).toMatch(/^(?:[0-9]+|[a-f0-9]{32})$/u);
     expect(rootIdentity.volumeId).toMatch(/^[0-9]+$/u);
 
-    const created = await helper.ensureDirectory(
-      { path: "owner/workspace", resume: false, root },
-      signal,
+    await expect(helper.directoryIdentity({ path: ".", root }, signal)).resolves.toEqual(
+      rootIdentity,
     );
-    await expect(
-      helper.directoryIdentity({ path: "owner/workspace", root }, signal),
-    ).resolves.toEqual(created);
-    await expect(
-      helper.ensureDirectory({ path: "owner/workspace", resume: false, root }, signal),
-    ).rejects.toMatchObject({ code: "already-exists" });
-    await expect(
-      helper.ensureDirectory({ path: "owner/workspace", resume: true, root }, signal),
-    ).resolves.toEqual(created);
   });
 
   it.skipIf(process.platform === "win32")(

@@ -2,6 +2,7 @@ import { type TeamChannelId, createId } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
+  TeamAgentRequestSchema,
   TeamBinaryUploadMetadataSchema,
   serializeTeamLinkOffer,
   TeamChannelAccessSchema,
@@ -26,6 +27,8 @@ import {
   hostApi,
   type HostApiClient,
   type TeamMessage,
+  type TeamMember,
+  type TeamAgentRequest,
   type TeamConsistentCut,
 } from "@opensteer/protocol";
 import type { z } from "zod";
@@ -79,6 +82,9 @@ export class MockTeamHost {
     string,
     { file: z.infer<typeof TeamFileSchema>; original: Blob; preview: Blob | null }
   >();
+  readonly members: TeamMember[] = [];
+  readonly requests: TeamAgentRequest[] = [];
+  readonly linkPresence: TeamConsistentCut["linkPresence"] = [];
   readonly groups = new Map<string, z.infer<typeof TeamGroupSchema>>();
   readonly invites = new Map<string, z.infer<typeof TeamInviteSchema>>();
   readonly #uploads = new Map<string, z.infer<typeof TeamFileSchema>>();
@@ -140,6 +146,7 @@ export class MockTeamHost {
       },
       sidebar: this.#sidebarPage(),
     });
+    this.members.push(this.bootstrap.member);
     this.rpc = new Proxy(
       {},
       {
@@ -299,8 +306,12 @@ export class MockTeamHost {
       subscriptionId,
       generation,
       scope,
-      requests: [],
-      linkPresence: [],
+      requests: this.requests.filter(
+        (request) =>
+          request.channelId === scope.channelId &&
+          (scope.kind === "channel" || request.threadRootId === scope.rootId),
+      ),
+      linkPresence: this.linkPresence,
     };
     if (since !== null) {
       const delta = TeamConsistentCutSchema.safeParse({
@@ -368,7 +379,7 @@ export class MockTeamHost {
       if (message?.channelId !== channelId) throw new Error("Unknown message.");
       return message;
     }
-    if (name === "team.members.list") return { members: [this.bootstrap.member], hasMore: false };
+    if (name === "team.members.list") return { members: this.members, hasMore: false };
     if (name === "team.groups.list")
       return { groups: [...this.groups.values()].slice(0, 50), hasMore: false };
     if (name === "team.group.get")
@@ -381,7 +392,14 @@ export class MockTeamHost {
     if (name === "team.knowledge.topics.list") return { topics: [], hasMore: false };
     if (name === "team.knowledge.facts.page" || name === "team.knowledge.history.page")
       return { facts: [], hasMore: false };
-    if (name === "team.agent.requests.get") return { requests: [] };
+    if (name === "team.agent.requests.get") {
+      const { channelId, rootId } = hostApi[name].payload.parse(input);
+      return {
+        requests: this.requests.filter(
+          (request) => request.channelId === channelId && request.threadRootId === rootId,
+        ),
+      };
+    }
     if (name === "team.mentions.page" || name === "team.pins.page")
       return {
         messages: [...this.messages.values()]
@@ -662,7 +680,7 @@ export class MockTeamHost {
               replySummary: {
                 count: replies.length,
                 latestMessageId: replies.at(-1)?.id ?? null,
-                repliers: [...new Set(replies.map((row) => row.authorUserId))].slice(0, 20),
+                repliers: [...new Set(replies.map((row) => row.authorUserId))].slice(0, 4),
               },
             });
           }
@@ -693,22 +711,11 @@ export class MockTeamHost {
             row.clientMessageId === command.clientMessageId && row.authorUserId === this.userId,
         );
         if (!message) {
-          const channel = this.channels.get(command.channelId);
-          if (!channel) throw new Error("Unknown channel.");
-          message = TeamMessageSchema.parse({
-            id: String(++this.#messageId),
+          message = this.post({
             channelId: command.channelId,
             threadRootId: command.threadRootId,
-            authorUserId: this.userId,
-            authorKind: "human",
-            agentRequestId: null,
             clientMessageId: command.clientMessageId,
             bodyMarkdown: command.bodyMarkdown,
-            plainText: command.bodyMarkdown,
-            createdAt: new Date().toISOString(),
-            editedAt: null,
-            deletedAt: null,
-            changeSeq: String(++this.#seq),
             mentions: command.mentions,
             attachments: command.attachmentIds.map((id) => {
               const file = this.files.get(id)?.file;
@@ -716,27 +723,7 @@ export class MockTeamHost {
                 throw new Error("Unknown attachment.");
               return file;
             }),
-            pinned: false,
-            replySummary: { count: 0, latestMessageId: null, repliers: [] },
-            requests: [],
           });
-          this.messages.set(message.id, message);
-          channel.changeSeq = message.changeSeq;
-          channel.latestMessageId = message.id;
-          if (command.threadRootId) {
-            const root = this.messages.get(command.threadRootId);
-            if (root)
-              this.messages.set(root.id, {
-                ...root,
-                changeSeq: message.changeSeq,
-                replySummary: {
-                  count: root.replySummary.count + 1,
-                  latestMessageId: message.id,
-                  repliers: [this.userId],
-                },
-              });
-          }
-          this.publish();
         }
         if (this.loseNextSendAck) {
           this.loseNextSendAck = false;
@@ -745,10 +732,7 @@ export class MockTeamHost {
         return { type: command.type, message, wake: "not-requested" };
       }
       if (command.type === "team.channel.read") {
-        const held = this.#reads.get(command.channelId) ?? "0";
-        if (BigInt(command.throughMessageId) > BigInt(held))
-          this.#reads.set(command.channelId, command.throughMessageId);
-        this.publish();
+        this.markRead(command.channelId, command.throughMessageId);
         return { type: command.type };
       }
       throw new Error(`Mock command not implemented: ${command.type}`);
@@ -815,6 +799,94 @@ export class MockTeamHost {
       };
     }
     throw new Error(`Mock read not implemented: ${name}`);
+  }
+  setRequest(input: TeamAgentRequest): TeamAgentRequest {
+    const channel = this.channels.get(input.channelId);
+    const root = this.messages.get(input.threadRootId);
+    if (!channel || root?.channelId !== channel.id) throw new Error("Unknown request thread.");
+    const request = TeamAgentRequestSchema.parse({ ...input, changeSeq: String(++this.#seq) });
+    const index = this.requests.findIndex((held) => held.id === request.id);
+    if (index === -1) this.requests.push(request);
+    else this.requests[index] = request;
+    channel.changeSeq = request.changeSeq;
+    this.messages.set(root.id, {
+      ...root,
+      changeSeq: request.changeSeq,
+      requests: this.requests.filter(
+        (held) => held.channelId === channel.id && held.threadRootId === root.id,
+      ),
+    });
+    this.publish();
+    return request;
+  }
+  markRead(channelId: TeamChannelId, throughMessageId: string): void {
+    const held = this.#reads.get(channelId) ?? "0";
+    if (BigInt(throughMessageId) > BigInt(held)) this.#reads.set(channelId, throughMessageId);
+    this.publish();
+  }
+  post(
+    input: Pick<TeamMessage, "channelId" | "bodyMarkdown"> &
+      Partial<
+        Pick<
+          TeamMessage,
+          | "authorUserId"
+          | "authorKind"
+          | "agentRequestId"
+          | "clientMessageId"
+          | "threadRootId"
+          | "createdAt"
+          | "attachments"
+          | "mentions"
+          | "pinned"
+        >
+      >,
+  ): TeamMessage {
+    const channel = this.channels.get(input.channelId);
+    if (!channel) throw new Error("Unknown channel.");
+    const authorUserId = input.authorUserId ?? this.userId;
+    if (!this.members.some((member) => member.userId === authorUserId))
+      throw new Error("Unknown member.");
+    const message = TeamMessageSchema.parse({
+      authorUserId,
+      authorKind: "human",
+      agentRequestId: null,
+      clientMessageId: crypto.randomUUID(),
+      threadRootId: null,
+      createdAt: new Date().toISOString(),
+      editedAt: null,
+      deletedAt: null,
+      mentions: [],
+      attachments: [],
+      pinned: false,
+      replySummary: { count: 0, latestMessageId: null, repliers: [] },
+      requests: [],
+      ...input,
+      id: String(++this.#messageId),
+      changeSeq: String(++this.#seq),
+      plainText: input.bodyMarkdown,
+    });
+    this.messages.set(message.id, message);
+    channel.changeSeq = message.changeSeq;
+    channel.latestMessageId = message.id;
+    if (message.threadRootId) {
+      const root = this.messages.get(message.threadRootId);
+      if (root) {
+        const replies = [...this.messages.values()].filter(
+          (row) => row.threadRootId === root.id && !row.deletedAt,
+        );
+        this.messages.set(root.id, {
+          ...root,
+          changeSeq: message.changeSeq,
+          replySummary: {
+            count: replies.length,
+            latestMessageId: message.id,
+            repliers: [...new Set(replies.map((row) => row.authorUserId).reverse())].slice(0, 4),
+          },
+        });
+      }
+    }
+    this.publish();
+    return message;
   }
   publish(): void {
     for (const [socket, scopes] of this.#sockets) {

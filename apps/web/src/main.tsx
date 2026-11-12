@@ -126,7 +126,13 @@ async function renderOpensteer(): Promise<void> {
             { MockHostClient, mockSubagentScenes },
             { browserPreferencesStorage },
             { browserClientLifecycle },
-            { MockTeamHost, TeamSessionClient, createMemoryTeamPersistence },
+            {
+              MockTeamHost,
+              TeamSessionClient,
+              createMemoryTeamPersistence,
+              busyTeamIds,
+              seedBusyTeam,
+            },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
@@ -146,20 +152,17 @@ async function renderOpensteer(): Promise<void> {
               }),
               link: null,
             });
-            if (search.get("mock-team") === "busy")
-              return import("./team/mock-team-world.js").then(
-                async ({ busyTeamIds, seedBusyTeam }) => {
-                  const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
-                  const family = new MockTeamHost({ teamId: busyTeamIds[1] });
-                  await seedBusyTeam(acme, { name: "Acme", index: 1 });
-                  await seedBusyTeam(family, { name: "Family", index: 2 });
-                  previewTeams = [
-                    attach(acme, "https://chat.acme.example"),
-                    attach(family, "https://family.example"),
-                  ];
-                  return mockClient();
-                },
-              );
+            if (search.get("mock-team") === "busy") {
+              const acme = new MockTeamHost({ teamId: busyTeamIds[0] });
+              const family = new MockTeamHost({ teamId: busyTeamIds[1] });
+              seedBusyTeam(acme, { name: "Acme", index: 1 });
+              seedBusyTeam(family, { name: "Family", index: 2 });
+              previewTeams = [
+                attach(acme, "https://chat.acme.example"),
+                attach(family, "https://family.example"),
+              ];
+              return mockClient();
+            }
             if (search.has("mock-team"))
               previewTeams = [attach(new MockTeamHost(), "https://chat.acme.example")];
             return mockClient();

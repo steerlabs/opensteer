@@ -2,6 +2,7 @@ import {
   DeploymentConnectionInputSchema,
   type DeploymentConnectionInput,
 } from "@opensteer/client/connections";
+import { busyTeamIds } from "@opensteer/client/team";
 import { DeploymentIdSchema, HostInstanceIdSchema } from "@opensteer/core";
 
 /**
@@ -25,6 +26,8 @@ const mockSignedOutOrigin = "https://signed-out.opensteer.example";
 /** Mock mode's team, which the mock computer is in. */
 export const mockTeamId = DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-0000000000a1");
 export const mockTeamOrigin = "https://acme.opensteer.example";
+export const mockFamilyTeamId = busyTeamIds[1];
+export const mockFamilyTeamOrigin = "https://family.opensteer.example";
 
 /** The Deployment mock mode holds no credential for, so its row needs one. */
 export const mockSignedOutDeploymentId = DeploymentIdSchema.parse(
@@ -60,6 +63,13 @@ export function mockDeploymentConnections(): readonly DeploymentConnectionInput[
       kind: "team",
       name: "Acme",
       origin: mockTeamOrigin,
+    }),
+    mockConnection({
+      deploymentId: mockFamilyTeamId,
+      hostInstanceId: "hst_00000000-0000-4000-8000-0000000000a3",
+      kind: "team",
+      name: "Family",
+      origin: mockFamilyTeamOrigin,
     }),
   ];
 }
