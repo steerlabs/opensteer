@@ -43,7 +43,33 @@ if (existsSync(browserConfigPath)) {
   });
 }
 
-const databaseUrl = /process\.env\.OPENSTEER_(?:CONTROL_PLANE_)?TEST_DATABASE_URL/u;
+const databaseUrl = /process\.env\.OPENSTEER_(?:CONTROL_PLANE_)?TEST_DATABASE_(?:URL|TEMPLATES)/u;
+
+function databaseGated(file: string, visited: Set<string>): boolean {
+  if (visited.has(file) || !existsSync(file)) return false;
+  visited.add(file);
+  const text = readFileSync(file, "utf8");
+  if (databaseUrl.test(text)) return true;
+  const supports = [
+    ...[...text.matchAll(/(?:from\s+|import\(\s*)["'](\.[^"']*test-support)\.js["']/gu)].map(
+      (match) => resolve(dirname(file), `${match[1]}.ts`),
+    ),
+    ...[
+      ...text.matchAll(
+        /(?:from\s+|import\(\s*)["']@opensteer\/([^/"']+)(\/test-support\/[^"']+)["']/gu,
+      ),
+    ].map(([, name, subpath]) => {
+      const directory = resolve(root, "packages", name!);
+      const manifest = resolve(directory, "package.json");
+      const exports: Record<string, string> = existsSync(manifest)
+        ? (JSON.parse(readFileSync(manifest, "utf8")).exports ?? {})
+        : {};
+      const target = exports[`.${subpath}`];
+      return target ? resolve(directory, target) : "";
+    }),
+  ];
+  return supports.some((support) => databaseGated(support, visited));
+}
 
 // These policies fail closed for new PostgreSQL journeys, real AppKit fixture
 // launches in the host tier, and accidental changes to default discovery.
@@ -74,27 +100,7 @@ describe("test tiers", () => {
   it("reserves the integration suffix for database-gated journeys", () => {
     const ungated = files.filter((file) => {
       if (!/\.integration\.test\.tsx?$/u.test(file)) return false;
-      const text = source(file);
-      if (databaseUrl.test(text)) return false;
-      const supports = [
-        ...[...text.matchAll(/from ["'](\.[^"']*test-support)\.js["']/gu)].map((match) =>
-          resolve(root, dirname(file), `${match[1]}.ts`),
-        ),
-        ...[...text.matchAll(/from ["']@opensteer\/([^/"']+)(\/test-support\/[^"']+)["']/gu)].map(
-          ([, name, subpath]) => {
-            const directory = resolve(root, "packages", name!);
-            const manifest = resolve(directory, "package.json");
-            const exports: Record<string, string> = existsSync(manifest)
-              ? (JSON.parse(readFileSync(manifest, "utf8")).exports ?? {})
-              : {};
-            const target = exports[`.${subpath}`];
-            return target ? resolve(directory, target) : "";
-          },
-        ),
-      ];
-      return !supports.some(
-        (support) => existsSync(support) && databaseUrl.test(readFileSync(support, "utf8")),
-      );
+      return !databaseGated(resolve(root, file), new Set());
     });
     expect(ungated).toEqual([]);
   });
