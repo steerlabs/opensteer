@@ -37,6 +37,7 @@ import {
   ThreadScreenBody,
   ThreadTitle,
 } from "./channel-screen.js";
+import { sendFromComposer } from "./composer-send.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
@@ -461,17 +462,23 @@ function Place(props: {
         });
         setEditing(null);
       } else {
-        setText("");
-        setStaged([]);
-        void session.setDraft(view.scope, "").catch(() => undefined);
         session.typing(channelId, rootId, false);
-        await session.send({
-          channelId,
-          threadRootId: rootId,
-          bodyMarkdown: body,
-          mentions: mentioned.slice(0, 20),
-          attachmentIds: files as never,
-        });
+        await sendFromComposer(
+          session,
+          view.scope,
+          {
+            channelId,
+            threadRootId: rootId,
+            bodyMarkdown: body,
+            mentions: mentioned.slice(0, 20),
+            attachmentIds: files as never,
+          },
+          () => {
+            // A pending draft save would put the sent words back.
+            if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+            setStaged([]);
+          },
+        );
       }
       setText("");
       // After sending it stays as the reader left it, in a thread; a channel's
@@ -629,7 +636,16 @@ function Place(props: {
             const pending = snapshot.pending.find(
               (row) => row.command.clientMessageId === clientMessageId,
             );
-            if (pending !== undefined && choice === "edit") setText(pending.command.bodyMarkdown);
+            if (pending === undefined) return;
+            const done =
+              choice === "edit"
+                ? session
+                    .editPending(clientMessageId, pending.command.bodyMarkdown)
+                    .then(() => setText(pending.command.bodyMarkdown))
+                : session.discardPending(clientMessageId);
+            void done.catch((error: unknown) =>
+              setFailure(error instanceof Error ? error.message : "That didn't work."),
+            );
           },
           onCardAction: (requestId, action) => {
             if (action === "cancel" || action === "stop")

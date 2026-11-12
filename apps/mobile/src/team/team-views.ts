@@ -405,7 +405,12 @@ function pendingView(
     edited: false,
     pinned: false,
     continued: false,
-    send: connected ? { kind: "sending" } : { kind: "queued" },
+    send:
+      send.failure !== null
+        ? { kind: "failed", reason: send.failure }
+        : connected
+          ? { kind: "sending" }
+          : { kind: "queued" },
     thread: null,
     agentRun: null,
   };
