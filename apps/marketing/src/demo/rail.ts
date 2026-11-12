@@ -29,27 +29,45 @@ export function glideRail(
     tip.style.translate = `${hovered.offsetLeft + hovered.offsetWidth / 2}px 0`;
   }
 
-  buttons.forEach((button, index) =>
-    button.addEventListener("pointerenter", () => {
-      const engine = engines[index];
-      if (!engine) return;
-      // The first icon the pointer reaches gets the highlight in place; later ones glide to it.
-      set.classList.toggle("is-entering", !hovered);
-      hovered = button;
-      tip.innerHTML = `<b>${engine.name}</b>${engine.plan}`;
-      place();
-      void set.offsetWidth;
-      set.classList.remove("is-entering");
-      set.classList.add("is-hovering");
-    }),
-  );
-  set.addEventListener("pointerleave", () => {
+  function show(button: HTMLElement, index: number): void {
+    const engine = engines[index];
+    if (!engine) return;
+    // The first icon reached gets the highlight in place; later ones glide to it.
+    set.classList.toggle("is-entering", !hovered);
+    hovered = button;
+    tip.innerHTML = `<b>${engine.name}</b>${engine.plan}`;
+    place();
+    void set.offsetWidth;
+    set.classList.remove("is-entering");
+    set.classList.add("is-hovering");
+  }
+  function hide(): void {
     hovered = undefined;
     set.classList.remove("is-hovering");
+  }
+
+  buttons.forEach((button, index) => {
+    button.addEventListener("pointerenter", () => show(button, index));
+    // Keyboard users get the same name caption; the row itself stays put.
+    button.addEventListener("focus", () => {
+      if (button.matches(":focus-visible")) show(button, index);
+    });
+  });
+  set.addEventListener("pointerleave", () => {
+    if (!set.contains(document.activeElement) || !set.querySelector(":focus-visible")) hide();
+  });
+  set.addEventListener("focusout", (event) => {
+    if (!set.contains(event.relatedTarget as Node | null) && !set.matches(":hover")) hide();
   });
 
   // A pick reflows the row while its label opens, so the highlight tracks it frame by frame.
+  // The demo rewrites aria-pressed on every update, so only a real change of pick counts.
+  const picked = (): number => buttons.findIndex((b) => b.getAttribute("aria-pressed") === "true");
+  let current = picked();
   new MutationObserver(() => {
+    const now = picked();
+    if (now === current) return;
+    current = now;
     if (!hovered) return;
     cancelAnimationFrame(following);
     const until = performance.now() + 600;
