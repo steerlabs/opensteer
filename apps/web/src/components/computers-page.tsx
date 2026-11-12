@@ -1,5 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import { Link } from "react-router";
 import { ComputerAppsSection } from "./computer-apps/computer-apps-section.js";
 import { AddComputerDialog } from "./computers/add-computer-dialog.js";
@@ -36,7 +34,7 @@ import {
   type ComputerStatus,
   type ComputerUse,
 } from "@opensteer/client/computers";
-import { localJoinOffer, localRunnerStateLabel } from "../desktop/desktop-bridge.js";
+import { localJoinOffer } from "../desktop/desktop-bridge.js";
 import {
   canRespondToRequests,
   fullAccessButtonLabel,
@@ -68,39 +66,18 @@ import {
 
 import { machineAccessSummary } from "./machine-access/machine-access-editor.js";
 
-/**
- * Folders the computer holds that no Workspace claims. Nothing is offered to
- * remove them here: the folders are the person's, and the Host never acts on a
- * machine's inventory beyond reporting it.
- */
-export function unlinkedFoldersLabel(count: number): string {
-  return count === 1
-    ? "1 folder on this computer is not linked to a Workspace"
-    : `${count} folders on this computer are not linked to a Workspace`;
-}
-
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
 
 /**
- * What removal actually costs. Threads placed here lose the computer they run
- * on, and Workspaces kept on its disk lose the only machine that can read their
- * files — neither is recoverable by re-adding a computer, so both counts are
- * named rather than implied.
+ * What removal actually costs: tasks placed here lose the computer they run
+ * on, which re-adding a computer does not give back, so the count is named
+ * rather than implied.
  */
 export function machineRemovalStakes(machine: MachineSummary): string | null {
-  const stakes: string[] = [];
-  if (machine.pinnedThreads > 0) {
-    stakes.push(`${plural(machine.pinnedThreads, "Thread runs", "Threads run")} here`);
-  }
-  if (machine.localWorkspaces > 0) {
-    stakes.push(
-      `${plural(machine.localWorkspaces, "Workspace keeps its files", "Workspaces keep their files")} on its disk`,
-    );
-  }
-  if (stakes.length === 0) return null;
-  return `${stakes.join(" and ")}, and will have nowhere to run until you move them.`;
+  if (machine.pinnedThreads === 0) return null;
+  return `${plural(machine.pinnedThreads, "task runs", "tasks run")} here, and will have nowhere to run.`;
 }
 
 /** The stakes, asked as the question the browser puts before the command. */
@@ -122,20 +99,13 @@ export function machineRemovalPrompt(
  * browser knows neither, so it never claims to be anywhere.
  */
 export function currentDeviceMachineId(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly hostsDeploymentOnThisComputer: boolean;
   readonly localRunnerId: string | null;
   readonly machines: readonly MachineSummary[];
 }): string | null {
   if (input.localRunnerId !== null) return input.localRunnerId;
-  if (
-    !input.hostsDeploymentOnThisComputer ||
-    input.deploymentPolicy?.deploymentOwnsMainComputer !== true
-  )
-    return null;
-  return (
-    input.machines.find((machine) => hostsDeployment(machine, input.deploymentPolicy))?.id ?? null
-  );
+  if (!input.hostsDeploymentOnThisComputer) return null;
+  return input.machines.find(hostsDeployment)?.id ?? null;
 }
 
 function StatusText({ status }: { readonly status: ComputerStatus }) {
@@ -164,9 +134,7 @@ export function ComputersPage() {
     snapshot,
   } = useShell();
   const deploymentName = useDeploymentName();
-  const deploymentPolicy = hostDeploymentPolicy(snapshot) ?? null;
   const hereId = currentDeviceMachineId({
-    deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
     machines: snapshot.machines,
@@ -176,19 +144,16 @@ export function ComputersPage() {
   const [addingPhone, setAddingPhone] = useState(false);
   const apps = useComputerAppData(hostClient, snapshot.machineRevision);
   const overview = computersOverview({
-    deploymentPolicy,
     deploymentName,
     hereId,
     machines: snapshot.machines,
     publicOrigin: snapshot.identityConfig?.publicOrigin ?? null,
   });
-  const administrator = snapshot.user?.instanceRole === "administrator";
   // The offer stands only where this desktop has a Runner slot for the
   // Deployment on screen and has not used it. The Personal Deployment hosted
-  // on this very computer has no slot at all — its Runner is the Main — so no
-  // offer is ever made there.
-  const offer = localJoinOffer({ deploymentPolicy, status: localExecutionStatus });
-  const homeName = overview.home.kind === "mac" ? overview.home.name : deploymentName;
+  // on this very computer has no slot at all, so no offer is ever made there.
+  const offer = localJoinOffer(localExecutionStatus);
+  const homeName = overview.home.name;
 
   const macOsDesktop = desktopBridge !== null && localExecutionStatus?.platform === "macos";
   /**
@@ -221,22 +186,17 @@ export function ComputersPage() {
       <div className="page__content computers-page__content">
         <PageHeader description={pageDescription} title="Computers" />
         <HomeCard
-          connection={snapshot.connection}
           hereId={hereId}
           home={overview.home}
           services={overview.services}
-          uses={
-            overview.home.kind === "mac" && overview.home.machine
-              ? usesOf(overview.home.machine)
-              : []
-          }
+          uses={overview.home.machine ? usesOf(overview.home.machine) : []}
         />
         {offer && localExecutionStatus ? (
           <JoinOffer
             adding={localExecutionAction?.kind === "add"}
             computerName={localExecutionStatus.computerName}
             error={localExecutionError}
-            homeName={deploymentPolicy?.deploymentOwnsMainComputer === true ? homeName : null}
+            homeName={homeName}
             onAdd={() =>
               void addThisComputer({
                 kind: "add",
@@ -267,35 +227,15 @@ export function ComputersPage() {
             {apps.error}
           </p>
         ) : null}
-        {/* A Personal Opensteer's services are the app's own business; a
-            server's administrator may need to rename or retire one. */}
-        {administrator &&
-        deploymentPolicy?.serviceManagement === true &&
-        overview.services.length > 0 ? (
-          <Services client={hostClient} services={overview.services} />
-        ) : null}
         {/* The question people most often bring here belongs next door:
             computers are what agents use, devices are where you open Opensteer. */}
         <p className="settings-footnote">
-          {deploymentPolicy?.personalRemoteAccess === true ? (
-            <>
-              To open {homeName} on your phone or another device, use{" "}
-              <Link to="/settings/devices">Remote access</Link>.
-            </>
-          ) : (
-            <>
-              The browsers and apps you open Opensteer from are under{" "}
-              <Link to="/settings/devices">Signed-in devices</Link>.
-            </>
-          )}
+          To open {homeName} on your phone or another device, use{" "}
+          <Link to="/settings/devices">Remote access</Link>.
         </p>
       </div>
       {adding ? (
         <AddComputerDialog
-          client={hostClient}
-          deploymentPolicy={deploymentPolicy}
-          deploymentName={deploymentName}
-          hostedOnThisComputer={desktopDeployment?.onThisComputer === true}
           homeName={homeName}
           localExecutionAction={localExecutionAction}
           localExecutionError={localExecutionError}
@@ -303,13 +243,11 @@ export function ComputersPage() {
           offer={offer}
           onAddThisComputer={addThisComputer}
           onClose={() => setAdding(false)}
-          snapshot={snapshot}
         />
       ) : null}
       {addingPhone ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentPolicy={deploymentPolicy}
           deploymentName={deploymentName}
           desktopBridge={desktopBridge}
           homeName={homeName}
@@ -336,36 +274,22 @@ export function ComputersPage() {
  * computer anybody added.
  */
 function HomeCard({
-  connection,
   hereId,
   home,
   services,
   uses,
 }: {
-  readonly connection: "connected" | "connecting" | "offline";
   readonly hereId: string | null;
   readonly home: ComputersHome;
   readonly services: readonly MachineSummary[];
   readonly uses: readonly ComputerUse[];
 }) {
-  const machine = home.kind === "mac" ? home.machine : null;
-  const art: PlaceArt =
-    home.kind === "server" ? "server" : machine ? computerGlyph(machine) : "computer";
-  const name = home.kind === "server" ? home.address : home.name;
-  const line =
-    home.kind === "mac"
-      ? "Your Opensteer runs here, and so do its agents."
-      : "Your Opensteer runs on this server.";
-  const status: ComputerStatus =
-    home.kind === "mac"
-      ? machine
-        ? computerStatus(machine)
-        : { label: "Starting", tone: "waiting" }
-      : connection === "connected"
-        ? { label: "Online", tone: "online" }
-        : connection === "connecting"
-          ? { label: "Connecting", tone: "waiting" }
-          : { label: "Offline", tone: "offline" };
+  const { machine, name } = home;
+  const art: PlaceArt = machine ? computerGlyph(machine) : "computer";
+  const line = "Your Opensteer runs here, and so do its agents.";
+  const status: ComputerStatus = machine
+    ? computerStatus(machine)
+    : { label: "Starting", tone: "waiting" };
   const body = (
     <>
       <DeviceArt art={art} />
@@ -576,16 +500,8 @@ function ComputerRow({
           {machine.name}
           {here ? <HerePin /> : null}
         </span>
-        {machine.ownerName || role || uses.length > 0 ? (
+        {role || uses.length > 0 ? (
           <span className="computer-row__line">
-            {machine.ownerName ? (
-              <span className="computer-row__owner">
-                <span aria-hidden className="computer-row__avatar">
-                  {machine.ownerName.trim().charAt(0).toUpperCase()}
-                </span>
-                {machine.ownerName}
-              </span>
-            ) : null}
             {role ? <span>{computerRoleLabel[role]}</span> : null}
             <ComputerUseMarks uses={uses} />
           </span>
@@ -594,137 +510,6 @@ function ComputerRow({
       <StatusText status={status} />
       <Icon className="computer-row__chevron" name="chevron-right" />
     </Link>
-  );
-}
-
-/**
- * The browser and messaging services a Deployment runs for itself. Nobody
- * adds one and almost nobody touches one, so administrators find them folded
- * away at the end, with everything they could do to one.
- */
-function Services({
-  client,
-  services,
-}: {
-  readonly client: ReturnType<typeof useShell>["hostClient"];
-  readonly services: readonly MachineSummary[];
-}) {
-  const profiles = useShell().snapshot.browserProfiles;
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [name, setName] = useState("");
-
-  async function rename(machine: MachineSummary) {
-    if (!name.trim()) return;
-    setBusy(machine.id);
-    setError(null);
-    try {
-      const result = await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey("machine-rename"),
-        machineId: machine.id,
-        name: name.trim(),
-        type: "machine.rename",
-      });
-      if (result.type !== "machine.rename") throw new Error("Service rename did not complete.");
-      await client.refresh();
-      setRenaming(null);
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function remove(machine: MachineSummary) {
-    if (!window.confirm(machineRemovalPrompt(machine, profiles))) return;
-    setBusy(machine.id);
-    setError(null);
-    try {
-      const result = await client.dispatch({
-        idempotencyKey: mutationIdempotencyKey("machine-remove"),
-        machineId: machine.id,
-        type: "machine.revoke",
-      });
-      if (result.type !== "machine.revoke") throw new Error("Service removal did not complete.");
-      await client.refresh();
-    } catch (reason) {
-      setError(actionErrorMessage(reason));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <details className="computers-services">
-      <summary>
-        <h2>Built-in services</h2>
-        <span>Opensteer runs these for you. You rarely need to change them.</span>
-      </summary>
-      <div className="computers-list">
-        {services.map((machine) => (
-          <div className="computer-row computer-row--static" key={machine.id}>
-            <span className="computer-row__glyph">
-              <Icon name={serviceGlyph(machine) === "browser" ? "globe" : "message"} />
-            </span>
-            <span className="computer-row__body">
-              {renaming === machine.id ? (
-                <span className="computers-inline-field">
-                  <input
-                    aria-label={`Name for ${machine.name}`}
-                    autoFocus
-                    className="text-input"
-                    maxLength={120}
-                    onChange={(event) => setName(event.target.value)}
-                    value={name}
-                  />
-                  <button
-                    className="btn btn--small"
-                    disabled={busy === machine.id || !name.trim()}
-                    onClick={() => void rename(machine)}
-                    type="button"
-                  >
-                    Save
-                  </button>
-                </span>
-              ) : (
-                <span className="computer-row__name">{machine.name}</span>
-              )}
-              <span className="computer-row__line">{serviceLabel(machine)}</span>
-            </span>
-            <StatusText status={computerStatus(machine)} />
-            <span className="computer-row__actions">
-              <button
-                className="btn btn--ghost btn--small"
-                disabled={busy !== null}
-                onClick={() => {
-                  setName(machine.name);
-                  setRenaming(machine.id);
-                }}
-                type="button"
-              >
-                Rename
-              </button>
-              {machine.revocable ? (
-                <button
-                  className="btn btn--danger btn--small"
-                  disabled={busy !== null}
-                  onClick={() => void remove(machine)}
-                  type="button"
-                >
-                  {busy === machine.id ? "Removing…" : "Remove"}
-                </button>
-              ) : null}
-            </span>
-          </div>
-        ))}
-      </div>
-      {error ? (
-        <p className="notice notice--error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </details>
   );
 }
 
@@ -766,8 +551,6 @@ export function ComputerDetailPage() {
  * words of the person reading it.
  */
 export function computerDetailLead(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
-  readonly deploymentName: string;
   readonly homeName: string;
   readonly machine: MachineSummary;
 }): string {
@@ -778,22 +561,13 @@ export function computerDetailLead(input: {
       : `Waiting for ${machine.name} to connect. Finish setting it up on that computer.`;
   }
   if (isAgentPhone(machine)) return phoneUseIntroduction;
-  if (isIphone(machine) && machine.ownership !== "other") {
+  if (isIphone(machine)) {
     return `Agents can use only the apps turned on for ${machine.name}, and only while Opensteer is open on it.`;
   }
-  if (hostsDeployment(machine, input.deploymentPolicy)) {
+  if (hostsDeployment(machine)) {
     return `Your Opensteer runs here. Keep ${machine.name} on and awake so agents can keep working while you’re away.`;
   }
-  if (input.deploymentPolicy?.runnerEnrollmentMode === "reach-only") {
-    return `Agents work on ${input.homeName}. Choose what they can use on ${machine.name}.`;
-  }
-  if (machine.ownership === "other") {
-    return `${machine.ownerName ?? "Its owner"} chooses what agents can use on ${machine.name}.`;
-  }
-  if (machine.ownership === "deployment") {
-    return `A shared computer: agents from everyone in ${input.deploymentName} can work here.`;
-  }
-  return `Choose whether agents work on ${machine.name}, and what they can use on it.`;
+  return `Agents work on ${input.homeName}. Choose what they can use on ${machine.name}.`;
 }
 
 function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
@@ -810,9 +584,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   } = useShell();
   const navigate = useNavigate();
   const deploymentName = useDeploymentName();
-  const deploymentPolicy = hostDeploymentPolicy(snapshot) ?? null;
   const hereId = currentDeviceMachineId({
-    deploymentPolicy,
     hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
     localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
     machines: snapshot.machines,
@@ -834,7 +606,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   }, [machine.name]);
   const here = hereId !== null && machine.id === hereId;
   const profiles = snapshot.browserProfiles;
-  const mainRunner = hostsDeployment(machine, deploymentPolicy);
+  const mainRunner = hostsDeployment(machine);
   // Whether this page runs in the desktop app on this very Mac — a lent one,
   // or the one hosting this Personal Deployment, which has no lent slot. It is
   // the one answer for everything only that Mac can do: open a macOS grant,
@@ -854,10 +626,7 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
   const phone = isAgentPhone(machine);
   // An iPhone lends only its own apps, which its apps section covers.
   const iphone = isIphone(machine);
-  const homeName =
-    snapshot.machines.find((candidate) => hostsDeployment(candidate, deploymentPolicy))?.name ??
-    deploymentName;
-  const runsAgentsSwitch = here && !mainRunner && machine.allowedModules.includes("agents");
+  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? deploymentName;
   const removable = machine.revocable && !mainRunner;
   const busy = localExecutionAction !== null || removing;
   const stakes = machineRemovalStakes(machine);
@@ -1044,87 +813,11 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             )}
             <p className="computer-header__facts">
               <StatusText status={status} />
-              {machine.ownerName ? (
-                <span className="computer-header__owner">
-                  {machine.ownerName}’s {phone || iphone ? "phone" : "computer"}
-                </span>
-              ) : null}
               {here ? <HerePin /> : null}
             </p>
           </div>
         </header>
-        <p className="computer-lead">
-          {computerDetailLead({ deploymentPolicy, deploymentName, homeName, machine })}
-        </p>
-
-        {/* Whether a teammate's computer lends itself to agents is theirs to
-            decide, so their page only says so when agents do work there. */}
-        {!phone &&
-        !iphone &&
-        deploymentPolicy?.computerExecutionControls === true &&
-        machine.status !== "pending" &&
-        (machine.ownership !== "other" || machine.modules.agents) ? (
-          <section aria-labelledby="runs-agents-title" className="computers-section">
-            <h2 className="visually-hidden" id="runs-agents-title">
-              Agents work here
-            </h2>
-            <div className="card">
-              {runsAgentsSwitch && localExecutionStatus ? (
-                <label className="card__row">
-                  <span className="card__row-glyph">
-                    <Icon name="bolt" />
-                  </span>
-                  <span className="card__row-body">
-                    <span className="card__row-title">Agents work here</span>
-                    <span className="card__row-detail card__row-detail--wrap">
-                      {runsAgentsDetail(machine.name)}
-                    </span>
-                  </span>
-                  <span className="machine-access__grant-control">
-                    <input
-                      aria-label={`Agents work on ${machine.name}`}
-                      checked={localExecutionStatus.runAgents}
-                      className="switch"
-                      disabled={busy || !localExecutionStatus.mayRunAgents}
-                      // The shell records the message and the notice below
-                      // renders it; the switch has nothing else to decide.
-                      onChange={(event) =>
-                        void performLocalExecutionAction({
-                          kind: "set-run-agents",
-                          runAgents: event.target.checked,
-                        }).catch(() => undefined)
-                      }
-                      role="switch"
-                      type="checkbox"
-                    />
-                  </span>
-                </label>
-              ) : (
-                <div className="card__row">
-                  <span className="card__row-glyph">
-                    <Icon name="bolt" />
-                  </span>
-                  <span className="card__row-body">
-                    <span className="card__row-title">
-                      {machine.modules.agents ? "Agents work here" : "Agents don’t work here"}
-                    </span>
-                    <span className="card__row-detail card__row-detail--wrap">
-                      {runsAgentsFact(machine)}
-                    </span>
-                  </span>
-                </div>
-              )}
-              {runsAgentsSwitch && localExecutionStatus ? (
-                <LocalReadiness status={localExecutionStatus} />
-              ) : null}
-              {localExecutionError && here ? (
-                <p className="notice notice--error" role="alert">
-                  {localExecutionError}
-                </p>
-              ) : null}
-            </div>
-          </section>
-        ) : null}
+        <p className="computer-lead">{computerDetailLead({ homeName, machine })}</p>
 
         {machine.allowedModules.includes("browser") ? (
           <Link className="card card__row" to="/settings/sign-ins/browsers">
@@ -1193,7 +886,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             setupRequests={apps.data.setupRequests.filter(
               (request) => request.runnerId === machine.id,
             )}
-            workspaces={snapshot.workspaces}
           />
         ) : null}
         {apps.error ? (
@@ -1216,7 +908,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
             <MachineAccessSection
               access={machine.access}
               client={hostClient}
-              deploymentPolicy={deploymentPolicy}
               deploymentName={deploymentName}
               // The desktop can only name folders on the computer it runs on.
               desktopBridge={here ? desktopBridge : null}
@@ -1277,10 +968,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
           </section>
         )}
 
-        {machine.unlinkedLocalFolders > 0 ? (
-          <p className="settings-footnote">{unlinkedFoldersLabel(machine.unlinkedLocalFolders)}.</p>
-        ) : null}
-
         {removable ? (
           <section aria-label="Remove this computer" className="computer-remove">
             <button
@@ -1315,7 +1002,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
       {pluggingIn ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentPolicy={deploymentPolicy}
           deploymentName={deploymentName}
           desktopBridge={desktopBridge}
           homeName={homeName}
@@ -1386,56 +1072,5 @@ function ComputersBackLink() {
       <Icon name="arrow-left" />
       Computers
     </Link>
-  );
-}
-
-function runsAgentsDetail(machineName: string): string {
-  return `New threads can run on ${machineName}, using its own files, apps and sign-ins.`;
-}
-
-/** Why agents do or do not work on a computer this page cannot switch. */
-function runsAgentsFact(machine: MachineSummary): string {
-  if (!machine.allowedModules.includes("agents")) {
-    return `${machine.name} was added only to lend its apps and folders. To let agents work on it, remove it and add it again from ${machine.name}.`;
-  }
-  if (machine.modules.agents) return runsAgentsDetail(machine.name);
-  return machine.ownership === "mine"
-    ? `Turn this on in the Opensteer app on ${machine.name}.`
-    : `Threads can’t be placed on ${machine.name}.`;
-}
-
-function LocalReadiness({
-  status,
-}: {
-  readonly status: NonNullable<ReturnType<typeof useShell>["localExecutionStatus"]>;
-}) {
-  return (
-    <div className="computers-readiness-block">
-      <div className="computers-readiness">
-        <ReadinessLine
-          label="Agents on this computer"
-          ready={status.runner.state === "running"}
-          text={localRunnerStateLabel(status.runner.state)}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ReadinessLine({
-  label,
-  ready,
-  text,
-}: {
-  readonly label: string;
-  readonly ready: boolean;
-  readonly text: string;
-}) {
-  return (
-    <div className="computers-readiness__line">
-      <span className={`status-dot ${ready ? "status-dot--running" : "status-dot--idle"}`} />
-      <strong>{label}</strong>
-      <span>{text}</span>
-    </div>
   );
 }

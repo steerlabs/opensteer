@@ -8,7 +8,7 @@ import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
 import { PageHeader, PageTopbar } from "../page-header.js";
 import { IntegrationInstaller } from "./admin-forms.js";
-import { GrantsSection, workspaceAccessSectionId } from "./grants-section.js";
+import { GrantsSection, agentAccessSectionId } from "./grants-section.js";
 import { message } from "./helpers.js";
 import { IntegrationDetail } from "./integration-detail.js";
 import { canRespondToRequests, mutationIdempotencyKey } from "@opensteer/client/host";
@@ -28,7 +28,6 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
     readError,
     view,
     result,
-    workspaceKind,
     repositorySetup,
     pending,
     recheckRepositorySetup,
@@ -45,9 +44,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
     snapshot,
     grants,
     run,
-    selectedWorkspaceId,
     simpleAction,
-    setWorkspaceId,
     uninstallIntegration,
     detailIntegration,
     localMachineId,
@@ -67,7 +64,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
     headerAction,
     children,
     revealAccess,
-    placementAnchor,
+    setRevealAccess,
     navigate,
   } = useIntegrationEditor(props);
   return (
@@ -85,7 +82,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
                 Settings
               </Link>
             }
-            description="Connect your accounts, install integrations, and decide exactly which tools each project can use."
+            description="Connect your accounts, install integrations, and decide exactly which tools your agent can use."
             eyebrow="Connections"
             title="Integrations"
           />
@@ -109,9 +106,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
                   <strong>{integrationResultTitle(result)}</strong>
                   <p>
                     {result.status === "connected"
-                      ? workspaceKind === "main"
-                        ? "The account is ready for Opensteer and your tasks."
-                        : "The account is ready for exact tools you authorize."
+                      ? "The account is ready for the tools you allow your agent."
                       : integrationResultDetail(result.status)}
                   </p>
                 </div>
@@ -162,7 +157,7 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
                       await run(async () => {
                         await client.dispatch({
                           idempotencyKey: mutationIdempotencyKey(
-                            `integration-grant:${input.workspaceId}`,
+                            `integration-grant:${input.installationId}`,
                           ),
                           input,
                           type: "integration.grant.create",
@@ -170,27 +165,18 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
                       });
                     }}
                     onRevoke={(grantId) =>
-                      selectedWorkspaceId
-                        ? simpleAction(() =>
-                            client
-                              .dispatch({
-                                grantId,
-                                idempotencyKey: mutationIdempotencyKey(
-                                  `integration-grant:${grantId}`,
-                                ),
-                                type: "integration.grant.revoke",
-                                workspaceId: selectedWorkspaceId,
-                              })
-                              .then(() => undefined),
-                          )
-                        : undefined
+                      simpleAction(() =>
+                        client
+                          .dispatch({
+                            grantId,
+                            idempotencyKey: mutationIdempotencyKey(`integration-grant:${grantId}`),
+                            type: "integration.grant.revoke",
+                          })
+                          .then(() => undefined),
+                      )
                     }
-                    onWorkspace={setWorkspaceId}
                     pending={pending}
                     platform={platform}
-                    workspaceId={selectedWorkspaceId}
-                    workspaceKind={workspaceKind}
-                    workspaces={snapshot.workspaces}
                   />
                 ) : null}
               </>
@@ -201,7 +187,6 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
         {view.kind === "overview" ? children : null}
         {view.kind === "detail" && detailIntegration && dashboard ? (
           <IntegrationDetail
-            showWorkspaceAccess={!placementAnchor}
             headerAction={headerAction}
             dashboard={dashboard}
             error={error}
@@ -222,12 +207,9 @@ export function IntegrationsPage(props: Parameters<typeof useIntegrationEditor>[
             }
             onChooseSignIn={() => signIn(detailIntegration.definition.id, null, true)}
             onConnectOauth={(account) => signIn(detailIntegration.definition.id, account)}
-            onWorkspaceAccess={() => {
-              if (placementAnchor) {
-                document.getElementById(placementAnchor)?.scrollIntoView({ block: "start" });
-                return;
-              }
-              openAt.current = workspaceAccessSectionId;
+            onAgentAccess={() => {
+              openAt.current = agentAccessSectionId;
+              setRevealAccess(true);
               setError(null);
               setView({ kind: "overview" });
             }}

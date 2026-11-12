@@ -13,23 +13,21 @@ import {
   type ChannelDashboard,
   type ChannelAccessPolicy,
 } from "@opensteer/channel-core";
-import type { WorkspaceSummary } from "@opensteer/client/host";
+import type { TaskFolder } from "@opensteer/core";
 import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ChannelsPage,
+  MessagingPage,
   AccessRequests,
   AccessPolicyEditor,
   AccountRoutes,
   LinkIdentityForm,
   normalizeChannelIds,
   normalizeLinkCode,
-} from "./channels-page.js";
+} from "./messaging-page.js";
 
 const mountedRoots: Root[] = [];
-const workspaceId = "wsp_11111111-1111-4111-8111-111111111111";
-const otherWorkspaceId = "wsp_22222222-2222-4222-8222-222222222222";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -103,7 +101,18 @@ describe("LinkIdentityForm", () => {
 });
 
 describe("AccountRoutes", () => {
-  it("creates a route from the channel ID, Workspace and access mode", async () => {
+  it("creates a route from the channel ID, folder and access mode", async () => {
+    const client = new MockHostClient({ latencyMs: 0 });
+    const snapshot = client.getSnapshot();
+    const agentHome = snapshot.personalSettings!.agentHome;
+    const support: TaskFolder = { computerId: agentHome.computerId, path: "/Users/ada/support" };
+    shell.value = {
+      hostClient: client,
+      snapshot: {
+        ...snapshot,
+        threads: [{ ...snapshot.threads[0]!, folder: support, purpose: "task" }],
+      },
+    };
     const created: { account: ChannelAccount; route: unknown }[] = [];
     const { container } = await mount(
       <AccountRoutes
@@ -119,9 +128,15 @@ describe("AccountRoutes", () => {
       button(container, "Add route").click();
     });
     await type(input(container), "C0123ABC");
-    const [workspaceSelect, accessSelect] = [...container.querySelectorAll("select")];
-    if (!workspaceSelect || !accessSelect) throw new Error("Missing route selects.");
-    await select(workspaceSelect, otherWorkspaceId);
+    // Agent home until another folder is chosen, from the folder chip.
+    await act(async () => button(container, "Agent home").click());
+    const supportRow = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')].find(
+      (row) => row.textContent?.startsWith("support"),
+    );
+    if (!supportRow) throw new Error("Missing the support folder.");
+    await act(async () => supportRow.click());
+    const [accessSelect] = [...container.querySelectorAll("select")];
+    if (!accessSelect) throw new Error("Missing access select.");
     await select(accessSelect, "anyone");
     await act(async () => {
       submitButton(container).click();
@@ -140,7 +155,7 @@ describe("AccountRoutes", () => {
             directMessages: { allowedExternalUserIds: [], mode: "off" },
           },
           conversationId: "C0123ABC",
-          workspaceId: otherWorkspaceId,
+          folder: support,
         },
       },
     ]);
@@ -207,7 +222,7 @@ describe("AccountRoutes", () => {
         channels: {
           conversationIds: ["C0123ABC"],
           scope: "selected",
-          sender: { allowedExternalUserIds: [], mode: "linked-members" },
+          sender: { allowedExternalUserIds: [], mode: "owner" },
         },
         directMessages: { allowedExternalUserIds: [], mode: "approved" },
       },
@@ -331,30 +346,6 @@ describe("AccessRequests", () => {
   });
 });
 
-const workspaces: readonly WorkspaceSummary[] = [
-  workspace({ id: workspaceId, name: "Engineering" }),
-  workspace({ id: otherWorkspaceId, name: "Support" }),
-];
-
-function workspace(fields: { id: string; name: string }): WorkspaceSummary {
-  return {
-    description: "",
-    fileCount: 0,
-    homeThreadId: null,
-    voiceThreadId: null,
-    harnessLabel: "Claude",
-    icon: null,
-    kind: "project",
-    machineName: null,
-    runnerLabel: "Main",
-    status: "ready",
-    storageIssue: null,
-    color: "blue",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    ...fields,
-  };
-}
-
 function account(fields: Partial<ChannelAccount> = {}): ChannelAccount {
   return {
     connectionId,
@@ -393,13 +384,12 @@ function routeProps(
   return {
     account: account(),
     bindings: [],
-    homeWorkspaceId: workspaceId,
+    folderName: (folder) => folder.path.split("/").at(-1) ?? folder.path,
     onAddRoute: async () => true,
     onRevokeRoute: () => undefined,
     onUpdateAccess: async () => true,
     pending: false,
     providerLabel: "Slack",
-    workspaces,
     ...overrides,
   };
 }
@@ -413,7 +403,7 @@ function binding(
       channels: {
         conversationIds: selector.conversationId ? [selector.conversationId] : [],
         scope: selector.conversationId ? "selected" : "all",
-        sender: { allowedExternalUserIds: [], mode: "linked-members" },
+        sender: { allowedExternalUserIds: [], mode: "owner" },
       },
       directMessages: { allowedExternalUserIds: [], mode: "owner" },
     },
@@ -426,7 +416,7 @@ function binding(
     selector: { ...selector, conversationType: null, scopeId: null, threadId: null },
     status,
     updatedAt: "2026-01-01T00:00:00.000Z",
-    workspaceId,
+    folder: { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/ada/Opensteer" },
   });
 }
 
@@ -561,7 +551,7 @@ it("selects only the Messaging connection named by the child route", async () =>
     const { container } = await mount(
       <MemoryRouter initialEntries={[`/settings/messaging/${selected.id}`]}>
         <ToastProvider>
-          <ChannelsPage embedded />
+          <MessagingPage embedded />
         </ToastProvider>
       </MemoryRouter>,
     );

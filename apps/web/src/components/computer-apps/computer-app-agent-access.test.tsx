@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { HostClient, WorkspaceSummary } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
 import type {
   ComputerAppPresentation,
@@ -11,16 +11,15 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  ComputerAppWorkspaceAccess,
-  type ComputerAppWorkspaceAccessProps,
-} from "./computer-app-workspace-access.js";
+  ComputerAppAgentAccess,
+  type ComputerAppAgentAccessProps,
+} from "./computer-app-agent-access.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const connectionA = "con_00000000-0000-4000-8000-000000000001";
 const connectionB = "con_00000000-0000-4000-8000-000000000002";
 const installationId = "ins_00000000-0000-4000-8000-000000000001";
-const supportId = "wsp_00000000-0000-4000-8000-000000000002";
 const mountedRoots: Root[] = [];
 
 afterEach(() => {
@@ -28,20 +27,20 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("ComputerAppWorkspaceAccess", () => {
+describe("ComputerAppAgentAccess", () => {
   it("keeps a read grant read when the computer ceiling rises until it is explicitly upgraded", async () => {
     const host = fakeHost([grant({ access: "read", connectionId: connectionA })]);
     const mounted = await mount({ access: "read", hostClient: host.client });
     await open(mounted.container);
 
-    expect(select(mounted.container, "Support workspace access").value).toBe("read");
-    expect(optionLabels(select(mounted.container, "Support workspace access"))).toEqual([
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
+    expect(optionLabels(select(mounted.container, "Agent access to Messages"))).toEqual([
       "Off",
       "Read only",
     ]);
 
     await mounted.render({ access: "read-write" });
-    const support = select(mounted.container, "Support workspace access");
+    const support = select(mounted.container, "Agent access to Messages");
     expect(support.value).toBe("read");
     expect(optionLabels(support)).toEqual(["Off", "Read only", "Read and send"]);
     expect(host.dispatch).not.toHaveBeenCalled();
@@ -54,12 +53,11 @@ describe("ComputerAppWorkspaceAccess", () => {
           access: "read-write",
           connectionId: connectionA,
           installationId,
-          workspaceId: supportId,
         }),
         type: "integration.grant.create",
       }),
     );
-    expect(select(mounted.container, "Support workspace access").value).toBe("read-write");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read-write");
   });
 
   it("shows the effective read level when a stored write grant is limited by the computer", async () => {
@@ -67,14 +65,14 @@ describe("ComputerAppWorkspaceAccess", () => {
     const mounted = await mount({ access: "read-write", hostClient: host.client });
     await open(mounted.container);
 
-    expect(select(mounted.container, "Support workspace access").value).toBe("read-write");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read-write");
     await mounted.render({ access: "read" });
 
-    const support = select(mounted.container, "Support workspace access");
+    const support = select(mounted.container, "Agent access to Messages");
     expect(support.value).toBe("read");
     expect(optionLabels(support)).toEqual(["Off", "Read only"]);
     expect(mounted.container.textContent).toContain(
-      "Read and send is allowed for this Workspace, but the app currently limits access to read only.",
+      "Read and send is allowed for your agent, but the app currently limits access to read only.",
     );
     expect(host.dispatch).not.toHaveBeenCalled();
   });
@@ -86,18 +84,17 @@ describe("ComputerAppWorkspaceAccess", () => {
     const mounted = await mount({ access: "read-write", hostClient: host.client });
     await open(mounted.container);
 
-    expect(select(mounted.container, "Support workspace access").value).toBe("read");
-    await choose(select(mounted.container, "Support workspace access"), "off");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
+    await choose(select(mounted.container, "Agent access to Messages"), "off");
 
     expect(host.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
         grantId: own.id,
         type: "integration.grant.revoke",
-        workspaceId: supportId,
       }),
     );
     expect(host.grants()).toEqual([anotherMac]);
-    expect(select(mounted.container, "Support workspace access").value).toBe("off");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("off");
   });
 
   it("does not let an old Host load replace the current connection", async () => {
@@ -108,10 +105,10 @@ describe("ComputerAppWorkspaceAccess", () => {
     await open(mounted.container);
 
     await mounted.render({ connectionId: connectionB, hostClient: current.client });
-    expect(select(mounted.container, "Support workspace access").value).toBe("read-write");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read-write");
 
     await act(async () => oldLoad.resolve([grant({ access: "read", connectionId: connectionA })]));
-    expect(select(mounted.container, "Support workspace access").value).toBe("read-write");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read-write");
   });
 
   it("finishes a pending save after the disclosure is collapsed and reopened", async () => {
@@ -121,16 +118,16 @@ describe("ComputerAppWorkspaceAccess", () => {
     });
     const mounted = await mount({ access: "read-write", hostClient: host.client });
     await open(mounted.container);
-    await choose(select(mounted.container, "Support workspace access"), "read-write");
+    await choose(select(mounted.container, "Agent access to Messages"), "read-write");
 
-    expect(select(mounted.container, "Support workspace access").disabled).toBe(true);
-    await click(button(mounted.container, "Workspace access"));
-    await click(button(mounted.container, "Workspace access"));
-    expect(select(mounted.container, "Support workspace access").disabled).toBe(true);
+    expect(select(mounted.container, "Agent access to Messages").disabled).toBe(true);
+    await click(button(mounted.container, "Agent access"));
+    await click(button(mounted.container, "Agent access"));
+    expect(select(mounted.container, "Agent access to Messages").disabled).toBe(true);
 
     await act(async () => save.resolve({ type: "integration.grant.create" }));
-    expect(select(mounted.container, "Support workspace access").disabled).toBe(false);
-    expect(select(mounted.container, "Support workspace access").value).toBe("read");
+    expect(select(mounted.container, "Agent access to Messages").disabled).toBe(false);
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
   });
 
   it("finishes a pending save and applies the current ceiling after it changes", async () => {
@@ -140,13 +137,13 @@ describe("ComputerAppWorkspaceAccess", () => {
     });
     const mounted = await mount({ access: "read-write", hostClient: host.client });
     await open(mounted.container);
-    await choose(select(mounted.container, "Support workspace access"), "read-write");
+    await choose(select(mounted.container, "Agent access to Messages"), "read-write");
 
     await mounted.render({ access: "read" });
-    expect(select(mounted.container, "Support workspace access").disabled).toBe(true);
+    expect(select(mounted.container, "Agent access to Messages").disabled).toBe(true);
     await act(async () => save.resolve({ type: "integration.grant.create" }));
 
-    const support = select(mounted.container, "Support workspace access");
+    const support = select(mounted.container, "Agent access to Messages");
     expect(support.disabled).toBe(false);
     expect(support.value).toBe("read");
     expect(optionLabels(support)).toEqual(["Off", "Read only"]);
@@ -160,38 +157,21 @@ describe("ComputerAppWorkspaceAccess", () => {
     });
     const mounted = await mount({ access: "read-write", hostClient: host.client });
     await open(mounted.container);
-    await choose(select(mounted.container, "Support workspace access"), "read-write");
+    await choose(select(mounted.container, "Agent access to Messages"), "read-write");
 
-    expect(select(mounted.container, "Support workspace access").value).toBe("read");
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
       "The Host refused this grant.",
     );
 
-    host.list.mockRejectedValueOnce(new Error("Workspace grants are unavailable."));
+    host.list.mockRejectedValueOnce(new Error("Grants are unavailable."));
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')?.textContent).toContain(
-      "Workspace grants are unavailable.",
+      "Grants are unavailable.",
     );
     await click(button(mounted.container, "Retry"));
     expect(mounted.container.querySelector('[role="alert"]')).toBeNull();
-    expect(select(mounted.container, "Support workspace access").value).toBe("read");
-  });
-
-  it("shows inherited Main access only when Main is in the visible workspace list", async () => {
-    const host = fakeHost([]);
-    const mounted = await mount({ hostClient: host.client, workspaces: [supportWorkspace] });
-    await open(mounted.container);
-
-    expect(mounted.container.textContent).not.toContain("Automatically uses");
-    expect(mounted.container.querySelector('[aria-label="Main workspace access"]')).toBeNull();
-
-    await mounted.render({ workspaces: [mainWorkspace, supportWorkspace] });
-    const main = select(mounted.container, "Main workspace access");
-    expect(main.disabled).toBe(true);
-    expect(main.value).toBe("read-write");
-    expect(mounted.container.textContent).toContain(
-      "Automatically uses read and send from the app setting above.",
-    );
+    expect(select(mounted.container, "Agent access to Messages").value).toBe("read");
   });
 });
 
@@ -205,29 +185,6 @@ const presentation: ComputerAppPresentation = {
   ],
   platforms: ["darwin"],
 };
-
-const mainWorkspace = workspace("wsp_00000000-0000-4000-8000-000000000001", "main", "Main");
-const supportWorkspace = workspace(supportId, "project", "Support");
-
-function workspace(id: string, kind: WorkspaceSummary["kind"], name: string): WorkspaceSummary {
-  return {
-    description: "",
-    fileCount: 0,
-    homeThreadId: null,
-    voiceThreadId: null,
-    harnessLabel: "Codex",
-    icon: null,
-    id,
-    kind,
-    machineName: null,
-    name,
-    runnerLabel: "This Mac",
-    status: "ready",
-    storageIssue: null,
-    color: "blue",
-    updatedAt: "2026-09-19T00:00:00.000Z",
-  };
-}
 
 function grant(input: {
   readonly access: IntegrationAccess;
@@ -245,7 +202,6 @@ function grant(input: {
     ownerUserId: "usr_00000000-0000-4000-8000-000000000001",
     revokedAt: null,
     status: "active",
-    workspaceId: supportId,
   } as IntegrationGrant;
 }
 
@@ -253,25 +209,18 @@ function fakeHost(
   initial: readonly IntegrationGrant[],
   options: {
     readonly dispatch?: (command: Record<string, unknown>) => Promise<unknown>;
-    readonly load?: (workspaceId: string) => Promise<readonly IntegrationGrant[]>;
+    readonly load?: () => Promise<readonly IntegrationGrant[]>;
   } = {},
 ) {
   let persisted = [...initial];
-  const list = vi.fn(async ({ workspaceId }: { readonly workspaceId: string }) => ({
-    data: {
-      grants: options.load
-        ? await options.load(workspaceId)
-        : persisted.filter((candidate) => candidate.workspaceId === workspaceId),
-    },
+  const list = vi.fn(async () => ({
+    data: { grants: options.load ? await options.load() : persisted },
     ok: true as const,
   }));
   const dispatch = vi.fn(async (command: Record<string, unknown>) => {
     if (options.dispatch) return await options.dispatch(command);
     if (command.type === "integration.grant.revoke") {
-      persisted = persisted.filter(
-        (candidate) =>
-          candidate.workspaceId !== command.workspaceId || candidate.id !== command.grantId,
-      );
+      persisted = persisted.filter((candidate) => candidate.id !== command.grantId);
       return { type: command.type };
     }
     if (command.type === "integration.grant.create") {
@@ -281,11 +230,9 @@ function fakeHost(
         readonly connectionId: string;
         readonly installationId: string;
         readonly isDefault: boolean;
-        readonly workspaceId: string;
       };
       const existing = persisted.find(
         (candidate) =>
-          candidate.workspaceId === input.workspaceId &&
           candidate.installationId === input.installationId &&
           candidate.connectionId === input.connectionId,
       );
@@ -306,10 +253,7 @@ function fakeHost(
   return { client, dispatch, grants: () => persisted, list };
 }
 
-type RenderInput = Pick<
-  ComputerAppWorkspaceAccessProps,
-  "access" | "connectionId" | "hostClient" | "workspaces"
->;
+type RenderInput = Pick<ComputerAppAgentAccessProps, "access" | "connectionId" | "hostClient">;
 
 async function mount(input: Partial<RenderInput> & Pick<RenderInput, "hostClient">) {
   const container = document.createElement("div");
@@ -320,14 +264,13 @@ async function mount(input: Partial<RenderInput> & Pick<RenderInput, "hostClient
     access: input.access ?? "read-write",
     connectionId: input.connectionId ?? connectionA,
     hostClient: input.hostClient,
-    workspaces: input.workspaces ?? [mainWorkspace, supportWorkspace],
   };
 
   async function render(changes: Partial<RenderInput> = {}): Promise<void> {
     current = { ...current, ...changes };
     await act(async () => {
       root.render(
-        <ComputerAppWorkspaceAccess
+        <ComputerAppAgentAccess
           access={current.access}
           appName="Messages"
           connectionId={current.connectionId}
@@ -335,7 +278,6 @@ async function mount(input: Partial<RenderInput> & Pick<RenderInput, "hostClient
           installationId={installationId}
           machineName="Mac mini"
           presentation={presentation}
-          workspaces={current.workspaces}
         />,
       );
     });
@@ -346,7 +288,7 @@ async function mount(input: Partial<RenderInput> & Pick<RenderInput, "hostClient
 }
 
 async function open(container: HTMLElement): Promise<void> {
-  await click(button(container, "Workspace access"));
+  await click(button(container, "Agent access"));
 }
 
 function select(container: HTMLElement, label: string): HTMLSelectElement {
@@ -371,11 +313,11 @@ async function click(element: HTMLElement): Promise<void> {
   await act(async () => element.click());
 }
 
-async function choose(element: HTMLSelectElement, value: WorkspaceAccessLevel): Promise<void> {
+async function choose(element: HTMLSelectElement, value: AgentAccessLevel): Promise<void> {
   await act(async () => {
     element.value = value;
     element.dispatchEvent(new Event("change", { bubbles: true }));
   });
 }
 
-type WorkspaceAccessLevel = "off" | IntegrationAccess;
+type AgentAccessLevel = "off" | IntegrationAccess;

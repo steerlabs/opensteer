@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { Icon } from "../../icon.js";
 import { Dialog } from "../../dialog.js";
 import { AddPhoneDialog } from "../../computers/add-phone-dialog.js";
@@ -18,7 +17,7 @@ import { Link } from "react-router";
 import { unwrapRpcResult } from "@opensteer/client/host";
 import { useShell } from "../../app-shell.js";
 import { currentDeviceMachineId } from "../../computers-page.js";
-import { deviceBrowser, deviceLendsApps } from "@opensteer/client/computers";
+import { deviceBrowser, deviceLendsApps, hostsDeployment } from "@opensteer/client/computers";
 import { isAgentPhone } from "@opensteer/client/integrations";
 import { SettingsError, SectionHeader } from "../primitives.js";
 import { useSettingsRead } from "../use-settings-read.js";
@@ -34,12 +33,12 @@ export function AgentDevicesSection() {
   );
   const localId = desktopBridge
     ? currentDeviceMachineId({
-        deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
         hostsDeploymentOnThisComputer: desktopDeployment?.onThisComputer === true,
         localRunnerId: localExecutionStatus?.runner.runnerId ?? null,
         machines: snapshot.machines,
       })
     : null;
+  const homeName = snapshot.machines.find(hostsDeployment)?.name ?? "your computer";
   return (
     <>
       <SectionHeader
@@ -52,26 +51,16 @@ export function AgentDevicesSection() {
       />
       {adding === "computer" ? (
         <AddComputerDialog
-          client={hostClient}
-          deploymentPolicy={hostDeploymentPolicy(snapshot) ?? null}
-          deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
-          homeName={
-            snapshot.machines.find((machine) => machine.ownership === "deployment")?.name ?? "Main"
-          }
-          hostedOnThisComputer={desktopDeployment?.onThisComputer === true}
+          homeName={homeName}
           localExecutionAction={shell.localExecutionAction}
           localExecutionError={shell.localExecutionError}
           localExecutionStatus={localExecutionStatus}
-          offer={localJoinOffer({
-            deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
-            status: localExecutionStatus,
-          })}
+          offer={localJoinOffer(localExecutionStatus)}
           onAddThisComputer={async (action) => {
             await shell.performLocalExecutionAction(action);
             setAdding(null);
           }}
           onClose={() => setAdding(null)}
-          snapshot={snapshot}
         />
       ) : null}
       {adding === "choose" ? (
@@ -101,12 +90,9 @@ export function AgentDevicesSection() {
       {adding === "phone" ? (
         <AddPhoneDialog
           client={hostClient}
-          deploymentPolicy={hostDeploymentPolicy(snapshot) ?? null}
           deploymentName={snapshot.identityConfig?.deployment.name ?? "Opensteer"}
           desktopBridge={desktopBridge}
-          homeName={
-            snapshot.machines.find((machine) => machine.ownership === "deployment")?.name ?? "Main"
-          }
+          homeName={homeName}
           onClose={() => setAdding(null)}
         />
       ) : null}
@@ -120,10 +106,8 @@ export function AgentDevicesSection() {
             <Link className="card__row-body" to={`/settings/devices/computers/${device.id}`}>
               <span className="card__row-title">
                 {device.name}
-                {hostDeploymentPolicy(snapshot)?.deploymentOwnsMainComputer === true &&
-                device.ownership === "deployment" &&
-                device.allowedModules.includes("agents") ? (
-                  <span className="chip">Main</span>
+                {device.ownership === "deployment" && device.allowedModules.includes("agents") ? (
+                  <span className="chip">Runs Opensteer</span>
                 ) : null}
                 {device.thisDevice ? <span className="chip">This device</span> : null}
               </span>

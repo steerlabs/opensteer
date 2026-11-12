@@ -6,7 +6,6 @@ import type {
   IntegrationGrant,
   IntegrationPlatformDashboardView,
 } from "@opensteer/integration-core";
-import type { WorkspaceSummary } from "@opensteer/client/host";
 import { accountsForRequirement } from "@opensteer/client/integrations";
 import { Icon } from "../icon.js";
 import { LoadingRows } from "../loading-rows.js";
@@ -20,8 +19,8 @@ import {
 } from "./helpers.js";
 import { IntegrationIcon } from "./integration-icon.js";
 
-/** Where an integration's own page sends a person to decide its Workspace access. */
-export const workspaceAccessSectionId = "workspace-access";
+/** Where an integration's own page sends a person to decide what agents may use. */
+export const agentAccessSectionId = "agent-access";
 
 export function GrantsSection({
   dashboard,
@@ -29,111 +28,69 @@ export function GrantsSection({
   loading,
   onCreate,
   onRevoke,
-  onWorkspace,
   pending,
   platform,
-  workspaceId,
-  workspaceKind,
-  workspaces,
 }: {
   readonly dashboard: IntegrationDashboard | null;
-  /** The selected Workspace's grants; null until a read for it answers. */
+  /** Null until the read answers. */
   readonly grants: readonly IntegrationGrant[] | null;
   /** Unknown grants are loading unless their read failed, which the page says. */
   readonly loading: boolean;
   readonly onCreate: (input: CreateIntegrationGrant) => Promise<void>;
-  readonly onRevoke: (grantId: string) => void;
-  readonly onWorkspace: (workspaceId: string) => void;
+  readonly onRevoke: (grantId: IntegrationGrant["id"]) => void;
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
-  readonly workspaceId: string | null;
-  readonly workspaceKind: "main" | "project";
-  readonly workspaces: readonly WorkspaceSummary[];
 }) {
   const [editing, setEditing] = useState(false);
   const liveGrants = grants?.filter(({ status }) => status === "active") ?? [];
   return (
-    <section className="section" id={workspaceAccessSectionId}>
+    <section className="section" id={agentAccessSectionId}>
       <div className="section__head">
-        <h2 className="section__title">Workspace access</h2>
-        <span className="section__hint">Access is reviewed per Workspace and account.</span>
+        <h2 className="section__title">Agent access</h2>
+        <span className="section__hint">What your agent may use, per account.</span>
       </div>
-      <label className="field">
-        <span className="field__label">Workspace</span>
-        <select
-          className="select-input"
-          onChange={(event) => {
-            setEditing(false);
-            onWorkspace(event.target.value);
-          }}
-          value={workspaceId ?? ""}
-        >
-          {workspaces.map((candidate) => (
-            <option key={candidate.id} value={candidate.id}>
-              {candidate.kind === "main" ? "Main" : candidate.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {workspaceKind === "main" ? (
-        <div className="notice notice--accent">
-          <Icon name="check-circle" />
-          <div>
-            <strong>Main Workspace access</strong>
-            <p>
-              Opensteer and your tasks can use all of your connected accounts and installed
-              integrations. Projects need explicit access.
-            </p>
+      {grants === null ? (
+        // Access not read yet is not "nothing allowed".
+        loading ? (
+          <div className="card">
+            <LoadingRows label="Loading agent access" rows={2} />
           </div>
-        </div>
+        ) : null
       ) : (
-        <>
-          {grants === null ? (
-            // Access not read yet is not "nothing allowed".
-            loading ? (
-              <div className="card">
-                <LoadingRows label="Loading Workspace access" rows={2} />
-              </div>
-            ) : null
-          ) : (
-            <div className="card">
-              {liveGrants.length > 0 ? (
-                liveGrants.map((grant) => (
-                  <GrantRow
-                    grant={grant}
-                    key={grant.id}
-                    onRevoke={onRevoke}
-                    pending={pending}
-                    platform={platform}
-                  />
-                ))
-              ) : !editing ? (
-                <div className="card__empty">
-                  Nothing is allowed here yet. Agents can request access from a Thread, or allow an
-                  integration directly.
-                </div>
-              ) : null}
+        <div className="card">
+          {liveGrants.length > 0 ? (
+            liveGrants.map((grant) => (
+              <GrantRow
+                grant={grant}
+                key={grant.id}
+                onRevoke={onRevoke}
+                pending={pending}
+                platform={platform}
+              />
+            ))
+          ) : !editing ? (
+            <div className="card__empty">
+              Nothing is allowed yet. Your agent can ask for access from a task, or you can allow an
+              integration here.
             </div>
-          )}
-          {editing && workspaceId ? (
-            <GrantEditor
-              dashboard={dashboard}
-              onCancel={() => setEditing(false)}
-              onCreate={async (input) => {
-                await onCreate(input);
-                setEditing(false);
-              }}
-              pending={pending}
-              platform={platform}
-              workspaceId={workspaceId}
-            />
-          ) : (
-            <button className="btn" onClick={() => setEditing(true)} type="button">
-              <Icon name="plus" /> Allow an integration
-            </button>
-          )}
-        </>
+          ) : null}
+        </div>
+      )}
+      {editing ? (
+        <GrantEditor
+          dashboard={dashboard}
+          onCancel={() => setEditing(false)}
+          onCreate={async (input) => {
+            await onCreate(input);
+            setEditing(false);
+          }}
+          pending={pending}
+          platform={platform}
+        />
+      ) : (
+        <button className="btn" onClick={() => setEditing(true)} type="button">
+          <Icon name="plus" /> Allow an integration
+        </button>
       )}
     </section>
   );
@@ -146,7 +103,7 @@ function GrantRow({
   platform,
 }: {
   readonly grant: IntegrationGrant;
-  readonly onRevoke: (grantId: string) => void;
+  readonly onRevoke: (grantId: IntegrationGrant["id"]) => void;
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
 }) {
@@ -196,14 +153,12 @@ function GrantEditor({
   onCreate,
   pending,
   platform,
-  workspaceId,
 }: {
   readonly dashboard: IntegrationDashboard | null;
   readonly onCancel: () => void;
   readonly onCreate: (input: CreateIntegrationGrant) => Promise<void>;
   readonly pending: boolean;
   readonly platform: IntegrationPlatformDashboardView | null;
-  readonly workspaceId: string;
 }) {
   const installations = useMemo(
     () =>
@@ -223,8 +178,8 @@ function GrantEditor({
   const requirement = entry?.servers.find(
     ({ connectionRequirement }) => connectionRequirement.kind !== "none",
   )?.connectionRequirement ?? { kind: "none" as const };
-  // The same reading the Request card uses: a Workspace can never be offered
-  // an account the card would not offer for the same requirement.
+  // The same reading the Request card uses: this list never offers an
+  // account the card would not offer for the same requirement.
   const accounts = accountsForRequirement({
     dashboard,
     installationId,
@@ -233,7 +188,7 @@ function GrantEditor({
   });
   const account = accounts.find(({ id }) => id === connectionId) ?? accounts[0] ?? null;
   // A read-only computer has no tool that makes changes, so "Read and make
-  // changes" is not an answer this Workspace could be given.
+  // changes" is not an answer it could be given.
   const readOnlyCeiling = account?.computer?.access === "read";
   const needsAccount = requirement.kind !== "none" && !account;
   const canSubmit = entry !== null && !needsAccount && !pending;
@@ -347,7 +302,6 @@ function GrantEditor({
                 connectionId: (account?.id ?? null) as CreateIntegrationGrant["connectionId"],
                 installationId: entry.installation.id,
                 isDefault,
-                workspaceId,
               });
             }}
             type="button"

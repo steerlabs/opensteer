@@ -1,4 +1,3 @@
-import type { DeploymentClientPolicy } from "@opensteer/core";
 import {
   machineAccessShareIssues,
   type MachineAccessPolicy,
@@ -24,15 +23,13 @@ export interface MachineReachOption {
  * The reach choices this computer can actually be set to.
  *
  * "My agents" needs an owner to admit anybody, and ownership does not settle
- * whether there is one: a Personal Deployment's main computer belongs to the
- * Deployment and still has an owner, while a server Deployment's computer may
- * have none. So the Host's `ownerReachAvailable` decides that choice, and
- * ownership only decides whether the whole Deployment is a sensible audience.
+ * whether there is one: the main computer belongs to the Deployment and still
+ * has an owner. So the Host's `ownerReachAvailable` decides that choice, and
+ * ownership only decides whether the whole Deployment is an audience.
  * An unofferable choice is left out rather than shown disabled: a choice the
  * write would refuse is not a choice.
  */
 export function machineReachOptions(input: {
-  readonly deploymentPolicy: DeploymentClientPolicy | null;
   readonly deploymentName: string;
   readonly ownerReachAvailable: boolean;
   readonly ownership: MachineSummary["ownership"];
@@ -47,10 +44,7 @@ export function machineReachOptions(input: {
       reach: "owner",
     });
   }
-  if (
-    input.ownership === "deployment" ||
-    input.deploymentPolicy?.deploymentWideMachineReach === true
-  ) {
+  if (input.ownership === "deployment") {
     options.push({
       detail: "Agents working for anyone in this deployment.",
       label: `Everyone in ${input.deploymentName}`,

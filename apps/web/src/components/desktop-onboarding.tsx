@@ -21,7 +21,6 @@ const personalSteps: ReadonlyArray<{
   { label: "Starting Opensteer", step: "starting-host" },
   { label: "Connecting this computer", step: "connecting-computer" },
   { label: "Starting local agents", step: "starting-local-agents" },
-  { label: "Creating your workspace", step: "creating-main" },
   { label: "Opening Opensteer", step: "ready" },
 ];
 

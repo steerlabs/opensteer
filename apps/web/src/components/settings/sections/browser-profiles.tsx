@@ -1,12 +1,10 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 import {
-  browserProfileAccessSummary,
   profileHomeChoice,
   browserProfileDeleteConsequence,
   browserProfileDeletionRows,
   browserProfileSettingsRows,
-  browserProfileProjects,
   mutationIdempotencyKey,
   type BrowserProfileSettingsRow,
   type ProfileHomeChoice,
@@ -23,8 +21,7 @@ import { lastBrowsingChoice, rememberBrowsingChoice } from "../../workspace/star
 
 /**
  * Settings → Browser profiles. Each profile is its own browser with its own
- * sign-ins; Opensteer may browse as any of them, a project only as the ones
- * chosen for it here.
+ * sign-ins; your agent may browse as any of them.
  */
 export function BrowserProfilesSection() {
   const { snapshot } = useShell();
@@ -184,7 +181,7 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
   const { profile } = row;
   // An older Host can list, create and share profiles but not rename or delete them.
   const manageable = snapshot.browserProfileManageAvailable === true;
-  const [mode, setMode] = useState<"view" | "rename" | "projects" | "delete">("view");
+  const [mode, setMode] = useState<"view" | "rename" | "delete">("view");
   const [menuOpen, setMenuOpen] = useState(false);
   const [draft, setDraft] = useState(profile.name);
   const [pending, setPending] = useState<string | null>(null);
@@ -291,27 +288,28 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
           <>
             <span className="card__row-body">
               <span className="card__row-title">{profile.name}</span>
-              <span className="card__row-detail">{browserProfileAccessSummary(row)}</span>
             </span>
             {row.device ? (
               <DeviceLabel className="browser-profile-settings__device" device={row.device} />
             ) : row.unopened ? (
               <span className="browser-profile-settings__device">Not opened yet</span>
             ) : null}
-            <span className="card__row-actions">
-              <button
-                aria-expanded={menuOpen}
-                aria-haspopup="menu"
-                aria-label={`Manage ${profile.name}`}
-                className="icon-btn icon-btn--small"
-                onClick={() => setMenuOpen((open) => !open)}
-                ref={menuRef}
-                title="Manage"
-                type="button"
-              >
-                <Icon name="more" />
-              </button>
-            </span>
+            {manageable ? (
+              <span className="card__row-actions">
+                <button
+                  aria-expanded={menuOpen}
+                  aria-haspopup="menu"
+                  aria-label={`Manage ${profile.name}`}
+                  className="icon-btn icon-btn--small"
+                  onClick={() => setMenuOpen((open) => !open)}
+                  ref={menuRef}
+                  title="Manage"
+                  type="button"
+                >
+                  <Icon name="more" />
+                </button>
+              </span>
+            ) : null}
           </>
         )}
       </div>
@@ -323,50 +321,32 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
           returnFocusTo={menuRef.current}
         >
           <div className="picker__section">
-            {manageable ? (
-              <button
-                className="picker__row"
-                onClick={() => choose("rename")}
-                role="menuitem"
-                type="button"
-              >
-                <span className="picker__check picker__check--icon">
-                  <Icon name="pencil" />
-                </span>
-                <span className="picker__label">Rename</span>
-              </button>
-            ) : null}
             <button
               className="picker__row"
-              onClick={() => choose("projects")}
+              onClick={() => choose("rename")}
               role="menuitem"
               type="button"
             >
               <span className="picker__check picker__check--icon">
-                <Icon name="users" />
+                <Icon name="pencil" />
               </span>
-              <span className="picker__label">Choose projects…</span>
+              <span className="picker__label">Rename</span>
             </button>
           </div>
-          {manageable ? (
-            <div className="picker__section">
-              <button
-                className="picker__row picker__row--danger"
-                onClick={() => choose("delete")}
-                role="menuitem"
-                type="button"
-              >
-                <span className="picker__check picker__check--icon">
-                  <Icon name="trash" />
-                </span>
-                <span className="picker__label">Delete profile</span>
-              </button>
-            </div>
-          ) : null}
+          <div className="picker__section">
+            <button
+              className="picker__row picker__row--danger"
+              onClick={() => choose("delete")}
+              role="menuitem"
+              type="button"
+            >
+              <span className="picker__check picker__check--icon">
+                <Icon name="trash" />
+              </span>
+              <span className="picker__label">Delete profile</span>
+            </button>
+          </div>
         </Popover>
-      ) : null}
-      {mode === "projects" ? (
-        <ProjectAccess onDone={close} pending={pending} row={row} run={run} />
       ) : null}
       {mode === "delete" ? (
         <div aria-label={`Delete ${profile.name}`} className="settings-item__confirm" role="group">
@@ -397,77 +377,3 @@ function BrowserProfileRow({ row }: { readonly row: BrowserProfileSettingsRow })
 }
 
 /** Each project, on or off for this profile. Opensteer itself needs no choice. */
-function ProjectAccess({
-  onDone,
-  pending,
-  row,
-  run,
-}: {
-  readonly onDone: () => void;
-  readonly pending: string | null;
-  readonly row: BrowserProfileSettingsRow;
-  readonly run: (key: string, action: () => Promise<unknown>) => void;
-}) {
-  const { hostClient, snapshot } = useShell();
-  const projects = browserProfileProjects(snapshot);
-  return (
-    <div
-      aria-label={`Projects that can use ${row.profile.name}`}
-      className="browser-profile-settings__projects"
-      role="group"
-    >
-      {projects.length === 0 ? (
-        <p className="browser-profile-settings__none">
-          You have no projects yet. Opensteer can already use this profile.
-        </p>
-      ) : (
-        <ul>
-          {projects.map((workspace) => {
-            const grant = row.projects.find((entry) => entry.workspace.id === workspace.id);
-            const key = `access:${workspace.id}`;
-            return (
-              <li key={workspace.id}>
-                <span className="browser-profile-settings__project">{workspace.name}</span>
-                <button
-                  aria-checked={grant !== undefined}
-                  aria-label={`${workspace.name} can use ${row.profile.name}`}
-                  className="btn btn--small"
-                  disabled={pending !== null}
-                  onClick={() =>
-                    run(key, () =>
-                      grant
-                        ? hostClient.dispatch({
-                            grantId: grant.grantId,
-                            idempotencyKey: mutationIdempotencyKey(
-                              `browser-grant:${grant.grantId}`,
-                            ),
-                            type: "browser.profileGrant.revoke",
-                          })
-                        : hostClient.dispatch({
-                            idempotencyKey: mutationIdempotencyKey(`browser-grant:${workspace.id}`),
-                            profileId: row.profile.id,
-                            type: "browser.profile.grant",
-                            workspaceId: workspace.id,
-                          }),
-                    )
-                  }
-                  role="switch"
-                  type="button"
-                >
-                  {pending === key ? "Updating…" : grant ? "Allowed" : "Off"}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-      <p className="browser-profile-settings__note">
-        A project you allow gets full control of this profile, including every account signed in to
-        it.
-      </p>
-      <button className="btn btn--small" onClick={onDone} type="button">
-        Done
-      </button>
-    </div>
-  );
-}

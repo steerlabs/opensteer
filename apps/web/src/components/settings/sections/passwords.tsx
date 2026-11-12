@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   mutationIdempotencyKey,
@@ -49,8 +48,7 @@ type PasswordsBridge = Pick<
 export function PasswordsSection({ view }: { readonly view: SettingsView }) {
   const { desktopBridge, hostClient, snapshot } = useShell();
   const home = useHomeComputer();
-  const personal = hostDeploymentPolicy(snapshot)?.nativePasswords === true;
-  const onThisMac = desktopBridge !== null && personal && view.facts.onThisComputer;
+  const onThisMac = desktopBridge !== null && view.facts.onThisComputer;
   return (
     <>
       <h2 className="settings-group__title">Passwords</h2>
@@ -63,9 +61,9 @@ export function PasswordsSection({ view }: { readonly view: SettingsView }) {
       ) : (
         <div className="card">
           <SettingsRow
-            detail={passwordsElsewhere({ homeName: home.name ?? view.name, personal })}
-            icon={personal ? home.icon : "server"}
-            title={personal ? (home.name ?? view.name) : "Not available on this Opensteer"}
+            detail={passwordsElsewhere({ homeName: home.name ?? view.name, personal: true })}
+            icon={home.icon}
+            title={home.name ?? view.name}
           />
         </div>
       )}
