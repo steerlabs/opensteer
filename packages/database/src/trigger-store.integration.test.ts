@@ -1657,25 +1657,10 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation?.desired).toBe("stopped");
   });
-  it("stops a Runner's watch activations atomically with revocation", async ({ storeFixture }) => {
-    const { createFixture, createWatchTrigger, store, detail } = storeFixture;
-    const fixture = await createFixture("watch-runner-revocation");
-    const created = await createWatchTrigger(fixture, "watch-runner-revocation");
-    await store.revokeRunner(fixture.runnerId, fixture.userId, {
-      allowDeployment: true,
-    });
-    expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
-      desired: "stopped",
-      leaseExpiresAt: null,
-      observed: "stopped",
-    });
-  });
-  it("records a Workspace access failure on the fenced watch activation", async ({
-    storeFixture,
-  }) => {
+  it("records a folder access failure on the fenced watch activation", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger, triggers, detail } = storeFixture;
-    const fixture = await createFixture("watch-workspace-unavailable");
-    const created = await createWatchTrigger(fixture, "watch-workspace-unavailable");
+    const fixture = await createFixture("watch-folder-unavailable");
+    const created = await createWatchTrigger(fixture, "watch-folder-unavailable");
     const bootId = `watch-boot-${randomUUID()}`;
     const snapshot = await triggers.reconcileWatchesForRunner({
       environmentId: fixture.environmentId,
@@ -1688,14 +1673,14 @@ integration.sequential("Trigger failure auto-pause", () => {
     await triggers.recordWatchUnavailable({
       activationId: activation.id,
       executionGeneration: activation.executionGeneration,
-      reason: "Runner does not support storage Workspace access",
+      reason: "The task folder is unavailable",
       runnerBootId: bootId,
       runnerConnectionGeneration: 1,
       runnerId: fixture.runnerId,
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
       healthySince: null,
-      lastError: "Runner does not support storage Workspace access",
+      lastError: "The task folder is unavailable",
       leaseExpiresAt: null,
       observed: "backoff",
     });

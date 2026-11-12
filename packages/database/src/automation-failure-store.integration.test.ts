@@ -525,7 +525,7 @@ integration.sequential("automation failure notices", () => {
     });
     const byId = Object.fromEntries(summaries.map((summary) => [summary.id, summary]));
     expect(byId[once.trigger.id]).toMatchObject({
-      anchorThreadTitle: "Chat",
+      anchorThreadTitle: "Anchor summary",
       latestOccurrence: null,
       // The list says when; the payload a schedule carries is the detail's.
       source: {
@@ -561,7 +561,9 @@ integration.sequential("automation failure notices", () => {
         },
       },
     });
-    expect((await detail(once.trigger.id, fixture.userId)).anchorThreadTitle).toBe("Chat");
+    expect((await detail(once.trigger.id, fixture.userId)).anchorThreadTitle).toBe(
+      "Anchor summary",
+    );
   });
   it("records nothing for a recurring failure below the threshold, and one auto-pause", async ({
     storeFixture,
@@ -833,8 +835,6 @@ integration.sequential("automation failure notices", () => {
     await complete(fixture, await fireOneShot(created.trigger.id), "failed", "wake-anchor");
     const [notice] = await notices.listDue();
 
-    // Only the Trigger's own owner, into its own anchor Thread, may say so:
-    // another member of the Workspace may not speak for it.
     const colleague = await store.createUser("Colleague");
 
     await expect(
@@ -857,7 +857,7 @@ integration.sequential("automation failure notices", () => {
       }),
     ).rejects.toMatchObject({
       code: "forbidden",
-      message: "Automation source is invalid",
+      message: "The personal owner is required.",
     });
     const delivered = await store.enqueueThreadInput({
       content: [

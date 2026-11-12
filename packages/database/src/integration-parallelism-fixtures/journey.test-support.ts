@@ -50,8 +50,8 @@ export function databaseJourney(label: string): void {
       }),
     );
     if (scenario === "cycle") {
-      const from = label === "a" ? "workspaces" : "threads";
-      const to = label === "a" ? "threads" : "workspaces";
+      const from = label === "a" ? "deployment_event_state" : "threads";
+      const to = label === "a" ? "threads" : "deployment_event_state";
       appendFileSync(
         process.env.OPENSTEER_LOCK_ORDER_TRACE!,
         JSON.stringify({
@@ -71,17 +71,17 @@ export function databaseJourney(label: string): void {
       );
     }
     if (scenario?.startsWith("reversal") && label === "a") {
-      // A real reversed acquisition: Threads ranks after Workspaces.
+      // A real reversed acquisition: Threads rank after the personal event fence.
       const client = new Client({ connectionString: hostUrl });
       await client.connect();
       try {
-        await client.query("create temporary table workspaces (id text primary key)");
+        await client.query("create temporary table deployment_event_state (id text primary key)");
         await client.query("create temporary table threads (id text primary key)");
-        await client.query("insert into workspaces values ('w')");
+        await client.query("insert into deployment_event_state values ('w')");
         await client.query("insert into threads values ('t')");
         await client.query("begin");
         await client.query("select * from threads for no key update");
-        await client.query("select * from workspaces for no key update");
+        await client.query("select * from deployment_event_state for no key update");
         await client.query("commit");
       } finally {
         await client.end();
