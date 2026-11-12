@@ -1,6 +1,6 @@
 import { computerGlyph, orderDevices, type ComputerGlyph } from "../computers/computers.js";
-import type { BrowserTabOpenInput, HostSnapshot } from "./client.js";
-import type { StartPageProfileChoice } from "./start-page-model.js";
+import type { BrowserIdentityOpenInput, BrowserTabOpenInput, HostSnapshot } from "./client.js";
+import type { BrowserIdentityChoice, StartPageProfileChoice } from "./start-page-model.js";
 
 type DeviceSource = Pick<HostSnapshot, "browserProfileHomes" | "machines">;
 type BrowsingSource = Pick<HostSnapshot, "browserProfiles" | "browserSessions" | "browserTabs">;
@@ -206,18 +206,32 @@ export function newTabProfiles(
 }
 
 /**
- * Where New tab opens a profile: on its home, which the Host keeps. Guest has
+ * Where a new tab opens a profile: on its home, which the Host keeps. Guest has
  * none, so it opens on the device the reader is at when that lends a browser;
  * elsewhere the Host places it.
  */
 export function newTabTarget(
   snapshot: DeviceSource,
-  profile: StartPageProfileChoice,
+  identity: BrowserIdentityChoice,
   hereId: string | null,
-): BrowserTabOpenInput {
-  return profile.identity.kind === "guest" && hereId !== null && browserDeviceHere(snapshot, hereId)
-    ? { identity: profile.identity, placement: { kind: "runner", runnerId: hereId } }
-    : { identity: profile.identity };
+): BrowserIdentityOpenInput {
+  return identity.kind === "guest" && hereId !== null && browserDeviceHere(snapshot, hereId)
+    ? { identity, placement: { kind: "runner", runnerId: hereId } }
+    : { identity };
+}
+
+/**
+ * A reply link opens as a new tab, except an address only the computer's own
+ * network reaches: that keeps the Host's placement, which puts Guest on the
+ * computer the agent works on.
+ */
+export function replyLinkTarget(
+  snapshot: DeviceSource,
+  identity: BrowserIdentityChoice,
+  hereId: string | null,
+  url: string,
+): BrowserIdentityOpenInput {
+  return linkOnComputerNetwork(url) ? { identity } : newTabTarget(snapshot, identity, hereId);
 }
 
 /** The computer a conversation's agent works on, or null where the Host has not said. */

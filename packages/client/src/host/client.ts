@@ -113,12 +113,11 @@ import type { BrowserWatchState } from "./browser-watch.js";
 import type { ClientNetworkState } from "./lifecycle.js";
 import type { PlaceActivity } from "./place-activity.js";
 
-export type BrowserTabOpenInput =
-  | { readonly sessionId: string }
-  | {
-      readonly identity: BrowserIdentityChoice;
-      readonly placement?: { readonly kind: "runner"; readonly runnerId: string };
-    };
+export interface BrowserIdentityOpenInput {
+  readonly identity: BrowserIdentityChoice;
+  readonly placement?: { readonly kind: "runner"; readonly runnerId: string };
+}
+export type BrowserTabOpenInput = { readonly sessionId: string } | BrowserIdentityOpenInput;
 export interface BrowserTabOpenOptions {
   readonly signal?: AbortSignal;
   readonly url?: string;

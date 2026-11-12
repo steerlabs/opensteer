@@ -1,31 +1,38 @@
 import {
+  DesktopWebLinkDeliverySchema,
   DesktopWebLinkSchema,
-  DesktopWebLinkRequestSchema,
   type DesktopWebLink,
   type DesktopWebLinkDelivery,
   type OpensteerDesktopBridge,
 } from "@opensteer/protocol/desktop";
 import type {
   BrowserIdentityChoice,
+  BrowserIdentityOpenInput,
   HostClient,
   HostSnapshot,
   PersonalSurfaceDestination,
   PendingBrowserTabDestination,
 } from "@opensteer/client/host";
 
+/** Who browses a link and, for Guest, on which computer: bound once, so a retry or reload replays it. */
+interface LinkTarget {
+  readonly identity: BrowserIdentityChoice;
+  readonly placement?: BrowserIdentityOpenInput["placement"] | undefined;
+}
+
 /** Uses the same person-owned command as the start page, with a replay-safe key. */
 export async function openDesktopWebLink(
   value: unknown,
   client: HostClient,
-  identity: BrowserIdentityChoice,
+  { identity, placement }: LinkTarget,
   show: (destination: PersonalSurfaceDestination | PendingBrowserTabDestination) => void,
   acknowledge: (id: string) => Promise<void>,
 ): Promise<void> {
   const link = DesktopWebLinkSchema.parse(value);
-  const opening = client.beginBrowserTabOpen(
-    { identity },
-    { url: link.url, idempotencyKey: `desktop-web-link:${link.id}` },
-  );
+  const opening = client.beginBrowserTabOpen(placement ? { identity, placement } : { identity }, {
+    url: link.url,
+    idempotencyKey: `desktop-web-link:${link.id}`,
+  });
   show({ kind: "pending-browser", idempotencyKey: opening.idempotencyKey });
   let opened;
   try {
@@ -37,6 +44,15 @@ export async function openDesktopWebLink(
   }
   show({ kind: "browser", sessionId: opened.sessionId, tabId: opened.tabId });
   await acknowledge(link.id);
+}
+
+function linkBinding(
+  id: string,
+  { identity, placement }: LinkTarget,
+): NonNullable<DesktopWebLinkDelivery["bind"]> {
+  return DesktopWebLinkDeliverySchema.shape.bind
+    .unwrap()
+    .parse({ id, identity, ...(placement ? { placement } : {}) });
 }
 
 export interface WebLinkFailureActions {
@@ -53,7 +69,7 @@ export function receiveDesktopWebLinks(
   scope: {
     deploymentId: DesktopWebLinkDelivery["deploymentId"];
     userId: DesktopWebLinkDelivery["userId"];
-    identity: () => BrowserIdentityChoice;
+    target: () => LinkTarget;
   },
   start: () => OpenDelivery,
   error: (error: unknown, actions?: WebLinkFailureActions) => void,
@@ -87,12 +103,7 @@ export function receiveDesktopWebLinks(
       inFlight.add(command.id);
       try {
         bound ??= await delivery({
-          bind: {
-            id: command.id,
-            identity:
-              command.request?.identity ??
-              DesktopWebLinkRequestSchema.shape.identity.parse(scope.identity()),
-          },
+          bind: linkBinding(command.id, command.request ?? scope.target()),
         });
         if (!active) return;
         const request = bound?.request;

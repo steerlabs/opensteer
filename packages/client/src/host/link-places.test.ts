@@ -9,6 +9,7 @@ import {
   newTabProfiles,
   newTabTarget,
   recentProfileOn,
+  replyLinkTarget,
 } from "./link-places.js";
 import type { StartPageProfileChoice } from "./start-page-model.js";
 
@@ -219,14 +220,24 @@ describe("new tab", () => {
   });
 
   it("puts Guest on this device when it lends a browser, and lets the Host place it otherwise", () => {
-    const guest = profiles[4]!;
+    const guest = { kind: "guest" } as const;
     expect(newTabTarget(snapshot, guest, phone)).toEqual({
-      identity: { kind: "guest" },
+      identity: guest,
       placement: { kind: "runner", runnerId: phone },
     });
-    expect(newTabTarget(snapshot, guest, null)).toEqual({ identity: { kind: "guest" } });
-    expect(newTabTarget(snapshot, profiles[0]!, phone)).toEqual({
+    expect(newTabTarget(snapshot, guest, null)).toEqual({ identity: guest });
+    expect(newTabTarget(snapshot, profiles[0]!.identity, phone)).toEqual({
       identity: { kind: "profile", profileId: "bpr_work" },
     });
+  });
+
+  it("opens a reply link here, except an address on the agent's computer's own network", () => {
+    const guest = { kind: "guest" } as const;
+    expect(replyLinkTarget(snapshot, guest, studio, "https://example.com/a")).toEqual({
+      identity: guest,
+      placement: { kind: "runner", runnerId: studio },
+    });
+    for (const url of ["http://localhost:5173/", "http://192.168.1.20/", "http://nas.local/"])
+      expect(replyLinkTarget(snapshot, guest, studio, url)).toEqual({ identity: guest });
   });
 });

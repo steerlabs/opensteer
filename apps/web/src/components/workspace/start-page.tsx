@@ -18,7 +18,9 @@ import { z } from "zod";
 import {
   HostClientRequestError,
   mutationIdempotencyKey,
+  newTabTarget,
   profileAwayWords,
+  replyLinkTarget,
   sameIdentity,
   startPageChoice,
   startPageIndex,
@@ -107,6 +109,7 @@ export function openWorkspaceWebLink(
   nav: WorkspaceNavigation,
   url: string,
   historyState: unknown,
+  hereId: string | null,
 ): void {
   const snapshot = hostClient.getSnapshot();
   const scope = { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null };
@@ -123,15 +126,12 @@ export function openWorkspaceWebLink(
     document.querySelector(".place")?.getBoundingClientRect() ?? null,
     window.matchMedia("(max-width: 700px)").matches,
   );
-  const opening = hostClient.beginBrowserTabOpen(
-    { identity: choice },
-    {
-      url,
-      typed: true,
-      ...(viewport ? { viewport } : {}),
-      idempotencyKey: mutationIdempotencyKey("reply-link"),
-    },
-  );
+  const opening = hostClient.beginBrowserTabOpen(replyLinkTarget(snapshot, choice, hereId, url), {
+    url,
+    typed: true,
+    ...(viewport ? { viewport } : {}),
+    idempotencyKey: mutationIdempotencyKey("reply-link"),
+  });
   rememberBrowsingChoice(scope, choice);
   nav.showPendingBrowserTab(opening.idempotencyKey, { address: url });
   void opening.result.then(
@@ -442,7 +442,9 @@ export const StartPage = memo(function StartPage({
         stageRef.current?.getBoundingClientRect() ?? null,
         phone,
       );
-      const target: BrowserTabOpenInput = { ...action.target, ...(placement ? { placement } : {}) };
+      const target: BrowserTabOpenInput = placement
+        ? { ...action.target, placement }
+        : newTabTarget(hostClient.getSnapshot(), action.target.identity, localMachineId);
       const opening = hostClient.beginBrowserTabOpen(target, {
         url,
         typed: result.kind === "address",

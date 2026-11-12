@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { DesktopWebLinks } from "../apps/desktop/src/app/web-links.js";
 import { WebLinkDeliveryOwner } from "../apps/desktop/src/bridge/methods/web-links.js";
 import { openDesktopWebLink, receiveDesktopWebLinks } from "../apps/web/src/desktop/web-links.js";
-import type { BrowserIdentityChoice } from "../packages/client/src/host/index.js";
+import type { BrowserIdentityOpenInput } from "../packages/client/src/host/index.js";
 import { MockHostClient } from "../packages/client/src/mock/index.js";
 import { createId } from "../packages/core/src/index.js";
 import {
@@ -21,7 +21,11 @@ async function deliveryFixture() {
   const scope = {
     deploymentId: DesktopWebLinkDeliverySchema.shape.deploymentId.parse(snapshot.deploymentId),
     userId: snapshot.user!.id,
-    identity: (): BrowserIdentityChoice => ({ kind: "guest" }),
+    // This Mac lends a browser to another Mac's Opensteer: Guest opens here.
+    target: (): BrowserIdentityOpenInput => ({
+      identity: { kind: "guest" },
+      placement: { kind: "runner", runnerId: "rnr_88888888-8888-4888-8888-888888888888" },
+    }),
   };
   let listener: ((link: DesktopPersonalTabCommand) => void) | undefined;
   const sender = {
@@ -69,7 +73,7 @@ async function deliveryFixture() {
     };
   });
   const start = () => (bound: DesktopWebLink, ack: (id: string) => Promise<void>) =>
-    openDesktopWebLink(bound, client, bound.request!.identity, show, ack);
+    openDesktopWebLink(bound, client, bound.request!, show, ack);
   const connect = () => receiveDesktopWebLinks(bridge, scope, start, errors);
   links.accept("https://example.com/first");
   links.accept("https://example.com/next");
@@ -128,11 +132,14 @@ it("Dismiss drops only the failed link and delivers its successor", async () => 
     fixture.cleanup();
   }
 });
-it("replays the bound request after a renderer reload even when the remembered profile changes", async () => {
+it("replays the bound request after a renderer reload even when the remembered profile or this Mac's browser changes", async () => {
   const fixture = await deliveryFixture();
   try {
+    expect(fixture.opened.mock.calls[0]![0]).toEqual(fixture.scope.target());
     fixture.stop();
-    fixture.scope.identity = () => ({ kind: "profile", profileId: createId("browserProfile") });
+    fixture.scope.target = () => ({
+      identity: { kind: "profile", profileId: createId("browserProfile") },
+    });
     const stop = fixture.connect();
     await vi.waitFor(() => expect(fixture.opened).toHaveBeenCalledTimes(3));
     expect(fixture.opened.mock.calls[1]).toEqual(fixture.opened.mock.calls[0]);

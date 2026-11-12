@@ -5,6 +5,7 @@ export {
   type AgentConnectionAuthorizationTarget,
 } from "./agent-connections.js";
 import { BrowserOpenIdentitySchema } from "./browser.js";
+import { BrowserPlacementSelectorSchema } from "./browser-tabs.js";
 import { type RealtimeFrameDiagnostic, type RendererFailureDiagnostic } from "./common.js";
 import { type DisplayClientDiagnostic } from "./display-stream.js";
 import type { DictationPort } from "./dictation.js";
@@ -1435,6 +1436,7 @@ export const DesktopWebLinkRequestSchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   userId: UserIdSchema,
   identity: BrowserOpenIdentitySchema,
+  placement: BrowserPlacementSelectorSchema.optional(),
 });
 export type DesktopWebLinkRequest = z.infer<typeof DesktopWebLinkRequestSchema>;
 export const DesktopWebLinkSchema = z.strictObject({
@@ -1451,7 +1453,13 @@ export const DesktopWebLinkDeliverySchema = z.strictObject({
   deploymentId: DeploymentIdSchema,
   acknowledgedId: z.uuid().optional(),
   dismissedId: z.uuid().optional(),
-  bind: z.strictObject({ id: z.uuid(), identity: BrowserOpenIdentitySchema }).optional(),
+  bind: z
+    .strictObject({
+      id: z.uuid(),
+      identity: BrowserOpenIdentitySchema,
+      placement: BrowserPlacementSelectorSchema.optional(),
+    })
+    .optional(),
   generation: z.uuid(),
   userId: UserIdSchema,
   ready: z.boolean(),

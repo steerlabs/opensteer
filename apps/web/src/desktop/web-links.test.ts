@@ -20,7 +20,13 @@ it("revalidates renderer links before invoking any browser command", async () =>
     `https://example.com/${"a".repeat(8192)}`,
   ]) {
     await expect(
-      openDesktopWebLink({ ...link, url }, client, { kind: "guest" }, vi.fn(), vi.fn()),
+      openDesktopWebLink(
+        { ...link, url },
+        client,
+        { identity: { kind: "guest" } },
+        vi.fn(),
+        vi.fn(),
+      ),
     ).rejects.toThrow();
   }
   expect(open).not.toHaveBeenCalled();
@@ -41,7 +47,7 @@ it("opens the exact destination through the person command, selects it then ackn
   const ack = vi.fn(async () => {
     order.push("ack");
   });
-  await openDesktopWebLink(link, client, { kind: "guest" }, show, ack);
+  await openDesktopWebLink(link, client, { identity: { kind: "guest" } }, show, ack);
   expect(open).toHaveBeenCalledWith(
     { identity: { kind: "guest" } },
     { url: link.url, idempotencyKey: `desktop-web-link:${link.id}` },
@@ -59,9 +65,9 @@ it("does not acknowledge when the person command fails", async () => {
   }));
   const ack = vi.fn();
   const show = vi.fn();
-  await expect(openDesktopWebLink(link, client, { kind: "guest" }, show, ack)).rejects.toThrow(
-    "Browser unavailable",
-  );
+  await expect(
+    openDesktopWebLink(link, client, { identity: { kind: "guest" } }, show, ack),
+  ).rejects.toThrow("Browser unavailable");
   expect(show).toHaveBeenCalledExactlyOnceWith({
     kind: "pending-browser",
     idempotencyKey: `desktop-web-link:${link.id}`,
@@ -88,7 +94,7 @@ it("acknowledges without a failure when the person closes the opening tab", asyn
   const ack = vi.fn(async () => {});
   const show = vi.fn();
   try {
-    const opening = openDesktopWebLink(link, client, { kind: "guest" }, show, ack);
+    const opening = openDesktopWebLink(link, client, { identity: { kind: "guest" } }, show, ack);
     client.dismissPendingBrowserTab(`desktop-web-link:${link.id}`);
     await opening;
     expect(ack).toHaveBeenCalledExactlyOnceWith(link.id);
@@ -134,7 +140,7 @@ it("opens and acknowledges without stealing a view changed after arrival", async
       resolve = done;
     }),
   }));
-  const opening = openDesktopWebLink(link, client, { kind: "guest" }, select, ack);
+  const opening = openDesktopWebLink(link, client, { identity: { kind: "guest" } }, select, ack);
   view = { revision: 1, changedAt: 50 };
   resolve!({ sessionId: "session", tabId: "tab" } as Awaited<
     ReturnType<typeof client.openBrowserTab>
@@ -204,7 +210,7 @@ it("selects a pending external link in the input turn before dispatch resolves",
   const opening = openDesktopWebLink(
     link,
     client,
-    { kind: "profile", profileId: profile.id },
+    { identity: { kind: "profile", profileId: profile.id } },
     show,
     ack,
   );

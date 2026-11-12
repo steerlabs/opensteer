@@ -55,6 +55,7 @@ import {
   canRespondToRequests,
   defaultThreadPlacement,
   mutationIdempotencyKey,
+  newTabTarget,
   reviewHostAction,
   sameStableHostSnapshot,
   threadPlacementOptions,
@@ -324,10 +325,6 @@ export function AppShell({
     deploymentId: snapshot.deploymentId,
     userId: snapshot.user?.id ?? null,
   });
-  const openWebLink = useCallback(
-    (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
-    [hostClient, nav, location.state],
-  );
   const { controller: dictation } = useDictation();
   const voice = useVoiceRuntime(hostClient, dictation, () => {
     // Settings and other full pages cover the conversation and any place beside it.
@@ -348,6 +345,7 @@ export function AppShell({
   }, [voice, location.key]);
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
+  const webLinkHere = useRef<string | null>(null);
   const webLinkView = useRef({
     key: location.key,
     revision: 0,
@@ -365,62 +363,6 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  const webLinkReady = desktopWebLinksReady(true, snapshot);
-  useEffect(() => {
-    if (
-      !webLinkReady ||
-      !snapshot.deploymentId ||
-      !snapshot.user ||
-      !suppliedDesktopBridge?.webLinkDelivery
-    )
-      return;
-    const deploymentId = DesktopWebLinkDeliverySchema.shape.deploymentId.parse(
-      snapshot.deploymentId,
-    );
-    const userId = snapshot.user.id;
-    const bridge = suppliedDesktopBridge;
-    setWebLinkFailure(null);
-    const selection = webLinkSelection(() => webLinkView.current);
-    return receiveDesktopWebLinks(
-      bridge,
-      {
-        deploymentId,
-        userId,
-        identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
-      },
-      () => {
-        let pendingKey: string | null = null;
-        const select = selection(
-          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
-            if (destination.kind === "pending-browser") {
-              pendingKey = destination.idempotencyKey;
-              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
-            } else if (pendingKey)
-              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
-          },
-        );
-        return (link, acknowledge) =>
-          openDesktopWebLink(
-            link,
-            hostClient,
-            link.request!.identity,
-            select(link.receivedAt),
-            acknowledge,
-          );
-      },
-      (error, actions) => {
-        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
-        else toast.error(actionErrorMessage(error));
-      },
-    );
-  }, [
-    webLinkReady,
-    suppliedDesktopBridge,
-    snapshot.deploymentId,
-    snapshot.user?.id,
-    hostClient,
-    toast,
-  ]);
   // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
   const navigateTo = useNavigate();
   useEffect(() => {
@@ -515,6 +457,78 @@ export function AppShell({
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
   const thisMachineId = localRunnerId ?? hostingRunnerId;
+  webLinkHere.current = thisMachineId;
+  const openWebLink = useCallback(
+    (address: string) =>
+      openWorkspaceWebLink(hostClient, nav, address, location.state, thisMachineId),
+    [hostClient, nav, location.state, thisMachineId],
+  );
+  // A link binds its computer for good, so it waits while this Mac is still saying whether it is one.
+  const localWorker = viewedLocalExecutionStatus?.runner;
+  const webLinkHereKnown =
+    localExecutionDeploymentId === null ||
+    localExecutionError !== null ||
+    (localWorker !== undefined &&
+      localWorker.state !== "starting" &&
+      (localWorker.state !== "running" ||
+        snapshot.machines.some(
+          (machine) => machine.id === localWorker.runnerId && machine.status === "online",
+        )));
+  const webLinkReady = desktopWebLinksReady(true, snapshot) && webLinkHereKnown;
+  useEffect(() => {
+    if (
+      !webLinkReady ||
+      !snapshot.deploymentId ||
+      !snapshot.user ||
+      !suppliedDesktopBridge?.webLinkDelivery
+    )
+      return;
+    const deploymentId = DesktopWebLinkDeliverySchema.shape.deploymentId.parse(
+      snapshot.deploymentId,
+    );
+    const userId = snapshot.user.id;
+    const bridge = suppliedDesktopBridge;
+    setWebLinkFailure(null);
+    const selection = webLinkSelection(() => webLinkView.current);
+    return receiveDesktopWebLinks(
+      bridge,
+      {
+        deploymentId,
+        userId,
+        target: () =>
+          newTabTarget(
+            hostClient.getSnapshot(),
+            lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
+            webLinkHere.current,
+          ),
+      },
+      () => {
+        let pendingKey: string | null = null;
+        const select = selection(
+          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
+            if (destination.kind === "pending-browser") {
+              pendingKey = destination.idempotencyKey;
+              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
+            } else if (pendingKey)
+              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
+          },
+        );
+        return (link, acknowledge) =>
+          openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
+      },
+      (error, actions) => {
+        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
+        else toast.error(actionErrorMessage(error));
+      },
+    );
+  }, [
+    webLinkReady,
+    suppliedDesktopBridge,
+    snapshot.deploymentId,
+    snapshot.user?.id,
+    hostClient,
+    toast,
+  ]);
   const localActivationReady =
     hostingRunnerId !== null
       ? personalSetup?.state === "ready" && desktopDeployment?.access === "owner"
