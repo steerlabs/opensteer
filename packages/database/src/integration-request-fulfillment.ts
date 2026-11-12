@@ -1,6 +1,5 @@
 import { ResolvedRequestSchema } from "@opensteer/core";
 import { appendHostDeploymentEvent } from "./deployment-events.js";
-import { writeIntegrationGrantInTransaction } from "./integration-grant-write.js";
 import {
   RequestResponseSchema,
   type AgentEvent,
@@ -36,21 +35,6 @@ export async function fulfillPendingIntegrationAccessRequestsInTransaction(
   const events: AgentEvent[] = [];
   const now = new Date();
   for (const row of pending) {
-    const details = await transaction
-      .selectFrom("integrationRequestDetails")
-      .select("access")
-      .where("requestId", "=", row.id)
-      .executeTakeFirstOrThrow();
-    await writeIntegrationGrantInTransaction(transaction, {
-      access: details.access ?? input.access,
-      alias: input.displayName,
-      connectionId: input.connectionId,
-      createdBy: input.ownerUserId,
-      installationId: input.installationId,
-      isDefault: false,
-      ownerUserId: input.ownerUserId,
-      providerAuthorizations: {},
-    });
     const response = RequestResponseSchema.parse({
       kind: "external",
       value: {
@@ -119,6 +103,7 @@ export function pendingIntegrationAccessRequests(
     .selectFrom("requests")
     .innerJoin("integrationRequestDetails", "integrationRequestDetails.requestId", "requests.id")
     .selectAll("requests")
+    .select("integrationRequestDetails.access as requestedAccess")
     .where("requests.kind", "=", "integration.access")
     .where("requests.status", "=", "pending")
     .where("requests.requestedBy", "=", input.ownerUserId)

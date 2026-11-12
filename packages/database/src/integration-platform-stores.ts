@@ -4157,10 +4157,22 @@ async function finishComputerConnectionChangeInTransaction(
           serverId: installed.serverId,
         }).execute()
       : [];
+  // Both Request kinds settle after the widest personal grant is written.
+  const pendingAccess = pendingRequests.some(
+    ({ requestedAccess }) => requestedAccess === "read-write",
+  )
+    ? "read-write"
+    : pendingRequests.length > 0
+      ? "read"
+      : null;
+  const grantAccess =
+    input.alsoGrant?.access === "read-write" || pendingAccess === "read-write"
+      ? "read-write"
+      : (input.alsoGrant?.access ?? pendingAccess);
   const settlement = await settleComputerAppApprovalInTransaction(transaction, {
     settlementActor,
     additionalRequestIds: pendingRequests.map(({ id }) => id),
-    ...(input.alsoGrant ? { alsoGrant: input.alsoGrant } : {}),
+    ...(grantAccess ? { alsoGrant: { access: grantAccess } } : {}),
     connection: {
       access: input.connectionAccess,
       alias: app?.displayName ?? input.row.displayName,

@@ -1,3 +1,4 @@
+import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   personalFixtureOwner,
   createPersonalRunFixturePort,
@@ -35,7 +36,7 @@ import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
 import type { DatabaseSchema } from "./schema.js";
-import { describe, expect, it as baseIt } from "vitest";
+import { describe, expect, it as baseIt, vi } from "vitest";
 import {
   ChannelStore,
   createDatabase,
@@ -737,7 +738,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
             await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-integration-uninstall-test'
         and wait_event_type = 'Lock'`.execute(database)
-          ).rows.some(({ query }) => query.includes('from "integration_servers"')),
+          ).rows.some(({ query }) => query.includes('from "deployment_event_state"')),
         )
         .toBe(true);
       release.resolve();
@@ -1297,7 +1298,16 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       providerAuthorizations: {},
       requestId: opened.request.id,
       resolvedBy: userId,
-      response: { kind: "external", value: { connectionId, decision: "fulfilled" } },
+      response: {
+        kind: "external",
+        value: {
+          connectionId,
+          decision: "fulfilled",
+          access: "read",
+          alias: "MCP",
+          isDefault: false,
+        },
+      },
     });
     expect((await platform.requests.get(opened.request.id))?.status).toBe("fulfilled");
   });
@@ -1513,13 +1523,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       suffix: string,
       existingOwnerUserId?: ReturnType<typeof createId<"user">>,
     ) {
-      if (!(await store.getDeployment())) {
-        await store.ensureDeployment({
-          canonicalOrigin: "https://computer-apps.test.invalid",
-          deploymentShape: { kind: "personal" },
-          hostInstanceId: createId("hostInstance"),
-        });
-      }
       const personal = await personalFixtureOwner(database, databaseUrl);
       const ownerUserId = existingOwnerUserId ?? personal.userId;
       const runnerId = createId("runner");
@@ -1793,15 +1796,19 @@ integration.sequential("PostgreSQL computer app connections", () => {
       return decision;
     }
     async function waitForLockWaiters(count: number): Promise<void> {
-      for (let attempt = 0; attempt < 200; attempt += 1) {
-        const { rows } = await sql<{ waiting: string }>`
-        select count(*)::text as waiting from pg_stat_activity
-        where datname = current_database() and wait_event_type = 'Lock'
-      `.execute(database);
-        if (Number(rows[0]?.waiting ?? 0) >= count) return;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      throw new Error(`Fewer than ${count} sessions ever waited on a lock.`);
+      await vi.waitFor(
+        async () => {
+          const { rows } = await sql<{ waiting: string }>`
+          select count(*)::text as waiting from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+        `.execute(database);
+          expect(
+            Number(rows[0]?.waiting ?? 0),
+            `${count} sessions never waited on a lock`,
+          ).toBeGreaterThanOrEqual(count);
+        },
+        { timeout: 2_000 },
+      );
     }
 
     return Object.freeze({
@@ -2530,6 +2537,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
       status: "pending",
     });
+    const anotherRead = await request("read", "computer-request-another-read");
     const widened = await setApprovedComputerConnection({
       access: "read-write",
       actorUserId: setup.ownerUserId,
@@ -2539,12 +2547,17 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read-write"),
     });
-    expect(widened.requestEvents).toEqual([
-      expect.objectContaining({
-        data: expect.objectContaining({
-          request: expect.objectContaining({ id: write.request.id }),
-        }),
-      }),
+    expect(
+      widened.requestEvents
+        .map((event) => {
+          if (event.type !== "request.resolved")
+            throw new Error("Expected a resolved access Request");
+          return event.data.request.id;
+        })
+        .sort(),
+    ).toEqual([write.request.id, anotherRead.request.id].sort());
+    expect(widened.grants).toEqual([
+      expect.objectContaining({ access: "read-write", connectionId: created.connection.id }),
     ]);
     await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
       status: "fulfilled",
@@ -2608,7 +2621,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
         resolvedBy: run.userId,
         response: {
           kind: "external",
-          value: { connectionId: other.connection.id, decision: "fulfilled" },
+          value: {
+            connectionId: other.connection.id,
+            decision: "fulfilled",
+            access: "read-write",
+            alias: "Messages",
+            isDefault: false,
+          },
         },
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
@@ -2919,9 +2938,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    // Pause the edit after it has locked the connection and before it advances
-    // the server generation. Its foreign-key key-share lock on the server must
-    // make uninstall wait there, before uninstall can lock the connection.
+    // The edit holds the personal commit fence until its tool writes finish.
     await sql`
       create function public.opensteer_uninstall_edit_probe() returns trigger
       language plpgsql as $$
@@ -2967,14 +2984,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
         requestId: "uninstall-edit-race-remove",
       });
       await waitForLockWaiters(2);
-      const blockedOnServer = await sql<{ count: string }>`
+      const blockedOnFence = await sql<{ count: string }>`
         select count(*)::text as count from pg_stat_activity
         where datname = current_database()
           and application_name = 'opensteer-computer-app-connections-test'
           and wait_event_type = 'Lock'
-          and query ilike '%integration_servers%'
+          and query ilike '%deployment_event_state%'
       `.execute(database);
-      expect(Number(blockedOnServer.rows[0]?.count)).toBeGreaterThanOrEqual(1);
+      expect(Number(blockedOnFence.rows[0]?.count)).toBeGreaterThanOrEqual(1);
       release();
       const outcomes = await Promise.allSettled([edit, uninstall, holder]);
       expect(outcomes.map((outcome) => outcome.status)).toEqual([
@@ -3255,7 +3272,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       requestedBy: run.userId,
       requestedConnectionId: source.connection.id,
       requestedServerId: setup.serverId,
-      reason: "Keep a pending Request in the channel Workspace",
+      reason: "Keep a pending Request in the Messaging folder",
     });
     expect(pending.request.status).toBe("pending");
     const channels = new ChannelStore(database);
@@ -3318,42 +3335,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const claim = await channels.claimIngress("source-race");
     if (!claim) throw new Error("Expected claimed ingress");
     expect(claim.id).toBe(ingress.ingressId);
-    const placementEnvironmentId = await store.createEnvironment({
-      kind: "local",
-      name: "Source Mac",
-      runnerId: setup.runnerId,
-    });
-    const placementHarness = await store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: placementEnvironmentId,
-      name: "Source Mac engine",
-      stateKind: "isolated",
-    });
-    await store.recordHarnessCatalogs({
-      environmentId: placementEnvironmentId,
-      expectedRevisions: new Map([[placementHarness.id, placementHarness.runtimeRevision]]),
-      catalogs: [
-        HarnessInstanceCatalogSchema.parse({
-          harnessInstanceId: placementHarness.id,
-          driverKind: "native",
-          status: "ready",
-          continuationIdentity: {
-            continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-            driverKind: "native",
-          },
-          models: [
-            {
-              displayName: "Test",
-              isDefault: true,
-              modelId: "gpt-5.6-sol",
-              options: [],
-              providerId: "openai",
-            },
-          ],
-        }),
-      ],
-    });
     const barrier = pauseAfterLock(
       database,
       (node) =>
@@ -3379,7 +3360,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           noRoute: "No route",
         },
         availableEngines: [
-          { environmentId: placementEnvironmentId, driverKinds: [placementHarness.driverKind] },
+          { environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
         ],
       });
       void adopting.catch(() => undefined);
@@ -3391,11 +3372,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(
-            ({ query }) =>
-              query.includes('"execution_environments"') ||
-              query.includes('"integration_connections"'),
-          ),
+          ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
         )
         .toBe(true);
       barrier.release();
@@ -3408,303 +3385,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await Promise.allSettled([renaming, adopting]);
     }
   });
-
-  it.for([
-    "revocation-first",
-    "ingress-first",
-    "connection-first",
-    "connection-holds-workspace",
-    "binding-first",
-  ] as const)(
-    "orders computer channel mutations after their Workspace (%s)",
-    async (arrival, { storeFixture }) => {
-      const { store, database, fixture, setApprovedComputerConnection, definition, platform } =
-        storeFixture;
-      const run = await runningRunFixture(store, `channel-source-${arrival}`);
-      const harness = await database
-        .selectFrom("harnessInstances")
-        .select("runtimeRevision")
-        .where("id", "=", run.harnessInstanceId)
-        .executeTakeFirstOrThrow();
-      await store.recordHarnessCatalogs({
-        catalogs: [
-          HarnessInstanceCatalogSchema.parse({
-            continuationIdentity: {
-              continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-              driverKind: "native",
-            },
-            driverKind: "native",
-            harnessInstanceId: run.harnessInstanceId,
-            models: [
-              {
-                displayName: "Test model",
-                isDefault: true,
-                modelId: "gpt-5.6-sol",
-                options: [],
-                providerId: "openai",
-              },
-            ],
-            status: "ready",
-          }),
-        ],
-        environmentId: run.environmentId,
-        expectedRevisions: new Map([[run.harnessInstanceId, harness.runtimeRevision]]),
-      });
-      const setup = await fixture(`channel-source-${arrival}`, run.userId);
-      const source = await setApprovedComputerConnection({
-        access: "read-write",
-        actorUserId: run.userId,
-        createIfMissing: true,
-        definitionId: definition.id,
-        requestId: `channel-source-${arrival}`,
-        runnerId: setup.runnerId,
-        tools: setup.tools("read-write"),
-      });
-      const pending = await platform.requests.createIntegrationAccessRequest({
-        access: "read-write",
-        callId: `channel-source-${arrival}`,
-        installationId: setup.installationId,
-        originatingRunId: run.runId,
-        originatingThreadId: run.threadId,
-
-        requestedBy: run.userId,
-        requestedConnectionId: source.connection.id,
-        requestedServerId: setup.serverId,
-        reason: "Keep a pending Request in the channel Workspace",
-      });
-      expect(pending.request.status).toBe("pending");
-      const channels = new ChannelStore(database);
-      const sender = { allowedExternalUserIds: [], mode: "anyone" };
-      const connectionInput: Parameters<ChannelStore["createConnection"]>[0] = {
-        folder: run.folder,
-        accessPolicy: {
-          channels: { conversationIds: [], scope: "all", sender },
-          directMessages: sender,
-        },
-        account: {
-          displayName: "Messages",
-          externalAccountId: "messages",
-          routingMode: arrival === "binding-first" ? "shared" : "dedicated",
-        },
-        connection: {
-          connectionMethod: "computer",
-          displayName: "Messages",
-          provider: "imessage",
-          runnerId: setup.runnerId,
-          sourceConnectionId: source.connection.id,
-          transportKind: "computer",
-        },
-        createdBy: run.userId,
-        credential: null,
-        executionPolicy: { harness: "default", harnessInstanceId: null },
-        linkedExternalUserIds: ["owner@messages.test"],
-        selector: {
-          conversationId: arrival === "binding-first" ? "owner-chat" : null,
-          conversationType: null,
-          scopeId: null,
-          threadId: null,
-        },
-      };
-      const configured = await channels.createConnection(connectionInput);
-      await channels.setRuntimeConnectionHealth({
-        connectionId: configured.connection.id,
-        detail: null,
-        reason: null,
-        runnerId: setup.runnerId,
-        status: "connected",
-      });
-      const ingress = await channels.commitIngress(configured.connection.id, {
-        accountExternalId: "messages",
-        actor: { displayName: "Owner", externalUserId: "owner@messages.test" },
-        content: [{ type: "text", text: "Hello" }],
-        conversation: {
-          displayName: "Owner",
-          externalConversationId: "owner-chat",
-          externalScopeId: null,
-          externalThreadId: null,
-          type: "dm",
-        },
-        eventId: `channel-source-${arrival}`,
-        occurredAt: new Date().toISOString(),
-        provider: "imessage",
-        providerMessageId: `channel-source-${arrival}`,
-        trigger: "direct-message",
-      });
-      const claim = await channels.claimIngress("source-race");
-      if (!claim) throw new Error("Expected claimed ingress");
-      expect(claim.id).toBe(ingress.ingressId);
-      const newIdentity = JSON.stringify(["imessage", null, "second-bot"]);
-      const held = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const blocker = database.transaction().execute(async (transaction) => {
-        if (arrival === "revocation-first") {
-          // SHARE stops revocation's NO KEY UPDATE while allowing source
-          // readers through, preserving the source → Workspace race staging.
-          await transaction
-            .selectFrom("integrationConnections")
-            .select("id")
-            .where("id", "=", source.connection.id)
-            .forShare()
-            .execute();
-        } else if (arrival === "connection-first") {
-          await sql`select pg_advisory_xact_lock(hashtextextended(${newIdentity}, 0))`.execute(
-            transaction,
-          );
-        } else if (arrival === "connection-holds-workspace") {
-          // Creation takes its Workspace, then waits here for the source;
-          // revocation then has to queue behind it at that Workspace.
-          await transaction
-            .selectFrom("integrationConnections")
-            .select("id")
-            .where("id", "=", source.connection.id)
-            .forShare()
-            .execute();
-        } else if (arrival === "binding-first") {
-          await transaction
-            .selectFrom("channelBindings")
-            .select("id")
-            .where("id", "=", configured.binding.id)
-            .forUpdate()
-            .execute();
-        } else {
-          await transaction
-            .selectFrom("personalSettings")
-            .select("ownerId")
-            .where("ownerId", "=", run.userId)
-            .forUpdate()
-            .execute();
-        }
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      const adopt = () =>
-        channels.adoptIngress({
-          claimToken: claim.claimToken,
-          ingressId: claim.id,
-          notices: {
-            approvalPending: "Pending",
-            linkByDirectMessage: "Send a DM",
-            linkCode: (code: string) => code,
-            noRoute: "No route",
-          },
-          availableEngines: [
-            { environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
-          ],
-        });
-      // Exercise the production revocation transaction without its outer retry:
-      // either deadlock victim must be visible to this regression.
-      const revoke = () =>
-        database.transaction().execute((transaction) =>
-          revokeComputerConnectionsInTransaction(transaction, {
-            connectionId: source.connection.id,
-            ownerUserId: run.userId,
-          }),
-        );
-      const waitingQueries = async () =>
-        (
-          await sql<{ query: string }>`
-        select query from pg_stat_activity where datname = current_database()
-        and application_name = 'opensteer-computer-app-connections-test'
-        and wait_event_type = 'Lock'
-      `.execute(database)
-        ).rows.map(({ query }) => query);
-      const first =
-        arrival === "revocation-first"
-          ? revoke()
-          : arrival === "connection-first" || arrival === "connection-holds-workspace"
-            ? channels.createConnection({
-                ...connectionInput,
-                account: { ...connectionInput.account, externalAccountId: "second-messages" },
-                connection: { ...connectionInput.connection, externalIdentityId: "second-bot" },
-              })
-            : arrival === "binding-first"
-              ? channels.createBinding({
-                  folder: run.folder,
-                  accessPolicy: connectionInput.accessPolicy,
-                  accountId: configured.account.id,
-                  createdBy: run.userId,
-                  executionPolicy: connectionInput.executionPolicy,
-                  selector: {
-                    conversationId: "another-chat",
-                    conversationType: null,
-                    scopeId: null,
-                    threadId: null,
-                  },
-                })
-              : adopt();
-      void first.catch(() => undefined);
-      let second: Promise<unknown> | undefined;
-      try {
-        await expect.poll(async () => (await waitingQueries()).length).toBe(1);
-        expect((await waitingQueries())[0]).toContain(
-          arrival === "revocation-first"
-            ? '"integration_connections"'
-            : arrival === "connection-first"
-              ? "pg_advisory_xact_lock"
-              : arrival === "connection-holds-workspace"
-                ? '"integration_connections"'
-                : arrival === "binding-first"
-                  ? '"channel_bindings"'
-                  : '"workspaces"',
-        );
-        second = arrival === "revocation-first" || arrival === "binding-first" ? adopt() : revoke();
-        void second.catch(() => undefined);
-        if (arrival === "connection-first") {
-          // Identity reservation now precedes Workspace acquisition. Revocation
-          // commits while creation is still at identity; creation must revalidate it.
-          await second;
-        } else {
-          await expect.poll(async () => (await waitingQueries()).length).toBe(2);
-          if (arrival === "connection-holds-workspace") {
-            expect(await waitingQueries()).toEqual(
-              expect.arrayContaining([expect.stringContaining('"workspaces"')]),
-            );
-          }
-        }
-        // Both waiters have reached their contested fences before release.
-      } finally {
-        release.resolve();
-        await blocker;
-        await Promise.allSettled([first, ...(second ? [second] : [])]);
-      }
-      const results = await Promise.allSettled([first, second!]);
-      if (arrival === "connection-first") {
-        expect(results[0]).toMatchObject({ status: "rejected", reason: { code: "forbidden" } });
-        expect(results[1]).toMatchObject({ status: "fulfilled" });
-      } else {
-        for (const result of results) if (result.status === "rejected") throw result.reason;
-      }
-      if (arrival === "connection-holds-workspace") {
-        // Revocation ran after creation committed, so it took the new channel too.
-        expect(
-          await database
-            .selectFrom("integrationConnections")
-            .select("status")
-            .where("externalIdentityId", "=", "second-bot")
-            .executeTakeFirstOrThrow(),
-        ).toEqual({ status: "revoked" });
-      } else if (arrival !== "connection-first") {
-        const adoption = results[arrival === "ingress-first" ? 0 : 1];
-        expect(adoption).toMatchObject({
-          value:
-            arrival === "revocation-first"
-              ? { kind: "ignored", reason: "source-withdrawn" }
-              : { kind: "adopted" },
-        });
-      }
-      expect(await platform.requests.get(pending.request.id)).toMatchObject({
-        status: arrival === "binding-first" ? "pending" : "cancelled",
-      });
-      expect(
-        await database
-          .selectFrom("integrationConnections")
-          .select("status")
-          .where("id", "=", source.connection.id)
-          .executeTakeFirstOrThrow(),
-      ).toEqual({ status: arrival === "binding-first" ? "connected" : "revoked" });
-    },
-  );
 
   it("advances authority generations at commit after source mutations", async ({
     storeFixture,
@@ -3814,7 +3494,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let replacing: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      replacing = database.transaction().execute((transaction) =>
+      replacing = withPersonalTransaction(database, (transaction) =>
         installIntegrationInTransaction(transaction, {
           actorUserId: setup.ownerUserId,
           adapterSnapshot: null,
@@ -3894,7 +3574,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         /"name":"integration_?tools"/iu.test(node) &&
         node.includes("ForNoKeyUpdate"),
     );
-    const replacing = barrier.database.transaction().execute((transaction) =>
+    const replacing = withPersonalTransaction(barrier.database, (transaction) =>
       installIntegrationInTransaction(transaction, {
         actorUserId: setup.ownerUserId,
         adapterSnapshot: null,
@@ -3929,7 +3609,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     let revoking: Promise<unknown> | undefined;
     try {
       await barrier.reached;
-      revoking = database.transaction().execute((transaction) =>
+      revoking = withPersonalTransaction(database, (transaction) =>
         revokeComputerConnectionsInTransaction(transaction, {
           connectionId: source.connection.id,
           ownerUserId: setup.ownerUserId,
@@ -3944,10 +3624,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             }>`select query from pg_stat_activity where datname=current_database() and application_name='opensteer-computer-app-connections-test' and wait_event_type='Lock'`.execute(
               database,
             )
-          ).rows.some(
-            ({ query }) =>
-              query.includes('"integration_tools"') || query.includes('"integration_connections"'),
-          ),
+          ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
         )
         .toBe(true);
       barrier.release();
@@ -4092,7 +3769,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
             const node = JSON.stringify(args.node);
             if (
               args.node.kind === "SelectQueryNode" &&
-              /"name":"integration_?(servers|installations)"/iu.test(node) &&
+              /"name":"deployment_?event_?state"/iu.test(node) &&
               (node.includes("ForNoKeyUpdate") || node.includes("ForShare"))
             )
               acquiring.resolve();
@@ -4117,10 +3794,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
           tools: setup.gui.tools("read"),
         });
         void asking.catch(() => undefined);
-        // Discovery does not contend with the held server lock. Observe the
-        // wait only once the contender submits its resource-lock query.
+        // The personal commit fence serializes the grant and the app ask.
         await withTimeout(acquiring.promise, 5_000, {
-          timeoutError: () => new Error("Computer access never submitted its resource-lock query"),
+          timeoutError: () => new Error("Computer access never submitted its personal fence query"),
         });
         await expect
           .poll(async () =>
@@ -4128,11 +3804,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
               await sql<{ query: string }>`select query from pg_stat_activity
         where datname = current_database() and application_name = 'opensteer-covered-order-test'
         and wait_event_type = 'Lock'`.execute(database)
-            ).rows.some(
-              ({ query }) =>
-                query.includes('"integration_servers"') ||
-                query.includes('"integration_installations"'),
-            ),
+            ).rows.some(({ query }) => query.includes('"deployment_event_state"')),
           )
           .toBe(true);
         release.resolve();
@@ -4141,7 +3813,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         expect(outcomes.filter(({ status }) => status === "rejected")).toEqual([]);
         expect(outcomes[1]).toMatchObject({
           status: "fulfilled",
-          value: { kind: policy === "automatic" ? "approved" : "workspace-grant" },
+          value: { kind: policy === "automatic" ? "approved" : "personal-grant" },
         });
         expect(
           await database
@@ -4290,9 +3962,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
   it("changes a server's secrets only for its computer's owner, while it runs as approved", async ({
     storeFixture,
   }) => {
-    const { database, guiFixture, platform } = storeFixture;
+    const { database, guiFixture, platform, store } = storeFixture;
     const setup = await guiFixture("server-secrets");
-    const stranger = await guiFixture("server-secrets-stranger");
+    const stranger = await store.createUser("Stranger");
     const setLaunch = (env: Record<string, string>) =>
       database
         .updateTable("integrationServers")
@@ -4339,7 +4011,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         secrets: async (current) => Buffer.concat([current ?? Buffer.alloc(0), Buffer.from("+")]),
         serverId: server.id,
       });
-    await expect(change(stranger.ownerUserId)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(change(stranger)).rejects.toMatchObject({ code: "forbidden" });
     await expect(change(setup.ownerUserId, "another-launch")).rejects.toMatchObject({
       code: "conflict",
     });
@@ -4602,9 +4274,24 @@ integration.sequential("PostgreSQL computer app connections", () => {
       code: "forbidden",
     });
     await allowAutomatic(setup);
-    await expect(platform.approveComputerAppAutomatically({ ...input })).rejects.toMatchObject({
-      code: "not_found",
-    });
+    const failing = new IntegrationPlatformStore(
+      database.withPlugin({
+        transformQuery(args) {
+          if (
+            args.node.kind === "InsertQueryNode" &&
+            /"name":"integration_?grants"/iu.test(JSON.stringify(args.node))
+          )
+            throw new Error("Grant write failed");
+          return args.node;
+        },
+        async transformResult(args) {
+          return args.result;
+        },
+      }),
+    );
+    await expect(failing.approveComputerAppAutomatically(input)).rejects.toThrow(
+      "Grant write failed",
+    );
     expect(
       await database
         .selectFrom("integrationConnections")
@@ -5132,7 +4819,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("replays one ask, then fulfils it with the project Workspace grant when that Mac approves", async ({
+  it("replays one ask, then fulfils it with a personal grant when that Mac approves", async ({
     storeFixture,
   }) => {
     const {
@@ -5590,7 +5277,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     );
   });
 
-  it("decides two tasks' asks in one Workspace on two Macs without deadlocking", async ({
+  it("decides two tasks' asks in one personal Opensteer on two Macs without deadlocking", async ({
     storeFixture,
   }) => {
     const {
@@ -5606,10 +5293,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       databaseUrl,
       notes,
     } = storeFixture;
-    // Two asks from one Workspace, each on its own Mac: one Mac allows any app
-    // automatically, the other already has the app and needs only this
-    // Workspace's grant. Each writes the Workspace and the Computer use
-    // server; taken in opposite orders, they deadlock.
+    // Both approval paths serialize at the same personal commit fence.
     const first = await runningRunFixture(store, "lock-order");
     const second = await anotherRunIn(store, first, "lock-order-second");
     const automatic = await guiFixture("lock-order", first.userId);
@@ -5659,19 +5343,22 @@ integration.sequential("PostgreSQL computer app connections", () => {
     try {
       const stores = new IntegrationPlatformStore(wide);
       const waitingOnLocks = async (count: number) => {
-        for (let attempt = 0; attempt < 400; attempt += 1) {
-          const waiting = await sql<{ count: string }>`
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{ count: string }>`
             select count(*)::text as count from pg_stat_activity
             where application_name = 'opensteer-computer-app-lock-order-test'
               and wait_event_type = 'Lock'
           `.execute(wide);
-          if (Number(waiting.rows[0]?.count) >= count) return;
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        throw new Error(`Expected ${count} transactions waiting on a lock`);
+            expect(
+              Number(waiting.rows[0]?.count ?? 0),
+              `${count} transactions never waited on a lock`,
+            ).toBeGreaterThanOrEqual(count);
+          },
+          { timeout: 4_000 },
+        );
       };
-      // The barrier: somebody else holds the Workspace, so each ask stops at
-      // the first lock it needs that the other might be holding.
+      // Both asks must wait at the personal commit fence.
       const barrier = wide.transaction().execute(async (transaction) => {
         await transaction
           .selectFrom("personalSettings")
@@ -5685,8 +5372,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       work.push(barrier);
       void barrier.catch(acquired.reject);
       await acquired.promise;
-      // The covered ask queues for the Workspace first; the automatic one
-      // then reaches it holding whatever its order took before it.
+
       const coveredAsk = ask(second, covered.runnerId, calendar, stores);
       work.push(coveredAsk);
       await waitingOnLocks(1);
@@ -5697,7 +5383,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await barrier;
 
       const [coveredDecision, automaticDecision] = await Promise.all([coveredAsk, automaticAsk]);
-      expect(coveredDecision.kind).toBe("workspace-grant");
+      expect(coveredDecision.kind).toBe("personal-grant");
       expect(automaticDecision.kind).toBe("approved");
     } catch (error) {
       failures.push(error);
@@ -5761,7 +5447,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       return { ask, consume, grants, mac, run, status };
     }
 
-    it("grants a Workspace the widest access its Requests asked for, whatever order they came in", async ({
+    it("grants the owner the widest access their Requests asked for, whatever order they came in", async ({
       storeFixture,
     }) => {
       const { askOnMac } = storeFixture;
@@ -5781,7 +5467,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ]);
     });
 
-    it("never lowers a grant a Workspace already holds when a narrower approval is answered", async ({
+    it("never lowers a grant the owner already holds when a narrower approval is answered", async ({
       storeFixture,
     }) => {
       const { askOnMac, notes } = storeFixture;
@@ -6289,10 +5975,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
       expect(allowed.grants).toEqual([expect.objectContaining({ access: "read-write" })]);
 
       // The phone is approved now, so another Thread's ask finds that
-      // connection and asks only for a Workspace grant.
+      // connection and asks only for a personal grant.
       const other = await anotherRunIn(store, run, "phone-ask-other");
       await expect(askForApp(phoneAsk(other, setup.phone.phoneId, "read"))).resolves.toMatchObject({
-        kind: "workspace-grant",
+        kind: "personal-grant",
       });
       await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
     });
@@ -6552,7 +6238,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const allowed = await allowPhoneFromClient(storeFixture, setup, "read", opened.setupRequest);
       expect(allowed.fulfilledRequestIds).toEqual([opened.request.id]);
-      expect(allowed.grants).toEqual([]);
+      expect(allowed.grants).toEqual([
+        expect.objectContaining({
+          access: "read",
+          ownerUserId: run.userId,
+          connectionId: allowed.connection.id,
+        }),
+      ]);
       await expect(platform.requests.get(mainRead.request.id)).resolves.toMatchObject({
         status: "fulfilled",
       });
@@ -6733,12 +6425,13 @@ async function runningRunFixture(store: OpensteerStore, suffix: string) {
     ...personal,
     folder: personal.agentHome,
     harnessInstanceId: task.harnessInstance.id,
+    modelSelection: task.thread.modelSelection,
     runId: started.runId,
     threadId: task.threadId,
   };
 }
 
-/** Another running Run in the same Workspace, on the same Runner, in a Thread of its own. */
+/** Another running Run in the same personal Opensteer, on the same Runner, in a Thread of its own. */
 async function anotherRunIn(
   store: OpensteerStore,
   fixture: Awaited<ReturnType<typeof runningRunFixture>>,
@@ -6753,12 +6446,15 @@ async function startRunIn(
   suffix: string,
 ) {
   const runs = createPersonalRunFixturePort(store);
-  const task = await runs.createTask({ ownerId: context.userId, folder: context.folder, suffix });
-  const started = await runs.startTask(task.threadId, "Start the work");
-  return {
-    ...context,
-    harnessInstanceId: task.harnessInstance.id,
-    runId: started.runId,
-    threadId: task.threadId,
-  };
+  const { thread } = await store.createThread({
+    createdBy: context.userId,
+    environmentId: context.environmentId,
+    folder: context.folder,
+    harnessInstanceId: context.harnessInstanceId,
+    idempotencyKey: suffix,
+    modelSelection: context.modelSelection,
+    title: suffix,
+  });
+  const started = await runs.startTask(thread.id, "Start the work");
+  return { ...context, runId: started.runId, threadId: thread.id };
 }
