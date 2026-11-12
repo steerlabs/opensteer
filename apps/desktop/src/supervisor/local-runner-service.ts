@@ -1331,7 +1331,6 @@ function runnerEnvironment(input: {
           }
         : {}),
       OPENSTEER_DEPLOYMENT_KIND: input.deploymentShape.kind,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: input.deploymentShape.defaultWorkspaceBacking,
       OPENSTEER_HOST_URL: new URL(input.hostUrl).toString(),
       OPENSTEER_MODE: input.config.mode,
       OPENSTEER_NATIVE_FS_HELPER: input.config.localExecution.nativeFsHelperBinary,

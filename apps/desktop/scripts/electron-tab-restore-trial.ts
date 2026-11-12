@@ -1136,7 +1136,7 @@ export async function runPageSleepRestoreTrial(root: string): Promise<void> {
         await runtime.prepare();
         const claims = freshClaims({
           sessionId: BrowserSessionIdSchema.parse(`bsn_${randomUUID()}`),
-          workspaceTabRestoreVersion: 1,
+          tabRestoreVersion: 1,
           surfaceState: 1,
           ...(mode === "passkey" ? { passkeys: 1 } : {}),
         });

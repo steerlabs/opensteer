@@ -68,7 +68,7 @@ export interface PersonalHostControlPort {
     ownerClaimToken: string,
     signal: AbortSignal,
   ): Promise<void>;
-  ensureMain(origin: string, deploymentId: string, signal: AbortSignal): Promise<void>;
+  ensureAgentHome(origin: string, deploymentId: string, signal: AbortSignal): Promise<void>;
   waitForHost(
     origin: string,
     manifest: PersonalDeploymentManifest,
@@ -304,27 +304,13 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     return { runnerEnrollmentToken: afterClaim.runnerEnrollmentToken };
   }
 
-  async ensureMain(origin: string, deploymentIdInput: string, signal: AbortSignal): Promise<void> {
+  async ensureAgentHome(
+    origin: string,
+    deploymentIdInput: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const deploymentId = DeploymentIdSchema.parse(deploymentIdInput);
-    for (;;) {
-      const snapshot = await this.#readBootstrap(deploymentId, origin, signal);
-      const workspace = snapshot.homeWorkspace;
-      if (workspace?.kind === "main" && workspace.status === "ready") return;
-      if (
-        workspace &&
-        (workspace.kind !== "main" ||
-          workspace.storageIssue?.retryable === false ||
-          (workspace.status !== "provisioning" &&
-            !(workspace.status === "unavailable" && workspace.storageIssue?.retryable === true)))
-      ) {
-        throw new Error(
-          `Personal Host did not finish creating Main.${workspace.storageIssue ? ` ${workspace.storageIssue.message}` : ""}`,
-        );
-      }
-      // The primary Runner connection can precede its first storage response.
-      // The supervisor's startup deadline and cancellation bound this wait.
-      await delay(this.#pollIntervalMs, signal);
-    }
+    await this.#readBootstrap(deploymentId, origin, signal);
   }
 
   async claimOwner(

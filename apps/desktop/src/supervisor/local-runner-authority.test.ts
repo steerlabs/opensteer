@@ -6,8 +6,7 @@ import {
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
-import { describe, expect, it, vi } from "vitest";
-import * as core from "@opensteer/core";
+import { describe, expect, it } from "vitest";
 import {
   DeploymentCatalogSchema,
   DeploymentConnectionSchema,
@@ -22,27 +21,6 @@ const loopbackOrigin = "http://127.0.0.1:4310";
 const routeOrigin = "https://studio.connect.opensteer.example";
 
 describe("DesktopLocalRunnerTargetResolver", () => {
-  it("uses agent modules rather than enrollment mode", async () => {
-    const connection = serverConnection();
-    const policy = core.deploymentPolicy({
-      kind: "server",
-      defaultWorkspaceBacking: "local-directory",
-    });
-    const mocked = vi
-      .spyOn(core, "deploymentPolicy")
-      .mockReturnValue({ ...policy, localRunnerDefaultModules: ["shell"] });
-    try {
-      const resolver = new DesktopLocalRunnerTargetResolver({
-        catalog: catalogStore([connection]),
-        supervisedDeploymentId: async () => null,
-      });
-      await expect(
-        resolver.resolve(connection.authority.document.deploymentId),
-      ).resolves.toMatchObject({ mayRunAgents: false });
-    } finally {
-      mocked.mockRestore();
-    }
-  });
   it("accepts a Personal Deployment this Mac reaches over its signed route", async () => {
     const connection = personalConnection({ route: routeOrigin });
     const deploymentId = connection.authority.document.deploymentId;
@@ -58,7 +36,7 @@ describe("DesktopLocalRunnerTargetResolver", () => {
       deploymentShape: { kind: "personal" },
       // The signed access route, never the Host's own unreachable loopback.
       hostUrl: routeOrigin,
-      // Only server Deployments may execute agents on a connecting computer.
+      // Personal tasks execute on their hosting computer.
       mayRunAgents: false,
     });
     await expect(resolver.isCurrent(target)).resolves.toBe(true);
@@ -73,7 +51,7 @@ describe("DesktopLocalRunnerTargetResolver", () => {
     });
 
     await expect(resolver.resolve(deploymentId)).rejects.toThrow(
-      "This Mac hosts this Deployment, so it already runs as its Main Runner.",
+      "This Mac hosts this Deployment, so it already runs its agent.",
     );
   });
 
@@ -89,20 +67,15 @@ describe("DesktopLocalRunnerTargetResolver", () => {
     );
   });
 
-  it("lets only a server Deployment run agents on this Mac", async () => {
-    const connection = serverConnection();
+  it("refuses team Hosts as local Runner targets", async () => {
+    const connection = teamConnection();
     const resolver = new DesktopLocalRunnerTargetResolver({
       catalog: catalogStore([connection]),
       supervisedDeploymentId: async () => null,
     });
-
-    await expect(
-      resolver.resolve(connection.authority.document.deploymentId),
-    ).resolves.toMatchObject({
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-      hostUrl: "https://cloud.opensteer.test",
-      mayRunAgents: true,
-    });
+    await expect(resolver.resolve(connection.authority.document.deploymentId)).rejects.toThrow(
+      "Team servers do not run agents or enroll computers.",
+    );
   });
 });
 
@@ -115,7 +88,7 @@ function personalConnection(options: { readonly route: string | null }) {
   const authority = envelope({
     canonicalOrigin: loopbackOrigin,
     deploymentId: createId("deployment"),
-    deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
+    deploymentShape: { kind: "personal" },
     hostInstanceId: createId("hostInstance"),
     hostKey: { algorithm: "Ed25519" },
   });
@@ -140,13 +113,13 @@ function personalConnection(options: { readonly route: string | null }) {
   });
 }
 
-function serverConnection() {
+function teamConnection() {
   const canonicalOrigin = "https://cloud.opensteer.test";
   return DeploymentConnectionSchema.parse({
     authority: envelope({
       canonicalOrigin,
       deploymentId: createId("deployment"),
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+      deploymentShape: { kind: "team" },
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
     }),

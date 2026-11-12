@@ -2,6 +2,10 @@
 export const desktopBridgeChannels = {
   dismissMcpAuthorization: "opensteer.desktop.mcp.authorization.dismiss",
   mcpAuthorization: "opensteer.desktop.mcp.authorization",
+  personalOldData: "opensteer.desktop.personal.old-data",
+  personalStartFresh: "opensteer.desktop.personal.start-fresh",
+  teamLink: "opensteer.desktop.team-link",
+  teamLinkDelivery: "opensteer.desktop.team-link.delivery",
   webLinkDelivery: "opensteer.desktop.webLinkDelivery",
   dictationAvailability: "opensteer.desktop.dictation.availability",
   dictationStart: "opensteer.desktop.dictation.start",

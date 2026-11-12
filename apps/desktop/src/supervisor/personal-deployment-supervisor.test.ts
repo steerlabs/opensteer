@@ -1,3 +1,7 @@
+import { PersonalDataReset, PersonalOldDatabaseError } from "./personal-data-reset.js";
+import { mkdtemp, mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import { testDiscoveryEnvelope } from "@opensteer/client/test-support";
 import { createId, type RunnerId } from "@opensteer/core";
@@ -42,6 +46,51 @@ import type {
 } from "./personal-process-port.js";
 
 describe("PersonalDeploymentSupervisor", () => {
+  it("exposes old lineage data and stops before setting aside fixture paths for a desktop relaunch", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "supervisor-reset-"));
+    const dataReset = new PersonalDataReset({
+      dataDirectory: root,
+      cryptography: {
+        isAsyncEncryptionAvailable: async () => true,
+        getSelectedStorageBackend: () => "keychain",
+        encryptStringAsync: async (value) => Buffer.from(value),
+        decryptStringAsync: async (value) => ({ result: value.toString(), shouldReEncrypt: false }),
+      },
+    });
+    const configured = deploymentManifest({ databaseInitialized: true, ownerInitialized: true });
+    const fixture = supervisorFixture(configured, undefined, undefined, undefined, { dataReset });
+    try {
+      fixture.host.waitForHost.mockRejectedValueOnce(new PersonalOldDatabaseError());
+      await expect(fixture.supervisor.resumeIfConfigured()).rejects.toThrow(
+        "earlier Opensteer lineage",
+      );
+      expect(fixture.supervisor.status.state).toBe("repair-required");
+      const old = fixture.supervisor.oldData!;
+      expect(old.deploymentId).toBe(configured.deploymentId);
+      expect(old.entries).toHaveLength(5);
+      for (const [index, entry] of old.entries.entries()) {
+        expect(entry.source.startsWith(root + path.sep)).toBe(true);
+        if (index < 2) {
+          await mkdir(entry.source, { recursive: true });
+          await writeFile(path.join(entry.source, "old-data"), "retained");
+        }
+      }
+      await fixture.supervisor.startFresh({ restart: false });
+      expect(fixture.supervisor.oldData).toBeNull();
+      expect(fixture.supervisor.status.state).toBe("stopped");
+      expect(fixture.release).toHaveBeenCalledOnce();
+      expect(await readFile(path.join(old.entries[0]!.destination, "old-data"), "utf8")).toBe(
+        "retained",
+      );
+      expect(await readFile(path.join(old.entries[1]!.destination, "old-data"), "utf8")).toBe(
+        "retained",
+      );
+    } finally {
+      await fixture.supervisor.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does nothing on launch until This Computer was chosen", async () => {
     const fixture = supervisorFixture(null);
     expect(fixture.supervisor.status).toMatchObject({
@@ -139,14 +188,14 @@ describe("PersonalDeploymentSupervisor", () => {
         "browser.start",
         "runner.spawn",
         "host.waitForRunner",
-        "host.ensureMain",
+        "host.ensureAgentHome",
       ]),
     );
     expect(fixture.lifecycle.indexOf("host.bootstrap")).toBeLessThan(
       fixture.lifecycle.indexOf("runner.spawn"),
     );
     expect(fixture.lifecycle.indexOf("host.waitForRunner")).toBeLessThan(
-      fixture.lifecycle.indexOf("host.ensureMain"),
+      fixture.lifecycle.indexOf("host.ensureAgentHome"),
     );
     expect(fixture.catalog.upsertAndSelect).toHaveBeenCalledOnce();
     expect(fixture.supervisor.status.components).toMatchObject({
@@ -207,9 +256,9 @@ describe("PersonalDeploymentSupervisor", () => {
     await fixture.supervisor.resumeIfConfigured();
 
     expect(fixture.lifecycle.indexOf("host.waitForRunner")).toBeLessThan(
-      fixture.lifecycle.indexOf("host.ensureMain"),
+      fixture.lifecycle.indexOf("host.ensureAgentHome"),
     );
-    expect(fixture.host.ensureMain).toHaveBeenCalledWith(
+    expect(fixture.host.ensureAgentHome).toHaveBeenCalledWith(
       expect.any(String),
       configured.deploymentId,
       expect.any(AbortSignal),
@@ -1279,6 +1328,7 @@ function supervisorFixture(
   restarts: {
     readonly restartBackoffMs?: number;
     readonly passkeys?: boolean;
+    readonly dataReset?: PersonalDataReset;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1294,7 +1344,6 @@ function supervisorFixture(
       hostInstanceId: existing?.hostInstanceId ?? createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory" as const,
         kind: "personal" as const,
       },
     },
@@ -1310,8 +1359,8 @@ function supervisorFixture(
       return { runnerEnrollmentToken: "runner-enrollment-token-12345" };
     }),
     claimOwner: vi.fn(async () => undefined),
-    ensureMain: vi.fn(async () => {
-      lifecycle.push("host.ensureMain");
+    ensureAgentHome: vi.fn(async () => {
+      lifecycle.push("host.ensureAgentHome");
     }),
     waitForHost: vi.fn<PersonalHostControlPort["waitForHost"]>(async () => {
       const discovery = {
@@ -1360,6 +1409,7 @@ function supervisorFixture(
   let nextPort = 4310;
   const logs: Record<string, unknown>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
+    ...(restarts.dataReset ? { dataReset: restarts.dataReset } : {}),
     passkeys: restarts.passkeys === true,
     allocatePort: async () => nextPort++,
     log: (event, fields) => logs.push({ event, ...fields }),

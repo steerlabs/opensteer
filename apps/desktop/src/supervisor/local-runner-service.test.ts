@@ -981,26 +981,6 @@ describe("LocalRunnerService", () => {
     expect(running.fork).toHaveBeenCalledTimes(1);
   });
 
-  it("runs agents with local-directory Workspace storage", async () => {
-    const directory = await temporaryDirectory();
-    const targets = mutableTargetAuthority();
-    const target = targets.add(
-      "https://local-workspaces.opensteer.test",
-      "server",
-      "local-directory",
-    );
-    const running = fixture(await configuration(directory), targets);
-
-    const start = running.service.start(startInput(target.deploymentId));
-    await eventually(() => running.children.length === 1);
-    const child = childAt(running.children, 0);
-    expect(child.environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING).toBe("local-directory");
-    expect(child.environment.OPENSTEER_RUNNER_WORKSPACE_BACKINGS).toBe("local-directory");
-    connect(child);
-
-    await expect(start).resolves.toMatchObject({ runner: { state: "running" } });
-  });
-
   it("does not restore enrolled intent when a removed start connects late", async () => {
     const directory = await temporaryDirectory();
     const targets = mutableTargetAuthority();
@@ -1328,11 +1308,7 @@ function fixture(
 }
 
 function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
-  add(
-    hostUrl: string,
-    kind?: "personal" | "server",
-    defaultWorkspaceBacking?: "local-directory",
-  ): DesktopLocalRunnerTarget;
+  add(hostUrl: string, kind?: "personal" | "team"): DesktopLocalRunnerTarget;
   changeRoute(deploymentId: DeploymentId, hostUrl: string): void;
   notify(): void;
   remove(deploymentId: DeploymentId): void;
@@ -1340,15 +1316,14 @@ function mutableTargetAuthority(): DesktopLocalRunnerTargetAuthority & {
   const targets = new Map<DeploymentId, DesktopLocalRunnerTarget>();
   const listeners = new Set<() => void>();
   return {
-    add: (hostUrl, kind = "server", defaultWorkspaceBacking = "local-directory") => {
+    add: (hostUrl, kind = "personal") => {
       const deploymentId = createId("deployment");
       const target: DesktopLocalRunnerTarget = {
         deploymentId,
-        deploymentShape: { defaultWorkspaceBacking, kind },
+        deploymentShape: { kind },
         hostUrl,
         key: `${deploymentId}:1`,
-        // Only server Deployments may run agents on a connecting computer.
-        mayRunAgents: kind === "server",
+        mayRunAgents: true,
       };
       targets.set(deploymentId, target);
       return target;
