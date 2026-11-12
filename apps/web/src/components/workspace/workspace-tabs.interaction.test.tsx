@@ -839,7 +839,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       ["Launch brief", "Coffee shortlist", closeButton],
       [
         "Coffee shortlist",
-        "Weekend ideas",
+        "Coffee shortlist",
         (place) =>
           dispatch(
             main(place.key),
@@ -848,7 +848,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       ],
       // Held by live work: asked first, then the same.
       [
-        "Weekend ideas",
+        "Coffee shortlist",
         "Flight award alerts",
         async (place) => {
           await dispatch(
@@ -1012,7 +1012,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
     let closing = "";
     await mount((source) => {
       const read = source.getSnapshot;
-      closing = tabOrder(placeList(read())).find((item) => item.title === "Weekend ideas")!.browser!
+      closing = tabOrder(placeList(read())).find((item) => item.title === "Coffee shortlist")!.browser!
         .sessionId;
       // One browser is closing and its saved tabs cannot open: they stay listed, dimmed.
       vi.spyOn(source, "getSnapshot").mockImplementation(() => {
@@ -1041,7 +1041,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       });
       return "/";
     });
-    expect(tab("Weekend ideas").availability).toBe("unavailable");
+    expect(tab("Coffee shortlist").availability).toBe("unavailable");
     await click(main(tab("Coffee shortlist").key));
     let before = history.length;
     await click(element(".side-tab__close", row(tab("Coffee shortlist").key)!));
@@ -1059,7 +1059,7 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
       order()
         .filter((place) => place.kind === "browser")
         .map((place) => place.title),
-    ).toEqual(["Weekend ideas", "Flight award alerts"]);
+    ).toEqual(["Coffee shortlist", "Flight award alerts"]);
     expect(shown()).toBe(tab("Flight award alerts").key);
     expect(history.length).toBe(before);
     // The last tab that can be shown: the start page, though Mac apps are still listed.
