@@ -189,8 +189,12 @@ describe("fresh personal/team lineage", () => {
     await migrateToLatest(database);
     expect(await catalog()).toEqual(before);
     expect(
-      (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
-    ).toEqual([{ name: personalTeamBaselineName }]);
+      (
+        await sql<{ name: string }>`select name from kysely_migration order by name`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([{ name: personalTeamBaselineName }, { name: "0002_browser_source_binding" }]);
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

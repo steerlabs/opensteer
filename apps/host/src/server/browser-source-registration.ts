@@ -257,6 +257,7 @@ export function registerBrowserSourceWire(
         socket,
         browserSourceIngressOrigin(request, canonicalOrigin),
         request.raw.socket.remoteAddress ?? "unknown",
+        new URL(request.url, "http://upgrade.invalid").searchParams,
       );
     } catch {
       socket.close(1008, "Invalid source route");

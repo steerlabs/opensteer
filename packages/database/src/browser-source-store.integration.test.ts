@@ -211,6 +211,43 @@ integration.sequential("browser sign-in authority", () => {
     );
   });
 
+  it("binds a source to the destination it paired on, and an older source to its first one", async ({
+    storeFixture,
+  }) => {
+    const { database, fixture, sources } = storeFixture;
+    const { source } = await fixture();
+    const canonical = { origin: "https://source-host.test", routeGeneration: null };
+    const remote = { origin: "https://remote.example", routeGeneration: 7 };
+    expect(await sources.claimDestination({ sourceId: source.id, ...canonical })).toBe(true);
+    expect(await sources.claimDestination({ sourceId: source.id, ...remote })).toBe(false);
+    expect(
+      await sources.claimDestination({ sourceId: source.id, ...remote, origin: canonical.origin }),
+    ).toBe(false);
+
+    // Paired before binding existed: whichever first connection lands binds it, never both.
+    await database
+      .updateTable("browserSources")
+      .set({ pairedOrigin: null, pairedRouteGeneration: null })
+      .where("id", "=", source.id)
+      .execute();
+    const raced = await Promise.all([
+      sources.claimDestination({ sourceId: source.id, ...canonical }),
+      sources.claimDestination({ sourceId: source.id, ...remote }),
+    ]);
+    expect(raced.filter(Boolean)).toHaveLength(1);
+    const winner = raced[0] ? canonical : remote;
+    const loser = raced[0] ? remote : canonical;
+    expect(await sources.claimDestination({ sourceId: source.id, ...winner })).toBe(true);
+    expect(await sources.claimDestination({ sourceId: source.id, ...loser })).toBe(false);
+    expect(
+      await database
+        .selectFrom("browserSources")
+        .select(["pairedOrigin", "pairedRouteGeneration"])
+        .where("id", "=", source.id)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ pairedOrigin: winner.origin, pairedRouteGeneration: winner.routeGeneration });
+  });
+
   it("commits a sign-in and its Request together, replays it, and refuses another scope", async ({
     storeFixture,
   }) => {

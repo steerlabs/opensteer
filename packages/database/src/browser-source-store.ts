@@ -251,6 +251,8 @@ export class BrowserSourceStore {
           tokenHash: input.tokenHash,
           revokedAt: null,
           lastSeenAt: null,
+          pairedOrigin: input.origin,
+          pairedRouteGeneration: input.routeGeneration,
         })
         .returning(["id", "ownerId", "name", "generation", "createdAt", "revokedAt", "lastSeenAt"])
         .executeTakeFirstOrThrow();
@@ -289,6 +291,35 @@ export class BrowserSourceStore {
         .where("browserSources.revokedAt", "is", null)
         .where("users.disabledAt", "is", null)
         .executeTakeFirst()) ?? null
+    );
+  }
+
+  /**
+   * Whether the source is bound to the destination its token was presented on.
+   * A source paired before binding existed binds to the first one; concurrent
+   * first connections race on one conditional write, so only one can win.
+   */
+  async claimDestination(input: {
+    readonly sourceId: BrowserSourceId;
+    readonly origin: string;
+    readonly routeGeneration: number | null;
+  }): Promise<boolean> {
+    const binding =
+      (await this.#database
+        .updateTable("browserSources")
+        .set({ pairedOrigin: input.origin, pairedRouteGeneration: input.routeGeneration })
+        .where("id", "=", input.sourceId)
+        .where("pairedOrigin", "is", null)
+        .returning(["pairedOrigin", "pairedRouteGeneration"])
+        .executeTakeFirst()) ??
+      (await this.#database
+        .selectFrom("browserSources")
+        .select(["pairedOrigin", "pairedRouteGeneration"])
+        .where("id", "=", input.sourceId)
+        .executeTakeFirst());
+    return (
+      binding?.pairedOrigin === input.origin &&
+      binding.pairedRouteGeneration === input.routeGeneration
     );
   }
 
