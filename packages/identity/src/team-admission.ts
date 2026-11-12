@@ -710,6 +710,8 @@ export class TeamIdentityAdmission {
     verified: Awaited<ReturnType<AccountAdoptionGrantVerifier["verify"]>>,
     providerId: string,
   ) {
+    // Locked before the proof row: admissions precede verifications, and the hosted owner
+    // bootstrap consumes this admission later in the same transaction.
     const stored = await t
       .selectFrom("authAdmissions")
       .selectAll()
@@ -717,6 +719,7 @@ export class TeamIdentityAdmission {
       .where("purpose", "=", "setup")
       .where("expiresAt", ">", new Date())
       .where("consumedAt", "is", null)
+      .forNoKeyUpdate()
       .executeTakeFirst();
     requireTeam(stored);
     const row = await t

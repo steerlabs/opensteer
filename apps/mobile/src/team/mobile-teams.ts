@@ -31,11 +31,7 @@ import {
   type TeamInviteSecret,
   type TeamPageLink,
 } from "@opensteer/core";
-import {
-  parseTeamLinkOffer,
-  type HostApiClient,
-  type TeamMember,
-} from "@opensteer/protocol";
+import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileClient, MobileTeamConnection } from "../client/mobile-client.js";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
@@ -217,7 +213,10 @@ export class MobileTeams {
     this.#client = options.client;
     this.#transport = options.transport;
     this.#verify = options.verify;
-    this.#entry = new NativeTeamEntry({ oauth: options.client.oauth, catalog: options.client.catalog });
+    this.#entry = new NativeTeamEntry({
+      oauth: options.client.oauth,
+      catalog: options.client.catalog,
+    });
     this.#files = options.files;
     this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;

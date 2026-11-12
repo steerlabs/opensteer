@@ -86,7 +86,10 @@ type TeamEntryOAuth = Pick<
   NativeOAuthManager,
   "accountAuthorizationLease" | "exchangeTeamSession" | "hostCredentialState" | "signOutHost"
 >;
-type TeamEntryCatalog = Pick<DeploymentCatalogStore, "addPendingAccountDeployment" | "load" | "remove">;
+type TeamEntryCatalog = Pick<
+  DeploymentCatalogStore,
+  "addPendingAccountDeployment" | "load" | "remove"
+>;
 
 /**
  * Entering a team as the signed-in Account, where this device keeps its credentials (desktop
@@ -160,7 +163,10 @@ export class NativeTeamEntry {
     if (held?.source.kind === "manual") return held;
     const lease = await this.#oauth.accountAuthorizationLease();
     if (!lease)
-      throw new ClientOperationError("Sign in to your Opensteer account to join a team.", "blocked");
+      throw new ClientOperationError(
+        "Sign in to your Opensteer account to join a team.",
+        "blocked",
+      );
     const deploymentId = verified.discovery.deploymentId;
     const catalog = await this.#catalog.addPendingAccountDeployment(
       deploymentConnectionFromVerifiedEndpoints({

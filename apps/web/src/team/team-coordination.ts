@@ -66,7 +66,6 @@ export function desktopAccountTeams(
   };
 }
 
-
 /**
  * Entering teams on the desktop: main verifies, previews, mints the Account grant and exchanges
  * it, keeping the credential; link codes and leaving use the team's own API over the bridge

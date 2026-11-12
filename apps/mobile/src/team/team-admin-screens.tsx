@@ -84,8 +84,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const padding = useSafeAreaInsets().bottom + space[24];
   const agent = useAgentConnection(teamId);
   const bootstrap = snapshot.bootstrap;
-  const hostedTeamId =
-    bootstrap?.member.role === "owner" ? (bootstrap.hostedTeamId ?? null) : null;
+  const hostedTeamId = bootstrap?.member.role === "owner" ? (bootstrap.hostedTeamId ?? null) : null;
   if (session === null || bootstrap === null || team === null) return <Waiting failure={failure} />;
   const words = agentWords(agent.intent, agent.linked, bootstrap.member.handle);
   const connected = words.tone === "done";

@@ -111,8 +111,12 @@ describe("NativeTeamEntry", () => {
     expect(oauth.exchangeTeamSession).toHaveBeenCalledTimes(1);
 
     // Once Account's directory lists it, a launch asks nothing of the network.
-    const { createdAt: _c, lastUsedAt: _l, updatedAt: _u, ...held } = (await catalog.load())
-      .deployments[0]!;
+    const {
+      createdAt: _c,
+      lastUsedAt: _l,
+      updatedAt: _u,
+      ...held
+    } = (await catalog.load()).deployments[0]!;
     await catalog.upsert({ ...held, accountAccess: "member" });
     verify.mockClear();
     await entry.restore(id, verify);

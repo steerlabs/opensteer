@@ -263,10 +263,11 @@ export const databaseLockOrder = [
   "control-plane:deployment_credentials",
   "control-plane:deployment_connect",
   "control-plane:deployment_directory_entries",
-  // Deleting a hosted team removes the Deployment adopted at its address first.
-  "control-plane:hosted_teams",
   // OAuth client identity precedes cloud operation projection and token cleanup.
   "control-plane:oauth_clients",
+  // Deleting a hosted team removes the Deployment adopted at its address first, and an
+  // adoption, retried ones included, fences its team's claim after its own locks.
+  "control-plane:hosted_teams",
   "control-plane:cloud_deployment_operations",
   "control-plane:oauth_refresh_token",
   "control-plane:oauth_consents",
