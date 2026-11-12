@@ -3583,7 +3583,7 @@ export class HttpHostClient {
         deploymentId: payload.deploymentId,
         personalSettings: payload.personalSettings,
         can: payload.can,
-        voiceThreadId: payload.personalSettings.voiceThreadId,
+        voiceThreadId: payload.personalSettings?.voiceThreadId ?? null,
         environments,
         harnesses,
         deploymentShape: { kind: "personal" },
