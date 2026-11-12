@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
-  chatExecutionDecision,
-  chatExecutionSelection,
   executionSelectionForPlacement,
   lastExecutionSelection,
   placementForSelection,
+  resolveExecutionSelection,
   type ExecutionSelection,
   type ThreadPlacementOption,
 } from "@opensteer/client/host";
@@ -55,20 +54,13 @@ export function SetupAiStep({
   const discovering = main !== null && main.connected && main.harnessDrivers.length === 0;
   const offline = main !== null && !main.connected;
   const ready = rows.flatMap((row) => (row.kind === "ready" ? [row.placement] : []));
-  const home = snapshot.threads.find(({ id }) => id === snapshot.homeThreadId);
-  const existing = home
-    ? {
-        environmentId: home.environmentId,
-        harnessInstanceId: home.harnessInstanceId,
-        modelSelection: home.modelSelection,
-      }
-    : null;
   const [chosen, setChosen] = useState<ExecutionSelection | null>(null);
-  const remembered = lastExecutionSelection(executionPreferences);
-  const decided = chatExecutionDecision({ chosen, existing, remembered });
-  const selection =
-    chatExecutionSelection({ chosen, existing, placements: ready, remembered }) ??
-    (decided === null && ready[0] ? executionSelectionForPlacement(ready[0]) : null);
+  const decided = chosen ?? lastExecutionSelection(executionPreferences);
+  const selection = decided
+    ? resolveExecutionSelection(decided, ready)
+    : ready[0]
+      ? executionSelectionForPlacement(ready[0])
+      : null;
   const selected = selection ? (placementForSelection(ready, selection) ?? null) : null;
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);

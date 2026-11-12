@@ -101,6 +101,7 @@ async function renderOpensteer(): Promise<void> {
     return;
   }
 
+  let previewTeams: Parameters<typeof import("./app.js").App>[0]["previewTeams"] = null;
   const [{ App }, hostClient] = await Promise.all([
     import("./app.js"),
     import.meta.env.VITE_OPENSTEER_USE_MOCK === "true"
@@ -108,15 +109,34 @@ async function renderOpensteer(): Promise<void> {
           import("@opensteer/client/mock"),
           import("./host/browser-host-client.js"),
           import("./host/browser-lifecycle.js"),
+          import("@opensteer/client/team"),
         ]).then(
           ([
-            { MockHostClient, mockSubagentScenes, mockTeamScenarios },
+            { MockHostClient, mockSubagentScenes },
             { browserPreferencesStorage },
             { browserClientLifecycle },
+            { MockTeamHost, TeamSessionClient, createMemoryTeamPersistence },
           ]) => {
             const search = new URLSearchParams(window.location.search);
             const world = search.get("mock-world");
-            const team = mockTeamScenarios.find((scenario) => scenario === search.get("mock-team"));
+            // `?mock-team` puts one live mock team beside the person's own tasks.
+            if (search.has("mock-team")) {
+              const team = new MockTeamHost();
+              previewTeams = [
+                {
+                  teamId: team.teamId,
+                  name: team.bootstrap.teamName,
+                  origin: "https://chat.acme.example",
+                  client: new TeamSessionClient({
+                    scope: { teamDeploymentId: team.teamId, userId: team.userId },
+                    persistence: createMemoryTeamPersistence(),
+                    rpc: team.rpc,
+                    connect: team.connect,
+                  }),
+                  link: null,
+                },
+              ];
+            }
             const subagents = mockSubagentScenes.find(
               (scene) => scene === search.get("mock-subagents"),
             );
@@ -125,7 +145,6 @@ async function renderOpensteer(): Promise<void> {
               browserPreferencesStorage,
               ...(search.has("mock-devices") ? { devices: "seeded" as const } : {}),
               ...(world === "first-run" || world === "busy" || world === "stress" ? { world } : {}),
-              ...(team ? { team } : {}),
               ...(subagents ? { subagents } : {}),
             });
             // The preview's own client, for journeys that count what the page sends.
@@ -178,7 +197,7 @@ async function renderOpensteer(): Promise<void> {
   window.addEventListener("pagehide", () => hostClient.dispose(), { once: true });
   reactRoot.render(
     <StrictMode>
-      <App hostClient={hostClient} />
+      <App hostClient={hostClient} previewTeams={previewTeams} />
     </StrictMode>,
   );
 }

@@ -19,6 +19,7 @@ const personalSteps: ReadonlyArray<{
   { label: "Checking this computer", step: "checking-computer" },
   { label: "Preparing your private database", step: "preparing-database" },
   { label: "Starting Opensteer", step: "starting-host" },
+  { label: "Preparing your agent’s home folder", step: "preparing-agent-home" },
   { label: "Connecting this computer", step: "connecting-computer" },
   { label: "Starting local agents", step: "starting-local-agents" },
   { label: "Opening Opensteer", step: "ready" },

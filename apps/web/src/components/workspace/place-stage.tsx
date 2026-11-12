@@ -13,7 +13,7 @@ import { ComputerWatchView } from "../computer-watch.js";
 import { Icon } from "../icon.js";
 import { useToastToolbar } from "../toast.js";
 import { SidebarRestoreButton } from "../sidebar-chrome.js";
-import { TaskMark, TaskBadge, AgentOrb } from "./task-mark.js";
+import { TaskMark, TaskBadge } from "./task-mark.js";
 import { AppTab, AppTabGone } from "./app-tab.js";
 import { useBrowserPresentations } from "./identity.js";
 import { OwnerView } from "./owner-view.js";

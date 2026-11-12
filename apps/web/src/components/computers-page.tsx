@@ -576,7 +576,6 @@ function ComputerDetail({ machine }: { readonly machine: MachineSummary }) {
     desktopDeployment,
     hostClient,
     localExecutionAction,
-    localExecutionError,
     localExecutionStatus,
     openMobileNavigation,
     performLocalExecutionAction,

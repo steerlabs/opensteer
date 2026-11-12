@@ -25,7 +25,8 @@ import { LoadingRows } from "../loading-rows.js";
 import { PageTopbar } from "../page-header.js";
 import { actionErrorMessage, automationPath, useMinuteClock } from "../../ui-utils.js";
 import { AreaLink } from "../workspace/area-link.js";
-import { AgentOrb, TaskMark } from "../workspace/task-mark.js";
+import { TaskMark } from "../workspace/task-mark.js";
+import { useStartTask } from "../start-task.js";
 
 /** Requests a first-time reader can send as written, to see what an automation is. */
 const examples = [
@@ -36,7 +37,9 @@ const examples = [
 
 /** Routed page listing what Opensteer does on its own, grouped by what each needs from you. */
 export function AutomationsPage() {
-  const { hostClient, openMobileNavigation, snapshot, writeInChat } = useShell();
+  const { hostClient, openMobileNavigation, snapshot } = useShell();
+  // An automation is asked for in words, in a new task.
+  const writeTask = useStartTask();
   const now = useMinuteClock();
   const [summaries, setSummaries] = useState<readonly TriggerSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -67,8 +70,8 @@ export function AutomationsPage() {
           <h1 className="page__title">Automations</h1>
           <button
             className="btn btn--primary btn--small"
-            onClick={() => writeInChat("")}
-            title="Ask Opensteer in Chat for something to happen on its own"
+            onClick={() => writeTask("")}
+            title="Ask your agent, in a new task, for something to happen on its own"
             type="button"
           >
             <Icon name="plus" /> New
@@ -95,7 +98,7 @@ export function AutomationsPage() {
           </div>
         ) : null}
 
-        {summaries?.length === 0 ? <FirstAutomation onWrite={writeInChat} /> : null}
+        {summaries?.length === 0 ? <FirstAutomation onWrite={writeTask} /> : null}
 
         {sections.map((section) => {
           const titleId = `automations-${section.id}`;
@@ -129,7 +132,7 @@ export function AutomationsPage() {
                 </p>
               ) : section.id === "system" ? (
                 <p className="automations-group__hint">
-                  Opensteer’s own upkeep. What it learns reaches you in Chat.
+                  Opensteer’s own upkeep. What it learns goes into your agent’s memory.
                 </p>
               ) : null}
             </section>
@@ -263,19 +266,14 @@ function Where({
   readonly snapshot: HostSnapshot;
   readonly summary: TriggerSummary;
 }) {
-  const home = summary.anchorThreadId === snapshot.homeThreadId;
   const thread = threadInDirectory(summary.anchorThreadId, snapshot);
   return (
     <span className="automation-row__where">
-      {home ? (
-        <AgentOrb size={16} />
-      ) : (
-        <TaskMark
-          mark={thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot)}
-          size={16}
-        />
-      )}
-      {conversationName(summary.anchorThreadId, summary.anchorThreadTitle, snapshot.homeThreadId)}
+      <TaskMark
+        mark={thread ? taskMark(thread) : threadMark(summary.anchorThreadId, snapshot)}
+        size={16}
+      />
+      {conversationName(summary.anchorThreadTitle)}
     </span>
   );
 }
