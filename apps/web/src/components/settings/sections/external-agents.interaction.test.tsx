@@ -101,7 +101,7 @@ describe("External agents in web and desktop Settings", () => {
       configurable: true,
     });
     const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Use from anywhere first"));
     expect(button("Add Another agent").disabled).toBe(true);
     await act(async () => finish!({ ok: true, data: { connections: [] } }));
     expect(button("Add Another agent").disabled).toBe(false);
@@ -123,7 +123,7 @@ describe("External agents in web and desktop Settings", () => {
       },
     });
     const page = await mount(host);
-    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Remote access first"));
+    await vi.waitFor(() => expect(page.textContent).toContain("Turn on Use from anywhere first"));
     expect(button("Add ChatGPT").disabled).toBe(true);
     await act(async () => button("Add Another agent").click());
     const dialog = document.querySelector('[role="dialog"]')!;

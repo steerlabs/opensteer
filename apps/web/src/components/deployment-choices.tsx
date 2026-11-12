@@ -12,7 +12,7 @@ interface DeploymentChoiceDefinition {
 
 const choices: Readonly<Record<DeploymentChoice, DeploymentChoiceDefinition>> = {
   computer: {
-    detail: "Turn on Remote access there, or pair it with a code.",
+    detail: "Turn on Use from anywhere there, or pair it with a code.",
     icon: "laptop",
     title: "Another computer of yours",
   },

@@ -953,7 +953,6 @@ function AccountRow({
           </span>
         ) : undefined)
       }
-      icon={account.server ? "server" : "user"}
       title={
         <>
           {account.name}

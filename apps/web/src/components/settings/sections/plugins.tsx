@@ -576,7 +576,6 @@ function PluginDetail({
                 {data.permissions.map((fact) => (
                   <SettingsRow
                     key={`${fact.layer}:${fact.layer === "account-scope" && fact.label === "Account access" ? (data.accounts.some((account) => account.access === "read-write") ? "Read and update connected accounts" : "Read connected accounts") : fact.label}`}
-                    icon="shield"
                     title={
                       fact.layer === "account-scope" && fact.label === "Account access"
                         ? data.accounts.some((account) => account.access === "read-write")
@@ -603,7 +602,7 @@ function PluginDetail({
               <h2 className="settings-group__title">Comes with</h2>
               <div className="card">
                 {data.contents.map((item) => (
-                  <SettingsRow key={`${item.kind}:${item.name}`} icon="puzzle" title={item.name} />
+                  <SettingsRow key={`${item.kind}:${item.name}`} title={item.name} />
                 ))}
               </div>
             </section>
@@ -930,7 +929,6 @@ function DeviceSetup({ detail, name }: { detail: PluginDetailView; name: string 
       <div className="card">
         {threadId ? (
           <SettingsRow
-            icon="message"
             title="Set up in"
             detail={
               <Link to={threadPath(threadId)}>
@@ -940,7 +938,6 @@ function DeviceSetup({ detail, name }: { detail: PluginDetailView; name: string 
           />
         ) : null}
         <SettingsRow
-          icon="help-circle"
           title="Not working?"
           detail="An agent can look into it."
           action={
@@ -1151,7 +1148,6 @@ function PluginSecrets({ detail }: { readonly detail?: PluginDetailView }) {
             {matching.map((server) => (
               <SettingsRow
                 key={server.id}
-                icon="shield"
                 title={server.name}
                 detail={[server.computer, ...server.secrets.map((secret) => secret.title)]
                   .filter(Boolean)
@@ -1208,12 +1204,7 @@ function PluginServers({ detail }: { readonly detail: PluginDetailView }) {
           <div className="card">
             {entries.flatMap((entry) =>
               entry.servers.map((server) => (
-                <SettingsRow
-                  key={server.id}
-                  title={server.name}
-                  icon="puzzle"
-                  detail={server.status}
-                />
+                <SettingsRow key={server.id} title={server.name} detail={server.status} />
               )),
             )}
           </div>

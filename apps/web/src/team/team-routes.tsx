@@ -181,7 +181,6 @@ function TopicSettings({
           />
         }
         detail="Your agent can do whatever you can, unless the thing is marked people only."
-        icon="user"
         title="People only"
       />
       {entries.map((entry, index) => (
@@ -196,7 +195,6 @@ function TopicSettings({
               value={entry.level}
             />
           }
-          icon={entry.subject.kind === "person" ? "user" : "users"}
           key={JSON.stringify(entry.subject)}
           title={subjectName(entry)}
         />
@@ -235,7 +233,6 @@ function TopicSettings({
             ))}
           </select>
         }
-        icon="plus"
         title="Add people or groups"
       />
     </SettingsGroup>

@@ -96,7 +96,7 @@ describe("Settings models", () => {
     const tail = "?integrationAttempt=a%2Bb&provider=google&workspace=w#computer-app-mail";
     expect(redirectSettingsPath(`${from}${tail}`)).toBe(`${to}${tail}`);
     expect(redirectSettingsPath(`${from}/child${tail}`)).toBe(
-      `${to}${to === "/settings/plugins" ? "" : "/child"}${tail}`,
+      `${to}${to === "/settings/plugins" || to === "/settings/account" ? "" : "/child"}${tail}`,
     );
     expect(redirectSettingsPath(`${from}-other`)).toBe(
       from.startsWith("/settings/apps/") ? "/settings/plugins" : null,

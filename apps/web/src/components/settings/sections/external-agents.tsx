@@ -27,7 +27,7 @@ import {
   type SettingsView,
 } from "../primitives.js";
 
-const remoteAccessPath = "/settings/account/remote-access";
+const remoteAccessPath = "/settings/account";
 const notReading = { status: null, error: null } as const;
 
 export function ExternalAgentsSection({
@@ -60,7 +60,6 @@ export function ExternalAgentsSection({
       {agents.connections === null && agents.error ? (
         <div className="card">
           <SettingsRow
-            icon="sparkles"
             title="Your agents couldn’t be loaded"
             detail={agents.error}
             action={
@@ -80,7 +79,6 @@ export function ExternalAgentsSection({
           {connections.map((connection) => (
             <SettingsRow
               key={connection.id}
-              icon="sparkles"
               title={connection.label}
               detail={connectionDetail(connection)}
               action={
@@ -103,14 +101,13 @@ export function ExternalAgentsSection({
         headingId="external-agents-add"
         note={
           reach.kind === "ready" && reach.personal
-            ? "Agents reach Opensteer through Remote access while this computer is on and awake."
+            ? "Agents reach Opensteer from anywhere while this computer is on and awake."
             : null
         }
       >
         {reach.kind === "needs-remote" ? (
           <SettingsRow
-            icon="globe"
-            title="Turn on Remote access first"
+            title="Turn on Use from anywhere first"
             detail="These agents run in the cloud and reach Opensteer through it."
             action={
               <Link className="btn btn--small btn--primary" to={remoteAccessPath}>
@@ -122,8 +119,12 @@ export function ExternalAgentsSection({
         {externalAgentGuides.map((entry) => (
           <SettingsRow
             key={entry.id}
-            icon={entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : "plus"}
-            title={entry.name}
+            title={
+              <>
+                {entry.providerId ? <ProviderLogo providerId={entry.providerId} /> : null}
+                {entry.name}
+              </>
+            }
             detail={entry.summary}
             action={
               <button
@@ -194,7 +195,7 @@ function ExternalAgentSetup({
       {address?.kind === "blocked" ? (
         <p className="notice">
           <span>
-            {address.detail} <Link to={remoteAccessPath}>Open Remote access</Link>
+            {address.detail} <Link to={remoteAccessPath}>Open Account settings</Link>
           </span>
         </p>
       ) : (

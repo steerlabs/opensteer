@@ -59,10 +59,9 @@ export function ChromeSection() {
 
   return (
     <>
-      <h2 className="settings-group__title">Chrome</h2>
       <section aria-labelledby="chrome-profiles-title" className="settings-group">
         <h2 className="settings-group__title" id="chrome-profiles-title">
-          Connected Chrome
+          Chrome
         </h2>
         <div className="card">
           {state === null ? (

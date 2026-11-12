@@ -1,7 +1,6 @@
 import type { DeploymentDisplayKind, IdentityConfig } from "@opensteer/core";
 import { passwordsSettingsDescription, passwordsSettingsLabel } from "@opensteer/client/host";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
-import type { IconName } from "../icon.js";
 
 /** Settings copy follows observable access facts so presentation labels cannot select behavior. */
 
@@ -31,35 +30,6 @@ export function settingsDeploymentName(input: {
   return originHostname(identityConfig?.publicOrigin) ?? "Opensteer";
 }
 
-/** Where this Opensteer runs, as the title of the first fact about it. */
-export function settingsWhereItRuns(input: {
-  readonly facts: SettingsFacts;
-  readonly kind: DeploymentDisplayKind;
-  readonly name: string;
-  readonly publicOrigin: string | undefined;
-}): string {
-  if (input.kind === "personal") {
-    return input.facts.onThisComputer ? "Runs on this computer" : `Runs on ${input.name}`;
-  }
-  const host = originHostname(input.publicOrigin);
-  return host ? `Runs on ${host}` : "Runs on a server";
-}
-
-/** What that means for the reader, in one sentence. */
-export function settingsWhatThisIs(input: {
-  readonly facts: SettingsFacts;
-  readonly kind: DeploymentDisplayKind;
-  readonly name: string;
-}): string {
-  if (input.facts.onThisComputer) {
-    return "Agents keep working while this computer is on and awake. Open it from other devices with Remote access.";
-  }
-  if (input.kind === "personal") {
-    return `Opening it here moves nothing: agents, files and sign-ins stay on ${input.name}.`;
-  }
-  return "Always on, and open from any device you sign in on.";
-}
-
 /* ------------------------------------------------------------------------- *
  * The rail
  * ------------------------------------------------------------------------- */
@@ -83,7 +53,6 @@ export type SettingsSectionId =
 export const defaultSettingsSection = "general" as const satisfies SettingsSectionId;
 
 export interface SettingsRailItem {
-  readonly icon: IconName;
   readonly id: SettingsSectionId;
   readonly label: string;
   readonly description: string;
@@ -97,81 +66,68 @@ export interface SettingsRailModel {
 }
 
 export const settingsItems: Readonly<Record<SettingsSectionId, SettingsRailItem>> = {
-  ai: { id: "ai", icon: "bolt", label: "AI", description: "Accounts and models" },
+  ai: { id: "ai", label: "AI", description: "Accounts and models" },
   messaging: {
     id: "messaging",
-    icon: "plug",
     label: "Messaging",
     description: "Message your agents",
   },
   "sign-ins": {
     id: "sign-ins",
-    icon: "key",
     label: "Sign-ins",
     description: "Browsers and passwords",
   },
   "ai-engines": {
-    icon: "bolt",
     id: "ai-engines",
     label: "AI services",
     description: "The accounts your agents think with",
   },
   apps: {
-    icon: "plug",
     id: "apps",
     label: "Connections",
     description: "Accounts and apps agents can use, and where people message them",
   },
   plugins: {
-    icon: "puzzle",
     id: "plugins",
     label: "Plugins",
     description: "Skills, tools and specialists installed for your agents",
   },
   computers: {
-    icon: "desktop",
     id: "computers",
     label: "Computers",
     description: "Where your Opensteer runs and the computers its agents can use",
   },
   chrome: {
-    icon: "key",
     id: "chrome",
     label: "Chrome",
     description: "Sign-ins agents can use from your Chrome",
   },
   "browser-profiles": {
-    icon: "browser",
     id: "browser-profiles",
     label: "Browser profiles",
     description: "Separate browsers with their own sign-ins, and who may use each",
   },
   passwords: {
-    icon: "shield",
     id: "passwords",
     label: passwordsSettingsLabel,
     description: passwordsSettingsDescription,
   },
   devices: {
-    icon: "devices",
     id: "devices",
     label: "Devices",
     description: "The browsers and apps you are signed in to this Opensteer from",
   },
   "external-agents": {
-    icon: "sparkles",
     id: "external-agents",
     label: "External agents",
     description: "ChatGPT, Claude and other agents you let use Opensteer",
   },
   account: {
-    icon: "user",
     id: "account",
     label: "Account",
     description: "Your Opensteer sign-in",
   },
   general: {
-    icon: "settings",
     id: "general",
     label: "General",
     description: "Where it runs and whether your Account lists it",
@@ -199,25 +155,14 @@ export function settingsSectionForPath(pathname: string): SettingsSectionId | nu
   return Object.hasOwn(settingsItems, section) ? (section as SettingsSectionId) : null;
 }
 
-/**
- * Where this Opensteer is, relative to the reader, for the chip in the corner
- * of Settings: the icon says what kind of place it is — the Mac it runs on,
- * a server — and the line says where that is from here.
- */
-export function settingsPlace(input: {
+/** Where this Opensteer is from here, under its name at the foot of Settings. */
+export function settingsPlaceDetail(input: {
   readonly facts: SettingsFacts;
-  /** The icon of the Mac a Personal Opensteer runs on, once it has said. */
-  readonly homeIcon: IconName | null;
   readonly kind: DeploymentDisplayKind;
   readonly publicOrigin: string | undefined;
-}): { readonly detail: string; readonly icon: IconName } {
-  if (input.kind === "personal") {
-    return {
-      detail: input.facts.remote ? "Opened remotely" : "Running here",
-      icon: input.homeIcon ?? "desktop",
-    };
-  }
-  return { detail: originHostname(input.publicOrigin) ?? "Server", icon: "server" };
+}): string {
+  if (input.kind === "personal") return input.facts.remote ? "Opened remotely" : "Running here";
+  return originHostname(input.publicOrigin) ?? "Server";
 }
 
 export function originHostname(value: string | undefined): string | null {

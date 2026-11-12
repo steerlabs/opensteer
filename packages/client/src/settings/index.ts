@@ -28,15 +28,17 @@ export const settingsPages = [
   "sign-ins",
 ] as const;
 export const settingsRedirects = [
-  ["/settings/devices/remote-access", "/settings/account/remote-access"],
-  ["/settings/devices/sessions", "/settings/account/sessions"],
+  ["/settings/account/remote-access", "/settings/account"],
+  ["/settings/account/sessions", "/settings/account"],
+  ["/settings/devices/remote-access", "/settings/account"],
+  ["/settings/devices/sessions", "/settings/account"],
   ["/settings/apps/messaging", "/settings/messaging"],
   ["/settings/apps/tools", "/settings/plugins"],
   ["/settings/ai-engines", "/settings/ai"],
   ["/settings/connections", "/settings/account"],
   ["/settings/integrations", "/settings/plugins"],
   ["/settings/computers", "/settings/devices/computers"],
-  ["/settings/remote-access", "/settings/account/remote-access"],
+  ["/settings/remote-access", "/settings/account"],
   ["/settings/this-device", "/settings/devices"],
   ["/settings/browser-profiles", "/settings/sign-ins/browsers"],
   ["/settings/passwords", "/settings/sign-ins/passwords"],
@@ -45,6 +47,10 @@ export const settingsRedirects = [
   ["/computers", "/settings/devices/computers"],
   ["/channels", "/settings/messaging"],
 ] as const;
+const pagesWithoutChildren: ReadonlySet<string> = new Set([
+  "/settings/plugins",
+  "/settings/account",
+]);
 export function redirectSettingsPath(path: string): string | null {
   const cut = path.search(/[?#]/u);
   const pathname = cut < 0 ? path : path.slice(0, cut);
@@ -55,8 +61,9 @@ export function redirectSettingsPath(path: string): string | null {
   );
   if (!match) return null;
   const [from, to] = match;
-  // Old integrations used local view state, not routable target identities.
-  return `${to}${to === "/settings/plugins" ? "" : pathname.slice(from.length)}${tail}`;
+  // Neither page has children: old integrations used local view state, and
+  // Account's remote-access and session pages folded into Account itself.
+  return `${to}${pagesWithoutChildren.has(to) ? "" : pathname.slice(from.length)}${tail}`;
 }
 export function pluginTargetKey(target: PluginTarget): string {
   switch (target.kind) {

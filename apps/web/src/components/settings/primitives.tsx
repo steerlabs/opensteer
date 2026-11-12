@@ -1,15 +1,13 @@
 import { Dialog } from "../dialog.js";
-import { SurfaceMenu } from "../surface-menu.js";
-import { useState, type ReactElement, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { DeploymentDisplayKind } from "@opensteer/core";
 import {
   deploymentStatusLabel,
   deploymentStatusTone,
   type DeploymentStatusInfo,
-  type DeploymentStatusTone,
 } from "@opensteer/protocol/deployment-status";
 import type { DesktopDeploymentSummary } from "@opensteer/protocol/desktop";
-import { Icon, type IconName } from "../icon.js";
+import { Icon } from "../icon.js";
 import type { SettingsFacts } from "./copy.js";
 
 /**
@@ -31,19 +29,6 @@ export interface SettingsView {
   readonly statusInfo: DeploymentStatusInfo;
 }
 
-/** The glyph a kind of place wears, everywhere it is drawn. */
-export function deploymentGlyph(kind: DeploymentDisplayKind): IconName {
-  if (kind === "personal") return "home";
-  return "server";
-}
-
-const toneClasses: Readonly<Record<DeploymentStatusTone, string>> = {
-  busy: "chip--warn",
-  muted: "",
-  ok: "chip--ok",
-  warn: "chip--warn",
-};
-
 /** The 7px dot every status wears; `starting` pulses, motion settings allowing. */
 export function StatusDot({ info }: { readonly info: DeploymentStatusInfo }) {
   const tone = deploymentStatusTone(info.status);
@@ -55,30 +40,10 @@ export function StatusDot({ info }: { readonly info: DeploymentStatusInfo }) {
   );
 }
 
-/** Dot plus word, for a row's trailing slot. */
-export function StatusLine({
-  info,
-  qualifier = null,
-}: {
-  readonly info: DeploymentStatusInfo;
-  readonly qualifier?: string | null;
-}) {
+/** Dot plus word: a status read at a glance, never a control. */
+export function StatusText({ info }: { readonly info: DeploymentStatusInfo }) {
   return (
-    <span className="status-line">
-      <StatusDot info={info} />
-      <span>
-        {deploymentStatusLabel(info.status)}
-        {qualifier ? <span className="status-line__qualifier"> · {qualifier}</span> : null}
-      </span>
-    </span>
-  );
-}
-
-/** Dot plus word in a chip, for the identity strip at the top of a section. */
-export function StatusChip({ info }: { readonly info: DeploymentStatusInfo }) {
-  const tone = toneClasses[deploymentStatusTone(info.status)];
-  return (
-    <span className={tone ? `chip ${tone}` : "chip"} role="status">
+    <span className="settings-status" role="status">
       <StatusDot info={info} />
       {deploymentStatusLabel(info.status)}
     </span>
@@ -107,29 +72,23 @@ export function SectionHeader({
 }
 
 /**
- * One fact about this place: a glyph, what it is, what it means, and at most
- * one control. Every row in Settings is this row, so a reader never has to
- * work out which of two shapes they are looking at.
+ * One fact about this place: what it is, what it means, and at most one
+ * control. Every row in Settings is this row, so a reader never has to work
+ * out which of two shapes they are looking at.
  */
 export function SettingsRow({
   action,
   className,
   detail,
-  icon,
   title,
 }: {
   readonly action?: ReactNode;
   readonly className?: string;
   readonly detail?: ReactNode;
-  /** A product glyph, or a mark of its own such as a provider's logo. */
-  readonly icon: IconName | ReactElement;
   readonly title: ReactNode;
 }) {
   return (
     <div className={className ? `card__row ${className}` : "card__row"}>
-      <span className="card__row-glyph">
-        {typeof icon === "string" ? <Icon name={icon} /> : icon}
-      </span>
       <span className="card__row-body">
         <span className="card__row-title">{title}</span>
         {detail ? <span className="card__row-detail">{detail}</span> : null}
@@ -245,7 +204,7 @@ export function SettingsSwitch({
   );
 }
 
-/** Destructive row actions explain their effect at the point of confirmation. */
+/** A quiet "Sign out" on a device's row; the effect is spelled out before it happens. */
 export function SettingsSignOut({
   label,
   warning,
@@ -260,28 +219,37 @@ export function SettingsSignOut({
   const [confirming, setConfirming] = useState(false);
   return (
     <>
-      <SurfaceMenu
-        label={label}
-        items={[
-          {
-            icon: "user",
-            label: "Sign out",
-            danger: true,
-            disabled: pending,
-            onSelect: () => setConfirming(true),
-          },
-        ]}
-      />
+      <button
+        aria-label={label}
+        className="settings-link"
+        disabled={pending}
+        onClick={() => setConfirming(true)}
+        type="button"
+      >
+        Sign out
+      </button>
       {confirming ? (
         <Dialog
           title="Sign out this device?"
           labelledBy="sign-out-device-title"
           onClose={() => setConfirming(false)}
+          footer={
+            <>
+              <button className="btn btn--ghost" onClick={() => setConfirming(false)} type="button">
+                Cancel
+              </button>
+              <button
+                className="btn btn--danger"
+                type="button"
+                disabled={pending}
+                onClick={onConfirm}
+              >
+                {pending ? "Signing out…" : "Sign out"}
+              </button>
+            </>
+          }
         >
           <p>{warning}</p>
-          <button className="btn btn--danger" type="button" disabled={pending} onClick={onConfirm}>
-            {pending ? "Signing out…" : "Sign out"}
-          </button>
         </Dialog>
       ) : null}
     </>

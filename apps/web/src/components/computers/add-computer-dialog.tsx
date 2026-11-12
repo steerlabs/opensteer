@@ -90,7 +90,7 @@ export function AddComputerDialog({
           {reachable === false ? (
             <li>
               Turn on remote access for {homeName}, so other computers can reach it.{" "}
-              <Link to="/settings/account/remote-access">Open Remote access</Link>
+              <Link to="/settings/account">Open Account settings</Link>
             </li>
           ) : null}
           <li>

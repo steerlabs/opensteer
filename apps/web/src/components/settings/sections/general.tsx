@@ -14,15 +14,16 @@ import {
 } from "../../../desktop/notifications.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
-import { settingsPlace } from "../copy.js";
-import { useHomeComputer } from "./devices.js";
+import { settingsPlaceDetail } from "../copy.js";
+import { desktopBridge } from "../../../desktop/desktop-bridge.js";
 import {
   SectionHeader,
   SettingsError,
+  SettingsGroup,
   SettingsRow,
   SettingsSegmented,
   SettingsSwitch,
-  StatusChip,
+  StatusText,
   type SettingsView,
 } from "../primitives.js";
 
@@ -31,45 +32,45 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
   const update = useDesktopUpdate();
   const [switching, setSwitching] = useState(false);
   const { snapshot } = useShell();
-  const home = useHomeComputer();
-  const place = settingsPlace({
+  const placeDetail = settingsPlaceDetail({
     facts: view.facts,
-    homeIcon: home.name ? home.icon : null,
     kind: view.kind,
     publicOrigin: snapshot.identityConfig?.publicOrigin,
   });
   return (
     <>
       <SectionHeader title="General" />
-      <h2>This Opensteer</h2>
-      <div className="card">
+      <SettingsGroup heading={null} headingId="settings-general-place">
         <SettingsRow
-          action={<StatusChip info={view.statusInfo} />}
-          detail={view.deployment?.onThisComputer ? "Running here" : place.detail}
-          icon={place.icon}
+          action={
+            places ? (
+              <button className="btn" type="button" onClick={() => setSwitching(true)}>
+                Switch…
+              </button>
+            ) : undefined
+          }
+          detail={
+            view.statusInfo.status === "ready" ? (
+              view.deployment?.onThisComputer ? (
+                "Running here"
+              ) : (
+                placeDetail
+              )
+            ) : (
+              <StatusText info={view.statusInfo} />
+            )
+          }
           title={view.name}
         />
-        {places ? (
-          <SettingsRow
-            icon="globe"
-            title="Switch Opensteer"
-            action={
-              <button className="btn" type="button" onClick={() => setSwitching(true)}>
-                Switch
-              </button>
-            }
-          />
-        ) : null}
-        <NotificationsRow />
-        <DesktopUpdatesRow />
+      </SettingsGroup>
+      <SettingsGroup heading="Behavior" headingId="settings-general-behavior">
+        <QuietTasksRow />
         <SearchSuggestionsRow />
-      </div>
-      <QuietTasksSection />
-      <RemoteDesktopUpdateSection view={view} />
-      <h2>About</h2>
-      <div className="card">
+        <NotificationsRow />
+      </SettingsGroup>
+      <UpdatesGroup view={view} />
+      <SettingsGroup heading="About" headingId="settings-general-about">
         <SettingsRow
-          icon="puzzle"
           title={
             update
               ? `${resolveDesktopAppBranding(update.currentVersion).displayName} ${update.currentVersion}`
@@ -86,7 +87,7 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
             </a>
           }
         />
-      </div>
+      </SettingsGroup>
       {switching && places ? (
         <Dialog
           labelledBy="switch-opensteer"
@@ -96,6 +97,22 @@ export function GeneralSection({ view }: { readonly view: SettingsView }) {
           <PlaceMenuPlaces places={places} onClose={() => setSwitching(false)} />
         </Dialog>
       ) : null}
+    </>
+  );
+}
+
+/** This app's own updates on Desktop, or the hosting computer's when opened remotely. */
+function UpdatesGroup({ view }: { readonly view: SettingsView }) {
+  const local = useDesktopUpdate();
+  const showsLocal = desktopBridge()?.updates?.setChannel !== undefined && local !== null;
+  return (
+    <>
+      {showsLocal ? (
+        <SettingsGroup heading="Updates" headingId="settings-general-updates">
+          <DesktopUpdatesRow />
+        </SettingsGroup>
+      ) : null}
+      <RemoteDesktopUpdateSection view={view} />
     </>
   );
 }
@@ -133,48 +150,26 @@ function NotificationsRow() {
   if (failure !== null) {
     return (
       <SettingsRow
-        detail={`Opensteer could not find out whether this app can notify you: ${failure}`}
-        icon="activity"
+        detail={`Couldn’t check whether this app can notify you: ${failure}`}
         title="Notifications"
       />
     );
   }
   // Nothing is claimed while the answer is outstanding.
   if (availability === null) return null;
-  if (availability === "desktop") {
-    return (
-      <SettingsRow
-        detail="Managed in system settings"
-        icon="activity"
-        title={
-          <>
-            Notifications
-            <span className="chip chip--accent">On</span>
-          </>
-        }
-      />
-    );
-  }
-  if (availability === "unsupported") {
-    return (
-      <SettingsRow
-        detail=""
-        icon="activity"
-        title={
-          <>
-            Notifications
-            <span className="chip">Unavailable</span>
-          </>
-        }
-      />
-    );
-  }
+  const detail = {
+    denied: "Blocked. Allow them in your browser’s site settings.",
+    desktop: "Managed in System Settings",
+    granted: "On",
+    prompt: "Replies and requests for you",
+    unsupported: "Not available here",
+  }[availability];
   return (
     <SettingsRow
       action={
         availability === "prompt" ? (
           <button
-            className="btn btn--small"
+            className="btn"
             disabled={asking}
             onClick={() => {
               setAsking(true);
@@ -188,49 +183,19 @@ function NotificationsRow() {
           </button>
         ) : undefined
       }
-      detail={
-        availability === "granted"
-          ? ""
-          : availability === "denied"
-            ? "Allow in browser site settings"
-            : "Replies and requests for you"
-      }
-      icon="activity"
-      title={
-        <>
-          Notifications
-          <span className={availability === "granted" ? "chip chip--accent" : "chip"}>
-            {availability === "granted" ? "On" : availability === "denied" ? "Blocked" : "Off"}
-          </span>
-        </>
-      }
+      detail={detail}
+      title="Notifications"
     />
   );
 }
 
-/* ------------------------------------------------------------------------- *
- * In your Account
- * ------------------------------------------------------------------------- */
-
-/**
- * Being listed in an Account is a property of this Deployment, not a button
- * with a verb — so the row names the property, chips the state, and offers
- * only the moves the access machine currently accepts.
- *
- * Every mutation here only *starts* work. The buttons used to report success
- * the moment the IPC call resolved, milliseconds into an operation that could
- * still open a browser sign-in and fail; they now wait for the access
- * snapshot's operation slot to empty and report what actually happened,
- * including the state that is neither success nor failure.
- */
 function SearchSuggestionsRow() {
   const { hostClient, snapshot } = useShell();
   const [enabled, setEnabled] = useState(hostClient.browserPreferences.showSearchSuggestions);
   if (!snapshot.searchSuggestionsAvailable) return null;
   return (
     <SettingsRow
-      icon="search"
-      title="Show search suggestions"
+      title="Search suggestions"
       detail="Uses Google"
       action={
         <SettingsSwitch
@@ -254,7 +219,7 @@ const quietTaskChoices = [
 ] as const;
 
 /** When the Host moves this person's untouched tasks to Done, for every device they use. */
-function QuietTasksSection() {
+function QuietTasksRow() {
   const { hostClient, snapshot } = useShell();
   const [pending, setPending] = useState<QuietTaskDays | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -270,23 +235,19 @@ function QuietTasksSection() {
   };
   return (
     <>
-      <h2>Tasks</h2>
-      <div className="card">
-        <SettingsRow
-          action={
-            <SettingsSegmented
-              label="Move quiet tasks to Done"
-              onChange={choose}
-              options={quietTaskChoices}
-              value={String(pending ?? snapshot.quietTaskDays)}
-            />
-          }
-          className="card__row--choice"
-          detail="Finished tasks you've read, with nothing waiting on you"
-          icon="check-circle"
-          title="Move quiet tasks to Done"
-        />
-      </div>
+      <SettingsRow
+        action={
+          <SettingsSegmented
+            label="Move quiet tasks to Done"
+            onChange={choose}
+            options={quietTaskChoices}
+            value={String(pending ?? snapshot.quietTaskDays)}
+          />
+        }
+        className="card__row--choice"
+        detail="Finished tasks you’ve read, with nothing waiting on you"
+        title="Move quiet tasks to Done"
+      />
       <SettingsError message={error} />
     </>
   );

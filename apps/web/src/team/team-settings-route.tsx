@@ -50,14 +50,17 @@ export function TeamSettingsRoute() {
       {(["profile", "notifications", ...(admin ? adminPages : [])] as const).map((key) => (
         <Link
           aria-current={key === page ? "page" : undefined}
-          className={key === page ? "chip chip--active" : "chip"}
+          className="team-settings-nav__link"
           key={key}
           to={`/settings/teams/${encodeURIComponent(teamId)}/${key}`}
         >
           {key[0]!.toUpperCase() + key.slice(1)}
         </Link>
       ))}
-      <Link className="chip" to={`/teams/${encodeURIComponent(teamId)}/knowledge`}>
+      <Link
+        className="team-settings-nav__link"
+        to={`/teams/${encodeURIComponent(teamId)}/knowledge`}
+      >
         Knowledge
       </Link>
     </nav>
@@ -81,11 +84,11 @@ export function TeamSettingsRoute() {
       <ProfilePage view={view} />
     );
   return (
-    <div className="settings-page team-settings">
+    <>
       <SectionHeader title={name} />
       {nav}
       {body}
-    </div>
+    </>
   );
 }
 
@@ -104,12 +107,10 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
     <SettingsGroup heading="Your profile" headingId="team-profile">
       <SettingsRow
         detail={`@${me.handle} · your agent is @${me.handle}-agent`}
-        icon="user"
         title={me.displayName}
       />
       <SettingsRow
         detail="Admins can see what agents read, searched and posted here."
-        icon="shield"
         title="Agent activity is logged"
       />
       {view.team.link ? (
@@ -128,7 +129,6 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
             </button>
           }
           detail="Tasks your agent did for this team stay on your computer."
-          icon="log-out"
           title={`Leave ${view.team.name}`}
         />
       ) : null}
@@ -164,7 +164,6 @@ function NotificationsPage({ view }: { readonly view: TeamView }) {
               value={row.notificationLevel}
             />
           }
-          icon={row.channel.kind === "dm" || row.channel.kind === "group_dm" ? "message" : "hash"}
           key={row.channel.id}
           title={row.channel.name}
         />
@@ -468,7 +467,6 @@ function ChannelsPage({ view }: { readonly view: TeamView }) {
             detail={
               channel.archivedAt ? "Archived" : channel.kind === "private" ? "Private" : "Public"
             }
-            icon={channel.kind === "private" ? "lock" : "hash"}
             key={channel.id}
             title={channel.name}
           />
@@ -554,7 +552,6 @@ function AuditPage({ view }: { readonly view: TeamView }) {
         return (
           <SettingsRow
             detail={`${new Date(entry.occurredAt).toLocaleString()} · ${entry.resourceKind}${entry.outcome === "denied" ? " · refused" : ""}`}
-            icon={entry.actor?.kind === "agent" ? "sparkles" : "user"}
             key={entry.id}
             title={`${who} · ${entry.action}`}
           />
