@@ -603,7 +603,7 @@ export class RemoteAccessRunner {
       nextRemoteAccessStep(this.#state.goal, facts, this.#port).kind === "done"
     )
       this.#set(idle);
-    for (const waiter of [...this.#waiters]) waiter();
+    for (const waiter of this.#waiters) waiter();
   }
 
   start(goal: RemoteAccessGoal): void {
