@@ -7,6 +7,7 @@ import {
   type ThreadId,
   type UserId,
 } from "@opensteer/core";
+import { lockDeploymentEvents } from "./personal-transaction.js";
 import type { Transaction } from "kysely";
 import { assignmentActivityEventsForRun } from "./assignment-store.js";
 import { requestFromRow, requestOriginEnvironment } from "./request-persistence.js";
@@ -24,6 +25,7 @@ export async function cancelPending(
     readonly requestedBy?: UserId;
   },
 ): Promise<readonly AgentEvent[]> {
+  await lockDeploymentEvents(transaction);
   let pending = transaction.selectFrom("requests").selectAll().where("status", "=", "pending");
   if (input.requestIds) {
     if (input.requestIds.length === 0) return [];

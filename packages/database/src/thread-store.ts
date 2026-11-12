@@ -2090,19 +2090,22 @@ export async function findThreadCreationByIdempotency(
   database: Kysely<DatabaseSchema>,
   input: CreateThreadInput,
 ): Promise<ThreadCreationResult | null> {
-  const resolvedInput = {
-    ...input,
-    accessMode: await resolveCreateThreadAccessMode(database, input),
-  };
-  return withPersonalReadTransaction(
-    database,
-    async (transaction) =>
+  return withPersonalReadTransaction(database, async (transaction) => {
+    await requirePersonalOwner(transaction, input.createdBy);
+    const settings = await personalSettings(transaction);
+    const resolvedInput = {
+      ...input,
+      folder: TaskFolderSchema.parse(input.folder ?? settings.agentHome),
+      accessMode: await resolveCreateThreadAccessMode(transaction, input),
+    };
+    return (
       (await findExistingThreadCreation(
         transaction,
         resolvedInput,
         canonicalCreateThreadInput(resolvedInput),
-      )) ?? null,
-  );
+      )) ?? null
+    );
+  });
 }
 export async function enqueueThreadInput(
   database: Kysely<DatabaseSchema>,

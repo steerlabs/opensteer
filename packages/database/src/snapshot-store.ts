@@ -1036,6 +1036,7 @@ export async function nodeEventPageForOwner(
   return withPersonalReadTransaction(
     database,
     async (transaction) => {
+      await requirePersonalOwner(transaction, input.ownerId);
       const node = await transaction
         .selectFrom("executionNodes")
         .innerJoin("runs", "runs.id", "executionNodes.runId")

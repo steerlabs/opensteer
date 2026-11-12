@@ -1,4 +1,8 @@
-import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  lockDeploymentEvents,
+  withPersonalReadTransaction,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
@@ -1053,6 +1057,7 @@ export async function installIntegrationInTransaction(
   transaction: Transaction<DatabaseSchema>,
   input: InstallIntegrationInput,
 ): Promise<InstallIntegrationMutation> {
+  await lockDeploymentEvents(transaction);
   const adapterSnapshot = validateAdapterInstallation(input);
   await lockIntegrationInstallationIdentityInTransaction(transaction, input.installation);
   const current = await transaction

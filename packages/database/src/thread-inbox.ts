@@ -2000,7 +2000,9 @@ async function lockThreadInputPreconditions(
     .selectFrom("threads")
     .select("harnessInstanceId")
     .where("id", "=", input.threadId)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirstOrThrow(
+      () => new OpensteerError({ code: "not_found", message: "Task not found" }),
+    );
   const active = await transaction
     .selectFrom("runs")
     .select("id")
