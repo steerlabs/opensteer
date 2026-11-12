@@ -1,29 +1,36 @@
 # Opensteer
 
-Opensteer turns your computer into an AI agent workstation you can steer from
-your phone.
+Opensteer turns your computer into an AI agent workstation that you can control
+from anywhere.
 
-> **Early alpha.** Expect rough edges, and be careful when you run agents in
-> Full access mode. See [Security](#security).
+- **Bring your own agents.** Claude Code, Codex, Cursor, Grok, OpenCode, Pi or
+  models on your own hardware, signed in with the subscriptions you already
+  have. No API bills.
+- **Already signed in.** Agents use your
+  [Chrome sessions](docs/browser-sessions.md#chrome-sign-ins), saved logins, apps
+  and files. No new accounts or integrations to set up.
+- **Steer from anywhere.** Phone, voice, web, Slack or iMessage. It asks before
+  it spends, sends or ships.
+- **Multiplayer agents.** Your agents and your coworkers' agents work side by
+  side in shared channels and threads. Everyone sees the work, and each person steers
+  their own.
+- **It knows what your team knows.** One knowledge base for the whole team. Each
+  person and agent sees only what they're allowed to.
+- **Open source and self-hostable.** MIT licensed. It runs on your Mac, and your
+  work and data stay with you.
 
-- **Bring your own agents.** Claude Code, Codex, Cursor, OpenCode and Pi, signed
-  in with the subscriptions you already have, or models running on your own
-  machine. No API bills required.
-- **Skip the setup.** Connect [Chrome](docs/browser-sessions.md#chrome-sign-ins) once and agents
-  use the sites you're already signed into, plus your
-  [saved logins](docs/passwords.md), so you don't spend your time signing in and
-  connecting things by hand.
-- **Runs on your computer.** Your files, accounts and data stay with you.
-- **Work from anywhere.** Your phone and your other computers connect to it.
-- **Agents work alongside you,** in your browser, your apps and your computer.
+## Get started
 
-## Getting started
+**On your Mac.** Download Opensteer from
+[Releases](https://github.com/steerlabs/opensteer/releases) (macOS 13 or later,
+Apple silicon). Open it, connect Chrome and sign in to an agent. Your phone
+pairs in one scan.
 
-Our goal is simple: install it, connect your devices, and do real computer work
-on the go, from any device. For now, you build it from source.
+**For your team.** Run a team server on a spare Mac or your own Linux server.
+Everyone joins from their own Opensteer. See [Run a team](deploy/team/README.md).
 
-Install the Node and pnpm versions declared in [package.json](package.json), Go,
-and Docker. Then run:
+**From source.** Install the Node and pnpm versions in
+[package.json](package.json), Go and Docker, then run
 
 ```sh
 pnpm install --frozen-lockfile
@@ -31,40 +38,56 @@ pnpm setup:local
 pnpm dev
 ```
 
-`pnpm setup:local` checks prerequisites, prepares local services and installs the
-Chromium that the tests drive. Native desktop and mobile builds also need their
-platform toolchains; see [apps/desktop](apps/desktop/README.md) and
-[apps/mobile](apps/mobile/README.md).
+## Bring your team
 
-To run your own server instead, follow the
-[self-hosting guide](deploy/self-host/). Compose builds the images locally;
-configure credentials and public origins before starting services.
+Bring your team, and everyone's agents work side by side in one shared chat, each
+on its owner's computer. Channels, DMs and threads, like the team chat you
+already use. Anyone can hand a thread to their
+own agent. The work runs on their computer, and the answer lands
+back in the channel.
 
-## Why we're building this
+- **Everyone brings their own.** Each person's agents run on their own computer,
+  with their own logins and AI subscription.
+- **Only you can wake yours.** A teammate's message, or a pasted email, can't
+  start work on your computer.
+- **The server holds the chat, not the work.** Your team server keeps channels,
+  files and knowledge. It runs no agents and stores no passwords.
 
-We think you should be able to do real work from anywhere: from your phone today,
-and eventually from new kinds of devices like AR/VR glasses, using your voice or
-gestures. We plan to add a real-time voice mode, so you can talk to your agents
-from whatever device you have on you. Agents do the heavy lifting while
-everything keeps running on your computer. Your work and your data stay yours.
-
-I strongly believe that, for most things, the future is running your own stuff
-locally. So we don't plan to offer a cloud-hosted version, even though you'll
-find bits of the code that suggest one. That was our original plan, and we
-changed our minds. For genuinely compute-heavy or parallel work, a cloud machine
-still makes sense, and it should be easy to connect one or host your own.
+More in [Teams](docs/teams.md).
 
 ## Security
 
-We can't guarantee security yet, but we take it seriously. We review changes
-carefully and run automated security scans with Codex Security and Daybreak. If
-you find a problem, please tell us privately. See [SECURITY.md](SECURITY.md).
+Agents can do what you can do on your computer, so they ask before they spend,
+send or ship. Be careful when you give an agent Full access. If you find a
+security problem, please tell us privately. See [SECURITY.md](SECURITY.md).
+
+## Why we're building this
+
+You should be able to work from anywhere, through your voice, on your phone, on
+the go. Opensteer is designed to be multimodal, and we plan to support AR and
+other new form factors soon.
+
+We start on your computer because it already has everything your agent needs,
+including your browser that's already signed in to everything, the apps you use,
+your IP, your local devices, and even home devices like a Ring camera. Agents
+run on top of everything that's already set up, so there's no need to install
+and log into all your plugins manually.
+
+We believe this is the best way for teams as well. Each employee brings their
+own agents from their own computer. The team server connects everyone's agents
+so they can work together in secure workspaces. We also believe in a central
+company knowledge base that updates in real time, so every employee has the
+most up-to-date, accurate facts about the company.
+
+This is an early product, but we hope to improve quickly.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Opensteer is inspired by
-[T3 Code](https://github.com/pingdotgg/t3code); see
-[ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Acknowledgments
+
+See [ACKNOWLEDGMENTS.md](ACKNOWLEDGMENTS.md).
 
 ## License
 
