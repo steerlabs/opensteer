@@ -201,7 +201,11 @@ export class ComputerDisplayViewer {
   readonly sent: { message: DisplayViewerClientMessage; sentMs: number }[] = [];
 
   constructor(
-    host: { origin: string; publicOrigin: string; ownerHeaders: Readonly<Record<string, string>> },
+    host: {
+      origin: string | URL;
+      publicOrigin: string;
+      ownerHeaders: Readonly<Record<string, string>>;
+    },
     source: NativeViewerSource,
     options: {
       readonly acknowledge?: boolean;

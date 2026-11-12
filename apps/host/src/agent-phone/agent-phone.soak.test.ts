@@ -20,7 +20,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunnerId, WorkspaceId } from "@opensteer/core";
+import type { RunnerId } from "@opensteer/core";
 import type { AndroidPhoneAction } from "@opensteer/protocol";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -30,7 +30,7 @@ import {
   createMachineAccessDatabase,
   freePort,
   type CallerMachine,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   Redaction,
@@ -353,8 +353,8 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
     await waitOnline();
     await clearReceipts(device);
     const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
-    if (!bootstrap.homeWorkspace) throw new Error("No Main Workspace for the soak agent.");
-    const workspaceId = bootstrap.homeWorkspace.id;
+    if (!bootstrap.personalSettings) throw new Error("No Main Workspace for the soak agent.");
+
     startedAt = new Date().toISOString();
     const start = Date.now();
     const deadline = start + durationMs;
@@ -461,7 +461,7 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
           }
         }
         try {
-          await exerciseCycle(cycle, runnerId, workspaceId);
+          await exerciseCycle(cycle, runnerId);
         } catch (error) {
           failures.push(redaction.error(error));
         }
@@ -494,11 +494,7 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
     }
     completed = true;
 
-    async function exerciseCycle(
-      cycle: Cycle,
-      phoneId: RunnerId,
-      main: WorkspaceId,
-    ): Promise<void> {
+    async function exerciseCycle(cycle: Cycle, phoneId: RunnerId): Promise<void> {
       let caller: CallerMachine | undefined;
       let agent: PhoneAgent | undefined;
       let release: string | undefined;
@@ -517,7 +513,6 @@ it("Agent Phone remains available and never duplicates fixture effects during a 
             key: `soak-run-${runKey}-${cycle.index}`,
             redaction,
             title: `Soak cycle ${cycle.index}`,
-            workspaceId: main,
           }),
         );
         const { gateway } = agent;

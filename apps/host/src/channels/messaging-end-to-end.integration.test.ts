@@ -1,4 +1,8 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 /**
  * The whole messaging path with every real component except Slack itself.
  *
@@ -41,14 +45,13 @@ import {
   HarnessIdSchema,
   OpensteerError,
   RunnerIdSchema,
-  ThreadAccessModeSchema,
   createId,
   type MessageId,
   type RunId,
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type TaskFolder,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
 import {
@@ -70,7 +73,7 @@ import {
 } from "@opensteer/protocol";
 import type { WebSocketFrame } from "@opensteer/shared/webSocketFrame";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { CredentialService } from "../identity/credential-service.js";
 import { ChannelService } from "./channel-service.js";
@@ -95,7 +98,7 @@ const slackEpoch = Math.floor(Date.now() / 1_000);
 function slackTs(second: number): string {
   return `${slackEpoch + second}.000100`;
 }
-const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/threads/${threadId}`;
+const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/tasks/${threadId}`;
 const botUserId = "U0BOT";
 const humanUserId = "U-HUMAN";
 const teamId = "T-E2E";
@@ -116,7 +119,9 @@ integration("messaging end to end", () => {
   let environmentId: ReturnType<typeof createId<"environment">>;
   let agentsRunnerId: RunnerId;
   let ownerUserId: UserId;
-  let workspaceId: WorkspaceId;
+  let personal: Awaited<ReturnType<typeof seedPersonalFixture>>;
+  let directory: string;
+  let folder: TaskFolder;
   let service: ChannelService;
   let hub: MessagingRelayHub;
   let wire: MessagingWire;
@@ -131,56 +136,16 @@ integration("messaging end to end", () => {
 
   beforeAll(async () => {
     await migrateToLatest(database);
-    await sql`
-      truncate table
-        credential_vault_canaries,
-        credential_access_audit,
-        request_continuations,
-        integration_request_details,
-        requests,
-        credentials,
-        workspace_events,
-        commands,
-        provider_sessions,
-        messages,
-        runs,
-        threads,
-        harness_catalogs,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
-    await sql`
-      insert into principals(id, kind, user_id, display_name)
-      values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
-      on conflict (id) do nothing
-    `.execute(database);
+    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+    directory = await realpath(await mkdtemp(join(tmpdir(), "personal-messaging-")));
+    personal = await seedPersonalFixture(database, directory);
     credentials = new CredentialService({ key: randomBytes(32), store });
     await credentials.initialize();
-    ownerUserId = await store.createUser("End to end owner");
-    environmentId = createId("environment");
-    agentsRunnerId = createId("runner");
-    await enrollAgentsRunner();
+    ownerUserId = personal.userId;
+    environmentId = personal.environmentId;
+    agentsRunnerId = personal.runnerId;
     await enrollMessagingRunner();
-    const workspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: ownerUserId,
-      idempotencyKey: "workspace-messaging-e2e",
-      name: "Messaging end to end",
-      status: "ready",
-    });
-    workspaceId = workspace.id;
+    folder = personal.agentHome;
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -221,7 +186,7 @@ integration("messaging end to end", () => {
       channels,
       credentials,
       onExecutionQueued: () => undefined,
-      onWorkspaceEvent: () => undefined,
+      onDeploymentEvent: () => undefined,
       relay: hub,
       runners: {
         canRunHarness: (candidate) => candidate === environmentId,
@@ -258,23 +223,24 @@ integration("messaging end to end", () => {
     hub?.close();
     wire?.close();
     await database.destroy();
+    await rm(directory, { recursive: true, force: true });
   });
 
   it("enrolls, synchronizes without deadlock, and reaches a connected Slack socket", async () => {
     const created = await service.createConnection({
+      folder,
       accessPolicy: {
         channels: {
           scope: "all",
           conversationIds: [],
-          sender: { mode: "linked-members", allowedExternalUserIds: [] },
+          sender: { mode: "owner", allowedExternalUserIds: [] },
         },
-        directMessages: { mode: "linked-members", allowedExternalUserIds: [] },
+        directMessages: { mode: "owner", allowedExternalUserIds: [] },
       },
       createdBy: ownerUserId,
       credentials: { appToken: "xapp-e2e-token", botToken: "xoxb-e2e-token" },
       provider: "slack",
       routingMode: "dedicated",
-      workspaceId,
     });
     connectionId = created.connection.id;
     // `connection.inspect` and `connections.sync` both completed, so the sync
@@ -1116,7 +1082,7 @@ integration("messaging end to end", () => {
           .executeTakeFirstOrThrow(),
       20_000,
     );
-    return { bindingGeneration: 0, id: run.id, threadId: run.threadId, workspaceId: workspaceId };
+    return { bindingGeneration: 0, id: run.id, threadId: run.threadId };
   }
 
   async function adoptedRun(providerEventId: string): Promise<AdoptedRun> {
@@ -1133,10 +1099,10 @@ integration("messaging end to end", () => {
     const run = await database
       .selectFrom("runs")
       .innerJoin("threads", "threads.id", "runs.threadId")
-      .select(["runs.id", "runs.threadId", "threads.workspaceId"])
+      .select(["runs.id", "runs.threadId"])
       .where("runs.id", "=", runId)
       .executeTakeFirstOrThrow();
-    return { bindingGeneration: 0, id: run.id, threadId: run.threadId, workspaceId: workspaceId };
+    return { bindingGeneration: 0, id: run.id, threadId: run.threadId };
   }
 
   async function beginRun(run: AdoptedRun) {
@@ -1147,7 +1113,8 @@ integration("messaging end to end", () => {
     }, 20_000);
     expect(command.command.runId).toBe(run.id);
     const harnesses = await store.listHarnessInstances();
-    const harness = harnesses.find((candidate) => candidate.enabled);
+    const row = await store.getThreadForOwner(run.threadId, ownerUserId);
+    const harness = harnesses.find((candidate) => candidate.id === row?.harnessInstanceId);
     if (!harness) throw new Error("No AI engine is available");
     const binding = await store.acquireExecutionBinding({
       bindingLeaseExpiresAt: new Date(Date.now() + 300_000),
@@ -1157,7 +1124,7 @@ integration("messaging end to end", () => {
       },
       harnessInstanceId: harness.id,
       leaseTokenHash: `e2e-run-lease-${run.id}`,
-      membershipGeneration: 1,
+
       runnerBootId: "e2e-run-boot",
       runnerId: agentsRunnerId,
       runId: run.id,
@@ -1203,7 +1170,6 @@ integration("messaging end to end", () => {
         runId: run.id,
         threadId: run.threadId,
         type,
-        workspaceId: run.workspaceId,
       }),
       runnerBootId: "e2e-run-boot",
       runnerId: agentsRunnerId,
@@ -1221,7 +1187,7 @@ integration("messaging end to end", () => {
   async function enrollMessagingRunner(): Promise<void> {
     const tokenHash = `sha256:e2e-messaging-${messagingRunnerId}`;
     await store.createRunnerEnrollment({
-      allowedModules: ["messaging"],
+      allowedModules: ["integrations", "messaging"],
       createdBy: null,
       expiresAt: new Date(Date.now() + 600_000),
       id: `ren_${randomUUID()}`,
@@ -1246,81 +1212,12 @@ integration("messaging end to end", () => {
       publicKeyPem: "-----BEGIN PUBLIC KEY-----\ne2e\n-----END PUBLIC KEY-----\n",
     });
   }
-
-  async function enrollAgentsRunner(): Promise<void> {
-    if (!(await store.getDeployment())) {
-      await store.ensureDeployment({
-        canonicalOrigin,
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-      });
-    }
-    const pair = generateKeyPairSync("ed25519");
-    const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const enrollmentTokenHash = `sha256:${createHash("sha256")
-      .update("e2e-agents-runner", "utf8")
-      .digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: ownerUserId,
-      expiresAt: new Date(Date.now() + 600_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: "e2e-agents-runner",
-      mainEnrollmentPurpose: "initial",
-      name: "End to end main runner",
-      requestFingerprint: "sha256:e2e-agents-runner",
-      runnerKind: "main",
-      tokenHash: enrollmentTokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor: {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: ["filesystem", "steer-answer-v1"],
-        modules: {
-          agents: {
-            environmentIds: [environmentId],
-            harnessDrivers: [
-              {
-                accessModes: [...ThreadAccessModeSchema.options],
-                driverKind: HarnessIdSchema.parse("native"),
-                readiness: "configured",
-                steering: true,
-                sources: [
-                  {
-                    fields: [],
-                    kind: "first-party",
-                    label: "Native",
-                    quota: "none",
-                    sourceId: "native",
-                    stateKinds: ["isolated"],
-                  },
-                ],
-              },
-            ],
-            localStorage: null,
-            maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
-          },
-        },
-        name: "End to end main runner",
-        runnerId: agentsRunnerId,
-        runnerKind: "main",
-        runtimeVersion: "test",
-      },
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-      publicKeyPem,
-    });
-  }
 });
 
 interface AdoptedRun {
   bindingGeneration: number;
   readonly id: RunId;
   readonly threadId: ThreadId;
-  readonly workspaceId: WorkspaceId;
 }
 
 const slackCapability = {
@@ -1753,7 +1650,7 @@ function auxiliaryStream(): RunnerAuxiliaryStream {
     auxiliaryStreamId: fence.auxiliaryStreamId,
     fence,
     identity: {
-      allowedModules: ["messaging"],
+      allowedModules: ["integrations", "messaging"],
       bootId,
       capabilities: [],
       connectionGeneration: 1,

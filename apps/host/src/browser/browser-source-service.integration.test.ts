@@ -1,14 +1,15 @@
-import { createTestdeployment } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import websocket from "@fastify/websocket";
 import type { BrowserCookie } from "@opensteer/browser-profile/cookies";
 import { browserSiteDomain } from "@opensteer/browser-profile/source-state";
 import {
   createId,
   BrowserSurfaceIdSchema,
-  HarnessIdSchema,
-  ModelSelectionSchema,
   OpensteerError,
-  ThreadAccessModeSchema,
   type RequestId,
   type RunnerId,
   type UserId,
@@ -20,7 +21,7 @@ import {
   migrateToLatest,
   OpensteerStore,
 } from "@opensteer/database";
-import { takeTransactionConflicts } from "@opensteer/database/test-support/lock-order";
+
 import type { PersonalHostAccessRouteEnvelope } from "@opensteer/deployment-authority";
 import type { PasswordsOffer } from "./passwords-offers.js";
 import {
@@ -35,8 +36,6 @@ import type {
   PasswordSignInAuthorityCommand,
   PasswordSignInAuthorityEvent,
   PasswordSignInAuthorityResult,
-  PendingAgentEvent,
-  RunnerDescriptor,
 } from "@opensteer/protocol";
 import {
   browserSourceProtocolVersion,
@@ -44,6 +43,7 @@ import {
 } from "@opensteer/protocol/browser-sources";
 import Fastify from "fastify";
 import { sql } from "kysely";
+import { testModelSelection } from "@opensteer/database/test-support/store";
 import {
   createHash,
   generateKeyPairSync,
@@ -55,7 +55,7 @@ import {
 import { EventEmitter } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
 import { connect as connectTcp } from "node:net";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { registerBrowserSourceWire } from "../server/browser-source-registration.js";
 import { normalizeHostError } from "../server/http-errors.js";
@@ -360,11 +360,12 @@ class FakeChrome {
 }
 
 async function waitFor(condition: () => boolean | Promise<boolean>, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await condition())) {
-    if (Date.now() > deadline) throw new Error("Timed out waiting for condition");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await vi.waitFor(
+    async () => {
+      expect(await condition(), "Expected browser sign-in state never arrived").toBe(true);
+    },
+    { timeout: timeoutMs },
+  );
 }
 
 integration.sequential("browser sign-ins over a Chrome connection", () => {
@@ -375,6 +376,120 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
   const store = new OpensteerStore(database);
   const sourceStore = new BrowserSourceStore(database);
+  let personal: Awaited<ReturnType<typeof seedPersonalFixture>>;
+  let directory: string;
+  function startServices(deploymentId: DeploymentId) {
+    browser = new BrowserService({
+      deploymentId,
+      connectTimeoutMs: 2_000,
+      onSessionsChanged: () => {},
+      onDeploymentEvent: () => {},
+      hostOrigin: new URL(sourceOrigin),
+      repository: store,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
+      targetResolver: {
+        placements: () =>
+          runtime.runnerId
+            ? [
+                {
+                  available: true,
+                  agents: true,
+                  environmentIds: [],
+                  kind: "runner" as const,
+                  label: "Test Mac",
+                  runnerId: runtime.runnerId,
+                  runtimeId: "browser",
+                },
+              ]
+            : [],
+        resolve: (placement) => ({
+          main: runtime.main,
+          localProfileStorage: {
+            storageInstanceId: "20000000-0000-4000-8000-000000000001",
+            engine: runtime.engine,
+          },
+          connect: (ticket) => {
+            const connection = new FakeRuntimeConnection(ticket);
+            connection.hasPasswordAuthority = runtime.signIn;
+            runtime.authorityConnection = connection;
+            connection.passwordEvents.on(
+              "event",
+              (event: PasswordSignInAuthorityEvent | { type: "authority-lost" }) => {
+                if (runtime.runnerId)
+                  for (const listener of passwordListeners) listener(runtime.runnerId, event);
+              },
+            );
+            runtime.connections.push(connection);
+            return connection;
+          },
+          cdpBoundary: true,
+          sharedControl: true,
+          computer: { name: "Test Mac", runnerId: placement.runnerId },
+          placementKey: `runner:${placement.runnerId}:browser`,
+          runtimeId: "browser",
+          signIn: runtime.signIn,
+          stateImport: runtime.supportsImport,
+        }),
+      },
+    });
+    passwords = new PasswordSignInService({
+      authority: passwordAuthority,
+      resolveAuthority: resolvePasswordAuthority,
+      agentWaitMs: 40,
+      declineAnswerMs: 400,
+      now: () => Date.now() + clockOffsetMs,
+      onError: (error) => passwordSignInErrors.push(error),
+      reconcileIntervalMs: 100,
+      describe: async () => description,
+      onRequestResolved: () => {
+        resolvedRequests += 1;
+      },
+      onDeploymentEvent: () => {},
+      requests: {
+        hasActiveRunPasswordSignInAuthority:
+          store.requests.hasActiveRunPasswordSignInAuthority.bind(store.requests),
+        hasDurablePasswordSignInRequestAuthority:
+          store.requests.hasDurablePasswordSignInRequestAuthority.bind(store.requests),
+        get: (requestId) => store.requests.get(requestId),
+        listPendingPasswordSignIns: store.requests.listPendingPasswordSignIns.bind(store.requests),
+        openPasswordSignIn: async (input) => {
+          await beforeOpen?.();
+          if (openFault) throw new Error("Synthetic Request opening failure");
+          return store.requests.openPasswordSignIn(input);
+        },
+        settlePasswordSignInRequest: (input) => {
+          if (settleFaults > 0) {
+            settleFaults -= 1;
+            return Promise.reject(new Error("The database connection was reset."));
+          }
+          return store.requests.settlePasswordSignInRequest(input);
+        },
+      },
+    });
+    service = new BrowserSourceService({
+      deploymentId,
+      browser,
+      canonicalOrigin: sourceOrigin,
+      currentRoute: async () => {
+        if (routeFault) throw routeFault;
+        return currentRoute;
+      },
+      store: sourceStore,
+      requests: store.requests,
+      onError: (error) => serviceErrors.push(error),
+      onRequestResolved: () => {
+        resolvedRequests += 1;
+      },
+      onDeploymentEvent: () => {},
+      onLoginSaved: async (offer) => {
+        if (wakeFault) throw wakeFault;
+        savedLogins.push(offer);
+      },
+      passwords,
+      sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
+      stoppedByPerson: async (threadId) => stoppedThreads.has(threadId),
+    });
+  }
   const hostKey = generateKeyPairSync("ed25519");
   let currentRoute: PersonalHostAccessRouteEnvelope | null = null;
   let routeFault: Error | null = null;
@@ -397,7 +512,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     deploymentId: "dep_test",
     deploymentName: "Test",
     threadTitle: "Test thread",
-    removeddeploymentName: "Main",
   };
   const passwordListeners = new Set<
     (runnerId: RunnerId, event: PasswordSignInAuthorityEvent | { type: "authority-lost" }) => void
@@ -434,130 +548,24 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     runtime.runnerId && passwordAuthority.passwordSignInSupported(runtime.runnerId)
       ? { runnerId: runtime.runnerId, name: "Test Mac" }
       : null;
-  const browser = new BrowserService({
-    connectTimeoutMs: 2_000,
-    onSessionsChanged: () => {},
-    onDeploymentEvent: () => {},
-    hostOrigin: new URL(sourceOrigin),
-    repository: store,
-    signer: new BrowserAttachTicketSigner({ keyId: "host-test", privateKey: hostKey.privateKey }),
-    targetResolver: {
-      placements: () =>
-        runtime.runnerId
-          ? [
-              {
-                available: true,
-                agents: true,
-                environmentIds: [],
-                kind: "runner" as const,
-                label: "Test Mac",
-                runnerId: runtime.runnerId,
-                runtimeId: "browser",
-              },
-            ]
-          : [],
-      resolve: (placement) => ({
-        main: runtime.main,
-        localProfileStorage: {
-          storageInstanceId: "20000000-0000-4000-8000-000000000001",
-          engine: runtime.engine,
-        },
-        connect: (ticket) => {
-          const connection = new FakeRuntimeConnection(ticket);
-          connection.hasPasswordAuthority = runtime.signIn;
-          runtime.authorityConnection = connection;
-          connection.passwordEvents.on(
-            "event",
-            (event: PasswordSignInAuthorityEvent | { type: "authority-lost" }) => {
-              if (runtime.runnerId)
-                for (const listener of passwordListeners) listener(runtime.runnerId, event);
-            },
-          );
-          runtime.connections.push(connection);
-          return connection;
-        },
-        cdpBoundary: true,
-        sharedControl: true,
-        computer: { name: "Test Mac", runnerId: placement.runnerId },
-        placementKey: `runner:${placement.runnerId}:browser`,
-        runtimeId: "browser",
-        signIn: runtime.signIn,
-        stateImport: runtime.supportsImport,
-      }),
-    },
-  });
+  let browser: BrowserService;
   let resolvedRequests = 0;
   const serviceErrors: unknown[] = [];
   const savedLogins: PasswordsOffer[] = [];
   const stoppedThreads = new Set<string>();
   let wakeFault: Error | null = null;
   const passwordSignInErrors: unknown[] = [];
-  const reconciliationSchedule = vi.spyOn(globalThis, "setInterval");
-  const passwords = new PasswordSignInService({
-    authority: passwordAuthority,
-    resolveAuthority: resolvePasswordAuthority,
-    agentWaitMs: 40,
-    declineAnswerMs: 400,
-    now: () => Date.now() + clockOffsetMs,
-    onError: (error) => passwordSignInErrors.push(error),
-    reconcileIntervalMs: 100,
-    describe: async () => description,
-    onRequestResolved: () => {
-      resolvedRequests += 1;
-    },
-    onDeploymentEvent: () => {},
-    requests: {
-      hasActiveRunPasswordSignInAuthority: store.requests.hasActiveRunPasswordSignInAuthority.bind(
-        store.requests,
-      ),
-      hasDurablePasswordSignInRequestAuthority:
-        store.requests.hasDurablePasswordSignInRequestAuthority.bind(store.requests),
-      get: (requestId) => store.requests.get(requestId),
-      listPendingPasswordSignIns: store.requests.listPendingPasswordSignIns.bind(store.requests),
-      openPasswordSignIn: async (input) => {
-        await beforeOpen?.();
-        if (openFault) throw new Error("Synthetic Request opening failure");
-        return store.requests.openPasswordSignIn(input);
-      },
-      settlePasswordSignInRequest: (input) => {
-        if (settleFaults > 0) {
-          settleFaults -= 1;
-          return Promise.reject(new Error("The database connection was reset."));
-        }
-        return store.requests.settlePasswordSignInRequest(input);
-      },
-    },
-  });
-  const reconcilePasswords = reconciliationSchedule.mock.calls[0]?.[0];
-  reconciliationSchedule.mockRestore();
-  if (typeof reconcilePasswords !== "function")
-    throw new Error("Missing Passwords reconciliation tick");
-  const service = new BrowserSourceService({
-    browser,
-    canonicalOrigin: sourceOrigin,
-    currentRoute: async () => {
-      if (routeFault) throw routeFault;
-      return currentRoute;
-    },
-    store: sourceStore,
-    requests: store.requests,
-    onError: (error) => serviceErrors.push(error),
-    onRequestResolved: () => {
-      resolvedRequests += 1;
-    },
-    onDeploymentEvent: () => {},
-    onLoginSaved: async (offer) => {
-      if (wakeFault) throw wakeFault;
-      savedLogins.push(offer);
-    },
-    passwords,
-    sign: (bytes) => sign(null, bytes, hostKey.privateKey).toString("base64url"),
-    stoppedByPerson: async (threadId) => stoppedThreads.has(threadId),
-  });
+
+  let passwords: PasswordSignInService;
+
+  let service: BrowserSourceService;
   const server = new WebSocketServer({ port: 0 });
   server.on("connection", (socket) => service.acceptSocket(socket, ingressOrigin, "127.0.0.1"));
 
-  beforeAll(async () => migrateToLatest(database));
+  beforeAll(async () => {
+    await migrateToLatest(database);
+    directory = await realpath(await mkdtemp(join(tmpdir(), "personal-browser-source-")));
+  });
   beforeEach(async () => {
     currentRoute = null;
     routeFault = null;
@@ -571,7 +579,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       deploymentId: "dep_test",
       deploymentName: "Test",
       threadTitle: "Test thread",
-      removeddeploymentName: "Main",
     };
     settleFaults = 0;
     passwordSignInErrors.length = 0;
@@ -579,26 +586,30 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     savedLogins.length = 0;
     stoppedThreads.clear();
     wakeFault = null;
-    // A previous test's closed Chrome may still be finishing its drain or
-    // last-seen write; truncation can deadlock with it, so retry.
-    for (let attempt = 0; ; attempt += 1) {
-      try {
-        await sql`truncate table deployments, users restart identity cascade`.execute(database);
-        break;
-      } catch (error) {
-        if ((error as { code?: string }).code !== "40P01" || attempt >= 5) throw error;
-      }
-    }
-    // Those deadlocks are this cleanup's, whichever side lost; the next test
-    // must still fail on one of its own.
-    takeTransactionConflicts();
+    await sql`truncate table deployments, users, runners restart identity cascade`.execute(
+      database,
+    );
+    personal = await seedPersonalFixture(database, directory);
+    await database
+      .updateTable("runners")
+      .set({
+        allowedModules: sql`'["agents","browser"]'::jsonb`,
+        moduleDescriptors: { browser: { runtimeId: "browser", wireVersion: 2 } },
+      })
+      .where("id", "=", personal.runnerId)
+      .executeTakeFirstOrThrow();
+    description.deploymentId = personal.deploymentId;
+    startServices(personal.deploymentId);
+  });
+  afterEach(async () => {
+    service?.close();
+    passwords?.close();
+    await browser?.close();
   });
   afterAll(async () => {
-    service.close();
-    passwords.close();
-    await browser.close();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await database.destroy();
+    await rm(directory, { recursive: true, force: true });
   });
 
   async function pairChrome(
@@ -665,145 +676,51 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     deploymentId: DeploymentId,
     existingRunnerId?: RunnerId,
   ) {
-    const suffix = randomUUID();
-    const runnerId = existingRunnerId ?? createId("runner");
-    const existingThread = existingRunnerId
-      ? await database
-          .selectFrom("threads")
-          .select("environmentId")
-          .limit(1)
-          .executeTakeFirstOrThrow()
-      : null;
-    const environmentId = existingThread?.environmentId ?? createId("environment");
-    const pair = generateKeyPairSync("ed25519");
-    const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const enrollmentTokenHash = `sha256:${createHash("sha256").update(suffix).digest("base64url")}`;
-    if (!existingRunnerId)
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents", "browser"],
-        createdBy: ownerId,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `browser-sign-in-${suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: "Browser sign-in test runner",
-        requestFingerprint: `sha256:${suffix}`,
-        runnerKind: "main",
-        tokenHash: enrollmentTokenHash,
-      });
-    const descriptor: RunnerDescriptor = {
-      bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-      capabilities: ["filesystem"],
-      modules: {
-        agents: {
-          environmentIds: [environmentId],
-          harnessDrivers: [
-            {
-              accessModes: ThreadAccessModeSchema.options,
-              driverKind: HarnessIdSchema.parse("native"),
-              readiness: "configured",
-              sources: [
-                {
-                  fields: [],
-                  kind: "first-party",
-                  label: "Native",
-                  quota: "none",
-                  sourceId: "native",
-                  stateKinds: ["isolated"],
-                },
-              ],
-            },
-          ],
-          localStorage: {
-            bindings: [],
-            storageAuthorityId: createId("storageAuthority"),
-            truncated: false,
-          },
-          maxConcurrentRuns: 1,
-          providerStateModes: ["isolated"],
-          workspaceBackings: ["local-directory"],
-        },
-      },
-      name: "Browser sign-in test runner",
-      runnerId,
-      runnerKind: "main",
-      runtimeVersion: "test",
-    };
-    if (!existingRunnerId)
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-        publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      });
-    const harness = await store.createHarnessInstance({
-      config: { model: "test" },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      sourceId: "native",
-      stateKind: "isolated",
-    });
-    const { thread } = await store.createThread({
-      createdBy: ownerId,
-      environmentId,
-      harnessInstanceId: harness.id,
-      idempotencyKey: `thread-${suffix}`,
-      modelSelection: ModelSelectionSchema.parse({
-        modelId: "gpt-5.6-sol",
-        options: { effort: "low" },
-        providerId: "openai",
-      }),
-      title: "Browser sign-in",
-      deploymentId,
-    });
-    const admitted = await store.enqueueThreadInput({
-      content: [{ text: "Start", type: "text" }],
-      idempotencyKey: `${suffix}-initial`,
-      policy: "queue",
-      requestedBy: ownerId,
-      source: { kind: "human" },
-      threadId: thread.id,
-    });
-    if (!admitted.command || !admitted.run) throw new Error("Expected queued Run");
-    await store.claimCommand(admitted.command.id, `${suffix}-dispatcher`);
-    const runnerBootId = `boot-${suffix}`;
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: {
-        continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-        driverKind: HarnessIdSchema.parse("native"),
-      },
-      harnessInstanceId: harness.id,
-      leaseTokenHash: `${suffix}-lease`,
-      membershipGeneration: 1,
-      runnerBootId,
-      runnerId,
-      runId: admitted.run.id,
-      threadId: thread.id,
-    });
-    const started: PendingAgentEvent = {
-      bindingGeneration: binding.bindingGeneration,
-      data: { status: "running" },
-      emittedAt: new Date().toISOString(),
-      environmentId,
-      ordinal: 0,
-      runId: admitted.run.id,
-      threadId: thread.id,
-      type: "run.started",
-      deploymentId,
-    };
-    await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
+    if (
+      ownerId !== personal.userId ||
+      deploymentId !== personal.deploymentId ||
+      (existingRunnerId && existingRunnerId !== personal.runnerId)
+    )
+      throw new Error("Browser Run must use its personal owner's hosting computer");
+    const admission = createPersonalRunFixturePort(store),
+      suffix = randomUUID();
+    const existing = await database
+      .selectFrom("threads")
+      .select(["environmentId", "harnessInstanceId"])
+      .executeTakeFirst();
+    const task = existing
+      ? await store
+          .createThread({
+            createdBy: ownerId,
+            folder: personal.agentHome,
+            environmentId: existing.environmentId,
+            harnessInstanceId: existing.harnessInstanceId,
+            modelSelection: testModelSelection,
+            title: suffix,
+            idempotencyKey: suffix,
+          })
+          .then(({ thread }) => ({ threadId: thread.id }))
+      : await admission.createTask({ ownerId, folder: personal.agentHome, suffix });
+    const started = await admission.startTask(task.threadId, "Start");
     return {
-      runId: admitted.run.id,
-      runnerId,
-      threadId: thread.id,
+      runId: started.runId,
+      runnerId: personal.runnerId,
+      threadId: task.threadId,
       complete: () =>
         store.commitRunnerEvent({
-          environmentId,
-          runnerBootId,
-          runnerId,
-          event: { ...started, ordinal: 1, type: "run.completed", data: { status: "completed" } },
+          environmentId: personal.environmentId,
+          runnerId: personal.runnerId,
+          runnerBootId: started.runnerBootId,
+          event: {
+            type: "run.completed",
+            emittedAt: new Date().toISOString(),
+            bindingGeneration: started.bindingGeneration,
+            environmentId: personal.environmentId,
+            ordinal: 1,
+            runId: started.runId,
+            threadId: task.threadId,
+            data: { status: "completed" },
+          },
         }),
     };
   }
@@ -827,34 +744,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   /** An owner, a project deployment, a running agent in it, and a live fresh session. */
   async function scene() {
-    const ownerId = await store.createUser("Chrome owner");
-    await store.ensureDeployment({
-      canonicalOrigin: sourceOrigin,
-      deploymentShape: { defaultdeploymentBacking: "local-directory", kind: "server" },
-      hostInstanceId: createId("hostInstance"),
-    });
-    const workspace = await createTestdeployment(store, {
-      kind: "project",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: ownerId,
-      idempotencyKey: randomUUID(),
-      name: "Sign-in test",
-      status: "ready",
-    });
-    const run = await runningRun(ownerId, workspace.id);
+    const ownerId = personal.userId;
+    const run = await runningRun(ownerId, personal.deploymentId);
     runtime.runnerId = run.runnerId;
     const opened = await browser.start({
       fresh: true,
       ownerId,
       placement: { kind: "runner", runnerId: run.runnerId },
-      deploymentId: workspace.id,
     });
     const connection = runtime.connections.at(-1);
     if (!connection) throw new Error("Expected a runtime connection");
@@ -867,13 +763,13 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         sessionId: opened.session.id,
         targetId: "target-1",
         threadId: run.threadId,
-        deploymentId: workspace.id,
+        deploymentId: personal.deploymentId,
       },
       connection,
       complete: run.complete,
       ownerId,
       sessionId: opened.session.id,
-      deploymentId: workspace.id,
+      deploymentId: personal.deploymentId,
     };
   }
 
@@ -1353,7 +1249,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ...description,
       deploymentName: "D".repeat(118) + "\u0000🫡",
       threadTitle: "Thread\n\u200b".repeat(40),
-      removeddeploymentName: "Work\tspace\u202e".repeat(20),
     };
     expect(
       (
@@ -1367,13 +1262,9 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     const requester = ready.connection.signInStarts()[0]!.requester;
     expect(requester.deploymentName.length).toBeLessThanOrEqual(120);
     expect(requester.threadTitle.length).toBeLessThanOrEqual(200);
-    expect(requester.removeddeploymentName.length).toBeLessThanOrEqual(120);
+
     expect(JSON.stringify(requester)).not.toMatch(/\\[nt]|\\u0000|[\u202e\u200b]/u);
-    for (const name of [
-      requester.deploymentName,
-      requester.threadTitle,
-      requester.removeddeploymentName,
-    ]) {
+    for (const name of [requester.deploymentName, requester.threadTitle]) {
       expect(name).not.toMatch(/[\p{Cc}\p{Cf}\p{Cs}]/u);
     }
     expect(ready.connection.readyState).toBe(WebSocket.OPEN);
@@ -1770,26 +1661,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     ).toMatchObject({ live: true });
   });
 
-  it("refuses a deployment whose membership disappeared before the lazy open", async () => {
-    const ready = await passwordScene();
-    beforeOpen = async () => {
-      await database
-        .deleteFrom("workspaceMemberships")
-        .where("deploymentId", "=", ready.deploymentId)
-        .where("userId", "=", ready.ownerId)
-        .execute();
-    };
-    expect(
-      await service.agentSignIn({
-        ...ready.agent,
-        callId: randomUUID(),
-        site: "https://revoked-workspace.test",
-      }),
-    ).toMatchObject({ status: "unavailable", reason: "interrupted" });
-    expect(await passwordRequestCount(ready.agent.runId)).toBe(0);
-    expect(ready.connection.signInCancels()[0]).toMatchObject({ reason: "authority-lost" });
-  });
-
   it("bounds a stuck start write without holding operation admission", async () => {
     const ready = await passwordScene();
     ready.connection.holdStartAck = true;
@@ -1842,7 +1713,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       requester: {
         deploymentName: "Test",
         threadTitle: "Test thread",
-        removeddeploymentName: "Main",
       },
       site,
     });
@@ -2148,7 +2018,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         deploymentId: "dep_test",
         deploymentName: "Test",
         threadTitle: "Test thread",
-        removeddeploymentName: "Main",
       }),
       onRequestResolved: () => {},
       onDeploymentEvent: () => {},
@@ -2167,7 +2036,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("pairs and proves canonical HTTPS authority through a proxy without forwarded protocol", async () => {
-    const ownerId = await store.createUser("Canonical proxy source owner");
+    const ownerId = personal.userId;
     const pairing = await service.createPairing({ ownerId, route: null });
     const host = Fastify();
     await host.register(websocket);
@@ -2295,7 +2164,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
   });
 
   it("rejects stale remote route pairing without consuming the local pairing code", async () => {
-    const ownerId = await store.createUser("Route source owner");
+    const ownerId = personal.userId;
     const remoteOrigin = "https://remote-source-host.test";
     const route = (generation: number) =>
       ({
@@ -2744,7 +2613,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       ownerId,
       placement: { kind: "runner", runnerId: runtime.runnerId! },
       reuseExisting: false,
-      deploymentId: agent.deploymentId,
     });
     expect(outdated.session.id).not.toBe(sessionId);
     expect(
@@ -3051,7 +2919,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
    * delivers it until Chrome happens to reconnect.
    */
   it("completes allowed Requests past any backlog, and on the agent's next call", async () => {
-    const { agent, connection, ownerId, sessionId, deploymentId } = await scene();
+    const { agent, connection, ownerId, sessionId } = await scene();
     const paired = await pairChrome(ownerId, "Chrome on Mac");
     let chrome = await connectChrome(paired);
     for (let index = 0; index < 70; index += 1) {
@@ -3062,7 +2930,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         mode: "durable",
         originatingRunId: agent.runId,
         originatingThreadId: agent.threadId,
-        originatingDeploymentId: deploymentId,
+
         payload: { kind: "browser.sign-in", reason: "Backlog", sessionId, site },
         presentation: {
           detail: "Backlog",
@@ -3072,7 +2940,6 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         },
         requestedBy: ownerId,
         requiredActor: "requester",
-        targetDeploymentId: deploymentId,
       });
     }
     const asked = await service.agentSignIn({

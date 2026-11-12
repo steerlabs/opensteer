@@ -13,10 +13,10 @@ import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  startPersonalMachineAccessHost,
+  startPrivateMachineHost,
   waitForValue,
   waitForExecute,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 import { passwordFixture, startPasswordsAuthority } from "./passwords-authority.test-support.js";
@@ -26,12 +26,11 @@ const command =
   "pnpm test:integration apps/host/src/browser/browser-sign-in-tool.integration.test.ts apps/host/src/browser/browser-source-service.integration.test.ts";
 const cases = [
   "sessionless-no-browser",
-  "workspace-approval-continuation",
-  "workspace-approval-once-continuation",
-  "workspace-approval-after-read-continuation",
-  "workspace-approval-once-after-read-continuation",
-  "workspace-approval-unready-workspace",
-  "same-workspace-reuse",
+  "personal-approval-continuation",
+  "personal-approval-once-continuation",
+  "personal-approval-after-read-continuation",
+  "personal-approval-once-after-read-continuation",
+  "same-personal-reuse",
   "capability-loss",
   "declined",
   "epoch-47-refusal",
@@ -69,14 +68,14 @@ export function passwordsAnywhereJourneys() {
               process.env.OPENSTEER_TEST_DATABASE_URL!,
             );
             cleanups.push(() => database.drop());
-            const host = await startPersonalMachineAccessHost(database.url);
+            const host = await startPrivateMachineHost(database.url);
             cleanups.push(() => host.close());
             const caller = await connectCallerMachine(host, {
               environmentId: host.ownerEnvironmentId,
               localDirectory: true,
               name: "Personal vault Mac",
               runnerKind: "main",
-              token: host.mainRunnerEnrollmentToken,
+              token: host.hostingRunnerEnrollmentToken,
               // Deliberately no loginFill: app sign-in must not depend on Browser Harness.
               ...(name === "browser-loginFill-required"
                 ? {
@@ -99,12 +98,11 @@ export function passwordsAnywhereJourneys() {
             const authority = await startPasswordsAuthority(host.hostPort, caller.primary);
             traffic = authority.commands;
             cleanups.push(() => authority.close());
-            const main = await host.store.findMainWorkspaceForOwner(host.ownerId);
-            if (!main) throw new Error("Missing Main Workspace");
+            const deployment = await host.store.getDeployment();
+            if (!deployment) throw new Error("Missing Personal Deployment");
             const run = await dispatchCallerRun(host, caller, {
               key: name,
               title: name,
-              workspaceId: main.id,
             });
             const connect = async (token: string) => {
               const client = new Client({ name: "passwords-anywhere-e2e", version: "1" });
@@ -184,7 +182,7 @@ export function passwordsAnywhereJourneys() {
               return;
             }
             authority.policy.approval =
-              name.startsWith("workspace-approval-") || name === "declined";
+              name.startsWith("personal-approval-") || name === "declined";
             authority.policy.declined = name === "declined";
             const held = signIn();
             void held.catch(() => undefined);
@@ -228,12 +226,12 @@ export function passwordsAnywhereJourneys() {
               await evidence.write("declined-request.json", declined);
               return;
             }
-            if (name.startsWith("workspace-approval-")) {
+            if (name.startsWith("personal-approval-")) {
               if (!request) throw new Error("Missing sign-in Request");
               expect(request.payload).toMatchObject({
                 kind: "browser.password-sign-in",
-                scope: "workspace",
-                permissionVersion: 5,
+                scope: "personal",
+                permissionVersion: 6,
                 site: passwordFixture.site,
               });
               expect(request.payload).not.toHaveProperty("sessionId");
@@ -242,7 +240,7 @@ export function passwordsAnywhereJourneys() {
               );
               if (!start || start.type !== "login.authorize")
                 throw new Error("Missing authority authorization");
-              expect(start.workspaceId).toBe(main.id);
+              expect(start.deploymentId).toBe(deployment.id);
               if (!name.includes("after-read")) await run.complete();
               const card = await testRpcData(
                 host.origin,
@@ -250,7 +248,7 @@ export function passwordsAnywhereJourneys() {
                 { requestId: RequestIdSchema.parse(request.id) },
                 { headers: host.ownerHeaders },
               );
-              expect(card).toMatchObject({ stage: "approval", permissionVersion: 5 });
+              expect(card).toMatchObject({ stage: "approval", permissionVersion: 6 });
               if (card.stage !== "approval") throw new Error("Missing account chooser");
               expect(JSON.stringify(request)).not.toContain(passwordFixture.username);
               const account = card.accounts[0]!;
@@ -269,31 +267,11 @@ export function passwordsAnywhereJourneys() {
                       loginId: account.id,
                       revision: account.revision,
                       remember: !name.includes("once"),
-                      permissionVersion: 5,
+                      permissionVersion: 6,
                     },
                   },
                   { headers: host.ownerHeaders },
                 );
-              if (name === "workspace-approval-unready-workspace") {
-                await host.store.database
-                  .updateTable("workspaces")
-                  .set({ status: "unavailable" })
-                  .where("id", "=", main.id)
-                  .execute();
-                await expect(
-                  testRpcData(
-                    host.origin,
-                    "browser.password-sign-in.get",
-                    { requestId: request.id },
-                    { headers: host.ownerHeaders },
-                  ),
-                ).rejects.toThrow("This sign-in no longer has Workspace authority.");
-                await expect(approve()).rejects.toThrow(
-                  "This sign-in no longer has Workspace authority.",
-                );
-                expect(authority.commands.some((c) => c.type === "login.approve")).toBe(false);
-                return;
-              }
               const executed = waitForExecute(caller.primary.socket);
               const accepted = await approve();
               expect(accepted.type).toBe("browser.password-sign-in.respond");
@@ -342,12 +320,11 @@ export function passwordsAnywhereJourneys() {
                 .object({ status: z.literal("ready"), loginRef: z.string(), account: z.string() })
                 .parse(first.structuredContent);
               expect(ready.account).toBe(passwordFixture.account);
-              if (name === "same-workspace-reuse") {
+              if (name === "same-personal-reuse") {
                 const count = authority.commands.length;
                 const secondRun = await dispatchCallerRun(host, caller, {
                   key: `${name}-second`,
                   title: "Same Workspace",
-                  workspaceId: main.id,
                 });
                 const second = await connect(secondRun.toolsToken);
                 const reused = await second.callTool({

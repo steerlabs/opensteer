@@ -11,8 +11,8 @@ import {
   connectCallerMachine,
   dispatchCallerRun,
   enrollmentToken,
-  startMachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+  startPrivateMachineHost,
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
@@ -20,7 +20,7 @@ import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 // the Host opens a page eagerly, or concurrent commands return the same tab.
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-integration("Reopen closed workspace tab through the Host", () => {
+integration("Reopen closed personal tab through the Host", () => {
   const cleanups: (() => Promise<void>)[] = [];
   afterEach(async () => {
     for (const close of cleanups.splice(0).reverse()) await close();
@@ -28,18 +28,14 @@ integration("Reopen closed workspace tab through the Host", () => {
   it("rechecks activation access, refuses without consuming, and returns a new suspended tab", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Reopen caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "caller",
-        name: "Caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    const run = await dispatchCallerRun(host, caller, { key: "reopen", title: "Reopen" });
+    await dispatchCallerRun(host, caller, { key: "reopen", title: "Reopen" });
     const runtime = await startBrowserRuntime(
       host.hostPort,
       await enrollmentToken(host, {
@@ -56,7 +52,7 @@ integration("Reopen closed workspace tab through the Host", () => {
       "commands.dispatch",
       {
         type: "browser.session.start",
-        workspaceId: run.workspaceId,
+
         idempotencyKey: "start",
         input: { fresh: true },
       },
@@ -66,14 +62,7 @@ integration("Reopen closed workspace tab through the Host", () => {
     const db = host.store.database;
     const sessionId = opened.session.id;
     const tabs = new PersonalTabStore(db);
-    const ownerId = (
-      await db
-        .selectFrom("browserSessions")
-        .innerJoin("workspaces", "workspaces.id", "browserSessions.workspaceId")
-        .select("workspaces.createdBy")
-        .where("browserSessions.id", "=", sessionId)
-        .executeTakeFirstOrThrow()
-    ).createdBy;
+    const ownerId = host.ownerId;
     const first = BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`);
     await tabs.recordChanges(
       sessionId,
@@ -160,7 +149,6 @@ integration("Reopen closed workspace tab through the Host", () => {
     expect(restored.session).toMatchObject({
       id: sessionId,
       profileId: profile.id,
-      workspaceId: run.workspaceId,
     });
     expect(restored.tabs?.find((tab) => tab.id === result.tabId)).toMatchObject({
       title: "Saved",

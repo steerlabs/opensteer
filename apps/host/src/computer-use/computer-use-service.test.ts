@@ -194,7 +194,7 @@ function harness(
   const onSessionEnded = vi.fn();
   const state: { now: number } = { now: 1_000_000 };
   const service = new ComputerUseService({
-    deploymentId: context.deploymentId,
+    deploymentId: deploymentId,
     ...(options.beginPlaceEntry ? { beginPlaceEntry: options.beginPlaceEntry } : {}),
     ...(options.onPhoneHeld ? { onPhoneHeld: options.onPhoneHeld } : {}),
     ...(options.passwords ? { passwords: options.passwords } : {}),
@@ -285,6 +285,7 @@ const callable: AppCallable = {
   runnerId,
   runnerName: "Alex's Mac",
 };
+const deploymentId = createId("deployment");
 const context: ComputerUseContext = {
   aud: "opensteer-integration-tools",
   bindingGeneration: 1,
@@ -293,13 +294,12 @@ const context: ComputerUseContext = {
   iat: 1_900_000_000,
   iss: "opensteer-host",
   jti: "test",
-  membershipGeneration: 1,
+
   requestedBy: ownerUserId,
   runnerBootId: "boot",
   runnerId: createId("runner"),
   runId: createId("run"),
   threadId: createId("thread"),
-  deploymentId: createId("deployment"),
 };
 
 function otherRun(): ComputerUseContext {
@@ -2088,7 +2088,7 @@ describe("saved login batch admission", () => {
         ]);
         expect(JSON.stringify(frame)).not.toContain(loginRef);
         expect(passwords.seal.mock.calls[0]?.[0]).toMatchObject({
-          deploymentId: context.deploymentId,
+          deploymentId: deploymentId,
           binding: {
             runId: context.runId,
             sessionId: lease.sessionId,

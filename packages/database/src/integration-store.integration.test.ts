@@ -216,8 +216,6 @@ integration.sequential("PostgreSQL integration store", () => {
     const binding = (await readIntegrationAccountBinding({
       database,
       ownerUserId,
-      kind: "personal",
-      accountAttached: true,
     }))!;
     await database
       .updateTable("personalRemoteAccountLink")
@@ -234,53 +232,6 @@ integration.sequential("PostgreSQL integration store", () => {
     expect(await attempts.getAuthAttempt({ id: attemptId, ownerUserId })).toMatchObject({
       status: "claimed",
     });
-    // The same generation fence also uses each server member's own Account row.
-    await database
-      .insertInto("accountDirectoryProvider")
-      .values({
-        createdAt: now,
-        updatedAt: now,
-        singletonKey: "opensteer-account",
-        providerId: "account-test",
-        issuer,
-      })
-      .execute();
-    const authAccountId = createId("authAccount");
-    await database
-      .insertInto("authAccounts")
-      .values({
-        id: authAccountId,
-        userId: ownerUserId,
-        providerId: "account-test",
-        accountId: subject,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .execute();
-    const serverBinding = (await readIntegrationAccountBinding({
-      database,
-      ownerUserId,
-      kind: "server",
-      accountAttached: true,
-    }))!;
-    await database.deleteFrom("authAccounts").where("id", "=", authAccountId).execute();
-    await database
-      .insertInto("authAccounts")
-      .values({
-        id: createId("authAccount"),
-        userId: ownerUserId,
-        providerId: "account-test",
-        accountId: subject,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .execute();
-    await expect(
-      integrations.completeOAuthAttempt({
-        ...completion,
-        accountBinding: { ...serverBinding, kind: "server" },
-      }),
-    ).rejects.toMatchObject({ reason: "account-link-mismatch" });
     const connection = await integrations.completeOAuthAttempt({
       ...completion,
       accountBinding: { ...binding, linkGeneration: "b".repeat(43), kind: "personal" },

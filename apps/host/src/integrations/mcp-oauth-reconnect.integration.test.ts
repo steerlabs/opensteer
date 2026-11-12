@@ -10,11 +10,10 @@ import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.
 import type { IntegrationAuthAttemptLifecycle } from "./integration-auth-attempt-service.js";
 import {
   createMachineAccessDatabase,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   connectCallerMachine,
   dispatchCallerRun,
-  enrollmentToken,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 
 const sdk = vi.hoisted(() => {
   class Transport {
@@ -88,27 +87,17 @@ integration("MCP OAuth reconnect", () => {
       const database = await createMachineAccessDatabase(baseUrl!);
       const closers: Array<() => Promise<unknown>> = [];
       try {
-        const host = await startMachineAccessHost(database.url);
+        const host = await startPrivateMachineHost(database.url);
         closers.unshift(() => host.close());
         const caller = await connectCallerMachine(host, {
           name: "MCP caller",
-          token: await enrollmentToken(host, {
-            allowedModules: ["agents"],
-            idempotencyKey: "mcp-caller",
-            name: "MCP caller",
-          }),
+          token: await host.hostingRunnerEnrollmentToken,
         });
         closers.unshift(() => caller.close());
-        const main = await host.store.database
-          .selectFrom("workspaces")
-          .select("id")
-          .where("createdBy", "=", host.ownerId)
-          .where("kind", "=", "main")
-          .executeTakeFirstOrThrow();
+
         const run = await dispatchCallerRun(host, caller, {
           key: "mcp-reconnect",
           title: "Reconnect MCP",
-          workspaceId: main.id,
         });
         closers.unshift(() => run.complete());
         const store = new IntegrationPlatformStore(host.store.database);
@@ -198,7 +187,6 @@ integration("MCP OAuth reconnect", () => {
           isDefault: true,
           ownerUserId: host.ownerId,
           providerAuthorizations: {},
-          workspaceId: run.workspaceId,
         });
         let savedPayload: Readonly<Record<string, string>> = {};
         let attemptId: ReturnType<typeof createIntegrationId<"mcpOauthAttempt">> | undefined;
@@ -349,7 +337,7 @@ integration("MCP OAuth reconnect", () => {
           authorizationSource: { providerAuthorizations: async () => ({}) },
           credentialMaterializer: {} as never,
           computerApps: {} as never,
-          onWorkspaceEvent: () => {},
+          onDeploymentEvent: () => {},
           onConnectionsChanged: () => {},
           onRequestsChanged: () => {},
           isRunnerConnected: () => true,
@@ -376,12 +364,11 @@ integration("MCP OAuth reconnect", () => {
           installationId,
           originatingRunId: run.runId,
           originatingThreadId: run.threadId,
-          originatingWorkspaceId: run.workspaceId,
+
           reason: "Reconnect",
           requestedBy: host.ownerId,
           requestedConnectionId: connectionId,
           requestedServerId: serverId,
-          targetWorkspaceId: run.workspaceId,
         });
         const started = await oauth.beginAuthorization({
           ...(appFinish ? { finish: "app" as const } : {}),
@@ -509,9 +496,7 @@ integration("MCP OAuth reconnect", () => {
         expect(
           await store.getMcpOAuthConnection({ connectionId, ownerUserId: host.ownerId, serverId }),
         ).toMatchObject({ revision: 2 });
-        expect(
-          await store.listGrants({ ownerUserId: host.ownerId, workspaceId: run.workspaceId }),
-        ).toEqual(
+        expect(await store.listGrants({ ownerUserId: host.ownerId })).toEqual(
           expect.arrayContaining([
             expect.objectContaining({ id: grant.id, connectionId, status: "active" }),
           ]),

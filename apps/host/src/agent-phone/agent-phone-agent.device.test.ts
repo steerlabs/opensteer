@@ -43,7 +43,7 @@ import { stagePhonePin } from "./agent-phone-pin.test-support.js";
 import { PasswordsJourneyEvidence } from "../browser/passwords-evidence.test-support.js";
 import { startPersonalPasswordsBridge } from "../browser/passwords-personal-bridge.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
-import { waitForValue } from "../runtime/machine-access.test-support.js";
+import { waitForValue } from "../integrations/personal-machine.test-support.js";
 import { passwordFixture } from "../browser/passwords-authority.test-support.js";
 import { AndroidPhoneActionSchema } from "@opensteer/protocol";
 import { browserSiteFromUrl } from "@opensteer/browser-profile/source-state";
@@ -68,7 +68,7 @@ import {
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
-import { freePort } from "../runtime/machine-access.test-support.js";
+import { freePort } from "../integrations/personal-machine.test-support.js";
 import {
   readObservation,
   writeDeviceTestManifest,
@@ -180,16 +180,14 @@ describe.skipIf(requestedEngine === undefined)(
       publicOrigin = new URL(`https://${address}:${publicPort}`);
       passwordsBridge = await startPersonalPasswordsBridge();
       stack = await startVerticalStack({
-        personal: {
-          integrations: () => {
-            integrations = prepareIntegrationsModule({
-              platform: "darwin",
-              dataDirectory: join(scratch, "integrations"),
-              computerUseBridge: passwordsBridge!.bridge,
-            });
-            if (!integrations) throw new Error("Missing scripted Personal authority module");
-            return integrations;
-          },
+        integrations: () => {
+          integrations = prepareIntegrationsModule({
+            platform: "darwin",
+            dataDirectory: join(scratch, "integrations"),
+            computerUseBridge: passwordsBridge!.bridge,
+          });
+          if (!integrations) throw new Error("Missing scripted Personal authority module");
+          return integrations;
         },
         hostLog: (line) => passwordLogs.host.push(line),
         runnerLogger: {
@@ -332,7 +330,6 @@ describe.skipIf(requestedEngine === undefined)(
             providerId: model.providerId,
           }),
           title: "Sign in on my phone",
-          workspaceId: active.mainWorkspaceId,
         });
         const prompt =
           'On my Android phone, open "Agent Phone fixture" and sign in to passwords-fixture.test with Opensteer Passwords. The app has a "Sign in with Opensteer Passwords" button. Finish signing in, then tell me which account is signed in.';
@@ -340,7 +337,7 @@ describe.skipIf(requestedEngine === undefined)(
         const turn = await active.sendMessage({
           text: prompt,
           threadId,
-          workspaceId: active.mainWorkspaceId,
+
           onQueued: async (runId) => {
             try {
               const card = await waitForValue(async () => {
@@ -355,31 +352,29 @@ describe.skipIf(requestedEngine === undefined)(
                   .find(
                     (request) =>
                       request.payload.kind === "browser.password-sign-in" &&
-                      request.targetWorkspaceId === active.mainWorkspaceId,
+                      request.originatingRunId === runId,
                   );
               }, runTimeoutMs);
               expect(card.payload).toMatchObject({
                 kind: "browser.password-sign-in",
                 site: passwordFixture.site,
-                scope: "workspace",
-                permissionVersion: 5,
+                scope: "personal",
+                permissionVersion: 6,
               });
               if (
                 card.payload.kind !== "browser.password-sign-in" ||
-                card.targetWorkspaceId !== active.mainWorkspaceId ||
-                card.originatingWorkspaceId !== active.mainWorkspaceId ||
-                card.payload.permissionVersion !== 5 ||
-                card.payload.scope !== "workspace"
+                card.payload.permissionVersion !== 6 ||
+                card.payload.scope !== "personal"
               )
                 throw new Error("Wrong sign-in approval card");
               await passwordsEvidence.write("pending-request.json", card);
               // Separate person action: polling the card itself never authorizes.
               passwordsBridge!.approve({
                 operationId: card.payload.operationId,
+                deploymentId: (await active.host.store.getDeployment())!.id,
                 site: card.payload.site,
                 scope: card.payload.scope,
                 permissionVersion: card.payload.permissionVersion,
-                workspaceId: card.targetWorkspaceId,
               });
               const fulfilled = await waitForValue(async () => {
                 const request = await active.host.store.requests.get(card.id);
@@ -562,13 +557,11 @@ describe.skipIf(requestedEngine === undefined)(
               providerId: model.providerId,
             }),
             title: "Phone task",
-            workspaceId: active.mainWorkspaceId,
           });
           const startedAt = new Date().toISOString();
           const turn = await active.sendMessage({
             text: prompt,
             threadId,
-            workspaceId: active.mainWorkspaceId,
           });
           const endedAt = new Date().toISOString();
           for (const pid of await agentPhonePids(phone())) appPids.add(pid);

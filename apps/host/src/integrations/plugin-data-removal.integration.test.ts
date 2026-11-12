@@ -11,8 +11,8 @@ import { testRpcData } from "../server/test-host-api-request.js";
 import { connectComputerAppMachine } from "../runtime/computer-apps.test-support.js";
 import {
   createMachineAccessDatabase,
-  startMachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+  startPrivateMachineHost,
+} from "../integrations/personal-machine.test-support.js";
 
 let database: Awaited<ReturnType<typeof createMachineAccessDatabase>>;
 beforeAll(async () => {
@@ -24,7 +24,7 @@ afterAll(async () => {
 
 it("queues plugin cleanup atomically, gates old Runners, acknowledges and replays on attach", async () => {
   const work = await realpath(await mkdtemp(join(tmpdir(), "plugin-data-removal-")));
-  const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+  const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
   const closers: (() => Promise<void>)[] = [];
   try {
     const local = new LocalMcpServers({ stateDirectory: work });

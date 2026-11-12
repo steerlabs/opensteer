@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { IntegrationPlatformStore } from "@opensteer/database";
 import type { ComputerAppSetupRequest, LocalMcpLaunch } from "@opensteer/integration-core";
 import { localMcpLaunchDigest } from "@opensteer/integration-core/digest";
@@ -24,13 +24,10 @@ import {
   configurePersonalRemoteAccess,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  resetMachineAccessDatabase,
-  startMachineAccessHost,
-  startPersonalMachineAccessHost,
+  startPrivateMachineHost,
   waitForCondition,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -47,8 +44,6 @@ integration("MCP servers on a computer", () => {
     await database?.drop();
     database = undefined;
   }, 120_000);
-
-  beforeEach(async () => resetMachineAccessDatabase(databaseUrl));
 
   let closeCurrent: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -67,7 +62,7 @@ integration("MCP servers on a computer", () => {
     try {
       const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-"));
       const fixture = await pluginFixture(work);
-      const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+      const host = await startPrivateMachineHost(databaseUrl, { remoteAccess: true });
       // What the Host held for the server, written beside a failure.
       serverState = async () =>
         host.store.database
@@ -80,11 +75,7 @@ integration("MCP servers on a computer", () => {
       };
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "local-mcp-caller",
-          name: "Caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const desktop = await startFakeDesktop();
@@ -236,7 +227,6 @@ integration("MCP servers on a computer", () => {
             connectionId: null,
             installationId: server.installationId,
             isDefault: true,
-            workspaceId: run.workspaceId,
           },
           type: "integration.grant.create",
         },
@@ -462,14 +452,15 @@ integration("MCP servers on a computer", () => {
       const work = await mkdtemp(join(tmpdir(), "opensteer-local-mcp-secrets-"));
       const fixture = await secretPluginFixture(work);
       const host = personal
-        ? await startPersonalMachineAccessHost(databaseUrl)
-        : await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+        ? await startPrivateMachineHost(databaseUrl)
+        : await startPrivateMachineHost(databaseUrl, { remoteAccess: true });
       const closers: (() => Promise<void>)[] = [() => host.close()];
       closeCurrent = async () => {
         for (const close of closers) await close().catch(() => undefined);
       };
       if (personal)
         await configurePersonalRemoteAccess(host, {
+          schemaVersion: 1,
           mode: "private",
           routeOrigin: "https://personal.local-mcp.test",
         });

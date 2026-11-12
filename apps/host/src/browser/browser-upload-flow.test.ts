@@ -31,7 +31,6 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
       email: "fixture@example.test",
       emailVerified: true,
       image: null,
-      instanceRole: "administrator",
     },
   };
   const discovery = signHostDiscovery(generateKeyPairSync("ed25519"), {
@@ -39,7 +38,7 @@ it("backpressures a bounded 10 MiB clipboard stream without ending the browser s
     deploymentId: createId("deployment"),
     hostInstanceId: createId("hostInstance"),
     hostKey: { algorithm: "Ed25519" },
-    deploymentShape: { kind: "server", defaultWorkspaceBacking: "local-directory" },
+    deploymentShape: { kind: "personal" },
   });
   let received = 0;
   let closed: { code: number; reason: string } | undefined;

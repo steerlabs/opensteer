@@ -22,7 +22,10 @@ describe("integration routes", () => {
       launchTicket: "t".repeat(43),
     }));
     await handleIntegrationCommand(
-      { integrations: { beginAuthorization } } as never,
+      {
+        platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } },
+        integrations: { beginAuthorization },
+      } as never,
       {
         type: "integration.authorization.begin",
         idempotencyKey: "begin-port",
@@ -50,7 +53,10 @@ describe("integration routes", () => {
       launchTicket: "t".repeat(43),
     }));
     await handleIntegrationCommand(
-      { integrations: { beginAuthorization } } as never,
+      {
+        platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } },
+        integrations: { beginAuthorization },
+      } as never,
       {
         type: "integration.authorization.begin",
         idempotencyKey: "begin-app",
@@ -87,7 +93,10 @@ describe("integration routes", () => {
       };
       await expect(
         handleIntegrationCommand(
-          { integrations: { connectApiKey } } as never,
+          {
+            platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } },
+            integrations: { connectApiKey },
+          } as never,
           { type: "integration.apiKey.connect", idempotencyKey: "connect-key", input },
           testHostApiContext(ownerUserId),
         ),
@@ -114,7 +123,10 @@ describe("integration routes", () => {
         integrations: { disconnect } as unknown as IntegrationService,
         platform: {
           computerAppApprovals: { disconnectComputerConnection },
-          store: { getConnectionKind: vi.fn(async () => "computer") },
+          store: {
+            connections: { assertOwner: vi.fn(async () => undefined) },
+            getConnectionKind: vi.fn(async () => "computer"),
+          },
         } as never,
       },
       { connectionId, idempotencyKey: "disconnect-computer", type: "integration.disconnect" },
@@ -157,7 +169,7 @@ describe("integration routes", () => {
         handleAuthorizationCallback,
         identifyAuthorizationCallback: vi.fn(async () => attemptId),
       } as unknown as IntegrationService,
-      platform: {} as never,
+      platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
     const response = await app.inject({
       headers: {
@@ -223,7 +235,9 @@ describe("integration routes", () => {
           handleAuthorizationCallback,
           identifyAuthorizationCallback: vi.fn(async () => attemptId),
         } as unknown as IntegrationService,
-        platform: {} as never,
+        platform: {
+          store: { connections: { assertOwner: vi.fn(async () => undefined) } },
+        } as never,
       });
 
       const response = await app.inject({
@@ -257,7 +271,7 @@ describe("integration routes", () => {
       } as unknown as HostAuthenticator,
       dashboard: {} as never,
       integrations: { identifyAuthorizationCallback } as unknown as IntegrationService,
-      platform: {} as never,
+      platform: { store: { connections: { assertOwner: vi.fn(async () => undefined) } } } as never,
     });
 
     const response = await app.inject({

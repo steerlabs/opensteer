@@ -28,8 +28,7 @@ const request: ComputerAppSetupRequest = {
   reason: null,
   threadId: null,
   threadTitle: null,
-  workspaceId: null,
-  workspaceName: null,
+
   createdAt: new Date().toISOString(),
   expiresAt: new Date(Date.now() + 60_000).toISOString(),
 };
@@ -47,6 +46,7 @@ const serverRequest: ComputerAppSetupRequest = {
 };
 function fixture(pending = request, compatibilityReason: string | null = null) {
   const store = {
+    connections: { assertOwner: vi.fn(async () => undefined) },
     computerAppRunner: vi.fn(async () => null),
     requestComputerAppSetup: vi.fn(),
     getComputerUsePolicy: vi.fn(async () => ({ appApproval: "ask" })),
@@ -85,7 +85,6 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
     } as never,
     computerUse: computerUse as unknown as ComputerUseApprovalGateway,
     definitions: integrationDefinitions,
-    deploymentName: null,
     installCatalogDefinition: install,
     listCallableTools: vi.fn(async () => []),
     listConnections: vi.fn(async () => []),
@@ -100,7 +99,6 @@ function fixture(pending = request, compatibilityReason: string | null = null) {
 const answer = {
   setupRequestId: request.id,
   actorUserId: ownerUserId,
-  isAdministrator: false,
   requestId: "answer",
   decision: "allow" as const,
   authorize: async () => undefined,
@@ -192,7 +190,6 @@ describe("owner-session computer app approvals", () => {
     });
     await service.respondComputerAppSetup({
       ...answer,
-      isAdministrator: true,
       settlementSessionId: "session",
     });
     expect(install).toHaveBeenCalledWith(
@@ -244,8 +241,14 @@ describe("owner-session computer app approvals", () => {
     await expect(service.respondComputerAppSetup(answer)).rejects.toThrow("denied");
     expect(store.setComputerConnection).not.toHaveBeenCalled();
   });
-  it("keeps first installation administrator-only even for the computer owner", async () => {
+  it("refuses first installation from another personal owner", async () => {
     const { service, install, store } = fixture();
+    store.connections.assertOwner.mockRejectedValueOnce(
+      new (await import("@opensteer/core")).OpensteerError({
+        code: "forbidden",
+        message: "Personal owner required",
+      }),
+    );
     await expect(service.respondComputerAppSetup(answer)).rejects.toMatchObject({
       code: "forbidden",
     });

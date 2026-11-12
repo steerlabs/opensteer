@@ -76,7 +76,6 @@ async function agentBridge(
       authenticate: vi.fn(async () => ({
         requestedBy,
         runId: createId("run"),
-        workspaceId: createId("workspace"),
       })),
       reauthorize: vi.fn(async (scope: unknown) => scope),
     } as unknown as RunToolTokenService,
@@ -95,14 +94,13 @@ afterEach(async () => {
 describe("Trigger CDP bridge", () => {
   it("adapts standard CDP WebSocket frames to the Browser Runtime", async () => {
     const requestedBy = createId("user");
-    const workspaceId = createId("workspace");
+
     const occurrenceId = createId("triggerOccurrence");
     const environmentId = createId("environment");
     const authenticate = vi.fn(async () => ({
       environmentId,
       occurrenceId,
       requestedBy,
-      workspaceId,
     }));
     const request = vi.fn(async () => ({ product: "Opensteer/TestBrowser" }));
     const close = vi.fn();
@@ -165,7 +163,6 @@ describe("Trigger CDP bridge", () => {
         agentBindingId: `trigger:${occurrenceId}`,
         environmentId,
         ownerId: requestedBy,
-        workspaceId,
       });
       expect(attachCdpForAgent).toHaveBeenCalledWith(
         {
@@ -173,7 +170,6 @@ describe("Trigger CDP bridge", () => {
           environmentId,
           ownerId: requestedBy,
           sessionId,
-          workspaceId,
         },
         expect.any(Function),
         expect.any(Function),
@@ -221,7 +217,6 @@ describe("Watch CDP bridge", () => {
           createdBy: createId("user"),
           environmentId: createId("environment"),
           exp: (Date.now() + 100) / 1_000,
-          workspaceId: createId("workspace"),
         })),
       } as unknown as WatchCapabilityTokenService<"opensteer-watch-browser-cdp">,
     );
@@ -246,7 +241,7 @@ describe("Watch CDP bridge", () => {
 describe("Agent CDP bridge", () => {
   it("binds a connection to the session it names and never releases the Run's sessions", async () => {
     const requestedBy = createId("user");
-    const workspaceId = createId("workspace");
+
     const runId = createId("run");
     const sessionId = createBrowserSessionId();
     const close = vi.fn();
@@ -270,7 +265,7 @@ describe("Agent CDP bridge", () => {
         openAgentSession,
       } as unknown as BrowserService,
       {
-        authenticate: vi.fn(async () => ({ requestedBy, runId, workspaceId })),
+        authenticate: vi.fn(async () => ({ requestedBy, runId })),
         reauthorize: vi.fn(async (scope: unknown) => scope),
       } as unknown as RunToolTokenService,
     );
@@ -291,7 +286,7 @@ describe("Agent CDP bridge", () => {
     );
     expect(JSON.parse(message)).toEqual({ id: 1, result: { product: "Opensteer/TestBrowser" } });
     expect(attachCdpForAgent).toHaveBeenCalledWith(
-      { agentBindingId: `run:${runId}`, ownerId: requestedBy, sessionId, workspaceId },
+      { agentBindingId: `run:${runId}`, ownerId: requestedBy, sessionId },
       expect.any(Function),
       expect.any(Function),
     );
@@ -405,7 +400,6 @@ describe("CDP bridge dispatch", () => {
       createdBy: createId("user"),
       environmentId: createId("environment"),
       exp: (Date.now() + 500) / 1_000,
-      workspaceId: createId("workspace"),
     };
     const close = vi.fn();
     const closeTriggerSessionsForBinding = vi.fn(async () => []);

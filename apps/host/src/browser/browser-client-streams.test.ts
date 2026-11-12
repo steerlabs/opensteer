@@ -24,9 +24,9 @@ const group: BrowserGroupRow = {
   tabCount: 1,
   inventoryRevision: 1,
   sessionId: groupId,
-  workspaceId: "wsp_00000000-0000-4000-8000-000000000001" as BrowserGroupRow["workspaceId"],
+
   state: "ready",
-  origin: "workspace",
+  origin: "person",
   access: "read-write",
   placement: {
     kind: "runner",

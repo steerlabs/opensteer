@@ -16,7 +16,7 @@ import {
   closed,
   waitForMessage,
   type PrimaryConnection,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 
 export const passwordFixture = {
   site: "https://passwords-fixture.test",
@@ -125,7 +125,7 @@ export async function startPasswordsAuthority(hostPort: number, primary: Primary
           type: "login.get.result",
           card: {
             stage: "approval",
-            permissionVersion: 5,
+            permissionVersion: 6,
             accounts: [
               {
                 id: "00000000-0000-4000-8000-000000000001",

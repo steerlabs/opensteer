@@ -1,65 +1,42 @@
 import { browserRows } from "./browser-rows.test-support.js";
 import {
   connectCallerMachine,
-  enrollmentToken,
+  startPrivateMachineHost,
   type CallerMachine,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
-import type { HostConfig } from "@opensteer/config";
+} from "../integrations/personal-machine.test-support.js";
+
 import { createId } from "@opensteer/core";
 import { createDatabase, migrateToLatest } from "@opensteer/database";
-import { hostApiVersion } from "@opensteer/deployment-authority";
-import {
-  BrowserServerMessageSchema,
-  decodeBrowserFrameEnvelope,
-  hostApiVersionHeader,
-} from "@opensteer/protocol";
-import { freePort } from "@opensteer/shared/test-support/loopbackPort";
+
+import { BrowserServerMessageSchema, decodeBrowserFrameEnvelope } from "@opensteer/protocol";
+
 import { sql } from "kysely";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { rm, writeFile } from "node:fs/promises";
+
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
-const accessToken = "browser-access-".padEnd(40, "a");
+"browser-access-".padEnd(40, "a");
 
 integration("Host browser broker vertical", () => {
   let browserRuntime: Awaited<ReturnType<typeof startBrowserRuntime>> | undefined;
   let dataDirectory: string | undefined;
   let caller: CallerMachine | undefined;
-  let runtime: HostRuntime | undefined;
+  let runtime: import("../runtime/runtime.js").PersonalHostRuntime | undefined;
+  let personalHost: MachineAccessHost | undefined;
   let uiSocket: WebSocket | undefined;
 
   beforeEach(async () => {
     const database = createDatabase({ connectionString: databaseUrl ?? "postgres://unconfigured" });
     await migrateToLatest(database);
     await sql`
-      truncate table
-        credential_access_audit,
-        credential_vault_canaries,
-        browser_profile_grants,
-        browser_sessions,
-        browser_profiles,
-        credentials,
-        workspace_events,
-        commands,
-        provider_sessions,
-        messages,
-        runs,
-        threads,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
+      truncate table deployments, users, runners restart identity cascade
     `.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
@@ -72,52 +49,19 @@ integration("Host browser broker vertical", () => {
   afterEach(async () => {
     uiSocket?.terminate();
     await caller?.close();
-    await runtime?.close();
+    await personalHost?.close();
     await Promise.allSettled([browserRuntime?.close()]);
     if (dataDirectory) await rm(dataDirectory, { force: true, recursive: true });
   });
 
   it("keeps Browser Runtime private while relaying authenticated view and input", async () => {
-    dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-browser-host-integration-"));
-    const hostPort = await freePort();
-    const config: HostConfig = {
-      acceptsExternalRunners: true,
-      authSecret: "browser-auth-secret".padEnd(40, "x"),
-      bindAddress: "127.0.0.1",
-      canonicalOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-      browserRuntime: { attachKeyId: "host-integration" },
-      credentialKeyPath: undefined,
-      databaseUrl: databaseUrl ?? "postgres://unconfigured",
-      dataDirectory,
-      identity: {
-        initialOwnerEnrollment: { lifetimeSeconds: 3_600, token: accessToken },
-        localPasswordEnabled: true,
-        oidcConfigPath: undefined,
-        signupPolicy: "invite-only",
-      },
-      executionLeaseMs: 90_000,
-      maxConcurrentDispatches: 2,
-      maxConcurrentTriggerDispatches: 2,
-      mode: "development",
-      port: hostPort,
-      exposure: "networked" as const,
-      privateKeyPath: undefined,
-      publicKeyPath: undefined,
-      runtimeOrigin: new URL(`http://127.0.0.1:${hostPort}`),
-      workspace: {
-        deletionRetentionDays: 14,
-        shape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "server" as const,
-        },
-        storage: { kind: "local-directory", ownerEnvironmentId: createId("environment") },
-      },
-    };
-    runtime = await createHostRuntime(config);
-    await runtime.listen();
-    const origin = config.runtimeOrigin.origin;
-    const cookie = await setupInitialOwner(origin, accessToken);
-    const sessionHeaders = { cookie, origin };
+    personalHost = await startPrivateMachineHost(databaseUrl!, { remoteAccess: true });
+    runtime = personalHost.runtime;
+
+    const hostPort = personalHost.hostPort;
+    const origin = personalHost.origin.origin;
+    const cookie = personalHost.ownerHeaders.cookie!;
+    const sessionHeaders = personalHost.ownerHeaders;
     // The browser is a module of an enrolled computer: it dials the Host and
     // relays over its own stream, so no Runtime address is ever configured.
     const enrollment = await testRpcData(
@@ -141,36 +85,13 @@ integration("Host browser broker vertical", () => {
 
     const owner = await runtime.store.firstUser();
     if (!owner) throw new Error("Owner was not created");
-    const machineHost: MachineAccessHost = {
-      close: async () => undefined,
-      config,
-      hostPort,
-      origin,
-      ownerHeaders: sessionHeaders,
-      ownerId: owner.id,
-      runtime,
-      store: runtime.store,
-    };
+    const machineHost = personalHost;
     caller = await connectCallerMachine(machineHost, {
       name: "Storage computer",
-      token: await enrollmentToken(machineHost, {
-        allowedModules: ["agents"],
-        idempotencyKey: "storage-computer",
-        name: "Storage computer",
-      }),
+      token: await machineHost.hostingRunnerEnrollmentToken,
     });
     await testRpcData(origin, "bootstrap.get", {}, { headers: sessionHeaders });
-    const created = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "browser-workspace-1",
-        name: "Browser workspace",
-        type: "workspace.create",
-      },
-      { headers: sessionHeaders },
-    );
-    if (created.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+
     // Identity is explicit at open: profiles are never auto-provisioned.
     const createdProfile = await testRpcData(
       origin,
@@ -195,7 +116,6 @@ integration("Host browser broker vertical", () => {
           reuseExisting: false,
         },
         type: "browser.session.start",
-        workspaceId: created.workspace.id,
       },
       { headers: sessionHeaders },
     );
@@ -205,7 +125,6 @@ integration("Host browser broker vertical", () => {
       runtimeId: "browser-runtime-integration",
       navigationVersion: 1,
       state: "ready",
-      workspaceId: created.workspace.id,
     });
     expect(browserRuntime.connectionCount()).toBe(1);
     const profileClaims = browserRuntime.lastClaims();
@@ -367,7 +286,6 @@ integration("Host browser broker vertical", () => {
         agentBindingId: `run:${projectionRunId}`,
         ownerId: bootstrap.user.id,
         sessionId: started.session.id,
-        workspaceId: started.session.workspaceId,
       }),
     ).resolves.toBe(false);
     const detachedBootstrap = await testRpcData(
@@ -383,25 +301,18 @@ integration("Host browser broker vertical", () => {
     ).toMatchObject({ acting: false, attachedRunIds: [] });
 
     // A fresh session needs no profile and no grant, and carries no lease.
-    const freshWorkspace = await testRpcData(
-      origin,
-      "commands.dispatch",
-      {
-        idempotencyKey: "browser-workspace-2",
-        name: "Fresh workspace",
-        type: "workspace.create",
-      },
-      { headers: sessionHeaders },
-    );
-    if (freshWorkspace.type !== "workspace.create") throw new Error("Workspace command mismatch.");
+
     const freshSession = await testRpcData(
       origin,
       "commands.dispatch",
       {
         idempotencyKey: "browser-session-2",
-        input: { fresh: true, reuseExisting: false },
+        input: {
+          fresh: true,
+          placement: { kind: "runner", runnerId: browserRuntime.runnerId },
+          reuseExisting: false,
+        },
         type: "browser.session.start",
-        workspaceId: freshWorkspace.workspace.id,
       },
       { headers: sessionHeaders },
     );
@@ -507,38 +418,6 @@ function openBrowserSocket(
     });
     socket.once("error", reject);
   });
-}
-
-async function setupInitialOwner(origin: string, token: string): Promise<string> {
-  const exchanged = await fetch(`${origin}/v1/rpc/auth.setup.exchange`, {
-    body: JSON.stringify({ token }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      origin,
-    },
-    method: "POST",
-  });
-  if (!exchanged.ok) throw new Error(`Setup exchange failed with HTTP ${exchanged.status}.`);
-  const admissionCookies = responseCookies(exchanged);
-  const claimed = await fetch(`${origin}/v1/rpc/auth.setup.claim`, {
-    body: JSON.stringify({
-      email: "browser-owner@example.com",
-      kind: "password",
-      password: "browser-owner-password",
-    }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      cookie: admissionCookies.join("; "),
-      origin,
-    },
-    method: "POST",
-  });
-  if (!claimed.ok) throw new Error(`Owner claim failed with HTTP ${claimed.status}.`);
-  const sessionCookies = responseCookies(claimed);
-  if (sessionCookies.length === 0) throw new Error("Host did not issue a session cookie.");
-  return sessionCookies.join("; ");
 }
 
 function responseCookies(response: Response): string[] {

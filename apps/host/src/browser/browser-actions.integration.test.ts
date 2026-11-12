@@ -19,14 +19,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   createMachineAccessDatabase,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   connectCallerMachine,
   enrollmentToken,
   dispatchCallerRun,
   stopRun,
   waitForMessage,
   closed,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
@@ -74,18 +74,15 @@ async function setup(surfaceState = true) {
   cleanups.push(() => database.drop());
   const startedAt = Date.now();
   let now = startedAt;
-  const host = await startMachineAccessHost(database.url, {
+  const host = await startPrivateMachineHost(database.url, {
+    remoteAccess: true,
     runCapabilityNow: () => now,
     runCapabilityLifetimeSeconds: 60,
   });
   cleanups.push(() => host.close());
   const caller = await connectCallerMachine(host, {
     name: "Agent computer",
-    token: await enrollmentToken(host, {
-      allowedModules: ["agents"],
-      idempotencyKey: "agent",
-      name: "Agent computer",
-    }),
+    token: await host.hostingRunnerEnrollmentToken,
   });
   cleanups.push(() => caller.close());
   const run = await dispatchCallerRun(host, caller, { key: "phone-run", title: "Phone browser" });
@@ -112,9 +109,9 @@ async function setup(surfaceState = true) {
   await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 2_000 });
   const opened = await host.runtime.browser.start({
     ownerId: host.ownerId,
-    workspaceId: run.workspaceId,
+
     fresh: true,
-    origin: "workspace",
+    origin: "person",
     reuseExisting: false,
     placement: { kind: "runner", runnerId: phone.runnerId },
   });
@@ -216,7 +213,6 @@ integration("session-scoped browser agent backends", () => {
         apiVersion: hostApiVersion,
         threadId: null,
         type: "client.subscribe",
-        workspaceId: f.run.workspaceId,
       }),
     );
     await synchronized;
@@ -372,7 +368,7 @@ integration("session-scoped browser agent backends", () => {
           {
             kind: "agent",
             ownerId: f.host.ownerId,
-            workspaceId: f.run.workspaceId,
+
             threadId: f.run.threadId,
             agentBindingId: `run:${f.run.runId}`,
           },
@@ -580,9 +576,9 @@ integration("session-scoped browser agent backends", () => {
     );
     const opened = await f.host.runtime.browser.start({
       ownerId: f.host.ownerId,
-      workspaceId: f.run.workspaceId,
+
       fresh: true,
-      origin: "workspace",
+      origin: "person",
       reuseExisting: false,
       placement: { kind: "runner", runnerId: chromium.runnerId },
     });

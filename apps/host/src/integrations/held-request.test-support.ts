@@ -1,6 +1,6 @@
 import type { RunId } from "@opensteer/core";
 import { expect, vi } from "vitest";
-import type { MachineAccessHost } from "../runtime/machine-access.test-support.js";
+import type { MachineAccessHost } from "../integrations/personal-machine.test-support.js";
 
 export async function startHeldRequest<T>(
   host: MachineAccessHost,

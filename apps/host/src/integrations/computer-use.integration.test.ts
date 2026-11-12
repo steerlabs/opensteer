@@ -1,10 +1,7 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
-} from "@opensteer/core";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { createPersonalRunFixturePort } from "@opensteer/database/test-support/personal-run";
+
+import { createId } from "@opensteer/core";
 import {
   createDatabase,
   IntegrationPlatformStore,
@@ -13,19 +10,16 @@ import {
 } from "@opensteer/database";
 import { computerAppIntegrations } from "@opensteer/integration-catalog";
 
-import type { PendingAgentEvent, RunnerDescriptor } from "@opensteer/protocol";
+import type { PendingAgentEvent } from "@opensteer/protocol";
 import { integrationDefinitionDigest } from "@opensteer/integration-core/digest";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { AesGcmSecretVault, StaticEncryptionKeyProvider } from "@opensteer/access/host";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createMachineAccessDatabase,
-  resetMachineAccessDatabase,
-} from "../runtime/machine-access.test-support.js";
+import { createMachineAccessDatabase } from "../integrations/personal-machine.test-support.js";
 import { integrationCallSubject } from "./integration-call-subject.js";
 import { operationAddress } from "./integration-operation.js";
 import {
@@ -53,7 +47,9 @@ integration.sequential("Host computer-use approval transactions", () => {
       maxConnections: 4,
     });
   }, 120_000);
-  beforeEach(async () => resetMachineAccessDatabase(isolated.url));
+  beforeEach(async () => {
+    await sql`truncate table deployments,users,runners restart identity cascade`.execute(database);
+  });
   afterAll(async () => {
     await database?.destroy();
     await isolated?.drop();
@@ -64,7 +60,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const store = new OpensteerStore(database);
     const persistence = new IntegrationPlatformStore(database);
     const connections = new IntegrationStore(database);
-    const task = await createComputerUseTask(store, randomUUID(), { kind: "project" });
+    const task = await createComputerUseTask(store, randomUUID(), dataDirectory);
     const runnerId = createId("runner");
     const keys = generateKeyPairSync("ed25519");
     await database
@@ -164,7 +160,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       definitions: [definition],
       isRunnerConnected: () => true,
       mcpOauth: { providerFor: vi.fn() },
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       onConnectionsChanged: vi.fn(),
       onRequestsChanged: vi.fn(),
       store: persistence,
@@ -184,7 +180,6 @@ integration.sequential("Host computer-use approval transactions", () => {
       originatingRunId: task.runId,
       runnerId,
       threadId: task.threadId,
-      workspaceId: task.workspaceId,
     };
     async function automatic() {
       const request = await service.computerAppApprovals.requestComputerAppSetup({
@@ -199,7 +194,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         setupRequestId: request.id,
         actorUserId: task.userId,
         runnerId,
-        isAdministrator: true,
+
         requestId: "automatic",
       });
     }
@@ -216,7 +211,7 @@ integration.sequential("Host computer-use approval transactions", () => {
         actorUserId: task.userId,
         runnerId,
         definitionId: "macos-app",
-        isAdministrator: true,
+
         requestId: "approve-notes",
       });
     }
@@ -267,9 +262,8 @@ integration.sequential("Host computer-use approval transactions", () => {
       reason: "Add groceries",
       threadTitle: "Shopping list",
       threadId: test.task.threadId,
-      workspaceId: test.task.workspaceId,
     });
-    expect(setup?.workspaceName).toEqual(expect.any(String));
+    expect(setup?.deploymentId).toEqual(test.task.deploymentId);
     const connection = await test.approve("read-write");
     expect(connection?.displayName).toBe("Notes on Alex's Mac");
     expect(
@@ -279,7 +273,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       (
         await test.service.listCallableTools({
           ownerUserId: test.task.userId,
-          workspaceId: test.task.workspaceId,
+
           threadId: test.task.threadId,
         })
       )
@@ -305,7 +299,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       (
         await test.service.listCallableTools({
           ownerUserId: test.task.userId,
-          workspaceId: test.task.workspaceId,
+
           threadId: test.task.threadId,
         })
       )
@@ -335,7 +329,6 @@ integration.sequential("Host computer-use approval transactions", () => {
       await test.service.listCallableTools({
         ownerUserId: test.task.userId,
         threadId: test.task.threadId,
-        workspaceId: test.task.workspaceId,
       }),
     ).toEqual([]);
     await test.service.computerAppApprovals.requestComputerAppSetup({
@@ -361,7 +354,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const act = (
       await test.service.listCallableTools({
         ownerUserId: test.task.userId,
-        workspaceId: test.task.workspaceId,
+
         threadId: test.task.threadId,
       })
     ).find((row) => row.tool.name === "act");
@@ -378,10 +371,7 @@ integration.sequential("Host computer-use approval transactions", () => {
     const toolStarted = (
       ordinal: number,
       address: { readonly account: string | null; readonly operation: string },
-      of: Pick<
-        typeof task,
-        "bindingGeneration" | "environmentId" | "runId" | "threadId" | "workspaceId"
-      > = task,
+      of: Pick<typeof task, "bindingGeneration" | "environmentId" | "runId" | "threadId"> = task,
     ): PendingAgentEvent => ({
       bindingGeneration: of.bindingGeneration,
       data: {
@@ -395,7 +385,6 @@ integration.sequential("Host computer-use approval transactions", () => {
       runId: of.runId,
       threadId: of.threadId,
       type: "tool.started",
-      workspaceId: of.workspaceId,
     });
     const event = toolStarted(1, actAddress);
 
@@ -429,42 +418,6 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(replayed.wasDuplicate).toBe(true);
     expect(replayed.event).toEqual(committed.event);
 
-    // The same person's task in another Workspace cannot resolve this
-    // Workspace's grant.
-    const elsewhere = await createWorkspace(test.store, task.userId, randomUUID(), "project");
-    const { thread } = await test.store.createThread({
-      createdBy: task.userId,
-      environmentId: task.environmentId,
-      harnessInstanceId: task.harnessInstanceId,
-      idempotencyKey: "thread-elsewhere",
-      modelSelection: ModelSelectionSchema.parse({
-        modelId: "gpt-5.6-sol",
-        options: { effort: "low" },
-        providerId: "openai",
-      }),
-      title: "Elsewhere",
-      workspaceId: elsewhere.id,
-    });
-    const queued = await test.store.enqueueThreadInput({
-      content: [{ text: "Work elsewhere", type: "text" }],
-      idempotencyKey: "elsewhere-turn",
-      policy: "queue",
-      requestedBy: task.userId,
-      source: { kind: "human" },
-      threadId: thread.id,
-    });
-    if (!queued.run) throw new Error("Expected a Run elsewhere");
-    await expect(
-      integrationCallSubject(
-        sources,
-        toolStarted(1, actAddress, {
-          ...task,
-          runId: queued.run.id,
-          threadId: thread.id,
-          workspaceId: elsewhere.id,
-        }),
-      ),
-    ).resolves.toBeUndefined();
     // An address whose schema changed, and one for a removed grant, name nothing.
     await expect(
       integrationCallSubject(
@@ -474,13 +427,11 @@ integration.sequential("Host computer-use approval transactions", () => {
     ).resolves.toBeUndefined();
     const [grant] = await test.persistence.listGrants({
       ownerUserId: task.userId,
-      workspaceId: task.workspaceId,
     });
     await test.service.revokeGrant({
       grantId: grant!.id,
       ownerUserId: task.userId,
       requestId: "revoke-for-subject",
-      workspaceId: task.workspaceId,
     });
     await expect(
       integrationCallSubject(sources, toolStarted(2, actAddress)),
@@ -507,13 +458,11 @@ integration.sequential("Host computer-use approval transactions", () => {
     );
     const [grant] = await test.persistence.listGrants({
       ownerUserId: test.task.userId,
-      workspaceId: test.task.workspaceId,
     });
     await test.service.revokeGrant({
       grantId: grant!.id,
       ownerUserId: test.task.userId,
       requestId: "revoke-grant",
-      workspaceId: test.task.workspaceId,
     });
     await test.service.computerAppApprovals.setComputerUsePolicy({
       runnerId: test.input.runnerId,
@@ -539,7 +488,7 @@ integration.sequential("Host computer-use approval transactions", () => {
       (
         await test.service.listCallableTools({
           ownerUserId: test.task.userId,
-          workspaceId: test.task.workspaceId,
+
           threadId: test.task.threadId,
         })
       ).map((row) => row.tool.name),
@@ -556,13 +505,11 @@ integration.sequential("Host computer-use approval transactions", () => {
     await test.approve("read");
     const [grant] = await test.persistence.listGrants({
       ownerUserId: test.task.userId,
-      workspaceId: test.task.workspaceId,
     });
     await test.service.revokeGrant({
       grantId: grant!.id,
       ownerUserId: test.task.userId,
       requestId: "revoke-grant",
-      workspaceId: test.task.workspaceId,
     });
     const reason = "Add every item from the shared shopping list. ".repeat(20).trim();
     expect(reason.length).toBeGreaterThan(500);
@@ -585,173 +532,25 @@ integration.sequential("Host computer-use approval transactions", () => {
     expect(stored.payload).toMatchObject({ kind: "integration.access", reason });
   });
 });
-async function createWorkspace(
-  store: OpensteerStore,
-  createdBy: ReturnType<typeof createId<"user">>,
-  suffix: string,
-  kind?: "main" | "project",
-) {
-  return createTestWorkspace(store, {
-    backing: {
-      kind: "local-directory",
-      generation: 1,
-      bindingId: createId("workspaceBinding"),
-      ownerEnvironmentId: createId("environment"),
-      storageAuthorityId: createId("storageAuthority"),
-    },
-
-    createdBy,
-    idempotencyKey: `workspace-${suffix}`,
-    ...(kind === undefined ? {} : { kind }),
-    name: `Workspace ${suffix}`,
-    status: "ready",
+async function createComputerUseTask(store: OpensteerStore, suffix: string, directory: string) {
+  const personal = await seedPersonalFixture(store.database, directory),
+    admission = createPersonalRunFixturePort(store);
+  const task = await admission.createTask({
+    ownerId: personal.userId,
+    folder: personal.agentHome,
+    suffix,
   });
-}
-
-/** A Request may only be opened from a Run the Host has seen start. */
-async function createComputerUseTask(
-  store: OpensteerStore,
-  suffix: string,
-  options: { readonly kind?: "main" | "project" } = {},
-) {
-  const userId = await store.createUser(`Owner ${suffix}`);
-  const runnerId = createId("runner");
-  const environmentId = createId("environment");
-  if (!(await store.getDeployment())) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-      hostInstanceId: createId("hostInstance"),
-    });
-  }
-  const pair = generateKeyPairSync("ed25519");
-  const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-  const enrollmentTokenHash = `sha256:${createHash("sha256")
-    .update(`test-enrollment-${suffix}`, "utf8")
-    .digest("base64url")}`;
-  await store.createRunnerEnrollment({
-    allowedModules: ["agents"],
-    createdBy: userId,
-    expiresAt: new Date(Date.now() + 60_000),
-    id: `ren_${randomUUID()}`,
-    idempotencyKey: `test-runner-${suffix}`,
-    mainEnrollmentPurpose: "initial",
-    name: `Test runner ${suffix}`,
-    requestFingerprint: `sha256:test-runner-${suffix}`,
-    runnerKind: "main",
-    tokenHash: enrollmentTokenHash,
-  });
-  const descriptor: RunnerDescriptor = {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: {
-      agents: {
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        localStorage: null,
-        maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
-      },
-    },
-    name: `Runner ${suffix}`,
-    runnerId,
-    runnerKind: "main",
-    runtimeVersion: "test",
-  };
-  await store.enrollRunnerConnection({
-    descriptor,
-    enrollmentTokenHash,
-    publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-    publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-  });
-  const workspace = await createWorkspace(store, userId, suffix, options.kind);
-  const harnessInstance = await store.createHarnessInstance({
-    config: { model: "test" },
-    driverKind: HarnessIdSchema.parse("native"),
-    environmentId,
-    name: "Native",
-    sourceId: "native",
-    stateKind: "isolated",
-  });
-  const { thread } = await store.createThread({
-    createdBy: userId,
-    environmentId,
-    harnessInstanceId: harnessInstance.id,
-    idempotencyKey: `thread-${suffix}`,
-    modelSelection: ModelSelectionSchema.parse({
-      modelId: "gpt-5.6-sol",
-      options: { effort: "low" },
-      providerId: "openai",
-    }),
-    title: `Thread ${suffix}`,
-    workspaceId: workspace.id,
-  });
-  const admitted = await store.enqueueThreadInput({
-    content: [{ text: "Start the work", type: "text" }],
-    idempotencyKey: `${suffix}-initial-turn`,
-    policy: "queue",
-    requestedBy: userId,
-    source: { kind: "human" },
-    threadId: thread.id,
-  });
-  if (!admitted.command || !admitted.run) throw new Error("Expected the input to queue a Run");
-  await store.claimCommand(admitted.command.id, `${suffix}-dispatcher`);
-  const runnerBootId = `boot-${suffix}`;
-  const binding = await store.acquireExecutionBinding({
-    bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-    continuationIdentity: {
-      continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-      driverKind: HarnessIdSchema.parse("native"),
-    },
-    harnessInstanceId: harnessInstance.id,
-    leaseTokenHash: `${suffix}-lease`,
-    membershipGeneration: 1,
-    runnerBootId,
-    runnerId,
-    runId: admitted.run.id,
-    threadId: thread.id,
-  });
-  const started: PendingAgentEvent = {
-    bindingGeneration: binding.bindingGeneration,
-    data: { status: "running" },
-    emittedAt: new Date().toISOString(),
-    environmentId,
-    ordinal: 0,
-    runId: admitted.run.id,
-    threadId: thread.id,
-    type: "run.started",
-    workspaceId: workspace.id,
-  };
-  await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
+  const started = await admission.startTask(task.threadId, "Start");
   return {
-    bindingGeneration: binding.bindingGeneration,
-    environmentId,
-    harnessInstanceId: harnessInstance.id,
-    runId: admitted.run.id,
-    runnerBootId,
-    runnerId,
-    threadId: thread.id,
-    userId,
-    workspaceId: workspace.id,
+    bindingGeneration: started.bindingGeneration,
+    environmentId: personal.environmentId,
+    harnessInstanceId: task.harnessInstance.id,
+    runId: started.runId,
+    runnerBootId: started.runnerBootId,
+    runnerId: personal.runnerId,
+    threadId: task.threadId,
+    userId: personal.userId,
+    folder: personal.agentHome,
+    deploymentId: personal.deploymentId,
   };
 }

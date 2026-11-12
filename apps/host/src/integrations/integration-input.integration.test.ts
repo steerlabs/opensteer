@@ -19,11 +19,9 @@ import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  resetMachineAccessDatabase,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { IntegrationPlatformService } from "./integration-platform-service.js";
 import { createHostRuntime } from "../runtime/runtime.js";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
@@ -42,7 +40,7 @@ integration("input from a computer's MCP server", () => {
     await database?.drop();
   }, 120_000);
   beforeEach(async () => {
-    await resetMachineAccessDatabase(database.url);
+    undefined;
   });
   afterEach(async () => {
     for (const close of closers.splice(0).reverse()) await close();
@@ -61,8 +59,7 @@ integration("input from a computer's MCP server", () => {
       mode: "durable",
       originatingRunId: s.run.runId,
       originatingThreadId: s.run.threadId,
-      originatingWorkspaceId: s.run.workspaceId,
-      targetWorkspaceId: s.run.workspaceId,
+
       requestedBy: s.host.ownerId,
       requiredActor: "requester",
       payload: {
@@ -163,7 +160,7 @@ integration("input from a computer's MCP server", () => {
     await respond(s.host, request, { kind: "choice", optionId: "decline" });
     await later;
     const events = await s.host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .selectAll()
       .where("threadId", "=", s.run.threadId)
       .execute();
@@ -235,7 +232,7 @@ integration("input from a computer's MCP server", () => {
     ).rejects.toThrow("no longer pending");
     // Keep old marker collisions in the full scan of unrelated IDs and timestamps.
     await s.host.store.database
-      .updateTable("workspaceEvents")
+      .updateTable("deploymentEvents")
       .set({
         eventId: "evt_f1867319-d42f-4d69-b727-5a8d77c76723" as EventId,
         createdAt: new Date("2026-11-07T14:32:13.750Z"),
@@ -351,8 +348,7 @@ integration("input from a computer's MCP server", () => {
       mode: "durable",
       originatingRunId: s.run.runId,
       originatingThreadId: s.run.threadId,
-      originatingWorkspaceId: s.run.workspaceId,
-      targetWorkspaceId: s.run.workspaceId,
+
       payload: {
         kind: "integration.input",
         installationId: s.callable.installation.id,
@@ -369,6 +365,10 @@ integration("input from a computer's MCP server", () => {
     await s.host.runtime.close();
     const restarted = await ownTestDatabaseProducer(database.url, async () => {
       const runtime = await createHostRuntime(s.host.config, { logger: false });
+      if (runtime.kind !== "personal") {
+        await runtime.close();
+        throw new Error("Expected Personal Host");
+      }
       return runtime;
     });
     closers.push(() => restarted.close());
@@ -384,16 +384,12 @@ async function scenario(longRequestHold = true) {
   const work = await mkdtemp(join(tmpdir(), "opensteer-integration-input-"));
   closers.push(() => rm(work, { recursive: true, force: true }));
   const plugin = await pluginFixture(work);
-  const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+  const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
   closers.push(() => host.close());
   const caller = await connectCallerMachine(host, {
     name: "Caller",
     longRequestHold,
-    token: await enrollmentToken(host, {
-      allowedModules: ["agents"],
-      idempotencyKey: "caller",
-      name: "Caller",
-    }),
+    token: await host.hostingRunnerEnrollmentToken,
   });
   closers.push(() => caller.close());
   const localMcp = new LocalMcpServers({ stateDirectory: join(work, "runner-state") });
@@ -441,7 +437,6 @@ async function scenario(longRequestHold = true) {
       connectionId: null,
       installationId: server.installationId,
       isDefault: true,
-      workspaceId: run.workspaceId,
     },
   });
   const gateway = await integrationGateway(run.integrationTools);
@@ -460,7 +455,6 @@ async function scenario(longRequestHold = true) {
     await platform.listCallableTools({
       ownerUserId: host.ownerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     })
   ).find((entry) => entry.tool.name === "pair")!;
   if (!callable) throw new Error("No pairing tool was discovered");
@@ -520,7 +514,7 @@ async function assertNoAnswers(
     .where("id", "=", request.id)
     .execute();
   const events = await host.store.database
-    .selectFrom("workspaceEvents")
+    .selectFrom("deploymentEvents")
     .selectAll()
     .where("threadId", "=", request.originatingThreadId)
     .execute();

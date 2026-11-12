@@ -65,7 +65,6 @@ describeStore("Settings invocation admission", (test) => {
       isDefault: true,
       ownerUserId: run.userId,
       providerAuthorizations: {},
-      workspaceId: run.workspace.id,
     });
     const caller = {
       kind: "run",
@@ -76,7 +75,7 @@ describeStore("Settings invocation admission", (test) => {
       thread: run.thread,
       claims: {
         requestedBy: run.userId,
-        workspaceId: run.workspace.id,
+
         threadId: run.thread.id,
         runId: run.run.id,
       },
@@ -84,7 +83,7 @@ describeStore("Settings invocation admission", (test) => {
     const listCallableTools = () =>
       store.listCallableTools({
         ownerUserId: run.userId,
-        workspaceId: run.workspace.id,
+
         threadId: run.thread.id,
         providerAuthorizations: {},
       });
@@ -98,15 +97,14 @@ describeStore("Settings invocation admission", (test) => {
       listDiscoveryInventory: () =>
         store.listDiscoveryInventory({
           ownerUserId: run.userId,
-          workspaceId: run.workspace.id,
+
           threadId: run.thread.id,
           providerAuthorizations: {},
         }),
     } as unknown as IntegrationPlatformService;
     const handlers = new IntegrationToolHandlers({
       definitions: [],
-      getWorkspaceForOwner: async () => ({ id: run.workspace.id }),
-      onWorkspaceEvent: () => undefined,
+      onEvent: () => undefined,
       platform,
     });
     if (!issued) throw new Error("Issued tool missing");
@@ -143,20 +141,6 @@ describeStore("Settings invocation admission", (test) => {
       idempotencyKey: "on",
     });
     expect(await call()).toMatchObject({ content: [{ text: "called" }] });
-    await store.settings.setPlacement(
-      run.userId,
-      {
-        type: "settings.plugin.placement.set",
-        target,
-        expectedRevision: await revision(),
-        mainIncluded: false,
-        projects: [],
-        personalEverywhere: null,
-        idempotencyKey: "exclude-main",
-      },
-      {},
-    );
-    await expect(call()).rejects.toThrow("Integration operation is no longer available");
     expect(callTool).toHaveBeenCalledTimes(2);
   });
 });

@@ -25,7 +25,7 @@ import {
   type AgentPhoneSetupStep,
 } from "@opensteer/agent-phone-setup";
 import { HttpHostClient } from "@opensteer/client/host";
-import { DeploymentIdSchema, type RunnerId, type WorkspaceId } from "@opensteer/core";
+import { DeploymentIdSchema, type RunnerId } from "@opensteer/core";
 import {
   AgentPhoneArtifactManifestSchema,
   AgentPhoneHostTargetSchema,
@@ -56,11 +56,11 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { closeSync, openSync } from "node:fs";
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import { createRequire } from "node:module";
 import { connect as connectTcp, type Socket } from "node:net";
-import { homedir, networkInterfaces, tmpdir } from "node:os";
+import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import { Transform, Writable } from "node:stream";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
@@ -69,15 +69,12 @@ import { z } from "zod";
 import {
   connectCallerMachine,
   dispatchCallerRun,
-  enrollmentToken,
-  establishOwner,
-  freePort,
-  machineAccessHostConfig,
+  startPrivateMachineHost,
   type CallerMachine,
   type CallerRun,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
-import { createHostRuntime, type HostRuntime } from "../runtime/runtime.js";
+} from "../integrations/personal-machine.test-support.js";
+import { createHostRuntime } from "../runtime/runtime.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 
 // ws exposes Receiver at runtime but omits it from its public TypeScript declarations.
@@ -1521,7 +1518,7 @@ export interface AgentPhoneHost extends MachineAccessHost {
 
 /** A Host as its owner's signed-in browser reaches it: where to dial, and the session's headers. */
 export interface AgentPhoneOwner {
-  readonly origin: string;
+  readonly origin: URL | string;
   readonly ownerHeaders: Readonly<Record<string, string>>;
 }
 
@@ -1540,60 +1537,51 @@ export async function startAgentPhoneHost(
     readonly log: (line: string) => void;
   },
 ): Promise<AgentPhoneHost> {
-  const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-agent-phone-host-"));
-  const hostPort = await freePort();
   const publicOrigin = new URL(`https://${emulatorHostAlias}:${input.publicPort}`);
-  const config = machineAccessHostConfig(
-    hostPort,
-    dataDirectory,
-    new URL("http://127.0.0.1:9"),
-    databaseUrl,
-    input.signupPolicy ?? "invite-only",
-    publicOrigin,
-  );
-  const start = async () => {
-    const started = await createHostRuntime(config, {
-      ...(input.phoneUpdateRelease ? { phoneUpdateRelease: input.phoneUpdateRelease } : {}),
-      logger: {
-        level: "info",
-        // As the Host's own entry point does: no credential reaches its log.
-        redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
-        stream: new Writable({
-          write(chunk: Buffer | string, _encoding, done) {
-            input.log(chunk.toString().trimEnd());
-            done();
-          },
-        }),
-      },
-    });
-    await started.listen();
-    return started;
-  };
-  let runtime: HostRuntime = await start();
-  const origin = `http://127.0.0.1:${hostPort}`;
-  const ownerHeaders = await establishOwner(origin, publicOrigin.origin);
-  const owner = await runtime.store.firstUser();
-  if (!owner) throw new Error("The Agent Phone Host did not establish an owner.");
+  const base = await startPrivateMachineHost(databaseUrl, {
+    remoteAccess: true,
+    canonicalOrigin: publicOrigin,
+    ...(input.phoneUpdateRelease ? { phoneUpdateRelease: input.phoneUpdateRelease } : {}),
+    logger: {
+      level: "info",
+      redact: ["req.headers.authorization", "req.headers.cookie", "res.headers.set-cookie"],
+      stream: new Writable({
+        write(chunk: Buffer | string, _encoding, done) {
+          input.log(chunk.toString().trimEnd());
+          done();
+        },
+      }),
+    },
+  });
+  let runtime = base.runtime;
   return {
-    close: async () => {
-      await runtime.close();
-      await rm(dataDirectory, { force: true, recursive: true });
-    },
-    config,
-    hostPort,
-    origin,
-    ownerHeaders,
-    ownerId: owner.id,
+    ...base,
     publicOrigin: publicOrigin.origin,
-    restart: async () => {
-      await runtime.close();
-      runtime = await start();
-    },
     get runtime() {
       return runtime;
     },
     get store() {
       return runtime.store;
+    },
+    async close() {
+      try {
+        await runtime.close();
+      } finally {
+        await base.close();
+      }
+    },
+    async restart() {
+      await runtime.close();
+      const created = await createHostRuntime(base.config, {
+        ...(input.phoneUpdateRelease ? { phoneUpdateRelease: input.phoneUpdateRelease } : {}),
+      });
+      if (created.kind !== "personal") {
+        await created.close();
+        throw new Error("Expected Personal Host");
+      }
+
+      runtime = created;
+      await runtime.listen();
     },
   };
 }
@@ -1769,11 +1757,7 @@ export async function connectAgentComputer(
   },
 ): Promise<CallerMachine> {
   const name = `Agent computer ${input.key}`;
-  const token = await enrollmentToken(host, {
-    allowedModules: ["agents"],
-    idempotencyKey: input.key,
-    name,
-  });
+  const token = await host.hostingRunnerEnrollmentToken;
   input.redaction.add(token);
   const caller = await connectCallerMachine(host, {
     name,
@@ -1820,13 +1804,11 @@ export async function startPhoneAgent(
     readonly key: string;
     readonly redaction: Redaction;
     readonly title: string;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<PhoneAgent> {
   const run = await dispatchCallerRun(host, caller, {
     key: input.key,
     title: input.title,
-    workspaceId: input.workspaceId,
   });
   input.redaction.add(run.integrationTools.token, run.toolsToken);
   try {

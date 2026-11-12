@@ -22,7 +22,6 @@ import {
   RunIdSchema,
   SequenceSchema,
   type AgentEvent,
-  type BrowserProfileGrantId,
   type BrowserProfileId,
   type EnvironmentId,
   type Request,
@@ -31,7 +30,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
 } from "@opensteer/core";
 import type { BrowserHistoryStore, PersonalTabStore } from "@opensteer/database";
 import {
@@ -45,7 +43,6 @@ import {
   createBrowserSessionId,
   decodeBrowserFrameEnvelope,
   RunnerBrowserModuleSchema,
-  type BrowserProfileAccess,
   type BrowserSessionId,
   type HostedBrowserSessionState,
   type PersonFillVersion,
@@ -68,7 +65,6 @@ import {
   BrowserService,
   BrowserConsumerOutlet,
   HostedBrowserBroker,
-  type ActiveBrowserProfileGrant,
   type BrowserConsumerPeer,
   type BrowserProfileRecord,
   type BrowserRuntimeTarget,
@@ -208,8 +204,9 @@ function nativeProfileOptions() {
   };
 }
 const profileStateOptions = {
+  deploymentId: createId("deployment"),
   onSessionsChanged: () => undefined,
-  onWorkspaceEvent: () => undefined,
+  onDeploymentEvent: () => undefined,
   hostOrigin: new URL("https://host.test"),
 };
 
@@ -223,17 +220,14 @@ describe("BrowserService", () => {
   it("bounds queued database admission and fences it when the owner retries after timeout", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const entered = Promise.withResolvers<void>(),
       release =
-        Promise.withResolvers<
-          Awaited<ReturnType<MemoryBrowserRepository["findMainWorkspaceForOwner"]>>
-        >();
-    const original = repository.findMainWorkspaceForOwner.bind(repository);
-    const workspace = await original(ownerId);
-    vi.spyOn(repository, "findMainWorkspaceForOwner").mockImplementationOnce(() => {
+        Promise.withResolvers<Awaited<ReturnType<MemoryBrowserRepository["getBrowserTabOpen"]>>>();
+    const original = repository.getBrowserTabOpen.bind(repository);
+    const binding = await original(ownerId, "deadline-admission");
+    vi.spyOn(repository, "getBrowserTabOpen").mockImplementationOnce(() => {
       entered.resolve();
       return release.promise;
     });
@@ -251,22 +245,21 @@ describe("BrowserService", () => {
       await entered.promise;
       await vi.advanceTimersByTimeAsync(18_000);
       await rejected;
-      release.resolve(workspace);
+      release.resolve(binding);
       await vi.advanceTimersByTimeAsync(0);
       expect(bind).not.toHaveBeenCalled();
       expect(create).not.toHaveBeenCalled();
       expect(runtime.connectionCount()).toBe(0);
     } finally {
-      release.resolve(workspace);
+      release.resolve(binding);
       vi.useRealTimers();
     }
   });
   it("orders profile deletion after startup admission so a late browser cannot escape erasure", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Delete during startup");
     const entered = Promise.withResolvers<void>(),
       release = Promise.withResolvers<void>();
@@ -279,9 +272,7 @@ describe("BrowserService", () => {
     });
     const deleted = vi.spyOn(repository, "deleteBrowserProfile");
     const service = freshService({ keys, repository, runtime });
-    const opening = service
-      .start({ ownerId, workspaceId, profileId: profile.id })
-      .catch((error) => error);
+    const opening = service.start({ ownerId, profileId: profile.id }).catch((error) => error);
     await withTimeout(entered.promise, 1_000, {
       timeoutError: () => new Error("startup never reserved its session"),
     });
@@ -305,21 +296,18 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       deferInitialSnapshot: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const first = repository.addHostedProfile("First"),
       second = repository.addHostedProfile("Second");
     const service = freshService({ keys, repository, runtime });
-    const openings: Promise<unknown>[] = [
-      service.start({ ownerId, workspaceId, profileId: first.id }),
-    ];
+    const openings: Promise<unknown>[] = [service.start({ ownerId, profileId: first.id })];
     try {
       await vi.waitFor(
         () => expect(runtime.connectionCount(), "first profile did not reach the runtime").toBe(1),
         { timeout: 1_000 },
       );
-      openings.push(service.start({ ownerId, workspaceId, profileId: second.id }));
+      openings.push(service.start({ ownerId, profileId: second.id }));
       await vi.waitFor(
         () =>
           expect(
@@ -337,9 +325,8 @@ describe("BrowserService", () => {
   it("signs initial navigation and returns its existing page without Host CDP navigation", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       repository,
@@ -375,9 +362,8 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       navigationAttribution: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Native history");
     const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
     const service = new BrowserService({
@@ -434,9 +420,8 @@ describe("BrowserService", () => {
   it("durably replays a failed initial open without starting another browser", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const create = vi.spyOn(repository, "createBrowserSession");
     const service = new BrowserService({
       ...nativeProfileOptions(),
@@ -472,11 +457,10 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
-    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const opened = await service.start({ ownerId, fresh: true });
     const command = {
       type: "browser.tab.open" as const,
       sessionId: opened.session.id,
@@ -516,9 +500,8 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
     const open = () =>
       service.openTab(ownerId, {
@@ -567,11 +550,10 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
-    const opened = await service.start({ ownerId, workspaceId, fresh: true });
+    const opened = await service.start({ ownerId, fresh: true });
     const command = {
       type: "browser.tab.open" as const,
       sessionId: opened.session.id,
@@ -615,9 +597,8 @@ describe("BrowserService", () => {
   it("refuses mismatched initial page readiness", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -629,8 +610,8 @@ describe("BrowserService", () => {
       }),
     });
     cleanups.push(() => service.close());
-    await expect(service.start({ ownerId, workspaceId, fresh: true })).rejects.toMatchObject({
-      code: "workspace_unavailable",
+    await expect(service.start({ ownerId, fresh: true })).rejects.toMatchObject({
+      code: "runner_offline",
     });
     expect((await repository.listBrowserSessions(ownerId))[0]?.state).toBe("failed");
   });
@@ -638,9 +619,8 @@ describe("BrowserService", () => {
   it("keeps native profiles on their computer, refuses old runtimes and omits saved site data", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Native");
     const relay = runnerTarget({ url: runtime.url });
     const binding = {
@@ -673,7 +653,7 @@ describe("BrowserService", () => {
       targetResolver: relay,
     });
     cleanups.push(() => service.close());
-    await expect(service.start({ ownerId, workspaceId, profileId: profile.id })).rejects.toThrow(
+    await expect(service.start({ ownerId, profileId: profile.id })).rejects.toThrow(
       "This computer's profile storage changed. Restore the original storage instance.",
     );
     await expect(
@@ -716,9 +696,8 @@ describe("BrowserService", () => {
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
         targetedStreaming: true,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
       let visited = false;
       const recordVisit = vi
@@ -745,7 +724,7 @@ describe("BrowserService", () => {
           list: async () => ({ entries: [], icons: [] }),
         } as unknown as BrowserHistoryStore,
       });
-      const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+      const opened = await service.start({ ownerId, profileId: profile.id });
       const peer = new RecordingPeer("history-icons");
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
       const favicon = "data:image/png;base64,AAAA";
@@ -852,9 +831,8 @@ describe("BrowserService", () => {
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
         targetedStreaming: true,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
       const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
       const retitle = vi.fn<BrowserHistoryStore["retitle"]>().mockResolvedValue(true);
@@ -869,7 +847,7 @@ describe("BrowserService", () => {
           list: async () => ({ entries: [], icons: [] }),
         } as unknown as BrowserHistoryStore,
       });
-      const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+      const opened = await service.start({ ownerId, profileId: profile.id });
       const peer = new RecordingPeer("history-late");
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
       await attachment.handle(
@@ -950,9 +928,8 @@ describe("BrowserService", () => {
         targetedStreaming: true,
         deferInitialSnapshot: true,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
       const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
       const history = {
@@ -974,7 +951,7 @@ describe("BrowserService", () => {
           : service.start(
               {
                 ownerId,
-                workspaceId,
+
                 profileId: profile.id,
                 initialUrl: "https://amazon.com/",
                 ...(path === "agent-start"
@@ -1055,9 +1032,8 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
     const recordVisit = vi.fn<BrowserHistoryStore["recordVisit"]>().mockResolvedValue(true);
     const retitle = vi.fn<BrowserHistoryStore["retitle"]>().mockResolvedValue(true);
@@ -1071,7 +1047,7 @@ describe("BrowserService", () => {
     const onError = vi.fn(),
       onHistoryChanged = vi.fn();
     const service = freshService({ keys, runtime, repository, history, onError, onHistoryChanged });
-    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const opened = await service.start({ ownerId, profileId: profile.id });
     const peer = new RecordingPeer("history-person");
     const first = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
     const second = await service.attach(
@@ -1194,27 +1170,21 @@ describe("BrowserService", () => {
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
         targetedStreaming: true,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
-      await repository.createBrowserProfileGrant({
-        createdBy: ownerId,
-        profileId: profile.id,
-        workspaceId,
-        access: "read-write",
-      });
+
       const recordVisit = vi.fn().mockResolvedValue(true);
       const history = {
         recordVisit,
         list: async () => ({ entries: [], icons: [] }),
       } as unknown as BrowserHistoryStore;
       const service = freshService({ keys, runtime, repository, history });
-      const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+      const opened = await service.start({ ownerId, profileId: profile.id });
       const peer = new RecordingPeer("person");
       const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
       const agent = await service.attachCdpForAgent(
-        { ownerId, workspaceId, sessionId: opened.session.id, agentBindingId: "history-agent" },
+        { ownerId, sessionId: opened.session.id, agentBindingId: "history-agent" },
         () => {},
       );
       await attachment.handle(
@@ -1285,9 +1255,8 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
     const recordVisit = vi.fn().mockResolvedValue(true);
     const service = freshService({
@@ -1299,7 +1268,7 @@ describe("BrowserService", () => {
         list: async () => ({ entries: [], icons: [] }),
       } as unknown as BrowserHistoryStore,
     });
-    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const opened = await service.start({ ownerId, profileId: profile.id });
     const peer = new RecordingPeer("person");
     const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
     const open = async (key: string, attributed: boolean) => {
@@ -1363,9 +1332,8 @@ describe("BrowserService", () => {
         targetedStreaming: true,
         navigationAttribution: kind !== "older-runtime",
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
       const recordVisit = vi.fn();
       const service = freshService({
@@ -1380,7 +1348,7 @@ describe("BrowserService", () => {
       });
       const opened = await service.start({
         ownerId,
-        workspaceId,
+
         ...(kind === "guest" ? {} : { profileId: profile.id }),
       });
       const peer = new RecordingPeer("person");
@@ -1434,9 +1402,8 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
     const recordVisit = vi.fn().mockResolvedValue(true);
     const history = {
@@ -1445,7 +1412,7 @@ describe("BrowserService", () => {
       list: async () => ({ entries: [], icons: [] }),
     } as unknown as BrowserHistoryStore;
     const service = freshService({ keys, runtime, repository, history });
-    const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+    const opened = await service.start({ ownerId, profileId: profile.id });
     const peer = new RecordingPeer("person");
     const attachment = await service.attach(ownerId, opened.session.id, peer, consumerOptions());
     const input = {
@@ -1530,7 +1497,7 @@ describe("BrowserService", () => {
   it("prunes expired history during existing browser maintenance without breaking startup on failure", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const repository = new MemoryBrowserRepository(createId("user"), createId("workspace"));
+    const repository = new MemoryBrowserRepository(createId("user"));
     const prune = vi.fn().mockRejectedValue(new Error("https://secret.example/"));
     const onError = vi.fn();
     const service = freshService({
@@ -1567,18 +1534,17 @@ describe("BrowserService", () => {
       editing: true,
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
       editing: true,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "legacy-copy",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const old = new RecordingPeer("legacy-copy"),
@@ -1729,19 +1695,18 @@ describe("BrowserService", () => {
         editing: version,
         clipboard,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
+      const ownerId = createId("user");
       const service = freshService({
         keys,
         runtime,
         editing: version,
         clipboard,
-        repository: new MemoryBrowserRepository(ownerId, workspaceId),
+        repository: new MemoryBrowserRepository(ownerId),
       });
       const opened = await service.openAgentSession({
         agentBindingId: `split-${version}-${clipboard}`,
         ownerId,
-        workspaceId,
+
         fresh: true,
       });
       expect(runtime.lastClaims()?.editingVersion).toBe(version);
@@ -1875,19 +1840,18 @@ describe("BrowserService", () => {
       editing: 2,
       clipboard: false,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
       editing: 2,
       clipboard: false,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "editing-routing",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const targeted = new RecordingPeer("editing-routing-targeted");
@@ -1974,17 +1938,16 @@ describe("BrowserService", () => {
   it("drops unaddressed copies even when only one viewer sent copy keys", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "unattributed-copy",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const copier = new RecordingPeer("unattributed-copier");
@@ -2082,17 +2045,16 @@ describe("BrowserService", () => {
   it("does not credit a newcomer with an unattributed copy it never sent", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "unattributed-newcomer",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const copier = new RecordingPeer("unattributed-departing");
@@ -2145,18 +2107,17 @@ describe("BrowserService", () => {
   it("targets editing activation and replaces forged consumer identities", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { editing: true });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
       editing: true,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "editing-activation",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const evidence: Record<string, unknown>[] = [];
@@ -2205,18 +2166,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
       editing: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
       editing: true,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "editing-parts",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("editing-parts");
@@ -2278,8 +2238,8 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     let sessionId: BrowserSessionId;
     const groupId = createBrowserSessionId();
     const tabId = BrowserSurfaceIdSchema.parse("page-1");
@@ -2305,7 +2265,7 @@ describe("BrowserService", () => {
       } as unknown as PersonalTabStore,
     });
     cleanups.push(() => service.close());
-    sessionId = (await service.start({ fresh: true, ownerId, workspaceId })).session.id;
+    sessionId = (await service.start({ fresh: true, ownerId })).session.id;
     const closing = service.closePersonalTab(ownerId, tabId);
     const settled = closing.then(
       () => "closed",
@@ -2347,17 +2307,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       connectTimeoutMs: 2_000,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(() => service.close());
-    const sessionId = (await service.start({ fresh: true, ownerId, workspaceId })).session.id;
+    const sessionId = (await service.start({ fresh: true, ownerId })).session.id;
     const tab = async () => (await browserRows(service, ownerId, sessionId)).tabs[0];
     const page = {
       active: true,
@@ -2427,9 +2387,8 @@ describe("BrowserService", () => {
       expect(advertised.navigationAttributionVersion).toBe(version === 1 ? 1 : undefined);
       const keys = generateKeyPairSync("ed25519");
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = await repository.createBrowserProfile({ ownerId, name: "History" });
       const service = freshService({
         keys,
@@ -2440,7 +2399,7 @@ describe("BrowserService", () => {
           list: async () => ({ entries: [], icons: [] }),
         } as unknown as BrowserHistoryStore,
       });
-      const opened = await service.start({ ownerId, workspaceId, profileId: profile.id });
+      const opened = await service.start({ ownerId, profileId: profile.id });
       const claims = JSON.parse(JSON.stringify(runtime.lastClaims()));
       if (version === 1) expect(claims.navigationAttributionVersion).toBe(1);
       else {
@@ -2478,11 +2437,11 @@ describe("BrowserService", () => {
         targetedStreaming: true,
       });
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
+
       const service = new BrowserService({
         ...nativeProfileOptions(),
         ...profileStateOptions,
-        repository: new MemoryBrowserRepository(ownerId, workspaceId),
+        repository: new MemoryBrowserRepository(ownerId),
         connectTimeoutMs: 2000,
         signer: new BrowserAttachTicketSigner({
           keyId: "host-primary",
@@ -2495,7 +2454,7 @@ describe("BrowserService", () => {
         }),
       });
       cleanups.push(() => service.close());
-      const opened = await service.start({ fresh: true, ownerId, workspaceId });
+      const opened = await service.start({ fresh: true, ownerId });
       expect(runtime.lastClaims()?.navigationVersion).toBe(capable ? 1 : undefined);
       expect(opened.session.navigationVersion).toBe(capable ? 1 : undefined);
       expect(service.clientStreams.source.ports.live(opened.session.id)?.navigation).toBe(capable);
@@ -2569,8 +2528,8 @@ describe("BrowserService", () => {
         targetedStreaming: true,
       });
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+      const repository = new MemoryBrowserRepository(ownerId);
       const onSessionsChanged = vi.fn();
       const service = new BrowserService({
         ...nativeProfileOptions(),
@@ -2598,7 +2557,7 @@ describe("BrowserService", () => {
         } as unknown as PersonalTabStore,
       });
       cleanups.push(() => service.close());
-      const opened = await service.start({ fresh: true, ownerId, workspaceId });
+      const opened = await service.start({ fresh: true, ownerId });
       expect(runtime.lastClaims()?.tabRestoreVersion).toBe(capable ? 1 : undefined);
       expect(opened.session.tabRestoreVersion).toBe(capable ? 1 : undefined);
       const bootstrap = await service.bootstrap(ownerId);
@@ -2634,17 +2593,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       targetControl: true,
     });
     const opened = await service.openAgentSession({
       agentBindingId: "run:viewer-surface",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("viewer-surface");
@@ -2784,16 +2743,15 @@ describe("BrowserService", () => {
   it("keeps a tab's bounded last picture across target switches until its document changes", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       ownerId,
-      workspaceId,
+
       fresh: true,
       agentBindingId: "return-picture",
     });
@@ -2894,17 +2852,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       targetControl: true,
     });
     const opened = await service.openAgentSession({
       agentBindingId: "run:control-capacity",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("capacity-native");
@@ -2962,13 +2920,13 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime, targetControl: true });
     const opened = await service.openAgentSession({
       agentBindingId: "run:native",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const native = new RecordingPeer("native");
@@ -3081,17 +3039,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       targetControl: true,
     });
     const opened = await service.openAgentSession({
       agentBindingId: "run:popup",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const attach = async (
@@ -3148,17 +3106,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       targetControl: true,
     });
     const opened = await service.openAgentSession({
       agentBindingId: "run:switch",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("switch");
@@ -3216,16 +3174,16 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       agentBindingId: "run:old-control",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("old-control");
@@ -3256,13 +3214,13 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, runtime, repository, targetControl: true });
     const opened = await service.openAgentSession({
       agentBindingId: "run:access-control",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("access-control");
@@ -3325,13 +3283,13 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
     const opened = await service.openAgentSession({
       agentBindingId: "run:catalog",
       ownerId,
-      workspaceId,
+
       fresh: true,
     });
     const peer = new RecordingPeer("catalog-metadata");
@@ -3368,10 +3326,10 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const runId = createId("run");
     const threadId = createId("thread");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const repository = new MemoryBrowserRepository(ownerId);
     const backing: BrowserSessionRepository = repository;
     const service = freshService({
       keys,
@@ -3381,7 +3339,7 @@ describe("BrowserService", () => {
       ...(options.activityClock ? { activityClock: options.activityClock } : {}),
       ...(options.onError ? { onError: options.onError } : {}),
     });
-    const authority = { agentBindingId: `run:${runId}`, ownerId, workspaceId };
+    const authority = { agentBindingId: `run:${runId}`, ownerId };
     const opened = await service.openAgentSession({ ...authority, fresh: true });
     const cdp = await service.attachCdpForAgent(
       { ...authority, sessionId: opened.session.id },
@@ -3396,7 +3354,6 @@ describe("BrowserService", () => {
         home: false,
         generation: 1,
         lineageThreadIds: [threadId],
-        lineageWorkspaceIds: [workspaceId],
       },
     ];
     const forwarded: { actorToken?: string | undefined; requestId: string }[] = [];
@@ -3816,7 +3773,7 @@ describe("BrowserService", () => {
   });
 
   it("joins binding detachment before closing and admits no detach after close", async () => {
-    const repository = new MemoryBrowserRepository(createId("user"), createId("workspace"));
+    const repository = new MemoryBrowserRepository(createId("user"));
     const service = freshService({
       keys: generateKeyPairSync("ed25519"),
       repository,
@@ -3939,12 +3896,12 @@ describe("BrowserService", () => {
         targetedStreaming: true,
       });
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
+
       const runId = createId("run");
       const threadId = createId("thread");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const repository = new MemoryBrowserRepository(ownerId);
       const service = freshService({ keys, repository, runtime, targetControl: true });
-      const authority = { agentBindingId: `run:${runId}`, ownerId, workspaceId };
+      const authority = { agentBindingId: `run:${runId}`, ownerId };
       const opened = await service.openAgentSession({ ...authority, fresh: true });
       const cdp = await service.attachCdpForAgent(
         { ...authority, sessionId: opened.session.id },
@@ -3966,7 +3923,6 @@ describe("BrowserService", () => {
             home: false,
             generation: 1,
             lineageThreadIds: [threadId],
-            lineageWorkspaceIds: [workspaceId],
           },
         ];
       });
@@ -4004,9 +3960,9 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const announced: WorkspaceId[] = [];
+
+    const repository = new MemoryBrowserRepository(ownerId);
+    const announced: BrowserSessionId[][] = [];
     const usage: BrowserUsageCredit[] = [];
     const service = new BrowserService({
       ...nativeProfileOptions(),
@@ -4014,11 +3970,11 @@ describe("BrowserService", () => {
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
       targetResolver: runnerTarget({ url: runtime.url }),
-      onSessionsChanged: (id) => announced.push(id),
+      onSessionsChanged: (id) => announced.push([...id]),
       onUsageChanged: (credits) => usage.push(...credits),
     });
     cleanups.push(async () => service.close());
-    const authority = { agentBindingId: "run:revisit", ownerId, workspaceId };
+    const authority = { agentBindingId: "run:revisit", ownerId };
     const opened = await service.openAgentSession({ ...authority, fresh: true });
     const cdp = await service.attachCdpForAgent(
       { ...authority, sessionId: opened.session.id },
@@ -4045,7 +4001,7 @@ describe("BrowserService", () => {
     await waitFor(() => usage.length > 0);
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(announced).toEqual([]);
-    expect(usage).toEqual([{ joined: false, threadId: "thr_run:revisit", workspaceId }]);
+    expect(usage).toEqual([{ joined: false, threadId: "thr_run:revisit" }]);
     expect(repository.uses.get(`${opened.session.id}|thr_run:revisit|run:revisit|page-1`)).toEqual({
       site: "about:blank",
       title: "Example",
@@ -4058,10 +4014,10 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime, sharedControl: false });
-    const authority = { agentBindingId: "run:old-browser", ownerId, workspaceId };
+    const authority = { agentBindingId: "run:old-browser", ownerId };
     const opened = await service.openAgentSession({ ...authority, fresh: true });
     await expect(
       service.attachCdpForAgent({ ...authority, sessionId: opened.session.id }, () => undefined),
@@ -4073,8 +4029,8 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4094,7 +4050,6 @@ describe("BrowserService", () => {
       initialUrl: "https://example.com/start",
       ownerId,
       profileId: workProfile.id,
-      workspaceId,
     });
 
     const navigation = await runtime.nextCommand();
@@ -4117,7 +4072,6 @@ describe("BrowserService", () => {
       kind: "profile-local",
       binding: { profileId: workProfile.id },
     });
-    await repository.grant(workProfile.id, "read-write");
 
     const peer = new RecordingPeer("ui-1");
     const attachment = await service.attach(ownerId, started.session.id, peer, consumerOptions());
@@ -4194,7 +4148,7 @@ describe("BrowserService", () => {
     await waitFor(() => peer.binaryFrames.length === 1);
     expect(peer.binaryFrames[0]?.subarray(-4)).toEqual(Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
 
-    const authority = { agentBindingId: "run:test", ownerId, workspaceId };
+    const authority = { agentBindingId: "run:test", ownerId };
     const agentSession = await service.openAgentSession({
       ...authority,
       profileId: workProfile.id,
@@ -4214,7 +4168,7 @@ describe("BrowserService", () => {
     });
     await expect(agentRequest).resolves.toEqual({ product: "Chrome/151" });
     expect(runtime.connectionCount()).toBe(2);
-    const secondAuthority = { agentBindingId: "run:second", ownerId, workspaceId };
+    const secondAuthority = { agentBindingId: "run:second", ownerId };
     const shared = await service.openAgentSession({
       ...secondAuthority,
       sessionId: agentSession.session.id,
@@ -4235,14 +4189,7 @@ describe("BrowserService", () => {
       agentSession.session.id,
     ]);
     expect(repository.session(agentSession.session.id)?.state).toBe("ready");
-    await repository.revokeBrowserGrant();
-    await expect(
-      service.detachAgentSessionsForRevokedProfileGrant({
-        ownerId,
-        profileId: workProfile.id,
-        workspaceId,
-      }),
-    ).resolves.toBe(1);
+    await service.detachAgentSessionsForBinding(secondAuthority.agentBindingId);
     expect(repository.session(agentSession.session.id)?.state).toBe("ready");
     await expect(attachedSessionIds(service, secondAuthority)).resolves.toEqual([]);
     expect(repository.session(started.session.id)?.state).toBe("ready");
@@ -4308,15 +4255,14 @@ describe("BrowserService", () => {
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       targetControl: true,
     });
-    const started = await service.start({ fresh: true, ownerId, workspaceId });
+    const started = await service.start({ fresh: true, ownerId });
     runtime.publishTabs({
       surfaces: [
         { id: "page-1", title: "Private sibling", url: "https://sibling.example/private" },
@@ -4381,8 +4327,8 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4395,7 +4341,7 @@ describe("BrowserService", () => {
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(async () => service.close());
-    const started = await service.start({ fresh: true, ownerId, workspaceId });
+    const started = await service.start({ fresh: true, ownerId });
 
     // A login that ended before this viewer could be reached by
     // `closeAuthSession` is caught by the one check made after it could.
@@ -4441,20 +4387,20 @@ describe("BrowserService", () => {
     expect(viewer.closed?.code).toBe(1013);
   }, 30_000);
 
-  it("announces the Workspace whenever a Browser Session appears or changes state", async () => {
+  it("announces sessions whenever a Browser Session appears or changes state", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const announced: WorkspaceId[] = [];
+
+    const repository = new MemoryBrowserRepository(ownerId);
+    const announced: BrowserSessionId[][] = [];
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
       connectTimeoutMs: 2_000,
-      onSessionsChanged: (id) => announced.push(id),
+      onSessionsChanged: (id) => announced.push([...id]),
       repository,
       signer: new BrowserAttachTicketSigner({
         keyId: "host-primary",
@@ -4464,15 +4410,15 @@ describe("BrowserService", () => {
     });
     cleanups.push(async () => service.close());
 
-    const started = await service.start({ fresh: true, ownerId, workspaceId });
+    const started = await service.start({ fresh: true, ownerId });
     // The row appearing, then the Runtime reporting the session ready.
-    expect(announced).toEqual([workspaceId, workspaceId]);
+    expect(announced).toEqual([[started.session.id], [started.session.id]]);
 
     announced.length = 0;
     await service.stop(ownerId, started.session.id);
 
     expect(repository.session(started.session.id)?.state).toBe("closed");
-    expect(announced).toEqual([workspaceId, workspaceId]);
+    expect(announced).toEqual([[started.session.id], [started.session.id]]);
   });
 
   it("holds an early viewer until the Runtime publishes its authoritative snapshot", async () => {
@@ -4481,8 +4427,8 @@ describe("BrowserService", () => {
       deferInitialSnapshot: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4495,7 +4441,7 @@ describe("BrowserService", () => {
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(async () => service.close());
-    const starting = service.start({ fresh: true, ownerId, workspaceId });
+    const starting = service.start({ fresh: true, ownerId });
     await waitFor(() => runtime.connectionCount() === 1);
     const record = (await repository.listBrowserSessions(ownerId)).find(
       (session) => session.state === "starting",
@@ -4524,8 +4470,8 @@ describe("BrowserService", () => {
           : { targetedStreaming: false },
       );
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+      const repository = new MemoryBrowserRepository(ownerId);
       const service = new BrowserService({
         ...nativeProfileOptions(),
         ...profileStateOptions,
@@ -4539,8 +4485,8 @@ describe("BrowserService", () => {
       });
       cleanups.push(async () => service.close());
 
-      await expect(service.start({ fresh: true, ownerId, workspaceId })).rejects.toMatchObject({
-        code: "workspace_unavailable",
+      await expect(service.start({ fresh: true, ownerId })).rejects.toMatchObject({
+        code: "runner_offline",
       });
       expect(await repository.listBrowserSessions(ownerId)).toEqual([
         expect.objectContaining({ state: "failed" }),
@@ -4554,8 +4500,8 @@ describe("BrowserService", () => {
       initialDialog: { message: "Continue?", surfaceId: "page-missing", type: "confirm" },
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4569,8 +4515,8 @@ describe("BrowserService", () => {
     });
     cleanups.push(async () => service.close());
 
-    await expect(service.start({ fresh: true, ownerId, workspaceId })).rejects.toMatchObject({
-      code: "workspace_unavailable",
+    await expect(service.start({ fresh: true, ownerId })).rejects.toMatchObject({
+      code: "runner_offline",
     });
     expect(await repository.listBrowserSessions(ownerId)).toEqual([
       expect.objectContaining({ state: "failed" }),
@@ -4583,18 +4529,17 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Client account");
     const target = runnerTarget({ url: runtime.url });
     const stale = await repository.createBrowserSession({
       id: createBrowserSessionId(),
-      origin: "workspace",
+      origin: "person",
       placementKey: `runner:${target.runnerId}:runtime-1`,
       profileId: profile.id,
       runnerId: target.runnerId,
       runtimeId: "runtime-1",
-      workspaceId,
     });
     const service = new BrowserService({
       ...nativeProfileOptions(),
@@ -4611,7 +4556,7 @@ describe("BrowserService", () => {
     await service.initialize();
     expect(repository.session(stale.id)?.state).toBe("failed");
     await expect(
-      service.start({ fresh: true, initialUrl: "file:///etc/passwd", ownerId, workspaceId }),
+      service.start({ fresh: true, initialUrl: "file:///etc/passwd", ownerId }),
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
@@ -4619,13 +4564,13 @@ describe("BrowserService", () => {
     const home = testRunner({});
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const events: AgentEvent[] = [];
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      onWorkspaceEvent: (event) => {
+      onDeploymentEvent: (event) => {
         events.push(event);
       },
       repository,
@@ -4633,13 +4578,12 @@ describe("BrowserService", () => {
     });
     const request = {
       callId: "browser-access-unit-request",
-      originatingWorkspaceId: workspaceId,
+
       ownerId,
       reason: "Sign in to the client portal",
       runId: createId("run"),
       suggestion: { kind: "new", suggestedName: "Client portal" } as const,
       threadId: createId("thread"),
-      workspaceId,
     };
 
     const requested = await service.requestAccess(request);
@@ -4708,10 +4652,8 @@ describe("BrowserService", () => {
       replayed: true,
       status: "fulfilled",
     });
-    await expect(service.listGrantedProfiles(ownerId, workspaceId)).resolves.toEqual([
+    await expect(service.listAgentProfiles(ownerId)).resolves.toEqual([
       {
-        access: "read-write",
-        grantId: resolved.grant?.id,
         id: resolved.profile?.id,
         name: "Client portal",
         home: null,
@@ -4726,12 +4668,10 @@ describe("BrowserService", () => {
     ).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("grants an existing profile or declines without granting any browser authority", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const existing = repository.addHostedProfile("Client portal");
+  it("declines new-profile consent without creating a profile", async () => {
+    const keys = generateKeyPairSync("ed25519"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4740,102 +4680,59 @@ describe("BrowserService", () => {
     });
     const request = {
       callId: "browser-access-decline",
-      originatingWorkspaceId: workspaceId,
       ownerId,
       reason: "Sign in to the client portal",
       runId: createId("run"),
-      suggestion: { kind: "existing", profileId: existing.id } as const,
+      suggestion: { kind: "new", suggestedName: "Client portal" } as const,
       threadId: createId("thread"),
-      workspaceId,
     };
-
-    const declinedRequest = await service.requestAccess(request);
-    const declineResponse = { kind: "external", value: { decision: "declined" } } as const;
-    const declined = await service.resolveRequest({
-      requestId: declinedRequest.requestId,
-      resolvedBy: ownerId,
-      response: declineResponse,
-    });
-    expect(declined).toMatchObject({
-      grant: null,
-      profile: null,
-      request: { response: declineResponse, status: "declined" },
-    });
-    await expect(service.listGrantedProfiles(ownerId, workspaceId)).resolves.toEqual([]);
-
-    const grantRequest = { ...request, callId: "browser-existing-profile-grant" };
-    const pending = await service.requestAccess(grantRequest);
-    const fulfillResponse = {
-      kind: "external",
-      value: { decision: "fulfilled", profileId: existing.id },
-    } as const;
-    const granted = await service.resolveRequest({
-      requestId: pending.requestId,
-      resolvedBy: ownerId,
-      response: fulfillResponse,
-    });
-    expect(granted.request).toMatchObject({
-      response: fulfillResponse,
-      status: "fulfilled",
-    });
-    await expect(service.requestAccess(grantRequest)).resolves.toEqual({
+    const pending = await service.requestAccess(request);
+    const response = { kind: "external", value: { decision: "declined" } } as const;
+    expect(
+      await service.resolveRequest({ requestId: pending.requestId, resolvedBy: ownerId, response }),
+    ).toMatchObject({ profile: null, request: { response, status: "declined" } });
+    await expect(service.listAgentProfiles(ownerId)).resolves.toEqual([]);
+    await expect(service.requestAccess(request)).resolves.toEqual({
       ...pending,
       replayed: true,
-      status: "fulfilled",
+      status: "declined",
     });
   });
 
-  it("asks in Main or a Project, never for a profile the Workspace can already use", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const signer = new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey });
-    const mainRepository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
-    const main = new BrowserService({
+  it("asks to create a profile and refuses redundant consent for an owned profile", async () => {
+    const keys = generateKeyPairSync("ed25519"),
+      ownerId = createId("user"),
+      repository = new MemoryBrowserRepository(ownerId);
+    const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      repository: mainRepository,
-      signer,
-    });
-    const project = new BrowserService({
-      ...nativeProfileOptions(),
-      ...profileStateOptions,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
-      signer,
+      repository,
+      signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
     const request = {
-      callId: "browser-access-main-refusal",
-      originatingWorkspaceId: workspaceId,
+      callId: "browser-access-new",
       ownerId,
       reason: "Sign in to the client portal",
       runId: createId("run"),
-      suggestion: { kind: "user_choice" } as const,
+      suggestion: { kind: "new", suggestedName: "Client portal" } as const,
       threadId: createId("thread"),
-      workspaceId,
     };
-
+    await expect(service.requestAccess(request)).resolves.toMatchObject({
+      kind: "browser.access",
+      status: "pending",
+    });
+    const owned = repository.addHostedProfile("Personal");
     await expect(
-      main.requestAccess({
+      service.requestAccess({
         ...request,
-        suggestion: { kind: "new", suggestedName: "Brex" },
-      }),
-    ).resolves.toMatchObject({ kind: "browser.access", status: "pending" });
-    // Main reaches every profile its owner has, so asking for one would only ask for a yes.
-    const owned = await mainRepository.createBrowserProfile({ ownerId, name: "Personal" });
-    await expect(
-      main.requestAccess({
-        ...request,
-        callId: "browser-access-main-owned",
+        callId: "owned",
         suggestion: { kind: "existing", profileId: owned.id },
       }),
     ).rejects.toMatchObject({ code: "conflict" });
     await expect(
-      project.requestAccess({ ...request, workspaceId: createId("workspace") }),
-    ).rejects.toMatchObject({ code: "not_found" });
-    await expect(
-      project.requestAccess({
+      service.requestAccess({
         ...request,
-        callId: "browser-access-advisory-profile",
+        callId: "advisory",
         suggestion: { kind: "existing", profileId: createId("browserProfile") },
       }),
     ).resolves.toMatchObject({ kind: "browser.access", status: "pending" });
@@ -4844,8 +4741,8 @@ describe("BrowserService", () => {
   it("keeps a worst-case maximum browser catalog below the serialized bootstrap ceiling", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MaximumBrowserCatalogRepository(ownerId, workspaceId, 100);
+
+    const repository = new MaximumBrowserCatalogRepository(ownerId, 128);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
@@ -4854,7 +4751,7 @@ describe("BrowserService", () => {
     });
 
     const bootstrap = await service.bootstrap(ownerId);
-    expect(bootstrap.profileGrants).toHaveLength(100);
+    expect(bootstrap.profiles).toHaveLength(128);
     expect(bootstrap).not.toHaveProperty("sessions");
     expect(bootstrap).not.toHaveProperty("personalTabs");
     expect(Buffer.byteLength(JSON.stringify(bootstrap), "utf8")).toBeLessThanOrEqual(
@@ -4865,20 +4762,20 @@ describe("BrowserService", () => {
     const overflow = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
-      repository: new MaximumBrowserCatalogRepository(ownerId, workspaceId, 101),
+      repository: new MaximumBrowserCatalogRepository(ownerId, 129),
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
     await expect(overflow.bootstrap(ownerId)).rejects.toMatchObject({ code: "conflict" });
   });
 
-  it("requires one read-write profile grant before raw CDP reaches a Runtime", async () => {
+  it("requires profile ownership before raw CDP reaches a Runtime", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Alex's Mac");
     const environmentId = createId("environment");
     const target = runnerTarget({
@@ -4895,20 +4792,18 @@ describe("BrowserService", () => {
       targetResolver: target,
     });
     cleanups.push(async () => service.close());
-    const authority = { agentBindingId: "run:runner-test", ownerId, workspaceId };
+    const authority = { agentBindingId: "run:runner-test", ownerId };
     await expect(
-      service.openAgentSession({ ...authority, environmentId, profileId: profile.id }),
+      service.openAgentSession({
+        ...authority,
+        ownerId: createId("user"),
+        environmentId,
+        profileId: profile.id,
+      }),
     ).rejects.toMatchObject({ code: "forbidden" });
     expect(runtime.connectionCount()).toBe(0);
 
-    const grant = await service.grantProfileToWorkspace({
-      access: "read-write",
-      createdBy: ownerId,
-      profileId: profile.id,
-      workspaceId,
-    });
-    expect(grant).toMatchObject({ access: "read-write", profileId: profile.id });
-    const visible = await service.start({ ownerId, profileId: profile.id, workspaceId });
+    const visible = await service.start({ ownerId, profileId: profile.id });
     expect(visible.session.placement).toEqual({ kind: "runner", runnerId: target.runnerId });
     const opened = await service.openAgentSession({ ...authority, profileId: profile.id });
     expect(opened.session).toMatchObject({
@@ -4943,7 +4838,7 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const environmentId = createId("environment");
     const bound = testRunner({ environmentIds: [environmentId] });
     const service = placementService({
@@ -4951,7 +4846,6 @@ describe("BrowserService", () => {
       ownerId,
       runners: [bound, testRunner({})],
       runtime,
-      workspaceId,
     });
 
     const opened = await service.openAgentSession({
@@ -4959,7 +4853,6 @@ describe("BrowserService", () => {
       environmentId,
       fresh: true,
       ownerId,
-      workspaceId,
     });
 
     expect(opened.session.placement).toEqual({ kind: "runner", runnerId: bound.runnerId });
@@ -4971,7 +4864,7 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const environmentId = createId("environment");
     const first = testRunner({ environmentIds: [environmentId] });
     const second = testRunner({ environmentIds: [environmentId] });
@@ -4980,7 +4873,6 @@ describe("BrowserService", () => {
       ownerId,
       runners: [first, second],
       runtime,
-      workspaceId,
     });
 
     await expect(
@@ -4989,7 +4881,6 @@ describe("BrowserService", () => {
         environmentId,
         fresh: true,
         ownerId,
-        workspaceId,
       }),
     ).rejects.toMatchObject({
       code: "conflict",
@@ -5009,7 +4900,7 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const runEnvironmentId = createId("environment");
     const chosenEnvironmentId = createId("environment");
     const here = testRunner({ environmentIds: [runEnvironmentId] });
@@ -5019,7 +4910,6 @@ describe("BrowserService", () => {
       ownerId,
       runners: [here, there],
       runtime,
-      workspaceId,
     });
 
     const opened = await service.openAgentSession({
@@ -5028,7 +4918,6 @@ describe("BrowserService", () => {
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
-      workspaceId,
     });
     expect(opened.session.placement).toEqual({ kind: "runner", runnerId: there.runnerId });
 
@@ -5040,7 +4929,6 @@ describe("BrowserService", () => {
       environmentId: runEnvironmentId,
       fresh: true,
       ownerId,
-      workspaceId,
     });
     expect(back.session.placement).toEqual({ kind: "runner", runnerId: here.runnerId });
     expect(back.session.id).not.toBe(opened.session.id);
@@ -5052,7 +4940,7 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const browserEnvironmentId = createId("environment");
     const withBrowser = testRunner({ environmentIds: [browserEnvironmentId] });
     const service = placementService({
@@ -5060,7 +4948,6 @@ describe("BrowserService", () => {
       ownerId,
       runners: [withBrowser],
       runtime,
-      workspaceId,
     });
 
     await expect(
@@ -5069,7 +4956,6 @@ describe("BrowserService", () => {
         chosenEnvironmentId: createId("environment"),
         fresh: true,
         ownerId,
-        workspaceId,
       }),
     ).rejects.toMatchObject({
       code: "bad_request",
@@ -5085,7 +4971,6 @@ describe("BrowserService", () => {
         chosenEnvironmentId: browserEnvironmentId,
         ownerId,
         sessionId: createBrowserSessionId(),
-        workspaceId,
       }),
     ).rejects.toMatchObject({
       code: "bad_request",
@@ -5102,15 +4987,15 @@ describe("BrowserService", () => {
         targetedStreaming: true,
       });
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
+
       const runner = testRunner({ agents: false });
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = repository.addHostedProfile("Legacy");
-      await repository.grant(profile.id, "read-write");
+
       const service = placementService({
         keys,
         ownerId,
-        workspaceId,
+
         runtime,
         repository,
         runners: [runner],
@@ -5119,59 +5004,11 @@ describe("BrowserService", () => {
         service.openAgentSession({
           agentBindingId: "run:guest",
           ownerId,
-          workspaceId,
+
           ...(identity === "guest" ? { fresh: true as const } : { profileId: profile.id }),
         }),
-      ).rejects.toMatchObject({ code: "workspace_unavailable" });
+      ).rejects.toMatchObject({ code: "runner_offline" });
       expect(runtime.connectionCount()).toBe(0);
-    },
-  );
-
-  it.each(["server", "personal"] as const)(
-    "admits an agent guest through a deployment-owned browser-only service only on a server: %s",
-    async (deployment) => {
-      const keys = generateKeyPairSync("ed25519");
-      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-        targetedStreaming: true,
-      });
-      const ownerId = createId("user");
-      const workspaceId = createId("workspace");
-      const runner = testRunner({ agents: false });
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-      vi.spyOn(repository, "listEligibleBrowserRunners").mockResolvedValue([
-        {
-          id: runner.runnerId,
-          name: "Browser service",
-          kind: "managed",
-          ownerKind: "deployment",
-          ownerUserId: null,
-          allowedModules: ["browser"],
-        },
-      ]);
-      const service = placementService({
-        keys,
-        ownerId,
-        workspaceId,
-        runtime,
-        repository,
-        personal: deployment === "personal",
-        runners: [runner],
-      });
-      const opening = service.openAgentSession({
-        agentBindingId: "run:browser-service",
-        ownerId,
-        workspaceId,
-        fresh: true,
-      });
-      if (deployment === "personal") {
-        await expect(opening).rejects.toMatchObject({ code: "workspace_unavailable" });
-        expect(runtime.connectionCount()).toBe(0);
-      } else {
-        expect((await opening).session.placement).toEqual({
-          kind: "runner",
-          runnerId: runner.runnerId,
-        });
-      }
     },
   );
 
@@ -5183,17 +5020,17 @@ describe("BrowserService", () => {
         targetedStreaming: true,
       });
       const ownerId = createId("user");
-      const workspaceId = createId("workspace");
+
       const environmentId = createId("environment");
       const home = testRunner({ agents: false });
       const agent = testRunner({ environmentIds: [environmentId] });
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+      const repository = new MemoryBrowserRepository(ownerId);
       const profile = repository.addHostedProfile("Work", home.runnerId);
-      await repository.grant(profile.id, "read-write");
+
       const service = placementService({
         keys,
         ownerId,
-        workspaceId,
+
         repository,
         runtime,
         runners: [home, agent],
@@ -5203,7 +5040,7 @@ describe("BrowserService", () => {
           ? await service.openAgentSession({
               agentBindingId: "run:home",
               ownerId,
-              workspaceId,
+
               profileId: profile.id,
               chosenEnvironmentId: environmentId,
             })
@@ -5216,7 +5053,7 @@ describe("BrowserService", () => {
       expect(opened.session.placement).toEqual({ kind: "runner", runnerId: home.runnerId });
       if (caller === "agent") {
         const attachment = await service.attachCdpForAgent(
-          { agentBindingId: "run:home", ownerId, workspaceId },
+          { agentBindingId: "run:home", ownerId },
           () => undefined,
         );
         for (const method of ["Opensteer.fillLogin", "Opensteer.fillCard"]) {
@@ -5239,16 +5076,16 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const home = testRunner({});
     const other = testRunner({});
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Work", home.runnerId);
-    await repository.grant(profile.id, "read-write");
+
     const service = placementService({
       keys,
       ownerId,
-      workspaceId,
+
       repository,
       runtime,
       runners: [other],
@@ -5262,7 +5099,7 @@ describe("BrowserService", () => {
       service.openAgentSession({
         agentBindingId: "run:offline",
         ownerId,
-        workspaceId,
+
         profileId: profile.id,
       }),
     ).rejects.toMatchObject(refusal);
@@ -5276,52 +5113,22 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(0);
   });
 
-  it("never offers or places a Workspace member on another member's browser computer", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const other = testRunner({});
-    const service = placementService({ keys, ownerId, workspaceId, runtime, runners: [other] });
-    eligibleRunners.delete(other.runnerId);
-    expect((await service.bootstrap(ownerId)).placements).toEqual([]);
-    await expect(
-      service.openTab(ownerId, {
-        type: "browser.tab.open",
-        identity: { kind: "guest" },
-        idempotencyKey: "foreign",
-        placement: { kind: "runner", runnerId: other.runnerId },
-      }),
-    ).rejects.toMatchObject({ reason: "browser-placement-unavailable" });
-    await expect(
-      service.openAgentSession({
-        agentBindingId: "run:foreign",
-        ownerId,
-        workspaceId,
-        fresh: true,
-      }),
-    ).rejects.toMatchObject({ code: "workspace_unavailable" });
-    expect(runtime.connectionCount()).toBe(0);
-  });
-
   it("uses Personal Main for a person's Guest unless they choose an eligible browser device", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const main = testRunner({});
     const phone = testRunner({ agents: false });
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const repository = new MemoryBrowserRepository(ownerId);
     repository.mainRunnerId = main.runnerId;
     const runners = [main, phone];
     const service = placementService({
       keys,
       ownerId,
-      workspaceId,
+
       runtime,
       repository,
       runners,
@@ -5349,51 +5156,6 @@ describe("BrowserService", () => {
     expect(runtime.connectionCount()).toBe(2);
   });
 
-  it("asks for a person's Guest computer on a server instead of treating remembered placement as a choice", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const first = testRunner({});
-    const second = testRunner({});
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    repository.rememberedPlacement = second.runnerId;
-    const multiple = placementService({
-      keys,
-      ownerId,
-      workspaceId,
-      runtime,
-      repository,
-      runners: [first, second],
-    });
-    await expect(
-      multiple.openTab(ownerId, {
-        type: "browser.tab.open",
-        identity: { kind: "guest" },
-        idempotencyKey: "choose",
-      }),
-    ).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
-    const single = placementService({
-      keys,
-      ownerId,
-      workspaceId,
-      runtime,
-      repository,
-      runners: [first],
-    });
-    expect(
-      (
-        await single.openTab(ownerId, {
-          type: "browser.tab.open",
-          identity: { kind: "guest" },
-          idempotencyKey: "only",
-        })
-      ).session.placement,
-    ).toEqual({ kind: "runner", runnerId: first.runnerId });
-  });
-
   it("falls back to the only connected computer and refuses to guess between many", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
@@ -5402,17 +5164,13 @@ describe("BrowserService", () => {
     const ownerId = createId("user");
     const only = testRunner({ environmentIds: [createId("environment")] });
 
-    const soleWorkspaceId = createId("workspace");
     const sole = placementService({
       keys,
       ownerId,
       runners: [only],
       runtime,
-      workspaceId: soleWorkspaceId,
     });
-    await expect(
-      sole.start({ fresh: true, ownerId, workspaceId: soleWorkspaceId }),
-    ).resolves.toMatchObject({
+    await expect(sole.start({ fresh: true, ownerId })).resolves.toMatchObject({
       session: { placement: { kind: "runner", runnerId: only.runnerId } },
     });
     // An environment nothing is bound to falls through to the same single
@@ -5423,35 +5181,30 @@ describe("BrowserService", () => {
         environmentId: createId("environment"),
         fresh: true,
         ownerId,
-        workspaceId: soleWorkspaceId,
       }),
     ).resolves.toMatchObject({
       session: { placement: { kind: "runner", runnerId: only.runnerId } },
     });
 
-    const conflictWorkspaceId = createId("workspace");
     const conflict = placementService({
       keys,
       ownerId,
       runners: [only, testRunner({})],
       runtime,
-      workspaceId: conflictWorkspaceId,
     });
-    await expect(
-      conflict.start({ fresh: true, ownerId, workspaceId: conflictWorkspaceId }),
-    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(conflict.start({ fresh: true, ownerId })).rejects.toMatchObject({
+      code: "conflict",
+    });
 
-    const unavailableWorkspaceId = createId("workspace");
     const unavailable = placementService({
       keys,
       ownerId,
       runners: [],
       runtime,
-      workspaceId: unavailableWorkspaceId,
     });
-    await expect(
-      unavailable.start({ fresh: true, ownerId, workspaceId: unavailableWorkspaceId }),
-    ).rejects.toMatchObject({ code: "workspace_unavailable" });
+    await expect(unavailable.start({ fresh: true, ownerId })).rejects.toMatchObject({
+      code: "runner_offline",
+    });
   });
 
   it("does not route a chosen incompatible browser to another computer", async () => {
@@ -5460,7 +5213,7 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const outdatedEnvironmentId = createId("environment");
     const reason = "Update the Browser Runtime on this computer; snapshot version 2 is required.";
     const outdated = testRunner({
@@ -5473,7 +5226,6 @@ describe("BrowserService", () => {
       ownerId,
       runners: [outdated, current],
       runtime,
-      workspaceId,
     });
     await service.initialize();
 
@@ -5491,17 +5243,15 @@ describe("BrowserService", () => {
         environmentId: outdatedEnvironmentId,
         fresh: true,
         ownerId,
-        workspaceId,
       }),
-    ).rejects.toMatchObject({ code: "workspace_unavailable", message: reason });
+    ).rejects.toMatchObject({ code: "runner_offline", message: reason });
     await expect(
       service.start({
         fresh: true,
         ownerId,
         placement: { kind: "runner", runnerId: outdated.runnerId },
-        workspaceId,
       }),
-    ).rejects.toMatchObject({ code: "workspace_unavailable", message: reason });
+    ).rejects.toMatchObject({ code: "runner_offline", message: reason });
     expect(runtime.connectionCount()).toBe(0);
   });
 
@@ -5511,11 +5261,11 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
+
     const environmentId = createId("environment");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Established profile");
-    await repository.grant(profile.id, "read-write");
+
     const established = testRunner({});
     const bound = testRunner({ environmentIds: [environmentId] });
     const service = placementService({
@@ -5524,18 +5274,16 @@ describe("BrowserService", () => {
       repository,
       runners: [established, bound],
       runtime,
-      workspaceId,
     });
 
     const initial = await service.start({
       ownerId,
       placement: { kind: "runner", runnerId: established.runnerId },
       profileId: profile.id,
-      workspaceId,
     });
     const reused = await service.start({
       ownerId,
-      workspaceId,
+
       profileId: profile.id,
       reuseExisting: true,
       placement: { kind: "runner", runnerId: bound.runnerId },
@@ -5547,26 +5295,22 @@ describe("BrowserService", () => {
       environmentId,
       ownerId,
       profileId: profile.id,
-      workspaceId,
     });
     expect(profileOpen.session.placement).toEqual({
       kind: "runner",
       runnerId: established.runnerId,
     });
 
-    const sessionWorkspaceId = repository.addWorkspace("project");
     const existing = await service.start({
       fresh: true,
       ownerId,
       placement: { kind: "runner", runnerId: established.runnerId },
-      workspaceId: sessionWorkspaceId,
     });
     const reattached = await service.openAgentSession({
       agentBindingId: "run:session-affinity",
       environmentId,
       ownerId,
       sessionId: existing.session.id,
-      workspaceId: sessionWorkspaceId,
     });
     expect(reattached.session).toMatchObject({
       id: existing.session.id,
@@ -5574,14 +5318,14 @@ describe("BrowserService", () => {
     });
   });
 
-  it("never reuses a user session on a profile that was not granted to agents", async () => {
+  it("never reuses a person session on a different profile", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const granted = repository.addHostedProfile("Granted");
     const userOnly = repository.addHostedProfile("User only");
     const service = new BrowserService({
@@ -5592,17 +5336,16 @@ describe("BrowserService", () => {
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(async () => service.close());
-    await service.start({ ownerId, profileId: userOnly.id, workspaceId });
-    await repository.grant(granted.id, "read-write");
+    await service.start({ ownerId, profileId: userOnly.id });
+
     const agent = await service.openAgentSession({
       agentBindingId: "run:isolation-test",
       ownerId,
       profileId: granted.id,
-      workspaceId,
     });
     expect(agent.session).toMatchObject({ profileId: granted.id });
     expect(agent.session.id).not.toBe(
-      (await repository.findActiveBrowserSessionForWorkspace(workspaceId))?.id,
+      (await repository.findActiveBrowserSessionForPerson(ownerId))?.id,
     );
     expect(runtime.connectionCount()).toBe(2);
   });
@@ -5613,8 +5356,8 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const profile = repository.addHostedProfile("Shopping");
     const onProfilesChanged = vi.fn();
     const service = new BrowserService({
@@ -5626,15 +5369,15 @@ describe("BrowserService", () => {
       targetResolver: runnerTarget({ url: runtime.url }),
     });
     cleanups.push(async () => service.close());
-    const { session } = await service.start({ ownerId, profileId: profile.id, workspaceId });
+    const { session } = await service.start({ ownerId, profileId: profile.id });
 
     await service.deleteProfile({ ownerId, profileId: profile.id });
 
     expect(repository.session(session.id)?.state).toBe("closed");
-    expect(onProfilesChanged).toHaveBeenCalledWith(ownerId, workspaceId);
-    await expect(
-      service.start({ ownerId, profileId: profile.id, workspaceId }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    expect(onProfilesChanged).toHaveBeenCalledWith(ownerId);
+    await expect(service.start({ ownerId, profileId: profile.id })).rejects.toMatchObject({
+      code: "not_found",
+    });
   });
 
   it("opens a fresh agent session with no profile, no grant, and no lease", async () => {
@@ -5643,12 +5386,12 @@ describe("BrowserService", () => {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
 
-    const authority = { agentBindingId: "run:fresh", ownerId, workspaceId };
-    await expect(service.listGrantedProfiles(ownerId, workspaceId)).resolves.toEqual([]);
+    const authority = { agentBindingId: "run:fresh", ownerId };
+    await expect(service.listAgentProfiles(ownerId)).resolves.toEqual([]);
     const opened = await service.openAgentSession({ ...authority, fresh: true });
     expect(opened).toMatchObject({
       session: { attached: true, profileId: null, profileName: null },
@@ -5670,25 +5413,24 @@ describe("BrowserService", () => {
       expect.arrayContaining([opened.session.id, second.session.id]),
     );
     expect(runtime.connectionCount()).toBe(2);
-    // A profile-backed request never reuses a fresh attachment.
     const profile = repository.addHostedProfile("Client portal");
-    await expect(
-      service.openAgentSession({ ...authority, profileId: profile.id }),
-    ).rejects.toMatchObject({ code: "forbidden" });
+    const backed = await service.openAgentSession({ ...authority, profileId: profile.id });
+    expect(backed.session.id).not.toBe(opened.session.id);
+    expect(backed.session.profileId).toBe(profile.id);
   });
 
   it("requires exactly one identity when an agent opens a Browser Session", async () => {
     const keys = generateKeyPairSync("ed25519");
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = new BrowserService({
       ...nativeProfileOptions(),
       ...profileStateOptions,
       repository,
       signer: new BrowserAttachTicketSigner({ keyId: "host-v1", privateKey: keys.privateKey }),
     });
-    const authority = { agentBindingId: "run:identity", ownerId, workspaceId };
+    const authority = { agentBindingId: "run:identity", ownerId };
     const profileId = repository.addHostedProfile("Client portal").id;
     for (const identity of [
       {},
@@ -5702,100 +5444,74 @@ describe("BrowserService", () => {
     }
   });
 
-  it("scopes a fresh session to its Workspace and the owner's Main", async () => {
-    const keys = generateKeyPairSync("ed25519");
-    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-      targetedStreaming: true,
-    });
-    const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
-    const service = freshService({ keys, repository, runtime });
+  it("shares a personal session across its owner's tasks and refuses another owner", async () => {
+    const keys = generateKeyPairSync("ed25519"),
+      runtime = await startFakeRuntime(keys.publicKey, "host-primary", { targetedStreaming: true }),
+      ownerId = createId("user");
+    const repository = new MemoryBrowserRepository(ownerId),
+      service = freshService({ keys, repository, runtime });
     const opened = await service.openAgentSession({
       agentBindingId: "run:owner",
       fresh: true,
       ownerId,
-      workspaceId,
     });
-
-    const otherWorkspaceId = repository.addWorkspace("project");
+    const otherOwner = createId("user");
     await expect(
       service.openAgentSession({
-        agentBindingId: "run:other-workspace",
-        ownerId,
+        agentBindingId: "run:foreign",
+        ownerId: otherOwner,
         sessionId: opened.session.id,
-        workspaceId: otherWorkspaceId,
       }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-
-    const mainWorkspaceId = repository.addWorkspace("main");
+    ).rejects.toMatchObject({ code: "not_found" });
     await expect(
-      service.openAgentSession({
-        agentBindingId: "run:channel",
-        ownerId,
-        sessionId: opened.session.id,
-        workspaceId: mainWorkspaceId,
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(
-      service.listAgentSessions({
-        agentBindingId: "run:channel",
-        ownerId,
-        workspaceId: mainWorkspaceId,
-      }),
+      service.listAgentSessions({ agentBindingId: "run:foreign", ownerId: otherOwner }),
     ).resolves.toEqual([]);
-
     await expect(
       service.openAgentSession({
-        agentBindingId: "run:main",
+        agentBindingId: "run:another-task",
         ownerId,
         sessionId: opened.session.id,
-        workspaceId: mainWorkspaceId,
       }),
     ).resolves.toMatchObject({ session: { id: opened.session.id, profileName: null } });
     await expect(
-      service.listAgentSessions({
-        agentBindingId: "run:main",
-        ownerId,
-        workspaceId: mainWorkspaceId,
-      }),
+      service.listAgentSessions({ agentBindingId: "run:another-task", ownerId }),
     ).resolves.toEqual([expect.objectContaining({ id: opened.session.id, profileName: null })]);
   });
 
-  it("keeps a Workspace session's identity immutable across reuse", async () => {
+  it("keeps a person session's identity immutable across reuse", async () => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
     const ownerId = createId("user");
-    const workspaceId = createId("workspace");
-    const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+
+    const repository = new MemoryBrowserRepository(ownerId);
     const service = freshService({ keys, repository, runtime });
     const profile = repository.addHostedProfile("Client portal");
 
-    const fresh = await service.start({ fresh: true, ownerId, workspaceId });
+    const fresh = await service.start({ fresh: true, ownerId });
     expect(fresh.session.profileId).toBeNull();
     await expect(
-      service.start({ fresh: true, ownerId, workspaceId, reuseExisting: true }),
+      service.start({ fresh: true, ownerId, reuseExisting: true }),
     ).resolves.toMatchObject({
       session: { id: fresh.session.id },
       wasExisting: true,
     });
     await expect(
-      service.start({ ownerId, profileId: profile.id, workspaceId, reuseExisting: true }),
+      service.start({ ownerId, profileId: profile.id, reuseExisting: true }),
     ).rejects.toMatchObject({
       code: "conflict",
-      message: "This Workspace is using a signed-out browser session.",
+      message: "This browser is using a signed-out browser session.",
     });
 
     await service.stop(ownerId, fresh.session.id);
-    const backed = await service.start({ ownerId, profileId: profile.id, workspaceId });
+    const backed = await service.start({ ownerId, profileId: profile.id });
     expect(backed.session.profileId).toBe(profile.id);
     await expect(
-      service.start({ fresh: true, ownerId, workspaceId, reuseExisting: true }),
+      service.start({ fresh: true, ownerId, reuseExisting: true }),
     ).rejects.toMatchObject({
       code: "conflict",
-      message: "This Workspace is using a browser profile.",
+      message: "This browser is using a browser profile.",
     });
   });
 });
@@ -5819,7 +5535,7 @@ function freshService(options: {
   readonly actorMetadataTimeoutMs?: number;
   readonly activityClock?: Clock;
   readonly keys: { readonly privateKey: KeyObject };
-  readonly onWorkspaceEvent?: (event: AgentEvent) => void;
+  readonly onDeploymentEvent?: (event: AgentEvent) => void;
   readonly repository: MemoryBrowserRepository;
   readonly runtime: { readonly url: URL };
   readonly personalTabs?: PersonalTabStore;
@@ -5840,7 +5556,7 @@ function freshService(options: {
       : {
           actorMetadataTimeoutMs: options.actorMetadataTimeoutMs,
         }),
-    ...(options.onWorkspaceEvent ? { onWorkspaceEvent: options.onWorkspaceEvent } : {}),
+    ...(options.onDeploymentEvent ? { onDeploymentEvent: options.onDeploymentEvent } : {}),
     repository: options.repository,
     signer: new BrowserAttachTicketSigner({
       keyId: "host-primary",
@@ -5896,7 +5612,6 @@ function placementService(options: {
   readonly repository?: MemoryBrowserRepository;
   readonly runners: readonly TestBrowserRunner[];
   readonly runtime: { readonly url: URL };
-  readonly workspaceId: WorkspaceId;
 }): BrowserService {
   // Every Runner here shares one fake runtime socket: placement is what these
   // tests are about, not what happens after the browser answers.
@@ -5918,7 +5633,7 @@ function placementService(options: {
       if (!runner) return undefined;
       if (runner.unavailableReason) {
         throw new OpensteerError({
-          code: "workspace_unavailable",
+          code: "runner_offline",
           message: runner.unavailableReason,
         });
       }
@@ -5936,8 +5651,7 @@ function placementService(options: {
     ...nativeProfileOptions(),
     ...profileStateOptions,
     personal: options.personal === true,
-    repository:
-      options.repository ?? new MemoryBrowserRepository(options.ownerId, options.workspaceId),
+    repository: options.repository ?? new MemoryBrowserRepository(options.ownerId),
     signer: new BrowserAttachTicketSigner({
       keyId: "host-primary",
       privateKey: options.keys.privateKey,
@@ -6014,7 +5728,6 @@ async function attachedSessionIds(
   authority: {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
   },
 ): Promise<readonly BrowserSessionId[]> {
   return (await service.listAgentSessions(authority))
@@ -6023,6 +5736,9 @@ async function attachedSessionIds(
 }
 
 class MemoryBrowserRepository implements BrowserSessionRepository {
+  async resolveResourceAccess() {
+    return { specialistAllowed: true };
+  }
   mainRunnerId: RunnerId | undefined;
   rememberedPlacement: RunnerId | null = null;
   async listEligibleBrowserRunners(): ReturnType<
@@ -6038,9 +5754,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     }));
   }
   readonly tabOpens = new Map<string, import("@opensteer/protocol").BrowserTabOpenBinding>();
-  async findMainWorkspaceForOwner(ownerId: UserId) {
-    return this.getWorkspaceForOwner(this.#workspaceId, ownerId);
-  }
+
   async getBrowserTabOpen(ownerId: UserId, key: string) {
     return this.tabOpens.get(`${ownerId}:${key}`) ?? null;
   }
@@ -6131,7 +5845,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     const key = `${sessionId}|${threadId}|${usedBy}|${tabId ?? ""}`;
     const created = !this.uses.has(key);
     this.uses.set(key, page ?? this.uses.get(key) ?? null);
-    return joined || created ? [{ joined, threadId, workspaceId: this.#workspaceId }] : [];
+    return joined || created ? [{ joined, threadId }] : [];
   }
   readonly #requestCallIds = new Map<string, RequestId>();
   readonly #requests = new Map<RequestId, Request>();
@@ -6142,28 +5856,17 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       readonly agentBindingId: string;
       readonly ownerId: UserId;
       readonly sessionId: BrowserSessionId;
-      readonly workspaceId: WorkspaceId;
     }
   >();
-  #grant: {
-    access: BrowserProfileAccess;
-    createdAt: Date;
-    grantId: BrowserProfileGrantId;
-    profileId: BrowserProfileId;
-    workspaceId: WorkspaceId;
-  } | null = null;
+
   readonly #ownerId: UserId;
-  readonly #otherWorkspaces = new Map<WorkspaceId, "main" | "project">();
+
   readonly #profiles = new Map<BrowserProfileId, BrowserProfileRecord>();
   readonly #deletedProfiles = new Set<BrowserProfileId>();
   readonly #sessions = new Map<BrowserSessionId, BrowserSessionRecord>();
-  readonly #workspaceId: WorkspaceId;
-  readonly #workspaceKind: "main" | "project";
 
-  constructor(ownerId: UserId, workspaceId: WorkspaceId, workspaceKind?: "main" | "project") {
+  constructor(ownerId: UserId) {
     this.#ownerId = ownerId;
-    this.#workspaceId = workspaceId;
-    this.#workspaceKind = workspaceKind ?? "project";
   }
 
   readonly requests: BrowserSessionRepository["requests"] = {
@@ -6191,7 +5894,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         originatingOccurrenceId: null,
         originatingRunId: input.originatingRunId,
         originatingThreadId: input.originatingThreadId,
-        originatingWorkspaceId: input.originatingWorkspaceId,
+
         payload: input.payload,
         presentation: input.presentation,
         requestedBy: input.requestedBy,
@@ -6200,7 +5903,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
         resolvedBy: null,
         response: null,
         status: "pending",
-        targetWorkspaceId: input.targetWorkspaceId,
       };
       this.#requestCallIds.set(callIdentity, request.id);
       this.#requests.set(request.id, request);
@@ -6252,29 +5954,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
           throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
         }
       }
-      let grant: ActiveBrowserProfileGrant | null = null;
-      const targetKind =
-        pending.targetWorkspaceId === this.#workspaceId
-          ? this.#workspaceKind
-          : this.#otherWorkspaces.get(pending.targetWorkspaceId);
-      if (fulfilled && profile && (pending.kind === "browser.access" || targetKind === "project")) {
-        if (
-          this.#grant &&
-          (this.#grant.profileId !== profile.id ||
-            this.#grant.workspaceId !== pending.targetWorkspaceId)
-        ) {
-          throw new OpensteerError({ code: "conflict", message: "Browser grant conflict" });
-        }
-        grant =
-          this.#grant ??
-          ({
-            access: "read-write",
-            createdAt: new Date(),
-            grantId: createId("browserProfileGrant"),
-            profileId: profile.id,
-            workspaceId: pending.targetWorkspaceId,
-          } satisfies ActiveBrowserProfileGrant);
-      }
       const request: Request = {
         ...pending,
         cancellationReason: null,
@@ -6287,11 +5966,10 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       // Everything above is prepared and validated before this synchronous
       // commit boundary, mirroring the production database transaction.
       if (profile && !this.#profiles.has(profile.id)) this.#profiles.set(profile.id, profile);
-      if (grant) this.#grant = grant;
+
       this.#requests.set(request.id, request);
       return {
         events: [this.#requestEvent(request)],
-        grant,
         profile,
         request,
       };
@@ -6307,23 +5985,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     };
     this.#profiles.set(profile.id, profile);
     return profile;
-  }
-
-  async createBrowserProfileGrant(input: {
-    readonly access: BrowserProfileAccess;
-    readonly createdBy: UserId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  }) {
-    if (this.#grant) throw new Error("conflict");
-    this.#grant = {
-      access: input.access,
-      createdAt: new Date(),
-      grantId: createId("browserProfileGrant"),
-      profileId: input.profileId,
-      workspaceId: input.workspaceId,
-    };
-    return this.#grant;
   }
 
   async createBrowserProfile(input: {
@@ -6347,7 +6008,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       runId: request.originatingRunId,
       sequence: SequenceSchema.parse("1"),
       threadId: request.originatingThreadId,
-      workspaceId: request.originatingWorkspaceId,
     };
     if (request.status === "pending") {
       return {
@@ -6370,31 +6030,9 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     };
   }
 
-  grant(profileId: BrowserProfileId, access: BrowserProfileAccess) {
-    return this.createBrowserProfileGrant({
-      access,
-      createdBy: this.#ownerId,
-      profileId,
-      workspaceId: this.#workspaceId,
-    });
-  }
-
-  async listActiveBrowserProfileGrants(ownerId: UserId) {
-    return ownerId === this.#ownerId && this.#grant ? [this.#grant] : [];
-  }
-
-  async listActiveBrowserSessionsForAgent(input: {
-    readonly allOwnerWorkspaces: boolean;
-    readonly ownerId: UserId;
-    readonly workspaceId: WorkspaceId;
-  }) {
+  async listActiveBrowserSessionsForAgent(input: { readonly ownerId: UserId }) {
     return [...this.#sessions.values()]
-      .filter(
-        (session) =>
-          input.ownerId === this.#ownerId &&
-          (input.allOwnerWorkspaces || session.workspaceId === input.workspaceId) &&
-          !terminal(session.state),
-      )
+      .filter((session) => input.ownerId === this.#ownerId && !terminal(session.state))
       .map((session) => ({
         ...session,
         activeAttachmentCount: [...this.#attachments.values()].filter(
@@ -6420,37 +6058,14 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return attached;
   }
 
-  async resolveResourceAccess(input: {
-    ownerUserId: UserId;
-    workspaceId: WorkspaceId;
-    agentBindingId?: string;
-  }) {
-    return {
-      inheritsMain:
-        input.agentBindingId !== "run:channel" &&
-        (await this.getWorkspaceForOwner(input.workspaceId, input.ownerUserId))?.kind === "main",
-    };
-  }
-
-  async listActiveBrowserProfileGrantsForWorkspace(workspaceId: WorkspaceId, ownerId: UserId) {
-    return workspaceId === this.#grant?.workspaceId && ownerId === this.#ownerId && this.#grant
-      ? [this.#grant]
-      : [];
-  }
-
-  async revokeBrowserGrant(): Promise<void> {
-    this.#grant = null;
-  }
-
   async createBrowserSession(input: {
     readonly id: BrowserSessionId;
     readonly placementKey: string;
     readonly runnerId: RunnerId;
-    readonly origin: "agent" | "trigger" | "workspace";
+    readonly origin: "agent" | "trigger" | "person";
     readonly opener?: BrowserSessionRecord["opener"];
     readonly profileId: BrowserProfileId | null;
     readonly runtimeId: string;
-    readonly workspaceId: WorkspaceId;
   }): Promise<BrowserSessionRecord> {
     const now = new Date();
     const record: BrowserSessionRecord = {
@@ -6464,7 +6079,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       runtimeId: input.runtimeId,
       state: "starting",
       updatedAt: now,
-      workspaceId: input.workspaceId,
     };
     this.#sessions.set(record.id, record);
     return record;
@@ -6480,7 +6094,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     readonly agentBindingId: string;
     readonly ownerId: UserId;
     readonly sessionId: BrowserSessionId;
-    readonly workspaceId: WorkspaceId;
   }): Promise<boolean> {
     const key = `${input.agentBindingId}\u0000${input.sessionId}`;
     const created = !this.#attachments.has(key);
@@ -6489,7 +6102,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       agentBindingId: input.agentBindingId,
       ownerId: input.ownerId,
       sessionId: input.sessionId,
-      workspaceId: input.workspaceId,
     });
     return created;
   }
@@ -6504,27 +6116,6 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       detached.push(attachment.sessionId);
     }
     return detached;
-  }
-
-  async detachBrowserSessionAttachmentsForProfileGrant(input: {
-    readonly ownerId: UserId;
-    readonly profileId: BrowserProfileId;
-    readonly workspaceId: WorkspaceId;
-  }): Promise<number> {
-    let count = 0;
-    for (const [bindingId, attachment] of this.#attachments) {
-      const session = this.#sessions.get(attachment.sessionId);
-      if (
-        attachment.ownerId === input.ownerId &&
-        attachment.workspaceId === input.workspaceId &&
-        session?.profileId === input.profileId &&
-        input.ownerId === this.#ownerId
-      ) {
-        this.#attachments.delete(bindingId);
-        count += 1;
-      }
-    }
-    return count;
   }
 
   async failActiveBrowserSessions(placementKey?: string): Promise<{
@@ -6553,17 +6144,12 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return { events, failed: count };
   }
 
-  async findActiveBrowserSessionForWorkspace(
-    workspaceId: WorkspaceId,
-  ): Promise<BrowserSessionRecord | null> {
-    return (
-      [...this.#sessions.values()].find(
-        (session) =>
-          session.origin === "workspace" &&
-          session.workspaceId === workspaceId &&
-          !terminal(session.state),
-      ) ?? null
-    );
+  async findActiveBrowserSessionForPerson(ownerId: UserId): Promise<BrowserSessionRecord | null> {
+    return ownerId === this.#ownerId
+      ? ([...this.#sessions.values()].find(
+          (session) => session.origin === "person" && !terminal(session.state),
+        ) ?? null)
+      : null;
   }
 
   async listActiveBrowserSessionsForAgentBinding(
@@ -6618,7 +6204,7 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
       throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
     }
     this.#deletedProfiles.add(input.profileId);
-    if (this.#grant?.profileId === input.profileId) this.#grant = null;
+
     return {
       sessionIds: [...this.#sessions.values()]
         .filter((session) => session.profileId === input.profileId && !terminal(session.state))
@@ -6639,26 +6225,10 @@ class MemoryBrowserRepository implements BrowserSessionRepository {
     return this.#ownsSession(session, ownerId) ? session : null;
   }
 
-  /** A fresh session has no profile owner, so Workspace membership answers. */
+  /** Fresh sessions belong to the personal owner. */
   #ownsSession(session: BrowserSessionRecord, ownerId: UserId): boolean {
     if (session.profileId === null) return ownerId === this.#ownerId;
     return this.#profiles.get(session.profileId)?.ownerId === ownerId;
-  }
-
-  async getWorkspaceForOwner(
-    workspaceId: WorkspaceId,
-    ownerId: UserId,
-  ): Promise<{ readonly id: WorkspaceId; readonly kind: "main" | "project" } | null> {
-    if (ownerId !== this.#ownerId) return null;
-    if (workspaceId === this.#workspaceId) return { id: workspaceId, kind: this.#workspaceKind };
-    const kind = this.#otherWorkspaces.get(workspaceId);
-    return kind ? { id: workspaceId, kind } : null;
-  }
-
-  addWorkspace(kind: "main" | "project"): WorkspaceId {
-    const workspaceId = createId("workspace");
-    this.#otherWorkspaces.set(workspaceId, kind);
-    return workspaceId;
   }
 
   async listBrowserProfiles(ownerId: UserId): Promise<readonly BrowserProfileRecord[]> {
@@ -7058,33 +6628,20 @@ function browserFrame(frameId: number, surfaceId = "page-1"): Buffer {
 }
 
 class MaximumBrowserCatalogRepository extends MemoryBrowserRepository {
-  readonly #grantCount: number;
+  readonly #profileCount: number;
   readonly #ownerId: UserId;
   readonly #profileId: BrowserProfileId;
 
-  constructor(ownerId: UserId, workspaceId: WorkspaceId, grantCount: number) {
-    super(ownerId, workspaceId);
-    this.#grantCount = grantCount;
+  constructor(ownerId: UserId, profileCount: number) {
+    super(ownerId);
+    this.#profileCount = profileCount;
     this.#ownerId = ownerId;
     this.#profileId = this.addHostedProfile("Default browser").id;
   }
 
-  override async listActiveBrowserProfileGrants(ownerId: UserId) {
-    if (ownerId !== this.#ownerId) return [];
-    return Array.from({ length: this.#grantCount }, (_, grantIndex) => {
-      return {
-        access: "read-write" as const,
-        createdAt: new Date(2_000 + grantIndex),
-        grantId: createId("browserProfileGrant"),
-        profileId: this.#profileId,
-        workspaceId: createId("workspace"),
-      };
-    });
-  }
-
   override async listBrowserProfiles(ownerId: UserId) {
     if (ownerId !== this.#ownerId) return [];
-    return Array.from({ length: 128 }, (_, index) => ({
+    return Array.from({ length: this.#profileCount }, (_, index) => ({
       id: index === 0 ? this.#profileId : createId("browserProfile"),
       name: `Profile ${index}`.padEnd(120, "p"),
       ownerId,
@@ -7108,14 +6665,13 @@ class MaximumBrowserCatalogRepository extends MemoryBrowserRepository {
     return Array.from({ length: 100 }, (_, index) => ({
       createdAt: new Date(10_000 + index),
       id: createBrowserSessionId(),
-      origin: "workspace" as const,
+      origin: "person" as const,
       placementKey: `runner:catalog-${index}`,
       profileId: this.#profileId,
       runnerId: createId("runner"),
       runtimeId: `runtime-${index}`.padEnd(255, "r"),
       state: "closed" as const,
       updatedAt: new Date(20_000 + index),
-      workspaceId: createId("workspace"),
     }));
   }
 }
@@ -7154,9 +6710,8 @@ it.each([
       const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
         targetedStreaming: true,
       });
-      const ownerId = createId("user"),
-        workspaceId = createId("workspace");
-      const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+      const ownerId = createId("user");
+      const repository = new MemoryBrowserRepository(ownerId);
       const service = freshService({
         keys,
         runtime,
@@ -7166,7 +6721,7 @@ it.each([
       });
       const opened = await service.openAgentSession({
         ownerId,
-        workspaceId,
+
         agentBindingId: "passkey-compat",
         fresh: true,
       });
@@ -7264,9 +6819,8 @@ it("runs the next control socket command after a passkey authorization deadline"
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const service = freshService({
     keys,
     runtime,
@@ -7276,7 +6830,7 @@ it("runs the next control socket command after a passkey authorization deadline"
   });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "passkey-deadline",
     fresh: true,
   });
@@ -7365,17 +6919,16 @@ it.each([true, false])(
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
       targetedStreaming: true,
     });
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
       rasterDemand,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
     });
     const opened = await service.openAgentSession({
       ownerId,
-      workspaceId,
+
       agentBindingId: "raster-demand",
       fresh: true,
     });
@@ -7457,16 +7010,15 @@ it.each([true, false])(
 it("delivers cursor hints only to their controller and refuses Watch cursor queries", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { inputLanes: true });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
+  const ownerId = createId("user");
   const service = freshService({
     keys,
     runtime,
-    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    repository: new MemoryBrowserRepository(ownerId),
   });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "cursor-hints",
     fresh: true,
   });
@@ -7553,18 +7105,17 @@ it.each([
   async (personal, personFill) => {
     const keys = generateKeyPairSync("ed25519");
     const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-    const ownerId = createId("user"),
-      workspaceId = createId("workspace");
+    const ownerId = createId("user");
     const service = freshService({
       keys,
       runtime,
-      repository: new MemoryBrowserRepository(ownerId, workspaceId),
+      repository: new MemoryBrowserRepository(ownerId),
       personal,
       personFill: personFill ? 1 : undefined,
     });
     const opened = await service.openAgentSession({
       ownerId,
-      workspaceId,
+
       agentBindingId: "autofill",
       fresh: true,
     });
@@ -7601,18 +7152,17 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
     targetedStreaming: true,
     inputLanes: true,
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
+  const ownerId = createId("user");
   const service = freshService({
     keys,
     runtime,
-    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    repository: new MemoryBrowserRepository(ownerId),
     personal: true,
     personFill: 2,
   });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "autofill",
     fresh: true,
   });
@@ -7769,9 +7319,8 @@ it("routes ephemeral autofill only to its opted-in controlling consumer and stam
 it("records a retired Guest closed, saves its tabs and closes viewers gracefully", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const saved = new Set(["page-1"]);
   const suspend = vi.fn(async () => undefined);
   const recordChanges = vi.fn(
@@ -7796,7 +7345,7 @@ it("records a retired Guest closed, saves its tabs and closes viewers gracefully
       },
     ) as unknown as PersonalTabStore,
   });
-  const opened = await service.start({ fresh: true, ownerId, workspaceId });
+  const opened = await service.start({ fresh: true, ownerId });
   const peer = new RecordingPeer("retired-viewer");
   await service.attach(ownerId, opened.session.id, peer, consumerOptions());
   runtime.sendServer({ type: "browser.status", state: "closed", reason: "retired" });
@@ -7817,9 +7366,8 @@ it("records a retired Guest closed, saves its tabs and closes viewers gracefully
 it("closes durable rows only on a change removal, never an interrupted or committed snapshot", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId);
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const recordChanges = vi.fn(async (sessionId: BrowserSessionId) => ({
     groupId: sessionId,
     changed: true,
@@ -7841,7 +7389,7 @@ it("closes durable rows only on a change removal, never an interrupted or commit
     } as unknown as PersonalTabStore,
   });
   cleanups.push(() => service.close());
-  const opened = await service.start({ fresh: true, ownerId, workspaceId });
+  const opened = await service.start({ fresh: true, ownerId });
   recordChanges.mockClear();
   runtime.sendServer({ type: "browser.tabs", stream: { op: "begin", generation: "resnapshot" } });
   runtime.sendServer({
@@ -7911,18 +7459,17 @@ it("closes durable rows only on a change removal, never an interrupted or commit
 it("resynchronizes an initial tab gap before announcing readiness", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", { initialTabCount: 2 });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
+  const ownerId = createId("user");
   const service = new BrowserService({
     ...nativeProfileOptions(),
     ...profileStateOptions,
-    repository: new MemoryBrowserRepository(ownerId, workspaceId),
+    repository: new MemoryBrowserRepository(ownerId),
     connectTimeoutMs: 2000,
     signer: new BrowserAttachTicketSigner({ keyId: "host-primary", privateKey: keys.privateKey }),
     targetResolver: runnerTarget({ url: runtime.url }),
   });
   cleanups.push(() => service.close());
-  const starting = service.start({ fresh: true, ownerId, workspaceId }).then(
+  const starting = service.start({ fresh: true, ownerId }).then(
     (result) => ({ result }),
     (error) => ({ error }),
   );
@@ -7960,7 +7507,7 @@ it("batches additive person-use marks once per runtime connection and replays on
       socket,
       sessionId,
       groupId: sessionId,
-      workspaceId: createId("workspace"),
+
       readSessionState: async () => ({ runs: 0, pinned: [] }),
       personUse: marks,
       savedTabIds,
@@ -8092,9 +7639,8 @@ it("sends authoritative sleep state after commit and keeps two viewers and Watch
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const service = freshService({
     keys,
     runtime,
@@ -8104,7 +7650,7 @@ it("sends authoritative sleep state after commit and keeps two viewers and Watch
   });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "sleep-run",
     fresh: true,
   });
@@ -8120,7 +7666,7 @@ it("sends authoritative sleep state after commit and keeps two viewers and Watch
     }),
   );
   const harness = await service.attachCdpForAgent(
-    { ownerId, workspaceId, agentBindingId: "sleep-run", sessionId },
+    { ownerId, agentBindingId: "sleep-run", sessionId },
     () => undefined,
   );
   harness.close();
@@ -8183,23 +7729,22 @@ it("admits paged listing and exact resume only inside an agent's own session", a
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const service = freshService({ keys, runtime, repository, surfaceState: true });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "sleep-run",
     fresh: true,
   });
   const cdp = await service.attachCdpForAgent(
-    { ownerId, workspaceId, agentBindingId: "sleep-run", sessionId: opened.session.id },
+    { ownerId, agentBindingId: "sleep-run", sessionId: opened.session.id },
     () => undefined,
   );
   await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "other-holding-run",
     sessionId: opened.session.id,
   });
@@ -8257,9 +7802,8 @@ it("lets the runtime sleep an unviewed leftover only after its Run's durable hol
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     core: { runtime: engine, verifier, sink },
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const service = freshService({
     keys,
     runtime,
@@ -8269,12 +7813,12 @@ it("lets the runtime sleep an unviewed leftover only after its Run's durable hol
   });
   const opened = await service.openAgentSession({
     ownerId,
-    workspaceId,
+
     agentBindingId: "leftover-run",
     fresh: true,
   });
   const cdp = await service.attachCdpForAgent(
-    { ownerId, workspaceId, agentBindingId: "leftover-run", sessionId: opened.session.id },
+    { ownerId, agentBindingId: "leftover-run", sessionId: opened.session.id },
     () => undefined,
   );
   await cdp.request({
@@ -8315,10 +7859,9 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
     targetedStreaming: true,
   });
   const ownerId = createId("user"),
-    workspaceId = createId("workspace"),
     runId = createId("run"),
     threadId = createId("thread");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const repository = new MemoryBrowserRepository(ownerId);
   vi.spyOn(repository as BrowserSessionRepository, "resolvePlaceActors").mockImplementation(
     async () => [
       {
@@ -8329,12 +7872,11 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
         home: false,
         generation: 1,
         lineageThreadIds: [threadId],
-        lineageWorkspaceIds: [workspaceId],
       },
     ],
   );
   const service = freshService({ keys, runtime, repository, surfaceState: true });
-  const authority = { ownerId, workspaceId, agentBindingId: `run:${runId}` };
+  const authority = { ownerId, agentBindingId: `run:${runId}` };
   const { session } = await service.openAgentSession({ ...authority, fresh: true });
   const cdp = await service.attachCdpForAgent(
     { ...authority, sessionId: session.id },
@@ -8383,48 +7925,13 @@ it("retains the requesting tab's pin after its actor ends and keeps unknown Host
   cdp.close();
 });
 
-it("updates Run holds when a revoked grant's session was opened in another Workspace", async () => {
-  const keys = generateKeyPairSync("ed25519");
-  const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user"),
-    main = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, main, "main");
-  const project = repository.addWorkspace("project");
-  const profile = repository.addHostedProfile("Work");
-  const service = freshService({ keys, runtime, repository, surfaceState: true });
-  await repository.createBrowserProfileGrant({
-    access: "read-write",
-    createdBy: ownerId,
-    profileId: profile.id,
-    workspaceId: main,
-  });
-  const { session } = await service.start({ ownerId, workspaceId: project, profileId: profile.id });
-  const cdp = await service.attachCdpForAgent(
-    { ownerId, workspaceId: main, sessionId: session.id, agentBindingId: "project-run" },
-    () => undefined,
-  );
-  const last = () => runtime.receivedCommands().findLast((m) => m.type === "session.state");
-  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 1 }));
-  await repository.revokeBrowserGrant();
-  expect(
-    await service.detachAgentSessionsForRevokedProfileGrant({
-      ownerId,
-      workspaceId: main,
-      profileId: profile.id,
-    }),
-  ).toBe(1);
-  await vi.waitFor(() => expect(last()).toMatchObject({ runs: 0 }));
-  cdp.close();
-});
-
 it("publishes a passkey offer as a pin until the ceremony is cancelled", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
     targetedStreaming: true,
   });
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const service = freshService({
     keys,
     runtime,
@@ -8434,7 +7941,7 @@ it("publishes a passkey offer as a pin until the ceremony is cancelled", async (
     passkeys: true,
     passkeysEnabled: true,
   });
-  const { session } = await service.start({ ownerId, workspaceId, fresh: true });
+  const { session } = await service.start({ ownerId, fresh: true });
   const peer = new RecordingPeer("passkey-pin");
   const viewer = await service.attach(ownerId, session.id, peer, {
     ...consumerOptions(),
@@ -8477,9 +7984,8 @@ it("publishes a passkey offer as a pin until the ceremony is cancelled", async (
 it("agent restore resumes its exact suspended tab in the existing session", async () => {
   const keys = generateKeyPairSync("ed25519");
   const runtime = await startFakeRuntime(keys.publicKey, "host-primary");
-  const ownerId = createId("user"),
-    workspaceId = createId("workspace");
-  const repository = new MemoryBrowserRepository(ownerId, workspaceId, "main");
+  const ownerId = createId("user");
+  const repository = new MemoryBrowserRepository(ownerId);
   const tabId = BrowserSurfaceIdSchema.parse("page-1");
   let sessionId: BrowserSessionId;
   const personalTabs = {
@@ -8506,14 +8012,14 @@ it("agent restore resumes its exact suspended tab in the existing session", asyn
     tabRestoreVersion: true,
     personalTabs,
   });
-  sessionId = (await service.start({ ownerId, workspaceId, fresh: true })).session.id;
+  sessionId = (await service.start({ ownerId, fresh: true })).session.id;
   runtime.publishTabs({
     surfaces: [{ id: tabId, state: "suspended", active: true, title: "Sleeping" }],
   });
   await vi.waitFor(() => expect(service.tabStateOf(sessionId, tabId)).toBe("suspended"));
   const before = runtime.receivedCommands().length;
   const restored = service.restoreAgentPersonalTab(
-    { ownerId, workspaceId, agentBindingId: "restoring-run" },
+    { ownerId, agentBindingId: "restoring-run" },
     tabId,
   );
   await vi.waitFor(() =>
