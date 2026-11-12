@@ -64,6 +64,7 @@ import { lockDeploymentIdentity, lockDeploymentOrigin } from "./advisory-locks.j
 import type { HostAccountAdoptionCompletionGrantIssuer } from "../adoption/adoption-grant-issuer.js";
 import type { AdoptionOperationCipher } from "../adoption/adoption-operation-crypto.js";
 import { ControlPlaneError } from "../server/errors.js";
+import { deleteHostedTeams } from "../hosted-teams/hosted-team-store.js";
 import {
   createHostCredential,
   createOAuthClientSecret,
@@ -1470,7 +1471,7 @@ export class ControlPlaneStore {
   }
 
   /**
-   * Removes the Account and the Deployments it owns. Their Connect resources must
+   * Removes the Account, the Deployments it owns and the teams Opensteer hosts for it. Their Connect resources must
    * already be revoked: a tunnel left behind would outlive every row that names it.
    * Hosts learn nothing here, so they keep running and find out on their next call.
    */
@@ -1535,6 +1536,7 @@ export class ControlPlaneStore {
           .where("ownerAccountId", "=", accountId)
           .execute();
       }
+      await deleteHostedTeams(transaction, { creatorAccountId: accountId });
       await transaction.deleteFrom("oauthRefreshToken").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("oauthConsents").where("userId", "=", accountId).execute();
       await transaction.deleteFrom("authSessions").where("userId", "=", accountId).execute();

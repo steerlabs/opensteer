@@ -19,6 +19,11 @@ import type {
   NotificationId,
   ThreadId,
 } from "@opensteer/core";
+import type {
+  HostedTeamId,
+  HostedTeamPhase,
+  HostedTeamState,
+} from "@opensteer/control-plane-protocol/hosted-teams";
 import type { ColumnType, Generated, Selectable } from "kysely";
 
 export type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>;
@@ -506,7 +511,26 @@ export interface NotificationDeliveryTable {
   completedAt: NullableTimestamp;
 }
 
+export interface HostedTeamTable {
+  id: HostedTeamId;
+  slug: string;
+  creatorAccountId: ControlPlaneAccountId | null;
+  state: HostedTeamState;
+  setupTokenDigest: string | null;
+  setupGeneration: number;
+  phase: HostedTeamPhase;
+  hostImage: string | null;
+  observedSetupGeneration: Generated<number>;
+  statusMessage: string | null;
+  statusReportedAt: NullableTimestamp;
+  suspendedReason: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  deletedAt: NullableTimestamp;
+}
+
 export interface ControlPlaneDatabaseSchema {
+  hostedTeams: HostedTeamTable;
   cloudDeploymentOperations: CloudDeploymentOperationTable;
   users: UserTable;
   authAccounts: AuthAccountTable;

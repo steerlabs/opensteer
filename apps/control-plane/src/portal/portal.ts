@@ -1,4 +1,10 @@
 import { registerTeamSetupPortal } from "../adoption/team-setup.js";
+import type { HostedTeamStore } from "../hosted-teams/hosted-team-store.js";
+import {
+  hostedTeamRows,
+  portalCreateHostedTeamPath,
+  registerHostedTeamPortal,
+} from "../hosted-teams/portal-routes.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import {
   IssuePersonalHostAccountLinkChallengeRequestSchema,
@@ -112,6 +118,8 @@ interface PortalDependencies {
   readonly androidAppUrl?: string;
   /** The app's typefaces, when this process serves them. */
   readonly fonts?: BrowserPageFonts;
+  /** Present when this Account offers teams Opensteer hosts. */
+  readonly hostedTeams?: HostedTeamStore;
   readonly portalOrigin: URL;
   readonly portalSessions: PortalSessionStore;
   readonly personalRemoteAccount?: PersonalRemoteAccountService;
@@ -181,7 +189,10 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
   ): Promise<string | FastifyReply> {
     const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
-    const deployments = await store.listDeployments(accountId);
+    const [deployments, hostedTeams] = await Promise.all([
+      store.listDeployments(accountId),
+      dependencies.hostedTeams?.listForAccount(accountId),
+    ]);
     const presence = await Promise.all(
       deployments.map((deployment) =>
         store.isDeploymentPresentForAccount(accountId, deployment.id),
@@ -192,6 +203,9 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         account: { displayName: session.displayName || null, email: session.email },
         deleteAccountHref: portalDeleteAccountPath,
         desktopDownloadUrl: dependencies.desktopDownloadUrl ?? null,
+        hostedTeams: hostedTeams
+          ? { createHref: portalCreateHostedTeamPath, rows: hostedTeamRows(hostedTeams) }
+          : null,
         rows: deployments.map((deployment, index) =>
           deploymentCard(deployment, presence[index] === true),
         ),
@@ -233,9 +247,11 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
     session: PortalSession,
     failed: boolean,
   ): Promise<string> {
-    const owned = await dependencies.store.ownedDeployments(
-      ControlPlaneAccountIdSchema.parse(session.accountId),
-    );
+    const accountId = ControlPlaneAccountIdSchema.parse(session.accountId);
+    const [owned, hostedTeams] = await Promise.all([
+      dependencies.store.ownedDeployments(accountId),
+      dependencies.hostedTeams?.listForAccount(accountId) ?? [],
+    ]);
     return sendBrowserPage(reply, {
       body: deleteAccountBody({
         action: portalDeleteAccountPath,
@@ -244,6 +260,7 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
           .map((deployment) => deployment.name),
         email: session.email,
         failed,
+        hostedTeams: hostedTeams.map((team) => new URL(team.origin).host),
         servers: owned.filter((deployment) => deployment.reachability !== "routed"),
       }),
       fonts,
@@ -348,6 +365,15 @@ export function createPortalRouter(dependencies: PortalDependencies): PortalRout
         fonts,
         guard,
         readSession,
+      });
+
+      registerHostedTeamPortal(app, {
+        fonts,
+        guard,
+        hostedTeams: dependencies.hostedTeams,
+        portalOrigin: origin,
+        readSession,
+        signInPath: portalSignInPath,
       });
 
       app.get("/mac", async (request, reply) => {
