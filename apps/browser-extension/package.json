@@ -10,11 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@opensteer/browser-profile": "workspace:*",
-    "@opensteer/core": "workspace:*",
-    "@opensteer/deployment-authority": "workspace:*",
-    "@opensteer/protocol": "workspace:*",
-    "@opensteer/shared": "workspace:*",
+    "@opensteer/browser-source-wire": "workspace:*",
     "zod": "catalog:"
   },
   "devDependencies": {

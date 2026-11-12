@@ -15,21 +15,24 @@ yet: unzip, open `chrome://extensions`, turn on Developer mode and Load unpacked
 The manifest's public `key` fixes the extension ID to `opensteerChromeExtensionId` in
 `@opensteer/protocol/browser-sources`, and the build fails if they disagree. Web pages detect the
 extension by loading `icons/probe.png` and hand it a pairing link by opening `connect.html`; those
-are its only web-accessible resources.
+are its only web-accessible resources. Other files live under a content-hashed `b/` directory.
+Replacing the unpacked folder’s files reloads the extension automatically within a minute,
+when no pairing or storage mutation is in progress. Saved connections are preserved.
 
 ## What the extension enforces
 
 Any website can open `connect.html` and any Deployment can sign an invitation calling itself "Home",
 so the page refuses to run in a frame, strips the invitation from the address first, and requires
 the tab that opened it to be on one of the invitation's destination origins. It leads with that
-address, not the Deployment's name. A destination is used only when its live identity matches the
-signed one and it signs a fresh challenge; only then does the pairing code or token leave. A refusal
+address, not the Deployment's name. A destination is used only when it signs a fresh challenge with the
+invitation’s pinned key; only then does the pairing code or token leave. A refusal
 stops retries until the person acts.
 
 The extension has `<all_urls>` host access, so Chrome never prompts per site. Per connection it keeps
 shared and stopped sites and a rolling 24-hour budget of 20 newly shared sites, and it refuses
 non-registrable sites, loopback and the sites of any Opensteer it is connected to. Cookie values
-leave only in an export, which is recorded as a share only once sent on the live socket. A site's
+leave only in an explicit export after its budget reservation is stored durably. An uncertain send
+remains counted. A site's
 first share shows a Chrome notification with **Stop sharing**.
 
 Cookies only: passkeys, device-bound sessions and sites that need local storage may not sign in.

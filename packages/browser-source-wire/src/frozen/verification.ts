@@ -91,7 +91,7 @@ export function verifyHostDiscoveryEnvelope(input: HostDiscoveryEnvelope): HostD
 
 export function verifyBrowserSourceChallenge(
   input: BrowserSourceChallenge & {
-    readonly authority: HostDiscoveryEnvelope;
+    readonly authority: Pick<HostDiscoveryEnvelope, "publicKey">;
     readonly signature: string;
   },
 ): boolean {
@@ -115,7 +115,7 @@ export function verifyBrowserSourceChallenge(
 
 export function verifyBrowserSourcePairChallenge(
   input: BrowserSourcePairChallenge & {
-    readonly authority: HostDiscoveryEnvelope;
+    readonly authority: Pick<HostDiscoveryEnvelope, "publicKey">;
     readonly signature: string;
   },
 ): boolean {
@@ -132,7 +132,7 @@ export function verifyBrowserSourcePairChallenge(
 
 export function verifyBrowserSourceRouteChanged(
   input: BrowserSourceChallenge & {
-    readonly authority: HostDiscoveryEnvelope;
+    readonly authority: Pick<HostDiscoveryEnvelope, "publicKey">;
     readonly signature: string;
   },
 ): boolean {
@@ -149,7 +149,7 @@ export function verifyBrowserSourceRouteChanged(
 }
 
 function verifyHostSignature(
-  authority: HostDiscoveryEnvelope,
+  authority: Pick<HostDiscoveryEnvelope, "publicKey">,
   encodedSignature: string,
   bytes: Uint8Array,
 ): boolean {

@@ -34,6 +34,11 @@
  *     `route-changed` is ignored.
  * 18. The popup shows the wrong state, jargon, or no fix, or offers an older
  *     Opensteer's extension as an "update".
+ * 19. Wire-4 pairing fallback changes the body or spends the one-use code.
+ * 20. Wire-5 fields or unknown operations cause a disconnect or cookie export.
+ * 21. Old storage loses tokens, stops or budget, or unreadable records disappear.
+ * 22. Cookies leave before the budget reservation is stored.
+ * 23. Replacing unpacked files fails to reload, loses storage or fails to reconnect.
  */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -55,11 +60,12 @@ import {
   hostApiVersion,
   hostDiscoverySigningBytes,
   personalHostAccessRouteSigningBytes,
-} from "@opensteer/deployment-authority";
+} from "../../../packages/deployment-authority/src/index.ts";
+import { BrowserSourceClientMessageV4Schema } from "@opensteer/browser-source-wire/frames";
 import {
   browserSourceProtocolVersion,
   opensteerChromeExtensionId,
-} from "@opensteer/protocol/browser-sources";
+} from "../../../packages/protocol/src/browser-sources.ts";
 
 const builtExtension = fileURLToPath(new URL("../dist/", import.meta.url));
 const screenshotDirectory = process.env.OPENSTEER_EXTENSION_SCREENSHOTS ?? null;
@@ -109,6 +115,8 @@ const signed = (bytes, key = hostKey) => sign(null, bytes, key.privateKey).toStr
 const host = {
   // impostor: another identity; squatter: replays this Deployment's public
   // discovery document but cannot sign; other: a different, honest Deployment.
+  wire: 4,
+  pairAttempts: [],
   loopbackMode: "down", // "down" | "impostor" | "squatter" | "other" | "up"
   remoteDown: false,
   // One-shot modes reset to "valid" after answering one challenge.
@@ -248,17 +256,18 @@ function hostRequest(origin, request, response) {
   }
   if (request.url === "/internal/v1/browser-sources/pair" && request.method === "POST") {
     void readJson(request).then((payload) => {
-      host.pairRequests.push({ ...payload, dialed: origin });
+      host.pairAttempts.push(payload);
       const refuse = (reason) => {
         response.writeHead(400, { "content-type": "application/json" });
         response.end(JSON.stringify({ error: { code: "bad_request", reason, message: reason } }));
       };
+      if (payload.version !== host.wire) return refuse("unsupported-version");
+      host.pairRequests.push({ ...payload, dialed: origin });
       if (!host.validCodes.delete(payload.code)) return refuse("code");
       if (payload.origin !== origin) return refuse("origin");
       if (payload.routeGeneration !== (origin === remoteOrigin ? routeGeneration : null)) {
         return refuse("route");
       }
-      if (payload.version !== browserSourceProtocolVersion) return refuse("unsupported-version");
       if (payload.replaces) {
         const old = host.sources.get(payload.replaces.sourceId);
         if (!old || old.token !== payload.replaces.token) return refuse("replaces");
@@ -292,7 +301,12 @@ function acceptSocket(origin, client) {
   host.frames.push(log);
   client.on("message", (raw) => {
     const message = JSON.parse(String(raw));
+    if (host.wire === 4) BrowserSourceClientMessageV4Schema.parse(message);
     log.messages.push(message.type);
+    if (message.type === "source.hello") {
+      assert.deepEqual(Object.keys(message).sort(), ["sourceId", "token", "type", "version"]);
+      assert.equal(message.version, host.wire === 4 ? 4 : host.wire);
+    }
     if (message.type === "source.challenge") {
       log.sourceId = message.sourceId;
       assert.equal(message.origin, origin);
@@ -338,7 +352,14 @@ function acceptSocket(origin, client) {
         }),
         keysAt(origin).signing,
       );
-      client.send(JSON.stringify({ type: "source.proof", nonce: message.nonce, signature }));
+      client.send(
+        JSON.stringify({
+          type: "source.proof",
+          nonce: message.nonce,
+          signature,
+          ...(host.wire === 4 ? {} : { wire: host.wire, future: true }),
+        }),
+      );
       return;
     }
     if (message.type === "source.hello") {
@@ -348,7 +369,13 @@ function acceptSocket(origin, client) {
         return;
       }
       host.clients.set(message.sourceId, client);
-      client.send(JSON.stringify({ type: "source.ready", sourceId: message.sourceId }));
+      client.send(
+        JSON.stringify({
+          type: "source.ready",
+          sourceId: message.sourceId,
+          ...(host.wire === 4 ? {} : { future: true }),
+        }),
+      );
       return;
     }
     if (message.type === "source.disconnect") {
@@ -383,7 +410,10 @@ for (const [server, origin] of [
     const down =
       (origin() === loopbackOrigin && !["up", "other"].includes(host.loopbackMode)) ||
       (origin() === remoteOrigin && host.remoteDown);
-    if (request.url !== "/internal/v1/browser-sources/connect" || down) {
+    if (
+      new URL(request.url, origin()).pathname !== "/internal/v1/browser-sources/connect" ||
+      down
+    ) {
       socket.destroy();
       return;
     }
@@ -460,7 +490,13 @@ try {
       `--load-extension=${extensionDirectory}`,
     ],
   });
-  const worker =
+  const developerSettings = await context.newPage();
+  await developerSettings.goto("chrome://extensions");
+  await developerSettings.evaluate(() =>
+    chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true }),
+  );
+  await developerSettings.close();
+  let worker =
     context.serviceWorkers()[0] ??
     (await context.waitForEvent("serviceworker", { timeout: 15_000 }));
   worker.on("console", (message) => console.error("worker:", message.text()));
@@ -471,10 +507,15 @@ try {
   const storage = () => worker.evaluate(() => chrome.storage.local.get(null));
   const connections = async () => (await storage()).connections ?? [];
 
-  const popup = await context.newPage();
+  let popup = await context.newPage();
   await popup.setViewportSize({ width: 340, height: 600 });
   const openPopup = async () => {
-    await popup.goto(extensionUrl("popup.html"));
+    await popup.goto(
+      extensionUrl(
+        JSON.parse(await readFile(path.join(extensionDirectory, "manifest.json"), "utf8")).action
+          .default_popup,
+      ),
+    );
     await popup.locator("#popup[aria-busy='false']").waitFor();
   };
   await openPopup();
@@ -607,6 +648,41 @@ try {
   const firstFrames = host.frames.filter((log) => log.sourceId === sourceId);
   assert.deepEqual(firstFrames.at(-1).messages.slice(0, 2), ["source.challenge", "source.hello"]);
   passed("the token is sent only after the signed challenge is answered");
+  assert.deepEqual(
+    host.pairAttempts.slice(0, 2).map((item) => item.version),
+    [5, 4],
+  );
+  assert.deepEqual({ ...host.pairAttempts[0], version: 4 }, host.pairAttempts[1]);
+  passed("wire-4 Host pairs via one identical-body fallback and connects without proof.wire");
+  host.wire = 5;
+  host.clients.get(sourceId).terminate();
+  await waitUntil(
+    () =>
+      host.frames.at(-1).messages.includes("source.hello") &&
+      host.clients.get(sourceId)?.readyState === 1,
+    "wire-5 reconnect",
+  );
+  const exportRepliesBeforeUnknown = host.frames
+    .at(-1)
+    .messages.filter((type) => type === "source.export.result").length;
+  const unknownId = randomUUID();
+  host.clients.get(sourceId).send(
+    JSON.stringify({
+      type: "future.operation",
+      site: "https://example.com",
+      operationId: unknownId,
+    }),
+  );
+  assert.equal(
+    (await operation(sourceId, "source.inspect", "https://example.com")).status,
+    "no-state",
+  );
+  assert.equal(
+    host.frames.at(-1).messages.filter((type) => type === "source.export.result").length,
+    exportRepliesBeforeUnknown,
+  );
+  assert.deepEqual((await connections())[0].sharedSites, {});
+  passed("wire-5 proof and ready tolerate unknown fields; unknown operation never exports");
 
   // 5: expired, tampered and unreachable links.
   const errorPage = await context.newPage();
@@ -748,7 +824,36 @@ try {
   assert.deepEqual((await connections())[0].sharedSites, {});
   passed("inspect reports available without values, sharing, or notifying");
 
-  const example = await operation(sourceId, "source.export", "https://example.com");
+  await worker.evaluate(() => {
+    const set = chrome.storage.local.set.bind(chrome.storage.local);
+    globalThis.__reservationWaiting = false;
+    chrome.storage.local.set = async (items) => {
+      if (items.connections?.some((item) => item.sharedSites["https://example.com"])) {
+        globalThis.__reservationWaiting = true;
+        await new Promise((resolve) => {
+          globalThis.__releaseReservation = resolve;
+        });
+        chrome.storage.local.set = set;
+      }
+      return await set(items);
+    };
+  });
+  let exportedBeforeReservation = false;
+  const examplePromise = operation(sourceId, "source.export", "https://example.com").then(
+    (result) => {
+      exportedBeforeReservation = true;
+      return result;
+    },
+  );
+  await waitUntil(
+    () => worker.evaluate(() => globalThis.__reservationWaiting),
+    "reservation write reached",
+  );
+  assert.equal(exportedBeforeReservation, false);
+  await worker.evaluate(() => globalThis.__releaseReservation());
+  const example = await examplePromise;
+  assert.equal((await connections())[0].newShares.length, 1);
+  passed("cookies cannot leave until the budget reservation storage write completes");
   assert.equal(example.result.status, "exported");
   assert.deepEqual(example.result.snapshot.cookies.map((cookie) => cookie.name).sort(), [
     "parent",
@@ -939,13 +1044,28 @@ try {
   await sleep(300);
   assert.deepEqual(host.frames.at(-1).messages, ["source.challenge"]);
   passed("a proof signed for another route generation is refused before the token is sent");
+  await waitUntil(
+    async () =>
+      (await popup.evaluate(() => chrome.runtime.sendMessage({ type: "ui.status" }))).value
+        .connections[0].state === "different-opensteer",
+    "failed pinned proof held",
+  );
+  await openPopup();
+  await popup
+    .getByText("This Opensteer was reset or replaced. Connect again from Opensteer.")
+    .waitFor();
+  passed("reachable wrong-key proof holds different-opensteer without releasing token");
   host.proofMode = "pre-proof-unauthorized";
+  await popup.evaluate(
+    (sourceId) => chrome.runtime.sendMessage({ type: "ui.retry", sourceId }),
+    sourceId,
+  );
   await waitUntil(() => host.proofMode === "valid", "pre-proof refusal sent", 30_000);
   await waitUntil(
     async () => {
       const [item] = await connections();
       return (
-        !item.ended &&
+        item.held?.state !== "ended" &&
         host.clients.get(sourceId)?.readyState === 1 &&
         host.frames.at(-1).messages.includes("source.hello")
       );
@@ -965,7 +1085,7 @@ try {
     async () => (await status()).value.connections[0].state === "update-required",
     "update needed",
   );
-  assert.equal((await connections())[0].blockedVersion, browserSourceProtocolVersion);
+  assert.equal((await connections())[0].held.version, 5);
   let framesNow = host.frames.length;
   await sleep(2_500);
   assert.equal(host.frames.length, framesNow);
@@ -989,7 +1109,7 @@ try {
     async () => (await status()).value.connections[0].state === "host-outdated",
     "Opensteer update needed",
   );
-  assert.equal((await connections())[0].hostOutdated, true);
+  assert.equal((await connections())[0].held.state, "host-outdated");
   framesNow = host.frames.length;
   await sleep(2_500);
   assert.equal(host.frames.length, framesNow);
@@ -1013,7 +1133,7 @@ try {
     await refuseBeforeProof(mode);
     await waitUntil(
       async () =>
-        !(await connections())[0].routeChanged &&
+        (await connections())[0].held?.state !== "route-changed" &&
         host.clients.get(sourceId)?.readyState === 1 &&
         host.frames.at(-1).messages.includes("source.hello"),
       `reconnect after ${mode}`,
@@ -1026,7 +1146,7 @@ try {
     async () => (await status()).value.connections[0].state === "route-changed",
     "route changed",
   );
-  assert.equal((await connections())[0].routeChanged, true);
+  assert.equal((await connections())[0].held.state, "route-changed");
   assert.deepEqual(host.frames.at(-1).messages, ["source.challenge"]);
   await openPopup();
   await popup.getByText("Reconnect needed").waitFor();
@@ -1071,7 +1191,7 @@ try {
     .get(sourceId)
     .send(JSON.stringify({ type: "source.error", code: "source-unauthorized" }));
   await waitUntil(async () => (await status()).value.connections[0].state === "ended", "ended");
-  assert.equal((await connections())[0].ended, true);
+  assert.equal((await connections())[0].held.state, "ended");
   framesNow = host.frames.length;
   await sleep(2_500);
   assert.equal(host.frames.length, framesNow);
@@ -1134,6 +1254,127 @@ try {
   host.loopbackMode = "up";
   await openPopup();
   await popup.getByText("Connected", { exact: true }).waitFor();
+  for (const deploymentShape of [
+    { kind: "personal" },
+    { kind: "personal", defaultWorkspaceBacking: "local" },
+    { kind: "personal", backing: "local" },
+  ]) {
+    const [flat] = await connections();
+    const legacy = {
+      authority: { ...authority(), document: { ...discoveryDocument(), deploymentShape } },
+      route: null,
+      connectedAt: flat.connectedAt,
+      deploymentName: flat.deploymentName,
+      name: flat.name,
+      origin: flat.origin,
+      sourceId: flat.sourceId,
+      token: flat.token,
+      sharedSites: { "https://saved.test": { firstSharedAt: 1, lastSharedAt: 2 } },
+      stoppedSites: ["https://saved.test"],
+      newShares: [Date.now()],
+    };
+    const unreadable = {
+      authority: { document: { deploymentId: flat.deploymentId } },
+      stoppedSites: ["https://never.test"],
+      token: "synthetic-unreadable",
+    };
+    await worker.evaluate((items) => chrome.storage.local.set(items), {
+      connections: [legacy, unreadable],
+    });
+    await popup.evaluate(() => chrome.runtime.sendMessage({ type: "ui.status" }));
+    const [migrated] = await connections();
+    assert.equal(migrated.schema, 2);
+    assert.equal(migrated.token, flat.token);
+    assert.deepEqual(migrated.stoppedSites, legacy.stoppedSites);
+    assert.deepEqual(migrated.newShares, legacy.newShares);
+    assert.deepEqual((await storage()).quarantined.at(-1).raw, unreadable);
+  }
+  await openPopup();
+  await popup.getByText("A saved connection couldn't be read. Connect again.").first().waitFor();
+  assert.equal(await popup.getByRole("button", { name: "Forget", exact: true }).count(), 3);
+  passed(
+    "0.1.565 and both pre-542 authority shapes migrate with token, stops and budget; unreadable raw records appear with Forget",
+  );
+  console.log("  checking on-disk worker replacement");
+  const socketBeforeReload = host.clients.get(online.sourceId);
+  const beforeReload = await connections();
+  const manifestPath = path.join(extensionDirectory, "manifest.json");
+  const oldManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const oldPrefix = path.posix.dirname(oldManifest.background.service_worker);
+  const newId = createHash("sha256")
+    .update(await readFile(path.join(extensionDirectory, oldManifest.background.service_worker)))
+    .update("reload-proof")
+    .digest("hex")
+    .slice(0, 20);
+  const newPrefix = `b/${newId}`;
+  await cp(path.join(extensionDirectory, oldPrefix), path.join(extensionDirectory, newPrefix), {
+    recursive: true,
+  });
+  await writeFile(
+    path.join(extensionDirectory, newPrefix, "worker.js"),
+    `${await readFile(path.join(extensionDirectory, oldManifest.background.service_worker), "utf8")}\nglobalThis.__reloadProof = true;\n`,
+  );
+  await writeFile(
+    path.join(extensionDirectory, "connect.html"),
+    (await readFile(path.join(extensionDirectory, "connect.html"), "utf8")).replaceAll(
+      oldPrefix,
+      newPrefix,
+    ),
+  );
+  const reloadedWorker = context.waitForEvent("serviceworker", { timeout: 75_000 });
+  void reloadedWorker.catch(() => undefined);
+  let closeTimer;
+  const workerClosed = Promise.race([
+    new Promise((resolve) => worker.once("close", resolve)),
+    new Promise((_, reject) => {
+      closeTimer = setTimeout(
+        () => reject(new Error("old worker did not close on reload")),
+        70_000,
+      );
+    }),
+  ]).finally(() => clearTimeout(closeTimer));
+  const reloadStarted = Date.now();
+  await writeFile(manifestPath, JSON.stringify(oldManifest).replaceAll(oldPrefix, newPrefix));
+  await worker.evaluate(() => chrome.alarms.create("reconnect", { periodInMinutes: 0.5 }));
+  await workerClosed;
+  worker = await reloadedWorker;
+  assert.ok(worker.url().endsWith(`${newPrefix}/worker.js`));
+  await waitUntil(
+    () => worker.evaluate(() => globalThis.__reloadProof === true),
+    "new worker bytes executed",
+  );
+  assert.deepEqual(await connections(), beforeReload);
+  await waitUntil(
+    () =>
+      host.clients.get(online.sourceId) !== socketBeforeReload &&
+      host.clients.get(online.sourceId)?.readyState === 1,
+    "replacement worker reconnects without opening a page",
+  );
+  popup = await context.newPage();
+  await popup.setViewportSize({ width: 340, height: 600 });
+  await openPopup();
+  await popup.getByText("Connected", { exact: true }).waitFor();
+  passed(
+    `disk replacement self-reloads in ${Date.now() - reloadStarted}ms, executes new bytes, preserves storage and reconnects`,
+  );
+  host.wire = 3;
+  host.clients.get(online.sourceId).terminate();
+  await waitUntil(
+    async () =>
+      (await popup.evaluate(() => chrome.runtime.sendMessage({ type: "ui.status" }))).value
+        .connections[0].state === "host-outdated",
+    "proof negotiates below supported floor",
+  );
+  assert.equal(host.frames.at(-1).messages.includes("source.hello"), false);
+  host.wire = 5;
+  await popup.evaluate(
+    (sourceId) => chrome.runtime.sendMessage({ type: "ui.retry", sourceId }),
+    online.sourceId,
+  );
+  await openPopup();
+  await popup.getByText("Connected", { exact: true }).waitFor();
+  passed("proof below the supported floor holds host-outdated before sending the token");
+
   await popup.getByRole("button", { name: "Disconnect", exact: true }).click();
   await popup.getByText("Home removes this Chrome too.").waitFor();
   await shoot(popup, "popup-disconnect-confirm-online", "body");
@@ -1167,7 +1408,7 @@ try {
   );
   console.log(`Chrome extension journey passed (${checks.length} checks). Report: ${reportPath}`);
 } finally {
-  for (const client of host.clients.values()) client.terminate();
+  for (const client of sockets.clients) client.terminate();
   if (context) await context.close();
   sockets.close();
   await new Promise((resolve) => loopbackServer.close(resolve));
