@@ -605,7 +605,6 @@ describe("RequestSheetContent browser profile requests", () => {
     const dispatch = vi.fn(async () => ({ type: "request.respond" }));
     await render(surface(request), dispatch, {
       snapshot: {
-        browserProfileGrants: [],
         browserProfiles: [{ id: "bpr_00000000-0000-4000-8000-000000000001", name: "Personal" }],
       },
     });
@@ -842,7 +841,6 @@ async function render(
     harnesses: [],
     identityConfig: { deployment: { name: "Alex’s Opensteer" } },
     threads: [],
-    workspaces: [{ id: workspaceId, name: "Research" }],
     ...options.snapshot,
   };
   await act(async () => {
@@ -1078,7 +1076,6 @@ function computerAppRequest(): Request {
       reason: "Move the plan into Notes",
       runnerId: studioId,
       setupRequestId: "00000000-0000-4000-8000-000000000003",
-      workspaceId: "wsp_00000000-0000-4000-8000-000000000001",
     },
     presentation: {
       detail: "Move the plan into Notes",
@@ -1089,7 +1086,6 @@ function computerAppRequest(): Request {
   } as unknown as Request;
 }
 
-const workspaceId = "wsp_00000000-0000-4000-8000-000000000001";
 const workChromeId = "bsr_00000000-0000-4000-8000-000000000001";
 
 const macChrome = "bsr_00000000-0000-4000-8000-000000000003";

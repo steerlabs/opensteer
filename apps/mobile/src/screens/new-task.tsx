@@ -138,7 +138,12 @@ function NewTask(props: {
       ? props.home.folder
       : (draft?.folder ?? snapshot.personalSettings?.agentHome ?? null);
   useLayoutEffect(() => {
-    if (folder !== null) drafts.placeNewTaskDraft(deploymentId, userId, draftId, folder);
+    if (folder !== null)
+      void drafts
+        .placeNewTaskDraft(deploymentId, userId, draftId, folder)
+        .catch((error: unknown) =>
+          setDraftFailure(operationDetail(error, "This draft could not be saved on this phone.")),
+        );
   }, [deploymentId, draftId, drafts, folder, userId]);
   const text = draft?.text ?? "";
   const held = drafts.readPending(deploymentId, userId, draftKey);

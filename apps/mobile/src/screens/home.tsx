@@ -1,8 +1,10 @@
 import type { TaskFolder } from "@opensteer/core";
-import { useHostValue } from "../ui/mobile-client-context.js";
+import { newTaskDraftKey } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
+import { useHostValue, useMobileClient } from "../ui/mobile-client-context.js";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useSyncExternalStore, type ReactNode } from "react";
 import { Keyboard } from "react-native";
 import { useSidebarMenu } from "../navigation-header.js";
 import { Screen } from "../ui/screen.js";
@@ -33,7 +35,13 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   useSidebarMenu(hostClient);
   useNotificationsIntro(hostClient);
   const home = useHostValue(hostClient, agentHome, null);
-  const folder = chosen ?? home;
+  // The folder Home's one draft was left in, until a new one is chosen.
+  const userId = useHostValue(hostClient, viewerId, null);
+  const drafts = useMobileClient().drafts;
+  useSyncExternalStore(drafts.subscribe, drafts.getVersion);
+  const draft =
+    userId === null ? null : drafts.readDraft(deploymentId, userId, newTaskDraftKey(homeDraftId));
+  const folder = chosen ?? draft?.folder ?? home;
   const onStarted = useCallback(
     (threadId: string): boolean => {
       if (!navigation.isFocused()) return false;
@@ -63,6 +71,9 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
     </Screen>
   );
 }
+
+const viewerId = (snapshot: { readonly user: { readonly id: string } | null }) =>
+  snapshot.user?.id ?? null;
 
 const agentHome = (snapshot: {
   readonly personalSettings: { readonly agentHome: TaskFolder } | null;

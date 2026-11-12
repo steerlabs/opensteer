@@ -22,7 +22,6 @@ const rawSnapshot = {
   browserProfiles: [],
   machines: [],
   activeTasks: [],
-  homeThreadId: "home",
   tasks: null,
   threads: [
     {

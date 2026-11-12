@@ -3481,6 +3481,76 @@ describe("MobileClient per-deployment sign out", () => {
  * - J2: a Host that cannot be told holds up or undoes the sign-out, or the
  *   person is never told the Host still lists the iPhone.
  */
+describe("MobileClient other computers' attention", () => {
+  const otherComputer = () =>
+    asInput(
+      testDeploymentConnection({
+        deploymentId: otherId,
+        kind: "personal",
+        route: { kind: "connect" },
+      }),
+    );
+
+  it("reads another computer once, leaves the selection alone, and never reads the shown one", async () => {
+    const port = testPort({ held: true });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await client.select(serverId).catch(() => undefined);
+    await settle();
+    const selection = client.getSnapshot().selection;
+    expect(selection.deploymentId).toBe(serverId);
+    const before = port.attached.length;
+
+    expect(await client.readAttention(serverId)).toBeNull();
+    expect(port.attached).toHaveLength(before);
+
+    await expect(client.readAttention(otherId)).resolves.toEqual({
+      needsYou: expect.any(Number),
+      unread: expect.any(Boolean),
+    });
+    expect(port.attached.slice(before).map(({ deploymentId }) => deploymentId)).toEqual([otherId]);
+    expect(port.disposed).toEqual([otherId]);
+    expect(client.getSnapshot().selection.deploymentId).toBe(selection.deploymentId);
+    expect(client.getSnapshot().selection.hostClient).toBe(selection.hostClient);
+    client.dispose();
+  });
+
+  it("shows nothing for a computer that is slow, and asks nothing of one signed out", async () => {
+    const port = testPort({
+      held: true,
+      configureClient: (host) => {
+        const rpc = host.rpc;
+        Object.defineProperty(host, "rpc", {
+          value: new Proxy(rpc, {
+            get: (target, name) =>
+              name === "attention.get"
+                ? () => new Promise(() => undefined)
+                : Reflect.get(target, name),
+          }),
+        });
+      },
+    });
+    const { client } = open(port.factory);
+    await client.catalog.upsertAndSelect(connectComputer(1));
+    await client.catalog.upsert(otherComputer());
+    await client.initialize();
+    await settle();
+    await expect(client.readAttention(otherId, 20)).resolves.toBeNull();
+    expect(port.disposed).toEqual([otherId]);
+    client.dispose();
+
+    const signedOut = testPort({ held: false });
+    const second = open(signedOut.factory).client;
+    await second.catalog.upsert(otherComputer());
+    await second.initialize();
+    await expect(second.readAttention(otherId)).resolves.toBeNull();
+    expect(signedOut.attached).toEqual([]);
+    second.dispose();
+  });
+});
+
 describe("MobileClient and this iPhone's apps", () => {
   const laptopRunnerId = "rnr_33333333-3333-4333-8333-333333333333";
 

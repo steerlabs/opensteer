@@ -121,7 +121,7 @@ describe("mobile retained attachment over HTTP and WebSocket", () => {
         }),
       });
       try {
-        const connection = testDeploymentConnection({});
+        const connection = testDeploymentConnection({ kind: "personal" });
         const id = connection.authority.document.deploymentId;
         const {
           createdAt: _createdAt,

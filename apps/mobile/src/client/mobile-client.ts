@@ -2286,6 +2286,48 @@ export class MobileClient {
     }
   }
 
+  /**
+   * Another personal computer's attention, for the computer list: one request
+   * over that computer's own route and credential, through a client that never
+   * opens a socket and is disposed at once. The selection and its attachment
+   * are untouched. Unreachable, refused, signed out or slow is null.
+   */
+  async readAttention(
+    deploymentId: DeploymentId | string,
+    deadlineMs = 3_000,
+  ): Promise<{ readonly needsYou: number; readonly unread: boolean } | null> {
+    const id = DeploymentIdSchema.parse(deploymentId);
+    // The computer on screen answers from its own snapshot.
+    if (id === this.#state.selection.deploymentId || id === this.#attachedDeploymentId) return null;
+    const connection = this.#state.catalog.deployments.find(
+      ({ authority }) => authority.document.deploymentId === id,
+    );
+    if (connection?.kind !== "personal") return null;
+    const authorization = await this.#host.credentials.authorization(connection).catch(() => null);
+    if (authorization === null) return null;
+    let client: HostClient;
+    try {
+      client = this.#host.attach({
+        authorization: createHostAuthorization(() => this.#authorizationFor(connection)),
+        capabilities: null,
+        connection,
+        origin: resolveConnection(connection, null, { authorization }).origin,
+      });
+    } catch {
+      return null;
+    }
+    try {
+      const result = await withTimeout(client.rpc["attention.get"]({}), deadlineMs, {
+        timeoutError: () => new Error("The computer did not answer in time."),
+      });
+      return result.ok ? result.data : null;
+    } catch {
+      return null;
+    } finally {
+      client.dispose();
+    }
+  }
+
   /** Works on a Host this phone can't attach to, which is when it's needed most. */
   desktopUpdates(deploymentId: DeploymentId): DesktopUpdates {
     const existing = this.#desktopUpdates.get(deploymentId);

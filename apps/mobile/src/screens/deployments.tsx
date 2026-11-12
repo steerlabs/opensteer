@@ -37,7 +37,20 @@ import {
   touchTarget,
   deploymentPaint,
 } from "../theme.js";
+import {
+  sameTaskListSource,
+  taskList,
+  type HostClient,
+  type HostSnapshot,
+} from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
+import { UnreadDot } from "../threads/task-row.js";
+import {
+  attentionReads,
+  computerBadge,
+  type AttentionBadge,
+  type ComputerAttention,
+} from "./computer-signals.js";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import { MentionCount, TeamTile } from "../team/team-marks.js";
 import { useMobileTeams, useTeamsSnapshot } from "../team/team-context.js";
@@ -75,6 +88,8 @@ const signedInStatuses: ReadonlySet<DeploymentStatus> = new Set<DeploymentStatus
 ]);
 
 const DeploymentListRow = memo(function DeploymentListRow(props: {
+  /** This computer's one read when the list opened; undefined until it answers. */
+  readonly attention: ComputerAttention | null | undefined;
   readonly current: boolean;
   readonly onDetails: (row: DeploymentRow) => void;
   readonly onOpen: (row: DeploymentRow) => void;
@@ -141,7 +156,11 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
               {detail}
             </AppText>
           )}
-          <ComputerSignals computerId={row.deploymentId} current={props.current} />
+          <ComputerSignals
+            computerId={row.deploymentId}
+            current={props.current}
+            read={props.attention}
+          />
         </View>
       </Pressable>
       {row.signIn === "pairing-code" ? (
@@ -183,22 +202,26 @@ const DeploymentListRow = memo(function DeploymentListRow(props: {
 });
 
 /**
- * What a computer has waiting: the shown computer's Needs you count, and each
- * team it is in with that team's mentions of the reader. Personal and work
- * computers read alike, so switching to the other one is a glance away.
+ * What a computer has waiting: its own Needs you count or unread dot, and each
+ * team it is in with that team's mentions of the reader. The shown computer
+ * speaks from its live snapshot; another from the one read made when the list
+ * opened. Personal and work computers read alike, so the other is a glance away.
  */
 function ComputerSignals(props: {
   readonly computerId: string;
   readonly current: boolean;
+  readonly read: ComputerAttention | null | undefined;
 }): ReactNode {
   const teams = useMobileTeams();
   useTeamsSnapshot();
   const joined = teams.teamsOn(props.computerId);
   const host = useSelectedHostClient();
-  if (joined.length === 0 && !(props.current && host !== null)) return null;
+  const shown = props.current && host !== null;
+  const read = computerBadge({ current: false, shown: null, read: props.read });
+  if (joined.length === 0 && !shown && read === null) return null;
   return (
     <View style={styles.signals}>
-      {props.current && host !== null ? <NeedsYouCount host={host} /> : null}
+      {shown ? <ShownBadge host={host} /> : <Badge badge={read} />}
       {joined.map(({ team, session }) => (
         <TeamSignal key={team.teamId} name={team.teamName} session={session} teamId={team.teamId} />
       ))}
@@ -206,15 +229,41 @@ function ComputerSignals(props: {
   );
 }
 
-const selectNeedsYouCount = (snapshot: { readonly needsYou: { readonly count: number } | null }) =>
-  snapshot.needsYou?.count ?? 0;
+/** The shown computer's own attention, from the list it already holds: no request. */
+function ShownBadge(props: { readonly host: HostClient }): ReactNode {
+  const shown = useHostSelector(props.host, shownAttention, sameAttention);
+  return <Badge badge={computerBadge({ current: true, shown, read: undefined })} />;
+}
 
-function NeedsYouCount(props: { readonly host: Parameters<typeof useHostSelector>[0] }): ReactNode {
-  const count = useHostSelector(props.host, selectNeedsYouCount);
-  if (count === 0) return null;
+let shownHeld: { readonly source: HostSnapshot; readonly value: ComputerAttention } | null = null;
+function shownAttention(snapshot: HostSnapshot): ComputerAttention {
+  if (shownHeld !== null && sameTaskListSource(shownHeld.source, snapshot)) {
+    const needsYou = snapshot.needsYou?.count ?? 0;
+    if (needsYou === shownHeld.value.needsYou) return shownHeld.value;
+  }
+  const value = {
+    needsYou: snapshot.needsYou?.count ?? 0,
+    unread: taskList(snapshot).ready.some((row) => row.unread),
+  };
+  shownHeld = { source: snapshot, value };
+  return value;
+}
+
+const sameAttention = (left: ComputerAttention, right: ComputerAttention): boolean =>
+  left.needsYou === right.needsYou && left.unread === right.unread;
+
+function Badge(props: { readonly badge: AttentionBadge }): ReactNode {
+  const { badge } = props;
+  if (badge === null) return null;
+  if (badge.kind === "unread")
+    return (
+      <View accessibilityLabel="Unread results" style={styles.unreadMark}>
+        <UnreadDot />
+      </View>
+    );
   return (
     <View
-      accessibilityLabel={count === 1 ? "1 task needs you" : `${count} tasks need you`}
+      accessibilityLabel={badge.count === 1 ? "1 task needs you" : `${badge.count} tasks need you`}
       style={styles.needsYou}
     >
       <Symbol name="exclamationmark.circle" size={11} tint={color.inkOnAmber} weight="bold" />
@@ -223,10 +272,37 @@ function NeedsYouCount(props: { readonly host: Parameters<typeof useHostSelector
         role="caption"
         style={styles.needsYouCount}
       >
-        {String(count)}
+        {String(badge.count)}
       </AppText>
     </View>
   );
+}
+
+/**
+ * Each other computer's attention, asked once when the list opens (and again
+ * only if the set of computers changes): one request each, in parallel, with a
+ * short deadline and no retry.
+ */
+function useOtherComputersAttention(
+  rows: readonly DeploymentRow[],
+  shown: string | null,
+): ReadonlyMap<string, ComputerAttention | null> {
+  const client = useMobileClient();
+  const [reads, setReads] = useState<ReadonlyMap<string, ComputerAttention | null>>(
+    () => new Map(),
+  );
+  const asked = attentionReads(rows, shown).join(" ");
+  useEffect(() => {
+    let current = true;
+    for (const id of asked === "" ? [] : asked.split(" "))
+      void client.readAttention(id).then((attention) => {
+        if (current) setReads((held) => new Map(held).set(id, attention));
+      });
+    return () => {
+      current = false;
+    };
+  }, [asked, client]);
+  return reads;
 }
 
 const TeamSignal = memo(function TeamSignal(props: {
@@ -283,6 +359,7 @@ export function DeploymentsScreen(): ReactNode {
   const navigation = useNavigation();
   const route = useRoute();
   const { account, directory, rows, selection } = useMobileState();
+  const attention = useOtherComputersAttention(rows, selection.deploymentId);
   const switching = route.name === "DeploymentSwitcher";
   const listInsets = useListContentInsets(space[32]);
   const column = useReadingColumn();
@@ -598,6 +675,7 @@ export function DeploymentsScreen(): ReactNode {
         <RowGroup>
           {visibleRows.map((row) => (
             <DeploymentListRow
+              attention={attention.get(row.deploymentId)}
               current={selection.deploymentId === row.deploymentId}
               key={row.deploymentId}
               onDetails={showDetails}
@@ -748,6 +826,7 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   needsYouCount: { color: color.inkOnAmber, fontVariant: ["tabular-nums"], fontWeight: "700" },
+  unreadMark: { alignItems: "center", height: 16, justifyContent: "center" },
   signals: {
     alignItems: "center",
     flexDirection: "row",

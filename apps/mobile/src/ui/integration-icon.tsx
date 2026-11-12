@@ -61,7 +61,7 @@ const bundledSources: Readonly<Record<BundledIntegrationIconId, number>> = {
  *
  * It is decoration in the accessibility tree — the name is already beside it as
  * text — so it is hidden rather than announced a second time, exactly as
- * `WorkspaceMark` is. An integration with no mark gets a neutral tile with its
+ * other leading marks are. An integration with no mark gets a neutral tile with its
  * initials, so every row keeps its leading mark.
  */
 export function IntegrationIcon(props: {

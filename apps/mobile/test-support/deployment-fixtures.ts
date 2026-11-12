@@ -50,7 +50,8 @@ export function testDeploymentConnection(input: {
   readonly route?: { readonly generation?: number; readonly kind?: "connect" | "private" };
   readonly source?: DeploymentConnection["source"];
 }): DeploymentConnection {
-  const kind = input.kind ?? "self-hosted";
+  // A phone attaches to a personal computer; a team is the other kind of row.
+  const kind = input.kind ?? "personal";
   const personal = kind === "personal";
   const document = testDiscoveryDocument({
     canonicalOrigin: personal ? personalCanonicalOrigin : serverCanonicalOrigin,

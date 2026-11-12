@@ -7,10 +7,18 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { useEffect, useState, type ReactNode } from "react";
-import { ActivityIndicator, Alert, ScrollView, Share, StyleSheet, View } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  ScrollView,
+  Share,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
-import { color, space } from "../theme.js";
+import { color, material, radius, space } from "../theme.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { Notice, RowGroup } from "../ui/primitives.js";
 import { LinkRow } from "./settings-rows.js";
@@ -429,53 +437,55 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
   useEffect(() => read(null), [session]);
   if (session === null || page === null) return <Waiting failure={failure} />;
   const last = page.channels.at(-1)?.id ?? null;
+  const rows = page.channels.filter(
+    (channel) => channel.kind === "public" || channel.kind === "private",
+  );
+  const open = (channel: TeamChannelSummary): void => {
+    const go = () => navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
+    if (channel.can.read) go();
+    else if (channel.can.join)
+      void command(session, { type: "team.channel.join", channelId: channel.id }).then(go, failed);
+  };
   return (
     <Screen edgeToEdge>
-      <ScrollView contentContainerStyle={styles.page}>
-        <RowGroup>
-          {[
-            ...page.channels
-              .filter((channel) => channel.kind === "public" || channel.kind === "private")
-              .map((channel) => (
-                <LinkRow
-                  detail={
-                    channel.archivedAt === null
-                      ? channel.peopleOnly
-                        ? "People only"
-                        : null
-                      : "Archived"
-                  }
-                  icon={channel.kind === "private" ? "lock" : "number"}
-                  key={channel.id}
-                  label={channel.name}
-                  onPress={() => {
-                    const open = () =>
-                      navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
-                    if (channel.can.read) open();
-                    else if (channel.can.join)
-                      void command(session, {
-                        type: "team.channel.join",
-                        channelId: channel.id,
-                      }).then(open, failed);
-                  }}
-                />
-              )),
-            page.hasMore && last !== null ? (
-              <LinkRow
-                action
-                disabled={loading}
-                icon="ellipsis"
-                key="more"
-                label="More channels"
-                onPress={() => read(last)}
-                tone="ember"
-              />
-            ) : null,
-          ]}
-        </RowGroup>
-      </ScrollView>
+      <View style={styles.browse}>
+        {/* One framed list, drawing only the rows on screen; its end asks for the next page. */}
+        <FlatList
+          data={rows}
+          initialNumToRender={16}
+          ItemSeparatorComponent={RowSeparator}
+          keyExtractor={(channel) => channel.id}
+          {...(page.hasMore
+            ? { ListFooterComponent: <ActivityIndicator color={color.muted} style={styles.more} /> }
+            : {})}
+          onEndReached={() => {
+            if (page.hasMore && !loading && last !== null) read(last);
+          }}
+          onEndReachedThreshold={0.6}
+          renderItem={({ item: channel }) => (
+            <LinkRow
+              detail={
+                channel.archivedAt === null
+                  ? channel.peopleOnly
+                    ? "People only"
+                    : null
+                  : "Archived"
+              }
+              icon={channel.kind === "private" ? "lock" : "number"}
+              label={channel.name}
+              onPress={() => open(channel)}
+            />
+          )}
+          style={styles.framed}
+          windowSize={9}
+        />
+      </View>
     </Screen>
   );
+}
+
+function RowSeparator(): ReactNode {
+  return <View style={styles.separator} />;
 }
 
 /** What admins did and what agents read, searched and posted. Never a private transcript. */
@@ -530,6 +540,10 @@ type TeamChannelSummary = import("zod").infer<
 type TeamAuditRow = import("zod").infer<typeof import("@opensteer/protocol").TeamAuditSchema>;
 
 const styles = StyleSheet.create({
+  framed: { ...material.plate, borderRadius: radius.lg, flexGrow: 0 },
+  more: { paddingVertical: space[12] },
+  browse: { flex: 1, padding: space[16] },
   page: { gap: space[16], padding: space[16] },
+  separator: { backgroundColor: color.line, height: StyleSheet.hairlineWidth },
   center: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
 });

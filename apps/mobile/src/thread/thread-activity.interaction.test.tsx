@@ -172,14 +172,12 @@ describe("a Thread's activity on the phone", () => {
     };
     const props = {
       conversation: false,
-      homeThreadId: null,
       message,
       onOpenThread: () => {},
       onReply: undefined,
       onToggle: () => {},
       open: true,
       viewerUserId: "owner",
-      workspaces: [],
     };
     const finished = mount(<Message {...props} />);
     expect(finished.querySelector("[data-report]")?.getAttribute("data-report")).toBe(message.id);
