@@ -187,34 +187,6 @@ function sentence(text: string): string {
 
 function planFor(ask: string, model: Model, context: readonly Msg[], where: string): Plan {
   const text = ask.toLowerCase();
-  if (/refund|stripe|charge|invoice|billing/.test(text)) {
-    if (model.refunded)
-      return {
-        title: "Check Northwind's refund",
-        steps: ["Read the thread", "Checked invoice 2291 in Stripe"],
-        answer:
-          "Already done. The duplicate $480.00 on invoice 2291 was refunded earlier today, so Northwind is square.",
-      };
-    return {
-      title: "Refund Northwind's duplicate charge",
-      steps: [
-        "Read the thread",
-        "Found two $480.00 charges for invoice 2291 in Stripe",
-        "Checked the Refund policy topic",
-      ],
-      ask: {
-        card: "Refund <b>$480.00</b> to Northwind?",
-        phone: "Refund $480.00 to Northwind for the duplicate charge on invoice 2291?",
-      },
-      after: ["Refunded $480.00 in Stripe"],
-      answer: REFUND_ANSWER,
-      denied: "Okay, I didn't refund anything. The duplicate $480.00 is still on invoice 2291.",
-      source: "Refund policy",
-      allowed: () => {
-        model.refunded = true;
-      },
-    };
-  }
   if (/summar|recap|tl;?dr|catch me up|what happened|what's going on/.test(text)) {
     const lines = context
       .filter((msg) => msg.body || msg.run)
@@ -265,6 +237,35 @@ function planFor(ask: string, model: Model, context: readonly Msg[], where: stri
       steps: ["Checked Maya's and Priya's calendars"],
       answer: "Booked 30 minutes with Maya and Priya tomorrow at 10:00 AM. The invites are out.",
     };
+  // The subject (a charge, an invoice) only decides once no other action was asked for.
+  if (/refund|stripe|charge|invoice|billing/.test(text)) {
+    if (model.refunded)
+      return {
+        title: "Check Northwind's refund",
+        steps: ["Read the thread", "Checked invoice 2291 in Stripe"],
+        answer:
+          "Already done. The duplicate $480.00 on invoice 2291 was refunded earlier today, so Northwind is square.",
+      };
+    return {
+      title: "Refund Northwind's duplicate charge",
+      steps: [
+        "Read the thread",
+        "Found two $480.00 charges for invoice 2291 in Stripe",
+        "Checked the Refund policy topic",
+      ],
+      ask: {
+        card: "Refund <b>$480.00</b> to Northwind?",
+        phone: "Refund $480.00 to Northwind for the duplicate charge on invoice 2291?",
+      },
+      after: ["Refunded $480.00 in Stripe"],
+      answer: REFUND_ANSWER,
+      denied: "Okay, I didn't refund anything. The duplicate $480.00 is still on invoice 2291.",
+      source: "Refund policy",
+      allowed: () => {
+        model.refunded = true;
+      },
+    };
+  }
   return {
     title:
       ask.length > 44 ? `${ask.slice(0, 42).trim()}…` : ask.charAt(0).toUpperCase() + ask.slice(1),
@@ -381,9 +382,9 @@ const SHELL = `<div class="tw" data-pane="main" role="group" aria-label="Interac
     <header class="tw-head" data-part="head"></header>
     <div class="tw-feed" data-part="feed"></div>
     <div class="tw-compose" data-part="compose">
-      <div class="tw-pop" data-part="pop" role="listbox" aria-label="Mention someone"></div>
+      <div class="tw-pop" id="teamMentions" data-part="pop" role="listbox" aria-label="Mention someone"></div>
       <div class="tw-hints" data-part="hints"></div>
-      <input class="tw-field" data-part="field" type="text" autocomplete="off" spellcheck="false" aria-label="Message" />
+      <input class="tw-field" data-part="field" type="text" role="combobox" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="teamMentions" aria-expanded="false" autocomplete="off" spellcheck="false" aria-label="Message" />
       <div class="tw-tools"><span class="tw-at">@</span><button type="button" class="tw-ask" data-act="ask-toggle" aria-pressed="false"><span class="orb"></span>Ask my agent</button><button type="button" class="tw-send" data-act="send" aria-label="Send">${icon("i-up")}</button></div>
     </div>
   </div>
@@ -512,6 +513,7 @@ export function mountTeam(): void {
   let lastPane = "";
   let frame = 0;
   const doneHooks = new Map<string, () => void>();
+  const drafts = new Map<string, string>();
 
   const later = (ms: number, run: () => void, story = false): void => {
     if (reducedMotion && story) {
@@ -898,6 +900,9 @@ export function mountTeam(): void {
   const isOpen = (pane: Pane): boolean => paneKey(pane) === paneKey(model.pane);
 
   function open(pane: Pane): void {
+    // Each conversation keeps its own unsent draft, like the app.
+    drafts.set(paneKey(model.pane), field.value);
+    field.value = drafts.get(paneKey(pane)) ?? "";
     model.pane = pane;
     model.mobile = "main";
     if (pane.k === "conv") {
@@ -1274,14 +1279,18 @@ export function mountTeam(): void {
     pop.innerHTML = current.options
       .map(
         (option, at) =>
-          `<button type="button" role="option" aria-selected="${at === current.active}" class="tw-opt${at === current.active ? " is-on" : ""}" data-act="mention" data-label="${esc(option.label)}">${option.html}${option.hint ? `<span>${option.hint}</span>` : ""}</button>`,
+          `<button type="button" role="option" id="teamMention-${at}" tabindex="-1" aria-selected="${at === current.active}" class="tw-opt${at === current.active ? " is-on" : ""}" data-act="mention" data-label="${esc(option.label)}">${option.html}${option.hint ? `<span>${option.hint}</span>` : ""}</button>`,
       )
       .join("");
     pop.classList.add("is-on");
+    field.setAttribute("aria-expanded", "true");
+    field.setAttribute("aria-activedescendant", `teamMention-${current.active}`);
   }
   function closeMenu(): void {
     menu = undefined;
     pop.classList.remove("is-on");
+    field.setAttribute("aria-expanded", "false");
+    field.removeAttribute("aria-activedescendant");
   }
   function pick(label: string): void {
     const start = menu?.start ?? field.value.lastIndexOf("@");
@@ -1397,6 +1406,7 @@ export function mountTeam(): void {
   });
   field.addEventListener("click", watchMention);
   field.addEventListener("keydown", (event) => {
+    if (event.isComposing) return;
     if (menu) {
       if (event.key === "ArrowDown" || event.key === "ArrowUp") {
         event.preventDefault();
@@ -1522,6 +1532,7 @@ export function mountTeam(): void {
     clear(storyTimers);
     clear(worldTimers);
     doneHooks.clear();
+    drafts.clear();
     model = seed();
     seedTasks();
     phoneRun = undefined;
