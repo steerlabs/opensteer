@@ -8,7 +8,7 @@ const platformContainment = "posix-openat-nofollow"
 
 // Darwin's st_dev is a mount-session identifier, not a durable volume
 // identity. APFS can assign a different value to the same volume after a
-// reboot, which made an unchanged managed task folder look replaced. The native
+// reboot, which made an unchanged managed root folder look replaced. The native
 // helper still enforces st_dev containment for every operation; persistence
 // uses the directory's stable inode identity on macOS.
 func persistentVolumeID(_ uint64) string { return "0" }

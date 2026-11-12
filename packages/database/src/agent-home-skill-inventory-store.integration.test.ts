@@ -5,9 +5,12 @@ import { expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
-import { listPersonalSkillInventory, reportFolderSkills } from "./folder-skill-inventory-store.js";
+import {
+  agentHomeSkillInventory,
+  reportAgentHomeSkills,
+} from "./agent-home-skill-inventory-store.js";
 
-it("fences folder metadata to the current hosting computer and retains the last successful scan", async () => {
+it("fences Agent home skills to the current hosting Runner and retains the last successful scan", async () => {
   const clone = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: clone.url });
   try {
@@ -29,7 +32,6 @@ it("fences folder metadata to the current hosting computer and retains the last 
     const report = RunnerSkillMetadataReportSchema.parse({
       ...fence,
       type: "runner.skills.report",
-      binding: personal.agentHome,
       scanSequence: 1,
       scannedAt: new Date().toISOString(),
       result: {
@@ -38,17 +40,16 @@ it("fences folder metadata to the current hosting computer and retains the last 
         skills: [{ fullName: "release", description: "Release", digest: "a".repeat(64) }],
       },
     });
-    expect(await reportFolderSkills(database, fence, report)).toBe(true);
-    expect(await reportFolderSkills(database, fence, report)).toBe(false);
-    expect((await listPersonalSkillInventory(database, personal.userId))[0]).toMatchObject({
-      folder: personal.agentHome,
+    expect(await reportAgentHomeSkills(database, fence, report)).toBe(true);
+    expect(await reportAgentHomeSkills(database, fence, report)).toBe(false);
+    expect(await agentHomeSkillInventory(database, personal.userId)).toMatchObject({
       stale: false,
       scanStatus: "complete",
       skills: [{ fullName: "release" }],
     });
-    await expect(listPersonalSkillInventory(database, createId("user"))).rejects.toThrow();
+    await expect(agentHomeSkillInventory(database, createId("user"))).rejects.toThrow();
     expect(
-      await reportFolderSkills(
+      await reportAgentHomeSkills(
         database,
         {
           ...fence,
@@ -57,21 +58,22 @@ it("fences folder metadata to the current hosting computer and retains the last 
         { ...report, scanSequence: 2 },
       ),
     ).toBe(false);
+    const otherRunner = { ...fence, runnerId: createId("runner") };
     expect(
-      await reportFolderSkills(database, fence, {
+      await reportAgentHomeSkills(database, otherRunner, {
         ...report,
-        binding: { ...report.binding, computerId: createId("runner") },
+        ...otherRunner,
         scanSequence: 2,
       }),
     ).toBe(false);
     expect(
-      await reportFolderSkills(database, fence, {
+      await reportAgentHomeSkills(database, fence, {
         ...report,
         scanSequence: 2,
         result: { status: "failed", reason: "unreadable" },
       }),
     ).toBe(true);
-    expect((await listPersonalSkillInventory(database, personal.userId))[0]).toMatchObject({
+    expect(await agentHomeSkillInventory(database, personal.userId)).toMatchObject({
       stale: true,
       scanStatus: "failed",
       skills: [{ fullName: "release" }],
@@ -81,8 +83,10 @@ it("fences folder metadata to the current hosting computer and retains the last 
       .set({ connectionGeneration: 2 })
       .where("id", "=", personal.runnerId)
       .execute();
-    expect(await reportFolderSkills(database, fence, { ...report, scanSequence: 3 })).toBe(false);
-    expect((await listPersonalSkillInventory(database, personal.userId))[0]?.stale).toBe(true);
+    expect(await reportAgentHomeSkills(database, fence, { ...report, scanSequence: 3 })).toBe(
+      false,
+    );
+    expect((await agentHomeSkillInventory(database, personal.userId))?.stale).toBe(true);
   } finally {
     await database.destroy();
     await clone.drop();

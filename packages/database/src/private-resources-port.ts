@@ -4,7 +4,6 @@ import type {
   DeploymentId,
   RunId,
   RunnerId,
-  TaskFolder,
   ThreadId,
   UserId,
 } from "@opensteer/core";
@@ -49,18 +48,4 @@ export interface PrivateResourceStorePort {
     site: string,
   ): Promise<{ readonly loginId: string; readonly revision: number } | null>;
   revokePasswordsGrant(actor: PrivateResourceActor, site: string): Promise<void>;
-  messagingFolder(actor: PrivateResourceActor, bindingId: string): Promise<TaskFolder>;
-  setMessagingFolder(
-    actor: PrivateResourceActor,
-    bindingId: string,
-    folder: TaskFolder,
-  ): Promise<void>;
-  appPublisher(
-    actor: PrivateResourceActor,
-    appId: string,
-  ): Promise<{
-    readonly threadId: ThreadId;
-    readonly runId: RunId;
-    readonly folder: TaskFolder | null;
-  }>;
 }

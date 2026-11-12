@@ -95,7 +95,7 @@ export interface RunDispatchContext {
   readonly firstOrdinal: number;
   readonly run: Run;
   readonly thread: Thread;
-  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
+  readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 function executionBindingFromRow(row: {
   readonly bindingGeneration: ProviderSessionTable["bindingGeneration"];
@@ -144,7 +144,6 @@ export async function renewActiveExecutionBindings(
   return withPersonalTransaction(database, async (transaction) => {
     const runs = await transaction
       .selectFrom("runs")
-      .innerJoin("threads", "threads.id", "runs.threadId")
       .innerJoin("personalSettings", "personalSettings.ownerId", "runs.requestedBy")
       .innerJoin("users", "users.id", "personalSettings.ownerId")
       .innerJoin("providerSessions", "providerSessions.id", "runs.providerSessionId")
@@ -154,7 +153,6 @@ export async function renewActiveExecutionBindings(
       .where("runs.id", "in", [...input.activeRunIds])
       .where("runs.status", "in", ["starting", "running", "waiting"])
       .whereRef("runs.bindingGeneration", "=", "providerSessions.bindingGeneration")
-      .whereRef("threads.folderComputerId", "=", "personalSettings.agentHomeComputerId")
       .whereRef("executionEnvironments.runnerId", "=", "personalSettings.agentHomeComputerId")
       .where("runners.revokedAt", "is", null)
       .where("users.disabledAt", "is", null)
@@ -535,10 +533,7 @@ export async function loadRunDispatchContext(
         }
       : {}),
     thread: threadFromRow(threadRow),
-    location: {
-      folder: { computerId: threadRow.folderComputerId, path: threadRow.folderPath },
-      agentHome: settings.agentHome,
-    },
+    agentHome: settings.agentHome,
   };
 }
 export async function acquireExecutionBinding(

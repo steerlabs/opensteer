@@ -7,11 +7,11 @@ import {
   AppFetchInputSchema,
   appFolderSegments,
   utf8Prefix,
-  type TaskFolder,
   type AppServerSpec,
   OpensteerError,
   appMaxBytes,
   type AgentEvent,
+  type ComputerFolder,
   type UserId,
 } from "@opensteer/core";
 import type { AppStore } from "@opensteer/database";
@@ -32,7 +32,7 @@ import {
 } from "./app-proxy.js";
 import { appFrameHeaders } from "@opensteer/shared/appFrame";
 import type { RunToolTokenService } from "../agents/run-tool-tokens.js";
-import type { FolderDirectoryPage } from "@opensteer/protocol";
+import type { AgentHomeFiles } from "../threads/agent-home-files.js";
 import type { z } from "zod";
 
 const unavailable = () =>
@@ -41,14 +41,8 @@ interface AppServiceOptions {
   readonly tunnels?: Pick<AppTunnelHub, "start" | "stop" | "connect" | "accept">;
   readonly dataDirectory: string;
   readonly apps: AppStore;
-  readonly files: {
-    list(
-      folder: TaskFolder,
-      input: { parentKey: string; limit: number; cursor?: string },
-      signal: AbortSignal,
-    ): Promise<FolderDirectoryPage>;
-    download(folder: TaskFolder, key: string, signal: AbortSignal): Promise<Response>;
-  };
+  readonly files: Pick<AgentHomeFiles, "list" | "download">;
+  readonly agentHome: () => Promise<ComputerFolder>;
   readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
   readonly tabsChanged?: () => Promise<void>;
   readonly publishEvent: (event: AgentEvent) => void;
@@ -91,16 +85,12 @@ export class AppService {
   ) {
     input = AppPublishInputSchema.parse(input);
     return this.#locks.run(input.appId ?? `${scope.runId}:${publishKey}`, async () => {
-      const { app: previous, publisher } = await this.#options.apps.authorize({
+      const { app: previous, agentHome } = await this.#options.apps.authorize({
         ...scope,
         userId: scope.requestedBy,
         ...(input.appId ? { appId: input.appId } : {}),
         fullAccess: input.start !== undefined,
       });
-      const folder: TaskFolder = {
-        computerId: publisher.folderComputerId,
-        path: publisher.folderPath,
-      };
       const replay = await this.#options.apps.publication(scope.runId, publishKey);
       if (replay) return publicationResult(replay);
       if (input.start !== undefined) {
@@ -109,19 +99,19 @@ export class AppService {
         } catch {
           throw new OpensteerError({
             code: "bad_request",
-            message: "Use an app folder relative to this task's folder without traversal",
+            message: "Use an app folder inside Agent home, without traversal",
           });
         }
         const server: AppServerSpec = {
           folder: {
-            computerId: folder.computerId,
-            path: join(folder.path, ...appFolderSegments(input.path)),
+            computerId: agentHome.computerId,
+            path: join(agentHome.path, ...appFolderSegments(input.path)),
           },
           command: input.start,
         };
         const appId = input.appId ?? `app_${randomUUID()}`;
         const version = (previous?.latestVersion ?? 0) + 1;
-        const spec = this.#runtimeSpec(appId, version, server);
+        const spec = await this.#runtimeSpec(appId, version, server);
         try {
           await this.#tunnels().start(spec, AbortSignal.timeout(30_000));
         } catch (error) {
@@ -164,7 +154,7 @@ export class AppService {
           code: "bad_request",
           message: "Publish an HTML file (.html or .htm)",
         });
-      // Files drivers resolve these opaque path segments against the admitted task folder.
+      // The file service resolves these opaque path segments inside Agent home.
       const segments = input.path.replace(/^\.\//u, "").split("/");
       if (
         segments.some(
@@ -174,7 +164,7 @@ export class AppService {
       )
         throw new OpensteerError({
           code: "bad_request",
-          message: "Use an HTML file path relative to this task's folder",
+          message: "Use an HTML file path inside Agent home",
         });
       const signal = AbortSignal.timeout(30_000);
       let key = "";
@@ -183,7 +173,6 @@ export class AppService {
         let found = false;
         do {
           const page = await this.#options.files.list(
-            folder,
             { parentKey: key, limit: 500, ...(cursor ? { cursor } : {}) },
             signal,
           );
@@ -199,7 +188,7 @@ export class AppService {
         } while (cursor);
         if (!found) throw unavailable();
       }
-      const response = await this.#options.files.download(folder, key, signal);
+      const response = await this.#options.files.download(key, signal);
       if (!response.ok) {
         await response.body?.cancel();
         throw unavailable();
@@ -240,7 +229,9 @@ export class AppService {
         const old = previousVersion!;
         // The old server's generation is the one replaced by this publication.
         if (old.version.server)
-          await this.#stop(this.#runtimeSpec(previous.id, result.version - 1, old.version.server));
+          await this.#stop(
+            await this.#runtimeSpec(previous.id, result.version - 1, old.version.server),
+          );
       }
       if (result.event) {
         this.#options.publishEvent(result.event);
@@ -358,7 +349,7 @@ export class AppService {
       const current = await this.#options.apps.latest(appId, userId);
       if (!current.version.server) throw new AppTunnelError("This app no longer runs a server");
       return this.#tunnels().connect(
-        this.#runtimeSpec(appId, current.version.version, current.version.server),
+        await this.#runtimeSpec(appId, current.version.version, current.version.server),
         signal,
       );
     });
@@ -404,7 +395,7 @@ export class AppService {
                 code: "bad_request",
                 message: "app_fetch requires a server app",
               });
-            const spec = this.#runtimeSpec(app.id, version.version, version.server);
+            const spec = await this.#runtimeSpec(app.id, version.version, version.server);
             return this.#tunnels().connect(spec, signal);
           }),
       });
@@ -459,8 +450,13 @@ export class AppService {
     }
   }
 
-  #runtimeSpec(appId: string, version: number, server: AppServerSpec): AppRuntimeSpec {
-    return { appId, version, folder: server.folder, command: server.command };
+  async #runtimeSpec(
+    appId: string,
+    version: number,
+    server: AppServerSpec,
+  ): Promise<AppRuntimeSpec> {
+    const agentHome = await this.#options.agentHome();
+    return { appId, version, folder: server.folder, agentHome, command: server.command };
   }
   #tunnels() {
     if (!this.#options.tunnels) throw new AppTunnelError("App servers are unavailable");

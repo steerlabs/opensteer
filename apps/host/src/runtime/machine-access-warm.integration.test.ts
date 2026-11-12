@@ -771,7 +771,6 @@ async function startRig(
     const threadId = await stack.createThread({
       modelSelection: selection,
       title: "Reach other computers",
-      folder: stack.agentHome,
     });
     // Codex reaches the relay socket only with its network on, in Full access.
     await stack.updateThreadAccess(threadId, "full-access");

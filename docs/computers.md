@@ -77,8 +77,8 @@ An approved server's changed launch on the same computer keeps consent unless it
 names, because personal agents already run as that OS user without isolation. Team servers run no
 agents or plugin servers. A new, moved or declined server always asks.
 
-An agent-made plugin records its task folder, not a Host path, so only an agent updates it, by
-installing that folder again; Settings' Update and `plugin_manage` update person-installed plugins.
+An agent-made plugin records its folder in Agent home, not a Host path, so only an agent updates it,
+by installing that folder again; Settings' Update and `plugin_manage` update person-installed plugins.
 
 Program servers declare secret names, never values, in their plugin metadata. The owner supplies
 values through consent; new names require review, and consent and values belong to one computer.

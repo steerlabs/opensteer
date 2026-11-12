@@ -1,4 +1,4 @@
-import { createId, type DeploymentId } from "@opensteer/core";
+import { createId, type DeploymentId, type TeamTaskOrigin, type ThreadId } from "@opensteer/core";
 import { PersonalTeamLinkSchema, type PersonalTeamLink } from "@opensteer/protocol";
 import type { Insertable, Kysely, Selectable } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
@@ -10,6 +10,18 @@ export class PersonalTeamLinksStore {
   readonly database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.database = database;
+  }
+
+  /** The local task a team thread is bound to, if it has one yet. */
+  async task(origin: TeamTaskOrigin): Promise<ThreadId | null> {
+    const row = await this.database
+      .selectFrom("threads")
+      .select("id")
+      .where("teamId", "=", origin.teamId)
+      .where("channelId", "=", origin.channelId)
+      .where("threadRootId", "=", origin.threadRootId)
+      .executeTakeFirst();
+    return row?.id ?? null;
   }
 
   get(teamId: DeploymentId) {

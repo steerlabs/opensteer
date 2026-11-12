@@ -2628,7 +2628,6 @@ async function browserProfilesTurn(input) {
     };
     if (plan.delegate)
       report.delegated = await call("delegate_task", {
-        folder: plan.delegate,
         task: 'Report your tool inventory. BROWSER_PROFILE_JOURNEY:{"kind":"delegated"}',
         title: "Profile authority inventory",
       });

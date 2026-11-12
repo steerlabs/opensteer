@@ -55,8 +55,6 @@ type ThreadReadRow = {
   readonly accessMode: ThreadAccessMode;
   readonly specialistId?: string | null;
   readonly purpose: Thread["purpose"];
-  readonly folderComputerId: import("@opensteer/core").RunnerId;
-  readonly folderPath: string;
   readonly teamId: import("@opensteer/core").DeploymentId | null;
   readonly channelId: import("@opensteer/core").TeamChannelId | null;
   readonly threadRootId: import("@opensteer/core").TeamMessageId | null;
@@ -87,10 +85,6 @@ export function threadsFromRows(rows: readonly ThreadReadRow[]): Thread[] {
 function threadValueFromRow(row: ThreadReadRow) {
   return {
     ...row,
-    folder: {
-      computerId: row.folderComputerId,
-      path: row.folderPath,
-    },
     teamOrigin:
       row.teamId && row.channelId && row.threadRootId
         ? {

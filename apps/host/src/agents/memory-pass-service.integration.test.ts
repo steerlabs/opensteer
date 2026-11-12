@@ -366,7 +366,6 @@ describeStore("managed memory passes", (it) => {
       parentThreadId: null,
       lineageRootThreadId: light.trigger.anchorThreadId,
       purpose: "background-job",
-      folder: base.agentHome,
       listed: false,
       modelSelection: base.thread.modelSelection,
     });
@@ -1097,7 +1096,6 @@ describeStore("managed memory passes", (it) => {
         harnessInstanceId: base.harnessInstance.id,
         idempotencyKey: `activity-${title}`,
         modelSelection: base.thread.modelSelection,
-        folder: base.folder,
         title,
       });
       if (Object.keys(patch).length === 0) return thread;

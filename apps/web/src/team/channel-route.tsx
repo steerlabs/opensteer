@@ -982,7 +982,6 @@ function ChannelDetailsPane({
           : {}),
       }}
       channel={channel}
-      folder={null}
       notify={level}
       topics={(topics.value?.topics ?? []).map((topic) => ({
         id: topic.id,

@@ -3,8 +3,6 @@ import { Dialog } from "../dialog.js";
 import { Icon } from "../icon.js";
 import { Popover } from "../popover.js";
 import { SegmentedControl } from "../segmented-control.js";
-import { AgentOrb } from "../workspace/task-mark.js";
-import { FolderChip, type FolderPickerProps } from "../home/folder-picker.js";
 import { PaneHeader } from "./channel-view.js";
 import { PersonAvatar, peopleOnlyRule } from "./team-marks.js";
 import {
@@ -36,21 +34,17 @@ export interface ChannelDetailsActions {
 
 /**
  * A channel's settings beside it. Everyone reads all of it; people with
- * manage access edit it. "Your agent here" is the one part kept on the
- * reader's own Opensteer, not on the team server.
+ * manage access edit it.
  */
 export function ChannelDetails({
   actions,
   channel,
-  folder,
   notify,
   topics,
   workingAgents,
 }: {
   readonly actions: ChannelDetailsActions;
   readonly channel: ChannelView;
-  /** Where the reader's agent works for asks started here; null hides it (people only). */
-  readonly folder: FolderPickerProps | null;
   readonly notify: NotifyLevel;
   readonly topics: readonly ChannelTopicRef[];
   /** Agents mid-run in this channel, which making it people only would stop from posting. */
@@ -149,26 +143,6 @@ export function ChannelDetails({
             </ul>
           </DetailsBlock>
         )}
-        {folder ? (
-          <DetailsBlock
-            action={
-              <span className="details-tag">
-                <Icon name="laptop" />
-                On your Opensteer
-              </span>
-            }
-            icon={<AgentOrb size={16} />}
-            title="Your agent here"
-          >
-            <div className="details-row details-row--spread">
-              <span className="details-note">
-                When you ask your agent in {channelLabel(channel)}, it works in
-              </span>
-              <FolderChip {...folder} />
-            </div>
-            <p className="details-note">Changing it affects new asks only.</p>
-          </DetailsBlock>
-        ) : null}
         <DetailsBlock title="Notify me about">
           <SegmentedControl
             ariaLabel="Notify me about"

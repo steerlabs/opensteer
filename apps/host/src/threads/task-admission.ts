@@ -1,7 +1,6 @@
 import type {
   MessageId,
   RunId,
-  TaskFolder,
   TeamAgentRequestId,
   TeamSource,
   TeamTaskOrigin,
@@ -12,7 +11,6 @@ export interface TeamTaskAdmission {
   readonly origin: TeamTaskOrigin;
   readonly requestId: TeamAgentRequestId;
   readonly triggerMessageId: TeamTaskOrigin["threadRootId"];
-  readonly folder: TaskFolder;
   readonly source: TeamSource;
 }
 export interface TeamTaskAdmissionReceipt {

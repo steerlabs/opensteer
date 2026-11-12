@@ -8,7 +8,6 @@ import {
   RunnerIdSchema,
   TimeZoneSchema,
   ThreadAccessModeSchema,
-  TaskFolderSchema,
 } from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
@@ -223,7 +222,6 @@ export const channel_manage = defineAgentTool({
       .array(
         z.object({
           id: z.string(),
-          folder: TaskFolderSchema,
           accountId: z.string(),
           status: z.string(),
         }),

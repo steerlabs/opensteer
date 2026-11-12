@@ -51,7 +51,6 @@ describe("channel admission contract", () => {
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
       status: "active",
       updatedAt: new Date().toISOString(),
-      folder: { computerId: createId("runner"), path: "/tmp/messaging" },
     });
     expect(binding.accessPolicy).toEqual(policy);
   });

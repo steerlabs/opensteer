@@ -993,7 +993,6 @@ function rpcContractFetch(
       return json({ data: { timeZone: payload.timeZone, type: payload.type }, ok: true });
     }
     const response = await fetch(input, init);
-    if (name === "folder.files.preview" && response.ok) return response;
     const responseBody: unknown = response.status === 204 ? {} : await response.json();
     if (!response.ok) {
       const error = objectValue(responseBody, "error");
@@ -12845,7 +12844,6 @@ function makeThread(_deploymentId: import("@opensteer/core").DeploymentId): Thre
     doneAt: null,
     doneReason: null,
     accessMode: "full-access",
-    folder: { computerId: runnerId, path: "/Users/person/Opensteer" },
     purpose: "task",
     teamOrigin: null,
     continuationIdentity: null,
@@ -13434,7 +13432,6 @@ describe("HttpHostClient overnight transcript residency", () => {
         status: "open" as const,
         updatedAt: now,
         workerThread: {
-          folder: f.thread.folder,
           environmentId,
           id: f.thread.id,
           pendingRequests: 1,
@@ -15296,7 +15293,7 @@ describe("HttpHostClient command projection", () => {
     const signals: (AbortSignal | null | undefined)[] = [];
     const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(input instanceof Request ? input.url : String(input)).pathname;
-      if (path !== "/v1/rpc/folder.files.list") return json(bootstrap([workspace]));
+      if (path !== "/v1/rpc/apps.view") return json(bootstrap([workspace]));
       signals.push(init?.signal);
       init?.signal?.throwIfAborted();
       return new Promise<Response>((_resolve, reject) => {
@@ -15310,26 +15307,17 @@ describe("HttpHostClient command projection", () => {
     });
     await client.load();
 
-    const pending = client.listFolderFiles(
-      { computerId: runnerId, path: "/tmp/folder" },
-      { parentKey: "" },
-      controller.signal,
-    );
+    const appId = `app_${crypto.randomUUID()}`;
+    const pending = client.viewApp(appId, "light", controller.signal);
     await vi.waitFor(() => expect(signals).toHaveLength(1));
     expect(signals[0]?.aborted).toBe(false);
-    const reason = new DOMException("Left the folder", "AbortError");
+    const reason = new DOMException("Closed the app", "AbortError");
     const cancelled = expect(pending).rejects.toBe(reason);
     controller.abort(reason);
     expect(signals[0]?.aborted).toBe(true);
     expect(signals[0]?.reason).toBe(reason);
     await cancelled;
-    await expect(
-      client.listFolderFiles(
-        { computerId: runnerId, path: "/tmp/folder" },
-        { parentKey: "" },
-        controller.signal,
-      ),
-    ).rejects.toBe(reason);
+    await expect(client.viewApp(appId, "light", controller.signal)).rejects.toBe(reason);
     expect(signals).toHaveLength(1);
     client.dispose();
   });

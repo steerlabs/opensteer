@@ -3,13 +3,8 @@ import {
   withPersonalReadTransaction,
   withPersonalTransaction,
 } from "./personal-transaction.js";
-import {
-  TaskFolderSchema,
-  type TaskFolder,
-  type TaskPurpose,
-  type TeamTaskOrigin,
-} from "@opensteer/core";
-import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
+import { type TaskPurpose, type TeamTaskOrigin } from "@opensteer/core";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { MemoryPassExecution } from "./memory-pass-store.js";
 import { getThreadNamingInput } from "./execution-store.js";
 import { environmentIsAvailableToUser } from "./environment-store.js";
@@ -142,7 +137,6 @@ import {
 import { appendHostDeploymentEvent } from "./deployment-events.js";
 import { projectThreadState } from "./thread-status.js";
 export interface CreateThreadInput {
-  readonly requestedFolder?: TaskFolder;
   readonly specialistId?: string;
   readonly expectedHarnessRevision?: number;
   readonly icon?: IconName;
@@ -151,7 +145,6 @@ export interface CreateThreadInput {
   readonly createdBy: UserId;
   readonly environmentId: EnvironmentId;
   readonly harnessInstanceId: HarnessInstanceId;
-  readonly folder?: TaskFolder;
   readonly purpose?: TaskPurpose;
   readonly teamOrigin?: TeamTaskOrigin;
   readonly generateTitle?: true;
@@ -304,7 +297,6 @@ export interface MovedThreadInput {
   readonly wasDuplicate: boolean;
 }
 export interface DelegateThreadRequest {
-  readonly folder?: TaskFolder;
   readonly specialistId?: string;
   readonly expectedHarnessRevision?: number;
   readonly callerIntent?: Pick<RunToolAdmissionInput, "requestId" | "requestFingerprint">;
@@ -379,7 +371,6 @@ export interface OwnerThreadPage {
   readonly window: DurableWindow;
 }
 interface AgentThreadListEntry {
-  readonly folder: import("@opensteer/core").TaskFolder;
   readonly assignmentId: AssignmentId | null;
   readonly taskStatus: AssignmentSummary["status"] | null;
   readonly doneAt: string | null;
@@ -481,7 +472,6 @@ function canonicalCreateThreadInput(input: CreateThreadInput): Readonly<Record<s
         }
       : {}),
     title: input.title,
-    folder: input.folder,
     purpose: input.purpose ?? "task",
     teamOrigin: input.teamOrigin ?? null,
   };
@@ -870,8 +860,6 @@ export async function agentThreadPageForOwner(
           .select(["task.assignmentId", "task.taskStatus"])
           .select([
             "threads.environmentId",
-            "threads.folderComputerId",
-            "threads.folderPath",
             "threads.id",
             "threads.status",
             "threads.title",
@@ -899,7 +887,6 @@ export async function agentThreadPageForOwner(
       const window = boundedSerializedPrefix(
         rows.slice(0, maxItems).map((row) => ({
           ...row,
-          folder: { computerId: row.folderComputerId, path: row.folderPath },
           updatedAt: row.updatedAt.toISOString(),
           doneAt: row.doneAt?.toISOString() ?? null,
         })),
@@ -1013,16 +1000,8 @@ export async function createThreadInTransaction(
 ): Promise<ThreadCreationResult> {
   await requirePersonalOwner(transaction, input.createdBy);
   await lockCommandIdempotency(transaction, input.createdBy, input.idempotencyKey);
-  const settings = await personalSettings(transaction);
-  const folder = TaskFolderSchema.parse(input.folder ?? settings.agentHome);
-  if (folder.computerId !== settings.agentHome.computerId)
-    throw new OpensteerError({
-      code: "bad_request",
-      message: "Tasks can run only on the hosting computer. Choose a folder on that computer.",
-    });
   const resolvedInput = {
     ...input,
-    folder,
     accessMode: await resolveCreateThreadAccessMode(transaction, input),
   };
   const requestPayload = canonicalCreateThreadInput(resolvedInput);
@@ -1059,8 +1038,6 @@ export async function createThreadInTransaction(
     modelSelection: jsonValue(ModelSelectionSchema.parse(input.modelSelection)),
     parentThreadId: input.parentThreadId ?? null,
     purpose,
-    folderComputerId: folder.computerId,
-    folderPath: folder.path,
     teamId: input.teamOrigin?.teamId ?? null,
     channelId: input.teamOrigin?.channelId ?? null,
     threadRootId: input.teamOrigin?.threadRootId ?? null,
@@ -2092,10 +2069,8 @@ export async function findThreadCreationByIdempotency(
 ): Promise<ThreadCreationResult | null> {
   return withPersonalReadTransaction(database, async (transaction) => {
     await requirePersonalOwner(transaction, input.createdBy);
-    const settings = await personalSettings(transaction);
     const resolvedInput = {
       ...input,
-      folder: TaskFolderSchema.parse(input.folder ?? settings.agentHome),
       accessMode: await resolveCreateThreadAccessMode(transaction, input),
     };
     return (

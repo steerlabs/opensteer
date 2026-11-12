@@ -151,9 +151,7 @@ describe("engine qualification", () => {
         const active = stack;
         const model = active.catalog.models.find((candidate) => candidate.isDefault);
         if (!model) throw new Error("The engine has no default model");
-        const workspace = await active.createFolder(`${engine.label} Request hold`);
         const threadId = await active.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
@@ -798,9 +796,7 @@ describe("engine qualification", () => {
           ]),
         );
       }
-      const workspace = await stack.createFolder(`${engine.label} qualification`);
       const threadId = await stack.createThread({
-        folder: workspace,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
@@ -935,7 +931,6 @@ describe("engine qualification", () => {
       // The engine's supervised mode must surface a real Opensteer Request
       // before an MCP shell call, then continue after a client answers it.
       const approvalThreadId = await stack.createThread({
-        folder: workspace,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
@@ -1105,7 +1100,6 @@ describe("engine qualification", () => {
           name: "two-colors.png",
         });
         const imageThreadId = await stack.createThread({
-          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: imageModel.modelId,
             options: {},

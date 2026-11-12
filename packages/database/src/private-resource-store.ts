@@ -1,10 +1,9 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   OpensteerError,
-  TaskFolderSchema,
   type BrowserProfileId,
   type BrowserSessionId,
-  type TaskFolder,
+  type RunnerId,
 } from "@opensteer/core";
 import {
   IntegrationConnectionIdSchema,
@@ -144,7 +143,7 @@ export class PrivateResourceStore implements PrivateResourceStorePort {
   async assertBrowserProfile(
     actor: PrivateResourceActor,
     profileId: BrowserProfileId,
-    computerId: TaskFolder["computerId"],
+    computerId: RunnerId,
   ) {
     await this.assertOwner(actor);
     const eligible = await listEligibleBrowserRunners(this.database, actor.ownerId);
@@ -212,74 +211,6 @@ export class PrivateResourceStore implements PrivateResourceStorePort {
   async revokePasswordsGrant(actor: PrivateResourceActor, site: string): Promise<void> {
     await this.assertOwner(actor);
     await this.passwords.revoke(actor, site);
-  }
-  async messagingFolder(actor: PrivateResourceActor, bindingId: string): Promise<TaskFolder> {
-    await this.assertOwner(actor);
-    const row = await this.database
-      .selectFrom("channelBindings")
-      .select(["folderComputerId", "folderPath"])
-      .where("id", "=", bindingId as DatabaseSchema["channelBindings"]["id"])
-      .where("createdBy", "=", actor.ownerId)
-      .where("status", "!=", "revoked")
-      .executeTakeFirst();
-    if (!row) throw unavailable();
-    return TaskFolderSchema.parse({ computerId: row.folderComputerId, path: row.folderPath });
-  }
-  async setMessagingFolder(
-    actor: PrivateResourceActor,
-    bindingId: string,
-    folder: TaskFolder,
-  ): Promise<void> {
-    await this.assertOwner(actor);
-    folder = TaskFolderSchema.parse(folder);
-    const owner = await assertPersonalOwner(this.database, actor.ownerId);
-    if (folder.computerId !== owner.hostingComputerId)
-      throw new OpensteerError({
-        code: "bad_request",
-        message: "Messaging tasks run on the hosting computer",
-      });
-    const binding = await this.database
-      .selectFrom("channelBindings")
-      .select("revision")
-      .where("id", "=", bindingId as DatabaseSchema["channelBindings"]["id"])
-      .where("createdBy", "=", actor.ownerId)
-      .where("status", "!=", "revoked")
-      .executeTakeFirst();
-    if (!binding) throw unavailable();
-    const { ChannelStore } = await import("./channel-store.js");
-    await new ChannelStore(this.database).setFolder({
-      bindingId: bindingId as DatabaseSchema["channelBindings"]["id"],
-      ownerUserId: actor.ownerId,
-      expectedRevision: binding.revision,
-      folder,
-    });
-  }
-  async appPublisher(actor: PrivateResourceActor, appId: string) {
-    await this.assertOwner(actor);
-    const row = await this.database
-      .selectFrom("apps")
-      .innerJoin("appVersions", (join) =>
-        join
-          .onRef("apps.id", "=", "appVersions.appId")
-          .onRef("apps.latestVersion", "=", "appVersions.version"),
-      )
-      .select([
-        "apps.threadId",
-        "apps.runId",
-        "appVersions.folderComputerId",
-        "appVersions.folderPath",
-      ])
-      .where("apps.id", "=", appId)
-      .executeTakeFirst();
-    if (!row) throw unavailable();
-    return {
-      threadId: row.threadId,
-      runId: row.runId,
-      folder:
-        row.folderComputerId && row.folderPath
-          ? { computerId: row.folderComputerId, path: row.folderPath }
-          : null,
-    };
   }
 }
 function unavailable() {

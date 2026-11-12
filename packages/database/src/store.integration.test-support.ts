@@ -35,7 +35,6 @@ import {
   type HarnessInstanceId,
   type RunId,
   type ThreadId,
-  type TaskFolder,
   PendingRequestSchema,
   type RequestId,
   type EnvironmentId,
@@ -61,11 +60,7 @@ export const testContinuationIdentity = ProviderContinuationIdentitySchema.parse
 });
 
 export interface PersonalRunFixturePort {
-  createTask(input: {
-    readonly ownerId: string;
-    readonly folder: TaskFolder;
-    readonly suffix: string;
-  }): Promise<{
+  createTask(input: { readonly ownerId: string; readonly suffix: string }): Promise<{
     readonly threadId: ThreadId;
     readonly thread: import("@opensteer/core").Thread;
     readonly harnessInstance: Awaited<ReturnType<OpensteerStore["createHarnessInstance"]>>;
@@ -115,13 +110,11 @@ export async function createStoreFixture() {
       personal ??= await seedPersonalFixture(database, directory);
       const task = await admission.createTask({
         ownerId: personal.userId,
-        folder: personal.agentHome,
         suffix,
       });
       return {
         ...personal,
         ...task,
-        folder: personal.agentHome,
         close: () => rm(directory, { recursive: true, force: true }),
       };
     }
@@ -329,7 +322,6 @@ export async function createStoreFixture() {
           scopeId: null,
           threadId: null,
         },
-        folder: fixture.folder,
       });
       await channels.setRuntimeConnectionHealth({
         connectionId: configured.connection.id,
@@ -434,7 +426,6 @@ export async function createStoreFixture() {
         },
         executionPolicy: { harness: "default", harnessInstanceId: null },
         selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-        folder: fixture.folder,
       });
       await channels.setRuntimeConnectionHealth({
         connectionId: configured.connection.id,
@@ -972,7 +963,7 @@ export const testChannelNotices = {
   approvalPending: "Your access request is waiting for approval.",
   linkByDirectMessage: "Send a direct message to link your account.",
   linkCode: (code: string) => `Enter the code **${code}** to link your account.`,
-  noRoute: "Choose a task folder for this conversation.",
+  noRoute: "This conversation has no Messaging binding.",
 } as const;
 
 export const reachOnlyModules: RunnerDescriptor["modules"] = {

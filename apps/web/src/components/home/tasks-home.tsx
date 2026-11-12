@@ -13,6 +13,7 @@ export const firstRunSuggestions = [
  * in the sidebar until Done.
  */
 export function TasksHome({
+  agentHome,
   composer,
   firstRun,
   header,
@@ -20,7 +21,8 @@ export function TasksHome({
   onConnectAccount,
   onSuggestion,
 }: {
-  /** The new-task composer, its folder chip in the leading slot. */
+  /** Agent home's path on this computer, where every task works; null until the Host says. */
+  readonly agentHome: string | null;
   readonly composer: ReactNode;
   /** No task yet: a line about where the agent works, and a few asks to start from. */
   readonly firstRun: boolean;
@@ -39,7 +41,9 @@ export function TasksHome({
             <h1 className="hero__title">What should your agent do?</h1>
             {firstRun ? (
               <p className="hero__subtitle">
-                Your agent works on this computer, in folders you choose.
+                {agentHome === null
+                  ? "Your agent works on this computer."
+                  : `Your agent works on this computer, in ${agentHome}.`}
                 {needsAccount ? (
                   <>
                     {" "}

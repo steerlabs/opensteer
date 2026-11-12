@@ -26,8 +26,6 @@ import {
   OpensteerError,
   isLoopbackHostname,
   RunnerIdSchema,
-  TaskFolderSchema,
-  type TaskFolder,
   type AgentEvent,
   type EnvironmentId,
   type HarnessId,
@@ -146,7 +144,6 @@ export class ChannelService {
     readonly createdBy: UserId;
     readonly provider: string;
     readonly routingMode: "dedicated" | "shared";
-    readonly folder: TaskFolder;
   }) {
     const provider = ChannelProviderSchema.parse(input.provider);
     const manifest = providerManifest(provider);
@@ -165,7 +162,6 @@ export class ChannelService {
         retryable: true,
       });
     }
-    const folder = TaskFolderSchema.parse(input.folder);
     const credentials = providerCredentials(manifest, input.credentials);
     const inspection = InspectChannelConnectionResponseSchema.parse(
       await this.#relay.request(runnerId, "connection.inspect", {
@@ -211,7 +207,6 @@ export class ChannelService {
       credential,
       executionPolicy: { harness: "default", harnessInstanceId: null },
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      folder,
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -238,7 +233,6 @@ export class ChannelService {
     readonly ownerHandles: readonly string[];
     readonly provider: string;
     readonly runnerId: string;
-    readonly folder: TaskFolder;
   }) {
     const provider = ChannelProviderSchema.parse(input.provider);
     const manifest = providerManifest(provider);
@@ -249,7 +243,6 @@ export class ChannelService {
       });
     }
     const runnerId = RunnerIdSchema.parse(input.runnerId);
-    const folder = TaskFolderSchema.parse(input.folder);
     const ownerHandles = input.ownerHandles.map(ownerHandle);
     const carries = this.#relay
       .capabilities(runnerId)
@@ -322,7 +315,6 @@ export class ChannelService {
       executionPolicy: { harness: "default", harnessInstanceId: null },
       linkedExternalUserIds: ownerHandles,
       selector: { conversationId: null, conversationType: null, scopeId: null, threadId: null },
-      folder,
     });
     await this.#syncRuntime(runnerId).catch(async (error: unknown) => {
       await this.#channels.setRuntimeConnectionHealth({
@@ -486,7 +478,6 @@ export class ChannelService {
     readonly createdBy: UserId;
     readonly executionPolicy: unknown;
     readonly selector: unknown;
-    readonly folder: TaskFolder;
   }) {
     return this.#channels.createBinding({
       accessPolicy: input.accessPolicy,
@@ -494,7 +485,6 @@ export class ChannelService {
       createdBy: input.createdBy,
       executionPolicy: input.executionPolicy,
       selector: input.selector,
-      folder: TaskFolderSchema.parse(input.folder),
     });
   }
 

@@ -6,7 +6,7 @@ import { createDatabase } from "./connection.js";
 import { seedPrivatePublisher } from "./private-publisher.test-support.js";
 import { cloneTestDatabase } from "./test-database.test-support.js";
 
-it("keeps published apps and personal tabs after the publisher is Done, with idempotent versions and immutable folders", async () => {
+it("keeps published apps and personal tabs after the publisher is Done, with idempotent versions", async () => {
   const clone = await cloneTestDatabase("host");
   const database = createDatabase({ connectionString: clone.url });
   try {
@@ -29,16 +29,13 @@ it("keeps published apps and personal tabs after the publisher is Done, with ide
     await store.openTab(first.appId, p.userId);
     expect(await store.listTabs(p.userId)).toHaveLength(1);
     await expect(store.get(first.appId, createId("user"))).rejects.toThrow();
-    await expect(
-      store.publish({
-        ...input,
-        publishKey: "wrong-computer",
-        server: {
-          folder: { computerId: createId("runner"), path: "/tmp/app" },
-          command: "pnpm dev",
-        },
-      }),
-    ).rejects.toThrow("hosting computer");
+    for (const [publishKey, folder] of [
+      ["wrong-computer", { computerId: createId("runner"), path: `${p.agentHome.path}/app` }],
+      ["outside-home", { ...p.agentHome, path: `${p.agentHome.path}/../elsewhere` }],
+    ] as const)
+      await expect(
+        store.publish({ ...input, publishKey, server: { folder, command: "pnpm dev" } }),
+      ).rejects.toThrow("inside Agent home");
     await database
       .updateTable("runs")
       .set({ accessMode: "approval-required" })
@@ -66,10 +63,7 @@ it("keeps published apps and personal tabs after the publisher is Done, with ide
       .execute();
     expect((await store.listOwned(p.userId)).map((app) => app.id)).toEqual([first.appId]);
     expect((await store.listTabs(p.userId)).map((tab) => tab.appId)).toEqual([first.appId]);
-    expect((await store.latest(first.appId, p.userId)).version).toMatchObject({
-      folderComputerId: p.runnerId,
-      folderPath: p.agentHome.path,
-    });
+    expect((await store.latest(first.appId, p.userId)).version).toMatchObject({ version: 1 });
     await expect(store.publish({ ...input, publishKey: "after-done" })).rejects.toThrow(
       "no longer active",
     );

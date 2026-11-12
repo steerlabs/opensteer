@@ -71,7 +71,6 @@ import type {
   ShellSessionHistoryEntry,
   ThreadMessagePage,
   ThreadMessageWindow,
-  FolderFilePreviewMetadata,
   PersonalTabActivateResultSchema,
   PersonalTabReopenResultSchema,
 } from "@opensteer/protocol";
@@ -251,7 +250,6 @@ export interface ThreadSummary {
   parentThreadId: string | null;
   pendingRequests: number;
   purpose: import("@opensteer/core").TaskPurpose;
-  folder: import("@opensteer/core").TaskFolder;
   teamOrigin: import("@opensteer/core").TeamTaskOrigin | null;
   runnerLabel: string;
   status: ThreadStatus;
@@ -606,12 +604,6 @@ export interface SelectionEntry {
   providerSessionId: string | null;
 }
 
-export interface FolderFilePreview {
-  /** Null when the bounded preview is binary or not safely decodable as UTF-8. */
-  content: string | null;
-  metadata: FolderFilePreviewMetadata;
-}
-
 export interface BrowserTabSummary {
   documentId?: string | undefined;
   active: boolean;
@@ -957,7 +949,6 @@ export interface CreateThreadInput {
    * background naming to replace. Dropped for a Host without `thread-titles-v1`.
    */
   generateTitle?: true;
-  folder?: import("@opensteer/core").TaskFolder;
 }
 
 export interface CreateHarnessInstanceInput {

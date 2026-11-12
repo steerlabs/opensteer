@@ -4032,7 +4032,7 @@ function threadStartupOptions(context: HarnessSessionContext): JsonObject {
  * Per-Run facts travel on the turn, not only on thread startup: Codex renders
  * `developerInstructions` when it builds a conversation's initial context, so
  * a resumed thread would otherwise keep an earlier Run's facts. The platform
- * guide and task-folder instructions need this refresh only on resume;
+ * guide and Agent home instructions need this refresh only on resume;
  * a fresh thread already has them in `developerInstructions`. This also lets a
  * long-lived thread receive a changed capability guide. `additionalContext` is keyed and diffed by
  * Codex, which emits a developer message when a value changes and nothing when

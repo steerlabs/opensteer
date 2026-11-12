@@ -756,8 +756,8 @@ describe("RunnerRuntime", () => {
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => Promise.reject(new Error("Unexpected Workspace access")),
       },
     } as const;
@@ -869,8 +869,8 @@ describe("RunnerRuntime", () => {
       dataDirectory: temporaryRoot,
       privateStateDirectory: join(temporaryRoot, "private"),
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => Promise.reject(new Error("Unexpected Workspace access")),
       },
     });
@@ -3334,11 +3334,10 @@ describe("RunnerRuntime", () => {
           };
         },
       },
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => {
           return {
-            agentHomePath: "/runner/triggers/test/workspace",
             instructions: undefined,
             path: "/runner/triggers/test/workspace",
           };
@@ -3412,10 +3411,9 @@ describe("RunnerRuntime", () => {
         },
       },
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => ({
-          agentHomePath: "/runner/triggers/test/workspace",
           instructions: undefined,
           path: "/runner/triggers/test/workspace",
         }),
@@ -3494,8 +3492,8 @@ describe("RunnerRuntime", () => {
         },
       },
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => {
           workspacePreparations += 1;
           throw new Error("Canceled execution must not prepare a Workspace");
@@ -3553,15 +3551,11 @@ describe("RunnerRuntime", () => {
     registry.registerDriver(driver);
 
     let mounts = 0;
-    const folderManager = {
-      writableRoots: () => ["/runner/workspaces"],
+    const agentHome = {
+      folder: async ({ path }: { readonly path: string }) => path,
       prepare: async () => {
         mounts += 1;
-        return {
-          agentHomePath: "/runner/runs/test/workspace",
-          instructions: "Be precise.",
-          path: "/runner/runs/test/workspace",
-        };
+        return { instructions: "Be precise.", path: "/runner/runs/test/workspace" };
       },
     };
     const environmentId = createId("environment");
@@ -3579,7 +3573,7 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(testPrivateStateRoot),
       privateStateDirectory: testPrivateStateRoot,
       projectContinuationIdentity,
-      folderManager,
+      agentHome,
     });
     const messages: RunnerOperationalReport[] = [];
     const sink: RunnerMessageSink = {
@@ -3595,7 +3589,7 @@ describe("RunnerRuntime", () => {
 
     expect(mounts).toBe(1);
     expect(driver.context?.instructions).toBe("Be precise.");
-    expect(command.location.folder.path).toBe("/runner/runs/control/workspace");
+    expect(command.agentHome.path).toBe("/runner/runs/control/workspace");
     expect(driver.context?.environment.OPENSTEER_AGENT_WORKSPACE).toBe(
       "/runner/runs/test/workspace",
     );
@@ -3728,10 +3722,9 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(stateRoot),
       privateStateDirectory: stateRoot,
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => ({
-          agentHomePath: "/runner/runs/claude/workspace",
           instructions: undefined,
           path: "/runner/runs/claude/workspace",
         }),
@@ -3820,17 +3813,16 @@ describe("RunnerRuntime", () => {
       dataDirectory: dirname(stateRoot),
       privateStateDirectory: stateRoot,
       projectContinuationIdentity,
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare: async () => ({
-          agentHomePath: workspacePath,
           instructions: "Workspace instructions",
           path: workspacePath,
         }),
       },
     });
     const reports: string[][] = [];
-    runtime.observeFolderSkills(async (_folder, _generation, scan) => {
+    runtime.observeAgentHomeSkills(async (_generation, scan) => {
       reports.push(scan?.metadata.map((skill) => skill.fullName) ?? []);
       // A known file mutation after preparation must appear in the settled scan.
       if (reports.length === 1) await writeWorkspaceSkill(workspacePath, "after-run");
@@ -3838,8 +3830,7 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
-      command.location.folder.path = workspacePath;
-      command.location.agentHome.path = workspacePath;
+      command.agentHome.path = workspacePath;
       if (disabled)
         command.context.plugins.skillPolicy = {
           revision: 1,
@@ -3860,7 +3851,7 @@ describe("RunnerRuntime", () => {
       if (specialist) {
         const pluginData = join(workspacePath, ".specialists", "registration-1");
         expect(driver.context?.workspacePath).toBe(workspacePath);
-        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces", workspacePath]);
+        expect(driver.context?.writableRoots).toEqual([workspacePath]);
         expect(driver.context?.instructions).toContain(
           `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
         );
@@ -3880,8 +3871,7 @@ describe("RunnerRuntime", () => {
         ).toEqual(["example:research", "example:helper"]);
         hold = true;
         const running = executeCommand(environmentId);
-        running.location.folder.path = workspacePath;
-        running.location.agentHome.path = workspacePath;
+        running.agentHome.path = workspacePath;
         running.context.specialistId = "registration-1";
         running.context.plugins.versions = command.context.plugins.versions;
         await reconcile(registry, running);
@@ -3979,7 +3969,7 @@ describe("RunnerRuntime", () => {
         ].filter((skill) => !disabled || skill.fullName !== "research"),
       );
       expect(logged).toEqual([
-        "Folder skill opensteer:threads was skipped: the directory name is not a valid skill name",
+        "Agent home skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -5801,10 +5791,7 @@ function executeCommand(
   hostOrigin = "https://host.example",
 ): Extract<RunnerCommand, { type: "run.execute" }> {
   return RunnerCommandSchema.parse({
-    location: {
-      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
     commandId: createId("command"),
     context: {
       accessMode: "full-access",
@@ -5902,10 +5889,7 @@ function triggerCommand(
   const revisionId = createId("triggerRevision");
   const triggerId = createId("trigger");
   return RunnerCommandSchema.parse({
-    location: {
-      folder: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-      agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/runner/runs/control/workspace" },
     commandId: createId("command"),
     context: {
       anchorThreadId,
@@ -6189,7 +6173,7 @@ function configuredRuntime(input: {
   readonly registry: HarnessRegistry;
   readonly workspacePrepare?: ConstructorParameters<
     typeof RunnerRuntime
-  >[0]["folderManager"]["prepare"];
+  >[0]["agentHome"]["prepare"];
   readonly watchSupervisor?: ConstructorParameters<typeof RunnerRuntime>[0]["watchSupervisor"];
 }): RunnerRuntime {
   return runtimeWithLeaseGrants(
@@ -6214,12 +6198,11 @@ function configuredRuntime(input: {
       privateStateDirectory: input.privateStateDirectory ?? testPrivateStateRoot,
       projectContinuationIdentity,
       ...(input.watchSupervisor ? { watchSupervisor: input.watchSupervisor } : {}),
-      folderManager: {
-        writableRoots: () => ["/runner/workspaces"],
+      agentHome: {
+        folder: async ({ path }: { readonly path: string }) => path,
         prepare:
           input.workspacePrepare ??
           (async () => ({
-            agentHomePath: "/runner/runs/control/workspace",
             instructions: undefined,
             path: "/runner/runs/control/workspace",
           })),
@@ -6285,7 +6268,7 @@ it("invalidates warm engines when the pinned package set changes, regardless of 
     providerSessionReference: null,
     runtimeBoundary: "native-user",
     skills: undefined,
-    folderSkillsDigest: "",
+    homeSkillsDigest: "",
     workspacePath: "/workspace",
     writableRoots: ["/workspace"],
   };

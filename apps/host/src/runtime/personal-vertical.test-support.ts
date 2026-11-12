@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, realpath } from "node:fs/promises";
+import { mkdtemp, rm, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -159,15 +159,10 @@ export async function startPersonalVertical(options: VerticalStackOptions): Prom
       runnerDataDirectory: current.runnerDataDirectory,
       network: current.network,
       ...(current.network instanceof RunnerWire ? { wire: current.network } : {}),
-      folderPreparations: current.folderPreparations,
+      agentHomePreparations: current.agentHomePreparations,
       settledRunEvent: (runId) => current.runner?.settledRunEvent(runId),
       async crashRunner(beforeRestart) {
         await current.crashRunner(beforeRestart);
-      },
-      async createFolder(_name) {
-        const path = await mkdtemp(join(directory, "task-"));
-        await mkdir(path, { recursive: true });
-        return { computerId: agentHome.computerId, path };
       },
       async startAdditionalPersonal() {
         const { agentHome: _home, ...additional } = options;

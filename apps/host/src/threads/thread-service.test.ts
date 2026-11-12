@@ -40,7 +40,6 @@ describe("new Thread access ceilings", () => {
         options: {},
       }),
       title: "Narrow work",
-      folder: { computerId: createId("runner"), path: "/chosen-folder" },
       idempotencyKey: "narrow",
       accessMode: "approval-required" as const,
     };

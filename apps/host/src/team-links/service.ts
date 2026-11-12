@@ -2,14 +2,11 @@ import { createHash } from "node:crypto";
 import {
   OpensteerError,
   type DeploymentId,
-  type TaskFolder,
-  type TeamChannelId,
   type TeamTaskOrigin,
   type TeamMessageId,
   type UserId,
 } from "@opensteer/core";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
-import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
 import { parseTeamLinkOffer, type PersonalTeamLink } from "@opensteer/protocol";
 import { type TeamLinkRpc, linkError } from "../team-link-endpoint/contracts.js";
 import { TeamLinkConnection } from "./connection.js";
@@ -22,11 +19,9 @@ export interface PersonalTeamLinksOptions {
   readonly deploymentId: DeploymentId;
   readonly installationLabel: string;
   readonly links: PersonalTeamLinksStore;
-  readonly folders: PersonalTeamChannelFoldersStore;
   readonly vault: PersonalTeamVault;
   readonly network: Pick<TeamLinkNetwork, "discover" | "redeem" | "connect">;
   readonly requests: PersonalTeamRequests;
-  readonly admitFolder: (folder: TaskFolder) => Promise<TaskFolder>;
 }
 
 export class PersonalTeamLinks {
@@ -284,18 +279,8 @@ export class PersonalTeamLinks {
   async list(): Promise<PersonalTeamLink[]> {
     return (await this.options.links.list()).map((link) => this.options.links.view(link));
   }
-  folder(teamId: DeploymentId, channelId: TeamChannelId) {
-    return this.options.folders.get(teamId, channelId);
-  }
-  async setFolder(
-    teamId: DeploymentId,
-    channelId: TeamChannelId,
-    folder: TaskFolder,
-  ): Promise<void> {
-    await this.options.folders.set(teamId, channelId, await this.options.admitFolder(folder));
-  }
   task(origin: TeamTaskOrigin) {
-    return this.options.folders.task(origin);
+    return this.options.links.task(origin);
   }
   replyTask(ownerId: UserId, input: TeamTaskOrigin & { readonly replyMessageId: TeamMessageId }) {
     return this.options.requests.options.requests.replyTask(ownerId, input);

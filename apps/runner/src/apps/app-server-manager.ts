@@ -1,6 +1,6 @@
 import { programEnvironment } from "@opensteer/harness";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +34,7 @@ export class AppServerError extends Error {
   }
 }
 interface Options {
-  readonly resolveRoot: (binding: AppRuntimeSpec["folder"], signal: AbortSignal) => Promise<string>;
+  readonly resolveRoot: (spec: AppRuntimeSpec) => Promise<string>;
   readonly planLaunch: (
     executionId: string,
     launch: Parameters<ProgramLaunchPlanner>[0],
@@ -74,9 +74,7 @@ export class AppServerManager {
       )
         return previous.port;
       // Resolve and check the identity-bound root even when replacing a live server.
-      const root = await this.#options.resolveRoot(spec.folder, signal);
-      const folder = await realpath(root);
-      if (!(await stat(folder)).isDirectory()) throw new Error("App folder must be a directory");
+      const folder = await this.#options.resolveRoot(spec);
       if (previous) await this.#stop(previous);
       if (this.#slots.size >= 32) throw new Error("This Runner already has 32 app servers");
       this.#slots.add(spec.appId);

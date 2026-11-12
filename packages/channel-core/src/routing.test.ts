@@ -1,4 +1,3 @@
-import { createId } from "@opensteer/core";
 import { describe, expect, it } from "vitest";
 import { assertUnambiguousBinding, resolveChannelBinding } from "./routing.js";
 import type { ChannelBinding, RouteCandidate } from "./models.js";
@@ -35,7 +34,6 @@ function binding(id: string, selector: Partial<ChannelBinding["selector"]>): Cha
     },
     status: "active",
     updatedAt: "2026-08-10T00:00:00.000Z",
-    folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
   };
 }
 

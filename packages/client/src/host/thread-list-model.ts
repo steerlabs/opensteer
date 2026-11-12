@@ -23,10 +23,7 @@ export function filterThreads(
   const asks = new Map(attention.map((ask) => [ask.threadId, ask.title]));
   return listed.filter(
     (thread) =>
-      matchSearch(
-        threadSearchFields(thread, thread.folder.path, asks.get(thread.id) ?? null),
-        words,
-      ) !== null,
+      matchSearch(threadSearchFields(thread, asks.get(thread.id) ?? null), words) !== null,
   );
 }
 
@@ -36,13 +33,11 @@ export function filterThreads(
  */
 export function threadSearchFields(
   thread: Pick<ThreadSummary, "title" | "harnessLabel" | "runnerLabel">,
-  folderPath: string | null,
   ask: string | null = null,
 ): SearchField[] {
   return [
     { text: searchText(thread.title), weight: 1, inside: true, name: "title" },
     { text: searchText(ask ?? ""), weight: 0.7, name: "ask" },
-    { text: searchText(folderPath ?? ""), weight: 0.5, name: "folder" },
     { text: searchText(thread.harnessLabel), weight: 0.4, name: "harness" },
     { text: searchText(thread.runnerLabel), weight: 0.4, name: "runner" },
   ];

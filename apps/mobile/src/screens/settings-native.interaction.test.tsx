@@ -221,7 +221,6 @@ it.each(["ios", "android"])(
     state.os = os;
     await open("messaging");
     const snapshot = host.getSnapshot();
-    const folder = snapshot.personalSettings!.agentHome;
     const now = new Date().toISOString();
     const accountId = `cha_${crypto.randomUUID()}`;
     const connectionId = `con_${crypto.randomUUID()}`;
@@ -253,7 +252,6 @@ it.each(["ios", "android"])(
           createdBy: snapshot.user!.id,
           createdAt: now,
           updatedAt: now,
-          folder,
           revision: 7,
           status: "active",
           selector: {

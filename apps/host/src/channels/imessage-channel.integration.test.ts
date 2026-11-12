@@ -182,7 +182,6 @@ integration("iMessage channel", () => {
           "commands.dispatch",
           {
             idempotencyKey: key,
-            folder: host.agentHome,
             ownerHandles: ["+1 (555) 123-4567", "Owner@Example.com"],
             provider: "imessage",
             runnerId: computer.runnerId,

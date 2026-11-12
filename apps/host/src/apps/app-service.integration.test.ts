@@ -383,6 +383,7 @@ describeStore("published app HTML", (it) => {
 
       apps,
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: (event) => events.push(event),
     });
@@ -400,11 +401,7 @@ describeStore("published app HTML", (it) => {
         version: 1,
         message: expect.stringContaining("shown inline in this Thread"),
       });
-      expect(files.download).toHaveBeenCalledWith(
-        f.folder,
-        "opaque_html_key",
-        expect.any(AbortSignal),
-      );
+      expect(files.download).toHaveBeenCalledWith("opaque_html_key", expect.any(AbortSignal));
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({
         type: "app.published",
@@ -475,7 +472,6 @@ describeStore("published app HTML", (it) => {
       }
       // Keep the shared causal chain's root outside the Thread being erased.
       const { thread: retained } = await store.createThread({
-        folder: f.folder,
         createdBy: f.userId,
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
@@ -524,7 +520,6 @@ describeStore("published app HTML", (it) => {
     const original = await publication(f.thread.id, f.run.id, "original");
     const thread = (idempotencyKey: string, parentThreadId?: ThreadId) =>
       store.createThread({
-        folder: f.folder,
         createdBy: f.userId,
         environmentId: f.environmentId,
         harnessInstanceId: f.harnessInstance.id,
@@ -601,6 +596,7 @@ describeStore("published app HTML", (it) => {
       apps,
 
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: published,
     });
@@ -699,6 +695,7 @@ describeStore("published app HTML", (it) => {
       dataDirectory: directory,
       apps,
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: () => undefined,
       tunnels: { start, stop, connect, accept: () => undefined },
@@ -753,7 +750,7 @@ describeStore("published app HTML", (it) => {
         sha256: null,
         sizeBytes: null,
         server: {
-          folder: { computerId: f.runnerId, path: join(f.folder.path, "app") },
+          folder: { computerId: f.runnerId, path: join(f.agentHome.path, "app") },
           command: "node server.js",
         },
       });
@@ -767,7 +764,7 @@ describeStore("published app HTML", (it) => {
           expect.objectContaining({
             id: first.appId,
             kind: "server",
-            folder: { computerId: f.runnerId, path: join(f.folder.path, "app") },
+            folder: join(f.agentHome.path, "app"),
             start: "node server.js",
           }),
         ],

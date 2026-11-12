@@ -1,6 +1,5 @@
-import { TaskFolderSchema } from "@opensteer/core";
 import { findPersonalSettings, requirePersonalOwner, needsYouPage } from "@opensteer/database";
-import type { FolderAdmissionService } from "./threads/folder-admission-service.js";
+import type { PersonalExecution } from "./runtime/personal-execution.js";
 import type { PersonalTeamLinks } from "./team-links/service.js";
 import { previewToolOutput, type AgentEventView } from "@opensteer/core";
 import type { BrowserClientStreamMessage } from "./browser/browser-client-streams.js";
@@ -137,7 +136,6 @@ import {
   RunnerToHostMessageSchema,
   RunnerWireProofSchema,
   ShellModuleToHostMessageSchema,
-  FolderFileKeySchema,
   agentPhoneOutdatedReason,
   agentToolPayloadMaxSerializedBytes,
   browserViewerCloseCodes,
@@ -306,7 +304,6 @@ import { createTriggerRpcHandlers, registerTriggerRoutes } from "./triggers/trig
 import type { TriggerService } from "./triggers/trigger-service.js";
 import type { WatchCapabilityTokenService } from "./triggers/watch-capability.js";
 import type { WatchProgramService } from "./triggers/watch-program-service.js";
-import type { FolderFilesService } from "./threads/folder-files-service.js";
 
 export { hostInternalRoutePatterns } from "./server/internal-routes.js";
 
@@ -344,10 +341,7 @@ const HarnessAuthenticationParamsSchema = z.strictObject({
 const machinePageLimit = 100;
 
 export interface HostServerDependencies {
-  readonly folders: Pick<
-    FolderAdmissionService,
-    "admit" | "resolve" | "canExecute" | "assertAvailable"
-  >;
+  readonly execution: Pick<PersonalExecution, "canExecute">;
   readonly teamLinks: () => Promise<PersonalTeamLinks>;
   readonly connections?: ConnectionOAuth;
   readonly notificationPreviews?: import("./notifications/notification-preview-service.js").NotificationPreviewService;
@@ -392,7 +386,6 @@ export interface HostServerDependencies {
   readonly credentials: CredentialService;
   readonly discovery: HostDiscoveryEnvelope;
   readonly egress: EgressService;
-  readonly files: FolderFilesService;
   readonly integrations: {
     readonly authAttempts: IntegrationAuthAttemptLifecycle;
     readonly continuations: ContinuationService;
@@ -885,34 +878,6 @@ export async function createHostServer(
     });
   }
 
-  app.post("/v1/folders/files/download", async (request, reply) => {
-    const userId = await dependencies.authenticator.authenticateUser(request.headers, {
-      mutation: true,
-    });
-    await requirePersonalOwner(dependencies.store.database, userId);
-    const input = z
-      .strictObject({ folder: TaskFolderSchema, file: FolderFileKeySchema })
-      .parse(request.body);
-    const folder = await dependencies.folders.admit(input.folder);
-    const response = await dependencies.files.download(
-      folder,
-      input.file,
-      requestAbortSignal(request.raw, reply.raw),
-    );
-    for (const header of ["content-length", "content-type", "etag", "last-modified"] as const) {
-      const value = response.headers.get(header);
-      if (value) void reply.header(header, value);
-    }
-    void reply
-      .header("cache-control", "private, no-store")
-      .header("content-disposition", "attachment")
-      .header("content-security-policy", "default-src 'none'; sandbox")
-      .header("x-content-type-options", "nosniff");
-    return reply.send(
-      response.body ? Readable.from(response.body as AsyncIterable<Uint8Array>) : Buffer.alloc(0),
-    );
-  });
-
   app.post<{ Params: { profileId: string } }>(
     "/v1/browser-profiles/:profileId/ready",
     async (request, reply) => {
@@ -1220,7 +1185,7 @@ export async function createHostServer(
               harnessDrivers: runner ? harnessDriversView(runner) : [],
               providerStateModes: runner?.modules.agents?.providerStateModes ?? [],
               status: runner ? "connected" : "disconnected",
-              can: { executeTasks: dependencies.folders.canExecute(environment.id) },
+              can: { executeTasks: dependencies.execution.canExecute(environment.id) },
             };
           }),
           executionPreferences,
@@ -1510,33 +1475,6 @@ export async function createHostServer(
         hostApi["thread.requests.list"].success.parse({ ...page, threadId: input.threadId }),
       );
     },
-    "folder.files.list": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      const page = await dependencies.files.list(
-        await dependencies.folders.admit(input.folder),
-        {
-          parentKey: input.parentKey,
-          ...(input.cursor ? { cursor: input.cursor } : {}),
-          limit: 200,
-        },
-        context.signal,
-      );
-      return rpcSuccess(page);
-    },
-    "folder.files.preview": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      const result = await dependencies.files.preview(
-        await dependencies.folders.admit(input.folder),
-        input.fileKey,
-        context.signal,
-      );
-      return rpcSuccess(
-        hostApi["folder.files.preview"].success.parse({
-          metadata: result.metadata,
-          content: Buffer.from(result.bytes).toString("base64"),
-        }),
-      );
-    },
     "attention.get": async (_input, context) =>
       rpcSuccess(
         await dependencies.store.notificationState.attention(requireRpcSession(context).user.id),
@@ -1552,12 +1490,6 @@ export async function createHostServer(
     "teams.links.list": async (_input, context) => {
       await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
       return rpcSuccess({ links: await (await dependencies.teamLinks()).list() });
-    },
-    "teams.channelFolder.get": async (input, context) => {
-      await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
-      return rpcSuccess({
-        folder: await (await dependencies.teamLinks()).folder(input.teamId, input.channelId),
-      });
     },
     "teams.threadTask.get": async (input, context) => {
       await requirePersonalOwner(dependencies.store.database, requireRpcSession(context).user.id);
@@ -1595,12 +1527,9 @@ export async function createHostServer(
     | "attachment.get"
     | "attachment.upload"
     | "attachment.content"
-    | "folder.files.list"
-    | "folder.files.preview"
     | "attention.get"
     | "needsYou.get"
     | "teams.links.list"
-    | "teams.channelFolder.get"
     | "teams.threadTask.get"
     | "teams.replyTask.get"
     | "bootstrap.get"
@@ -1661,11 +1590,6 @@ export async function createHostServer(
         };
       case "teams.link.leave":
         await (await dependencies.teamLinks()).leave(command.teamId);
-        return { type: command.type };
-      case "teams.channelFolder.set":
-        await (
-          await dependencies.teamLinks()
-        ).setFolder(command.teamId, command.channelId, command.folder);
         return { type: command.type };
       case "thread.read.mark": {
         const state = await dependencies.store.notificationState.markRead({

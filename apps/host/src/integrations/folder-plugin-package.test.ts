@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { createId } from "@opensteer/core";
 import { withFolderPluginPackage } from "./folder-plugin-package.js";
 
 describe("Folder plugin package", () => {
@@ -11,11 +10,10 @@ describe("Folder plugin package", () => {
       await expect(
         withFolderPluginPackage({
           directory,
-          folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
           files: { list, download: vi.fn() },
           install,
         }),
-      ).rejects.toThrow("inside the task folder");
+      ).rejects.toThrow("inside Agent home");
       expect(list).not.toHaveBeenCalled();
       expect(install).not.toHaveBeenCalled();
     },
@@ -25,7 +23,6 @@ describe("Folder plugin package", () => {
     await expect(
       withFolderPluginPackage({
         directory: "package",
-        folder: { computerId: createId("runner"), path: "/tmp/agent-home" },
         files: {
           list: vi.fn(async () => ({
             cursor: null,

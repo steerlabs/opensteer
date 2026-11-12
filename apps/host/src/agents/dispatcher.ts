@@ -1,5 +1,4 @@
 import { hydrateTeamTaskInput } from "@opensteer/database";
-import type { FolderAdmissionService } from "../threads/folder-admission-service.js";
 import { dispatchNodeStop, NodeStopAuthoritySchema } from "@opensteer/database";
 import { agentToolsPlanForRun } from "./agent-tools-plan.js";
 import { SpecialistStore } from "@opensteer/database";
@@ -164,7 +163,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
   readonly #triggerControlTokens: TriggerControlTokenService;
   readonly #triggers: TriggerStore;
   readonly #teamRequestContext: TeamRequestContextLoader;
-  readonly #folders: Pick<FolderAdmissionService, "assertAvailable">;
   constructor(options: {
     readonly attachmentRunTokens: RunCapabilityTokenService<"opensteer-run-attachments">;
     readonly attachments: Pick<AttachmentStore, "listForRun">;
@@ -194,7 +192,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     readonly triggerControlTokens: TriggerControlTokenService;
     readonly triggers: TriggerStore;
     readonly teamRequestContext: TeamRequestContextLoader;
-    readonly folders: Pick<FolderAdmissionService, "assertAvailable">;
   }) {
     this.#attachmentRunTokens = options.attachmentRunTokens;
     this.#attachments = options.attachments;
@@ -220,7 +217,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     this.#catalogs = options.catalogs ?? options.store;
     this.#triggerControlTokens = options.triggerControlTokens;
     this.#triggers = options.triggers;
-    this.#folders = options.folders;
     this.#teamRequestContext = options.teamRequestContext;
   }
   isAvailable(command: PendingCommandRow, dispatchingRuns: number): boolean {
@@ -289,7 +285,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     if (context.run.assignmentId && (!assignment || assignment.status !== "open")) {
       throw new CommandDispatchError("This task assignment is no longer open.", "failed");
     }
-    await this.#folders.assertAvailable(context.location.folder);
     const harness = await this.#store.getHarnessInstance(context.run.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== command.environmentId) {
       throw new CommandDispatchError("The selected AI engine is no longer available.", "failed");
@@ -714,7 +709,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
             ? null
             : SequenceSchema.parse(context.reports.throughSequence),
       },
-      location: context.location,
+      agentHome: context.agentHome,
       type: "run.execute",
     });
     // The reachable-computer list shares one size budget with the Thread
@@ -802,7 +797,6 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
         "failed",
       );
     }
-    await this.#folders.assertAvailable(initial.location.folder);
     const { context, executionGeneration } = await this.#triggers.startExecution({
       commandId: command.id,
       runnerBootId: identity.bootId,
@@ -843,7 +837,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
       },
       correlationId: CorrelationIdSchema.parse(command.id),
       environmentId: context.anchorThread.environmentId,
-      location: context.location,
+      agentHome: context.agentHome,
       type: "trigger.execute",
     };
     // Trigger setup can cross a stop transaction. Make the

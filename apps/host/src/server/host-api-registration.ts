@@ -29,8 +29,6 @@ import { afterResponse } from "./after-response.js";
 import { requestAbortSignal } from "./request-abort-signal.js";
 
 export const hostApiScopes = {
-  "folder.files.list": "session",
-  "folder.files.preview": "session",
   "attention.get": "session",
   "needsYou.get": "session",
   "team.bootstrap.get": "session",
@@ -56,7 +54,6 @@ export const hostApiScopes = {
   "team.agent.requests.get": "session",
   "team.links.list": "session",
   "teams.links.list": "session",
-  "teams.channelFolder.get": "session",
   "teams.threadTask.get": "session",
   "teams.replyTask.get": "session",
   "team.mentions.page": "session",

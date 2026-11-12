@@ -1,4 +1,3 @@
-import { TaskFolderSchema } from "./personal.js";
 import { TeamTaskOriginSchema, TeamSourceSchema, TeamAudienceSchema } from "./team.js";
 import { TeamAgentRequestIdSchema } from "./ids.js";
 import { z } from "zod";
@@ -326,7 +325,6 @@ export const ThreadSchema = z.object({
   parentThreadId: ThreadIdSchema.nullable(),
   pendingRequests: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   purpose: TaskPurposeSchema,
-  folder: TaskFolderSchema,
   teamOrigin: TeamTaskOriginSchema.nullable(),
   // Older durable Thread events did not record which native session was selected.
   providerSessionId: ProviderSessionIdSchema.nullable().default(null),
@@ -339,7 +337,6 @@ export const ThreadSchema = z.object({
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
-  folder: z.object(TaskFolderSchema.shape),
   teamOrigin: z.object(TeamTaskOriginSchema.shape).nullable(),
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
@@ -1014,7 +1011,6 @@ export const AssignmentSummarySchema = z.object({
   status: AssignmentStatusSchema,
   updatedAt: IsoDateTimeSchema,
   workerThread: z.object({
-    folder: z.object(TaskFolderSchema.shape),
     environmentId: EnvironmentIdSchema,
     id: ThreadIdSchema,
     pendingRequests: z.number().int().nonnegative(),

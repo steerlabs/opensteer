@@ -7,7 +7,8 @@ import {
   UserIdSchema,
 } from "./ids.js";
 
-export const TaskFolderSchema = z.strictObject({
+/** An absolute folder on one computer: Agent home, or an app server's folder inside it. */
+export const ComputerFolderSchema = z.strictObject({
   computerId: RunnerIdSchema,
   path: z
     .string()
@@ -22,10 +23,10 @@ export const TaskFolderSchema = z.strictObject({
       "Folder path must be absolute",
     ),
 });
-export type TaskFolder = z.infer<typeof TaskFolderSchema>;
+export type ComputerFolder = z.infer<typeof ComputerFolderSchema>;
 export const PersonalSettingsSchema = z.strictObject({
   ownerId: UserIdSchema,
-  agentHome: TaskFolderSchema,
+  agentHome: ComputerFolderSchema,
   voiceThreadId: ThreadIdSchema.nullable(),
 });
 export type PersonalSettings = z.infer<typeof PersonalSettingsSchema>;

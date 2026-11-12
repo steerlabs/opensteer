@@ -53,7 +53,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type TaskFolder,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
 import {
@@ -123,7 +122,6 @@ integration("messaging end to end", () => {
   let ownerUserId: UserId;
   let personal: Awaited<ReturnType<typeof seedPersonalFixture>>;
   let directory: string;
-  let folder: TaskFolder;
   let service: ChannelService;
   let hub: MessagingRelayHub;
   let wire: MessagingWire;
@@ -162,7 +160,6 @@ integration("messaging end to end", () => {
       capabilities: ["filesystem", "steer-answer-v1"],
     });
     await enrollMessagingRunner();
-    folder = personal.agentHome;
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -245,7 +242,6 @@ integration("messaging end to end", () => {
 
   it("enrolls, synchronizes without deadlock, and reaches a connected Slack socket", async () => {
     const created = await service.createConnection({
-      folder,
       accessPolicy: {
         channels: {
           scope: "all",

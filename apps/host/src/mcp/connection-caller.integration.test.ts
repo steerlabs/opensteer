@@ -29,7 +29,7 @@ import {
   testReadyHarnessCatalog,
   pendingEvent,
 } from "@opensteer/database/test-support/store";
-import { personalTestFolders } from "./personal-folder.test-support.js";
+import { personalTestExecution } from "./personal-execution.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -119,11 +119,6 @@ async function serveMcp(
     .executeTakeFirstOrThrow();
   const threads = new ThreadService({
     store,
-    folders: personalTestFolders(store, {
-      userId: settings.ownerId,
-      environmentId: environment.id,
-      agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
-    }),
     commands,
     runners: {
       canRunHarness: () => true,
@@ -137,7 +132,7 @@ async function serveMcp(
   });
   const product = new ProductToolHandlers({
     onEvent: (event: import("@opensteer/core").AgentEvent) => realtime.publish(event),
-    folders: personalTestFolders(store, {
+    execution: personalTestExecution(store, {
       userId: settings.ownerId,
       environmentId: environment.id,
       agentHome: { computerId: settings.agentHomeComputerId, path: settings.agentHomePath },
@@ -330,7 +325,6 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       idempotencyKey: "connection-full-access",
       modelSelection: testModelSelection,
       title: "Full access",
-      folder: f.folder,
     });
     const url = await serveMcp(storeFixture.store);
     const cautious = await connection(storeFixture.store, url, {

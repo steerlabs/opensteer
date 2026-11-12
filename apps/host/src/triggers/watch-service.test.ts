@@ -105,6 +105,7 @@ describe("WatchService", () => {
         },
         executionGeneration: 3,
         revisionId: fixture.context.activation.revisionId,
+        agentHome: fixture.context.agentHome,
       }),
     ]);
     expect(desired?.[0]).not.toHaveProperty("program");
@@ -131,89 +132,6 @@ describe("WatchService", () => {
     await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledTimes(2));
     await service.close();
   });
-  it("marks an unavailable anchor folder and sends an empty desired set", async () => {
-    const fixture = watchFixture();
-    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
-      async () => undefined,
-    );
-    const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
-      async () => fixture.context.activation,
-    );
-    const assertAvailable = vi.fn<WatchServiceOptions["folders"]["assertAvailable"]>(async () => {
-      throw new Error("The anchor folder is missing");
-    });
-    const service = new WatchService(
-      options(fixture, { assertAvailable, recordWatchUnavailable, reconcileWatches }),
-    );
-    try {
-      service.runnerRegistered(fixture.identity);
-      await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
-      expect(assertAvailable).toHaveBeenCalledWith(fixture.context.location.folder);
-      expect(reconcileWatches.mock.calls[0]?.[2]).toEqual([]);
-      expect(recordWatchUnavailable).toHaveBeenCalledWith(
-        expect.objectContaining({
-          activationId: fixture.context.activation.id,
-          reason: "The anchor folder is missing",
-        }),
-      );
-    } finally {
-      await service.close();
-    }
-  });
-
-  it("runs an available anchor while reporting another task's missing folder", async () => {
-    const fixture = watchFixture();
-    const unavailable: WatchActivationContext = {
-      ...fixture.context,
-      activation: {
-        ...fixture.context.activation,
-        id: createId("triggerWatchActivation"),
-        triggerId: createId("trigger"),
-        anchorThreadId: createId("thread"),
-      },
-      location: {
-        ...fixture.context.location,
-        folder: { ...fixture.context.location.folder, path: "/tmp/missing-task" },
-      },
-    };
-    const reconcileWatches = vi.fn<WatchServiceOptions["runners"]["reconcileWatches"]>(
-      async () => undefined,
-    );
-    const recordWatchUnavailable = vi.fn<WatchServiceOptions["store"]["recordWatchUnavailable"]>(
-      async () => unavailable.activation,
-    );
-    const service = new WatchService(
-      options(fixture, {
-        assertAvailable: async (folder) => {
-          if (folder.path === unavailable.location.folder.path)
-            throw new Error("The anchor folder is missing");
-        },
-        reconcileWatches,
-        recordWatchUnavailable,
-        reconcileWatchesForRunner: async () => ({
-          activations: [fixture.context, unavailable],
-          reconcileGeneration: 1,
-        }),
-      }),
-    );
-    try {
-      service.runnerRegistered(fixture.identity);
-      await vi.waitFor(() => expect(reconcileWatches).toHaveBeenCalledOnce());
-      expect(reconcileWatches.mock.calls[0]?.[2].map(({ activationId }) => activationId)).toEqual([
-        fixture.context.activation.id,
-      ]);
-      expect(reconcileWatches.mock.calls[0]?.[2][0]?.location).toEqual(fixture.context.location);
-      expect(recordWatchUnavailable).toHaveBeenCalledWith(
-        expect.objectContaining({
-          activationId: unavailable.activation.id,
-          reason: "The anchor folder is missing",
-        }),
-      );
-    } finally {
-      await service.close();
-    }
-  });
-
   it("serializes repeated reconciliation so the latest live Runner identity is used", async () => {
     const fixture = watchFixture();
     let identity = fixture.identity;
@@ -304,7 +222,6 @@ function options(
     readonly identityForEnvironment?: WatchServiceOptions["runners"]["identityForEnvironment"];
     readonly onChanged?: WatchServiceOptions["onChanged"];
     readonly onError?: WatchServiceOptions["onError"];
-    readonly assertAvailable?: WatchServiceOptions["folders"]["assertAvailable"];
     readonly reconcileWatches?: WatchServiceOptions["runners"]["reconcileWatches"];
     readonly reconcileWatchesForRunner?: WatchServiceOptions["store"]["reconcileWatchesForRunner"];
     readonly recordWatchUnavailable?: WatchServiceOptions["store"]["recordWatchUnavailable"];
@@ -350,7 +267,7 @@ function options(
         overrides.recordWatchUnavailable ??
         (async () => ({
           ...fixture.context.activation,
-          lastError: "The anchor folder is unavailable",
+          lastError: "The Watch is unavailable",
           observed: "backoff",
         })),
       watchEnvironmentForTrigger: async () => fixture.context.activation.environmentId,
@@ -362,7 +279,6 @@ function options(
         token: "browser-token",
       }),
     },
-    folders: { assertAvailable: overrides.assertAvailable ?? (async () => undefined) },
   };
 }
 function watchFixture(): {
@@ -398,10 +314,7 @@ function watchFixture(): {
       updatedAt: new Date().toISOString(),
     }),
     toolContractVersion: 3,
-    location: {
-      folder: { computerId: createId("runner"), path: "/tmp/watch-task" },
-      agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
-    },
+    agentHome: { computerId: createId("runner"), path: "/tmp/watch-home" },
   };
   const descriptor = RunnerDescriptorSchema.parse({
     bootId: context.activation.runnerBootId,

@@ -78,11 +78,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
   );
   const cases = corpus.filter((c) => c.area === "memory");
   expect(cases.map((entry) => entry.id)).toEqual(
-    expect.arrayContaining([
-      "memory-remember-fact",
-      "memory-from-other-folder",
-      "memory-trivial-task-wake",
-    ]),
+    expect.arrayContaining(["memory-remember-fact", "memory-trivial-task-wake"]),
   );
   for (const c of cases) for (const turn of c.turns) inputForCaseTurn(turn);
   expect(

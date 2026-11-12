@@ -54,12 +54,10 @@ integration("chat attachment delivery through a whole deployment", () => {
         stateKind: "isolated",
       },
     });
-    const folder = await stack.createFolder("Attachment verification");
     const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(bootstrap.data.deploymentId).toBe((await stack.host.store.getDeployment())?.id);
     const threadId = await stack.createThread({
-      folder,
       title: "Verify attachment transport",
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",

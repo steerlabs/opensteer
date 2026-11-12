@@ -1657,7 +1657,7 @@ integration.sequential("Trigger failure auto-pause", () => {
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation?.desired).toBe("stopped");
   });
-  it("records a folder access failure on the fenced watch activation", async ({ storeFixture }) => {
+  it("records an Agent home failure on the fenced watch activation", async ({ storeFixture }) => {
     const { createFixture, createWatchTrigger, triggers, detail } = storeFixture;
     const fixture = await createFixture("watch-folder-unavailable");
     const created = await createWatchTrigger(fixture, "watch-folder-unavailable");
@@ -1673,14 +1673,14 @@ integration.sequential("Trigger failure auto-pause", () => {
     await triggers.recordWatchUnavailable({
       activationId: activation.id,
       executionGeneration: activation.executionGeneration,
-      reason: "The task folder is unavailable",
+      reason: "Agent home is unavailable",
       runnerBootId: bootId,
       runnerConnectionGeneration: 1,
       runnerId: fixture.runnerId,
     });
     expect((await detail(created.trigger.id, fixture.userId)).activation).toMatchObject({
       healthySince: null,
-      lastError: "The task folder is unavailable",
+      lastError: "Agent home is unavailable",
       leaseExpiresAt: null,
       observed: "backoff",
     });

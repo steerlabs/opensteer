@@ -5,14 +5,13 @@ interface SkillPlanLayers {
   readonly bundled: readonly HarnessSkill[];
   readonly integration: readonly HarnessSkill[];
   readonly home: readonly HarnessSkill[];
-  readonly folder: readonly HarnessSkill[];
 }
-/** Folder skills override home names; one canonical source appears only once. */
+/** Later layers override earlier names; one canonical source appears only once. */
 export async function resolveSkillPlan(
   layers: SkillPlanLayers,
 ): Promise<HarnessSkillPlan | undefined> {
   const selected = new Map<string, HarnessSkill>();
-  const ordered = [...layers.bundled, ...layers.integration, ...layers.home, ...layers.folder];
+  const ordered = [...layers.bundled, ...layers.integration, ...layers.home];
   for (const skill of ordered) {
     const expected = skill.plugin === null ? skill.localName : `${skill.plugin}:${skill.localName}`;
     if (skill.localName.includes(":") || skill.fullName !== expected)

@@ -787,7 +787,6 @@ async function runningRunFixture(store: OpensteerStore, suffix: string, database
   const personalRuns = createPersonalRunFixturePort(store);
   const task = await personalRuns.createTask({
     ownerId: owner.userId,
-    folder: owner.agentHome,
     suffix,
   });
   const started = await personalRuns.startTask(task.threadId, "Start");

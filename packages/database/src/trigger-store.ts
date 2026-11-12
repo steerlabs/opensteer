@@ -1,4 +1,4 @@
-import { personalExecutionLocation, requirePersonalOwner } from "./personal-settings-store.js";
+import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { TransactionScopeChanged } from "./connection.js";
 import { jsonValue } from "./store-primitives.js";
@@ -110,13 +110,13 @@ export interface TriggerDispatchContext {
   readonly occurrence: TriggerOccurrence;
   readonly revision: TriggerRevision;
   readonly trigger: Trigger;
-  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
+  readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 
 export interface WatchActivationContext {
   readonly activation: TriggerWatchActivation;
   readonly toolContractVersion: 1 | 2 | 3;
-  readonly location: import("@opensteer/protocol").PersonalExecutionLocation;
+  readonly agentHome: import("@opensteer/core").ComputerFolder;
 }
 export interface ActiveWatchBindingInput {
   readonly activationId: TriggerWatchActivationId;
@@ -797,7 +797,7 @@ export class TriggerStore {
         activations.push({
           activation: watchActivationFromRow(updated),
           toolContractVersion: TriggerProgramSchema.parse(revision.program).toolContractVersion,
-          location: await personalExecutionLocation(transaction, row.anchorThreadId),
+          agentHome: (await personalSettings(transaction)).agentHome,
         });
       }
       const generation = await sql<{
@@ -1418,7 +1418,7 @@ export class TriggerStore {
       occurrence: occurrenceFromRow(occurrence),
       revision: revisionFromRow(revision),
       trigger: triggerFromRow(trigger),
-      location: await personalExecutionLocation(this.#database, trigger.anchorThreadId),
+      agentHome: (await personalSettings(this.#database)).agentHome,
     };
   }
   async startExecution(input: {
@@ -1919,7 +1919,7 @@ async function loadDispatchContext(
     occurrence: occurrenceFromRow(occurrence),
     revision: revisionFromRow(revision),
     trigger: triggerFromRow(trigger),
-    location: await personalExecutionLocation(transaction, trigger.anchorThreadId),
+    agentHome: (await personalSettings(transaction)).agentHome,
   };
 }
 async function requireAnchorThread(

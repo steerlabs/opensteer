@@ -202,7 +202,6 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
       status: "idle" as const,
       title: "t".repeat(240),
       updatedAt: new Date().toISOString(),
-      folder: { computerId: createId("runner"), path: "/tasks" },
     };
   });
   // Every model a discovery page may show, each at its longest names.
@@ -211,7 +210,6 @@ it("fits largest catalog and single-message tool pages but rejects an oversized 
     providerId: `p${index}`.padEnd(100, "p"),
   });
   const catalog = orchestrator_capabilities.output.parse({
-    folder: { computerId: createId("runner"), path: "/tasks" },
     accessCeiling: "full-access",
     limits: {
       maxDepth: 4,
@@ -297,7 +295,6 @@ it("fits a full Thread listing page and requires explicit agent message delivery
       status: "running" as const,
       title: "t".repeat(240),
       updatedAt: new Date().toISOString(),
-      folder: { computerId: createId("runner"), path: "/tasks" },
     })),
     hasMore: true,
     nextBefore: "cursor",

@@ -19,7 +19,6 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
   ...OpensteerAgentSkillNameSchema.options,
 ]);
 
-/** Personal memory follows the agent into every task folder. */
 export function opensteerAgentSkillsFor(
   options: {
     readonly teamBound?: boolean;

@@ -1,9 +1,8 @@
 import type { AesGcmCredentialVault } from "@opensteer/access/host";
-import type { DeploymentId, RunId, TaskFolder, ThreadId, UserId } from "@opensteer/core";
+import type { DeploymentId, RunId, ThreadId, UserId } from "@opensteer/core";
 import type { DatabaseSchema } from "@opensteer/database";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PersonalTeamChannelFoldersStore } from "@opensteer/database/personal-team-channel-folders-store";
 import type { Kysely } from "kysely";
 import type { TaskAdmissionPort } from "../threads/task-admission.js";
 import { PersonalTeamLinks } from "./service.js";
@@ -23,18 +22,15 @@ export function createPersonalTeamLinkServices(options: {
   readonly admission: TaskAdmissionPort;
   readonly runs: PersonalTeamRunPort;
   readonly attachments: PersonalTeamAttachmentPort;
-  readonly admitFolder: (folder: TaskFolder) => Promise<TaskFolder>;
   readonly onPublished: (taskId: ThreadId) => Promise<void>;
 }) {
   const linksStore = new PersonalTeamLinksStore(options.database);
   const requestsStore = new PersonalTeamRequestsStore(options.database, options.onPublished);
-  const folders = new PersonalTeamChannelFoldersStore(options.database);
   const vault = new PersonalTeamVault(options.credentialVault, options.database, options.ownerId);
   const network = new TeamLinkNetwork();
   const requests = new PersonalTeamRequests({
     links: linksStore,
     requests: requestsStore,
-    folders,
     admission: options.admission,
     runs: options.runs,
     rpc: (teamId) => links.rpc(teamId),
@@ -43,11 +39,9 @@ export function createPersonalTeamLinkServices(options: {
     deploymentId: options.deploymentId,
     installationLabel: options.installationLabel,
     links: linksStore,
-    folders,
     vault,
     network,
     requests,
-    admitFolder: options.admitFolder,
   });
   const files = new TeamRunFileTransfers({
     links: linksStore,

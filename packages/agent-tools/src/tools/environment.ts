@@ -1,5 +1,5 @@
 import { defineAgentTool } from "../registry.js";
-import { EnvironmentIdSchema, HarnessInstanceIdSchema, TaskFolderSchema } from "@opensteer/core";
+import { EnvironmentIdSchema, HarnessInstanceIdSchema } from "@opensteer/core";
 
 import { z } from "zod";
 
@@ -15,7 +15,6 @@ export const OrchestratorCapabilitiesInputSchema = z
       .optional(),
     harnessInstanceId: HarnessInstanceIdSchema.optional(),
     cursor: CursorSchema.optional(),
-    folder: TaskFolderSchema.optional(),
     harnessCursor: HarnessInstanceIdSchema.optional(),
   })
   .superRefine((input, context) => {
@@ -32,7 +31,7 @@ export const orchestrator_capabilities = defineAgentTool({
   name: "orchestrator_capabilities",
   title: "Discover orchestration choices",
   description:
-    "Engine accounts, models/options for delegate_task and thread_configure, your access ceiling and enforced budgets. folder selects a task folder on the hosting computer; omission uses the current task folder, or agent home for a connection. Copy selectors exactly; unavailable choices never imply substitution. Page with harnessesNextCursor as harnessCursor; for models keep query/harnessInstanceId and pass modelsNextCursor as cursor.",
+    "Engine accounts, models/options for delegate_task and thread_configure, your access ceiling and enforced budgets. Copy selectors exactly; unavailable choices never imply substitution. Page with harnessesNextCursor as harnessCursor; for models keep query/harnessInstanceId and pass modelsNextCursor as cursor.",
   input: OrchestratorCapabilitiesInputSchema,
   output: OrchestratorCapabilitiesSchema,
   access: "read",

@@ -831,7 +831,6 @@ run("Browser Sessions through a whole deployment", () => {
       const bootstrap = await stack.api["bootstrap.get"]({});
       return bootstrap.ok && bootstrap.data.browser.available;
     }, 30_000);
-    const folder = await stack.createFolder("Listings");
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
@@ -839,7 +838,6 @@ run("Browser Sessions through a whole deployment", () => {
         providerId: "openai",
       }),
       title: "Delete the listing",
-      folder: folder,
     });
     const evidence =
       process.env.OPENSTEER_HOST_DIALOG_EVIDENCE_DIR ??

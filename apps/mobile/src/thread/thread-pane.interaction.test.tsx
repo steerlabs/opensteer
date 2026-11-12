@@ -784,7 +784,6 @@ if (viewer === null) throw new Error("The mock Host has no signed-in reader.");
 const userId = viewer.id;
 const workId = ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000004");
 const newDraftId = homeDraftId;
-const agentHome = base.personalSettings!.agentHome;
 const at = "2026-10-09T10:00:00.000Z";
 const human = {
   displayName: viewer.displayName,
@@ -3189,7 +3188,6 @@ describe("a finished task's title", () => {
         revision: 2,
         status: "completed",
         workerThread: {
-          folder: work.folder,
           id: work.id,
           environmentId: work.environmentId,
           status: "idle",
@@ -3285,7 +3283,6 @@ describe("renaming a task on a phone", () => {
           environmentId: template.environmentId,
           harnessInstanceId: template.harnessInstanceId,
           modelSelection: template.modelSelection,
-          folder: template.folder,
           title: seed,
           ...(mode !== "chosen at creation" ? { generateTitle: true } : {}),
         });
@@ -4333,10 +4330,7 @@ describe("a new task Ask started", () => {
     expect(createThread).toHaveBeenCalledOnce();
     await settle();
     expect(drafts.readPending(deploymentId, userId, key)).toBeNull();
-    expect(drafts.readDraft(deploymentId, userId, key)).toMatchObject({
-      text: "Refused words",
-      folder: agentHome,
-    });
+    expect(drafts.readDraft(deploymentId, userId, key)?.text).toBe("Refused words");
     expect(field(container)).toBe("Refused words");
   });
 

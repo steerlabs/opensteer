@@ -1,7 +1,7 @@
 import { emptyAutomaticModelConfig } from "@opensteer/core";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
-import { mkdtemp, realpath, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 /**
@@ -14,7 +14,11 @@ import { join } from "node:path";
  *
  * Requires OPENSTEER_TEST_DATABASE_URL; it skips without one.
  */
-import { slackChannelProviderManifest, type ChannelDeliveryId } from "@opensteer/channel-core";
+import {
+  slackChannelProviderManifest,
+  type ChannelBindingId,
+  type ChannelDeliveryId,
+} from "@opensteer/channel-core";
 import {
   RuntimeChannelRequestSchema,
   type RuntimeChannelRequest,
@@ -28,7 +32,6 @@ import {
   type RunnerId,
   type ThreadId,
   type UserId,
-  type TaskFolder,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
 import type { RunnerAuxiliaryStream, RunnerIdentity } from "@opensteer/orchestration";
@@ -130,7 +133,7 @@ integration("messaging pipeline", () => {
     expect(first).not.toHaveProperty("accepted");
 
     // 2. The service's own drain adopts the ingress into a Thread and a Run.
-    const run = await waitForRun(fixture.folder);
+    const run = await waitForRun(fixture.created.binding.id);
     expect(run).toMatchObject({ status: "queued" });
     expect(run.replyTarget).not.toBeNull();
     await vi.waitFor(() => expect(fixture.queued).toEqual([environmentId]), 10_000);
@@ -355,7 +358,7 @@ integration("messaging pipeline", () => {
       messagingRunnerId,
       runtimeRequest("ingress.commit", { connectionId: fixture.created.connection.id, event }),
     );
-    const run = await waitForRun(fixture.folder);
+    const run = await waitForRun(fixture.created.binding.id);
     const binding = await beginRun(run);
     const narrationId = createId("message");
     await emit(binding, run, 1, "assistant.message", {
@@ -532,7 +535,7 @@ integration("messaging pipeline", () => {
         event: { ...direct, eventId: "Ev-LINK-3", providerMessageId: "1786320000.000102" },
       }),
     );
-    const run = await waitForRun(fixture.folder);
+    const run = await waitForRun(fixture.created.binding.id);
     expect(run).toMatchObject({ status: "queued" });
 
     await service.close();
@@ -655,7 +658,7 @@ integration("messaging pipeline", () => {
       .where("id", "=", parked.id)
       .execute();
     service.wake();
-    const run = await waitForRun(fixture.folder);
+    const run = await waitForRun(fixture.created.binding.id);
     expect(run).toMatchObject({ status: "queued" });
 
     await service.close();
@@ -694,9 +697,9 @@ integration("messaging pipeline", () => {
     await expect(
       database
         .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
+        .innerJoin("channelConversations", "channelConversations.activeThreadId", "runs.threadId")
         .select("runs.id")
-        .where("threads.folderPath", "=", fixture.folder.path)
+        .where("channelConversations.bindingId", "=", fixture.created.binding.id)
         .execute(),
     ).resolves.toEqual([]);
 
@@ -721,10 +724,7 @@ integration("messaging pipeline", () => {
       threadId: null,
     });
 
-    const roomFolder = { ...personal.agentHome, path: join(directory, "ROUTE-room") };
-    await mkdir(roomFolder.path, { recursive: true });
     const roomBinding = await service.createBinding({
-      folder: roomFolder,
       accessPolicy: {
         channels: {
           scope: "all",
@@ -752,7 +752,7 @@ integration("messaging pipeline", () => {
         event: channelEvent({ scope: "ROUTE", text: "Investigate the room" }),
       }),
     );
-    const roomRun = await waitForRun(roomFolder);
+    const roomRun = await waitForRun(roomBinding.id);
     expect(roomRun).toMatchObject({ status: "queued" });
 
     // 2. A direct message nothing names still falls through to the catch-all.
@@ -775,7 +775,7 @@ integration("messaging pipeline", () => {
         },
       }),
     );
-    await waitForRun(fixture.folder);
+    await waitForRun(fixture.created.binding.id);
 
     // 3. Retiring the route leaves its conversation unrouted, and the next
     //    message there says so rather than disappearing.
@@ -867,7 +867,7 @@ integration("messaging pipeline", () => {
       }
       const mention = channelEvent({ scope: "ACCESS", text: "Hello from the team" });
       await deliver(mention);
-      const sharedRun = await waitForRun(fixture.folder);
+      const sharedRun = await waitForRun(fixture.created.binding.id);
       const thread = await database
         .selectFrom("threads")
         .selectAll()
@@ -901,8 +901,9 @@ integration("messaging pipeline", () => {
       expect(
         await database
           .selectFrom("threads")
-          .select("id")
-          .where("folderPath", "=", fixture.folder.path)
+          .innerJoin("channelConversations", "channelConversations.activeThreadId", "threads.id")
+          .select("threads.id")
+          .where("channelConversations.bindingId", "=", fixture.created.binding.id)
           .execute(),
       ).toHaveLength(1);
       const intruder = await store.createUser("Unrelated operator");
@@ -927,8 +928,9 @@ integration("messaging pipeline", () => {
       expect(
         await database
           .selectFrom("threads")
-          .select("id")
-          .where("folderPath", "=", fixture.folder.path)
+          .innerJoin("channelConversations", "channelConversations.activeThreadId", "threads.id")
+          .select("threads.id")
+          .where("channelConversations.bindingId", "=", fixture.created.binding.id)
           .execute(),
       ).toHaveLength(1);
       await expect(
@@ -944,8 +946,9 @@ integration("messaging pipeline", () => {
       expect(
         await database
           .selectFrom("threads")
-          .select("id")
-          .where("folderPath", "=", fixture.folder.path)
+          .innerJoin("channelConversations", "channelConversations.activeThreadId", "threads.id")
+          .select("threads.id")
+          .where("channelConversations.bindingId", "=", fixture.created.binding.id)
           .execute(),
       ).toHaveLength(2);
       await service.reviewAccess({
@@ -958,10 +961,10 @@ integration("messaging pipeline", () => {
       const dmCommand = await database
         .selectFrom("commands")
         .innerJoin("runs", "runs.id", "commands.runId")
-        .innerJoin("threads", "threads.id", "runs.threadId")
+        .innerJoin("channelConversations", "channelConversations.activeThreadId", "runs.threadId")
         .select(["commands.id", "runs.id as runId"])
-        .where("threads.folderPath", "=", fixture.folder.path)
-        .where("threads.id", "!=", sharedRun.threadId)
+        .where("channelConversations.bindingId", "=", fixture.created.binding.id)
+        .where("runs.threadId", "!=", sharedRun.threadId)
         .where("commands.type", "=", "run.execute")
         .executeTakeFirstOrThrow();
       const blocked = await store.claimCommand(dmCommand.id, "revoked-dm-test");
@@ -1153,8 +1156,6 @@ integration("messaging pipeline", () => {
     readonly suffix: string;
     /** The one work location online, instead of the shared Main Runner's. */
     readonly environmentId?: ReturnType<typeof createId<"environment">>;
-    /** Routes to this Workspace instead of a new one of its own. */
-    readonly folder?: TaskFolder;
   }) {
     const onlineEnvironmentId = input.environmentId ?? environmentId;
     const queued: string[] = [];
@@ -1191,12 +1192,6 @@ integration("messaging pipeline", () => {
       },
     };
     hub.attach(peer, stream());
-    const folder: TaskFolder = input.folder ?? {
-      ...personal.agentHome,
-      path: join(directory, input.suffix),
-    };
-    await mkdir(folder.path, { recursive: true });
-
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -1261,7 +1256,6 @@ integration("messaging pipeline", () => {
       },
       provider: "slack",
       routingMode: input.routingMode ?? "dedicated",
-      folder,
     });
     await service.handleRuntimeRequest(
       messagingRunnerId,
@@ -1279,25 +1273,24 @@ integration("messaging pipeline", () => {
       queued,
       relayRequests,
       service,
-      folder,
     };
   }
 
-  async function waitForRun(folder: TaskFolder) {
+  /** The Run of the first conversation a binding routed. */
+  async function waitForRun(bindingId: ChannelBindingId) {
     return vi.waitFor(
       async () => {
         const row = await database
           .selectFrom("runs")
-          .innerJoin("threads", "threads.id", "runs.threadId")
+          .innerJoin("channelConversations", "channelConversations.activeThreadId", "runs.threadId")
           .select([
             "runs.id",
             "runs.replyTarget",
             "runs.seedInputId",
             "runs.status",
             "runs.threadId",
-            "threads.folderPath",
           ])
-          .where("threads.folderPath", "=", folder.path)
+          .where("channelConversations.bindingId", "=", bindingId)
           .executeTakeFirst();
         if (!row)
           throw new Error(

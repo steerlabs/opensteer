@@ -38,7 +38,6 @@ import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/i
 import type { BrowserPageContentPart, TeamTaskOrigin } from "@opensteer/core";
 import { AudienceLine, TaskSourceChip } from "../home/task-source.js";
 import { useTeamsSnapshot } from "../team/team-context.js";
-import { folderLabel } from "../home/folder-label.js";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
@@ -171,9 +170,8 @@ type TranscriptItem =
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
   readonly title: string;
-  /** Where the task works or came from: its folder, or "#support" for a team's ask. */
+  /** The team channel that asked, "#support"; null for the person's own task. */
   readonly placeName: string | null;
-  readonly placeKind: "folder" | "team" | null;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
   readonly isVoice: boolean;
@@ -190,7 +188,6 @@ export function sameThreadHeader(
     left.connectionLabel === right.connectionLabel &&
     left.title === right.title &&
     left.placeName === right.placeName &&
-    left.placeKind === right.placeKind &&
     left.icon === right.icon &&
     left.color === right.color &&
     left.isVoice === right.isVoice &&
@@ -266,7 +263,6 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     network: snapshot.network,
     session: snapshot.session,
     user: snapshot.user,
-    agentHome: snapshot.personalSettings?.agentHome ?? null,
     voiceThreadId: snapshot.voiceThreadId,
     environments: snapshot.environments,
     harnesses: snapshot.harnesses,
@@ -669,13 +665,7 @@ function ThreadPaneForUser(
   const headerTitle = thread?.title ?? null;
   const teamOrigin = thread?.teamOrigin ?? null;
   const channelName = useChannelName(teamOrigin?.teamId ?? null, teamOrigin?.channelId ?? null);
-  const placeKind = thread === null ? null : teamOrigin !== null ? "team" : "folder";
-  const placeName =
-    thread === null
-      ? null
-      : teamOrigin !== null
-        ? `#${channelName ?? "channel"}`
-        : folderLabel(thread.folder, snapshot.agentHome);
+  const placeName = teamOrigin === null ? null : `#${channelName ?? "channel"}`;
   const icon = thread?.icon ?? null;
   const markColor = thread?.color ?? null;
   // The split heading's own width, which the title's menu is sized to.
@@ -703,22 +693,11 @@ function ThreadPaneForUser(
       task,
       title: headerTitle ?? "Thread",
       placeName,
-      placeKind,
       icon,
       color: markColor,
       isVoice: voiceThread,
     });
-  }, [
-    connectionLabel,
-    headerTitle,
-    onHeader,
-    task,
-    placeName,
-    placeKind,
-    icon,
-    markColor,
-    voiceThread,
-  ]);
+  }, [connectionLabel, headerTitle, onHeader, task, placeName, icon, markColor, voiceThread]);
 
   // The reader's choices survive rows leaving the list's mounted window.
   const [openRows, setOpenRows] = useState<ReadonlyMap<string, boolean>>(() => new Map());

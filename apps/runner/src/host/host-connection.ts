@@ -1285,9 +1285,8 @@ export class AgentsWorkSession implements RunnerWorkSession {
   constructor(options: AgentsWorkSessionOptions) {
     this.#options = options;
     this.#signal = AbortSignal.any([options.signal, this.#lifetime.signal]);
-    options.agents.runtime.observeFolderSkills(async (folder, bindingGeneration, scan) => {
+    options.agents.runtime.observeAgentHomeSkills(async (bindingGeneration, scan) => {
       await this.#reportSkills(
-        folder,
         bindingGeneration,
         scan
           ? { status: "complete", skills: [...scan.metadata], warnings: [...scan.warningCodes] }
@@ -1416,7 +1415,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   async close(): Promise<void> {
     this.#unsubscribePreparation();
-    this.#options.agents.runtime.observeFolderSkills(undefined);
+    this.#options.agents.runtime.observeAgentHomeSkills(undefined);
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
@@ -1659,7 +1658,7 @@ export class AgentsWorkSession implements RunnerWorkSession {
         message:
           error instanceof RunFileError
             ? error.message
-            : "File movement failed. Use a regular file inside this task's folder, smaller than 2 GiB, and retry from the current execution.",
+            : "File movement failed. Use a regular file inside Agent home, smaller than 2 GiB, and retry from the current execution.",
       });
     } finally {
       if (controller && this.#fileRequests.get(request.requestId) === controller)
@@ -1746,7 +1745,6 @@ export class AgentsWorkSession implements RunnerWorkSession {
 
   #skillSequence = 0;
   async #reportSkills(
-    binding: import("@opensteer/core").TaskFolder,
     bindingGeneration: number,
     result: import("@opensteer/protocol").RunnerSkillMetadataReport["result"],
   ): Promise<void> {
@@ -1756,7 +1754,6 @@ export class AgentsWorkSession implements RunnerWorkSession {
       environmentId: this.#options.environmentId(),
       bindingGeneration,
       type: "runner.skills.report",
-      binding,
       scanSequence: ++this.#skillSequence,
       scannedAt: new Date().toISOString(),
       result,

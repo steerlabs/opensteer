@@ -1,4 +1,4 @@
-import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
+import { requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
   createId,
@@ -46,7 +46,6 @@ export async function createMemoryPass(
 ) {
   return withPersonalTransaction(database, async (transaction) => {
     await requirePersonalOwner(transaction, input.ownerId);
-    const settings = await personalSettings(transaction);
     const key = `memory:${input.systemRole}`;
     await sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["trigger-create", input.ownerId, key])}, 0))`.execute(
       transaction,
@@ -63,7 +62,6 @@ export async function createMemoryPass(
       {
         createdBy: input.ownerId,
         ...input.execution,
-        folder: settings.agentHome,
         purpose: "background-job",
         idempotencyKey: key,
         title: input.systemRole === "memory-light" ? "Memory light pass" : "Memory nightly pass",

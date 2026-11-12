@@ -63,7 +63,6 @@ import {
   type Message,
   type Thread,
   type ThreadAccessMode,
-  type TaskFolder,
 } from "@opensteer/core";
 import type { BrowserUsageCredit, OpensteerStore } from "@opensteer/database";
 import type { CommandService } from "@opensteer/orchestration";
@@ -107,11 +106,8 @@ import {
   threadCallerAuthority,
 } from "../operations.js";
 
-export interface AgentTaskFolders {
-  resolve(
-    ownerId: UserId,
-    folder?: TaskFolder,
-  ): Promise<{ readonly folder: TaskFolder; readonly environmentId: EnvironmentId }>;
+export interface AgentExecution {
+  environmentFor(ownerId: UserId): Promise<EnvironmentId>;
   canExecute(environmentId: EnvironmentId): boolean;
 }
 
@@ -157,7 +153,7 @@ export class ProductToolHandlers {
   readonly #commands: CommandService;
   readonly #requestResponseVault: RequestResponseVault | undefined;
   readonly #questionNotices: Pick<TaskQuestionNotices, "wait"> | undefined;
-  readonly #folders: AgentTaskFolders;
+  readonly #execution: AgentExecution;
   readonly #isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
   readonly #onEvent: (event: AgentEvent) => void;
   readonly #store: OpensteerStore;
@@ -198,7 +194,7 @@ export class ProductToolHandlers {
     readonly commands: CommandService;
     readonly requestResponseVault?: RequestResponseVault;
     readonly questionNotices?: Pick<TaskQuestionNotices, "wait">;
-    readonly folders: AgentTaskFolders;
+    readonly execution: AgentExecution;
     readonly isEnvironmentConnected: (environmentId: EnvironmentId) => boolean;
     readonly memoryPasses?: Pick<MemoryPassService, "admissionSelection">;
     readonly onEvent: (event: AgentEvent) => void;
@@ -222,7 +218,7 @@ export class ProductToolHandlers {
     this.#commands = options.commands;
     this.#requestResponseVault = options.requestResponseVault;
     this.#questionNotices = options.questionNotices;
-    this.#folders = options.folders;
+    this.#execution = options.execution;
     this.#isEnvironmentConnected = options.isEnvironmentConnected;
     this.#onEvent = options.onEvent;
     this.#store = options.store;
@@ -379,10 +375,7 @@ export class ProductToolHandlers {
   async orchestrator_capabilities({ caller, input }: ToolCall<"orchestrator_capabilities">) {
     const currentThread = caller.kind === "connection" ? undefined : callerThread(caller);
     const claims = { requestedBy: caller.userId };
-    const { folder, environmentId } = await this.#folders.resolve(
-      caller.userId,
-      input.folder ?? currentThread?.folder,
-    );
+    const environmentId = await this.#execution.environmentFor(caller.userId);
     const result = await environmentDiscovery({
       store: this.#store,
       userId: claims.requestedBy,
@@ -429,7 +422,6 @@ export class ProductToolHandlers {
       ...(result.delegationDefault ? { delegationDefault: result.delegationDefault } : {}),
       harnesses,
       ...(result.harnessesNextCursor ? { harnessesNextCursor: result.harnessesNextCursor } : {}),
-      folder,
       accessCeiling: caller.accessMode,
       limits: {
         maxDepth: caller.kind === "connection" ? null : agentDelegationMaxDepth,
@@ -463,7 +455,7 @@ export class ProductToolHandlers {
         name,
         capabilities,
         connected: this.#isEnvironmentConnected(id),
-        can: { executeTasks: this.#folders.canExecute(id) },
+        can: { executeTasks: this.#execution.canExecute(id) },
       })),
       ...(rows.length > 64 ? { environmentsNextCursor: environments[63]!.id } : {}),
     };
@@ -490,7 +482,6 @@ export class ProductToolHandlers {
       ...(input.query ? { query: input.query } : {}),
       scope,
       scopeId: caller.kind === "connection" ? caller.key : callerThread(caller).id,
-      ...(input.folder ? { folder: input.folder } : {}),
     });
     const response = {
       threads: page.threads.map((summary) => ({
@@ -505,7 +496,6 @@ export class ProductToolHandlers {
         doneAt: summary.doneAt,
         title: summary.title,
         updatedAt: summary.updatedAt,
-        folder: summary.folder,
       })),
       hasMore: page.window.hasMore,
       nextBefore: page.window.nextBefore,
@@ -1046,10 +1036,7 @@ export class ProductToolHandlers {
         throw badRequest("Choose another work Thread for the assignment");
       }
     }
-    const { folder, environmentId } = await this.#folders.resolve(
-      claims.requestedBy,
-      existingThread?.folder ?? input.folder ?? currentThread.folder,
-    );
+    const environmentId = await this.#execution.environmentFor(claims.requestedBy);
     const specialist = await resolveDelegationSpecialist(
       this.#store,
       claims.requestedBy,
@@ -1077,7 +1064,7 @@ export class ProductToolHandlers {
             parent: currentThread,
           });
 
-    return { existingThread, folder, specialist, environment, placement };
+    return { existingThread, specialist, environment, placement };
   }
   async authorizeDelegation(call: ToolCall<"delegate_task">) {
     if (call.caller.kind === "connection") {
@@ -1108,7 +1095,6 @@ export class ProductToolHandlers {
     if (!prior) return null;
     const requested = prior.payload as Readonly<Record<string, unknown>>;
     const asked = {
-      ...(input.folder === undefined ? {} : { folder: input.folder }),
       ...(input.harnessInstanceId === undefined
         ? {}
         : { harnessInstanceId: input.harnessInstanceId }),
@@ -1142,7 +1128,6 @@ export class ProductToolHandlers {
   ): Promise<ConnectionTask> {
     const {
       existing,
-      folder,
       environmentId,
       harnessInstanceId,
       harnessRevision,
@@ -1156,7 +1141,6 @@ export class ProductToolHandlers {
       caller,
       {
         type: "thread.create",
-        folder,
         environmentId,
         harnessInstanceId,
         modelSelection,
@@ -1212,7 +1196,6 @@ export class ProductToolHandlers {
         result: null,
         pendingRequests: thread.pendingRequests,
         parentThreadId: null,
-        folder: thread.folder,
         environmentId: thread.environmentId,
         createdAt: thread.createdAt,
         finishedAt: null,
@@ -1238,8 +1221,9 @@ export class ProductToolHandlers {
       claims.requestedBy,
       idempotencyKey(caller, requestId, "delegate"),
       async () => {
-        const { existingThread, folder, specialist, environment, placement } =
-          await this.prepareDelegation({ caller, input, operationKey });
+        const { existingThread, specialist, environment, placement } = await this.prepareDelegation(
+          { caller, input, operationKey },
+        );
         const delegateInput = {
           ...(specialist ? { specialistId: specialist.id } : {}),
           ...(placement.harnessRevision === undefined
@@ -1260,7 +1244,6 @@ export class ProductToolHandlers {
           task: [{ text: input.task, type: "text" }, ...(input.places ?? [])],
           title: input.title ?? provisionalThreadTitle(input.task),
           titleSource: input.title === undefined ? "provisional" : "chosen",
-          folder,
         } as const;
         const replayed = await this.#store.findDelegatedThreadByIdempotency(delegateInput);
         if (replayed) {
@@ -1523,10 +1506,7 @@ export class ProductToolHandlers {
       ? await this.#threads.assertTarget(caller, input.threadId)
       : null;
     if (existing && existing.purpose !== "task") throw badRequest("Choose a work Thread");
-    const { folder, environmentId } = await this.#folders.resolve(
-      caller.userId,
-      existing?.folder ?? input.folder,
-    );
+    const environmentId = await this.#execution.environmentFor(caller.userId);
     const specialist = await resolveDelegationSpecialist(
       this.#store,
       caller.userId,
@@ -1554,7 +1534,7 @@ export class ProductToolHandlers {
         accessMode: caller.accessMode,
         specialist,
       });
-      return { existing, folder, environmentId, ...placement, specialist };
+      return { existing, environmentId, ...placement, specialist };
     }
     const preferred = preferences.history.find((entry) => entry.environmentId === environmentId);
     const named =
@@ -1574,7 +1554,6 @@ export class ProductToolHandlers {
     if (!modelSelection) throw badRequest("Choose a model for the new task", chooseExecutionNext);
     return {
       existing,
-      folder,
       environmentId,
       harnessInstanceId,
       harnessRevision: undefined,

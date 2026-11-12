@@ -124,7 +124,6 @@ export function useThreadHeader(props: {
               >
                 <AppText role="title">{fallbackTitle}</AppText>
                 <ThreadSubtitle
-                  placeKind={null}
                   placeName={null}
                   connectionLabel={savedSubtitle.label}
                   onRetry={savedSubtitle.onRetry}
@@ -355,7 +354,6 @@ export function ThreadTitlePill(
               {props.connectionLabel === null ? null : (
                 <ThreadSubtitle
                   connectionLabel={props.connectionLabel}
-                  placeKind={null}
                   placeName={null}
                   task={null}
                 />
@@ -376,7 +374,6 @@ export function ThreadTitlePill(
           {name}
           <ThreadSubtitle
             placeName={props.placeName}
-            placeKind={props.placeKind}
             connectionLabel={props.connectionLabel}
             // iOS says "Completed" in the menu's heading and its accessible
             // name, so the bar keeps one line for the title. Android's menu

@@ -443,7 +443,6 @@ describe("Expo engine/account/model journeys", () => {
             attachmentsReady: true,
             connected: true,
             execution,
-            folder: live.personalSettings?.agentHome ?? null,
           })}
           held={false}
           execution={execution}

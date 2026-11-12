@@ -162,13 +162,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/mobile/src/thread/thread-subtitle.tsx": {
-    counts: {
-      "props.placeKind": 1,
-    },
-    reason:
-      "The place icon distinguishes a team channel from a native task folder, not Deployment capabilities.",
-  },
   "apps/web/src/components/add-deployment.tsx": {
     counts: {
       choice: 1,

@@ -28,8 +28,7 @@ export function createDesktopHostFetch(
     const headers = hostRequestHeaders(request.headers);
     if (
       url.pathname === "/v1/rpc/attachment.upload" ||
-      url.pathname === "/v1/rpc/attachment.content" ||
-      url.pathname === "/v1/rpc/workspace.files.preview"
+      url.pathname === "/v1/rpc/attachment.content"
     ) {
       return binaryHostRequest(bridge, request, url, headers);
     }
@@ -61,21 +60,15 @@ async function binaryHostRequest(
   headers: ReturnType<typeof hostRequestHeaders>,
 ): Promise<Response> {
   const upload = url.pathname === "/v1/rpc/attachment.upload";
-  const preview = url.pathname === "/v1/rpc/workspace.files.preview";
   if (upload && request.method !== "POST") throw new Error("Attachment upload requires POST.");
-  if (preview && request.method !== "POST") throw new Error("File preview requires POST.");
-  if (!upload && !preview && request.method !== "GET")
-    throw new Error("Attachment content requires GET.");
-  const body = preview ? await request.text() : undefined;
+  if (!upload && request.method !== "GET") throw new Error("Attachment content requires GET.");
   const opened = await bridge.hostBinaryOpen({
-    ...(body === undefined ? {} : { body }),
     headers: {
       ...(headers.accept ? { accept: headers.accept } : {}),
       ...(headers.apiVersion ? { apiVersion: headers.apiVersion } : {}),
       ...(upload ? { contentType: "application/octet-stream" as const } : {}),
-      ...(preview ? { contentType: "application/json" as const } : {}),
     },
-    method: upload || preview ? "POST" : "GET",
+    method: upload ? "POST" : "GET",
     path: `${url.pathname}${url.search}`,
     timeoutMs: 120_000,
   });

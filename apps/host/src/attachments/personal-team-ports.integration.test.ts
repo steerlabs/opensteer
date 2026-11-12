@@ -67,7 +67,6 @@ async function fixture() {
     origin: { teamId, channelId: source.channelId, threadRootId: source.threadRootId },
     requestId: createId("teamAgentRequest"),
     triggerMessageId: source.messageId!,
-    folder: personal.folder,
     source,
     ownerId: personal.userId,
     execution: {

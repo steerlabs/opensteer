@@ -1,5 +1,3 @@
-import type { FolderAdmissionService } from "./folder-admission-service.js";
-import { personalSettings } from "@opensteer/database";
 import {
   threadAccessModeAtMost,
   DEFAULT_THREAD_ACCESS_MODE,
@@ -47,7 +45,6 @@ type Command<K extends HostApiCommand["type"]> = Extract<
 export class ThreadService {
   readonly options: {
     readonly store: OpensteerStore;
-    readonly folders: Pick<FolderAdmissionService, "admit">;
     readonly commands: CommandService;
     readonly runners: Pick<
       RunnerRegistry,
@@ -126,7 +123,6 @@ export class ThreadService {
             generateTitle: true as const,
           }
         : {}),
-      folder: command.folder ?? (await personalSettings(this.options.store.database)).agentHome,
       title: command.title,
     } as const;
     const existing = await this.options.store.findThreadCreationByIdempotency(input);
@@ -137,7 +133,6 @@ export class ThreadService {
         type: command.type,
       };
     }
-    const folder = await this.options.folders.admit(input.folder);
     const harness = await this.options.store.getHarnessInstance(command.harnessInstanceId);
     if (!harness?.enabled || harness.environmentId !== command.environmentId) {
       throw new OpensteerError({
@@ -177,8 +172,6 @@ export class ThreadService {
     );
     const created = await this.options.commands.createThread({
       ...input,
-      folder,
-      requestedFolder: input.folder,
       modelSelection: storedModelSelection(command.modelSelection, available.model),
     });
     return {

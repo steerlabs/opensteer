@@ -1,4 +1,4 @@
-import { RunnerIdSchema } from "@opensteer/core";
+import { EnvironmentIdSchema, RunnerIdSchema } from "@opensteer/core";
 import { z } from "zod";
 
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
@@ -87,6 +87,11 @@ export const RunnerConnectionFenceSchema = z.strictObject({
   runnerId: RunnerIdSchema,
 });
 export type RunnerConnectionFence = z.infer<typeof RunnerConnectionFenceSchema>;
+
+export const TaskRuntimeFenceSchema = RunnerConnectionFenceSchema.extend({
+  environmentId: EnvironmentIdSchema,
+  bindingGeneration: z.number().int().positive(),
+}).strict();
 
 export function sameRunnerConnectionFence(
   left: RunnerConnectionFence,

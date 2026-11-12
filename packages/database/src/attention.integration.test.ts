@@ -47,7 +47,6 @@ describeStore("personal computer attention", (it) => {
     });
     await f.store.createThread({
       createdBy: task.userId,
-      folder: task.folder,
       environmentId: task.environmentId,
       harnessInstanceId: task.harnessInstance.id,
       modelSelection: task.thread.modelSelection,

@@ -1,10 +1,6 @@
 import type { HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import {
-  BrowserPageContentPartSchema,
-  ModelSelectionSchema,
-  RunnerIdSchema,
-} from "@opensteer/core";
+import { BrowserPageContentPartSchema, ModelSelectionSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { sendPendingMessage } from "../thread/send-pending-message.js";
 import { createThreadDraftStore, newTaskDraftKey, sameDraftSummary } from "./thread-drafts.js";
@@ -442,11 +438,6 @@ describe("createThreadDraftStore", () => {
  * one the Host has never seen. Typing no longer answers an approval.
  */
 describe("new-task drafts", () => {
-  const folder = {
-    computerId: RunnerIdSchema.parse("rnr_0192f4a1-4444-4000-8000-000000000004"),
-    path: "/Users/person/Opensteer",
-  };
-  const otherFolder = { ...folder, path: "/Users/person/code/opensteer" };
   const first = "0192f4a1-7777-4000-8000-000000000007";
   const second = "0192f4a1-8888-4000-8000-000000000008";
   const start = {
@@ -460,31 +451,14 @@ describe("new-task drafts", () => {
       providerId: "provider-1",
     }),
     title: "Saved task",
-    folder,
   } as const;
   const summary = (store: ReturnType<typeof open>["drafts"]) =>
     store.readDraftSummary(deploymentId, userId);
 
-  it("persists a folder-chip change after Home's words were already saved", async () => {
+  it("restores Home and drops unreachable new-task drafts and pending files", async () => {
     const { drafts, privateFiles } = open();
     await drafts.load();
-    await drafts.placeNewTaskDraft(deploymentId, userId, "home", folder);
-    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Saved words");
-    await drafts.placeNewTaskDraft(deploymentId, userId, "home", otherFolder);
-    const relaunched = open(privateFiles).drafts;
-    await relaunched.load();
-    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey("home"))).toMatchObject({
-      text: "Saved words",
-      folder: otherFolder,
-    });
-  });
-
-  it("restores Home in the last chosen folder and drops unreachable new-task drafts and pending files", async () => {
-    const { drafts, privateFiles } = open();
-    await drafts.load();
-    await drafts.placeNewTaskDraft(deploymentId, userId, "home", folder);
     await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Home words");
-    await drafts.placeNewTaskDraft(deploymentId, userId, "home", otherFolder);
     await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(first), "Obsolete");
     await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey(first), [
       {
@@ -510,7 +484,7 @@ describe("new-task drafts", () => {
       idempotencyKey: "pending-home",
       text: "Held home",
       threadId: newTaskDraftKey("home"),
-      start: { ...start, folder: otherFolder },
+      start,
     });
     await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Home words");
     await drafts.writeDraft(deploymentId, userId, threadId, "Task reply");
@@ -522,10 +496,9 @@ describe("new-task drafts", () => {
       forgetDraftFiles,
     });
     await relaunched.load();
-    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey("home"))).toMatchObject({
-      text: "Home words",
-      folder: otherFolder,
-    });
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey("home"))?.text).toBe(
+      "Home words",
+    );
     expect(
       relaunched.readPending(deploymentId, userId, newTaskDraftKey("home"))?.idempotencyKey,
     ).toBe("pending-home");
@@ -542,26 +515,6 @@ describe("new-task drafts", () => {
     expect(
       new TextDecoder().decode((await privateFiles.readFile(filePath, 10 * 1024 * 1024))!),
     ).not.toContain(`new-task:${second}`);
-  });
-
-  it("takes a refused message back into the same draft, in the same folder", async () => {
-    const { drafts } = open();
-    await drafts.load();
-    const key = newTaskDraftKey(first);
-    await drafts.placeNewTaskDraft(deploymentId, userId, first, otherFolder);
-    await drafts.writeDraft(deploymentId, userId, key, "Refused words");
-    await drafts.claimPending(deploymentId, userId, key, {
-      idempotencyKey: "message:refused",
-      start: { ...start, folder: otherFolder },
-      text: "Refused words",
-      threadId: key,
-    });
-    await drafts.clearPending(deploymentId, userId, key, "message:refused");
-    await drafts.writeDraft(deploymentId, userId, key, "Refused words");
-    expect(drafts.readDraft(deploymentId, userId, key)).toMatchObject({
-      text: "Refused words",
-      folder: otherFolder,
-    });
   });
 
   it("forgets a discarded draft for good, and only that draft", async () => {

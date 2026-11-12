@@ -3,7 +3,7 @@ import { expect } from "vitest";
 import {
   PluginSettingsStore,
   projectLooseSkillRows,
-  type PersonalSkillInventory,
+  type AgentHomeSkillInventory,
 } from "./plugin-settings-store.js";
 import { PluginStore } from "./plugin-store.js";
 import { describeStore } from "./store.integration.test-support.js";
@@ -57,29 +57,17 @@ describeStore("personal plugin settings", (test) => {
     ).rejects.toMatchObject({ code: "forbidden" });
   });
 
-  test("consumes grouped folder metadata and applies one personal skill switch", async ({
+  test("lists Agent home skills and applies one personal skill switch", async ({
     storeFixture: f,
   }) => {
     const owner = await f.createRunFixture("settings-skills");
     const skill = { fullName: "notes", description: "Local notes", digest: "a".repeat(64) };
-    const inventory: PersonalSkillInventory[] = [
-      {
-        folder: owner.folder,
-        ownerRunnerId: owner.runnerId,
-        observedAt: new Date().toISOString(),
-        scanStatus: "complete",
-        stale: false,
-        skills: [skill],
-      },
-      {
-        folder: { ...owner.folder, path: owner.folder.path + "/older" },
-        ownerRunnerId: owner.runnerId,
-        observedAt: "2020-01-01T00:00:00.000Z",
-        scanStatus: "failed",
-        stale: true,
-        skills: [skill],
-      },
-    ];
+    const inventory: AgentHomeSkillInventory = {
+      observedAt: new Date().toISOString(),
+      scanStatus: "complete",
+      stale: false,
+      skills: [skill],
+    };
     const settings = new PluginSettingsStore(f.database, async () => inventory);
     expect(projectLooseSkillRows(inventory, [])).toMatchObject([
       { target: { kind: "skill", fullName: "notes" }, issues: [] },

@@ -1,4 +1,4 @@
-import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
+import { unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import {
   KnowledgeTopicIdSchema,
@@ -17,7 +17,6 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import type { NativeMenuOption } from "../thread/composer-menu.js";
-import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import {
   AppText,
   Field,
@@ -111,7 +110,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   const { teamId, channelId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session, snapshot } = useTeamSession(teamId);
-  const personal = useSelectedHostClient();
   const padding = useBottomPadding();
   const channelKey = TeamChannelIdSchema.parse(channelId);
   const channel = useTeamRead(
@@ -130,18 +128,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
     },
     channelId,
   );
-  const [folder, setFolder] = useState<string | null>(null);
-  useEffect(() => {
-    if (personal === null || channel.value?.peopleOnly !== false) return;
-    let current = true;
-    void new PersonalTeamLinks(personal.rpc).folder(teamId, channelId).then(
-      (value) => current && setFolder(value.path),
-      () => undefined,
-    );
-    return () => {
-      current = false;
-    };
-  }, [channel.value?.peopleOnly, channelId, personal, teamId]);
   const entry = snapshot.sidebar?.channels.find((row) => row.channel.id === channelId);
   const notify: NotifyLevel =
     entry?.notificationLevel === "all"
@@ -186,11 +172,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
           onPinned: () => navigation.navigate("TeamPinned", { teamId, channelId }),
           onKnowledge: () => navigation.navigate("TeamKnowledge", { teamId, channelId }),
           onInstructions: () => navigation.navigate("TeamInstructions", { teamId, channelId }),
-          onAgentFolder: () => {
-            const deploymentId = personalDeployment();
-            if (deploymentId !== null)
-              navigation.navigate("FolderPicker", { deploymentId, teamId, channelId });
-          },
           onNotify: () =>
             Alert.alert("Notify me", undefined, [
               { text: "Everything", onPress: () => setNotify("all") },
@@ -237,7 +218,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
               navigation.popToTop(),
             ),
         }}
-        agentFolder={value.peopleOnly ? null : folder}
         canManage={value.can.manage}
         channel={channelHeader({ channel: value, memberCount: 0, people: [] })}
         counts={counts.value ?? { files: 0, pinned: 0 }}
@@ -247,10 +227,6 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
       />
     </Screen>
   );
-
-  function personalDeployment(): string | null {
-    return personal?.getSnapshot().deploymentId ?? null;
-  }
 }
 
 /** The people and groups on a channel's list. Managers add and remove them. */

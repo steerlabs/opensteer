@@ -40,7 +40,6 @@ const ownerId = createId("user");
 const runnerId = createId("runner");
 const environmentId = createId("environment");
 const targetEnvironmentId = createId("environment");
-const agentHome = { computerId: runnerId, path: "/agent-home" };
 const currentThreadId = createId("thread");
 const targetThreadId = createId("thread");
 const nativeHarnessId = createId("harnessInstance");
@@ -412,7 +411,6 @@ describe("Product tool handlers", () => {
     });
     expect(delegateThread).toHaveBeenCalledWith({
       accessMode: "auto",
-      folder: current.folder,
       callerIntent: {
         requestId: mcpToolCallId(`run:${claims.runId}`, delegateId, "operation", "delegate_task"),
         requestFingerprint: fingerprint({
@@ -1181,7 +1179,6 @@ function makeService(options: {
           status: candidate.status,
           title: candidate.title,
           updatedAt: candidate.updatedAt,
-          folder: candidate.folder,
         }));
       const threads = visible.slice(0, input.maxItems ?? 25);
       return {
@@ -1456,11 +1453,11 @@ function makeService(options: {
         : {
             triggers: options.triggers,
           }),
-      folders: {
-        resolve: async (owner, folder) => {
+      execution: {
+        environmentFor: async (owner) => {
           if (owner !== ownerId)
             throw new OpensteerError({ code: "forbidden", message: "Personal owner required" });
-          return { folder: folder ?? agentHome, environmentId };
+          return environmentId;
         },
         canExecute: (id) => id === environmentId,
       },
@@ -1579,7 +1576,6 @@ function thread(
 ): Thread {
   return {
     accessMode: "full-access",
-    folder: agentHome,
     teamOrigin: null,
     continuationIdentity: null,
     doneAt: null,

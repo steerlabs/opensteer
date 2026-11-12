@@ -59,7 +59,6 @@ describe("Request protocol", () => {
       pendingRequests: 1,
       providerSessionId: null,
       purpose: "task",
-      folder: { computerId: createId("runner"), path: "/tmp/task" },
       teamOrigin: null,
       status: "waiting",
       title: "Request test",

@@ -5,7 +5,7 @@ import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
 import { createTeamHostRuntime } from "./team-runtime.js";
-import { FolderFilesService } from "../threads/folder-files-service.js";
+import { AgentHomeFiles } from "../threads/agent-home-files.js";
 import { createPersonalTeamLinkServices } from "../team-links/index.js";
 import {
   personalTeamRunPort,
@@ -14,7 +14,7 @@ import {
 import { TaskAdmissionService } from "../threads/task-admission-service.js";
 import {
   personalSettings,
-  reportFolderSkills,
+  reportAgentHomeSkills,
   ensureDeployment,
   personalDeploymentOwner,
 } from "@opensteer/database";
@@ -499,35 +499,31 @@ export async function createHostRuntime(
     let teamRunEvents: TeamRunEvents | undefined;
     let linkServices: ReturnType<typeof createPersonalTeamLinkServices> | undefined;
     let linkStarting: Promise<ReturnType<typeof createPersonalTeamLinkServices>> | undefined;
-    const folders = {
-      canExecute: (environmentId: EnvironmentId) => environmentId === personalConfig.environmentId,
-      admit: async (folder: import("@opensteer/core").TaskFolder) =>
-        (await folderService()).admit(folder),
-      resolve: async (ownerId: UserId, folder?: import("@opensteer/core").TaskFolder) =>
-        (await folderService()).resolve(ownerId, folder),
-      assertAvailable: async (folder: import("@opensteer/core").TaskFolder) =>
-        (await folderService()).assertAvailable(folder),
-    };
-    let initializedFolders: Awaited<ReturnType<typeof initializePersonalState>> = null;
-    let initializingFolders:
+    let initializedPersonal: Awaited<ReturnType<typeof initializePersonalState>> = null;
+    let initializingPersonal:
       Promise<Awaited<ReturnType<typeof initializePersonalState>>> | undefined;
-    const initializeFolders = async () => {
-      if (initializedFolders) return initializedFolders;
-      initializingFolders ??= initializePersonalState(database, personalConfig, realtime)
-        .then((service) => (initializedFolders = service))
+    const initializePersonal = async () => {
+      if (initializedPersonal) return initializedPersonal;
+      initializingPersonal ??= initializePersonalState(database, personalConfig, realtime)
+        .then((execution) => (initializedPersonal = execution))
         .finally(() => {
-          initializingFolders = undefined;
+          initializingPersonal = undefined;
         });
-      return initializingFolders;
+      return initializingPersonal;
     };
-    const folderService = async () => {
-      const service = await initializeFolders();
-      if (!service)
+    const personalExecution = async () => {
+      const execution = await initializePersonal();
+      if (!execution)
         throw new OpensteerError({
           code: "folder_unavailable",
           message: "The personal owner and hosting computer are still starting",
         });
-      return service;
+      return execution;
+    };
+    const execution = {
+      canExecute: (environmentId: EnvironmentId) => environmentId === personalConfig.environmentId,
+      environmentFor: async (ownerId: UserId) =>
+        (await personalExecution()).environmentFor(ownerId),
     };
     await recoverAssignmentResultWaits(database);
     // Only the Host knows the origin its own web app answers on, so it is the
@@ -1055,8 +1051,8 @@ export async function createHostRuntime(
       store: integrationPlatformStore,
       vault: integrationVault,
     });
-    const files = new FolderFilesService({
-      admit: folders.admit,
+    const files = new AgentHomeFiles({
+      agentHome: async () => (await personalExecution()).options.agentHome,
       helperPath: personalConfig.nativeFsHelperPath,
     });
     let harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator | undefined;
@@ -1614,7 +1610,7 @@ export async function createHostRuntime(
         },
         onSkillReport: async (identity, report) => {
           if (!identity.environmentIds.includes(report.environmentId)) return;
-          const changed = await reportFolderSkills(
+          const changed = await reportAgentHomeSkills(
             database,
             {
               ...identity.fence,
@@ -1734,7 +1730,7 @@ export async function createHostRuntime(
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
-            if (await initializeFolders()) await ensureLinks();
+            if (await initializePersonal()) await ensureLinks();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
@@ -1916,7 +1912,6 @@ export async function createHostRuntime(
       runners,
       store: triggerStore,
       watchBrowserTokens,
-      folders,
     });
     const reportThreadNamingError = (error: unknown) =>
       console.error("Thread naming failed", error);
@@ -1970,7 +1965,6 @@ export async function createHostRuntime(
       store,
       triggerControlTokens,
       triggers: triggerStore,
-      folders,
     });
     let reportDispatchError: (error: unknown, commandId: string) => void = (error, commandId) =>
       console.error("Runner command dispatch failed", commandId, error);
@@ -2111,15 +2105,14 @@ export async function createHostRuntime(
       runners,
       placeContext,
       browser,
-      folders,
     });
     const memoryPasses = new MemoryPassService({
       store,
       runners,
-      readAgentInstructions: async (folder, signal) => {
+      readAgentInstructions: async (signal) => {
         const key = Buffer.from("AGENTS.md").toString("base64url");
         try {
-          const read = await files.preview(folder, key, signal);
+          const read = await files.preview(key, signal);
           return new TextDecoder("utf-8", { fatal: true }).decode(read.bytes);
         } catch (error) {
           if (error instanceof OpensteerError && error.code === "not_found") return null;
@@ -2136,7 +2129,7 @@ export async function createHostRuntime(
     });
     const productHandlers = new ProductToolHandlers({
       deploymentId: deployment.id,
-      folders,
+      execution,
       requestResponseVault: integrationVault,
       questionNotices: (taskQuestions = new TaskQuestionNotices({
         database,
@@ -2192,6 +2185,7 @@ export async function createHostRuntime(
         if (ownerId) realtime.sendToUsers([ownerId], { type: "host.app-tabs-changed" });
       },
       files,
+      agentHome: async () => (await personalExecution()).options.agentHome,
       tokens: runToolTokens,
       publishEvent: publishDeploymentEvent,
     });
@@ -2247,7 +2241,7 @@ export async function createHostRuntime(
     const authenticator = new HostAuthenticator({
       identity,
       onAuthenticatedSession: async () => {
-        if (await initializeFolders()) await ensureLinks();
+        if (await initializePersonal()) await ensureLinks();
       },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
@@ -2334,7 +2328,6 @@ export async function createHostRuntime(
           if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
           return withFolderPluginPackage({
             directory,
-            folder: thread.folder,
             files,
             install: async (stagedDirectory) => {
               const result = await integrationPlatform.installAgentPlugin({
@@ -2365,7 +2358,6 @@ export async function createHostRuntime(
     });
     const taskAdmission = new TaskAdmissionService({
       database,
-      folders,
       execution: async () => {
         const settings = await personalSettings(database);
         const preferences = await store.getExecutionPreferences(settings.ownerId);
@@ -2385,7 +2377,7 @@ export async function createHostRuntime(
       if (linkServices) return linkServices;
       if (linkStarting) return linkStarting;
       linkStarting = (async () => {
-        const service = await folderService();
+        const service = await personalExecution();
         const links = createPersonalTeamLinkServices({
           database,
           ownerId: service.options.ownerId,
@@ -2407,7 +2399,6 @@ export async function createHostRuntime(
             runners,
             relay: runFileRelay,
           }),
-          admitFolder: folders.admit,
         });
         await links.links.start();
         linkServices = links;
@@ -2475,8 +2466,7 @@ export async function createHostRuntime(
         credentials,
         discovery: discoveryEnvelope,
         egress,
-        files,
-        folders,
+        execution,
         teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         integrations: {
@@ -2705,7 +2695,7 @@ export async function createHostRuntime(
       },
       sweep: () => 0,
     });
-    if (await initializeFolders()) await ensureLinks();
+    if (await initializePersonal()) await ensureLinks();
     personalReconcileLoop.start();
     // An execution lease is the whole grace a Runner out of reach has, so an
     // expired one is noticed within a fraction of it, whether or not the

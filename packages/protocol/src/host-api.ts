@@ -1,13 +1,5 @@
 import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
-import {
-  FolderFileKeySchema,
-  FolderFileCursorSchema,
-  FolderFileRevisionSchema,
-  FolderDirectoryPageViewSchema,
-  FolderFilePreviewMetadataViewSchema,
-} from "./files.js";
 import { NeedsYouPageSchema } from "./needs-you.js";
-import { TaskFolderSchema } from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
 import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
@@ -395,7 +387,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     generateTitle: z.literal(true).optional(),
     title: ThreadTitleSchema,
     type: z.literal("thread.create"),
-    folder: TaskFolderSchema.optional(),
   }),
   /**
    * A person names a Thread. Nothing replaces the name afterwards, even when
@@ -898,7 +889,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     provider: z.string().min(1),
     routingMode: z.enum(["dedicated", "shared"]),
-    folder: TaskFolderSchema,
     type: z.literal("channel.connection.create"),
   }),
   z.strictObject({
@@ -917,7 +907,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     ownerHandles: z.array(z.string().trim().min(3).max(320)).min(1).max(8),
     provider: z.string().min(1),
     runnerId: RunnerIdSchema,
-    folder: TaskFolderSchema,
     type: z.literal("channel.connection.computer.create"),
   }),
   z.strictObject({
@@ -926,7 +915,6 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     executionPolicy: ChannelExecutionPolicySchema,
     idempotencyKey: idempotencyKeySchema,
     selector: ChannelRouteSelectorSchema,
-    folder: TaskFolderSchema,
     type: z.literal("channel.binding.create"),
   }),
   z.strictObject({
@@ -1120,7 +1108,6 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.create"),
-    folder: z.object(TaskFolderSchema.shape).optional(),
     wasDuplicate: z.boolean(),
   }),
   z.object({
@@ -1431,24 +1418,6 @@ const declaration = <Payload extends z.ZodType, Success extends z.ZodType>(
 ) => ({ error: HostApiErrorSchema, method, payload, success, ...(stream ? { stream } : {}) });
 
 export const hostApi = defineRpc({
-  "folder.files.list": declaration(
-    "POST",
-    z.strictObject({
-      folder: TaskFolderSchema,
-      parentKey: FolderFileKeySchema,
-      cursor: FolderFileCursorSchema.optional(),
-      knownRevision: FolderFileRevisionSchema.optional(),
-    }),
-    FolderDirectoryPageViewSchema,
-  ),
-  "folder.files.preview": declaration(
-    "POST",
-    z.strictObject({ folder: TaskFolderSchema, fileKey: FolderFileKeySchema }),
-    z.object({
-      metadata: FolderFilePreviewMetadataViewSchema,
-      content: z.string().max(512 * 1024),
-    }),
-  ),
   "attention.get": declaration(
     "POST",
     z.strictObject({}),
@@ -1576,11 +1545,6 @@ export const hostApi = defineRpc({
     "POST",
     teamReadSchemas["teams.links.list"].input,
     teamReadViews["teams.links.list"],
-  ),
-  "teams.channelFolder.get": declaration(
-    "POST",
-    teamReadSchemas["teams.channelFolder.get"].input,
-    teamReadViews["teams.channelFolder.get"],
   ),
   "teams.threadTask.get": declaration(
     "POST",

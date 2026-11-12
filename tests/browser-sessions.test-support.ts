@@ -61,7 +61,6 @@ export async function agentJourney(
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 
-  const folder = await stack.createFolder("Marketplace");
   const threadId = await stack.createThread({
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
@@ -69,7 +68,6 @@ export async function agentJourney(
       providerId: "openai",
     }),
     title: "List the mattress",
-    folder: folder,
   });
   const profileId = await createProfile(stack);
   const photo = noisePng(900, 900);

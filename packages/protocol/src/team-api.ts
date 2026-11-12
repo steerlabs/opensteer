@@ -4,7 +4,6 @@ import {
   IsoDateTimeSchema,
   KnowledgeTopicIdSchema,
   SequenceSchema,
-  TaskFolderSchema,
   TeamAgentRequestIdSchema,
   TeamBlobIdSchema,
   TeamChannelIdSchema,
@@ -184,12 +183,6 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   }),
   z.strictObject({ type: z.literal("teams.link.join"), link: TeamLinkOfferTextSchema }),
   z.strictObject({ type: z.literal("teams.link.leave"), teamId: DeploymentIdSchema }),
-  z.strictObject({
-    type: z.literal("teams.channelFolder.set"),
-    teamId: DeploymentIdSchema,
-    channelId: TeamChannelIdSchema,
-    folder: TaskFolderSchema,
-  }),
   z.strictObject({ type: z.literal("team.channel.archive"), channelId: TeamChannelIdSchema }),
   z.strictObject({ type: z.literal("team.channel.restore"), channelId: TeamChannelIdSchema }),
   z.strictObject({ type: z.literal("team.channel.join"), channelId: TeamChannelIdSchema }),
@@ -365,10 +358,6 @@ export const teamReadSchemas = {
   "teams.links.list": {
     input: z.strictObject({}),
     output: z.strictObject({ links: z.array(PersonalTeamLinkSchema).max(100) }),
-  },
-  "teams.channelFolder.get": {
-    input: z.strictObject({ teamId: DeploymentIdSchema, channelId: TeamChannelIdSchema }),
-    output: z.strictObject({ folder: TaskFolderSchema }),
   },
   "teams.threadTask.get": {
     input: z.strictObject({

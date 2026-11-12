@@ -97,9 +97,6 @@ export * from "./subagent-now.js";
 export * from "./node-detail.js";
 
 export { BrowserTabStore, type BrowserTabKey, type BrowserTabList } from "./browser-tab-store.js";
-export * from "./task-folders.js";
 export * from "./personal-team-links.js";
 export * from "./personal-stream-cache.js";
 export * from "./needs-you.js";
-
-export * from "./task-drafts.js";

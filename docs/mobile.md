@@ -48,8 +48,7 @@ Drafts work offline, but approvals need a live authenticated Host, because repla
 decision is unsafe; only Host state resolves a Request, and sending does not answer one.
 
 Unsent drafts never leave the device: no Host API carries them, so a task begun on a Mac does not
-appear on a phone, and each client keeps its own store. A new task's draft has its own id and a selectable folder. Once admitted, the task's folder
-never changes. Attachment staging remains bound to the authenticated personal owner. A route may name that id and nothing else: an
+appear on a phone, and each client keeps its own store. A new task's draft has its own id. Attachment staging remains bound to the authenticated personal owner. A route may name that id and nothing else: an
 id with no draft behind it is a blank page, so nothing about a draft is readable from an address.
 
 Execution preferences belong to the Host: never silently replace an unavailable model, account or

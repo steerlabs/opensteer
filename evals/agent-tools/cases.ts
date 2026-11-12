@@ -77,7 +77,6 @@ export const CaseSchema = z.strictObject({
   voice: z.boolean().optional(),
   teamBound: z.boolean().default(false),
   teamContext: z.string().min(1).optional(),
-  folder: fixturePath.optional(),
   machineAccessNotice: z.string().min(1).optional(),
   requesterTimeZone: TimeZoneSchema.optional(),
   engines: z

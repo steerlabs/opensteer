@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunnerMessageSink } from "../runtime/runtime.js";
-import type { FolderAccessManager } from "../folders/task-folder.js";
+import type { AgentHomeAccess } from "../folders/agent-home.js";
 import { WatchSupervisor } from "./watch-supervisor.js";
 
 describe("WatchSupervisor", () => {
@@ -71,14 +71,12 @@ describe("WatchSupervisor", () => {
         messages.push(message);
       },
     };
-    const folderManager: FolderAccessManager = {
+    const agentHome: AgentHomeAccess = {
       async prepare() {
         await mkdir(workspace, { recursive: true });
-        return { agentHomePath: workspace, instructions: undefined, path: workspace };
+        return { instructions: undefined, path: workspace };
       },
-      writableRoots() {
-        return [workspace];
-      },
+      folder: async ({ path }) => path,
     };
     const environmentId = createId("environment");
     const activationId = createId("triggerWatchActivation");
@@ -107,7 +105,7 @@ describe("WatchSupervisor", () => {
       privateStateDirectory: join(root, "private"),
       terminate: async () => undefined,
       transport: { mode: "development" },
-      folderManager,
+      agentHome,
     });
     const command = (
       reconcileGeneration: number,
@@ -120,10 +118,7 @@ describe("WatchSupervisor", () => {
       desired: desired
         ? [
             {
-              location: {
-                folder: { computerId: createId("runner"), path: workspace },
-                agentHome: { computerId: createId("runner"), path: workspace },
-              },
+              agentHome: { computerId: createId("runner"), path: workspace },
               activationId,
               anchorThreadId,
               capabilities: {
@@ -286,6 +281,28 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("waits for a missing Agent home without counting it as a crash", async () => {
+    const fixture = await watchHarness("export default async () => {};", async () => {
+      throw new Error("Agent home /missing is missing");
+    });
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      await vi.waitFor(
+        () =>
+          expect(
+            fixture.messages.findLast((message) => message.type === "runner.watch-status"),
+          ).toMatchObject({
+            observed: "backoff",
+            restartCount: 0,
+            lastError: expect.stringContaining("Agent home /missing is missing"),
+          }),
+        { timeout: 5_000 },
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("resolves relative modules and packages from the Workspace", async () => {
     const fixture = await watchHarness(`
       import { helper } from "./helper.js";
@@ -326,7 +343,10 @@ describe("WatchSupervisor", () => {
   });
 });
 
-async function watchHarness(source: string): Promise<{
+async function watchHarness(
+  source: string,
+  prepare?: AgentHomeAccess["prepare"],
+): Promise<{
   readonly activationId: ReturnType<typeof createId<"triggerWatchActivation">>;
   readonly close: () => Promise<void>;
   readonly command: (
@@ -362,13 +382,9 @@ async function watchHarness(source: string): Promise<{
       messages.push(message);
     },
   };
-  const folderManager: FolderAccessManager = {
-    async prepare() {
-      return { agentHomePath: workspace, instructions: undefined, path: workspace };
-    },
-    writableRoots() {
-      return [workspace];
-    },
+  const agentHome: AgentHomeAccess = {
+    prepare: prepare ?? (async () => ({ instructions: undefined, path: workspace })),
+    folder: async ({ path }) => path,
   };
   const supervisor = new WatchSupervisor({
     environmentId,
@@ -377,7 +393,7 @@ async function watchHarness(source: string): Promise<{
     privateStateDirectory: join(root, "private"),
     terminate: async () => undefined,
     transport: { mode: "development" },
-    folderManager,
+    agentHome,
   });
   const command = (
     reconcileGeneration: number,
@@ -386,10 +402,7 @@ async function watchHarness(source: string): Promise<{
     correlationId: CorrelationIdSchema.parse(`watch-harness:${crypto.randomUUID()}`),
     desired: [
       {
-        location: {
-          folder: { computerId: createId("runner"), path: workspace },
-          agentHome: { computerId: createId("runner"), path: workspace },
-        },
+        agentHome: { computerId: createId("runner"), path: workspace },
         activationId,
         anchorThreadId,
         capabilities: {
