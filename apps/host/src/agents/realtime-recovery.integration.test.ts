@@ -360,6 +360,7 @@ async function desktopApp(
     {
       DeploymentCatalogSchema: {
         parse(value: unknown): unknown;
+        readonly shape: { readonly schemaVersion: { readonly value: number } };
       };
       DeploymentConnectionSchema: {
         parse(value: unknown): Record<string, unknown>;
@@ -415,7 +416,7 @@ async function desktopApp(
   let catalog = connections.DeploymentCatalogSchema.parse({
     deployments: [connection],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: connections.DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: deploymentId,
     updatedAt: now,
   }) as {
@@ -426,7 +427,7 @@ async function desktopApp(
     catalog = connections.DeploymentCatalogSchema.parse({
       deployments,
       revision: catalog.revision + 1,
-      schemaVersion: 4,
+      schemaVersion: connections.DeploymentCatalogSchema.shape.schemaVersion.value,
       selectedDeploymentId: deployments.length > 0 ? deploymentId : null,
       updatedAt: now,
     }) as typeof catalog;
