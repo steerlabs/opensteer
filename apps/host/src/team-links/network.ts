@@ -1,6 +1,6 @@
 import { isPublicIp, tlsServerName } from "@opensteer/access/host";
 import { OpensteerError, TeamOriginSchema } from "@opensteer/core";
-import { teamStorageFullReason } from "@opensteer/database/team-files";
+import { teamStorageFullMessage, teamStorageFullReason } from "@opensteer/database/team-files";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { TeamLinkViewSchema, type TeamLinkRedeemSchema } from "@opensteer/protocol";
 import { lookup } from "node:dns/promises";
@@ -91,7 +91,7 @@ export class TeamLinkNetwork {
                 new OpensteerError({
                   code: "resource_exhausted",
                   reason: teamStorageFullReason,
-                  message: "The team's file storage is full.",
+                  message: teamStorageFullMessage,
                 }),
               );
               return;

@@ -9,9 +9,16 @@ import { TeamLinkService } from "./link-service.js";
 import { parseTeamLinkOffer } from "@opensteer/protocol";
 import { TeamFileService } from "./file-service.js";
 import { startTeamServices } from "./services.js";
-import { createId, type TeamActor, type KnowledgeTopicId } from "@opensteer/core";
+import {
+  createId,
+  type KnowledgeTopicId,
+  type TeamActor,
+  type TeamChannelId,
+  type TeamMessageId,
+} from "@opensteer/core";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { hostApi } from "@opensteer/protocol";
+import { teamApiVersion } from "@opensteer/deployment-authority";
 import { teamChannelTopics } from "@opensteer/database";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
@@ -21,7 +28,7 @@ import { TeamMembersStore } from "@opensteer/database/team-members";
 import { TeamInvitesStore } from "@opensteer/database/team-invites";
 import { TeamRequestsStore } from "@opensteer/database/team-requests";
 import { TeamOutboxStore, type TeamPushDelivery } from "@opensteer/database/team-outbox";
-import { TeamFilesStore } from "@opensteer/database/team-files";
+import { bindTeamFiles, TeamFilesStore } from "@opensteer/database/team-files";
 
 describe("team transaction authority", () => {
   let fixture: Awaited<ReturnType<typeof createTeamKnowledgeFixture>>;
@@ -89,6 +96,50 @@ describe("team transaction authority", () => {
   }
   async function rights(actor: TeamActor, id: Parameters<TeamAccessStore["channel"]>[2]) {
     return fixture.database.transaction().execute((t) => access.channel(t, actor, id));
+  }
+  function services(options: Partial<Parameters<typeof startTeamServices>[0]> = {}) {
+    return startTeamServices({
+      kind: "team",
+      database: fixture.database,
+      teamId: fixture.deploymentId,
+      teamName: "Acme",
+      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
+      origin: "https://team.example.invalid",
+      dataDirectory: tmpdir(),
+      topics: chat.topics,
+      async ensureKnowledge() {},
+      knowledge: {
+        async read() {
+          throw new Error("Unexpected knowledge call");
+        },
+        async command() {
+          throw new Error("Unexpected knowledge command");
+        },
+      },
+      async publishPush() {},
+      backgroundError() {},
+      ...options,
+    });
+  }
+  async function textUpload(files: TeamFileService, actor: TeamActor, channelId: TeamChannelId) {
+    const data = Buffer.from(randomUUID());
+    return files.upload(
+      actor,
+      channelId,
+      {
+        clientUploadId: randomUUID(),
+        filename: "notes.txt",
+        mediaType: "text/plain",
+        sizeBytes: data.length,
+        sha256: createHash("sha256").update(data).digest("hex"),
+        previewSizeBytes: 0,
+      },
+      {
+        original: (async function* () {
+          yield data;
+        })(),
+      },
+    );
   }
   it("counts all authorized unread mentions independently of sidebar pages and changed channel filters", async () => {
     const reader = await person("MentionReader");
@@ -560,6 +611,126 @@ describe("team transaction authority", () => {
     });
     await files.begin(owner, c.id, metadata(20));
     await expect(files.begin(owner, c.id, first)).resolves.toMatchObject({ sizeBytes: "30" });
+  });
+  it("frees a deleted message's files, on disk and against the limit, before the command returns", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "opensteer-team-files-"));
+    const team = await services({ dataDirectory, storageLimitBytes: 60 });
+    try {
+      const c = await channel();
+      const file = await textUpload(team.files, owner, c.id);
+      const sent = await team.dispatch(owner, {
+        type: "team.message.send",
+        channelId: c.id,
+        threadRootId: null,
+        clientMessageId: randomUUID(),
+        bodyMarkdown: "notes",
+        mentions: [],
+        attachmentIds: [file.id],
+      });
+      await expect(textUpload(team.files, owner, c.id)).rejects.toMatchObject({
+        reason: "team-storage-full",
+      });
+      expect(await readdir(join(dataDirectory, "team-files"))).toContain(file.id);
+      await team.dispatch(owner, {
+        type: "team.message.delete",
+        channelId: c.id,
+        messageId: (sent as { message: { id: TeamMessageId } }).message.id,
+      });
+      expect(await readdir(join(dataDirectory, "team-files"))).not.toContain(file.id);
+      await expect(textUpload(team.files, owner, c.id)).resolves.toMatchObject({
+        sizeBytes: 36,
+      });
+    } finally {
+      await team.close();
+      await rm(dataDirectory, { recursive: true, force: true });
+    }
+  });
+  it("never reclaims an expired upload that a message is attaching", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-team-files-"));
+    const files = new TeamFileService(new TeamFilesStore(access), access, directory);
+    const release = Promise.withResolvers<void>();
+    try {
+      const c = await channel();
+      const file = await textUpload(files, owner, c.id);
+      await fixture.database
+        .updateTable("teamBlobs")
+        .set({ expiresAt: new Date(Date.now() - 1000) })
+        .where("id", "=", file.id)
+        .execute();
+      const sent = await send(c.id);
+      const message = await fixture.database
+        .selectFrom("teamMessages")
+        .selectAll()
+        .where("id", "=", sent.message.id)
+        .executeTakeFirstOrThrow();
+      const bound = Promise.withResolvers<void>();
+      const binding = fixture.database.transaction().execute(async (t) => {
+        await bindTeamFiles(t, owner, message, [file.id]);
+        bound.resolve();
+        await withTimeout(release.promise, 5000, {
+          timeoutError: () => new Error("Attach fixture was never released"),
+        });
+      });
+      await withTimeout(bound.promise, 5000, {
+        timeoutError: () => new Error("Attach never locked its file"),
+      });
+      let settled = false;
+      const collecting = files.collectGarbage().finally(() => {
+        settled = true;
+      });
+      collecting.catch(() => undefined);
+      await vi.waitFor(
+        async () => {
+          const { waiting } = await sql<{
+            waiting: number;
+          }>`select count(*)::int as waiting from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`
+            .execute(fixture.database)
+            .then((result) => result.rows[0]!);
+          expect(settled || waiting > 0, "Collection neither finished nor waited").toBe(true);
+        },
+        { timeout: 5000 },
+      );
+      release.resolve();
+      await binding;
+      await collecting;
+      await files.collectGarbage();
+      await expect(
+        fixture.database
+          .selectFrom("teamBlobs")
+          .select("state")
+          .where("id", "=", file.id)
+          .executeTakeFirst(),
+      ).resolves.toEqual({ state: "ready" });
+      expect(await readdir(join(directory, "team-files"))).toContain(file.id);
+    } finally {
+      release.resolve();
+      files.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+  it("releases a removed member's unsent uploads", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "opensteer-team-files-"));
+    const files = new TeamFileService(new TeamFilesStore(access), access, directory);
+    try {
+      const c = await channel();
+      const member = await person("Leaver");
+      await chat.setAccess(owner, c.id, access.revision, [
+        { subject: { kind: "person", userId: owner.userId }, level: "post", manage: true },
+        { subject: { kind: "person", userId: member.userId }, level: "post", manage: false },
+      ]);
+      const unsent = await textUpload(files, member, c.id);
+      const kept = await textUpload(files, owner, c.id);
+      await new TeamMembersStore(access).change(owner, member.userId, "remove");
+      await files.collectGarbage();
+      const remaining = await fixture.database.selectFrom("teamBlobs").select("id").execute();
+      expect(remaining.map((row) => row.id)).toEqual([kept.id]);
+      const stored = await readdir(join(directory, "team-files"));
+      expect(stored).not.toContain(unsent.id);
+      expect(stored).toContain(kept.id);
+    } finally {
+      files.close();
+      await rm(directory, { recursive: true, force: true });
+    }
   });
   it("consumes a one-use invite atomically and never revives an old membership generation", async () => {
     const member = await person("Invitee");
@@ -1212,25 +1383,7 @@ describe("team transaction authority", () => {
   });
 
   it("uses teamApiVersion before authentication and parsing and ignores the personal epoch", async () => {
-    const services = await startTeamServices({
-      kind: "team",
-      database: fixture.database,
-      teamId: fixture.deploymentId,
-      teamName: "Acme",
-      hostKeyFingerprint: `sha256:${"A".repeat(43)}`,
-      origin: "https://team.example.invalid",
-      dataDirectory: tmpdir(),
-      topics: chat.topics,
-      async ensureKnowledge() {},
-      knowledge: {
-        async read() {
-          throw new Error("Unexpected knowledge call");
-        },
-        async command() {
-          throw new Error("Unexpected knowledge command");
-        },
-      },
-      async publishPush() {},
+    const team = await services({
       async registerPreviewKey(session, command) {
         await fixture.database
           .insertInto("notificationPreviewKeys")
@@ -1245,7 +1398,6 @@ describe("team transaction authority", () => {
           })
           .execute();
       },
-      backgroundError() {},
     });
     try {
       const sessionId = createId("authSession");
@@ -1281,7 +1433,7 @@ describe("team transaction authority", () => {
         },
       };
       await expect(
-        services.rpc(
+        team.rpc(
           new Headers({ "x-opensteer-api-version": "52" }),
           "commands.dispatch",
           raw,
@@ -1290,16 +1442,19 @@ describe("team transaction authority", () => {
       ).rejects.toMatchObject({ reason: "api-version-mismatch" });
       expect(authenticate).not.toHaveBeenCalled();
       await expect(
-        services.rpc(
-          new Headers({ "x-opensteer-team-api-version": "1" }),
+        team.rpc(
+          new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) }),
           "tasks.list",
           {},
           authenticate,
         ),
       ).rejects.toThrow("Personal routes");
       expect(authenticate).not.toHaveBeenCalled();
-      const result = await services.rpc(
-        new Headers({ "x-opensteer-team-api-version": "1", "x-opensteer-api-version": "99999" }),
+      const result = await team.rpc(
+        new Headers({
+          "x-opensteer-team-api-version": String(teamApiVersion),
+          "x-opensteer-api-version": "99999",
+        }),
         "team.bootstrap.get",
         {},
         authenticate,
@@ -1319,9 +1474,9 @@ describe("team transaction authority", () => {
         keyId: Buffer.alloc(16).toString("base64url"),
         key: Buffer.alloc(32).toString("base64url"),
       };
-      const headers = new Headers({ "x-opensteer-team-api-version": "1" });
+      const headers = new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) });
       await expect(
-        services.rpc(headers, "commands.dispatch", preview, async () => session),
+        team.rpc(headers, "commands.dispatch", preview, async () => session),
       ).rejects.toThrow("Team access denied");
       expect(
         await fixture.database.selectFrom("notificationPreviewKeys").select("userId").execute(),
@@ -1331,12 +1486,7 @@ describe("team transaction authority", () => {
         .set({ memberGeneration: "1" })
         .where("id", "=", session.id)
         .execute();
-      const registered = await services.rpc(
-        headers,
-        "commands.dispatch",
-        preview,
-        async () => session,
-      );
+      const registered = await team.rpc(headers, "commands.dispatch", preview, async () => session);
       expect(hostApi["commands.dispatch"].success.parse(registered)).toMatchObject({
         type: preview.type,
         registered: true,
@@ -1348,7 +1498,7 @@ describe("team transaction authority", () => {
           .execute(),
       ).toEqual([{ authSessionId: session.id }]);
     } finally {
-      await services.close();
+      await team.close();
     }
   });
 });

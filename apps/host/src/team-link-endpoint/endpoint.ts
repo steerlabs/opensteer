@@ -9,7 +9,8 @@ import {
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import type { TeamRequestStorePort } from "@opensteer/database/team-requests-port";
 import {
-  TeamLinkClientFrameSchema,
+  readTeamFrame,
+  TeamLinkClientFrameViewSchema,
   TeamLinkServerFrameSchema,
   TeamLinkResultSchema,
   type TeamLinkServerFrame,
@@ -157,7 +158,8 @@ export class TeamLinkEndpoint {
       }
       work = work.then(async () => {
         try {
-          const frame = TeamLinkClientFrameSchema.parse(JSON.parse(bytes.toString()));
+          const frame = readTeamFrame(TeamLinkClientFrameViewSchema, JSON.parse(bytes.toString()));
+          if (!frame) return;
           await links.assertActive(linkId);
           if (frame.type === "hello") {
             if (hello) throw linkError("bad_request");

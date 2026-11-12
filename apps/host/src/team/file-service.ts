@@ -258,32 +258,29 @@ export class TeamFileService {
       throw error;
     }
   }
+  /** Removes every file no message can reach, so freed space counts again once this returns. */
   async collectGarbage() {
-    await this.access.database
-      .updateTable("teamBlobs")
-      .set({ state: "deleting" })
-      .where("expiresAt", "<", new Date())
-      .where(
-        "id",
-        "not in",
-        this.access.database.selectFrom("teamMessageAttachments").select("blobId"),
-      )
-      .execute();
-    const rows = await this.access.database
-      .selectFrom("teamBlobs")
-      .selectAll()
-      .where("state", "=", "deleting")
-      .limit(100)
-      .execute();
-    for (const row of rows) {
-      await rm(join(this.#directory, row.storageKey), { force: true });
-      if (row.previewStorageKey)
-        await rm(join(this.#directory, row.previewStorageKey), { force: true });
-      await this.access.database
-        .deleteFrom("teamBlobs")
-        .where("id", "=", row.id)
+    await this.store.abandonUnsent();
+    for (;;) {
+      const rows = await this.access.database
+        .selectFrom("teamBlobs")
+        .selectAll()
         .where("state", "=", "deleting")
+        .orderBy("id")
+        .limit(100)
         .execute();
+      for (const row of rows) {
+        // The row keeps the bytes reserved until they are gone, and lets a crash retry.
+        await rm(join(this.#directory, row.storageKey), { force: true });
+        if (row.previewStorageKey)
+          await rm(join(this.#directory, row.previewStorageKey), { force: true });
+        await this.access.database
+          .deleteFrom("teamBlobs")
+          .where("id", "=", row.id)
+          .where("state", "=", "deleting")
+          .execute();
+      }
+      if (rows.length < 100) break;
     }
     await mkdir(this.#directory, { recursive: true, mode: 0o700 });
     for (const name of await readdir(this.#directory))

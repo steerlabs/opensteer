@@ -36,6 +36,40 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("keeps synchronizing through a newer team server's fields and frame types", async () => {
+    const host = new MockTeamHost(),
+      sockets: MockTeamSocket[] = [];
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: () => {
+        const socket = host.connect();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    try {
+      await client.load();
+      await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1_000,
+      });
+      sockets[0]!.deliver({ type: "team.future", detail: { anything: true } });
+      sockets[0]!.deliver({
+        type: "team.presence",
+        people: [{ userId: mockTeamUserId, online: true, lastSeenAt: null }],
+        reason: "newer",
+      });
+      expect(client.getSnapshot()).toMatchObject({
+        connection: "connected",
+        presence: { [mockTeamUserId]: true },
+      });
+      expect(sockets).toHaveLength(1);
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
   it("refreshes and notifies a dirty channel beyond the loaded sidebar page", async () => {
     const host = new MockTeamHost(),
       notify = vi.fn();
@@ -278,7 +312,7 @@ describe("team synchronization", () => {
         sockets.at(-1)!.close();
         await reconnectsAfter(delayMs);
       }
-      sockets.at(-1)!.deliver({ type: "team.unknown" });
+      sockets.at(-1)!.deliver({ type: "team.cut" });
       expect(client.getSnapshot().connection).toBe("offline");
       await reconnectsAfter(1_800);
       await vi.advanceTimersByTimeAsync(30_000);

@@ -7,7 +7,8 @@ import {
 } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
-  TeamServerFrameSchema,
+  readTeamFrame,
+  TeamServerFrameViewSchema,
   teamPreviewMaxBytes,
   teamUploadMaxBytes,
   type HostApiClient,
@@ -221,7 +222,8 @@ export class TeamSessionClient {
       if (this.#socket !== socket || typeof event.data !== "string") return;
       try {
         if (event.data.length > 512 * 1024) throw new Error("Team frame exceeds its byte bound.");
-        this.receive(TeamServerFrameSchema.parse(JSON.parse(event.data)));
+        const frame = readTeamFrame(TeamServerFrameViewSchema, JSON.parse(event.data));
+        if (frame) this.receive(frame);
       } catch {
         this.#update({
           channel: this.#fresh(this.#snapshot.channel),
@@ -517,7 +519,7 @@ export class TeamSessionClient {
     this.#update({ [view]: { ...next, hasMore: before.hasMore, anchorId: message.id } });
     return message;
   }
-  receive(frame: z.infer<typeof TeamServerFrameSchema>): void {
+  receive(frame: z.infer<typeof TeamServerFrameViewSchema>): void {
     if (this.#removed) return;
     switch (frame.type) {
       case "team.cut": {

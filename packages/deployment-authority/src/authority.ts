@@ -46,8 +46,8 @@ export const hostApiVersion = 53;
  * compatibility policy in docs/teams.md before changing either; the wire
  * snapshot test refuses a breaking schema change without a bump.
  */
-export const teamApiVersion = 1;
-export const minimumTeamApiVersion = 1;
+export const teamApiVersion = 2;
+export const minimumTeamApiVersion = 2;
 export const teamOAuthVersionParameter = "opensteer_team_api_version";
 export const teamOidcStatePrefix = "ost-team-api-";
 export const hostApiVersionHeader = "x-opensteer-api-version";
