@@ -154,7 +154,6 @@ const HostEnvironmentSchema = z.object({
   OPENSTEER_DEPLOYMENT_NAME: optionalDeploymentName,
   OPENSTEER_CREDENTIAL_KEY_PATH: optionalPath,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
-  OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: optionalEnrollmentToken,
   OPENSTEER_INITIAL_OWNER_ENROLLMENT_LIFETIME_SECONDS: positiveInteger(24 * 60 * 60),
   OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN: optionalLocalOwnerClaimToken,
@@ -251,7 +250,6 @@ export interface HostConfig {
    * for itself. Each is scoped to exactly one module, so a token minted for a
    * browser service can never come back as a machine that executes agents.
    */
-  readonly initialBrowserRunnerEnrollmentToken?: string | undefined;
   readonly initialMessagingRunnerEnrollmentToken?: string | undefined;
   /**
    * How long a Run's execution lease lasts without renewal. It is the grace a
@@ -337,10 +335,7 @@ export function assertHostConfigInvariants(config: HostConfig): void {
   if (!personal && (config.identity.localPasswordEnabled || config.identity.oidcConfigPath)) {
     throw new Error("A team Host uses Opensteer Account sign-in only");
   }
-  if (
-    !personal &&
-    (config.initialBrowserRunnerEnrollmentToken || config.initialMessagingRunnerEnrollmentToken)
-  ) {
+  if (!personal && config.initialMessagingRunnerEnrollmentToken) {
     throw new Error("A team Host cannot enroll Runners");
   }
   if (config.webDistribution) {
@@ -591,7 +586,6 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
       oidcConfigPath: parsed.OPENSTEER_OIDC_CONFIG_PATH,
       signupPolicy: parsed.OPENSTEER_SIGNUP_POLICY,
     },
-    initialBrowserRunnerEnrollmentToken: parsed.OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN,
     initialMessagingRunnerEnrollmentToken:
       parsed.OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN,
     executionLeaseMs: parsed.OPENSTEER_EXECUTION_LEASE_SECONDS * 1_000,

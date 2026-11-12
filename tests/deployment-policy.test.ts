@@ -12,13 +12,6 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
 const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {};
 const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
-  "scripts/verify-team-deployment.mjs": {
-    counts: {
-      "host.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
-    },
-    reason:
-      "Configuration admits only the supported deployment kind and selects the services that can start.",
-  },
   "apps/control-plane/src/database/store.ts": {
     counts: {
       "team.data.document.deploymentShape.kind": 1,
@@ -110,6 +103,12 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The service validates its durable Personal or team authority before acting.",
   },
+  "apps/mobile/src/app.tsx": {
+    counts: {
+      "outcome.kind": 2,
+    },
+    reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
+  },
   "apps/mobile/src/client/deployment-rows.ts": {
     counts: {
       "connection.kind": 1,
@@ -119,8 +118,15 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
       "connection.kind": 1,
+      "connection.authority.document.deploymentShape.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/notifications/notification-routing.ts": {
+    counts: {
+      "destination.kind": 2,
+    },
+    reason: "A team notice destination is distinct from the currently visible Personal task.",
   },
   "apps/mobile/src/screens/add-deployment.tsx": {
     counts: {
@@ -128,11 +134,11 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/mobile/src/screens/settings-model.ts": {
+  "apps/mobile/src/team/mobile-teams.ts": {
     counts: {
-      "home.kind": 2,
+      "verified.discovery.deploymentShape.kind": 1,
     },
-    reason: "The boundary distinguishes team data from personal resource scope.",
+    reason: "Team-link admission verifies the signed discovery kind before accepting the team.",
   },
   "apps/mobile/src/thread/integration-connect-sheet.tsx": {
     counts: {
@@ -141,6 +147,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
       step: 2,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/thread/thread-subtitle.tsx": {
+    counts: {
+      "props.placeKind": 1,
+    },
+    reason:
+      "The place icon distinguishes a team channel from a native task folder, not Deployment capabilities.",
   },
   "apps/web/src/components/add-deployment.tsx": {
     counts: {
@@ -372,6 +385,13 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "scripts/smoke-desktop-release-profile.ts": {
     counts: {
       "entry.kind": 1,
+    },
+    reason:
+      "Configuration admits only the supported deployment kind and selects the services that can start.",
+  },
+  "scripts/verify-team-deployment.mjs": {
+    counts: {
+      "host.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
     },
     reason:
       "Configuration admits only the supported deployment kind and selects the services that can start.",

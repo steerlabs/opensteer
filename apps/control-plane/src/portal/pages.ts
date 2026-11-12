@@ -297,7 +297,7 @@ export interface PlaceStatus {
 export function placeRow(input: {
   readonly control: PlaceControl;
   readonly id: string;
-  readonly kind: "personal" | "self-hosted";
+  readonly kind: "personal" | "team";
   readonly kindLabel: string;
   readonly name: string;
   readonly remove: { readonly action: string } | null;

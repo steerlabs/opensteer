@@ -81,7 +81,7 @@ const sessionId = (index: number) =>
   `bsn_00000000-0000-4000-8000-${String(800 + index).padStart(12, "0")}`;
 const sessionIdForBasicInput = sessionId(11);
 /**
- * `busy` is the decisive world of the approved design: 21 tabs over two
+ * `busy` is the decisive world of the approved design: tabs over two
  * computers, two Work browsers and two separate Guest browsers. `stress`
  * adds one browser with 64 tabs, the bounded large case.
  */
@@ -273,6 +273,15 @@ export function seedMockPlaces(
         : []),
     ]),
   );
+  const delegated = snapshot.threads.find((thread) => thread.title === "Book a table for Friday");
+  if (delegated)
+    add(13, "trigger", [
+      {
+        title: "Flight award alerts",
+        site: "https://www.google.com",
+        occupants: [occupant(delegated.id)],
+      },
+    ]);
   add(8, "person", [
     { title: "Q4 roadmap – Linear", site: "https://linear.app", occupants: [] },
     ...(busy

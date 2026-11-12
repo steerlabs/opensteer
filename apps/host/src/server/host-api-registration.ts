@@ -1,3 +1,4 @@
+import { rejectDuplicateCredentialHeaders } from "../identity/request-credential-headers.js";
 import { assertTeamApiVersion } from "../team/services.js";
 import { toWebHeaders } from "../identity/auth.js";
 import { bindAnonymousClientAddress } from "../identity/anonymous-client-address.js";
@@ -171,6 +172,7 @@ function registerHostApiMember<Name extends keyof typeof hostApi>(
       try {
         if (options.kind === "team") assertTeamApiVersion(toWebHeaders(request.headers));
         else requireNegotiatedVersion(request);
+        await rejectDuplicateCredentialHeaders(request);
       } catch (error) {
         const normalized = normalizeHostError(error);
         return reply

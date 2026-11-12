@@ -256,11 +256,10 @@ export async function createTeamHostRuntime(input: {
       const normalized = normalizeHostError(error);
       void reply.status(normalized.status).send(normalized.error);
     });
-    app.addHook("onRequest", rejectDuplicateCredentialHeaders);
     app.addHook("onRequest", async (request) => {
       carryWebSocketVersion(request, "team");
       // A system browser carries negotiation in the OAuth round trip; it cannot set upgrade headers.
-      if (request.method === "GET" && request.headers[teamApiVersionHeader] === undefined) {
+      if (request.method === "GET") {
         const url = new URL(request.url, config.canonicalOrigin),
           values = url.searchParams.getAll(teamOAuthVersionParameter);
         if (url.pathname === "/v1/auth/oidc/callback") {
@@ -268,15 +267,24 @@ export async function createTeamHostRuntime(input: {
             state = states.length === 1 ? states[0] : undefined;
           if (state?.startsWith(teamOidcStatePrefix)) {
             const version = state.slice(teamOidcStatePrefix.length).split(".", 1)[0];
-            if (version) request.headers[teamApiVersionHeader] = version;
+            if (version) {
+              const held = request.headers[teamApiVersionHeader];
+              request.headers[teamApiVersionHeader] =
+                held === undefined || held === version ? version : "invalid";
+            }
           }
         } else if (
           ["/v1/auth/native/oauth2/authorize", "/v1/auth/native/oauth2/end-session"].includes(
             url.pathname,
           ) &&
-          values.length === 1
-        )
-          request.headers[teamApiVersionHeader] = values[0];
+          values.length > 0
+        ) {
+          const held = request.headers[teamApiVersionHeader];
+          request.headers[teamApiVersionHeader] =
+            values.length === 1 && (held === undefined || held === values[0])
+              ? values[0]
+              : "invalid";
+        }
       }
 
       if (
@@ -287,6 +295,9 @@ export async function createTeamHostRuntime(input: {
         request.url.startsWith("/.well-known/oauth-authorization-server")
       )
         assertTeamApiVersion(toWebHeaders(request.headers));
+    });
+    app.addHook("onRequest", async (request) => {
+      if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
     });
     await app.register(websocket, { options: { maxPayload: 512 * 1024 } });
     app.get("/healthz", () => ({ ok: true }));

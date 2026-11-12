@@ -298,7 +298,7 @@ export function runUsageFromRow(row: {
     outputTokens: Number(row.outputTokens),
     ...Object.fromEntries(
       Object.entries(optional)
-        .filter(([value]) => value !== null)
+        .filter(([, value]) => value !== null)
         .map(([key, value]) => [key, Number(value)]),
     ),
   };

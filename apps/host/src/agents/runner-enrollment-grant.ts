@@ -4,15 +4,12 @@ import { RunnerModuleNameSchema, type RunnerModuleName } from "@opensteer/protoc
 export function computerRunnerGrant(
   requested: readonly RunnerModuleName[],
 ): readonly RunnerModuleName[] {
-  return serviceRunnerGrant([...requested, "browser"]);
+  return serviceRunnerGrant([...requested, "browser", "integrations", "messaging", "shell"]);
 }
 
 /** Supervised services retain their original preset. */
 export function serviceRunnerGrant(
   requested: readonly RunnerModuleName[],
 ): readonly RunnerModuleName[] {
-  const reach: readonly RunnerModuleName[] = ["integrations", "messaging", "shell"];
-  return RunnerModuleNameSchema.options.filter(
-    (module) => requested.includes(module) || reach.includes(module),
-  );
+  return RunnerModuleNameSchema.options.filter((module) => requested.includes(module));
 }

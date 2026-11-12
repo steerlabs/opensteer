@@ -3,16 +3,17 @@ import type {
   BrowserTabRecord,
   BrowserTabStreamMeta,
 } from "../../packages/protocol/src/browser-tabs.js";
-import { randomUUID } from "node:crypto";
+import { createPublicKey, randomUUID, type KeyObject } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BrowserRuntime,
   BrowserRuntimeServer,
+  Ed25519AttachTicketVerifier,
+  defaultAttachTicketReplayLedgerPath,
   type LaunchedBrowser,
 } from "../../packages/browser-runtime-core/src/index.js";
-import { BrowserAttachTicketClaimsSchema } from "../../packages/protocol/src/index.js";
 import {
   TestChromiumLauncher,
   findChromium,
@@ -22,6 +23,11 @@ import {
 export interface BrowserStreamProducer {
   readonly encoding: string;
   readonly runtimeUrl: string;
+  readonly browserBridge: {
+    readonly bridgeToken: string;
+    readonly runtimeId: string;
+    readonly url: URL;
+  };
   surfaceId(): string;
   evaluate<T>(expression: string): Promise<T>;
   close(): Promise<void>;
@@ -36,6 +42,9 @@ export async function startJpegProducer(): Promise<BrowserStreamProducer> {
   });
   let engine: LaunchedBrowser | undefined;
   let surface: string | undefined;
+  const keys = new Map<string, KeyObject>();
+  const bridgeToken = randomUUID();
+  const runtimeId = "browser-runtime-integration";
   const runtime = new BrowserRuntime({
     runtimeId: "browser-runtime-integration",
     initialViewport: { width: 800, height: 600, devicePixelRatio: 1 },
@@ -45,13 +54,10 @@ export async function startJpegProducer(): Promise<BrowserStreamProducer> {
         return engine;
       },
     },
-    // The enrolled relay fixture verifies the real Host signature before forwarding this ticket.
-    ticketVerifier: {
-      verify: async (ticket) =>
-        BrowserAttachTicketClaimsSchema.parse(
-          JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()),
-        ),
-    },
+    ticketVerifier: await Ed25519AttachTicketVerifier.create({
+      replayLedgerPath: defaultAttachTicketReplayLedgerPath(directory),
+      resolvePublicKey: (keyId) => keys.get(keyId) ?? null,
+    }),
     sessionFilesRoot: join(directory, "files"),
   });
   const tabs = new KeyedStreamReceiver<BrowserTabRecord, BrowserTabStreamMeta>();
@@ -68,7 +74,13 @@ export async function startJpegProducer(): Promise<BrowserStreamProducer> {
   const server = new BrowserRuntimeServer({
     runtime,
     port: 0,
-    relayBridge: { token: randomUUID(), updateAttachKeys: () => undefined },
+    relayBridge: {
+      token: bridgeToken,
+      updateAttachKeys: (entries) => {
+        keys.clear();
+        for (const entry of entries) keys.set(entry.keyId, createPublicKey(entry.publicKeyPem));
+      },
+    },
   });
   const close = async () => {
     try {
@@ -81,6 +93,7 @@ export async function startJpegProducer(): Promise<BrowserStreamProducer> {
     const address = await server.start();
     return {
       encoding: "jpeg",
+      browserBridge: { bridgeToken, runtimeId, url: new URL(`http://127.0.0.1:${address.port}/`) },
       runtimeUrl: `ws://127.0.0.1:${address.port}/v1/browser`,
       surfaceId: () => {
         if (!surface) throw new Error("Producer has no root surface");

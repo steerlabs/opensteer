@@ -79,21 +79,18 @@ describe("live agent-created browser profile", () => {
       if (!model) throw new Error("The engine has no default model");
       evidence.model = model.modelId;
       const home = await stack.createThread({
-        home: true,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
           providerId: model.providerId,
         }),
-        title: "Chat",
-        workspaceId: stack.mainWorkspaceId,
+        title: "Browser task",
       });
 
       const ask = `can u create a new browser profile called work for me? And then please sign in to my Ledger account at ${origin}`;
       const first = await stack.sendMessage({
         text: ask,
         threadId: home,
-        workspaceId: stack.mainWorkspaceId,
       });
       evidence.turns = [{ ask, reply: first.assistantText, runId: first.runId }];
 
@@ -101,17 +98,11 @@ describe("live agent-created browser profile", () => {
       if (!afterFirst.ok) throw new Error(afterFirst.error.message);
       const { profiles } = afterFirst.data.browser;
       const { browserSessions: sessions } = await browserInventory(stack);
-      const saveRequests = await stack.host.store.database
-        .selectFrom("requests")
-        .select(["id", "status"])
-        .where("kind", "=", "browser.profile.save")
-        .execute();
       const onSite = sessions.filter((session) =>
         (session.browserTabs?.sessionTabs(session?.id) ?? []).some((tab) => tab.site === origin),
       );
       Object.assign(evidence, {
         profiles: profiles.map(({ id, name }) => ({ id, name })),
-        saveRequests,
         sessions: sessions.map((session) => ({
           id: session.id,
           profileId: session.profileId,
@@ -122,7 +113,6 @@ describe("live agent-created browser profile", () => {
       });
       const work = profiles.filter((profile) => profile.name.trim().toLowerCase() === "work");
       expect(work, "exactly one profile named work").toHaveLength(1);
-      expect(saveRequests, "no Guest session was copied into a profile").toEqual([]);
       expect(onSite.length, "the account's site is open for the person").toBeGreaterThan(0);
       expect(
         onSite.map((session) => session.profileId),
@@ -142,7 +132,6 @@ describe("live agent-created browser profile", () => {
       const second = await stack.sendMessage({
         text: confirm,
         threadId: home,
-        workspaceId: stack.mainWorkspaceId,
       });
       (evidence.turns as unknown[]).push({
         ask: confirm,

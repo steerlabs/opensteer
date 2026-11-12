@@ -1160,6 +1160,7 @@ export interface TriggerOccurrenceTable {
 }
 
 export interface ProviderSessionTable {
+  personalContext: Generated<boolean>;
   active: boolean;
   stateLayout: "thread" | "session";
   id: ProviderSessionId;

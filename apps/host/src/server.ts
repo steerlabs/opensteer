@@ -455,7 +455,6 @@ export async function createHostServer(
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
-  app.addHook("onRequest", rejectDuplicateCredentialHeaders);
   app.addHook("onRequest", async (request) => {
     carryWebSocketVersion(request, "personal");
     if (
@@ -464,6 +463,9 @@ export async function createHostServer(
       !request.url.startsWith("/v1/local-bootstrap")
     )
       requireNegotiatedVersion(request);
+  });
+  app.addHook("onRequest", async (request) => {
+    if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
   });
   await registerResponseCompression(app);
   const harnessCatalogs = {
@@ -2995,13 +2997,7 @@ function attachRunnerSocket(
     runners.disconnect(peer);
     closeProtocolSocket(socket, error);
   };
-  // Runner messages keep their order per Run, and per kind beyond that. A
-  // Request answer is delivered inside a transaction that holds its Workspace
-  // until the Runner's receipt arrives, while other work — another Run's
-  // event, another command's receipt — may be waiting on that Workspace to
-  // commit. A receipt queued behind any of it would never arrive, so each
-  // receipt is handled on its own: receipts are independent facts, and nothing
-  // orders one after another. Each Run and everything else keep a lane each.
+  // Receipts have their own lane because a Run transaction can await one.
   const lanes = new Map<string, Promise<void>>();
   let queued = 0;
   let drained: (() => void) | undefined;
@@ -3685,10 +3681,6 @@ function attachRealtimeSocket(
   let browserStream: Awaited<ReturnType<BrowserService["clientStreams"]["attach"]>> | undefined;
   let realtimeClosed = false;
   let subscribed = false;
-  // Machine notifications are addressed to the connection, not to a Workspace:
-  // the people entitled to them are usually nowhere near the Workspace whose
-  // Run caused them, and this is registered before any subscription so it does
-  // not depend on one.
   const unregister = realtime.registerConnection(session.user.id, session.id, sink);
   const expiresAt = Math.min(
     new Date(session.expiresAt).getTime(),

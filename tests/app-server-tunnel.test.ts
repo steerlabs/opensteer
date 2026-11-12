@@ -82,6 +82,7 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
         fence: {
           ...fence,
           environmentId,
+          bindingGeneration: 1,
         },
         port: address.port,
       };

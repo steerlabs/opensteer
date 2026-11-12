@@ -55,6 +55,45 @@ vi.mock("../integrations/integration-platform-service.js", async (importOriginal
   };
 });
 
+vi.mock("../agents/memory-pass-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/memory-pass-service.js")>();
+  return {
+    ...actual,
+    MemoryPassService: class extends actual.MemoryPassService {
+      constructor(...args: ConstructorParameters<typeof actual.MemoryPassService>) {
+        super(...args);
+        constructions.push("MemoryPassService");
+      }
+    },
+  };
+});
+
+vi.mock("../channels/channel-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../channels/channel-service.js")>();
+  return {
+    ...actual,
+    ChannelService: class extends actual.ChannelService {
+      constructor(...args: ConstructorParameters<typeof actual.ChannelService>) {
+        super(...args);
+        constructions.push("ChannelService");
+      }
+    },
+  };
+});
+
+vi.mock("../browser/password-sign-in-service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../browser/password-sign-in-service.js")>();
+  return {
+    ...actual,
+    PasswordSignInService: class extends actual.PasswordSignInService {
+      constructor(...args: ConstructorParameters<typeof actual.PasswordSignInService>) {
+        super(...args);
+        constructions.push("PasswordSignInService");
+      }
+    },
+  };
+});
+
 it.each(["personal", "team"] as const)(
   "cold starts and shuts down a fresh %s Host with independent version admission",
   async (kind) => {
@@ -66,6 +105,9 @@ it.each(["personal", "team"] as const)(
       const config = parseHostConfig({
         OPENSTEER_MODE: "development",
         OPENSTEER_DEPLOYMENT_KIND: kind,
+        ...(kind === "personal"
+          ? { OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: "m".repeat(48) }
+          : {}),
         OPENSTEER_DATABASE_URL: database.url,
         OPENSTEER_AUTH_SECRET: "s".repeat(48),
         OPENSTEER_HOST_DATA_DIR: directory,

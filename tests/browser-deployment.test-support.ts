@@ -1,3 +1,11 @@
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
+import {
+  configurePersonalRemoteAccess,
+  enrollmentToken,
+} from "../apps/host/src/runtime/personal-machine.test-support.js";
 import { execFileSync } from "node:child_process";
 import { createPublicKey, randomBytes, randomUUID, type KeyObject } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -6,7 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspect } from "node:util";
-import { afterEach, describe, expect } from "vitest";
+import { afterEach, describe, expect, vi } from "vitest";
 import { PlaywrightChromiumLauncher } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import {
   startVerticalStack,
@@ -20,7 +28,6 @@ import {
   sessionFilesRoot,
   type LaunchedBrowser,
 } from "../packages/browser-runtime-core/src/index.js";
-import type { WorkspaceId } from "../packages/core/src/index.js";
 import { CodexHarnessDriver } from "../packages/harness-codex/src/codex-driver.js";
 import {
   HarnessRegistry,
@@ -93,12 +100,10 @@ afterEach(async (context) => {
 
 export async function deployment(
   browser: Pick<Browser, "runtimeId" | "bridgeToken" | "url" | "close"> | undefined,
-  browserServiceEnrollmentToken?: string,
   options: {
     readonly scenario?: string;
     readonly maxConcurrentRuns?: number;
     readonly activityClock?: import("@opensteer/shared/clock").Clock;
-    readonly personal?: boolean;
   } = {},
 ): Promise<VerticalStack> {
   const harnesses = () => {
@@ -118,11 +123,9 @@ export async function deployment(
     return registry;
   };
   const stack = await startVerticalStack({
-    ...(options.personal ? { personal: {} } : {}),
     ...(browser ? { browser, beforeHostClose: () => browser.close() } : {}),
     ...(options.activityClock ? { browserActivityClock: options.activityClock } : {}),
     browserHarnessExecutable: browserHarness,
-    ...(browserServiceEnrollmentToken ? { browserServiceEnrollmentToken } : {}),
     catalogTimeoutMs: 15_000,
     databaseUrl: databaseUrl!,
     harnesses,
@@ -226,9 +229,8 @@ export function killChromium(parentPid: number): void {
   for (const pid of pids) process.kill(Number(pid), "SIGKILL");
 }
 
-export async function grantedProfile(
+export async function createProfile(
   stack: VerticalStack,
-  workspaceId: WorkspaceId,
   name = "Marketplace account",
 ): Promise<string> {
   const machines = await stack.api["machines.list"]({});
@@ -243,20 +245,31 @@ export async function grantedProfile(
   if (!created.ok || created.data.type !== "browser.profile.create") {
     throw new Error("Could not create the profile");
   }
-  const granted = await stack.api["commands.dispatch"]({
-    idempotencyKey: randomUUID(),
-    profileId: created.data.profile.id,
-    type: "browser.profile.grant",
-    workspaceId,
-  });
-  if (!granted.ok) throw new Error(granted.error.message);
   return created.data.profile.id;
 }
 
 export async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() > deadline) throw new Error("Timed out waiting for the deployment.");
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
+  await vi.waitFor(
+    async () => expect(await predicate(), "Deployment state did not become ready").toBe(true),
+    { timeout: timeoutMs, interval: 50 },
+  );
+}
+
+export async function enrollBrowserComputer(stack: VerticalStack, name: string) {
+  await configurePersonalRemoteAccess(
+    {
+      runtime: stack.host,
+      ownerHeaders: {
+        cookie: stack.sessionCookie,
+        origin: stack.hostOrigin.origin,
+        [hostApiVersionHeader]: String(hostApiVersion),
+      },
+    },
+    { schemaVersion: 1, mode: "private", routeOrigin: "https://personal.browser.test" },
+  );
+  return enrollmentToken(stack, {
+    allowedModules: ["browser"],
+    idempotencyKey: randomUUID(),
+    name,
+  });
 }

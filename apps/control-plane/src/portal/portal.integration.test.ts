@@ -322,7 +322,8 @@ integration("Opensteer web portal", () => {
 
     const ready = await registerDeployment("First <Server>", "first-server");
     await publishPresence(ready);
-    await registerDeployment("Second Server", "second-server");
+    const second = await registerDeployment("Second Server", "second-server");
+    await publishPresence(second);
     const listed = await server.inject({
       headers: portalHeaders({ cookie }),
       method: "GET",

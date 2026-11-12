@@ -68,15 +68,16 @@ export function connectCard(input: {
     (loaded.request.manifest ? installationDefinition(loaded.request.manifest)?.id : null) ??
     entry?.installation.id ??
     name.toLowerCase();
-  const effectiveAccess: "read" | "read-write" =
+  const requestedAccess: "read" | "read-write" =
     loaded.request.access === "read-write" || input.allowChanges ? "read-write" : "read";
   const grantedAccess =
     plan === null
-      ? effectiveAccess
+      ? requestedAccess
       : grantedIntegrationAccess({
           allowChanges: input.allowChanges ?? false,
           plan,
         });
+  const effectiveAccess = grantedAccess;
   const accounts = plan?.accounts ?? [];
   const selected = plan?.selectedAccount ?? null;
   const serverChoices = accessServerChoices(loaded);
@@ -108,7 +109,8 @@ export function connectCard(input: {
   const canConnectAnother =
     plan !== null && plan.requestedConnectionId === null && accountConnectable(plan);
   const canAllowChanges =
-    plan?.requestedAccess === "read" &&
+    plan?.requirement.kind === "computer" &&
+    plan.requestedAccess === "read" &&
     (plan.writeCount > 0 || plan.definition?.computerApp?.accessLevels.length === 2);
   const proposed = plan?.proposed === true || input.agentProposed === true;
   const scope = "All your tasks";

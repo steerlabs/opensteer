@@ -78,7 +78,7 @@ describe("Account adoption bundle file", () => {
         OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
         OPENSTEER_DATABASE_URL: "postgres://localhost/opensteer",
         OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-        OPENSTEER_DEPLOYMENT_KIND: "server",
+        OPENSTEER_DEPLOYMENT_KIND: "team",
         OPENSTEER_storage_MANAGER_URL: "https://storage.example.test",
       });
     } catch (error) {

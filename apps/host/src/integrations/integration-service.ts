@@ -2884,5 +2884,5 @@ function humanizeField(field: string): string {
 }
 
 function accountLinkedPosture(posture: IntegrationDeploymentPosture): boolean {
-  return posture === "account-linked-personal" || posture === "account-adopted-self-hosted";
+  return posture === "account-linked-personal";
 }

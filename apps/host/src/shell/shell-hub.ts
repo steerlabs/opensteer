@@ -935,7 +935,7 @@ export class ShellHub implements ShellControlStreamHandler {
     }
     this.#releaseTombstone(record);
     if (ended.ended) {
-      this.#options.notifier.ended({
+      void this.#options.notifier.ended({
         endReason: record.reason,
         runnerId: record.runnerId,
         session: record.summary,
@@ -1084,7 +1084,7 @@ export class ShellHub implements ShellControlStreamHandler {
     if (session.openTimer) clearTimeout(session.openTimer);
     session.openTimer = undefined;
     session.settle.resolve();
-    this.#options.notifier.started({
+    void this.#options.notifier.started({
       runnerId: session.runnerId,
       session: this.#summary(session),
     });

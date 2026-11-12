@@ -1352,6 +1352,7 @@ export class OpensteerStore {
       .events;
   }
   async acquireExecutionBinding(input: {
+    readonly personalContext?: boolean;
     readonly bindingLeaseExpiresAt: Date;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;

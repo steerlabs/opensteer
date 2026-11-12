@@ -506,6 +506,9 @@ create table personal_remote_access (
   primary key ("singleton_key")
 );
 
+insert into personal_remote_access(singleton_key, generation, mode, route_origin)
+values ('personal', 0, 'off', null);
+
 create table personal_remote_account_link (
   "account_operation" text,
   "singleton_key" text not null check (singleton_key in ('opensteer-account')),
@@ -1284,6 +1287,8 @@ create table trigger_revisions (
   primary key ("id")
 );
 
+create sequence trigger_watch_reconcile_generation;
+
 create table trigger_watch_activations (
   "id" text not null,
   "trigger_id" text not null,
@@ -1346,6 +1351,7 @@ create table trigger_occurrences (
 );
 
 create table provider_sessions (
+  "personal_context" boolean not null default true,
   "active" boolean not null,
   "state_layout" text not null check (state_layout in ('thread', 'session')),
   "id" text not null,

@@ -402,7 +402,7 @@ export interface HostRuntimeOptions {
   >;
   /** Domain activity expiry and native coalescing; transport and browser deadlines stay on real time. */
   readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
-  /** When periodic workspace reconciliation passes run; each pass's own work stays real. */
+  /** When periodic Personal reconciliation passes run; each pass's own work stays real. */
   readonly personalReconcileClock?: import("@opensteer/shared/clock").Clock;
   /** Observes a committed catalog capture; observer failures never affect Host work. */
   readonly onRunnerCatalogsCommitted?: (
@@ -937,8 +937,6 @@ export async function createHostRuntime(
       });
     const integrationDeploymentPosture = async () =>
       resolveIntegrationDeploymentPosture({
-        kind: "personal",
-        accountReachability: null,
         personalAccountLinked:
           (await database
             .selectFrom("personalRemoteAccountLink")
@@ -1466,27 +1464,13 @@ export async function createHostRuntime(
     // The browser and messaging computers a Deployment supervises are
     // enrolled the same way any other machine is; the operator
     // minted their one-use tokens ahead of starting them.
-    for (const service of [
-      {
-        allowedModules: ["browser"] as const,
-        idempotencyKey: "deployment-managed-browser-runner",
-        name: "Browser service",
-        token: config.initialBrowserRunnerEnrollmentToken,
-      },
-      {
-        allowedModules: ["messaging"] as const,
+    if (config.initialMessagingRunnerEnrollmentToken) {
+      await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
+        allowedModules: ["integrations", "messaging"],
         idempotencyKey: "deployment-managed-messaging-runner",
+        lifetimeSeconds: 7 * 24 * 60 * 60,
         name: "Messaging service",
         token: config.initialMessagingRunnerEnrollmentToken,
-      },
-    ]) {
-      if (!service.token || service.allowedModules[0] === "browser") continue;
-      await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
-        allowedModules: [...service.allowedModules],
-        idempotencyKey: service.idempotencyKey,
-        lifetimeSeconds: 7 * 24 * 60 * 60,
-        name: service.name,
-        token: service.token,
       });
     }
     /** Who owns a module stream once the registry has stopped tracking it. */

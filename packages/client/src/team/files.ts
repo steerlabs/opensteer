@@ -27,6 +27,7 @@ export function teamFileTransport(
   const deploymentId = DeploymentIdSchema.parse(scope.teamDeploymentId);
   const version = { [teamApiVersionHeader]: String(teamApiVersion) };
   return {
+    // Native adapters use response.blob(): React Native rejects typed-array Blob parts.
     async readFile(
       file: TeamFile,
       part: "preview" | "original",

@@ -12,7 +12,7 @@ import { startTeamServices } from "./services.js";
 import { createId, type TeamActor, type KnowledgeTopicId } from "@opensteer/core";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { hostApi } from "@opensteer/protocol";
-import { teamChannelTopics } from "../../../../packages/database/src/team-topics-store.js";
+import { teamChannelTopics } from "@opensteer/database";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
 import { TeamChatStore } from "@opensteer/database/team-chat";
@@ -443,6 +443,7 @@ describe("team transaction authority", () => {
 
   it("mints hashed ten-minute link codes, replaces only pending codes, and revokes requests before returning", async () => {
     const links = new TeamLinkService(access, {
+      teamName: "Acme",
       teamId: fixture.deploymentId,
       origin: "https://team.example.invalid",
       hostKeyFingerprint: `sha256:${"A".repeat(43)}`,

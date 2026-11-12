@@ -61,6 +61,8 @@
     "@types/ws": "catalog:",
     "app-builder-lib": "26.15.3",
     "esbuild": "0.28.2",
+    "fastify": "catalog:",
+    "kysely": "catalog:",
     "oxlint": "1.77.0",
     "oxlint-tsgolint": "^7.0.2001",
     "playwright-core": "1.62.1",

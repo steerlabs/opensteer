@@ -77,6 +77,9 @@ it("executes a private task through the real Host and Runner with a fake Codex e
       readAgentInstructions: async () => null,
       onEvent: () => {},
       onChanged: () => {},
+      onError: (error) => {
+        throw error;
+      },
     });
     await memory.ensureForPersonal();
     expect(
@@ -90,6 +93,26 @@ it("executes a private task through the real Host and Runner with a fake Codex e
         .map((row) => row.systemRole)
         .sort(),
     ).toEqual(["memory-light", "memory-nightly"]);
+    const previousHost = runtime.host;
+    await runtime.restartHost();
+    expect(runtime.host).not.toBe(previousHost);
+    const followup = await runtime.api["commands.dispatch"]({
+      type: "thread.sendMessage",
+      threadId: created.data.thread.id,
+      idempotencyKey: crypto.randomUUID(),
+      delivery: "queue",
+      content: [{ type: "text", text: "Say Done again." }],
+    });
+    if (!followup.ok || followup.data.type !== "thread.sendMessage")
+      throw new Error("Restarted Personal Host did not admit its task continuation");
+    const continued = await runtime.waitForInput(
+      followup.data.message.id,
+      AbortSignal.timeout(15000),
+    );
+    expect(
+      continued.events.some((event) => event.type === "run.completed"),
+      JSON.stringify(continued.events),
+    ).toBe(true);
   } finally {
     await runtime?.close();
     await database.drop();

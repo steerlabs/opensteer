@@ -46,7 +46,11 @@ export async function registerTeamLinkRoutes(
         .send({ error: version ? "Team API version mismatch" : "Team request is unavailable" });
     });
     scope.addHook("onRequest", async (request) => {
-      checkTeamVersion(headers(request)[teamApiVersionHeader]);
+      const values: string[] = [];
+      for (let index = 0; index < request.raw.rawHeaders.length; index += 2)
+        if (request.raw.rawHeaders[index]!.toLowerCase() === teamApiVersionHeader)
+          values.push(request.raw.rawHeaders[index + 1]!);
+      checkTeamVersion(values.length === 1 ? values[0] : undefined);
     });
     scope.post(teamLinkRoutes.redeem, { bodyLimit: 8192 }, async (request) =>
       endpoint.options.links.redeem(request.body),

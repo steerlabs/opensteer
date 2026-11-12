@@ -1,3 +1,4 @@
+import { threadFromRow } from "./thread-row-mappers.js";
 import { retryDatabaseTransaction } from "./connection.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import {
@@ -50,7 +51,6 @@ import {
   catalogDefaultCandidate,
   catalogDefaultModelSelection,
   OpensteerError,
-  ThreadSchema,
   createId,
   nonTerminalRunStatuses,
   type AgentEvent,
@@ -60,7 +60,6 @@ import {
   type HarnessInstanceId,
   type ModelSelection,
   type Run,
-  type Thread,
   type RunnerId,
   type UserId,
   type ThreadId,
@@ -73,7 +72,6 @@ import type {
   ChannelDeliveryTable,
   DatabaseSchema,
   IntegrationConnectionTable,
-  ThreadTable,
 } from "./schema.js";
 import { executionEnvironmentIsAvailableToUser } from "./execution-authority.js";
 import { getAutomaticModelConfig } from "./background-model-store.js";
@@ -1820,7 +1818,6 @@ export class ChannelStore {
                   .executeTakeFirst()
               : undefined;
           const rotate =
-            conversation.personalContext !== personalContext ||
             !thread ||
             thread.doneAt !== null ||
             thread.status === "archived" ||
@@ -1856,10 +1853,19 @@ export class ChannelStore {
               iconSource: "provisional",
             });
             thread = threadRow;
-            const providerSessionId = await ensureSelectedProviderSession(transaction, threadRow);
+            const providerSessionId = await ensureSelectedProviderSession(transaction, threadRow, {
+              personalContext,
+            });
             events.push(
               await appendHostDeploymentEvent(transaction, {
-                data: { thread: threadFromRow(thread, providerSessionId) },
+                data: {
+                  thread: threadFromRow({
+                    ...thread,
+                    providerSessionId,
+                    continuationIdentity: null,
+                    pendingRequests: thread.pendingRequestCount,
+                  }),
+                },
                 environmentId: thread.environmentId,
                 runId: null,
                 threadId: thread.id,
@@ -2620,23 +2626,6 @@ function deliveryDestination(row: {
     externalThreadId: event.conversation.externalThreadId,
     externalUserId: row.audience === "actor" ? event.actor.externalUserId : null,
   };
-}
-
-function threadFromRow(
-  row: Selectable<ThreadTable>,
-  providerSessionId: Thread["providerSessionId"],
-) {
-  return ThreadSchema.parse({
-    ...row,
-    folder: { computerId: row.folderComputerId, path: row.folderPath },
-    doneAt: row.doneAt?.toISOString() ?? null,
-    continuationIdentity: null,
-    providerSessionId,
-    askedAt: row.askedAt.toISOString(),
-    createdAt: row.createdAt.toISOString(),
-    pendingRequests: row.pendingRequestCount,
-    updatedAt: row.updatedAt.toISOString(),
-  });
 }
 
 function channelThreadTitle(event: NormalizedChannelEvent, label: string | null): string {

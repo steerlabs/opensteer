@@ -6213,6 +6213,33 @@ class MockHostState {
         })),
       };
     }
+    if (
+      !firstRun &&
+      options.subagents !== undefined &&
+      options.subagents !== "seeded" &&
+      options.subagents !== "absent"
+    ) {
+      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+    } else if (!firstRun && options.subagents !== "absent") {
+      const fixture = seedMockSubagents(this.snapshot);
+      this.snapshot = fixture.snapshot;
+      this.nodeEvents = fixture.events;
+      for (const assignment of [fixture.assignment, fixture.openAssignment]) {
+        this.assignments.set(assignment.id, assignment);
+        const worker = this.snapshot.threads.find(
+          (thread) => thread.id === assignment.workerThreadId,
+        )!;
+        const parent = this.snapshot.threads.find(
+          (thread) => thread.id === assignment.parentThreadId,
+        )!;
+        this.assignmentModels.set(assignment.id, {
+          modelSelection: worker.modelSelection,
+          parentModelSelection: parent.modelSelection,
+        });
+      }
+    }
     for (const run of this.snapshot.runQueue) {
       this.nextRunOrdinals.set(
         run.threadId,
@@ -6227,31 +6254,6 @@ class MockHostState {
           steered: [],
         });
       }
-    }
-    if (
-      !firstRun &&
-      options.subagents !== undefined &&
-      options.subagents !== "seeded" &&
-      options.subagents !== "absent"
-    ) {
-      const fixture = seedMockSubagentScene(this.snapshot, options.subagents, this.now());
-      this.snapshot = fixture.snapshot;
-      this.nodeEvents = fixture.events;
-    } else if (!firstRun && true && options.subagents !== "absent") {
-      const fixture = seedMockSubagents(this.snapshot);
-      this.snapshot = fixture.snapshot;
-      this.nodeEvents = fixture.events;
-      this.assignments.set(fixture.assignment.id, fixture.assignment);
-      const worker = this.snapshot.threads.find(
-        (thread) => thread.id === fixture.assignment.workerThreadId,
-      )!;
-      const parent = this.snapshot.threads.find(
-        (thread) => thread.id === fixture.assignment.parentThreadId,
-      )!;
-      this.assignmentModels.set(fixture.assignment.id, {
-        modelSelection: worker.modelSelection,
-        parentModelSelection: parent.modelSelection,
-      });
     }
     // The rendered transcript and messages API must name the same published
     // positions: opening a seeded result can only mark what was actually seen.
@@ -7532,7 +7534,6 @@ class MockHostState {
       status: "active",
       updatedAt: now.toISOString(),
       webhookRouteKey,
-      deploymentId: this.snapshot.deploymentId!,
     });
     this.triggers.set(triggerId, {
       activation:

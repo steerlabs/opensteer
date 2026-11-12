@@ -253,19 +253,7 @@ export async function configureDevelopmentBrowserRuntimeEnvironment(
   }
 }
 
-/**
- * The messaging computer is one the development stack supervises for itself,
- * so the stack holds its one-use enrollment token before the Host starts and
- * configures the Host with it — the same contract a managed or self-hosted
- * Deployment follows. The Host records an enrollment only for a computer whose
- * supervisor holds the token.
- *
- * The Host binds the enrollment's idempotency key to the exact token, so the
- * value has to survive restarts. It is derived from the one secret this stack
- * already keeps in `.env`, which `pnpm setup:local` preserves, so there is no
- * second file to lose: the token changes exactly when the deployment's own
- * secret does, and then every session and credential is gone with it anyway.
- */
+// The Host binds enrollment to its exact token, so dev restarts must reuse it.
 export function developmentMessagingEnrollmentToken(
   services: readonly ServiceName[],
   environment: NodeJS.ProcessEnv,

@@ -684,7 +684,6 @@ run("Browser Sessions through a whole deployment", () => {
             agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
-            workspaceId: stack.mainWorkspaceId,
           },
           () => undefined,
         ),
@@ -753,7 +752,6 @@ run("Browser Sessions through a whole deployment", () => {
             agentBindingId: `trigger:${createId("triggerOccurrence")}`,
             ownerId: owner.id,
             sessionId,
-            workspaceId: stack.mainWorkspaceId,
           },
           () => undefined,
         ),
@@ -783,7 +781,6 @@ run("Browser Sessions through a whole deployment", () => {
         agentBindingId: `trigger:${createId("triggerOccurrence")}`,
         ownerId: owner.id,
         sessionId,
-        workspaceId: stack.mainWorkspaceId,
       };
       const consumerClosed = vi.fn();
       const attachment = await stack.host.browser.attachCdpForAgent(

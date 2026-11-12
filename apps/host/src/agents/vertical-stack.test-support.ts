@@ -14,7 +14,7 @@ import type {
   ThreadAccessMode,
 } from "@opensteer/core";
 import type { HarnessInstanceCatalogView, HarnessModelDescriptor } from "@opensteer/protocol";
-import type { HostRuntime } from "../runtime/runtime.js";
+import type { PersonalHostRuntime as HostRuntime } from "../runtime/runtime.js";
 import type { NetworkPartition } from "./network-partition.test-support.js";
 import type { RunnerWire, RunnerWireOptions } from "./runner-wire.test-support.js";
 import type {
@@ -131,11 +131,6 @@ export interface VerticalStackOptions {
   };
   /** The Browser Harness executable a Run's commands invoke. */
   readonly browserHarnessExecutable?: string;
-  /**
-   * The one-use token a separately running browser service enrolls with, as a
-   * self-hosted Deployment configures it.
-   */
-  readonly browserServiceEnrollmentToken?: string;
   readonly cleanupTimeoutMs?: number;
   /** Final browser saves run after engines stop, while Host and storage remain alive. */
   readonly beforeHostClose?: (host: HostRuntime) => Promise<void>;
@@ -205,11 +200,10 @@ export interface VerticalStackOptions {
 }
 
 export async function startVerticalStack(options: VerticalStackOptions): Promise<VerticalStack> {
-  if (!options.startPersonal)
-    throw new Error(
-      "The vertical fixture needs lanes P/R/X's production local-owner bootstrap, folder admission and Runner composition",
-    );
-  return options.startPersonal(options);
+  if (options.startPersonal) return options.startPersonal(options);
+  return (await import("../runtime/personal-vertical.test-support.js")).startPersonalVertical(
+    options,
+  );
 }
 export function attachmentReference(attachment: Attachment): ArtifactContentPart {
   return {

@@ -5,7 +5,6 @@ import {
   startBrowser,
   killChromium,
 } from "./browser-deployment.test-support.js";
-import { randomBytes } from "node:crypto";
 import { it } from "vitest";
 import { agentJourney, startBrowserService } from "./browser-sessions.test-support.js";
 
@@ -30,10 +29,9 @@ run("Browser Sessions through a whole deployment", () => {
     await agentJourney(stack, "relayed", () => killChromium(process.pid));
   }, 240_000);
 
-  it("works on a browser service of its own, as self-hosted and in the cloud", async () => {
-    const enrollmentToken = randomBytes(36).toString("base64url");
-    const stack = await deployment(undefined, enrollmentToken);
-    const service = await startBrowserService(stack, enrollmentToken);
+  it("works on an enrolled reachable Personal browser computer", async () => {
+    const stack = await deployment(undefined);
+    const service = await startBrowserService(stack);
     await agentJourney(stack, "service", () => killChromium(service.pid));
   }, 240_000);
 });

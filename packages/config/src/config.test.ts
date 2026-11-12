@@ -308,12 +308,6 @@ describe("configuration", () => {
     expect(() =>
       parseHostConfig({
         ...hostEnvironment,
-        OPENSTEER_INITIAL_BROWSER_RUNNER_ENROLLMENT_TOKEN: "too-short",
-      }),
-    ).toThrow();
-    expect(() =>
-      parseHostConfig({
-        ...hostEnvironment,
         OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: "too-short",
       }),
     ).toThrow();

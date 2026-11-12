@@ -51,7 +51,7 @@ run("Browser Sessions through a whole deployment", () => {
     try {
       const browser = await startBrowser();
       addCleanup("automatic context Browser Runtime", () => browser.close());
-      const stack = await deployment(browser, undefined, { scenario: "conversation" });
+      const stack = await deployment(browser, { scenario: "conversation" });
       await browserAvailable(stack);
       const rendered = new Set<string>();
       let releaseLogin = false;
@@ -163,7 +163,7 @@ run("Browser Sessions through a whole deployment", () => {
       ) => {
         const threadId = await stack.createThread({
           title: label,
-          workspaceId: stack.mainWorkspaceId,
+
           modelSelection: ModelSelectionSchema.parse({
             modelId: "gpt-5.6-sol",
             providerId: "openai",
@@ -212,7 +212,7 @@ run("Browser Sessions through a whole deployment", () => {
             .executeTakeFirst();
           return run?.status === "completed";
         }, 30_000);
-        const snapshot = await stack.host.store.workspaceSnapshot(stack.mainWorkspaceId);
+        const snapshot = await stack.host.store.deploymentSnapshot();
         expect(
           snapshot.messages.find((message) => message.id === result.message.id)?.content,
         ).toEqual(command.content);
@@ -260,7 +260,7 @@ run("Browser Sessions through a whole deployment", () => {
       expect(retry.wasDuplicate).toBe(true);
       expect(retry.message.id).toBe(automatic.result.message.id);
       expect(retry.run?.id).toBe(automatic.result.run!.id);
-      const snapshot = await stack.host.store.workspaceSnapshot(stack.mainWorkspaceId);
+      const snapshot = await stack.host.store.deploymentSnapshot();
       expect(
         snapshot.messages.filter(
           (message) => message.threadId === automatic.command.threadId && message.kind === "input",
@@ -283,7 +283,7 @@ run("Browser Sessions through a whole deployment", () => {
     const clock = new ManualClock();
     const browser = await startBrowser();
     addCleanup("local Browser Runtime", () => browser.close());
-    const stack = await deployment(browser, undefined, {
+    const stack = await deployment(browser, {
       activityClock: clock,
       scenario: "notifications",
       maxConcurrentRuns: 2,
@@ -327,7 +327,7 @@ run("Browser Sessions through a whole deployment", () => {
       ["Ada task", "Concurrent task"].map((title) =>
         stack.createThread({
           title,
-          workspaceId: stack.mainWorkspaceId,
+
           modelSelection: ModelSelectionSchema.parse({
             modelId: "gpt-5.6-sol",
             providerId: "openai",
@@ -412,7 +412,7 @@ run("Browser Sessions through a whole deployment", () => {
         {
           agentBindingId: `run:${runId}`,
           ownerId: owner.id,
-          workspaceId: stack.mainWorkspaceId,
+
           sessionId,
         },
         () => undefined,
@@ -831,7 +831,7 @@ run("Browser Sessions through a whole deployment", () => {
       const bootstrap = await stack.api["bootstrap.get"]({});
       return bootstrap.ok && bootstrap.data.browser.available;
     }, 30_000);
-    const workspace = await stack.createWorkspace("Listings");
+    const folder = await stack.createFolder("Listings");
     const threadId = await stack.createThread({
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
@@ -839,7 +839,7 @@ run("Browser Sessions through a whole deployment", () => {
         providerId: "openai",
       }),
       title: "Delete the listing",
-      workspaceId: workspace.id,
+      folder: folder,
     });
     const evidence =
       process.env.OPENSTEER_HOST_DIALOG_EVIDENCE_DIR ??
@@ -849,7 +849,6 @@ run("Browser Sessions through a whole deployment", () => {
       const reply = await stack.sendMessage({
         text: `Delete the listing. DIALOG_PAGE=${pageOrigin}/upload?dialog DIALOG_TRIGGER=${trigger}`,
         threadId,
-        workspaceId: workspace.id,
       });
       const report = JSON.parse(reply.assistantText) as DialogReport;
       await writeFile(

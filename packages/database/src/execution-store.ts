@@ -545,6 +545,7 @@ export async function acquireExecutionBinding(
   database: Kysely<DatabaseSchema>,
   input: {
     readonly bindingLeaseExpiresAt: Date;
+    readonly personalContext?: boolean;
     readonly continuationIdentity: ProviderContinuationIdentity;
     readonly harnessInstanceId: HarnessInstanceId;
     readonly leaseTokenHash: string;
@@ -687,6 +688,21 @@ export async function acquireExecutionBinding(
         message: "Run's selected provider session is no longer current",
       });
     }
+    const personalContext = await runAllowsPersonalContext(transaction, input.runId);
+    if (
+      (input.personalContext !== undefined && input.personalContext !== personalContext) ||
+      (session.personalContext !== personalContext && session.providerSessionReference !== null)
+    )
+      throw new OpensteerError({
+        code: "forbidden",
+        message: "Messaging personal context changed before execution",
+      });
+    if (session.personalContext !== personalContext)
+      await transaction
+        .updateTable("providerSessions")
+        .set({ personalContext })
+        .where("id", "=", session.id)
+        .execute();
     if (
       session.continuationIdentity &&
       !sameProviderContinuationIdentity(session.continuationIdentity, continuationIdentity)
