@@ -1,31 +1,18 @@
-# Knowledge
+# Team knowledge
 
-Agents read and append structured facts with one `sql` tool. It is a trial: off unless
-`OPENSTEER_KNOWLEDGE` is set, refused by [configuration](../packages/config/src/config.ts) on
-anything but a Personal Deployment, and advertised as `knowledge-sql-v1`. Facts live in the Host's
-own database, in the `knowledge` schema ([schema](../packages/database/src/knowledge-schema.ts)).
+Knowledge exists only on team servers. Each channel has its own topic with the channel's
+access; shared topics have independent read/write/manage lists. A channel's shared memory is
+its topic and searchable chat, with no channel memory files. Personal memory remains files in
+`~/Opensteer`.
 
-With the trial off, nothing about knowledge exists in the database. The schema, its owner role and
-the restricted login come from a versioned ensure step that the manager runs at each start with the
-trial on, in one transaction under an advisory lock. Add a step to change the schema; never edit
-one that shipped. The Host's PostgreSQL user must be a superuser, as the desktop's is: the step
-creates the schema under its owner role and pins the login's logging, which CREATEROLE alone cannot.
-Otherwise turning the trial on fails at start. Each start gives the login a new password, so two
-Hosts must never share a database with the trial on; the
-[authority lease](../packages/database/src/deployment-authority.ts) already refuses a second Host on
-a database. Turning the trial off leaves the schema and its facts in place.
+Attaching a shared topic to a channel grants no access. Agent SQL is scoped to the current
+run ticket's channel topic and attached topics its owner may use. Either people-only switch
+excludes the agent. A task's earlier team Runs confer no authority on a private follow-up.
 
-## Who holds the tool
-
-Knowledge follows the boundary personal memory follows: a conversation other people can start never
-holds the person's private things, and the Host already expresses that as Main inheritance.
-[One rule](../apps/host/src/knowledge/knowledge-eligibility.ts) decides the Run's skill and tool
-plan, what MCP lists and what dispatch accepts: a Run that inherits Main (reach `user`), requested by
-the Personal owner, on a Runner that advertises `knowledgeSkill`. So the owner's own tasks and
-chats, their direct message to their bot and a task a connected agent with user reach starts in Main
-hold it, exactly where they hold memory. A shared channel conversation, a workspace- or
-lineage-reach Run, and a connection or Program calling directly never do. A Runner that cannot load
-the skill still starts and plans its Runs exactly as with the trial off.
+Knowledge writes hold the team access share lock and recheck authority while the restricted
+executor writes and commits. Only then may the main-pool fence release. Buffered answers
+recheck the access revision at handoff and discard the whole result on access loss, rather than
+returning partial rows. See [Teams](teams.md#access-and-removal).
 
 ## The boundary
 
@@ -36,7 +23,7 @@ Three layers, each covering what the others cannot:
   settings, catalogs and functions such as `set_config`.
 - Grants keep the restricted login out of every application table. Each start revokes PUBLIC from
   everything in the `knowledge` schema, so default privileges the Host's user set cannot reach it.
-- Row security hides fact rows outside the caller's topics.
+- Forced row-level security hides fact rows outside the server-set topic arrays.
 
 The login alone does not hide PostgreSQL's public catalogs: through PUBLIC grants, which cannot be
 revoked for one role, it can read `pg_class`, `pg_proc`, `pg_settings` and call `set_config`. That
@@ -51,11 +38,17 @@ Agent SQL runs as its own non-superuser LOGIN role with its own two-connection p
 superuser and a shell through `COPY … TO PROGRAM`. The pool reaches the server and database that pg
 resolves for the Host's own connection, environment included, but its startup carries only the
 login, database and name: no options, replication or timeouts from the query string, `PGOPTIONS` or
-other `PG*` variables. It refuses any connection whose session is not the restricted login. It does
-not support TLS yet, so a Host whose connection uses TLS cannot turn the trial on. The Host gives
+other `PG*` variables. It refuses any connection whose session is not the restricted login. It refuses TLS; the restricted login uses the recipe's private database network, which must have no published PostgreSQL port. The Host gives
 the role a fresh random password at each start and keeps it only in memory.
 
-## Limits
+## Resource limits and availability
+
+The Host allows two restricted connections, eight waiting callers, a two-second statement
+timeout and a 250 ms lock timeout; excess callers get `knowledge-busy`. The
+[Compose recipe](../deploy/team/compose.yaml) caps PostgreSQL at 2 GiB including swap and two
+CPUs, on a private database network without a published port. The Host database user must be a
+superuser to prepare the restricted role; role preparation or restricted-login verification
+failure refuses team startup. Personal Hosts never initialize this executor.
 
 The Host never receives more than it can safely parse. pg-protocol turns each backend message into
 a string as it arrives, and a short query can make PostgreSQL send hundreds of megabytes, as a row
@@ -74,24 +67,15 @@ or as an error that quotes a failing input, crashing the Host from the socket pa
 Also bounded: temp files at 32 MB; statement text at 16 KiB; at most 64 parameters, each bounded
 only by the size of the MCP request; a write at 25 facts, each value at 64 KB.
 
-Neither backend time nor backend memory is bounded. `statement_timeout` is only checked between
-interrupt checks, and string building inside one expression does not check: with the functions
-still allowed, a 2 s timeout landed after 3.9 s. `work_mem` and `temp_file_limit` do not cap one
-expression: one backend reached 3.8 GB, and the pool's two together 5.9 GB (PostgreSQL 17.11 on
-macOS). `lpad`, `rpad`, `format` and `repeat` are refused because one call builds any width, but
-`||`, `replace`, `regexp_replace`, `to_jsonb` and `string_agg` still amplify. That is acceptable for one
-person's own agents and must be decided before knowledge reaches a server.
+Timeouts are checked at PostgreSQL interrupt points, not continuously, and `work_mem` does
+not bound expression allocation. One hostile query can exhaust the container cap, restart
+PostgreSQL and briefly interrupt chat. These limits protect the Host parser and bound the
+container; they do not promise per-query memory isolation or uninterrupted team availability.
+External managed/TLS PostgreSQL and native unbounded PostgreSQL are outside the v1 recipe.
 
-Parameters reach PostgreSQL as JSON, so a list is a JSON array read with
-`jsonb_array_elements_text($n::jsonb)`; the validator refuses `ANY($n)` and parameters cast to
-arrays, which could never work.
-
-## Parser and PostgreSQL versions
-
-The parser is `libpg-query` pinned to PostgreSQL 17's grammar, because the desktop bundles
-PostgreSQL 17. Self-hosted and development databases run 18, so newer syntax is refused there and
-the reviewed functions were checked against 17. The
-[corpus integration test](../apps/host/src/knowledge/sql-gate-corpus.integration.test.ts) runs
-every admitted statement through the real schema; rerun it against every major the Host runs before
-widening either. The parser loads its WASM relative to its own module, so builds leave it unbundled
-and ship its package folder beside the Host.
+Parameters arrive as JSON; use `jsonb_array_elements_text($n::jsonb)` for a list. The validator
+refuses array casts and `ANY($n)`. The parser uses PostgreSQL 17 grammar; newer syntax stays
+refused on PostgreSQL 18 until reviewed. The
+[corpus integration test](../apps/host/src/knowledge/sql-gate-corpus.integration.test.ts) must
+prove admitted syntax against each supported PostgreSQL major before widening the boundary.
+The parser's WASM loads relative to its package, so builds ship it unbundled beside the Host.

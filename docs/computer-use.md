@@ -9,7 +9,7 @@ Android; [iPhone apps](mobile.md#this-iphones-apps) are data-only. Procedures:
 Approval is durable, per app and Mac, not per task. Bundle identity and signing team identify the
 app, never a PID or window. An app approval permits everything its interface offers; it is not a
 confinement boundary. Bounded data APIs and GUI app approvals are separate authority, and connection
-access caps every Workspace grant. The Host owns approvals, blocks and grants; the helper holds no
+access caps every Run. The Host owns approvals, blocks and grants; the helper holds no
 approval list but enforces app identity, the deny list, access and session ownership.
 
 Automatic approval never widens an existing connection: wider access and unblocking need the owner's
@@ -93,11 +93,11 @@ reaches far more than Messages, so anything that widened that boundary would wid
 Mac. Agents name an attachment by id, never a path, and the helper opens it by descriptor.
 
 A file moves for one live tool call. When the Run is on the Mac's own Runner it never leaves that
-computer, so a photo does not reach a server Deployment. When the Run is elsewhere it streams through
+computer, so a photo does not reach a team server. When the Run is elsewhere it streams through
 the Host, because Runners reach the Host and never each other; nothing is spooled, and the
 [relay](../apps/host/src/integrations/run-file-relay.ts) ends with the call. Exports land in the
 Thread's attachment directory and go at the end of the Run. Files an agent sends must already be in
-its Workspace or that directory: the Runner checks, so a send cannot read what the Run could not.
+its task folder or that directory: the Runner checks, so a send cannot read what the Run could not.
 Trigger and Watch programs have no Run, so their file operations refuse.
 
 ### Setting an app up on this Mac

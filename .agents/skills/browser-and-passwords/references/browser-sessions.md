@@ -27,7 +27,7 @@ Select the layer changed; keep every engine's cookie scope and durability checks
 pnpm exec vitest run packages/browser-runtime-core/src/native-profiles.test.ts packages/browser-runtime-core/src/local-profile-store.test.ts packages/browser-runtime-core/src/native-profile-ready.test.ts
 pnpm exec vitest run apps/browser-runtime/src/browser/playwright-launcher.test.ts apps/browser-runtime/src/browser/persistent-launch-cleanup.test.ts
 pnpm exec vitest run apps/desktop/src/browser/electron-browser-launcher.test.ts apps/desktop/src/browser/session-cookie-mirror.test.ts apps/desktop/src/browser/browser-session-policy.test.ts
-pnpm exec vitest run packages/client/src/host/pending-browser-tabs.test.ts packages/client/src/host/browser-presentation-wait.test.ts packages/client/src/host/workspace-tab-activations.test.ts
+pnpm exec vitest run packages/client/src/host/pending-browser-tabs.test.ts packages/client/src/host/browser-presentation-wait.test.ts packages/client/src/host/personal-tab-activations.test.ts
 pnpm test:integration -- tests/browser-native-only-migration.integration.test.ts packages/database/src/operation-budget.integration.test.ts tests/browser-native-profiles.integration.test.ts tests/browser-profiles.integration.test.ts
 ```
 

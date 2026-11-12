@@ -8,10 +8,9 @@ import { setTimeout as delay } from "node:timers/promises";
 import { app, BrowserWindow, ipcMain, powerMonitor, protocol, systemPreferences } from "electron";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
-import { createId } from "@opensteer/core";
+import { createId, emptyExecutionPreferences } from "@opensteer/core";
 import { BrowserServerMessageSchema, hostApi } from "@opensteer/protocol";
 import type { CdpSession } from "@opensteer/browser-runtime-core";
-import { previewBootstrap } from "../../web/src/desktop/preview-bootstrap.js";
 import { DesktopLocalVisibility } from "../src/app/local-visibility.js";
 import { desktopWebPreferences } from "../src/app/electron-window.js";
 import { registerDesktopBridge } from "../src/bridge/registration.js";
@@ -36,14 +35,48 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
     environmentId: createId("environment"),
     runnerId: createId("runner"),
     userId: createId("user"),
-    workspaceId: createId("workspace"),
   };
-  const fixture = previewBootstrap(selected, ids);
+  const fixture = {
+    deploymentId: selected.id,
+    sessionId: createId("authSession"),
+    personalSettings: {
+      ownerId: ids.userId,
+      agentHome: { computerId: ids.runnerId, path: path.join(directory, "agent-home") },
+      voiceThreadId: null,
+    },
+    can: { createTasks: true, useVoice: true, manageComputers: true, managePrivateResources: true },
+    appTabs: [],
+    latestPlaces: [],
+    environments: [],
+    harnesses: [],
+    machines: [],
+    executionPreferences: emptyExecutionPreferences,
+    quietTaskDays: 7,
+    sessionSurface: "canonical",
+    identityConfig: {
+      deployment: { kind: "personal", name: selected.name },
+      emailDeliveryAvailable: false,
+      exposure: "loopback",
+      localPasswordEnabled: false,
+      machineOwner: true,
+      oidcProviders: [],
+      passkeysEnabled: false,
+      portalOrigin: null,
+      publicOrigin: selected.canonicalOrigin,
+      setupState: "complete",
+      signupPolicy: "closed",
+    },
+    user: {
+      id: ids.userId,
+      disabledAt: null,
+      displayName: "Idle smoke",
+      email: "idle@opensteer.invalid",
+      emailVerified: true,
+      image: null,
+    },
+  };
   const bootstrap = hostApi["bootstrap.get"].success.parse({
     ...fixture,
-    workspaces: [],
-    homeWorkspace: null,
-    notificationPreferences: [],
     browser: {
       available: true,
       placements: [],
@@ -55,13 +88,12 @@ export async function idleLifecyclePhase(platform: CdpSession, directory: string
             access: "read-write",
             createdAt: new Date().toISOString(),
             id: sessionId,
-            origin: "workspace",
+            origin: "person",
             placement: { kind: "runner", runnerId: ids.runnerId },
             profileId: null,
             runtimeId: "idle-smoke",
             state: "ready",
             updatedAt: new Date().toISOString(),
-            workspaceId: ids.workspaceId,
           },
           {
             generation: 1,

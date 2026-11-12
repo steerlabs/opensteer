@@ -8,7 +8,7 @@ import {
 import type {
   DesktopForwardedKey,
   DesktopUpdateState,
-  DesktopWorkspaceTabCommand,
+  DesktopPersonalTabCommand,
 } from "@opensteer/protocol/desktop";
 import { desktopBridgeChannels } from "../bridge/desktop-bridge-channels.js";
 import { desktopQuitShortcut } from "./electron-window.js";
@@ -16,7 +16,7 @@ import { desktopQuitShortcut } from "./electron-window.js";
 type ShortcutInput = Pick<Input, "alt" | "control" | "key" | "meta" | "shift">;
 
 /** The workspace tab command a chord names, matching the Tabs and File menu accelerators. */
-export function workspaceTabCommand(input: ShortcutInput): DesktopWorkspaceTabCommand | null {
+export function workspaceTabCommand(input: ShortcutInput): DesktopPersonalTabCommand | null {
   const command = process.platform === "darwin" ? input.meta : input.control;
   const key = input.key.toLowerCase();
   if (command && input.alt && !input.shift && ["arrowleft", "arrowright"].includes(key))
@@ -118,7 +118,7 @@ export function createDesktopApplicationMenu(options: {
   const command = (
     label: string,
     accelerator: string,
-    value: DesktopWorkspaceTabCommand,
+    value: DesktopPersonalTabCommand,
   ): MenuItemConstructorOptions => ({
     label,
     accelerator,
