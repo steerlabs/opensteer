@@ -210,6 +210,7 @@ COPY apps/control-plane/package.json /output/control-plane/package.json
 COPY apps/runner/package.json /output/runner/package.json
 COPY apps/browser-runtime/package.json /output/browser-runtime/package.json
 COPY apps/channel-runtime/package.json /output/channel-runtime/package.json
+COPY apps/team-provisioner/package.json /output/team-provisioner/package.json
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
@@ -218,7 +219,8 @@ RUN node scripts/stamp-release-package.cjs /output/host/package.json && \
     node scripts/stamp-release-package.cjs /output/control-plane/package.json && \
     node scripts/stamp-release-package.cjs /output/runner/package.json && \
     node scripts/stamp-release-package.cjs /output/browser-runtime/package.json && \
-    node scripts/stamp-release-package.cjs /output/channel-runtime/package.json
+    node scripts/stamp-release-package.cjs /output/channel-runtime/package.json && \
+    node scripts/stamp-release-package.cjs /output/team-provisioner/package.json
 
 # Web assets contain no native dependencies; compile with the builder's Node.
 FROM --platform=$BUILDPLATFORM ${NODE_IMAGE} AS web-assets
@@ -402,10 +404,12 @@ CMD ["node", "dist/main.js"]
 FROM node-runtime AS team-provisioner
 WORKDIR /app
 COPY --from=team-provisioner-build --chown=10001:10001 /output/team-provisioner ./
+COPY --from=package-stamps --chown=10001:10001 /output/team-provisioner/package.json ./package.json
 ARG OPENSTEER_RELEASE_VERSION
 ARG OPENSTEER_SOURCE_REVISION
 ENV OPENSTEER_RELEASE_VERSION=${OPENSTEER_RELEASE_VERSION} \
     OPENSTEER_SOURCE_REVISION=${OPENSTEER_SOURCE_REVISION}
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
 USER 10001:10001
 CMD ["node", "dist/main.js"]
 

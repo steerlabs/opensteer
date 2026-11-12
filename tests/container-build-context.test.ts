@@ -311,6 +311,7 @@ describe("container build context", () => {
       "browser-runtime",
       "gateway",
       "team-gateway",
+      "team-provisioner",
     ];
     for (const name of targetNames) {
       const start = containerfile.indexOf(` AS ${name}\n`);
