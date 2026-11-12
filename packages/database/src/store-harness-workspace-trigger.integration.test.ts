@@ -26,8 +26,8 @@ describeStore("PostgreSQL store", (it) => {
   it("trims a person's execution history to the limit, dropping the oldest", async ({
     storeFixture,
   }) => {
-    const { store } = storeFixture;
-    const userId = await store.createUser("Alex");
+    const { store, createRunFixture } = storeFixture;
+    const { userId } = await createRunFixture("profile-idempotency");
     const environmentId = createId("environment");
     const harnessInstanceId = createId("harnessInstance");
     const selectionFor = (index: number) => ({
@@ -584,11 +584,11 @@ describeStore("PostgreSQL store", (it) => {
       sql`
         insert into harness_instances(
           id, environment_id, driver_kind, name, config, state_kind, source_id,
-          runtime_revision, enabled
+          runtime_revision, enabled, is_default
         )
         values (
           ${createId("harnessInstance")}, ${environmentId}, 'codex', 'Direct', '{}'::jsonb,
-          'ambient', 'codex', 1, true
+          'ambient', 'codex', 1, true, false
         )
       `.execute(database),
     ).rejects.toThrow(/harness_instances_one_ambient_per_driver/);
@@ -855,8 +855,8 @@ describeStore("PostgreSQL store", (it) => {
   it("returns the same profile when a create is retried under one idempotency key", async ({
     storeFixture,
   }) => {
-    const { store } = storeFixture;
-    const userId = await store.createUser("Alex");
+    const { store, createRunFixture } = storeFixture;
+    const { userId } = await createRunFixture("profile-idempotency");
     const environmentId = await store.createEnvironment({
       kind: "local",
       name: "Laptop",
@@ -892,14 +892,12 @@ describeStore("PostgreSQL store", (it) => {
       code: "conflict",
     });
 
-    // Keys belong to the person who sent them; another person's identical key
-    // is another request.
-    const otherUserId = await store.createUser("Ada");
+    // A separate intent creates another profile for the same personal owner.
     const other = await store.createHarnessInstance({
       ...input,
       idempotency: {
-        key: "harness-create-retry",
-        requestedBy: otherUserId,
+        key: "harness-create-separate",
+        requestedBy: userId,
       },
     });
     expect(other.id).not.toBe(first.id);

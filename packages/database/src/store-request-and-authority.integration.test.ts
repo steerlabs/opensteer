@@ -1,3 +1,4 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   createId,
   emptyExecutionPreferences,
@@ -24,7 +25,6 @@ import {
 } from "./index.js";
 import {
   describeStore,
-  enrollTestRunner,
   testContinuationIdentity,
   testOpenApiAdapterContract,
   writeBrowserUsageArtifact,
@@ -707,11 +707,6 @@ describeStore("PostgreSQL store", (it) => {
                 decision: "fulfilled",
                 createProfile: {
                   name: 'Owner "renamed" work',
-                  ...(chosenHome
-                    ? {
-                        homeRunnerId: chosenHome,
-                      }
-                    : {}),
                 },
               }
             : {
@@ -736,25 +731,6 @@ describeStore("PostgreSQL store", (it) => {
         code: "bad_request",
       });
       expect((await store.requests.get(opened.request.id))?.status).toBe("pending");
-      if (choice === "new") {
-        await expect(
-          store.requests.resolveBrowserRequest({
-            requestId: opened.request.id,
-            resolvedBy: fixture.userId,
-            response: {
-              kind: "external",
-              value: {
-                decision: "fulfilled",
-                createProfile: {
-                  name: "Unplaced",
-                },
-              },
-            },
-          }),
-        ).rejects.toMatchObject({
-          code: "conflict",
-        });
-      }
       const resolved = await store.requests.resolveBrowserRequest({
         requestId: opened.request.id,
         resolvedBy: fixture.userId,
@@ -1057,7 +1033,7 @@ describeStore("PostgreSQL store", (it) => {
       status: "waiting",
     });
   });
-  it("enriches valid integration access, rejects mismatched accounts, and preserves project grants", async ({
+  it("enriches valid integration access, rejects mismatched accounts, and persists personal grants", async ({
     storeFixture,
   }) => {
     const {
@@ -1248,6 +1224,9 @@ describeStore("PostgreSQL store", (it) => {
             displayName: "Forged Alias",
           },
           connectionId,
+          access: "read",
+          alias: "Records",
+          isDefault: false,
           decision: "fulfilled",
         },
       },
@@ -1258,7 +1237,7 @@ describeStore("PostgreSQL store", (it) => {
           type: "request.resolved",
         }),
       ],
-      grant: null,
+      grant: { access: "read", alias: "Records", connectionId },
       request: {
         response: {
           kind: "external",
@@ -1268,6 +1247,9 @@ describeStore("PostgreSQL store", (it) => {
               displayName: "Alex",
             },
             connectionId,
+            access: "read",
+            alias: "Records",
+            isDefault: false,
             decision: "fulfilled",
           },
         },
@@ -1283,6 +1265,9 @@ describeStore("PostgreSQL store", (it) => {
             displayName: "Alex",
           },
           connectionId,
+          access: "read",
+          alias: "Records",
+          isDefault: false,
           decision: "fulfilled",
         },
       },
@@ -1291,15 +1276,15 @@ describeStore("PostgreSQL store", (it) => {
       platform.listGrants({
         ownerUserId: fixture.userId,
       }),
-    ).resolves.toEqual([]);
-    const projectRequest = await platform.requests.createIntegrationAccessRequest({
+    ).resolves.toEqual([mainResolution.grant]);
+    const selectedRequest = await platform.requests.createIntegrationAccessRequest({
       ...requestInput,
-      callId: "integration-access-project-target",
+      callId: "integration-access-selected-server",
       requestedServerId: null,
     });
     await expect(
       platform.requests.selectIntegrationAccessServer({
-        requestId: projectRequest.request.id,
+        requestId: selectedRequest.request.id,
         requestedServerId: serverId,
         resolvedBy: fixture.userId,
         settlementSessionId: createId("authSession"),
@@ -1307,17 +1292,17 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({
       code: "unauthorized",
     });
-    expect((await platform.requests.get(projectRequest.request.id))?.payload).toMatchObject({
+    expect((await platform.requests.get(selectedRequest.request.id))?.payload).toMatchObject({
       requestedServerId: null,
     });
     await platform.requests.selectIntegrationAccessServer({
-      requestId: projectRequest.request.id,
+      requestId: selectedRequest.request.id,
       requestedServerId: serverId,
       resolvedBy: fixture.userId,
     });
-    const projectResolution = await platform.requests.resolveIntegrationAccessRequest({
+    const selectedResolution = await platform.requests.resolveIntegrationAccessRequest({
       providerAuthorizations: {},
-      requestId: projectRequest.request.id,
+      requestId: selectedRequest.request.id,
       resolvedBy: fixture.userId,
       response: {
         kind: "external",
@@ -1329,12 +1314,13 @@ describeStore("PostgreSQL store", (it) => {
           access: "read",
           alias: "Records",
           connectionId,
-          decision: "fulfilled",
+
           isDefault: false,
+          decision: "fulfilled",
         },
       },
     });
-    expect(projectResolution).toMatchObject({
+    expect(selectedResolution).toMatchObject({
       events: [
         expect.objectContaining({
           type: "request.resolved",
@@ -1345,7 +1331,7 @@ describeStore("PostgreSQL store", (it) => {
         status: "fulfilled",
       },
     });
-    expect(projectResolution.request.response).toEqual({
+    expect(selectedResolution.request.response).toEqual({
       kind: "external",
       value: {
         access: "read",
@@ -1375,8 +1361,9 @@ describeStore("PostgreSQL store", (it) => {
             access: "read",
             alias: "Records",
             connectionId,
-            decision: "fulfilled",
+
             isDefault: false,
+            decision: "fulfilled",
           },
         },
       }),
@@ -1405,6 +1392,9 @@ describeStore("PostgreSQL store", (it) => {
               displayName: "Forged Alias",
             },
             connectionId: missingConnectionId,
+            access: "read",
+            alias: "Records",
+            isDefault: false,
             decision: "fulfilled",
           },
         },
@@ -1427,6 +1417,9 @@ describeStore("PostgreSQL store", (it) => {
           kind: "external",
           value: {
             connectionId: mcpConnectionId,
+            access: "read",
+            alias: "MCP",
+            isDefault: false,
             decision: "fulfilled",
           },
         },
@@ -1484,6 +1477,9 @@ describeStore("PostgreSQL store", (it) => {
           kind: "external",
           value: {
             connectionId: mcpConnectionId,
+            access: "read",
+            alias: "MCP",
+            isDefault: false,
             decision: "fulfilled",
           },
         },
@@ -1493,15 +1489,14 @@ describeStore("PostgreSQL store", (it) => {
         status: "fulfilled",
       },
     });
-    await expect(
-      platform.listGrants({
-        ownerUserId: fixture.userId,
-      }),
-    ).resolves.toEqual([
-      expect.objectContaining({
-        access: "read",
-      }),
-    ]);
+    const personalGrants = await platform.listGrants({ ownerUserId: fixture.userId });
+    expect(personalGrants).toHaveLength(2);
+    expect(personalGrants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ access: "read", alias: "Records", connectionId }),
+        expect.objectContaining({ access: "read", alias: "MCP", connectionId: mcpConnectionId }),
+      ]),
+    );
     await expect(platform.requests.listPendingContinuations()).resolves.toEqual([]);
     const storedContinuations = await database
       .selectFrom("requestContinuations")
@@ -1511,7 +1506,7 @@ describeStore("PostgreSQL store", (it) => {
     expect(storedContinuations).toEqual(
       [
         mainRequest.request.id,
-        projectRequest.request.id,
+        selectedRequest.request.id,
         declinedRequest.request.id,
         mcpRequest.request.id,
       ]
@@ -1637,13 +1632,17 @@ describeStore("PostgreSQL store", (it) => {
       await releaseSignal;
       return mutation;
     });
-    await installationWritten;
-    const raced = platform.requests.createIntegrationInstallRequest({
-      ...requestInput,
-      callId: "catalog-currentness-raced",
-    });
-    void raced.catch(() => undefined);
+    let raced: ReturnType<typeof platform.requests.createIntegrationInstallRequest> | undefined;
+    void installing.catch(() => undefined);
     try {
+      await withTimeout(Promise.race([installationWritten, installing]), 5_000, {
+        timeoutError: () => new Error("Installation never reached its commit barrier"),
+      });
+      raced = platform.requests.createIntegrationInstallRequest({
+        ...requestInput,
+        callId: "catalog-currentness-raced",
+      });
+      void raced.catch(() => undefined);
       await vi.waitFor(
         async () => {
           const result = await sql<{
@@ -1653,13 +1652,13 @@ describeStore("PostgreSQL store", (it) => {
           from pg_locks locks
           join pg_stat_activity activity on activity.pid = locks.pid
           where locks.granted = false
-            and locks.locktype = 'advisory'
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
+            and activity.query like '%deployment_event_state%'
         `.execute(database);
           expect(
             Number(result.rows[0]?.waiting ?? 0),
-            "Install Request never waited for the installation fence",
+            "Install Request never waited for Deployment event order",
           ).toBeGreaterThan(0);
         },
         { timeout: 1_000, interval: 5 },
@@ -2045,15 +2044,12 @@ describeStore("PostgreSQL store", (it) => {
   it("keeps one harness catalog per environment and AI engine, newest answer wins", async ({
     storeFixture,
   }) => {
-    const { store } = storeFixture;
-    const userId = await store.createUser("Alex");
-    const environmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: userId,
-      environmentId,
-      name: "Managed Runner",
-      runnerId: createId("runner"),
-      tokenSuffix: "harness-catalogs",
+    const { store, createRunFixture } = storeFixture;
+    const { runnerId } = await createRunFixture("harness-catalogs");
+    const environmentId = await store.createEnvironment({
+      kind: "local",
+      name: "Catalog fixture",
+      runnerId,
     });
     const laptopEnvironmentId = await store.createEnvironment({
       kind: "local",
@@ -2182,8 +2178,8 @@ describeStore("PostgreSQL store", (it) => {
   it("keeps one execution-preference record per person, newest choice first", async ({
     storeFixture,
   }) => {
-    const { store } = storeFixture;
-    const userId = await store.createUser("Alex");
+    const { store, createRunFixture } = storeFixture;
+    const { userId } = await createRunFixture("execution-preferences");
     const environmentId = createId("environment");
     const harnessInstanceId = createId("harnessInstance");
     const lowEffort = ModelSelectionSchema.parse({

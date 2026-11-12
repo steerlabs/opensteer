@@ -152,7 +152,6 @@ describeStore("durable Run place entries", (it) => {
     ).resolves.toMatchObject([
       {
         threadId: f.thread.id,
-        home: false,
       },
     ]);
     // Unlisted non-call workers without an Assignment stay unrepresented.
@@ -229,7 +228,7 @@ describeStore("durable Run place entries", (it) => {
     const observed = new OpensteerStore(
       database.withPlugin({
         transformQuery({ node }) {
-          if (JSON.stringify(node).includes('"name":"workspace_events"')) placeQueries += 1;
+          if (JSON.stringify(node).includes('"name":"deployment_events"')) placeQueries += 1;
           return node;
         },
         async transformResult({ result }) {

@@ -112,13 +112,13 @@ describeStore("agent Thread history", (it) => {
         itemId: "9".repeat(255),
       }))!.items,
     ).toEqual([]);
-    expect(
-      await readAgentThreadActivity(database, {
+    await expect(
+      readAgentThreadActivity(database, {
         ownerId: createId("user"),
         threadId: f.thread.id,
         limit: 10,
       }),
-    ).toBeNull();
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
   it("bounds recent places by newest Runs and newest entries before deduplication", async ({
     storeFixture,
@@ -159,13 +159,13 @@ describeStore("agent Thread history", (it) => {
       "5",
       "4",
     ]);
-    expect(
-      await readAgentThreadRecent(database, {
+    await expect(
+      readAgentThreadRecent(database, {
         ownerId: createId("user"),
         threadId: f.thread.id,
         runLimit: 1,
       }),
-    ).toBeNull();
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
   it("says a wait has more when messages after it were left unread", async ({ storeFixture }) => {
     const { store, database, startRunFixture } = storeFixture;

@@ -1,3 +1,6 @@
+import { ChannelStore, ChannelIngressDeferredError } from "./channel-store.js";
+import { pauseAfterLock } from "./lock-race.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
 import { prepareThreadInsertion } from "./thread-insertion.js";
@@ -13,7 +16,7 @@ import { OpensteerStore, TriggerStore } from "./index.js";
 import {
   describeStore,
   testModelSelection,
-  enrollTestRunner,
+  testChannelNotices,
   pendingEvent,
   liveRequest,
   sealedTestRequestResponse,
@@ -70,7 +73,7 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({ code: "bad_request" });
     const outsider = await store.createUser("Outsider");
     await expect(store.taskPageForUser({ active: true, userId: outsider })).rejects.toMatchObject({
-      code: "not_found",
+      code: "forbidden",
     });
     await database
       .updateTable("users")
@@ -79,13 +82,14 @@ describeStore("PostgreSQL store", (it) => {
       .execute();
     await expect(
       store.taskPageForUser({ active: true, userId: fixture.userId }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
 
   it.for(["40P01", "40001"])(
     "retries Request transaction conflict %s within a bound",
     async (code, { storeFixture }) => {
-      const { database } = storeFixture;
+      const { database, createRunFixture } = storeFixture;
+      await createRunFixture("transaction-retry");
 
       let attempts = 0;
       await expect(
@@ -1281,7 +1285,7 @@ describeStore("PostgreSQL store", (it) => {
   it.for(
     (["update", "resume"] as const).flatMap((mutation) =>
       (["drain", "resolution"] as const).flatMap((writer) =>
-        (["watch-first", "workspace-first"] as const).map((order) => ({
+        (["watch-first", "writer-first"] as const).map((order) => ({
           mutation,
           writer,
           order,
@@ -1382,10 +1386,7 @@ describeStore("PostgreSQL store", (it) => {
       const release = Promise.withResolvers<void>();
       const held = Promise.withResolvers<void>();
       const operations: Promise<unknown>[] = [];
-      // This barrier stops the activation INSERT. Watch writes now take their
-      // Workspace before the environment, so the second writer may instead wait at
-      // that Workspace: the case checks both commit without a deadlock, whichever
-      // fence they meet at. It changes no production query or lock mode.
+      // The second writer waits on Deployment event order while the first holds its domain fence.
       await sql`create function phase3k_watch_barrier() returns trigger language plpgsql as $$
       begin perform pg_advisory_xact_lock(731003, 1); return new; end $$`.execute(database);
       await sql`create trigger phase3k_watch_barrier before insert on trigger_watch_activations
@@ -1410,19 +1411,24 @@ describeStore("PostgreSQL store", (it) => {
         held.resolve();
         await release.promise;
       });
-      const waitFor = (fragment: string) =>
-        expect
-          .poll(async () => {
+      let waitingCount = 0;
+      const waitFor = async () => {
+        waitingCount += 1;
+        await vi.waitFor(
+          async () => {
             const result = await sql<{
               waiting: number;
             }>`select count(*)::integer as waiting from pg_stat_activity
-        where datname = current_database() and application_name = 'opensteer-watch-fk-race'
-        and wait_event_type = 'Lock' and (query like ${`%${fragment}%`} or query like '%from "workspaces"%')`.execute(
-              database,
-            );
-            return result.rows[0]!.waiting;
-          })
-          .toBe(1);
+            where datname=current_database() and application_name='opensteer-watch-fk-race'
+            and wait_event_type='Lock'`.execute(database);
+            expect(
+              result.rows[0]!.waiting,
+              "Watch and projection writers never reached their fences",
+            ).toBe(waitingCount);
+          },
+          { timeout: 1_000 },
+        );
+      };
       const startWatch = () =>
         mutation === "update"
           ? racingTriggers.update({
@@ -1460,14 +1466,14 @@ describeStore("PostgreSQL store", (it) => {
         await held.promise;
         if (order === "watch-first") {
           start(startWatch);
-          await waitFor('insert into "trigger_watch_activations"');
+          await waitFor();
           start(startWriter);
-          await waitFor(`from "${writer === "drain" ? "threads" : "requests"}"`);
+          await waitFor();
         } else {
           start(startWriter);
-          await waitFor(`from "${writer === "drain" ? "threads" : "requests"}"`);
+          await waitFor();
           start(startWatch);
-          await waitFor('insert into "trigger_watch_activations"');
+          await waitFor();
         }
         release.resolve();
         await blocker;
@@ -1525,472 +1531,265 @@ describeStore("PostgreSQL store", (it) => {
       }
     },
   );
-  it.for([
-    {
-      creator: "delegation",
-      mutation: "reassign",
-    },
-    {
-      creator: "delegation",
-      mutation: "retire",
-    },
-    {
-      creator: "channel",
-      mutation: "reassign",
-    },
-    {
-      creator: "channel",
-      mutation: "retire",
-    },
-  ] as const)(
-    "fences every Thread creator against parent changes ($creator / $mutation)",
-    async ({ creator, mutation }, { storeFixture, signal, onTestFinished }) => {
-      const {
-        createChannelNoticeFixture,
-        startRunFixture,
-        store,
-        recordReadyHarnessCatalog,
-        database,
-      } = storeFixture;
-      const channel =
-        creator === "channel"
-          ? await createChannelNoticeFixture(`parent-fence-${mutation}`, {
-              accessMode: "anyone",
-            })
-          : null;
-      const parent = channel ? null : await startRunFixture(`parent-fence-${mutation}`);
-      const fixture = channel?.fixture ?? parent!;
-      const environmentId = await store.createEnvironment({
-        kind: "local",
-        name: "Unbound child environment",
-        runnerId: fixture.runnerId,
-      });
+  it.for(["task", "delegation"] as const)(
+    "fences %s creation against profile retirement",
+    async (creator, { storeFixture }) => {
+      const { startRunFixture, store, database, recordReadyHarnessCatalog } = storeFixture;
+      const f = await startRunFixture("parent-fence");
       const harness = await store.createHarnessInstance({
         config: {},
         driverKind: HarnessIdSchema.parse("native"),
-        environmentId,
+        environmentId: f.environmentId,
         name: "Child engine",
-        sourceId: "native",
         stateKind: "isolated",
       });
-      await recordReadyHarnessCatalog(environmentId, harness);
-      const otherUserId = await store.createUser("Other parent owner");
-      const otherRunnerId = createId("runner");
-      await enrollTestRunner(store, {
-        createdBy: otherUserId,
-        environmentId: createId("environment"),
-        name: "Other parent runner",
-        runnerId: otherRunnerId,
-        runnerKind: "local",
-        tokenSuffix: "parent-fence-other",
-      });
-      if (channel)
-        channel.availableEngines.splice(0, 1, {
-          environmentId,
-          driverKinds: [harness.driverKind],
-        });
-      const held = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      await sql`create function phase3l_thread_barrier() returns trigger language plpgsql as $$
-      begin perform pg_advisory_xact_lock(731004, 1); return new; end $$`.execute(database);
-      await sql`create constraint trigger phase3l_thread_barrier after insert on threads
-      deferrable initially deferred for each row execute function phase3l_thread_barrier()`.execute(
+      await recordReadyHarnessCatalog(f.environmentId, harness);
+      const create = (target: OpensteerStore) =>
+        creator === "task"
+          ? target.createThread({
+              createdBy: f.userId,
+              environmentId: f.environmentId,
+              harnessInstanceId: harness.id,
+              idempotencyKey: "parent-fence-create",
+              modelSelection: testModelSelection,
+              title: "Child",
+            })
+          : target.delegateThread({
+              createdBy: f.userId,
+              environmentId: f.environmentId,
+              harnessInstanceId: harness.id,
+              idempotencyKey: "parent-fence-create",
+              modelSelection: testModelSelection,
+              title: "Child",
+              accessMode: "auto",
+              origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
+              task: [{ type: "text", text: "Child" }],
+            });
+      const barrier = pauseAfterLock(
         database,
+        (node) => node.includes('"name":"execution_environments"') && node.includes("ForShare"),
       );
-      const blocker = database.transaction().execute(async (transaction) => {
-        await sql`select pg_advisory_xact_lock(731004, 1)`.execute(transaction);
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      const creating = channel
-        ? channel.adopt({
-            eventId: "Ev-PARENT-FENCE",
-          })
-        : store.delegateThread({
-            accessMode: "auto",
-            createdBy: fixture.userId,
-            environmentId,
-            harnessInstanceId: harness.id,
-            idempotencyKey: "parent-fence-child",
-            modelSelection: testModelSelection,
-            origin: {
-              kind: "run",
-              parentRunId: parent!.run.id,
-              parentThreadId: fixture.thread.id,
-            },
-            task: [
-              {
-                text: "Child task",
-                type: "text",
-              },
-            ],
-            title: "Child task",
-          });
+      const creating = create(new OpensteerStore(barrier.database));
       void creating.catch(() => undefined);
-      let changing: Promise<unknown> | undefined;
-      const waiters = async () =>
-        (
-          await sql<{
-            query: string;
-          }>`select query from pg_stat_activity
-      where datname = current_database() and application_name = 'opensteer-integration-test'
-      and wait_event_type = 'Lock'`.execute(database)
-        ).rows;
-      const waitForPhase = async (ready: () => Promise<boolean>) => {
+      let removing: ReturnType<OpensteerStore["removeHarnessInstance"]> | undefined;
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Creation never held the environment fence"),
+        });
+        removing = store.removeHarnessInstance(f.environmentId, harness.id);
+        void removing.catch(() => undefined);
         await vi.waitFor(
           async () => {
-            signal.throwIfAborted();
-            expect(await ready(), "Thread lock phase was never observed").toBe(true);
+            const waiting = await sql<{
+              query: string;
+            }>`select query from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
+              database,
+            );
+            expect(
+              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
+              "Retirement never waited on creation",
+            ).toBe(true);
           },
-          { timeout: 5_000, interval: 10 },
+          { timeout: 5_000 },
         );
-      };
-      let cleanup: Promise<void> | undefined;
-      const dispose = () =>
-        (cleanup ??= (async () => {
-          release.resolve();
-          await blocker;
-          await Promise.allSettled([creating, changing]);
-          await sql`drop trigger phase3l_thread_barrier on threads`.execute(database);
-          await sql`drop function phase3l_thread_barrier()`.execute(database);
-        })());
-      onTestFinished(dispose);
-      try {
-        // Both lock phases share the test's cancellation and overall deadline.
-        await waitForPhase(async () =>
-          (await waiters()).some(({ query }) =>
-            ["commit", "set constraints all immediate"].includes(query.toLowerCase()),
-          ),
-        );
-        let changed = false;
-        changing =
-          mutation === "reassign"
-            ? store.assignEnvironmentRunner(environmentId, otherRunnerId)
-            : store.removeHarnessInstance(environmentId, harness.id);
-        void changing.then(
-          () => {
-            changed = true;
-          },
-          () => {
-            changed = true;
-          },
-        );
-        await waitForPhase(
-          async () =>
-            changed ||
-            (await waiters()).some(
-              ({ query }) =>
-                query.startsWith("select") && query.includes('from "execution_environments"'),
-            ),
-        );
-        release.resolve();
-        await blocker;
-        const outcomes = await Promise.allSettled([creating, changing]);
-        expect(outcomes[0].status).toBe("fulfilled");
-        expect(outcomes[1]).toMatchObject({
-          status: "rejected",
-          reason: {
-            code: "conflict",
-          },
+        barrier.release();
+        await expect(creating).resolves.toMatchObject({
+          thread: { harnessInstanceId: harness.id },
         });
+        await expect(removing).rejects.toMatchObject({ code: "conflict" });
+        expect(barrier.conflicts).toEqual([]);
+      } finally {
+        barrier.release();
+        await Promise.allSettled([creating, removing]);
+      }
+    },
+  );
+  it.for(["task", "delegation"] as const)(
+    "revalidates %s creation after profile retirement",
+    async (creator, { storeFixture }) => {
+      const { startRunFixture, store, database, recordReadyHarnessCatalog } = storeFixture;
+      const f = await startRunFixture("parent-fence");
+      const harness = await store.createHarnessInstance({
+        config: {},
+        driverKind: HarnessIdSchema.parse("native"),
+        environmentId: f.environmentId,
+        name: "Child engine",
+        stateKind: "isolated",
+      });
+      await recordReadyHarnessCatalog(f.environmentId, harness);
+      const create = (target: OpensteerStore) =>
+        creator === "task"
+          ? target.createThread({
+              createdBy: f.userId,
+              environmentId: f.environmentId,
+              harnessInstanceId: harness.id,
+              idempotencyKey: "parent-fence-create",
+              modelSelection: testModelSelection,
+              title: "Child",
+            })
+          : target.delegateThread({
+              createdBy: f.userId,
+              environmentId: f.environmentId,
+              harnessInstanceId: harness.id,
+              idempotencyKey: "parent-fence-create",
+              modelSelection: testModelSelection,
+              title: "Child",
+              accessMode: "auto",
+              origin: { kind: "run", parentRunId: f.run.id, parentThreadId: f.thread.id },
+              task: [{ type: "text", text: "Child" }],
+            });
+      const barrier = pauseAfterLock(
+        database,
+        (node) =>
+          node.includes('"name":"execution_environments"') && node.includes("ForNoKeyUpdate"),
+      );
+      const removing = new OpensteerStore(barrier.database).removeHarnessInstance(
+        f.environmentId,
+        harness.id,
+      );
+      void removing.catch(() => undefined);
+      let creating: ReturnType<typeof create> | undefined;
+      try {
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Retirement never held the environment fence"),
+        });
+        creating = create(store);
+        void creating.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{
+              query: string;
+            }>`select query from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
+              database,
+            );
+            expect(
+              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
+              "Creation never waited on retirement",
+            ).toBe(true);
+          },
+          { timeout: 5_000 },
+        );
+        barrier.release();
+        await removing;
+        await expect(creating).rejects.toMatchObject({ code: "conflict" });
         expect(
           await database
             .selectFrom("threads")
             .select("id")
-            .where("environmentId", "=", environmentId)
+            .where("harnessInstanceId", "=", harness.id)
             .execute(),
-        ).toHaveLength(1);
-        expect(
-          await database
-            .selectFrom("executionEnvironments")
-            .select("runnerId")
-            .where("id", "=", environmentId)
-            .executeTakeFirstOrThrow(),
-        ).toEqual({
-          runnerId: fixture.runnerId,
-        });
-        expect(
-          await database
-            .selectFrom("harnessInstances")
-            .select(["enabled", "removedAt"])
-            .where("id", "=", harness.id)
-            .executeTakeFirstOrThrow(),
-        ).toEqual({
-          enabled: true,
-          removedAt: null,
-        });
+        ).toEqual([]);
+        expect(barrier.conflicts).toEqual([]);
       } finally {
-        await dispose();
+        barrier.release();
+        await Promise.allSettled([removing, creating]);
       }
     },
   );
-  it.for([
-    {
-      creator: "delegation",
-      mutation: "reassign",
-    },
-    {
-      creator: "delegation",
-      mutation: "retire",
-    },
-    {
-      creator: "channel",
-      mutation: "reassign",
-    },
-    {
-      creator: "channel",
-      mutation: "retire",
-    },
-  ] as const)(
-    "revalidates every Thread creator after waiting for parent changes ($creator / $mutation)",
-    async ({ creator, mutation }, { storeFixture }) => {
-      const {
-        createChannelNoticeFixture,
-        startRunFixture,
-        store,
-        recordReadyHarnessCatalog,
-        database,
-      } = storeFixture;
-      const channel =
-        creator === "channel"
-          ? await createChannelNoticeFixture(`parent-fence-${mutation}`, {
-              accessMode: "anyone",
-            })
-          : null;
-      const parent = channel ? null : await startRunFixture(`parent-fence-${mutation}`);
-      const fixture = channel?.fixture ?? parent!;
+
+  it.for(["creation-first", "retirement-first"] as const)(
+    "fences messaging task creation against profile retirement (%s)",
+    async (order, { storeFixture }) => {
+      const { createChannelNoticeFixture, store, database, recordReadyHarnessCatalog } =
+        storeFixture;
+      const channel = await createChannelNoticeFixture("profile-retirement", {
+        accessMode: "anyone",
+      });
+      const f = channel.fixture;
       const environmentId = await store.createEnvironment({
         kind: "local",
-        name: "Unbound child environment",
-        runnerId: fixture.runnerId,
+        name: "Messaging engine",
+        runnerId: f.runnerId,
       });
       const harness = await store.createHarnessInstance({
         config: {},
         driverKind: HarnessIdSchema.parse("native"),
         environmentId,
-        name: "Child engine",
-        sourceId: "native",
+        name: "Messaging profile",
         stateKind: "isolated",
       });
       await recordReadyHarnessCatalog(environmentId, harness);
-      const otherUserId = await store.createUser("Other parent owner");
-      const otherRunnerId = createId("runner");
-      await enrollTestRunner(store, {
-        createdBy: otherUserId,
-        environmentId: createId("environment"),
-        name: "Other parent runner",
-        runnerId: otherRunnerId,
-        runnerKind: "local",
-        tokenSuffix: "parent-fence-other",
-      });
-      if (channel)
-        channel.availableEngines.splice(0, 1, {
-          environmentId,
-          driverKinds: [harness.driverKind],
-        });
-      const held = Promise.withResolvers<void>();
-      const release = Promise.withResolvers<void>();
-      const blocker = database.transaction().execute(async (transaction) => {
-        await transaction
-          .selectFrom("executionEnvironments")
-          .select("id")
-          .where("id", "=", environmentId)
-          .forNoKeyUpdate()
-          .execute();
-        if (mutation === "reassign") {
-          await transaction
-            .updateTable("executionEnvironments")
-            .set({
-              runnerId: otherRunnerId,
-            })
-            .where("id", "=", environmentId)
-            .execute();
-        } else {
-          await transaction
-            .updateTable("harnessInstances")
-            .set({
-              enabled: false,
-              isDefault: false,
-              removedAt: new Date(),
-            })
-            .where("id", "=", harness.id)
-            .execute();
-        }
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      const creating = channel
-        ? channel.adopt({
-            eventId: "Ev-PARENT-FENCE",
-          })
-        : store.delegateThread({
-            accessMode: "auto",
-            createdBy: fixture.userId,
-            environmentId,
-            harnessInstanceId: harness.id,
-            idempotencyKey: "parent-fence-child",
-            modelSelection: testModelSelection,
-            origin: {
-              kind: "run",
-              parentRunId: parent!.run.id,
-              parentThreadId: fixture.thread.id,
-            },
-            task: [
-              {
-                text: "Child task",
-                type: "text",
-              },
-            ],
-            title: "Child task",
-          });
-      void creating.catch(() => undefined);
-      let settled = false;
-      void creating.then(
-        () => {
-          settled = true;
-        },
-        () => {
-          settled = true;
-        },
+      const committed = await channel.channels.commitIngress(
+        channel.configured.connection.id,
+        channel.event({ eventId: "profile-retirement" }),
       );
-      const waiters = async () =>
-        (
-          await sql<{
-            query: string;
-          }>`select query from pg_stat_activity
-      where datname = current_database() and application_name = 'opensteer-integration-test'
-      and wait_event_type = 'Lock'`.execute(database)
-        ).rows;
+      const claimed = await channel.claimFor(committed.ingressId);
+      const input = {
+        ingressId: claimed.id,
+        claimToken: claimed.claimToken,
+        notices: testChannelNotices,
+        availableEngines: [{ environmentId, driverKinds: [harness.driverKind] }],
+      };
+      const barrier = pauseAfterLock(
+        database,
+        (node) =>
+          node.includes('"name":"execution_environments"') &&
+          node.includes(order === "creation-first" ? "ForShare" : "ForNoKeyUpdate"),
+      );
+      let adoption: ReturnType<ChannelStore["adoptIngress"]> | undefined;
+      let removal: ReturnType<OpensteerStore["removeHarnessInstance"]> | undefined;
       try {
-        await expect.poll(async () => settled || (await waiters()).length > 0).toBe(true);
-        const blockedBeforeValidation =
-          !settled &&
-          (await waiters()).some(
-            ({ query }) =>
-              query.startsWith("select") && query.includes('from "execution_environments"'),
+        if (order === "creation-first") {
+          adoption = new ChannelStore(barrier.database).adoptIngress(input);
+          void adoption.catch(() => undefined);
+        } else {
+          removal = new OpensteerStore(barrier.database).removeHarnessInstance(
+            environmentId,
+            harness.id,
           );
-        release.resolve();
-        await blocker;
-        const outcome = await Promise.allSettled([creating]);
-        expect(blockedBeforeValidation).toBe(true);
-        expect(outcome[0].status).toBe("rejected");
-        expect(
-          await database
-            .selectFrom("threads")
-            .select("id")
-            .where("environmentId", "=", environmentId)
-            .execute(),
-        ).toEqual([]);
+          void removal.catch(() => undefined);
+        }
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Messaging profile race never held its environment fence"),
+        });
+        if (order === "creation-first")
+          removal = store.removeHarnessInstance(environmentId, harness.id);
+        else adoption = channel.channels.adoptIngress(input);
+        void removal!.catch(() => undefined);
+        void adoption!.catch(() => undefined);
+        await vi.waitFor(
+          async () => {
+            const waiting = await sql<{
+              query: string;
+            }>`select query from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`.execute(
+              database,
+            );
+            expect(
+              waiting.rows.some(({ query }) => query.includes('from "execution_environments"')),
+              "Messaging creation and retirement never met at the environment fence",
+            ).toBe(true);
+          },
+          { timeout: 5_000 },
+        );
+        barrier.release();
+        if (order === "creation-first") {
+          await expect(adoption).resolves.toMatchObject({ kind: "adopted" });
+          await expect(removal).rejects.toMatchObject({ code: "conflict" });
+          expect(
+            await database
+              .selectFrom("threads")
+              .select("harnessInstanceId")
+              .where("environmentId", "=", environmentId)
+              .execute(),
+          ).toEqual([{ harnessInstanceId: harness.id }]);
+        } else {
+          await removal;
+          await expect(adoption).rejects.toBeInstanceOf(ChannelIngressDeferredError);
+          expect(
+            await database
+              .selectFrom("threads")
+              .select("id")
+              .where("environmentId", "=", environmentId)
+              .execute(),
+          ).toEqual([]);
+        }
+        expect(barrier.conflicts).toEqual([]);
       } finally {
-        release.resolve();
-        await blocker;
-        await Promise.allSettled([creating]);
+        barrier.release();
+        await Promise.allSettled([adoption, removal]);
       }
     },
   );
-  it("fences Thread creation before rechecking a reassigned execution environment", async ({
-    storeFixture,
-  }) => {
-    const { createRunFixture, store, database } = storeFixture;
-    const fixture = await createRunFixture("environment-fence-creator");
-    const otherUserId = await store.createUser("Other environment owner");
-    const otherRunnerId = createId("runner");
-    await enrollTestRunner(store, {
-      createdBy: otherUserId,
-      environmentId: createId("environment"),
-      name: "Other owner",
-      runnerId: otherRunnerId,
-      runnerKind: "local",
-      tokenSuffix: "environment-fence-other",
-    });
-    const environmentId = await store.createEnvironment({
-      kind: "local",
-      name: "Unbound environment",
-      runnerId: fixture.runnerId,
-    });
-    const harness = await store.createHarnessInstance({
-      config: {},
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Native",
-      sourceId: "native",
-      stateKind: "isolated",
-    });
-    const held = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    await sql`create function phase3k_environment_barrier() returns trigger language plpgsql as $$
-      begin perform pg_advisory_xact_lock(731003, 2); return new; end $$`.execute(database);
-    await sql`create trigger phase3k_environment_barrier before update of runner_id on execution_environments
-      for each row when (old.runner_id is distinct from new.runner_id) execute function phase3k_environment_barrier()`.execute(
-      database,
-    );
-    const blocker = database.transaction().execute(async (transaction) => {
-      await sql`select pg_advisory_xact_lock(731003, 2)`.execute(transaction);
-      held.resolve();
-      await release.promise;
-    });
-    await held.promise;
-    const assigning = store.assignEnvironmentRunner(environmentId, otherRunnerId);
-    void assigning.catch(() => undefined);
-    let creating: ReturnType<OpensteerStore["createThread"]> | undefined;
-    const waiters = async () =>
-      (
-        await sql<{
-          query: string;
-        }>`select query from pg_stat_activity
-      where datname = current_database() and application_name = 'opensteer-integration-test'
-      and wait_event_type = 'Lock'`.execute(database)
-      ).rows;
-    try {
-      await expect
-        .poll(async () =>
-          (await waiters()).some(({ query }) =>
-            query.startsWith('update "execution_environments"'),
-          ),
-        )
-        .toBe(true);
-      creating = store.createThread({
-        createdBy: fixture.userId,
-        environmentId,
-        harnessInstanceId: harness.id,
-        idempotencyKey: "environment-fence-thread",
-        modelSelection: testModelSelection,
-        title: "Must recheck ownership",
-      });
-      void creating.catch(() => undefined);
-      await expect.poll(async () => (await waiters()).length).toBe(2);
-      expect(
-        (await waiters()).some(
-          ({ query }) =>
-            query.startsWith("select") && query.includes('from "execution_environments"'),
-        ),
-      ).toBe(true);
-      release.resolve();
-      await blocker;
-      await expect(assigning).resolves.toBeUndefined();
-      await expect(creating).rejects.toMatchObject({
-        code: "forbidden",
-      });
-      expect(
-        await database
-          .selectFrom("threads")
-          .select("id")
-          .where("environmentId", "=", environmentId)
-          .execute(),
-      ).toEqual([]);
-    } finally {
-      release.resolve();
-      await blocker;
-      await Promise.allSettled([assigning, creating]);
-      await sql`drop trigger phase3k_environment_barrier on execution_environments`.execute(
-        database,
-      );
-      await sql`drop function phase3k_environment_barrier()`.execute(database);
-    }
-  });
-
   it("keeps durable Request event foreign keys compatible with Runner ingestion", async ({
     storeFixture,
   }) => {

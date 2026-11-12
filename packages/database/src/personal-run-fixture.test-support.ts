@@ -22,7 +22,7 @@ export function createPersonalRunFixturePort(store: OpensteerStore): PersonalRun
         driverKind: HarnessIdSchema.parse("native"),
         environmentId: environment.id,
         name: `Fixture ${input.suffix}`,
-        stateKind: "ambient",
+        stateKind: "isolated",
       });
       await store.recordHarnessCatalogs({
         environmentId: environment.id,

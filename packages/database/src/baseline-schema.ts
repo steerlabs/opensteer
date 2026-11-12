@@ -1320,6 +1320,10 @@ create table requests (
   "resolved_by" text,
   "settlement_provenance" jsonb,
   "created_at" timestamp with time zone not null default now(),
+  constraint requests_origin_check check (
+    num_nonnulls(originating_run_id, originating_occurrence_id) = 1
+    and (mode <> 'live' or originating_run_id is not null)
+  ),
   primary key ("id")
 );
 
@@ -2488,6 +2492,42 @@ alter table threads add check (folder_path <> '' and purpose in ('task','voice',
 alter table threads add check ((team_id is null and channel_id is null and thread_root_id is null) or (team_id is not null and channel_id is not null and thread_root_id is not null and purpose = 'task'));
 create unique index threads_team_origin on threads(team_id,channel_id,thread_root_id) where team_id is not null;
 create index threads_folder_tasks on threads(folder_computer_id,folder_path,asked_at desc,id) where listed;
+create function opensteer_prevent_harness_instance_identity_change() returns trigger language plpgsql as $$
+begin
+  if new.environment_id is distinct from old.environment_id
+    or new.driver_kind is distinct from old.driver_kind
+    or new.state_kind is distinct from old.state_kind then
+    raise exception 'harness instance environment, driver, and state kind are immutable';
+  end if;
+  if new.runtime_revision < old.runtime_revision then
+    raise exception 'harness runtime revision cannot decrease';
+  end if;
+  if old.removed_at is not null and new.removed_at is distinct from old.removed_at then
+    raise exception 'a removed harness instance cannot be restored';
+  end if;
+  return new;
+end $$;
+create trigger harness_instances_keep_identity before update on harness_instances
+for each row execute function opensteer_prevent_harness_instance_identity_change();
+
+create function opensteer_enforce_command_execution_authority() returns trigger language plpgsql as $$
+begin
+  if new.type in ('run.execute', 'trigger.execute', 'run.steer', 'run.interrupt', 'request.respond')
+    and not exists (
+      select 1 from threads thread
+      join execution_environments environment on environment.id = thread.environment_id
+      join personal_settings settings on settings.owner_id = new.requested_by
+      join users person on person.id = settings.owner_id and person.disabled_at is null
+      where thread.id = new.thread_id and thread.environment_id = new.environment_id
+        and environment.runner_id = settings.agent_home_computer_id
+    ) then
+    raise exception 'command requester cannot execute the thread environment';
+  end if;
+  return new;
+end $$;
+create trigger commands_execution_authority before insert or update of environment_id, thread_id, requested_by, type on commands
+for each row execute function opensteer_enforce_command_execution_authority();
+
 create function opensteer_keep_task_location() returns trigger language plpgsql as $$
 begin
   if row(old.folder_computer_id, old.folder_path, old.team_id, old.channel_id, old.thread_root_id)

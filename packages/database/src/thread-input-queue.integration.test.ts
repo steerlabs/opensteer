@@ -61,7 +61,7 @@ integration.sequential("thread input queue promotion", () => {
       readPersonalResources: readEmptyPersonalResources,
     });
     const attachments = new AttachmentStore(database);
-    async function fixture(suffix: string, collaborator = false) {
+    async function fixture(suffix: string) {
       const personal = await personalFixtureOwner(database, databaseUrl);
       const { userId: ownerId, runnerId, environmentId } = personal;
       await enrollRunner({ environmentId, runnerId, suffix, userId: ownerId });
@@ -96,7 +96,6 @@ integration.sequential("thread input queue promotion", () => {
         expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
       });
       const userId = ownerId;
-      if (collaborator) throw new Error("This fixture only admits the personal owner");
       const { thread } = await store.createThread({
         createdBy: userId,
         environmentId,
@@ -1752,84 +1751,27 @@ integration.sequential("thread input queue promotion", () => {
       items: [],
     });
   });
-  it("refuses to withdraw another member's queued message", async ({ storeFixture }) => {
-    const { fixture, store, database } = storeFixture;
-    const f = await fixture("withdraw-other", true);
-    const theirs = await store.enqueueThreadInput({
-      content: [
-        {
-          text: "Owner follow-up",
-          type: "text",
-        },
-      ],
-      idempotencyKey: "send-withdraw-other-owner",
-      policy: "queue",
-      requestedBy: f.ownerId,
-      source: {
-        kind: "human",
-      },
-      threadId: f.thread.id,
-    });
+  it("refuses a nonowner's withdrawal of a personal queued message", async ({ storeFixture }) => {
+    const { fixture, queued, store, database } = storeFixture;
+    const f = await fixture("withdraw-other");
+    const sent = await queued(f, "withdraw-other");
     await expect(
       store.cancelThreadInput({
-        idempotencyKey: "cancel-withdraw-other",
-        messageId: theirs.message.id,
-        requestedBy: f.userId,
+        idempotencyKey: "unauthorized-withdrawal",
+        messageId: sent.message.id,
+        requestedBy: await store.createUser("Outsider"),
         threadId: f.thread.id,
       }),
-    ).rejects.toMatchObject({
-      code: "forbidden",
-    });
-    await expect(
-      database
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(
+      await database
         .selectFrom("threadInputs")
         .select("state")
-        .where("messageId", "=", theirs.message.id)
+        .where("messageId", "=", sent.message.id)
         .executeTakeFirstOrThrow(),
-    ).resolves.toEqual({
-      state: "pending",
-    });
+    ).toEqual({ state: "pending" });
   });
-  it("offers withdrawal only for the reader's own queued messages", async ({ storeFixture }) => {
-    const { fixture, queued, store } = storeFixture;
-    const f = await fixture("can-cancel", true);
-    const mine = await queued(f, "can-cancel");
-    const theirs = await store.enqueueThreadInput({
-      content: [
-        {
-          text: "Owner follow-up",
-          type: "text",
-        },
-      ],
-      idempotencyKey: "send-can-cancel-owner",
-      policy: "queue",
-      requestedBy: f.ownerId,
-      source: {
-        kind: "human",
-      },
-      threadId: f.thread.id,
-    });
-    const view = await store.getThreadInputQueue({
-      requestedBy: f.userId,
-      threadId: f.thread.id,
-    });
-    expect(
-      view.items.map(({ canCancel, message }) => ({
-        canCancel,
-        id: message.id,
-      })),
-    ).toEqual([
-      {
-        canCancel: true,
-        id: mine.message.id,
-      },
-      {
-        canCancel: false,
-        id: theirs.message.id,
-      },
-    ]);
-    expect(view.items.every((item) => !("status" in item))).toBe(true);
-  });
+
   it("refuses to withdraw a message a promotion has already claimed", async ({ storeFixture }) => {
     const { fixture, queued, store, database } = storeFixture;
     const f = await fixture("withdraw-claimed");
@@ -2134,7 +2076,7 @@ integration.sequential("thread input queue promotion", () => {
       storeFixture,
     }) => {
       const { fixture, queued, database, store } = storeFixture;
-      const f = await fixture(`connection-person-${revoked}`, true);
+      const f = await fixture(`connection-person-${revoked}`);
       const connections = new AgentConnectionStore(database);
       const createConnection = async () => {
         const connection = await connections.create({
@@ -2206,10 +2148,6 @@ integration.sequential("thread input queue promotion", () => {
           ...person,
           authority: other,
         },
-        {
-          ...person,
-          requestedBy: f.ownerId,
-        },
       ]) {
         const restricted = await store.getThreadInputQueue(caller);
         expect(
@@ -2273,32 +2211,14 @@ integration.sequential("thread input queue promotion", () => {
       expect(remaining).toEqual([move.message.id, anchor.message.id]);
     });
   }
-  it("moves only the reader's own messages, around anyone's", async ({ storeFixture }) => {
+  it("moves the person's queued messages around a platform continuation without moving it", async ({
+    storeFixture,
+  }) => {
     const { fixture, queued, store, move, order } = storeFixture;
-    const f = await fixture("own-move", true);
+    const f = await fixture("own-move");
     const mine = await queued(f, "own-move");
-    const theirs = await store.enqueueThreadInput({
-      content: [
-        {
-          text: "Owner follow-up",
-          type: "text",
-        },
-      ],
-      idempotencyKey: "send-own-move-owner",
-      policy: "queue",
-      requestedBy: f.ownerId,
-      source: {
-        kind: "human",
-      },
-      threadId: f.thread.id,
-    });
     const followUp = await store.enqueueThreadInput({
-      content: [
-        {
-          text: "Request fulfilled. Continue.",
-          type: "text",
-        },
-      ],
+      content: [{ text: "Request fulfilled. Continue.", type: "text" }],
       idempotencyKey: "platform-own-move",
       policy: "queue",
       requestedBy: f.userId,
@@ -2310,44 +2230,18 @@ integration.sequential("thread input queue promotion", () => {
       },
       threadId: f.thread.id,
     });
-    const view = await store.getThreadInputQueue({
-      requestedBy: f.userId,
-      threadId: f.thread.id,
-    });
+    const view = await store.getThreadInputQueue({ requestedBy: f.userId, threadId: f.thread.id });
     expect(
-      view.items.map(({ canMove, message }) => ({
-        canMove,
-        id: message.id,
-      })),
+      view.items.map(({ canMove, canCancel, message }) => ({ canMove, canCancel, id: message.id })),
     ).toEqual([
-      {
-        canMove: true,
-        id: mine.message.id,
-      },
-      {
-        canMove: false,
-        id: theirs.message.id,
-      },
-      {
-        canMove: false,
-        id: followUp.message.id,
-      },
+      { canMove: true, canCancel: true, id: mine.message.id },
+      { canMove: false, canCancel: false, id: followUp.message.id },
     ]);
-    const forbidden = {
-      code: "forbidden",
-    };
-    await expect(move(f, theirs.message.id, mine.message.id, "move-theirs")).rejects.toMatchObject(
-      forbidden,
-    );
     await expect(
       move(f, followUp.message.id, mine.message.id, "move-follow-up"),
-    ).rejects.toMatchObject(forbidden);
+    ).rejects.toMatchObject({ code: "forbidden" });
     await move(f, mine.message.id, null, "move-mine-last");
-    await expect(order(f)).resolves.toEqual([
-      theirs.message.id,
-      followUp.message.id,
-      mine.message.id,
-    ]);
+    await expect(order(f)).resolves.toEqual([followUp.message.id, mine.message.id]);
   });
   it("replays a retried move instead of applying it over a newer arrangement", async ({
     storeFixture,

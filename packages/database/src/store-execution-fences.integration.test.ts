@@ -16,14 +16,16 @@ import {
   pendingEvent,
 } from "./store.integration.test-support.js";
 describeStore("PostgreSQL store", (it) => {
-  it("reserves delegation task idempotency before execution fences", async ({ storeFixture }) => {
+  it("reserves Deployment event order before delegation task idempotency", async ({
+    storeFixture,
+  }) => {
     const { startRunFixture, database, store } = storeFixture;
     const fixture = await startRunFixture("delegation-idempotency-order");
     const key = "delegation-idempotency-order";
     const barrier = pauseAfterLock(database, (node) => node.includes("pg_advisory_xact_lock"));
     const peer = barrier.database.transaction().execute(async (transaction) => {
-      await lockCommandIdempotency(transaction, fixture.userId, `${key}:task`);
       await lockDeploymentEvents(transaction);
+      await lockCommandIdempotency(transaction, fixture.userId, `${key}:task`);
     });
     void peer.catch(() => undefined);
     let delegation: ReturnType<OpensteerStore["delegateThread"]> | undefined;
@@ -59,7 +61,7 @@ describeStore("PostgreSQL store", (it) => {
         select query from pg_stat_activity where datname=current_database()
         and application_name='opensteer-integration-test' and wait_event_type='Lock'
       `.execute(database)
-          ).rows.some(({ query }) => query.includes("pg_advisory_xact_lock")),
+          ).rows.some(({ query }) => query.includes("deployment_event_state")),
         )
         .toBe(true);
       barrier.release();
@@ -625,6 +627,7 @@ describeStore("PostgreSQL store", (it) => {
         .executeTakeFirstOrThrow();
       const barrier = pauseAfterLock(database, (node) => node.includes(resource));
       const peer = barrier.database.transaction().execute(async (transaction) => {
+        await lockDeploymentEvents(transaction);
         await sql`select id from ${sql.table(resource)} where id=${scenario === "nested-delegation" ? run.causalChainId : scenario === "cancel-request" ? opened!.request.id : delegated.assignment.id} for no key update`.execute(
           transaction,
         );
@@ -688,7 +691,7 @@ describeStore("PostgreSQL store", (it) => {
           select query from pg_stat_activity where datname=current_database()
           and application_name='opensteer-integration-test' and wait_event_type='Lock'
         `.execute(database)
-            ).rows.some(({ query }) => query.includes(resource)),
+            ).rows.some(({ query }) => query.includes("deployment_event_state")),
           )
           .toBe(true);
         barrier.release();
@@ -1611,7 +1614,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerId: await store.createUser("Outsider"),
         nodeId,
       }),
-    ).resolves.toBeNull();
+    ).rejects.toMatchObject({ code: "forbidden" });
     const nodes = (await store.listRunAttemptsForOwner({
       ownerId: fixture.userId,
       runId: fixture.run.id,

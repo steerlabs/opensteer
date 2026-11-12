@@ -3,7 +3,7 @@ import { expect } from "vitest";
 import { jsonValue } from "./store-primitives.js";
 import { describeStore, testModelSelection } from "./store.integration.test-support.js";
 describeStore("person-asked Thread listing", (it) => {
-  it("lists only human-seeded Chat delegations and promotes on re-task", async ({
+  it("lists only human-seeded Voice delegations and promotes on re-task", async ({
     storeFixture,
   }) => {
     const { startRunFixture, store, database } = storeFixture;
@@ -139,9 +139,7 @@ describeStore("person-asked Thread listing", (it) => {
       },
     ]);
   });
-  it("keeps a person's child inside a task, and lists one they make in Chat", async ({
-    storeFixture,
-  }) => {
+  it("keeps a person's child inside its parent, including Voice", async ({ storeFixture }) => {
     const { createRunFixture, database, store } = storeFixture;
     const f = await createRunFixture("person-child");
     const create = (key: string) =>
@@ -162,13 +160,11 @@ describeStore("person-asked Thread listing", (it) => {
       })
       .where("id", "=", f.thread.id)
       .execute();
-    expect((await create("from-chat")).thread.listed).toBe(true);
+    expect((await create("from-voice")).thread.listed).toBe(false);
   });
   for (const kind of ["trigger", "watch"] as const) {
-    it(`never lists ${kind} work on Chat, including a re-tasked helper`, async ({
-      storeFixture,
-    }) => {
-      const { startRunFixture, startTriggerOccurrence, store, database, triggers } = storeFixture;
+    it(`keeps ${kind} work unlisted, including a re-tasked helper`, async ({ storeFixture }) => {
+      const { startRunFixture, startTriggerOccurrence, store, triggers } = storeFixture;
       const f = await startRunFixture(`automation-${kind}`);
       const base = {
         accessMode: "auto" as const,
@@ -199,13 +195,6 @@ describeStore("person-asked Thread listing", (it) => {
         requestedBy: f.userId,
         idempotencyKey: "stop-helper",
       });
-      await database
-        .updateTable("threads")
-        .set({
-          purpose: "voice",
-        })
-        .where("id", "=", f.thread.id)
-        .execute();
       const occurrence = await startTriggerOccurrence(f, kind);
       const watch =
         kind === "watch"

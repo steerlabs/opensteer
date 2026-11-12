@@ -1,3 +1,4 @@
+import { personalReachableGrant, phoneRunnerGrant } from "./runner-store.js";
 import { NotificationStore } from "./notification-store.js";
 import { runReply } from "./run-reply.js";
 import type { StoreFixture } from "./store.integration.test-support.js";
@@ -486,6 +487,7 @@ describeStore("PostgreSQL store", (it) => {
         },
         input: {
           ...baseInput,
+          threadId: createId("thread"),
         },
       }),
     ).rejects.toMatchObject({
@@ -671,15 +673,15 @@ describeStore("PostgreSQL store", (it) => {
         code: "forbidden",
       });
     });
-    it("ends tool authority with its Runner", async ({ storeFixture }) => {
+    it("protects the hosting computer while preserving its Run authority", async ({
+      storeFixture,
+    }) => {
       const { startRunFixture, store } = storeFixture;
-      const revoked = await startRunFixture("grant-runner-revoked");
-      await store.revokeRunner(revoked.runnerId, revoked.userId, {
-        allowDeployment: true,
-      });
-      await expect(store.assertActiveGrant(capability(revoked))).rejects.toMatchObject({
-        code: "forbidden",
-      });
+      const started = await startRunFixture("hosting-computer-removal");
+      await expect(
+        store.revokeRunner(started.runnerId, started.userId, { allowDeployment: true }),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(store.assertActiveGrant(capability(started))).resolves.toBeUndefined();
     });
     it("revokes a worker's grant when its Assignment is cancelled", async ({ storeFixture }) => {
       const { startRunFixture, store } = storeFixture;
@@ -921,7 +923,7 @@ describeStore("PostgreSQL store", (it) => {
       bindingGeneration: 1,
       environmentId: fixture.environmentId,
       requestedBy: fixture.userId,
-      runnerBootId: "boot-agent-control-agent-admission-authority-fence",
+      runnerBootId: "agent-admission-authority-fence",
       runnerId: fixture.runnerId,
     };
     const admitted = {
@@ -1073,7 +1075,8 @@ describeStore("PostgreSQL store", (it) => {
   it("stores only coherent adapter definitions, runtime snapshots, and server authority", async ({
     storeFixture,
   }) => {
-    const { database } = storeFixture;
+    const { database, createRunFixture } = storeFixture;
+    await createRunFixture("adapter-boundary");
     const platform = new IntegrationPlatformStore(database);
     const installationId = createIntegrationId("installation");
     const contract = testOpenApiAdapterContract({
@@ -1327,11 +1330,14 @@ describeStore("PostgreSQL store", (it) => {
         readonly tokenSuffix: string;
       },
     ): Promise<RunnerId> {
-      const { store, database } = storeFixture;
+      const { store, database, enablePersonalRemoteAccess } = storeFixture;
+      await enablePersonalRemoteAccess();
       const runnerId = createId("runner");
       const environmentId = createId("environment");
       await enrollTestRunner(store, {
         createdBy: input.ownerId,
+        allowedModules: personalReachableGrant,
+        modules: {},
         environmentId,
         name: input.name,
         runnerId,
@@ -1392,7 +1398,7 @@ describeStore("PostgreSQL store", (it) => {
     }
     it("updates full access only on a non-revoked shell descriptor", async ({ storeFixture }) => {
       const { store, database } = storeFixture;
-      const ownerId = await store.createUser("Full access owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Mac",
@@ -1429,7 +1435,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("writes a policy only over the revision the editor read", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
@@ -1496,7 +1502,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
@@ -1565,7 +1571,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -1624,60 +1630,10 @@ describeStore("PostgreSQL store", (it) => {
         code: "conflict",
       });
     });
-    it("refuses owner reach on a computer that has no owner", async ({ storeFixture }) => {
-      const { store } = storeFixture;
-      const adminId = await store.createUser("Administrator");
 
-      // A server Deployment's own main computer: the Deployment owns it and
-      // nobody in particular does, so "My agents" would name nobody.
-      const runnerId = await shellMachine(storeFixture, {
-        name: "Build box",
-        ownerId: adminId,
-        runnerKind: "main",
-        tokenSuffix: "owner-reach-none",
-      });
-      await expect(store.effectiveMachineOwner(runnerId)).resolves.toEqual({
-        effectiveOwner: null,
-        ownerKind: "deployment",
-      });
-      await expect(
-        store.updateMachineAccessPolicy({
-          allowDeployment: true,
-          expectedRevision: 1,
-          ownerId: adminId,
-          policy: {
-            ...openPolicy,
-            reach: "owner",
-          },
-          runnerId,
-        }),
-      ).rejects.toMatchObject({
-        code: "bad_request",
-        message:
-          "This computer belongs to the Deployment rather than to a person, so it cannot be limited to its owner's agents.",
-      });
-      // Nothing was written, so the revision did not move either.
-      await expect(store.getMachineAccessTarget(runnerId)).resolves.toMatchObject({
-        revision: 1,
-      });
-      await expect(
-        store.updateMachineAccessPolicy({
-          allowDeployment: true,
-          expectedRevision: 1,
-          ownerId: adminId,
-          policy: {
-            ...openPolicy,
-            reach: "deployment",
-          },
-          runnerId,
-        }),
-      ).resolves.toMatchObject({
-        outcome: "updated",
-      });
-    });
     it("reports effective owners for a page of computers in one read", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const mine = await shellMachine(storeFixture, {
         ownerId,
         name: "Mine",
@@ -1699,7 +1655,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("refuses a policy write from somebody else's account", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const strangerId = await store.createUser("Stranger");
       const runnerId = await shellMachine(storeFixture, {
         ownerId,
@@ -1718,28 +1674,11 @@ describeStore("PostgreSQL store", (it) => {
         code: "not_found",
       });
     });
-    it("names the Personal Deployment owner as the Main machine's owner", async ({
-      storeFixture,
-    }) => {
-      const { store } = storeFixture;
-      const ownerId = await store.createUser("Personal owner");
-
-      await store.ensureDeployment({
-        canonicalOrigin: "http://127.0.0.1:4310",
-        deploymentId: createId("deployment"),
-        deploymentShape: {
-          kind: "personal",
-        },
-        hostInstanceId: createId("hostInstance"),
-      });
-      const mainId = await shellMachine(storeFixture, {
-        name: "This Mac",
-        ownerId,
-        runnerKind: "main",
-        tokenSuffix: "personal-main",
-      });
-      await expect(store.effectiveMachineOwner(mainId)).resolves.toEqual({
-        effectiveOwner: ownerId,
+    it("names the personal owner as the hosting computer's owner", async ({ storeFixture }) => {
+      const { store, createRunFixture } = storeFixture;
+      const f = await createRunFixture("machine-owner");
+      await expect(store.effectiveMachineOwner(f.runnerId)).resolves.toEqual({
+        effectiveOwner: f.userId,
         ownerKind: "deployment",
       });
       await expect(store.effectiveMachineOwner(createId("runner"))).resolves.toBeNull();
@@ -1748,7 +1687,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const strangerId = await store.createUser("Stranger");
       const closed = await shellMachine(storeFixture, {
         ownerId,
@@ -1774,6 +1713,8 @@ describeStore("PostgreSQL store", (it) => {
       const noModule = createId("runner");
       await enrollTestRunner(store, {
         createdBy: ownerId,
+        allowedModules: personalReachableGrant,
+        modules: {},
         environmentId: createId("environment"),
         name: "No shell",
         runnerId: noModule,
@@ -1830,7 +1771,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const self = await shellMachine(storeFixture, {
         ownerId,
         name: "Caller",
@@ -1865,7 +1806,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Laptop",
@@ -1876,6 +1817,8 @@ describeStore("PostgreSQL store", (it) => {
         createdBy: ownerId,
         environmentId: createId("environment"),
         name: "Old computer",
+        allowedModules: personalReachableGrant,
+        modules: {},
         runnerId: noModule,
         runnerKind: "local",
         tokenSuffix: "connect-no-module",
@@ -1918,7 +1861,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -1982,7 +1925,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("ends every open session at Host startup", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2032,7 +1975,7 @@ describeStore("PostgreSQL store", (it) => {
       storeFixture,
     }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2095,7 +2038,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("pages history newest first and stops at the last row", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2157,7 +2100,7 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("shows the sessions open on a machine right now", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const target = await shellMachine(storeFixture, {
         ownerId,
         name: "Target",
@@ -2203,9 +2146,9 @@ describeStore("PostgreSQL store", (it) => {
     });
     it("stores and replays exactly the requested enrollment grant", async ({ storeFixture }) => {
       const { store } = storeFixture;
-      const ownerId = await store.createUser("Machine owner");
+      const { userId: ownerId } = await storeFixture.createRunFixture("machine-owner");
       const request = {
-        allowedModules: ["agents"] as const,
+        allowedModules: personalReachableGrant,
         createdBy: ownerId,
         expiresAt: new Date(Date.now() + 60_000),
         id: `ren_${randomUUID()}`,
@@ -2216,15 +2159,15 @@ describeStore("PostgreSQL store", (it) => {
         tokenHash: "sha256:replay-with-shell-token",
       };
       const created = await store.createRunnerEnrollment(request);
-      expect(created.allowedModules).toEqual(["agents"]);
+      expect(created.allowedModules).toEqual(personalReachableGrant);
       await expect(store.createRunnerEnrollment(request)).resolves.toMatchObject({
-        allowedModules: ["agents"],
+        allowedModules: personalReachableGrant,
         id: created.id,
       });
       await expect(
         store.createRunnerEnrollment({
           ...request,
-          allowedModules: ["agents", "browser"],
+          allowedModules: phoneRunnerGrant,
           id: `ren_${randomUUID()}`,
         }),
       ).rejects.toMatchObject({

@@ -26,18 +26,13 @@ async function fixture() {
   const database = createDatabase({ connectionString: clone.url, maxConnections: 4 });
   try {
     const personal = await seedPersonalFixture(database, directory);
-    const principalId = `pri_${crypto.randomUUID()}`;
+    const { id: principalId } = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", personal.userId)
+      .executeTakeFirstOrThrow();
     const harnessInstanceId = createId("harnessInstance");
     const threadId = createId("thread");
-    await database
-      .insertInto("principals")
-      .values({
-        id: principalId as import("@opensteer/channel-core").PrincipalId,
-        kind: "user",
-        userId: personal.userId,
-        displayName: "Alex",
-      })
-      .execute();
     await database
       .insertInto("harnessInstances")
       .values({
@@ -80,7 +75,7 @@ async function fixture() {
         }),
         status: "idle",
         createdBy: personal.userId,
-        createdByPrincipalId: principalId as import("@opensteer/channel-core").PrincipalId,
+        createdByPrincipalId: principalId,
       })
       .execute();
     return {

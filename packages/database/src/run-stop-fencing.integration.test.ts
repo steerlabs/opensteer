@@ -1,3 +1,4 @@
+import { jsonValue } from "./store-primitives.js";
 import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 
@@ -353,7 +354,10 @@ integration.sequential("Run stop fencing", () => {
       };
       await database
         .updateTable("runners")
-        .set({ capabilities: descriptor.capabilities, moduleDescriptors: descriptor.modules })
+        .set({
+          capabilities: jsonValue(descriptor.capabilities),
+          moduleDescriptors: descriptor.modules,
+        })
         .where("id", "=", input.runnerId)
         .execute();
     }

@@ -1888,7 +1888,7 @@ describeStore("PostgreSQL store", (it) => {
       }),
     ]);
   });
-  it("names a Run's requester only for its own Thread and Workspace", async ({ storeFixture }) => {
+  it("names a Run's requester only for its own Thread", async ({ storeFixture }) => {
     const { createRunFixture, store } = storeFixture;
     const fixture = await createRunFixture("run-requester");
     const work = await store.enqueueThreadInput({
@@ -1912,11 +1912,6 @@ describeStore("PostgreSQL store", (it) => {
       threadId: fixture.thread.id,
     };
     await expect(store.runRequester(scope)).resolves.toBe(fixture.userId);
-    await expect(
-      store.runRequester({
-        ...scope,
-      }),
-    ).resolves.toBeNull();
     await expect(
       store.runRequester({
         ...scope,
