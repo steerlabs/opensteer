@@ -1,4 +1,3 @@
-import { sql } from "kysely";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -862,8 +861,6 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
     snapshotError = error;
   });
   let writer: ReturnType<typeof requests.create> | undefined;
-  let writerError: unknown;
-  let writerCompleted = false;
   try {
     await withTimeout(ready.promise, 5_000, {
       timeoutError: () => new Error("Snapshot never entered its resource transaction"),
@@ -887,34 +884,20 @@ it("bounds Deployment-wide Needs you and rolls navigation up without changing Re
         subject: { kind: "task", id: child.id },
       },
     });
-    void writer.then(
-      () => {
-        writerCompleted = true;
-      },
-      (error) => {
-        writerError = error;
-      },
-    );
-    await vi.waitFor(
-      async () => {
-        if (snapshotError) throw snapshotError;
-        if (writerError) throw writerError;
-        if (writerCompleted)
-          throw new Error("A later Request committed while the snapshot held its fence");
-        const active = await sql<{
-          count: string;
-        }>`select count(*) from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock'`.execute(
-          f.database,
-        );
-        expect(
-          Number(active.rows[0]!.count),
-          "The later Request never waited on the snapshot fence",
-        ).toBeGreaterThanOrEqual(1);
-      },
-      { timeout: 2_000 },
-    );
+    // A pure read holds no mutation fence: the later Request commits while the
+    // snapshot is open, and the snapshot keeps its own point in time.
+    await withTimeout(writer, 5_000, {
+      timeoutError: () => new Error("A later Request waited on an open snapshot"),
+    });
+    if (snapshotError) throw snapshotError;
+    const committed = await f.database
+      .selectFrom("deploymentEventState")
+      .select("sequence")
+      .executeTakeFirstOrThrow();
     release.resolve();
-    const [view] = await Promise.all([snapshot, writer]);
+    const view = await snapshot;
+    // The reader resumes after the snapshot's sequence, so it still hears the later Request.
+    expect(BigInt(view.sequence)).toBeLessThan(BigInt(committed.sequence));
     expect(resourceCount).toBe(3);
     expect(view.needsYou.count).toBe(3);
     expect(view.serializedBytes).toBeLessThanOrEqual(900 * 1024);
