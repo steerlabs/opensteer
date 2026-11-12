@@ -17,7 +17,8 @@ import { AppText, Notice, PrimaryButton } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
 import { TeamPageList } from "./team-page-list.js";
-import { useMobileTeams, useTeamSession } from "./team-context.js";
+import { useMobileTeams, useTeamEntry, useTeamSession } from "./team-context.js";
+import { DeploymentIdSchema } from "@opensteer/core";
 import { drawerSection } from "./team-views.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
@@ -31,6 +32,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const teams = useMobileTeams();
+  const { coordinator } = useTeamEntry();
   const { team, session, failure } = useTeamSession(teamId);
   const sidebar = useSidebar(session);
   const padding = useSafeAreaInsets().bottom + space[24];
@@ -79,7 +81,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
                         style: "destructive",
                         text: "Leave",
                         onPress: () =>
-                          void teams.leave(teamId).then(
+                          void coordinator.leaveTeam(DeploymentIdSchema.parse(teamId)).then(
                             () => navigation.popToTop(),
                             (error: unknown) =>
                               Alert.alert(
@@ -104,7 +106,7 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
         </NativeMenu>
       ),
     });
-  }, [name, navigation, teamId, teams]);
+  }, [coordinator, name, navigation, teamId]);
 
   if (team !== null && team.state === "signed-out")
     return (
