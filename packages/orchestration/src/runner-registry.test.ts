@@ -3219,6 +3219,7 @@ it("routes correlated app requests only to the folder computer and cancels pendi
     appId: "app_" + crypto.randomUUID(),
     version: 1,
     folder: { computerId: identity.runnerId, path: "/tmp/test-app" },
+    agentHome: { computerId: identity.runnerId, path: "/tmp" },
     command: "node server.js",
   };
   try {

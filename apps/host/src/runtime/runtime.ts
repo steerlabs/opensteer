@@ -2185,6 +2185,7 @@ export async function createHostRuntime(
         if (ownerId) realtime.sendToUsers([ownerId], { type: "host.app-tabs-changed" });
       },
       files,
+      agentHome: async () => (await personalExecution()).options.agentHome,
       tokens: runToolTokens,
       publishEvent: publishDeploymentEvent,
     });

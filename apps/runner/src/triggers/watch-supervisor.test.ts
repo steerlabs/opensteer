@@ -281,6 +281,28 @@ describe("WatchSupervisor", () => {
     }
   });
 
+  it("waits for a missing Agent home without counting it as a crash", async () => {
+    const fixture = await watchHarness("export default async () => {};", async () => {
+      throw new Error("Agent home /missing is missing");
+    });
+    try {
+      await fixture.supervisor.reconcile(fixture.command(1), fixture.sink);
+      await vi.waitFor(
+        () =>
+          expect(
+            fixture.messages.findLast((message) => message.type === "runner.watch-status"),
+          ).toMatchObject({
+            observed: "backoff",
+            restartCount: 0,
+            lastError: expect.stringContaining("Agent home /missing is missing"),
+          }),
+        { timeout: 5_000 },
+      );
+    } finally {
+      await fixture.close();
+    }
+  });
+
   it("resolves relative modules and packages from the Workspace", async () => {
     const fixture = await watchHarness(`
       import { helper } from "./helper.js";
@@ -321,7 +343,10 @@ describe("WatchSupervisor", () => {
   });
 });
 
-async function watchHarness(source: string): Promise<{
+async function watchHarness(
+  source: string,
+  prepare?: AgentHomeAccess["prepare"],
+): Promise<{
   readonly activationId: ReturnType<typeof createId<"triggerWatchActivation">>;
   readonly close: () => Promise<void>;
   readonly command: (
@@ -358,9 +383,7 @@ async function watchHarness(source: string): Promise<{
     },
   };
   const agentHome: AgentHomeAccess = {
-    async prepare() {
-      return { instructions: undefined, path: workspace };
-    },
+    prepare: prepare ?? (async () => ({ instructions: undefined, path: workspace })),
     folder: async ({ path }) => path,
   };
   const supervisor = new WatchSupervisor({

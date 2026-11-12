@@ -11,6 +11,7 @@ import {
   OpensteerError,
   appMaxBytes,
   type AgentEvent,
+  type ComputerFolder,
   type UserId,
 } from "@opensteer/core";
 import type { AppStore } from "@opensteer/database";
@@ -41,6 +42,7 @@ interface AppServiceOptions {
   readonly dataDirectory: string;
   readonly apps: AppStore;
   readonly files: Pick<AgentHomeFiles, "list" | "download">;
+  readonly agentHome: () => Promise<ComputerFolder>;
   readonly tokens: Pick<RunToolTokenService, "authenticate" | "reauthorize">;
   readonly tabsChanged?: () => Promise<void>;
   readonly publishEvent: (event: AgentEvent) => void;
@@ -109,7 +111,7 @@ export class AppService {
         };
         const appId = input.appId ?? `app_${randomUUID()}`;
         const version = (previous?.latestVersion ?? 0) + 1;
-        const spec = this.#runtimeSpec(appId, version, server);
+        const spec = await this.#runtimeSpec(appId, version, server);
         try {
           await this.#tunnels().start(spec, AbortSignal.timeout(30_000));
         } catch (error) {
@@ -227,7 +229,9 @@ export class AppService {
         const old = previousVersion!;
         // The old server's generation is the one replaced by this publication.
         if (old.version.server)
-          await this.#stop(this.#runtimeSpec(previous.id, result.version - 1, old.version.server));
+          await this.#stop(
+            await this.#runtimeSpec(previous.id, result.version - 1, old.version.server),
+          );
       }
       if (result.event) {
         this.#options.publishEvent(result.event);
@@ -345,7 +349,7 @@ export class AppService {
       const current = await this.#options.apps.latest(appId, userId);
       if (!current.version.server) throw new AppTunnelError("This app no longer runs a server");
       return this.#tunnels().connect(
-        this.#runtimeSpec(appId, current.version.version, current.version.server),
+        await this.#runtimeSpec(appId, current.version.version, current.version.server),
         signal,
       );
     });
@@ -391,7 +395,7 @@ export class AppService {
                 code: "bad_request",
                 message: "app_fetch requires a server app",
               });
-            const spec = this.#runtimeSpec(app.id, version.version, version.server);
+            const spec = await this.#runtimeSpec(app.id, version.version, version.server);
             return this.#tunnels().connect(spec, signal);
           }),
       });
@@ -446,8 +450,13 @@ export class AppService {
     }
   }
 
-  #runtimeSpec(appId: string, version: number, server: AppServerSpec): AppRuntimeSpec {
-    return { appId, version, folder: server.folder, command: server.command };
+  async #runtimeSpec(
+    appId: string,
+    version: number,
+    server: AppServerSpec,
+  ): Promise<AppRuntimeSpec> {
+    const agentHome = await this.#options.agentHome();
+    return { appId, version, folder: server.folder, agentHome, command: server.command };
   }
   #tunnels() {
     if (!this.#options.tunnels) throw new AppTunnelError("App servers are unavailable");

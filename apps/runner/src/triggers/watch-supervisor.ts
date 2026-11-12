@@ -15,6 +15,7 @@ import {
   TriggerProgramEventSchema,
   TriggerProgramSchema,
   WATCH_LOG_TAIL_BYTES,
+  WATCH_START_RETRY_MS,
   type TriggerProgram,
 } from "@opensteer/triggers";
 import { createId, type EnvironmentId, type TriggerWatchActivationId } from "@opensteer/core";
@@ -210,13 +211,28 @@ export class WatchSupervisor {
       let workspace: AgentHomeWorkspace | undefined;
       let materializationRoot: string | undefined;
       let programFile: string | undefined;
+      active.observed = "starting";
+      await this.#report(active);
       try {
-        active.observed = "starting";
-        await this.#report(active);
         workspace = await this.#agentHome.prepare({
           agentHome: active.desired.agentHome,
           signal: active.abort.signal,
         });
+      } catch (error) {
+        if (active.abort.signal.aborted) break;
+        // An unavailable Agent home is not the program crashing, so it never counts toward the
+        // restart limit that pauses the Trigger; the Watch starts once the folder is back.
+        active.lastExitCode = null;
+        active.lastError = safeMessage(error, {
+          fallback: "Agent home is unavailable",
+          maximumLength: 20_000,
+        });
+        active.observed = "backoff";
+        await this.#report(active);
+        await delay(WATCH_START_RETRY_MS, active.abort.signal).catch(() => undefined);
+        continue;
+      }
+      try {
         const program = await this.#cachedProgram(active);
         const materialized = await this.#materialize(active, program, workspace.path);
         materializationRoot = materialized.root;

@@ -48,6 +48,7 @@ function fixture(
     dataDirectory: tmpdir(),
     apps,
     files: { list: vi.fn(), download: vi.fn() },
+    agentHome: async () => agentHome,
     tokens: {
       authenticate: async () => scope,
       reauthorize: async () => scope,
@@ -278,6 +279,7 @@ it("reports a committed tab change when notifying other devices fails", async ()
     apps: { setTabOpen: async () => ({ appTabs }) } as unknown as AppStore,
 
     files: { list: vi.fn(), download: vi.fn() },
+    agentHome: async () => ({ computerId: createId("runner"), path: "/fixture/home" }),
     tokens: { authenticate: vi.fn(), reauthorize: vi.fn() },
     publishEvent: vi.fn(),
     tabsChanged: async () => {

@@ -508,7 +508,7 @@ export class RunnerRuntime {
       new ExecutionContainment({ bootId: options.bootId, dataDirectory: options.dataDirectory });
     this.appServers = new AppServerManager({
       privateDirectory: join(options.dataDirectory, "private", "app-servers"),
-      resolveRoot: (folder) => options.agentHome.folder(folder),
+      resolveRoot: (spec) => options.agentHome.folder(spec.folder, spec.agentHome),
       planLaunch: (id, launch) => this.#planProgramLaunch(id, launch),
       terminate: (id, stopEngine) => this.#containment.terminate(id, stopEngine),
     });

@@ -383,6 +383,7 @@ describeStore("published app HTML", (it) => {
 
       apps,
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: (event) => events.push(event),
     });
@@ -595,6 +596,7 @@ describeStore("published app HTML", (it) => {
       apps,
 
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: published,
     });
@@ -693,6 +695,7 @@ describeStore("published app HTML", (it) => {
       dataDirectory: directory,
       apps,
       files,
+      agentHome: async () => f.agentHome,
       tokens: { authenticate: async () => scope, reauthorize: async () => scope },
       publishEvent: () => undefined,
       tunnels: { start, stop, connect, accept: () => undefined },

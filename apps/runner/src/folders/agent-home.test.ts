@@ -45,6 +45,20 @@ describe("Agent home", () => {
     );
   });
 
+  it("resolves app folders only inside Agent home, refusing a symlink that leads out", async () => {
+    const f = await fixture();
+    const app = join(f.agentHome.path, "dashboard");
+    await mkdir(app);
+    expect(await f.manager.folder({ ...f.agentHome, path: app }, f.agentHome)).toBe(app);
+    const outside = join(f.root, "outside");
+    await mkdir(outside);
+    const escape = join(f.agentHome.path, "escape");
+    await symlink(outside, escape);
+    await expect(f.manager.folder({ ...f.agentHome, path: escape }, f.agentHome)).rejects.toThrow(
+      /outside Agent home/,
+    );
+  });
+
   it("refuses other computers, a missing folder, and oversized or invalid instructions", async () => {
     const f = await fixture();
     await expect(

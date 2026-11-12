@@ -1,5 +1,5 @@
 import { realpath, stat } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import type { ComputerFolder, RunnerId } from "@opensteer/core";
 import { readBoundedRegularFile } from "@opensteer/shared/privateFiles";
 
@@ -17,8 +17,8 @@ export interface AgentHomeAccess {
     readonly personalContext?: boolean;
     readonly signal: AbortSignal;
   }): Promise<AgentHomeWorkspace>;
-  /** A folder inside Agent home, such as an app server's, resolved and checked. */
-  folder(folder: ComputerFolder): Promise<string>;
+  /** A folder that must resolve inside Agent home, such as an app server's. */
+  folder(folder: ComputerFolder, agentHome: ComputerFolder): Promise<string>;
 }
 
 /**
@@ -37,17 +37,27 @@ export class AgentHomeManager implements AgentHomeAccess {
     readonly signal: AbortSignal;
   }): Promise<AgentHomeWorkspace> {
     input.signal.throwIfAborted();
-    const path = await this.#directory(input.agentHome);
-    if (path !== input.agentHome.path)
-      throw new Error(`Agent home ${input.agentHome.path} now resolves to ${path}. Restore it.`);
+    const path = await this.#home(input.agentHome);
     const instructions =
       input.personalContext === false ? undefined : await readInstructions(join(path, "AGENTS.md"));
     input.signal.throwIfAborted();
     return { path, instructions };
   }
 
-  folder(folder: ComputerFolder): Promise<string> {
-    return this.#directory(folder);
+  async folder(folder: ComputerFolder, agentHome: ComputerFolder): Promise<string> {
+    const home = await this.#home(agentHome);
+    const path = await this.#directory(folder);
+    const inside = relative(home, path);
+    if (inside.startsWith("..") || isAbsolute(inside))
+      throw new Error(`${folder.path} resolves outside Agent home`);
+    return path;
+  }
+
+  async #home(agentHome: ComputerFolder): Promise<string> {
+    const path = await this.#directory(agentHome);
+    if (path !== agentHome.path)
+      throw new Error(`Agent home ${agentHome.path} now resolves to ${path}. Restore it.`);
+    return path;
   }
 
   async #directory(folder: ComputerFolder): Promise<string> {

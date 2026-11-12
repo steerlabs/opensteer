@@ -6,7 +6,9 @@ import { ComputerFolderSchema } from "@opensteer/core";
 export const AppRuntimeSpecSchema = z.strictObject({
   appId: AppIdSchema,
   version: z.number().int().positive(),
+  /** The server's folder, which the Runner refuses unless it resolves inside `agentHome`. */
   folder: ComputerFolderSchema,
+  agentHome: ComputerFolderSchema,
 
   command: z.string().min(1).max(16_384),
 });

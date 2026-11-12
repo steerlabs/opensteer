@@ -25,6 +25,7 @@ it("shares starts, refuses stale generations, lazily restarts crashes and stops 
     appId: "app_test",
     version: 1,
     folder: { computerId: createId("runner"), path: root },
+    agentHome: { computerId: createId("runner"), path: root },
     command: `${process.execPath} server.cjs`,
   } as Parameters<typeof manager.start>[0];
   await writeFile(
@@ -75,6 +76,7 @@ it("returns bounded log tails on exit and readiness timeout", async () => {
     appId: "app_test",
     version: 1,
     folder: { computerId: createId("runner"), path: root },
+    agentHome: { computerId: createId("runner"), path: root },
     command: "",
   } as Parameters<typeof manager.start>[0];
   try {
@@ -126,6 +128,7 @@ it("reserves the Runner's server limit across concurrent apps and refuses launch
     appId: "unused",
     version: 1,
     folder: { computerId: createId("runner"), path: root },
+    agentHome: { computerId: createId("runner"), path: root },
     command: "exit 1",
   } as Parameters<typeof manager.start>[0];
   const starts = Array.from({ length: 32 }, () =>
@@ -168,6 +171,7 @@ it("inventories detached descendants without the execution marker before stoppin
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
     folder: { computerId: createId("runner"), path: root },
+    agentHome: { computerId: createId("runner"), path: root },
     command: `${process.execPath} parent.cjs`,
   } as Parameters<typeof manager.start>[0];
   try {
@@ -235,6 +239,7 @@ it("cleans a crashed server and descendants before releasing its capacity and la
     appId: "app_crash",
     version: 1,
     folder: { computerId: createId("runner"), path: root },
+    agentHome: { computerId: createId("runner"), path: root },
     command: `exec ${process.execPath} server.cjs`,
   } as Parameters<typeof manager.start>[0];
   const starts: Promise<number>[] = [];
@@ -327,6 +332,7 @@ it.each(["stop", "replacement", "crash", "stopAll"] as const)(
       appId: "app_uncertain",
       version: 1,
       folder: { computerId: createId("runner"), path: root },
+      agentHome: { computerId: createId("runner"), path: root },
       command: `exec ${process.execPath} server.cjs`,
     } as Parameters<typeof manager.start>[0];
     const starts: Promise<number>[] = [];

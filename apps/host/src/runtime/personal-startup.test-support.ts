@@ -337,7 +337,7 @@ export async function startPersonalRuntime(input: {
           agentHomePreparations.push(input);
           return agentHome.prepare(input);
         },
-        folder: (folder) => agentHome.folder(folder),
+        folder: (folder, home) => agentHome.folder(folder, home),
       },
     });
     const identityStore = new FileRunnerIdentityStore({

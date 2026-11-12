@@ -101,6 +101,7 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
     folder: { computerId: fence.runnerId, path: "/tmp/app-tunnel-test" },
+    agentHome: { computerId: fence.runnerId, path: "/tmp" },
     command: "node server.js",
   };
   try {
