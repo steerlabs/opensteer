@@ -38,7 +38,7 @@ async function run(command: string, args: readonly string[], cwd = root, capture
     cwd,
     env,
     signal: signal.signal,
-    timeoutMs: 900_000,
+    timeoutMs: 2_700_000,
     inheritOutput: !capture,
   });
 }
