@@ -1,5 +1,5 @@
 import { ENGINES } from "./demo/agents.js";
-import { byId, find, icon, reducedMotion, restart } from "./dom.js";
+import { byId, find, icon, reducedMotion } from "./dom.js";
 
 function nav(): void {
   const bar = byId("nav");
@@ -160,51 +160,6 @@ function constellation(): void {
   });
 }
 
-const GRANTS = ["Browser", "Logins", "Files", "Shell", "Payments"] as const;
-const CAN: Record<(typeof GRANTS)[number], string> = {
-  Browser: "use the browser",
-  Logins: "use saved logins",
-  Files: "touch files",
-  Shell: "run commands",
-  Payments: "make payments",
-};
-const PEOPLE = [
-  { name: "Maya", role: "Design", color: "#c58af9", grants: [1, 1, 1, 0, 0] },
-  { name: "Dev", role: "Finance", color: "#71c6a5", grants: [1, 1, 1, 0, 1] },
-  { name: "Sam", role: "Engineering", color: "#84b5e0", grants: [1, 0, 1, 1, 0] },
-  { name: "Priya", role: "Sales", color: "#dfb36b", grants: [1, 1, 0, 0, 0] },
-];
-
-function matrix(): void {
-  const body = find(document, "#matrix tbody");
-  const note = byId("matrixNote");
-  PEOPLE.forEach((person, row) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML =
-      `<td><span class="person"><span class="mark" style="--c:${person.color}">${person.name[0]}</span><span>${person.name}<small>${person.role}</small></span></span></td>` +
-      person.grants
-        .map(
-          (granted, column) =>
-            `<td><button class="switch" type="button" role="switch" aria-checked="${granted ? "true" : "false"}" aria-label="${person.name}: ${GRANTS[column]}" data-row="${row}" data-column="${column}"></button></td>`,
-        )
-        .join("");
-    body.appendChild(tr);
-  });
-  body.addEventListener("click", (event) => {
-    const toggle = (event.target as Element).closest<HTMLElement>(".switch");
-    if (!toggle) return;
-    const on = toggle.getAttribute("aria-checked") !== "true";
-    toggle.setAttribute("aria-checked", String(on));
-    const person = PEOPLE[Number(toggle.dataset.row)];
-    const grant = GRANTS[Number(toggle.dataset.column)];
-    if (!person || !grant) return;
-    find(note, "span").textContent = on
-      ? `${person.name}'s agents can now ${CAN[grant]}. Live on every device.`
-      : `${person.name}'s agents can no longer ${CAN[grant]}. Their next action is checked.`;
-    restart(note, "is-flash");
-  });
-}
-
 function copyButtons(): void {
   document.querySelectorAll<HTMLButtonElement>(".copy").forEach((button) =>
     button.addEventListener("click", () => {
@@ -231,6 +186,5 @@ export function startSections(): void {
   setup();
   automations();
   constellation();
-  matrix();
   copyButtons();
 }
