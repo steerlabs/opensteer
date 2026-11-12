@@ -18,7 +18,7 @@ function deployment(overrides: Partial<DesktopDeploymentSummary> = {}): DesktopD
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: createId("deployment"),
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: null,
     name: "Team server",
     access: "native",

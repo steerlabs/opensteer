@@ -144,7 +144,7 @@ describe("Account linking from a Host browser", () => {
             deploymentId: createId("deployment"),
             hostInstanceId: createId("hostInstance"),
             hostKey: { algorithm: "Ed25519" },
-            deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+            deploymentShape: { kind: "personal" },
           },
           publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
           signature: "A".repeat(86),
