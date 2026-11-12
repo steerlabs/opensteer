@@ -51,7 +51,6 @@ import {
   testModelSelection,
   pendingEvent,
   liveRequest,
-  enrollTestRunner,
   testContinuationIdentity,
   type StoreFixture,
 } from "@opensteer/database/test-support/store";
@@ -1503,15 +1502,7 @@ describeStore("shaped agent Thread tools", (it) => {
   });
   it("lists personal recent places and refuses another person", async ({ storeFixture }) => {
     const f = await storeFixture.startRunFixture("shaped-places");
-    const nativeRunner = createId("runner");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: f.userId,
-      runnerKind: "local",
-      runnerId: nativeRunner,
-      environmentId: createId("environment"),
-      name: "Owned machine",
-      tokenSuffix: randomUUID(),
-    });
+    const nativeRunner = f.runnerId;
     const reader = await storeFixture.store.createUser("Other person");
     const s = setup(storeFixture, f);
     const sessionId = createBrowserSessionId();
@@ -1541,7 +1532,7 @@ describeStore("shaped agent Thread tools", (it) => {
     await expect(s.read({ view: "activity" }, actor)).rejects.toMatchObject({ code: "forbidden" });
     const part = {
       type: "computer-app",
-      machineId: nativeRunner,
+      machineId: createId("runner"),
       app: { bundleId: "com.apple.Notes", teamId: null, displayName: "Notes" },
       name: "Private Notes",
     };
@@ -2021,15 +2012,7 @@ describeStore("shaped agent Thread tools", (it) => {
   }) => {
     const f = await storeFixture.startRunFixture("shaped-show");
     const s = setup(storeFixture, f);
-    const nativeRunner = createId("runner");
-    await enrollTestRunner(storeFixture.store, {
-      createdBy: f.userId,
-      runnerKind: "local",
-      runnerId: nativeRunner,
-      environmentId: createId("environment"),
-      name: "Owned machine",
-      tokenSuffix: randomUUID(),
-    });
+    const nativeRunner = f.runnerId;
     const delegated = await storeFixture.store.delegateThread({
       createdBy: f.userId,
       environmentId: f.environmentId,
@@ -2109,6 +2092,6 @@ describeStore("shaped agent Thread tools", (it) => {
         { runId: delegated.run.id },
         { ...s.caller, userId: reader, claims: { ...s.caller.claims, requestedBy: reader } },
       ),
-    ).rejects.toThrow("unavailable");
+    ).rejects.toMatchObject({ code: "forbidden", message: "The personal owner is required." });
   });
 });

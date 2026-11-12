@@ -510,7 +510,7 @@ insert into personal_remote_access(singleton_key, generation, mode, route_origin
 values ('personal', 0, 'off', null);
 
 create table personal_remote_account_link (
-  "account_operation" text,
+  "account_operation" jsonb,
   "singleton_key" text not null check (singleton_key in ('opensteer-account')),
   "challenge_id" text not null,
   "grant_id" text not null,
@@ -553,7 +553,7 @@ create table personal_desktop_update (
   "from_version" text,
   "target_version" text,
   "incarnation_id" text,
-  "detail" text not null,
+  "detail" text,
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
   primary key ("id")
@@ -799,6 +799,94 @@ create table account_directory_projections (
   "updated_at" timestamp with time zone not null default now(),
   primary key ("provider_id", "account_id")
 );
+
+create function opensteer_set_account_directory_projection(
+  target_provider_id text, target_account_id text, target_user_id text, target_present boolean
+) returns void language plpgsql as $$
+begin
+  if not exists (select 1 from account_directory_provider where provider_id=target_provider_id) then
+    return;
+  end if;
+  insert into account_directory_projections(provider_id,account_id,user_id,present,generation,published_generation)
+  values(target_provider_id,target_account_id,target_user_id,target_present,1,0)
+  on conflict(provider_id,account_id) do update
+  set user_id=excluded.user_id,present=excluded.present,
+      generation=account_directory_projections.generation+1,attempts=0,next_attempt_at=now(),
+      last_error=null,lease_token=null,lease_expires_at=null,updated_at=now()
+  where account_directory_projections.present is distinct from excluded.present
+     or account_directory_projections.user_id is distinct from excluded.user_id;
+end;
+$$;
+
+create function opensteer_refresh_account_directory_user(target_user_id text)
+returns void language plpgsql as $$
+declare
+  target_present boolean;
+  account record;
+begin
+  select exists (
+    select 1 from users u cross join deployments d
+    where u.id=target_user_id and u.disabled_at is null and d.singleton_key='primary'
+      and ((d.deployment_shape->>'kind'='personal' and u.id=(
+        select id from users order by created_at limit 1
+      )) or (d.deployment_shape->>'kind'='team' and exists (
+        select 1 from team_members m where m.user_id=u.id and m.state='active'
+      )))
+  ) into target_present;
+  for account in
+    select a.provider_id,a.account_id from auth_accounts a
+    join account_directory_provider p on p.provider_id=a.provider_id
+    where a.user_id=target_user_id and a.password is null
+  loop
+    if target_present or exists (
+      select 1 from account_directory_projections p
+      where p.provider_id=account.provider_id and p.account_id=account.account_id
+    ) then
+      perform opensteer_set_account_directory_projection(account.provider_id,account.account_id,target_user_id,target_present);
+    end if;
+  end loop;
+end;
+$$;
+
+create function opensteer_project_auth_account_change() returns trigger language plpgsql as $$
+begin
+  if tg_op='DELETE' then
+    if old.password is null then
+      perform opensteer_set_account_directory_projection(old.provider_id,old.account_id,old.user_id,false);
+    end if;
+    return old;
+  end if;
+  if tg_op='UPDATE' and old.password is null and (
+    row(old.provider_id,old.account_id,old.user_id) is distinct from row(new.provider_id,new.account_id,new.user_id)
+    or new.password is not null
+  ) then
+    perform opensteer_set_account_directory_projection(old.provider_id,old.account_id,old.user_id,false);
+  end if;
+  perform opensteer_refresh_account_directory_user(new.user_id);
+  return new;
+end;
+$$;
+
+create trigger auth_accounts_account_directory_projection after insert or update or delete on auth_accounts
+  for each row execute function opensteer_project_auth_account_change();
+
+create function opensteer_project_user_change() returns trigger language plpgsql as $$
+begin
+  if tg_op='DELETE' then
+    update account_directory_projections set present=false,generation=generation+1,attempts=0,
+      next_attempt_at=now(),last_error=null,lease_token=null,lease_expires_at=null,updated_at=now()
+    where user_id=old.id and present;
+    return old;
+  end if;
+  perform opensteer_refresh_account_directory_user(new.id);
+  return new;
+end;
+$$;
+
+create trigger users_account_directory_projection_update after update of disabled_at on users
+  for each row execute function opensteer_project_user_change();
+create trigger users_account_directory_projection_delete before delete on users
+  for each row execute function opensteer_project_user_change();
 
 create table host_account_adoption_proofs (
   "id" text not null,
@@ -1175,7 +1263,7 @@ create table delegations (
   "result_waits" jsonb not null default '[]'::jsonb,
   "result_run_id" text,
   "finished_at" timestamptz,
-  "revision" integer not null default 1 check (revision > 0),
+  "revision" integer not null default 1 check (revision >= 1),
   "child_run_id" text not null,
   "child_thread_id" text not null,
   "completed_at" timestamp with time zone,
@@ -1435,7 +1523,7 @@ create table deployment_events (
 create table automation_failure_notices (
   "id" text not null,
   "trigger_id" text not null,
-  "occurrence_id" text,
+  "occurrence_id" text unique,
   "activation_id" text,
   "reason" text not null check (reason in ('final-occurrence-failed', 'final-occurrence-interrupted', 'paused')),
   "detail" text not null,
@@ -1909,6 +1997,8 @@ create table specialists (
   primary key ("id")
 );
 
+alter table specialists add constraint specialists_plugin_owner unique (plugin_id, owner_user_id);
+
 create table plugin_versions (
   "id" text not null,
   "plugin_id" text not null,
@@ -2105,7 +2195,7 @@ alter table channel_ingress_events add constraint channel_ingress_events_account
 alter table channel_link_codes add constraint channel_link_codes_code_hash_key UNIQUE (code_hash);
 alter table commands add constraint commands_request_idempotency_unique UNIQUE (requested_by, idempotency_key);
 alter table delegations add constraint delegations_child_run_id_key UNIQUE (child_run_id);
-alter table delegations add constraint delegations_result_message_id_key UNIQUE (result_message_id);
+create index delegations_result_message on delegations(result_message_id) where result_message_id is not null;
 alter table deployments add constraint deployments_singleton_key_key UNIQUE (singleton_key);
 alter table harness_instances add constraint harness_instances_id_environment_key UNIQUE (id, environment_id);
 alter table host_account_adoption_proofs add constraint host_account_adoption_proofs_credential_hash_key UNIQUE (credential_hash);
@@ -2128,6 +2218,8 @@ alter table thread_inputs add constraint thread_inputs_request_idempotency_uniqu
 alter table threads add constraint threads_id_lineage_unique UNIQUE (id, lineage_root_thread_id);
 alter table trigger_occurrences add constraint trigger_occurrences_command_id_key UNIQUE (command_id);
 alter table trigger_occurrences add constraint trigger_occurrences_source_unique UNIQUE (trigger_id, source_key);
+alter table triggers add foreign key(created_by_thread_id) references threads(id) on delete set null;
+alter table trigger_revisions add foreign key(created_by_thread_id) references threads(id) on delete set null;
 alter table trigger_revisions add constraint trigger_revisions_trigger_id_unique UNIQUE (trigger_id, id);
 alter table trigger_revisions add constraint trigger_revisions_trigger_ordinal_unique UNIQUE (trigger_id, ordinal);
 alter table triggers add constraint triggers_creator_idempotency_unique UNIQUE (created_by, idempotency_key);
@@ -2349,6 +2441,7 @@ create index thread_inputs_pending on thread_inputs USING btree (thread_id, crea
 create index thread_inputs_run on thread_inputs USING btree (run_id, created_at, message_id) WHERE (run_id IS NOT NULL);
 create index threads_lineage_page on threads USING btree (lineage_root_thread_id, updated_at DESC, id DESC);
 create index threads_parent_thread on threads USING btree (parent_thread_id) WHERE (parent_thread_id IS NOT NULL);
+create index threads_creator_created on threads(created_by,created_at desc,id desc) include(color);
 create index trigger_control_requests_class_count on trigger_control_requests USING btree (occurrence_id, action_class);
 create index trigger_occurrences_recent on trigger_occurrences USING btree (trigger_id, created_at DESC, id DESC);
 create index trigger_occurrences_running_binding on trigger_occurrences USING btree (runner_id, runner_boot_id) WHERE (status = 'running'::text);

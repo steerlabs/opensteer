@@ -370,8 +370,7 @@ integration("Run attempts", () => {
         .where("status", "=", "pending")
         .executeTakeFirst();
       expect(claimed.numUpdatedRows).toBe(1n);
-      await active.restartHost();
-      active.network.unblock();
+      await active.restartHost({ whileDown: async () => active.network.unblock() });
       await settled(active, runId);
       const journey = await record("restart claimed before a Host restart", active, runId, [
         steer.messageId,

@@ -87,10 +87,12 @@ export type AppTab = z.infer<typeof AppTabSchema>;
 export const HostBootstrapSchema = z.object({
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
-  personalSettings: z.object({
-    ...PersonalSettingsSchema.shape,
-    agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
-  }),
+  personalSettings: z
+    .object({
+      ...PersonalSettingsSchema.shape,
+      agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
+    })
+    .nullable(),
   can: z.object({
     createTasks: z.boolean(),
     useVoice: z.boolean(),

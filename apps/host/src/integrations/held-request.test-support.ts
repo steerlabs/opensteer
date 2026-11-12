@@ -3,7 +3,7 @@ import { expect, vi } from "vitest";
 import type { MachineAccessHost } from "../integrations/personal-machine.test-support.js";
 
 export async function startHeldRequest<T>(
-  host: MachineAccessHost,
+  host: Pick<MachineAccessHost, "store">,
   runId: RunId,
   call: () => Promise<T>,
 ) {

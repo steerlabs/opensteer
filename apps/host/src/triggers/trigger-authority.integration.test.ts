@@ -21,6 +21,8 @@ import {
   type TriggerId,
 } from "@opensteer/core";
 import { createDatabase, migrateToLatest, OpensteerStore, TriggerStore } from "@opensteer/database";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { withPersonalTransaction } from "@opensteer/database";
 import { recordedTransactionConflicts } from "@opensteer/database/test-support/lock-order";
 import {
   CommandService,
@@ -40,7 +42,7 @@ import {
 } from "@opensteer/triggers";
 import { sql } from "kysely";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1136,11 +1138,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     const f = await fixture();
     for (const change of ["actor-downgrade", "anchor-upgrade"] as const) {
       const created = await personCreate(f, f.sibling);
-      const barrier = holdQueryResult(
-        database,
-        (node) => node.includes('"name":"triggers"') && !node.includes("SelectModifierNode"),
-      );
-      const service = triggerService(new TriggerStore(barrier.database));
+      const fence = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const service = triggerService(triggerStore);
       const actor = change === "actor-downgrade" ? f.fullChild : f.child;
       const input =
         change === "actor-downgrade"
@@ -1158,24 +1158,33 @@ integration.sequential("Trigger authority through real Host services and Postgre
               triggerId: created.trigger.id,
               nextFireAt: plusThirty,
             };
-      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
-      void mutation.catch(() => undefined);
-      try {
-        await barrier.reached;
-        await store.updateThreadAccessMode({
+      const downgrade = withPersonalTransaction(database, async (transaction) => {
+        fence.resolve();
+        await withTimeout(release.promise, 5_000, {
+          timeoutError: () => new Error("Authority race did not release the personal event fence"),
+        });
+        await new OpensteerStore(transaction).updateThreadAccessMode({
           accessMode: change === "actor-downgrade" ? "auto" : "full-access",
           requestedBy: f.ownerId,
           threadId: change === "actor-downgrade" ? actor.id : f.sibling.id,
         });
-        barrier.release();
+      });
+      await withTimeout(fence.promise, 5_000, {
+        timeoutError: () => new Error("Authority change did not acquire the personal event fence"),
+      });
+      const mutation = service.manage(f.ownerId, TriggerControlInputSchema.parse(input), actor.id);
+      void mutation.catch(() => undefined);
+      try {
+        await blockedQuery("deployment_event_state", mutation);
+        release.resolve();
+        await downgrade;
         await denied(`A10/F15 ${change}`, actor.id, input.operation, "forbidden", () => mutation);
         const detail = await personDetail(f, created.trigger.id);
         expect(detail.trigger.currentRevisionId).toBe(created.revision.id);
         expect(detail.trigger.nextFireAt).toBe(nextHour);
-        expect(barrier.conflicts).toEqual([]);
       } finally {
-        barrier.release();
-        await Promise.allSettled([mutation]);
+        release.resolve();
+        await Promise.allSettled([mutation, downgrade]);
       }
     }
   });
@@ -1225,7 +1234,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("threads", mutation);
+      await blockedQuery("deployment_event_state", mutation);
       barrier.release();
       await check(
         "A10 delegation and mutation overlap",
@@ -1346,7 +1355,7 @@ integration.sequential("Trigger authority through real Host services and Postgre
         f.child.id,
       );
       void mutation.catch(() => undefined);
-      await blockedQuery("triggers", mutation);
+      await blockedQuery("deployment_event_state", mutation);
       barrier.release();
       await check(
         "A11 claim commits before reschedule",
@@ -2136,9 +2145,9 @@ integration.sequential("Trigger authority through real Host services and Postgre
     ],
     options: { readonly rootAccessMode?: Thread["accessMode"] } = {},
   ) {
-    const path = join(evidenceRoot, randomUUID());
-    await mkdir(path, { recursive: true });
-    const personal = await seedPersonalFixture(database, path);
+    const directory = join(evidenceRoot, randomUUID());
+    await mkdir(directory, { recursive: true });
+    const personal = await seedPersonalFixture(database, await realpath(directory));
     const { userId: ownerId, runnerId, environmentId, agentHome } = personal;
     folders = personalTestFolders(store, personal);
     await database
@@ -2182,7 +2191,12 @@ integration.sequential("Trigger authority through real Host services and Postgre
       title: "Root task",
     });
     const rootExecution = await activate(base, root);
-    async function child(title: string, accessMode: Thread["accessMode"]) {
+    async function child(
+      title: string,
+      accessMode: Thread["accessMode"],
+      parent = root,
+      parentRunId = rootExecution.run.id,
+    ) {
       const result = await store.delegateThread({
         accessMode,
         folder: agentHome,
@@ -2193,8 +2207,8 @@ integration.sequential("Trigger authority through real Host services and Postgre
         modelSelection,
         origin: {
           kind: "run",
-          parentThreadId: root.id,
-          parentRunId: rootExecution.run.id,
+          parentThreadId: parent.id,
+          parentRunId,
         },
         task: [
           {
@@ -2208,7 +2222,6 @@ integration.sequential("Trigger authority through real Host services and Postgre
       return result.thread;
     }
     const delegated = await child("Delegated worker", "auto");
-    const fullChild = await child("Full-access author", "full-access");
     const sibling = await child("Sibling sibling", "auto");
     const crossChild = await child("Independent sibling", "auto");
     const { thread: specialist } = await store.createThread({
@@ -2232,9 +2245,15 @@ integration.sequential("Trigger authority through real Host services and Postgre
       title: "Unrelated work Thread",
     });
     const childExecution = await activate(base, delegated);
-    const fullExecution = await activate(base, fullChild);
     const siblingExecution = await activate(base, sibling);
     const specialistExecution = await activate(base, specialist);
+    const fullChild = await child(
+      "Full-access author",
+      "full-access",
+      specialist,
+      specialistExecution.run.id,
+    );
+    const fullExecution = await activate(base, fullChild);
     const { thread: isolatedChild } = await store.delegateThread({
       accessMode: "auto",
       createdBy: ownerId,
@@ -2558,18 +2577,24 @@ integration.sequential("Trigger authority through real Host services and Postgre
   }
 
   // Observe PostgreSQL's actual wait graph; ordering never depends on a timer.
-  async function blockedQuery(table: "threads" | "triggers", mutation: Promise<unknown>) {
-    const observed = (async () => {
-      for (let attempt = 0; attempt < 1_000; attempt += 1) {
+  async function blockedQuery(
+    table: "threads" | "triggers" | "deployment_event_state",
+    mutation: Promise<unknown>,
+  ) {
+    const observed = vi.waitFor(
+      async () => {
         const blocked = await sql<{
           query: string;
-        }>`select query from pg_stat_activity where datname = current_database() and application_name = ${applicationName} and wait_event_type = 'Lock' and cardinality(pg_blocking_pids(pid)) > 0`.execute(
+        }>`select query from pg_stat_activity where datname=current_database() and application_name=${applicationName} and wait_event_type='Lock' and cardinality(pg_blocking_pids(pid))>0`.execute(
           database,
         );
-        if (blocked.rows.some(({ query }) => query.includes(table))) return;
-      }
-      throw new Error(`Mutation never waited for the held ${table} lock`);
-    })();
+        expect(
+          blocked.rows.some(({ query }) => query.includes(table)),
+          `Mutation never waited for the held ${table} lock`,
+        ).toBe(true);
+      },
+      { timeout: 5_000 },
+    );
     await Promise.race([
       observed,
       mutation.then(() => {
