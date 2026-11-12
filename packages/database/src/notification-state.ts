@@ -1,5 +1,5 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import {
   administrationCommand,
   type AdministrationCommandIdentity,
@@ -22,6 +22,7 @@ import {
 import { sql, type Kysely } from "kysely";
 import { conversationUnreadPredicate, publishedMessagePredicate } from "./message-visibility.js";
 import type { DatabaseSchema } from "./schema.js";
+import { safeCount } from "./store-primitives.js";
 interface ReadRow {
   threadId: ThreadId;
   readSequence: string | null;
@@ -41,6 +42,29 @@ export class NotificationStateStore {
   readonly #database: Kysely<DatabaseSchema>;
   constructor(database: Kysely<DatabaseSchema>) {
     this.#database = database;
+  }
+  attention(userId: UserId): Promise<{ needsYou: number; unread: boolean }> {
+    return withPersonalReadTransaction(this.#database, async (transaction) => {
+      await requirePersonalOwner(transaction, userId);
+      const {
+        rows: [row],
+      } = await sql<{ needsYou: string; unread: boolean }>`
+        select (select count(*) from public.requests where status = 'pending')::text as needs_you,
+          exists (
+            select 1 from public.threads thread
+            join public.messages message on message.thread_id = thread.id
+            left join public.thread_inputs inbox on inbox.message_id = message.id
+            left join public.thread_read_markers marker
+              on marker.thread_id = thread.id and marker.user_id = ${userId}
+            where thread.listed and thread.purpose = 'task' and thread.status <> 'archived'
+              and message.sequence > coalesce(marker.sequence, -1)
+              and ${visibleMessage}
+              and (message.author->>'kind' <> 'human' or ${humanSender} is distinct from ${userId})
+          ) as unread
+      `.execute(transaction);
+      if (!row) throw new Error("Personal attention summary was not returned");
+      return { needsYou: safeCount(row.needsYou), unread: row.unread };
+    });
   }
   async getReadState(input: {
     readonly threadId: ThreadId;

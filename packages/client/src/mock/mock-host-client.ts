@@ -1919,6 +1919,19 @@ function mockNeedsYou(
 
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
   const handlers: Partial<HostApiHandlers> = {
+    "attention.get": async () => {
+      const snapshot = client.getSnapshot();
+      return rpcSuccess({
+        needsYou: snapshot.waitingRequests.length,
+        unread: snapshot.threads.some(
+          (thread) =>
+            thread.listed &&
+            thread.purpose === "task" &&
+            thread.status !== "archived" &&
+            isThreadUnread(snapshot.threadReadStates[thread.id]),
+        ),
+      });
+    },
     "needsYou.get": async (input) =>
       rpcSuccess(mockNeedsYou(client.getSnapshot(), input.before, input.limit)),
     "teams.links.list": async () => rpcSuccess({ links: [...client.teamLinks.values()] }),
