@@ -18,7 +18,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ModelSelectionSchema, type RunId, type ThreadId } from "@opensteer/core";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { afterAll, afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { sql } from "kysely";
 import { z } from "zod";
 import { observeDispatchReadiness } from "./dispatch-readiness.test-support.js";
@@ -237,8 +237,9 @@ integration("Runs that outlive their connection", () => {
     };
   }
   async function thread(active: VerticalStack, title: string): Promise<ThreadId> {
-    const workspace = await active.createWorkspace(`${title} workspace`);
+    const workspace = await active.createFolder(`${title} workspace`);
     return active.createThread({
+      folder: workspace,
       modelSelection,
       title,
     });
@@ -673,7 +674,6 @@ integration("Runs that outlive their connection", () => {
     });
     const observation = observeDispatchReadiness(active.host.store);
     const parentId = await active.createThread({
-      home: true,
       modelSelection,
       title: "Restart parent",
     });
@@ -839,41 +839,44 @@ integration("Runs that outlive their connection", () => {
       30_000,
       "preparing continuation queued",
     );
-    const heldSnapshots = [];
+    const heldSnapshots: Awaited<ReturnType<typeof observation.snapshot>>[] = [];
     const holdStartedAt = Date.now();
     // Absence of churn must span several real coordinator polls.
-    while (Date.now() - holdStartedAt < 2_500) {
-      const current = await observation.snapshot(command.id);
-      expect(
-        current.run.failure,
-        "preparation must preserve the continuation rather than dispatch_failed",
-      ).toBeNull();
-      expect(current.command).toMatchObject({
-        id: command.id,
-        runId: recoveringRunId,
-      });
-      expect(["pending", "dispatched"]).toContain(current.command.status);
-      expect(current.command.attempts).toBeLessThanOrEqual(1);
-      expect(
-        current.run,
-        "preparation must preserve the continuation rather than dispatch_failed",
-      ).toMatchObject({
-        id: recoveringRunId,
-        failure: null,
-        bindingGeneration: null,
-      });
-      expect(["queued", "starting"]).toContain(current.run.status);
-      expect(current.inputs).toHaveLength(1);
-      expect(current.inputs[0]).toMatchObject({
-        messageId: inputId,
-        cancelReason: null,
-        policy: "queue",
-      });
-      expect(["claimed", "pending"]).toContain(current.inputs[0]!.state);
-      expect(current.runAttempts).toHaveLength(2);
-      heldSnapshots.push(current);
-      await delay(100);
-    }
+    await vi.waitUntil(
+      async () => {
+        const current = await observation.snapshot(command.id);
+        expect(
+          current.run.failure,
+          "preparation must preserve the continuation rather than dispatch_failed",
+        ).toBeNull();
+        expect(current.command).toMatchObject({
+          id: command.id,
+          runId: recoveringRunId,
+        });
+        expect(["pending", "dispatched"]).toContain(current.command.status);
+        expect(current.command.attempts).toBeLessThanOrEqual(1);
+        expect(
+          current.run,
+          "preparation must preserve the continuation rather than dispatch_failed",
+        ).toMatchObject({
+          id: recoveringRunId,
+          failure: null,
+          bindingGeneration: null,
+        });
+        expect(["queued", "starting"]).toContain(current.run.status);
+        expect(current.inputs).toHaveLength(1);
+        expect(current.inputs[0]).toMatchObject({
+          messageId: inputId,
+          cancelReason: null,
+          policy: "queue",
+        });
+        expect(["claimed", "pending"]).toContain(current.inputs[0]!.state);
+        expect(current.runAttempts).toHaveLength(2);
+        heldSnapshots.push(current);
+        return Date.now() - holdStartedAt >= 2_500;
+      },
+      { timeout: 3_000, interval: 100 },
+    );
     const holdDurationMs = Date.now() - holdStartedAt;
     expect(heldSnapshots.at(-1)!.run.status).toBe("queued");
     expect(heldSnapshots.at(-1)!.command.status).toBe("pending");
@@ -1237,12 +1240,14 @@ integration("Runs that outlive their connection", () => {
       maxConcurrentRuns: 2,
       scenario: "sibling-approval-race",
     });
-    const workspace = await active.createWorkspace("Shared workspace");
+    const workspace = await active.createFolder("Shared workspace");
     const streaming = await active.createThread({
+      folder: workspace,
       modelSelection,
       title: "Streaming",
     });
     const asking = await active.createThread({
+      folder: workspace,
       modelSelection,
       title: "Asking",
     });
@@ -1298,9 +1303,8 @@ integration("Runs that outlive their connection", () => {
     const unlock = Promise.withResolvers<void>();
     const blocker = active.host.store.database.transaction().execute(async (transaction) => {
       await transaction
-        .selectFrom("workspaces")
-        .select("id")
-        .where("id", "=", workspace.id)
+        .selectFrom("deploymentEventState")
+        .select("deploymentId")
         .forNoKeyUpdate()
         .executeTakeFirstOrThrow();
       const result = await sql<{
@@ -1444,30 +1448,21 @@ async function waitFor(
   budget: number | AbortSignal,
   label: string,
 ): Promise<void> {
-  const deadline = typeof budget === "number" ? Date.now() + budget : undefined;
-  for (;;) {
-    if (typeof budget !== "number") budget.throwIfAborted();
-    if (await predicate()) return;
-    if (deadline !== undefined && Date.now() >= deadline) {
-      throw new Error(`Timed out waiting for ${label}`);
-    }
-    await delay(
-      100,
-      undefined,
-      typeof budget === "number"
-        ? undefined
-        : {
-            signal: budget,
-          },
-    );
-  }
+  await vi.waitFor(
+    async () => {
+      if (typeof budget !== "number") budget.throwIfAborted();
+      expect(await predicate(), `Timed out waiting for ${label}`).toBe(true);
+    },
+    { timeout: typeof budget === "number" ? budget : 30_000, interval: 100 },
+  );
 }
 async function waitForValue<T>(timeoutMs: number, read: () => Promise<T | undefined>): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const value = await read();
-    if (value !== undefined) return value;
-    await delay(100);
-  }
-  throw new Error("Timed out waiting for a value");
+  return vi.waitFor(
+    async () => {
+      const value = await read();
+      expect(value, "Timed out waiting for a value").not.toBeUndefined();
+      return value!;
+    },
+    { timeout: timeoutMs, interval: 100 },
+  );
 }

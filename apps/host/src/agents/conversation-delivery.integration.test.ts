@@ -121,7 +121,6 @@ integration("conversation delivery across Host and Runner", () => {
   }
   async function chat(active: VerticalStack): Promise<ThreadId> {
     return active.createThread({
-      home: true,
       modelSelection,
       title: "Chat",
     });
@@ -394,7 +393,6 @@ integration("conversation delivery across Host and Runner", () => {
       await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"), {
         timeout: 15_000,
       });
-      client.activateWorkspace(active.mainWorkspaceId);
       client.activateThread(threadId);
       const send = async (text: string) => {
         const sent = await client.dispatch({
@@ -512,7 +510,6 @@ integration("conversation delivery across Host and Runner", () => {
     const active = stack;
     const model = active.catalog.models[0]!;
     const threadId = await active.createThread({
-      home: true,
       modelSelection: ModelSelectionSchema.parse({
         modelId: model.modelId,
         options: {},

@@ -1,4 +1,4 @@
-import { WorkspaceSchema, createId, type EnvironmentId } from "@opensteer/core";
+import { createId, type EnvironmentId } from "@opensteer/core";
 import type { WatchActivationContext } from "@opensteer/database";
 import type { RunnerIdentity } from "@opensteer/orchestration";
 import {

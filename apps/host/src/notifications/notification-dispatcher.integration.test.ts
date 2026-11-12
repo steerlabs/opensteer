@@ -18,7 +18,7 @@ import {
 } from "@opensteer/database";
 import { HarnessRegistry, isolatedServiceHarnessRuntimeBoundary } from "@opensteer/harness";
 import { CodexHarnessDriver } from "@opensteer/harness-codex";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { startVerticalStack, type VerticalStack } from "../agents/vertical-stack.test-support.js";
 import { NotificationDispatcher } from "./notification-dispatcher.js";
 import { NotificationPublicationClient } from "./notification-publication-client.js";
@@ -75,27 +75,11 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       harnessRuntimeBoundary: isolatedServiceHarnessRuntimeBoundary,
     });
     const database = stack.host.store.database;
-    const member = await database
-      .selectFrom("workspaceMemberships")
-      .select("userId")
+    const owner = await database
+      .selectFrom("personalSettings")
+      .select("ownerId")
       .executeTakeFirstOrThrow();
-    recipientId = member.userId;
-    const coOwner = await stack.host.store.createUser("Co-owner for revocation checks");
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        userId: coOwner,
-        role: "owner",
-        state: "active",
-        generation: 1,
-        invitedBy: member.userId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(),
-      })
-      .execute();
+    recipientId = owner.ownerId;
     await new AccountDirectoryStore(database).configureProvider({
       issuer: "https://accounts.invalid",
       providerId: "oidc:notifications",
@@ -104,7 +88,7 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       .insertInto("authAccounts")
       .values({
         id: createId("authAccount"),
-        userId: member.userId,
+        userId: recipientId,
         accountId: `acct_${randomUUID()}`,
         providerId: "oidc:notifications",
         password: null,
@@ -128,11 +112,9 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
   }, 60_000);
   it.each([
     ["read", "readiness"],
-    ["mute", "readiness"],
     ["revoke", "readiness"],
     ["answer", "readiness"],
     ["read", "retry"],
-    ["mute", "retry"],
     ["revoke", "retry"],
     ["answer", "retry"],
   ] as const)(
@@ -155,28 +137,23 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
             });
       const runId = queued.runId;
       if (!runId) throw new Error("Expected a Run");
-      let row;
-      const deadline = Date.now() + 20_000;
-      while (!row) {
-        row = await database
-          .selectFrom("deploymentEvents")
-          .selectAll()
-          .where("runId", "=", runId)
-          .where("type", "=", change === "answer" ? "request.opened" : "run.completed")
-          .executeTakeFirst();
-        if (Date.now() >= deadline)
-          throw new Error("Producer did not commit its notification event");
-        if (!row) await new Promise((resolve) => setTimeout(resolve, 50));
-      }
+      const row = await vi.waitFor(
+        async () => {
+          const observed = await database
+            .selectFrom("deploymentEvents")
+            .selectAll()
+            .where("runId", "=", runId)
+            .where("type", "=", change === "answer" ? "request.opened" : "run.completed")
+            .executeTakeFirst();
+          expect(observed, "Producer did not commit its notification event").toBeDefined();
+          return observed!;
+        },
+        { timeout: 20_000, interval: 50 },
+      );
       const event = AgentEventSchema.parse({
         ...row,
         createdAt: row.createdAt.toISOString(),
       });
-      const member = await database
-        .selectFrom("workspaceMemberships")
-        .selectAll()
-        .where("userId", "=", recipientId)
-        .executeTakeFirstOrThrow();
       const state = new NotificationStateStore(database);
       const clock = new ManualClock(Date.parse(event.createdAt));
       const now = () => new Date(clock.now());
@@ -210,23 +187,14 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
           await state.markRead({
             threadId,
             throughSequence: message.sequence,
-            userId: member.userId,
+            userId: recipientId,
           });
         }
-        if (change === "mute")
-          await state.setAgentNotificationMute({
-            muted: true,
-            userId: member.userId,
-          });
         if (change === "revoke")
           await database
-            .updateTable("workspaceMemberships")
-            .set({
-              state: "revoked",
-              revokedBy: member.userId,
-              revokedAt: new Date(),
-            })
-            .where("id", "=", member.id)
+            .updateTable("users")
+            .set({ disabledAt: new Date() })
+            .where("id", "=", recipientId)
             .execute();
         if (change === "answer") await stack.host.store.requests.cancelForRun(runId, "run-ended");
       };
@@ -287,19 +255,10 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
         await dispatcher.close();
         if (change === "revoke")
           await database
-            .updateTable("workspaceMemberships")
-            .set({
-              state: "active",
-              revokedAt: null,
-              revokedBy: null,
-            })
-            .where("id", "=", member.id)
+            .updateTable("users")
+            .set({ disabledAt: null })
+            .where("id", "=", recipientId)
             .execute();
-        if (change === "mute")
-          await state.setAgentNotificationMute({
-            muted: false,
-            userId: member.userId,
-          });
         if (change === "answer") await stack.interruptRun(threadId, runId);
       }
       expect(posts).toBe(stage === "retry" ? 1 : 0);
@@ -307,7 +266,6 @@ integration("notification rechecks against committed PostgreSQL facts", () => {
       expect(skip).toBe(
         {
           read: "Reply was read before publication",
-          mute: "Workspace was muted before publication",
           revoke: "Recipient can no longer open this Thread",
           answer: "Request was answered before the notification was published",
         }[change],

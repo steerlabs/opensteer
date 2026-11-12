@@ -107,7 +107,6 @@ function world(
   }));
   const config = options.config ?? structuredClone(emptyAutomaticModelConfig);
   config.excludedAccounts.push(...(options.exclude ?? []).map((index) => harnesses[index]!.id));
-  const homeThreadId = createId("thread");
   const dependencies = {
     store: {
       getAutomaticModelConfig: async () => config,

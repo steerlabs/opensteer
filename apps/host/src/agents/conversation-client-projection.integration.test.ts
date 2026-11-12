@@ -120,7 +120,6 @@ integration("what the shared client draws of a Chat a person keeps writing to", 
       runTimeoutMs: 30_000,
     });
     const threadId = await stack.createThread({
-      home: true,
       modelSelection,
       title: "Chat",
     });
@@ -631,7 +630,6 @@ async function signedIn(active: VerticalStack, threadId: ThreadId): Promise<Sess
   await vi.waitFor(() => expect(client.getSnapshot().connection).toBe("connected"), {
     timeout: 15_000,
   });
-  client.activateWorkspace(active.mainWorkspaceId);
   client.activateThread(threadId);
   await vi.waitFor(() => expect(client.getSnapshot().inputQueues[threadId]).toBeDefined(), {
     timeout: 15_000,

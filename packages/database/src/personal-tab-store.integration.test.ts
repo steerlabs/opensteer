@@ -1,8 +1,5 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
-import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -10,7 +7,7 @@ import {
 } from "./test-database.test-support.js";
 /** Failure modes: parent locking can leave child cascades unordered; reclamation can
  * hold member A while a cascade holds B; transaction retries can hide the deadlock.
- * Force the first-member interleaving for pruning and Workspace deletion and record it. */
+ * Force the first-member interleaving for pruning and record it. */
 import { createId } from "@opensteer/core";
 import {
   BrowserSurfaceIdSchema,
@@ -34,6 +31,7 @@ import { OpensteerStore } from "./store.js";
 import { PersonalTabStore } from "./personal-tab-store.js";
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// The PostgreSQL launcher supplies the isolated database; plain unit runs omit it.
 const integration = databaseUrl ? describe : describe.skip;
 
 const cascadeEvidence: Array<Record<string, unknown>> = [];
@@ -66,13 +64,13 @@ const iconB =
 const iconC =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
-integration.sequential("durable workspace tabs", () => {
+integration.sequential("durable personal tabs", () => {
   async function createTestFixture() {
     const clone = await cloneTestDatabase("host");
     const databaseUrl = clone.url;
     const { database } = await ownTestDatabaseProducer(databaseUrl, async () => {
       const database = createDatabase({
-        applicationName: "workspace-tabs-test",
+        applicationName: "personal-tabs-test",
         connectionString: databaseUrl,
         maxConnections: 3,
       });
@@ -81,30 +79,8 @@ integration.sequential("durable workspace tabs", () => {
     const store = new OpensteerStore(database);
     const tabs = new PersonalTabStore(database);
     async function fixture() {
-      const ownerId = await store.createUser("Tab owner");
+      const { userId: ownerId } = await personalFixtureOwner(database, databaseUrl);
       const strangerId = await store.createUser("Stranger");
-      await store.ensureDeployment({
-        canonicalOrigin: "https://tabs.test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-        hostInstanceId: createId("hostInstance"),
-      });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          kind: "local-directory",
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-          generation: 1,
-        },
-
-        createdBy: ownerId,
-        idempotencyKey: randomUUID(),
-        name: "Tabs",
-        kind: "project",
-        status: "ready",
-      });
       const runnerId = createId("runner");
       await database
         .insertInto("runners")
@@ -134,11 +110,11 @@ integration.sequential("durable workspace tabs", () => {
       const session = {
         id: groupId,
         runnerId,
-        origin: "workspace" as const,
+        origin: "agent" as const,
+        ownerId,
         placementKey: "test",
         profileId: null,
         runtimeId: "test",
-        workspaceId: workspace.id,
       };
       await store.createBrowserSession(session);
       const first = {
@@ -171,10 +147,10 @@ integration.sequential("durable workspace tabs", () => {
     },
   });
 
-  it.for(["prune", "workspace deletion"] as const)(
+  it.for(["prune"] as const)(
     "orders membership cascades against reclamation during %s without retrying",
     async (path, { storeFixture }) => {
-      const { fixture, tabs, database, store, databaseUrl } = storeFixture;
+      const { fixture, tabs, database, databaseUrl } = storeFixture;
       const f = await fixture();
       const a = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000001");
       const b = BrowserSurfaceIdSchema.parse("surface_00000000-0000-4000-8000-000000000002");
@@ -219,15 +195,9 @@ integration.sequential("durable workspace tabs", () => {
       });
       expect(
         (
-          await sql<{ id: string }>`select id from workspace_tabs order by ctid`.execute(database)
+          await sql<{ id: string }>`select id from personal_tabs order by ctid`.execute(database)
         ).rows.map((row) => row.id),
       ).toEqual([b, a]);
-      if (path === "workspace deletion")
-        await store.requestWorkspaceDeletion({
-          workspaceId: f.session.workspaceId,
-          requestedBy: f.ownerId,
-          purgeAfter: new Date(),
-        });
       const applicationName = `workspace-tabs-cascade-${path}`;
       const deletingDatabase = createDatabase({
         connectionString: databaseUrl!,
@@ -281,12 +251,7 @@ integration.sequential("durable workspace tabs", () => {
       let outcomes: PromiseSettledResult<unknown>[] = [];
       try {
         await barrier.reached;
-        deleting =
-          path === "prune"
-            ? new PersonalTabStore(deletingDatabase).prune()
-            : new OpensteerStore(deletingDatabase).markWorkspaceDeleted({
-                workspaceId: f.session.workspaceId,
-              });
+        deleting = new PersonalTabStore(deletingDatabase).prune();
         void deleting.catch(() => undefined);
         await expect
           .poll(async () => {
@@ -395,19 +360,19 @@ integration.sequential("durable workspace tabs", () => {
       statements
         .filter(
           (statement) =>
-            statement.sql.includes('from "workspace_tabs"') &&
+            statement.sql.includes('from "personal_tabs"') &&
             statement.sql.includes("for no key update"),
         )
         .map((statement) => statement.rows),
     ).toEqual([1]);
     expect(
       statements
-        .filter((statement) => statement.sql.startsWith('select * from "workspace_tabs"'))
+        .filter((statement) => statement.sql.startsWith('select * from "personal_tabs"'))
         .map((statement) => statement.rows),
     ).toEqual([1]);
     expect(
       statements
-        .filter((statement) => statement.sql.startsWith('update "workspace_tabs"'))
+        .filter((statement) => statement.sql.startsWith('update "personal_tabs"'))
         .map((statement) => statement.writes),
     ).toEqual([1n]);
     const group = await tabs.read(f.ownerId, f.groupId);
@@ -540,23 +505,6 @@ integration.sequential("durable workspace tabs", () => {
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.[0]?.id).toBe(f.first.id);
     expect((await tabs.get(f.ownerId, f.first.id))?.url).toBe(url);
     expect(await tabs.read(f.strangerId, f.groupId)).toBeNull();
-  });
-  it("reuses session authority and removes rows on Workspace deletion", async ({
-    storeFixture,
-  }) => {
-    const { fixture, tabs, store } = storeFixture;
-    const f = await fixture();
-    await tabs.recordChanges(f.groupId, [f.first], []);
-    expect(await tabs.read(f.strangerId, f.groupId)).toBeNull();
-    expect(await tabs.get(f.strangerId, f.first.id)).toBeNull();
-    expect(await tabs.list(f.strangerId)).toEqual([]);
-    await store.requestWorkspaceDeletion({
-      workspaceId: f.session.workspaceId,
-      requestedBy: f.ownerId,
-      purgeAfter: new Date(),
-    });
-    await store.markWorkspaceDeleted({ workspaceId: f.session.workspaceId });
-    expect(await tabs.list(f.ownerId)).toEqual([]);
   });
   it("lists every dormant group beyond the old 100-group window", async ({ storeFixture }) => {
     const { fixture, store, tabs, database } = storeFixture;
@@ -898,33 +846,12 @@ integration.sequential("durable workspace tabs", () => {
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
     cascadeEvidence.push({ concurrentReopened: reopened });
   });
-  it("excludes other people's, agent, inventory and lineage closes and expired live markers", async ({
+  it("excludes agent, inventory and lineage closes and expired live markers", async ({
     storeFixture,
   }) => {
     const { fixture, tabs, database, allowReopen } = storeFixture;
     const f = await fixture();
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: f.session.workspaceId,
-        userId: f.strangerId,
-        role: "collaborator",
-        state: "active",
-        generation: 1,
-        invitedBy: f.ownerId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(),
-      })
-      .execute();
-    const shared = { ...f.first, id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`) };
-    await tabs.recordChanges(f.groupId, [shared], []);
-    await tabs.close(f.strangerId, shared.id);
-    await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
-    expect((await tabs.reopen(f.strangerId, allowReopen)).title).toBe("One");
     await tabs.close(f.ownerId, f.first.id, false);
     await tabs.recordChanges(f.groupId, [], [f.second.id]);
     await expect(tabs.reopen(f.ownerId, allowReopen)).rejects.toMatchObject({ code: "not_found" });
@@ -1097,18 +1024,22 @@ integration.sequential("durable workspace tabs", () => {
     });
     const reopening = tabs.reopen(f.ownerId, async () => {
       reached();
-      await held;
+      await withTimeout(held, 2_000, {
+        timeoutError: () => new Error("Tab close/reopen race was not released"),
+      });
     });
     let closing: Promise<unknown> | undefined;
     try {
-      await entered;
+      await withTimeout(entered, 2_000, {
+        timeoutError: () => new Error("Tab reopen never reached its fence"),
+      });
       closing = tabs.close(f.ownerId, f.second.id);
       await expect
         .poll(
           async () =>
             (
               await sql<{ query: string }>`select query from pg_stat_activity
-        where datname=current_database() and application_name='workspace-tabs-test'
+        where datname=current_database() and application_name='personal-tabs-test'
         and wait_event_type='Lock' and query like '%browser_sessions%'`.execute(database)
             ).rows.length,
         )

@@ -1,21 +1,11 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { createId } from "@opensteer/core";
+import { createBrowserSessionId } from "@opensteer/protocol";
 import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
-import {
-  createId,
-  HarnessIdSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
-} from "@opensteer/core";
-import {
-  createBrowserSessionId,
-  type PendingAgentEvent,
-  type RunnerDescriptor,
-} from "@opensteer/protocol";
+  personalFixtureOwner,
+  createPersonalRunFixturePort,
+} from "./personal-run-fixture.test-support.js";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { it as baseIt, describe, expect } from "vitest";
 import { BrowserSourceStore } from "./browser-source-store.js";
 import { createDatabase } from "./connection.js";
@@ -46,28 +36,8 @@ integration.sequential("browser sign-in authority", () => {
     const store = new OpensteerStore(database);
     const hostInstanceId = createId("hostInstance");
     async function fixture() {
-      const ownerId = await store.createUser("Source owner");
-      await store.ensureDeployment({
-        canonicalOrigin: "https://browser-source.test",
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-        hostInstanceId,
-      });
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          kind: "local-directory",
-          generation: 1,
-          bindingId: createStorageFixtureId("workspaceBinding"),
-          ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-            "env_00000000-0000-4000-8000-000000000001",
-          ),
-          storageAuthorityId: createStorageFixtureId("storageAuthority"),
-        },
-
-        createdBy: ownerId,
-        idempotencyKey: randomUUID(),
-        name: "Source test",
-        status: "ready",
-      });
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const ownerId = personal.userId;
       const codeHash = createHash("sha256").update(randomUUID()).digest("hex");
       const tokenHash = createHash("sha256").update(randomUUID()).digest("hex");
       await sources.createPairing({
@@ -86,135 +56,23 @@ integration.sequential("browser sign-in authority", () => {
         name: "Chrome",
         replaces: null,
       });
-      return { ownerId, workspaceId: workspace.id, source, codeHash, tokenHash };
+      return { ownerId, deploymentId: personal.deploymentId, source, codeHash, tokenHash };
     }
-    async function runningRun(
-      ownerId: Awaited<ReturnType<typeof store.createUser>>,
-      workspaceId: Awaited<ReturnType<typeof store.createWorkspace>>["id"],
-    ) {
-      const suffix = randomUUID();
-      const runnerId = createId("runner");
-      const environmentId = createId("environment");
-      const pair = generateKeyPairSync("ed25519");
-      const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-      const enrollmentTokenHash = `sha256:${createHash("sha256").update(suffix).digest("base64url")}`;
-      await store.createRunnerEnrollment({
-        allowedModules: ["agents"],
-        createdBy: ownerId,
-        expiresAt: new Date(Date.now() + 60_000),
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: `browser-source-${suffix}`,
-        mainEnrollmentPurpose: "initial",
-        name: "Browser source test runner",
-        requestFingerprint: `sha256:${suffix}`,
-        runnerKind: "main",
-        tokenHash: enrollmentTokenHash,
+    async function runningRun(ownerId: import("@opensteer/core").UserId) {
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      expect(ownerId).toBe(personal.userId);
+      const port = createPersonalRunFixturePort(store);
+      const task = await port.createTask({
+        ownerId,
+        folder: personal.agentHome,
+        suffix: randomUUID(),
       });
-      const descriptor: RunnerDescriptor = {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: ["filesystem"],
-        modules: {
-          agents: {
-            environmentIds: [environmentId],
-            harnessDrivers: [
-              {
-                accessModes: ThreadAccessModeSchema.options,
-                driverKind: HarnessIdSchema.parse("native"),
-                readiness: "configured",
-                sources: [
-                  {
-                    fields: [],
-                    kind: "first-party",
-                    label: "Native",
-                    quota: "none",
-                    sourceId: "native",
-                    stateKinds: ["isolated"],
-                  },
-                ],
-              },
-            ],
-            localStorage: null,
-            maxConcurrentRuns: 1,
-            providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
-          },
-        },
-        name: "Browser source test runner",
-        runnerId,
-        runnerKind: "main",
-        runtimeVersion: "test",
-      };
-      await store.enrollRunnerConnection({
-        descriptor,
-        enrollmentTokenHash,
-        publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-        publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-      });
-      const harness = await store.createHarnessInstance({
-        config: { model: "test" },
-        driverKind: HarnessIdSchema.parse("native"),
-        environmentId,
-        name: "Native",
-        sourceId: "native",
-        stateKind: "isolated",
-      });
-      const { thread } = await store.createThread({
-        createdBy: ownerId,
-        environmentId,
-        harnessInstanceId: harness.id,
-        idempotencyKey: `thread-${suffix}`,
-        modelSelection: ModelSelectionSchema.parse({
-          modelId: "gpt-5.6-sol",
-          options: { effort: "low" },
-          providerId: "openai",
-        }),
-        title: "Browser source Request",
-        workspaceId,
-      });
-      const admitted = await store.enqueueThreadInput({
-        content: [{ text: "Start", type: "text" }],
-        idempotencyKey: `${suffix}-initial`,
-        policy: "queue",
-        requestedBy: ownerId,
-        source: { kind: "human" },
-        threadId: thread.id,
-      });
-      if (!admitted.command || !admitted.run) throw new Error("Expected queued Run");
-      await store.claimCommand(admitted.command.id, `${suffix}-dispatcher`);
-      const runnerBootId = `boot-${suffix}`;
-      const binding = await store.acquireExecutionBinding({
-        bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-        continuationIdentity: {
-          continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-          driverKind: HarnessIdSchema.parse("native"),
-        },
-        harnessInstanceId: harness.id,
-        leaseTokenHash: `${suffix}-lease`,
-        membershipGeneration: 1,
-        runnerBootId,
-        runnerId,
-        runId: admitted.run.id,
-        threadId: thread.id,
-      });
-      const started: PendingAgentEvent = {
-        bindingGeneration: binding.bindingGeneration,
-        data: { status: "running" },
-        emittedAt: new Date().toISOString(),
-        environmentId,
-        ordinal: 0,
-        runId: admitted.run.id,
-        threadId: thread.id,
-        type: "run.started",
-        workspaceId,
-      };
-      await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
+      const started = await port.startTask(task.threadId, "Start");
       return {
-        bindingGeneration: binding.bindingGeneration,
-        environmentId,
-        runId: admitted.run.id,
-        runnerBootId,
-        runnerId,
-        threadId: thread.id,
+        ...started,
+        threadId: task.threadId,
+        environmentId: personal.environmentId,
+        runnerId: personal.runnerId,
       };
     }
     async function liveSession(
@@ -228,7 +86,7 @@ integration.sequential("browser sign-in authority", () => {
         profileId: null,
         runnerId: run.runnerId,
         runtimeId: "browser",
-        workspaceId: scope.workspaceId,
+        ownerId: scope.ownerId,
       });
       await store.transitionBrowserSession({ sessionId: session.id, state: "ready" });
       return session.id;
@@ -245,10 +103,8 @@ integration.sequential("browser sign-in authority", () => {
         mode: "durable",
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: scope.workspaceId,
         requestedBy: scope.ownerId,
         requiredActor: "requester",
-        targetWorkspaceId: scope.workspaceId,
         payload: { kind: "browser.sign-in", reason: "Open my dashboard", sessionId, site },
         presentation: {
           detail: "Open my dashboard",
@@ -293,7 +149,7 @@ integration.sequential("browser sign-in authority", () => {
     storeFixture,
   }) => {
     const { fixture, sources } = storeFixture;
-    const { ownerId, workspaceId, source, tokenHash } = await fixture();
+    const { ownerId, deploymentId, source, tokenHash } = await fixture();
     const pair = async (
       replaces: { readonly sourceId: typeof source.id; readonly tokenHash: string } | null,
       destination = { origin: "https://source-host.test", routeGeneration: null as number | null },
@@ -328,7 +184,7 @@ integration.sequential("browser sign-in authority", () => {
     };
     await sources.upsertGrant({
       ownerId,
-      workspaceId,
+      deploymentId,
       site: "https://example.test",
       preferredSourceId: source.id,
     });
@@ -342,13 +198,13 @@ integration.sequential("browser sign-in authority", () => {
     });
     expect(await sources.authenticate(tokenHash)).toMatchObject({ id: source.id });
     expect(
-      await sources.getGrant({ ownerId, workspaceId, site: "https://example.test" }),
+      await sources.getGrant({ ownerId, deploymentId, site: "https://example.test" }),
     ).toMatchObject({ preferredSourceId: source.id });
 
     const replacement = await pair({ sourceId: source.id, tokenHash });
     expect(await sources.authenticate(tokenHash)).toBeNull();
     expect(
-      await sources.getGrant({ ownerId, workspaceId, site: "https://example.test" }),
+      await sources.getGrant({ ownerId, deploymentId, site: "https://example.test" }),
     ).toMatchObject({ preferredSourceId: replacement.paired.id });
     expect((await sources.list(ownerId)).map(({ id }) => id).sort()).toEqual(
       [remote.paired.id, forged.paired.id, replacement.paired.id].sort(),
@@ -369,14 +225,14 @@ integration.sequential("browser sign-in authority", () => {
       database,
     } = storeFixture;
     const scope = await fixture();
-    const run = await runningRun(scope.ownerId, scope.workspaceId);
+    const run = await runningRun(scope.ownerId);
     const sessionId = await liveSession(scope, run);
     const site = "https://example.test";
     const opened = await createSignInRequest(scope, run, sessionId, site);
     expect(opened.request.status).toBe("pending");
     await sources.upsertGrant({
       ownerId: scope.ownerId,
-      workspaceId: scope.workspaceId,
+      deploymentId: scope.deploymentId,
       site,
       preferredSourceId: scope.source.id,
     });
@@ -391,7 +247,7 @@ integration.sequential("browser sign-in authority", () => {
       site,
       sourceId: scope.source.id,
       sourceName: scope.source.name,
-      workspaceId: scope.workspaceId,
+      deploymentId: scope.deploymentId,
     };
     const committed = await sources.commitSignIn(input);
     expect(committed).toMatchObject({
@@ -409,7 +265,7 @@ integration.sequential("browser sign-in authority", () => {
     });
     expect(await continuationFor(opened.request.id)).toEqual({ status: "waiting" });
     expect(
-      (await sources.getGrant({ ownerId: scope.ownerId, workspaceId: scope.workspaceId, site }))
+      (await sources.getGrant({ ownerId: scope.ownerId, deploymentId: scope.deploymentId, site }))
         ?.lastSignedInAt,
     ).toBeInstanceOf(Date);
 
@@ -437,7 +293,7 @@ integration.sequential("browser sign-in authority", () => {
     const { fixture, runningRun, liveSession, createSignInRequest, store, continuationFor } =
       storeFixture;
     const scope = await fixture();
-    const run = await runningRun(scope.ownerId, scope.workspaceId);
+    const run = await runningRun(scope.ownerId);
     const sessionId = await liveSession(scope, run);
     const declined = await createSignInRequest(scope, run, sessionId);
     const first = await store.requests.declineBrowserSignInRequest({
@@ -459,7 +315,6 @@ integration.sequential("browser sign-in authority", () => {
         ownerId: scope.ownerId,
         originatingRunId: run.runId,
         site: "https://closed.test",
-        workspaceId: scope.workspaceId,
       }),
     ).toMatchObject({ id: closed.request.id });
     expect(
@@ -495,7 +350,7 @@ integration.sequential("browser sign-in authority", () => {
     storeFixture,
   }) => {
     const { fixture, sources } = storeFixture;
-    const { ownerId, workspaceId, source } = await fixture();
+    const { ownerId, deploymentId, source } = await fixture();
     const site = "https://example.test";
     const fence = {
       ownerId,
@@ -506,15 +361,15 @@ integration.sequential("browser sign-in authority", () => {
       site,
       sourceGeneration: source.generation,
       sourceId: source.id,
-      workspaceId,
+      deploymentId,
     };
     expect(await sources.fence(fence)).toBe("grant-removed");
     expect(await sources.fence({ ...fence, requireGrant: false })).toBeNull();
-    await sources.upsertGrant({ ownerId, workspaceId, site, preferredSourceId: source.id });
+    await sources.upsertGrant({ ownerId, deploymentId, site, preferredSourceId: source.id });
     expect(await sources.fence(fence)).toBeNull();
-    expect(await sources.removeGrant({ ownerId, workspaceId, site })).toBe(true);
+    expect(await sources.removeGrant({ ownerId, deploymentId, site })).toBe(true);
     expect(await sources.fence(fence)).toBe("grant-removed");
-    await sources.upsertGrant({ ownerId, workspaceId, site, preferredSourceId: source.id });
+    await sources.upsertGrant({ ownerId, deploymentId, site, preferredSourceId: source.id });
     expect(await sources.revoke({ ownerId, sourceId: source.id })).toBe(true);
     expect(await sources.fence(fence)).toBe("source-changed");
     // Grants outlive the connection; only the preference points nowhere now.
@@ -529,7 +384,7 @@ integration.sequential("browser sign-in authority", () => {
    * in for a Request the owner refused):
    * - the Request was declined, fulfilled or withdrawn after export;
    * - the Request names another session or site than the delivery;
-   * - the Workspace became unavailable after export;
+   * - the personal Deployment became unavailable after export;
    * - remembering a new site would exceed the owner's 1,024-site limit, which
    *   the commit would otherwise discover only after import.
    */
@@ -539,7 +394,7 @@ integration.sequential("browser sign-in authority", () => {
     const { fixture, runningRun, liveSession, createSignInRequest, sources, store, database } =
       storeFixture;
     const scope = await fixture();
-    const run = await runningRun(scope.ownerId, scope.workspaceId);
+    const run = await runningRun(scope.ownerId);
     const sessionId = await liveSession(scope, run);
     const site = "https://example.test";
     const opened = await createSignInRequest(scope, run, sessionId, site);
@@ -552,7 +407,7 @@ integration.sequential("browser sign-in authority", () => {
       site,
       sourceGeneration: scope.source.generation,
       sourceId: scope.source.id,
-      workspaceId: scope.workspaceId,
+      deploymentId: scope.deploymentId,
     };
     expect(await sources.fence(fence)).toBeNull();
     expect(await sources.fence({ ...fence, sessionId: createBrowserSessionId() })).toBe(
@@ -567,9 +422,9 @@ integration.sequential("browser sign-in authority", () => {
 
     const orphaned = await createSignInRequest(scope, run, sessionId, "https://orphan.test");
     await database
-      .updateTable("workspaces")
-      .set({ status: "unavailable" })
-      .where("id", "=", scope.workspaceId)
+      .updateTable("deployments")
+      .set({ lifecycle: "sealed" })
+      .where("id", "=", scope.deploymentId)
       .execute();
     expect(
       await sources.fence({
@@ -577,16 +432,16 @@ integration.sequential("browser sign-in authority", () => {
         requestId: orphaned.request.id,
         site: "https://orphan.test",
       }),
-    ).toBe("workspace-unavailable");
+    ).toBe("deployment-unavailable");
     await database
-      .updateTable("workspaces")
-      .set({ status: "ready" })
-      .where("id", "=", scope.workspaceId)
+      .updateTable("deployments")
+      .set({ lifecycle: "active" })
+      .where("id", "=", scope.deploymentId)
       .execute();
 
     await sql`
-      insert into public.browser_site_grants (id, owner_id, workspace_id, site, preferred_source_id)
-      select gen_random_uuid(), ${scope.ownerId}, ${scope.workspaceId}, 'https://s' || n || '.test', ${scope.source.id}
+      insert into public.browser_site_grants (id, owner_id, deployment_id, site, preferred_source_id)
+      select gen_random_uuid(), ${scope.ownerId}, ${scope.deploymentId}, 'https://s' || n || '.test', ${scope.source.id}
       from generate_series(1, 1024) as n
     `.execute(database);
     const remember = { ...fence, rememberSite: true, requestId: null };
@@ -607,7 +462,7 @@ integration.sequential("browser sign-in authority", () => {
     const { fixture, runningRun, liveSession, database, sources, createSignInRequest, store } =
       storeFixture;
     const scope = await fixture();
-    const run = await runningRun(scope.ownerId, scope.workspaceId);
+    const run = await runningRun(scope.ownerId);
     const sessionId = await liveSession(scope, run);
     const other = await database
       .insertInto("browserSources")
@@ -638,7 +493,7 @@ integration.sequential("browser sign-in authority", () => {
         ownerId: scope.ownerId,
         preferredSourceId,
         site,
-        workspaceId: scope.workspaceId,
+        deploymentId: scope.deploymentId,
       });
     for (let index = 0; index < 5; index += 1) {
       await createSignInRequest(scope, run, sessionId, `https://ungranted${index}.test`);
@@ -650,7 +505,7 @@ integration.sequential("browser sign-in authority", () => {
     await sources.removeGrant({
       ownerId: scope.ownerId,
       site: "https://removed.test",
-      workspaceId: scope.workspaceId,
+      deploymentId: scope.deploymentId,
     });
     const mine = await createSignInRequest(scope, run, sessionId, "https://mine.test");
     await grant("https://mine.test", scope.source.id);
@@ -683,7 +538,6 @@ integration.sequential("browser sign-in authority", () => {
         originatingRunId: run.runId,
         ownerId: scope.ownerId,
         site: "https://elsewhere.test",
-        workspaceId: scope.workspaceId,
       }))!.id,
       orphan.request.id,
     ]);
@@ -692,13 +546,12 @@ integration.sequential("browser sign-in authority", () => {
   it("admits sign_in on the Run tool ledger", async ({ storeFixture }) => {
     const { fixture, runningRun, store } = storeFixture;
     const scope = await fixture();
-    const run = await runningRun(scope.ownerId, scope.workspaceId);
+    const run = await runningRun(scope.ownerId);
     const admit = (requestId: string) =>
       store.admitRunToolCall({
         action: "browser.sign-in",
         bindingGeneration: run.bindingGeneration,
         environmentId: run.environmentId,
-        membershipGeneration: 1,
         requestFingerprint: createHash("sha256").update(requestId).digest("hex"),
         requestId,
         requestedBy: scope.ownerId,
@@ -706,7 +559,6 @@ integration.sequential("browser sign-in authority", () => {
         runnerBootId: run.runnerBootId,
         runnerId: run.runnerId,
         sourceThreadId: run.threadId,
-        workspaceId: scope.workspaceId,
       });
     const requestId = randomUUID();
     expect(await admit(requestId)).toEqual({ actionClass: "browser.sign-in", wasDuplicate: false });

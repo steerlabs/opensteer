@@ -809,8 +809,8 @@ describeStore("PostgreSQL store", (it) => {
           presentation: {
             kind: "external",
             subject: {
-              id: started.workspace.id,
-              kind: "workspace",
+              id: started.threadId,
+              kind: "thread",
             },
             title: "Browser",
           },

@@ -35,8 +35,8 @@ describeStore("Continuation paging", (it) => {
           kind: "external",
           title: "Choose a profile",
           subject: {
-            kind: "workspace",
-            id: fixture.workspace.id,
+            kind: "thread",
+            id: fixture.threadId,
           },
         },
       });

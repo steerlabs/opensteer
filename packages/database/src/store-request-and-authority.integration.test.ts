@@ -15,7 +15,7 @@ import { integrationDefinitionDigest } from "@opensteer/integration-core/digest"
 import { createBrowserSessionId, HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { sql } from "kysely";
 import { randomUUID } from "node:crypto";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 
 import {
   installIntegrationInTransaction,
@@ -233,7 +233,7 @@ describeStore("PostgreSQL store", (it) => {
         title: "Choose browser access",
         subject: {
           id: target.id,
-          kind: "workspace",
+          kind: "thread",
         },
       },
     });
@@ -313,7 +313,7 @@ describeStore("PostgreSQL store", (it) => {
         kind: "external",
         subject: {
           id: target.id,
-          kind: "workspace",
+          kind: "thread",
         },
         title: "Choose browser access",
       },
@@ -436,7 +436,7 @@ describeStore("PostgreSQL store", (it) => {
         kind: "external" as const,
         subject: {
           id: targetWorkspace.id,
-          kind: "workspace",
+          kind: "thread",
         },
         title: "Choose browser access",
       },
@@ -688,7 +688,7 @@ describeStore("PostgreSQL store", (it) => {
           title: "Choose a profile",
           subject: {
             id: target.id,
-            kind: "workspace",
+            kind: "thread",
           },
         },
       });
@@ -1644,11 +1644,11 @@ describeStore("PostgreSQL store", (it) => {
     });
     void raced.catch(() => undefined);
     try {
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
+      await vi.waitFor(
+        async () => {
+          const result = await sql<{
+            readonly waiting: number;
+          }>`
           select count(*)::integer as waiting
           from pg_locks locks
           join pg_stat_activity activity on activity.pid = locks.pid
@@ -1657,10 +1657,13 @@ describeStore("PostgreSQL store", (it) => {
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
         `.execute(database);
-        waiting = Number(result.rows[0]?.waiting ?? 0);
-        if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(waiting).toBeGreaterThan(0);
+          expect(
+            Number(result.rows[0]?.waiting ?? 0),
+            "Install Request never waited for the installation fence",
+          ).toBeGreaterThan(0);
+        },
+        { timeout: 1_000, interval: 5 },
+      );
     } finally {
       releaseInstallation();
     }
@@ -2037,48 +2040,6 @@ describeStore("PostgreSQL store", (it) => {
         )
       `.execute(database),
     ).rejects.toThrow("command requester cannot execute the thread environment");
-  });
-
-  it("leaves Main and local work locations untouched by the ownership binding", async ({
-    storeFixture,
-  }) => {
-    const { store, sqlCanExecute } = storeFixture;
-    const ownerId = await store.createUser("Owner");
-    const otherId = await store.createUser("Other");
-    const mainEnvironmentId = createId("environment");
-    const laptopEnvironmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: ownerId,
-      environmentId: mainEnvironmentId,
-      name: "Main runner",
-      runnerId: createId("runner"),
-      tokenSuffix: "binding-regression-main",
-    });
-    await enrollTestRunner(store, {
-      createdBy: ownerId,
-      environmentId: laptopEnvironmentId,
-      name: "Owner's laptop",
-      runnerId: createId("runner"),
-      runnerKind: "local",
-      tokenSuffix: "binding-regression-laptop",
-    });
-    for (const userId of [ownerId, otherId]) {
-      await expect(store.environmentIsAvailableToUser(mainEnvironmentId, userId)).resolves.toBe(
-        true,
-      );
-      await expect(sqlCanExecute(mainEnvironmentId, userId)).resolves.toBe(true);
-    }
-    await expect(store.environmentIsAvailableToUser(laptopEnvironmentId, ownerId)).resolves.toBe(
-      true,
-    );
-    await expect(store.environmentIsAvailableToUser(laptopEnvironmentId, otherId)).resolves.toBe(
-      false,
-    );
-    await expect(sqlCanExecute(laptopEnvironmentId, ownerId)).resolves.toBe(true);
-    await expect(sqlCanExecute(laptopEnvironmentId, otherId)).resolves.toBe(false);
-    expect((await store.listEnvironmentsForUser(otherId)).map((item) => item.id)).toEqual([
-      mainEnvironmentId,
-    ]);
   });
 
   it("keeps one harness catalog per environment and AI engine, newest answer wins", async ({

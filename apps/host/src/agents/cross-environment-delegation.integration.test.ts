@@ -2,7 +2,11 @@ import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { OrchestratorCapabilitiesSchema } from "@opensteer/agent-tools/outputs";
 import { ProductToolResultSchema } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
@@ -14,9 +18,6 @@ import {
   MessageContentSchema,
   ModelSelectionSchema,
   PendingRequestSchema,
-  SequenceSchema,
-  ThreadAccessModeSchema,
-  WorkspaceIdSchema,
   type AssignmentId,
   type EnvironmentId,
   type RequestId,
@@ -28,7 +29,6 @@ import {
 import {
   createDatabase,
   migrateToLatest,
-  migrationProvider,
   OpensteerStore,
   readThreadWaitSnapshot,
 } from "@opensteer/database";
@@ -38,10 +38,9 @@ import {
   HarnessInstanceCatalogSchema,
   type HarnessInstanceCatalog,
   type RunnerCommand,
-  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,15 +65,7 @@ const testModelSelection = ModelSelectionSchema.parse({
   providerId: "openai",
 });
 
-/**
- * A Thread delegated to another machine used to inherit its parent's harness
- * instance, which belongs to the parent's environment. The Host created the
- * child Thread and its Run, and the dispatcher then failed that Run outright on
- * the environment mismatch. This exercise runs the whole path against a real
- * database and ends at the Runner command, which is the only place the mismatch
- * could still surface.
- */
-integration("cross-environment delegation reaches the Runner", () => {
+integration("personal task delegation lifecycle", () => {
   const database = createDatabase({
     applicationName: "opensteer-cross-environment-delegation-integration-test",
     connectionString: databaseUrl ?? "postgres://unconfigured",
@@ -90,10 +81,12 @@ integration("cross-environment delegation reaches the Runner", () => {
       maxQueuedCommands: 64,
     }),
     onExecutionQueued: vi.fn(),
-    onWorkspaceEvent: vi.fn(),
+    onDeploymentEvent: vi.fn(),
     store,
   });
   const assertDelegatedPlaces = vi.fn(async () => undefined);
+  let folders: ReturnType<typeof personalTestFolders>;
+  const directories: string[] = [];
   const service = new ProductToolsTestClient({
     placeContext: {
       assertDelegated: assertDelegatedPlaces,
@@ -117,14 +110,13 @@ integration("cross-environment delegation reaches the Runner", () => {
       readablePlaces: async (_owner, references) => [...references],
       drainRunPlaces: async () => undefined,
       listAgentSessions: unexpected,
-      listGrantedProfiles: unexpected,
+      listAgentProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
     },
     canRunHarness: () => true,
     commands,
     isEnvironmentConnected: () => true,
-    onWorkspaceEvent: vi.fn(),
     store,
     tokens: {
       authenticate: async (token: string) => {
@@ -133,13 +125,9 @@ integration("cross-environment delegation reaches the Runner", () => {
         return claims;
       },
     } as unknown as RunToolTokenService,
-    defaultWorkspaceBacking: "local-directory",
-    environmentWorkspaceBackings: () => ["local-directory"],
-    workspaceMounts: {
-      mount: unexpected,
-    },
-    workspaces: {
-      create: unexpected,
+    folders: {
+      resolve: (...args) => folders.resolve(...args),
+      canExecute: (id) => folders.canExecute(id),
     },
   });
   beforeAll(async () => {
@@ -163,26 +151,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         );
     });
     claimsByToken.clear();
-    await sql`
-      truncate table
-        workspace_events,
-        agent_control_requests,
-        commands,
-        thread_inputs,
-        causal_chains,
-        delegations,
-        messages,
-        runs,
-        threads,
-        harness_catalogs,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
+    await sql`truncate table deployments, users restart identity cascade`.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
       values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
@@ -220,57 +189,9 @@ integration("cross-environment delegation reaches the Runner", () => {
       );
     }
     await database.destroy();
+    await Promise.all(directories.map((path) => rm(path, { recursive: true, force: true })));
   });
-  it("dispatches the delegated Run on the lent machine's own AI engine", async () => {
-    const fixture = await createFixture();
-    const response = await service.handle(fixture.token, {
-      requestId: randomUUID(),
-      task: "Build the release on the lent Mac",
-      title: "Lent build",
-      type: "thread.delegate",
-    });
-    if (response.type !== "thread.delegate.result") throw new Error("Expected a delegate result");
 
-    // The child is placed on the lent machine and on that machine's own engine.
-    expect(response.result.assignmentId).toMatch(/^dlg_/u);
-    expect((await readToolRecords(store, response.result)).thread.role).toBe("work");
-    expect((await readToolRecords(store, response.result)).thread.modelSelection).toEqual(
-      testModelSelection,
-    );
-    expect((await readToolRecords(store, response.result)).thread.environmentId).toBe(
-      fixture.lentEnvironmentId,
-    );
-    expect((await readToolRecords(store, response.result)).thread.harnessInstanceId).toBe(
-      fixture.lentHarnessInstanceId,
-    );
-    expect((await readToolRecords(store, response.result)).thread.harnessInstanceId).not.toBe(
-      fixture.mainHarnessInstanceId,
-    );
-    expect((await readToolRecords(store, response.result)).run?.environmentId).toBe(
-      fixture.lentEnvironmentId,
-    );
-    const childRunId = (await readToolRecords(store, response.result)).run?.id;
-    if (!childRunId) throw new Error("Expected the delegation to queue a Run");
-    const pending = await database
-      .selectFrom("commands")
-      .select("id")
-      .where("runId", "=", childRunId)
-      .where("type", "=", "run.execute")
-      .executeTakeFirstOrThrow();
-    const claimed = await store.claimCommand(pending.id, "delegation-dispatcher");
-    if (!claimed) throw new Error("Expected the child Run command to be claimable");
-    const dispatched: RunnerCommand[] = [];
-    const dispatcher = makeDispatcher(fixture.lentRunnerId, dispatched);
-    await dispatcher.dispatch(claimed.command, new AbortController().signal);
-    const [runnerCommand] = dispatched;
-    expect(runnerCommand).toMatchObject({
-      environmentId: fixture.lentEnvironmentId,
-      type: "run.execute",
-    });
-    expect(runnerCommand?.type === "run.execute" && runnerCommand.context.harnessInstanceId).toBe(
-      fixture.lentHarnessInstanceId,
-    );
-  });
   it("shares a delegation admission while the accepted attempt waits before PostgreSQL commit", async () => {
     const fixture = await createFixture();
     let release!: () => void;
@@ -353,6 +274,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     } as const;
     const first = await commands.delegateThread({
       accessMode: "auto",
+      folder: fixture.agentHome,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -433,6 +355,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     ] as const;
     const child = await commands.delegateThread({
       accessMode: "auto",
+      folder: fixture.agentHome,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -619,10 +542,8 @@ integration("cross-environment delegation reaches the Runner", () => {
       await new Promise<void>((resolve) => mcp.server.close(() => resolve()));
     }
   });
-  it("Workspace and delegated agents discover Sol by name and delegate typed model options through MCP", async () => {
-    const fixture = await createFixture({
-      project: true,
-    });
+  it("Personal and delegated agents discover Sol by name and delegate typed model options through MCP", async () => {
+    const fixture = await createFixture({});
     const base = readyCatalog(fixture.lentHarnessInstanceId, nativeDriver);
     if (base.status !== "ready") throw new Error("Expected ready catalog");
     const selected = {
@@ -700,7 +621,6 @@ integration("cross-environment delegation reaches the Runner", () => {
             .map(({ id }) => id)
             .sort(),
         ).toEqual([fixture.lentHarnessInstanceId]);
-        const workspacePages = vi.spyOn(store, "workspacePageForOwner");
         const threadPages = vi.spyOn(store, "ownerThreadPageForOwner");
         let discovery: Awaited<ReturnType<typeof mcp.client.callTool>>;
         try {
@@ -711,10 +631,8 @@ integration("cross-environment delegation reaches the Runner", () => {
               harnessInstanceId: fixture.lentHarnessInstanceId,
             },
           });
-          expect(workspacePages).not.toHaveBeenCalled();
           expect(threadPages).not.toHaveBeenCalled();
         } finally {
-          workspacePages.mockRestore();
           threadPages.mockRestore();
         }
         expect(discovery.isError).not.toBe(true);
@@ -789,25 +707,7 @@ integration("cross-environment delegation reaches the Runner", () => {
   });
   it("discovers every authorized profile and model through MCP", async () => {
     const fixture = await createFixture();
-    const extraEnvironments = Array.from(
-      {
-        length: 70,
-      },
-      () => createId("environment"),
-    ).sort();
-    const extraHarnesses = extraEnvironments.map(() => createId("harnessInstance")).sort();
-    await database
-      .insertInto("executionEnvironments")
-      .values(
-        extraEnvironments.map((id, index) => ({
-          capabilities: sql`'["filesystem"]'::jsonb`,
-          id,
-          kind: "local" as const,
-          name: `Extra machine ${index}`,
-          runnerId: fixture.lentRunnerId,
-        })),
-      )
-      .execute();
+    const extraHarnesses = Array.from({ length: 70 }, () => createId("harnessInstance")).sort();
     await database
       .insertInto("harnessInstances")
       .values(
@@ -894,50 +794,6 @@ integration("cross-environment delegation reaches the Runner", () => {
         expectedRevisions: new Map([[id, 1]]),
       });
     }
-    const privateUser = await store.createUser("Private owner");
-    const privateEnvironmentId = createId("environment");
-    const privateRunnerId = createId("runner");
-    await enrollRunner({
-      createdBy: privateUser,
-      driverKind: nativeDriver,
-      environmentId: privateEnvironmentId,
-      name: "Private machine",
-      runnerId: privateRunnerId,
-      runnerKind: "local",
-    });
-    const privateHarness = await store.createHarnessInstance({
-      config: {},
-      driverKind: nativeDriver,
-      environmentId: privateEnvironmentId,
-      name: "Private engine",
-      sourceId: "native",
-      stateKind: "isolated",
-    });
-    const revokedEnvironmentId = createId("environment");
-    const revokedRunnerId = createId("runner");
-    await enrollRunner({
-      createdBy: fixture.userId,
-      driverKind: nativeDriver,
-      environmentId: revokedEnvironmentId,
-      name: "Revoked machine",
-      runnerId: revokedRunnerId,
-      runnerKind: "local",
-    });
-    const revokedHarness = await store.createHarnessInstance({
-      config: {},
-      driverKind: nativeDriver,
-      environmentId: revokedEnvironmentId,
-      name: "Revoked engine",
-      sourceId: "native",
-      stateKind: "isolated",
-    });
-    await database
-      .updateTable("runners")
-      .set({
-        revokedAt: new Date(),
-      })
-      .where("id", "=", revokedRunnerId)
-      .execute();
     const disabledId = extraHarnesses[68]!;
     await database
       .updateTable("harnessInstances")
@@ -990,7 +846,6 @@ integration("cross-environment delegation reaches the Runner", () => {
               providerId: string;
             };
           };
-          environmentsTruncated: boolean;
           harnesses: {
             id: string;
             environmentId: string;
@@ -1021,33 +876,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       expect(seen.size).toBe(71);
       expect(seen.get(targetId)?.environmentId).toBe(targetEnvironmentId);
       expect(seen.has(disabledId)).toBe(true);
-      expect(seen.has(privateHarness.id)).toBe(false);
-      expect(seen.has(revokedHarness.id)).toBe(false);
       {
-        const environmentIds = new Set<string>();
-        let environmentCursor: string | undefined;
-        do {
-          const result = await mcp.client.callTool({
-            name: "environment_list",
-            arguments: environmentCursor
-              ? {
-                  environmentCursor,
-                }
-              : {},
-          });
-          expect(result.isError).not.toBe(true);
-          const page = result.structuredContent as {
-            environments: {
-              id: string;
-            }[];
-            environmentsNextCursor?: string;
-          };
-          if (!environmentCursor)
-            expect(page.environments.map(({ id }) => id)).not.toContain(extraEnvironments[69]);
-          page.environments.forEach(({ id }) => environmentIds.add(id));
-          environmentCursor = page.environmentsNextCursor;
-        } while (environmentCursor);
-        expect(environmentIds.size).toBe(72);
         const found = await discoveryClient.callTool({
           name: "orchestrator_capabilities",
           arguments: {
@@ -1138,21 +967,10 @@ integration("cross-environment delegation reaches the Runner", () => {
             ).isError,
           ).toBe(true);
         }
-        const workspaces = await mcp.client.callTool({
-          name: "project_list",
-          arguments: {},
-        });
-        expect(workspaces.isError, JSON.stringify(workspaces.content)).not.toBe(true);
-        expect(Object.keys(workspaces.structuredContent ?? {}).sort()).toEqual([
-          "projects",
-          "window",
-        ]);
         acceptanceEvidence.push({
-          caseId: "environment-discovery-v3",
-          environments: [...environmentIds],
+          caseId: "personal-engine-discovery-v3",
           found: found.structuredContent,
           none: none.structuredContent,
-          workspaces: workspaces.structuredContent,
         });
       }
       const starvedId = otherCatalogIds.find((id) => {
@@ -1239,30 +1057,6 @@ integration("cross-environment delegation reaches the Runner", () => {
           await discoveryClient.callTool({
             arguments: {
               modelPage: {
-                harnessInstanceId: privateHarness.id,
-              },
-            },
-            name: "orchestrator_capabilities",
-          })
-        ).isError,
-      ).toBe(true);
-      expect(
-        (
-          await discoveryClient.callTool({
-            arguments: {
-              modelPage: {
-                harnessInstanceId: revokedHarness.id,
-              },
-            },
-            name: "orchestrator_capabilities",
-          })
-        ).isError,
-      ).toBe(true);
-      expect(
-        (
-          await discoveryClient.callTool({
-            arguments: {
-              modelPage: {
                 harnessInstanceId: disabledId,
               },
             },
@@ -1331,27 +1125,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       await new Promise<void>((resolve) => mcp.server.close(() => resolve()));
     }
   }, 60_000);
-  it("fails the delegation by name when the lent machine has no engine of that driver", async () => {
-    const fixture = await createFixture({
-      lentDriverKind: HarnessIdSchema.parse("codex"),
-    });
-    await expect(
-      service.handle(fixture.token, {
-        requestId: randomUUID(),
-        task: "Build the release on the lent Mac",
-        type: "thread.delegate",
-      }),
-    ).rejects.toThrow(
-      /Lent Mac has no enabled native AI engine on native\. Name another engine with harnessInstanceId/u,
-    );
-    await expect(
-      database
-        .selectFrom("delegations")
-        .select("childThreadId")
-        .where("origin", "=", "run")
-        .execute(),
-    ).resolves.toEqual([]);
-  });
+
   it("creates one durable assignment when a delegate request is retried", async () => {
     const fixture = await createFixture();
     const request = {
@@ -2245,20 +2019,9 @@ integration("cross-environment delegation reaches the Runner", () => {
       (_, round) => round,
     ),
   )(
-    "never deadlocks when a cross-Workspace task is stopped while its Request is answered (race %i)",
+    "never deadlocks when a task is stopped while its Request is answered (race %i)",
     async (round) => {
-      // The old deadlock needed the parent Workspace to sort first. These IDs
-      // fix that order; their shared random end keeps each pair unique.
-      const unique = randomUUID().slice(-12);
-      const fixture = await createFixture({});
-      const workerWorkspaceId = (
-        await createWorkspace(
-          fixture.userId,
-          "Worker workspace",
-          WorkspaceIdSchema.parse(`wsp_ffffffff-ffff-4fff-bfff-${unique}`),
-        )
-      ).id;
-      expect().toBe(true);
+      const fixture = await createFixture();
       const started = performance.now();
       const stages: Record<string, number> = {};
       const reached = (name: string) => {
@@ -2266,17 +2029,15 @@ integration("cross-environment delegation reaches the Runner", () => {
       };
       const progress: Record<string, unknown> = {
         caseId: "L19",
-        parentWorkspaceId: fixture.workspaceId,
         round,
         stages,
-        workerWorkspaceId,
       };
       // Recorded before the race, so a race that stalls shows where.
       acceptanceEvidence.push(progress);
       // One task waits on its Request with no Run left to serialize on; a
       // sibling keeps its Runner busy in the same worker Workspace.
       // Past the per-Run agent quota, so the parent Run delegates directly.
-      const task = await delegateFromParent(fixture, workerWorkspaceId, `Research round ${round}`);
+      const task = await delegateFromParent(fixture, fixture.agentHome, `Research round ${round}`);
       reached("task delegated");
       const worker = await activateRun(fixture, task.run.id);
       reached("task Run active");
@@ -2286,7 +2047,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       reached("task Run ended");
       const sibling = await delegateFromParent(
         fixture,
-        workerWorkspaceId,
+        fixture.agentHome,
         `Sibling round ${round}`,
       );
       reached("sibling delegated");
@@ -2374,9 +2135,8 @@ integration("cross-environment delegation reaches the Runner", () => {
     await expect(cancel(parentWorker.token, unrelated.assignmentId)).resolves.toMatchObject({
       status: "cancelled",
     });
-    // A member who neither started the work nor owns the Workspace cannot stop it.
+    // A different person cannot stop the owner’s work.
     const collaboratorId = await store.createUser("Collaborator");
-    await addMembership(collaboratorId, "collaborator", fixture.userId);
     await expect(
       commands.cancelAssignment({
         assignmentId: sibling.assignmentId,
@@ -2397,7 +2157,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         status: "cancelled",
       },
     });
-    // A Run that inherits Main stops whatever its person could.
+    // The owner can stop the assigning task.
     await expect(cancel(fixture.token, parent.assignmentId)).resolves.toMatchObject({
       status: "cancelled",
     });
@@ -2408,57 +2168,9 @@ integration("cross-environment delegation reaches the Runner", () => {
       childAssignmentId: child.assignmentId,
     });
   });
-  it("keeps a revoked parent Workspace out of a worker's completion", async () => {
+
+  it("keeps a completed task's model after reload and Thread reuse", async () => {
     const fixture = await createFixture();
-    const workerWorkspace = await createWorkspace(fixture.userId, "Worker workspace");
-    const task = await delegate(fixture.token, {
-      task: "Research mattress options in the worker workspace",
-    });
-    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
-    const remainingOwnerId = await store.createUser("Remaining parent Workspace owner");
-    await addMembership(remainingOwnerId, "owner", fixture.userId);
-    await database
-      .updateTable("workspaceMemberships")
-      .set({
-        revokedAt: new Date(),
-        revokedBy: remainingOwnerId,
-        state: "revoked",
-      })
-      .where("userId", "=", fixture.userId)
-      .executeTakeFirstOrThrow();
-    await reply(worker, "The worker found the evidence, but parent access was revoked");
-    const terminal = await end(worker, "completed");
-    const completion = terminal.committed.compensatingEvents.filter(
-      ({ type }) => type === "assignment.updated",
-    );
-    expect(completion).toEqual([
-      expect.objectContaining({
-        threadId: (await readToolRecords(store, task)).thread.id,
-      }),
-    ]);
-    await drainReturns();
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
-      resultReason: "execution-authority-unavailable",
-      resultStatus: "undeliverable",
-      status: "completed",
-    });
-    await expect(returnMessages(fixture.parentThreadId)).resolves.toEqual([]);
-    const parentEvents = await database
-      .selectFrom("deploymentEvents")
-      .select("type")
-      .where("type", "=", "assignment.updated")
-      .execute();
-    expect(parentEvents).toEqual([]);
-    acceptanceEvidence.push({
-      caseId: "L22",
-      assignmentId: task.assignmentId,
-      workerWorkspaceId: workerWorkspace.id,
-      parentWorkspaceId: fixture.workspaceId,
-    });
-  });
-  it("keeps a completed cross-Workspace task's model after reload and Thread reuse", async () => {
-    const fixture = await createFixture();
-    const workerWorkspace = await createWorkspace(fixture.userId, "Model worker workspace");
     const alternateModel = ModelSelectionSchema.parse({
       modelId: "gpt-5.6-terra",
       options: {
@@ -2468,7 +2180,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     });
     const task = await delegate(fixture.token, {
       model: alternateModel,
-      task: "Research across workspaces",
+      task: "Research the project",
     });
     const list = async (open?: boolean) => {
       const page = await store.listThreadAssignmentsForOwner({
@@ -2607,32 +2319,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     expect((await list()).find(({ id }) => id === followUp.assignmentId)?.modelLabel).toBe(
       alternateModel.modelId,
     );
-    const historicalEvent = await database
-      .selectFrom("deploymentEvents")
-      .select("sequence")
-      .where("type", "=", "assignment.created")
-      .where(sql<boolean>`data #>> '{assignment,id}' = ${followUp.assignmentId}`)
-      .orderBy("sequence", "desc")
-      .executeTakeFirstOrThrow();
-    await database
-      .updateTable("deploymentEvents")
-      .set({
-        data: sql`data #- '{assignment,modelLabel}'`,
-      })
-      .where("sequence", "=", historicalEvent.sequence)
-      .executeTakeFirstOrThrow();
-    const migration = (await migrationProvider().getMigrations())["0071_assignment_run_models"];
-    if (!migration) throw new Error("Assignment model migration missing");
-    await migration.up(database);
-    const replayed = await store.eventsAfter(workerWorkspace.id, SequenceSchema.parse("0"));
-    expect(
-      replayed.find(({ sequence }) => sequence === String(historicalEvent.sequence))?.data,
-    ).toMatchObject({
-      assignment: {
-        id: followUp.assignmentId,
-        modelLabel: null,
-      },
-    });
     const committed = await database
       .selectFrom("deploymentEvents")
       .select("data")
@@ -2717,442 +2403,44 @@ integration("cross-environment delegation reaches the Runner", () => {
       runId: worker.runId,
     });
   });
-  it("lists what Home hands off, once, and keeps a task's own helpers inside it", async () => {
-    const fixture = await createFixture({
-      home: true,
-    });
-    const task = await delegate(fixture.token, {
-      task: "Compare mattress trial terms",
-      title: "Mattress research",
-    });
-    const taskFirst = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
-    const helper = await delegate(taskFirst.token, {
-      task: "Check the warranty",
-      title: "Warranty check",
-    });
-    expect((await readToolRecords(store, helper)).thread.parentThreadId).toBe(
-      (await readToolRecords(store, task)).thread.id,
-    );
 
-    // What a person's client reads: the realtime snapshot, the next page, and
-    // the live event for each new Thread must make the same decision.
-    const listedIds = async () => {
-      const snapshot = await store.workspaceSnapshot({
-        listedOnly: true,
-        viewerId: fixture.userId,
-      });
-      const page = await store.taskPageForUser({
-        userId: fixture.userId,
-      });
-      expect(page.window.totalItems).toBe(page.tasks.length);
-      return {
-        page: page.tasks.map(({ thread }) => thread.id).sort(),
-        snapshot: snapshot.threads.map(({ id }) => id).sort(),
-      };
-    };
-    const expected = [
-      fixture.parentThreadId,
-      (await readToolRecords(store, task)).thread.id,
-    ].sort();
-    expect(await listedIds()).toEqual({
-      page: expected,
-      snapshot: expected,
-    });
-    const created = await database
-      .selectFrom("deploymentEvents")
-      .select(["data", "threadId"])
-      .where("type", "=", "thread.created")
-      .where("threadId", "in", [
-        (await readToolRecords(store, task)).thread.id,
-        (await readToolRecords(store, helper)).thread.id,
-      ])
-      .execute();
-    expect(
-      Object.fromEntries(
-        created.map(({ data, threadId }) => [
-          threadId,
-          (
-            data as {
-              thread: {
-                listed: boolean;
-              };
-            }
-          ).thread.listed,
-        ]),
-      ),
-    ).toEqual({
-      [(await readToolRecords(store, helper)).thread.id]: false,
-      [(await readToolRecords(store, task)).thread.id]: true,
-    });
-
-    // Finishing the task and handing it more work reuses its one row.
-    const helperWorker = await activateRun(fixture, (await readToolRecords(store, helper)).run!.id);
-    const helperActor = await store.resolvePlaceActor({
-      agentBindingId: `run:${helperWorker.runId}`,
-      ownerId: fixture.userId,
-    });
-    expect(helperActor).toMatchObject({
-      threadId: (await readToolRecords(store, task)).thread.id,
-      home: false,
-    });
-    expect(
-      await store.resolvePlaceActor({
-        agentBindingId: `run:${fixture.parent.runId}`,
-        ownerId: fixture.userId,
-      }),
-    ).toMatchObject({
-      threadId: fixture.parentThreadId,
-      home: true,
-    });
-    expect(
-      await store.resolvePlaceActor({
-        agentBindingId: `trigger:${randomUUID()}`,
-        ownerId: fixture.userId,
-      }),
-    ).toBeNull();
-    expect(
-      await store.resolvePlaceActor({
-        agentBindingId: `run:${helperWorker.runId}`,
-        ownerId: createId("user"),
-      }),
-    ).toBeNull();
-    await reply(helperWorker, "Warranty: 10 years.");
-    await end(helperWorker, "completed");
-    await reply(taskFirst, "Waiting on the warranty check.");
-    await end(taskFirst, "completed");
-    await drainReturns();
-    const taskSecond = await activateRun(
-      fixture,
-      (await queuedRun((await readToolRecords(store, task)).thread.id)).id,
-    );
-    await reply(taskSecond, "100-night trial and a 10-year warranty.");
-    await end(taskSecond, "completed");
-    expect((await assignmentRow(task.assignmentId)).status).toBe("completed");
-    const followUp = await delegate(fixture.token, {
-      task: "Also compare return shipping",
-      threadId: (await readToolRecords(store, task)).thread.id,
-    });
-    expect((await readToolRecords(store, followUp)).thread.id).toBe(
-      (await readToolRecords(store, task)).thread.id,
-    );
-    expect(await listedIds()).toEqual({
-      page: expected,
-      snapshot: expected,
-    });
-    acceptanceEvidence.push({
-      caseId: "sidebar-listing",
-      helperActor,
-      helperThreadId: (await readToolRecords(store, helper)).thread.id,
-
-      voiceThreadId: null,
-      listedThreadIds: expected,
-      reusedAssignmentId: followUp.assignmentId,
-      taskThreadId: (await readToolRecords(store, task)).thread.id,
-    });
-  }, 60_000);
-  it("tells Home's person what a helper inside a task asks, and follows reused work to its new owner", async () => {
-    const fixture = await createFixture({
-      home: true,
-    });
-    const task = await delegate(fixture.token, {
-      task: "Compare mattress trial terms",
-      title: "Mattress research",
-    });
-    const taskRun = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
-    const helper = await delegate(taskRun.token, {
-      task: "Check the warranty",
-      title: "Warranty check",
-    });
-    const helperRun = await activateRun(fixture, (await readToolRecords(store, helper)).run!.id);
-    const asked = await openDurableRequest(fixture, helperRun);
-
-    // The question is Alex's, and it holds up the helper, the task and so Home.
-    const waiting = await store.requests.waitingOnUserPage({
-      limit: 100,
-      userId: fixture.userId,
-    });
-    expect(
-      waiting.requests.map(({ assignments, request }) => ({
-        assignments,
-        id: request.id,
-      })),
-    ).toEqual([
-      {
-        assignments: [
-          {
-            id: helper.assignmentId,
-            parentThreadId: (await readToolRecords(store, task)).thread.id,
-            workerThread: {
-              id: (await readToolRecords(store, helper)).thread.id,
-              title: "Warranty check",
-            },
-          },
-          {
-            id: task.assignmentId,
-            parentThreadId: fixture.parentThreadId,
-            workerThread: {
-              id: (await readToolRecords(store, task)).thread.id,
-              title: "Mattress research",
-            },
-          },
-        ],
-        id: asked.request.id,
-      },
-    ]);
-    // A teammate in the same Workspace is not the one to answer it.
-    const teammate = await store.createUser("Sam");
-    await addMembership(teammate, "collaborator", fixture.userId);
-    expect(
-      (
-        await store.requests.waitingOnUserPage({
-          limit: 100,
-          userId: teammate,
-        })
-      ).requests,
-    ).toEqual([]);
-    // Home's handoff names whose assistant it is to anyone but its owner.
-    const [handoff] = await database
-      .selectFrom("messages")
-      .select("author")
-      .where("threadId", "=", (await readToolRecords(store, task)).thread.id)
-      .orderBy("sequence", "asc")
-      .execute();
-    expect(handoff?.author).toMatchObject({
-      displayName: "Alex’s Opensteer",
-      kind: "agent",
-    });
-
-    // Answered, it waits on nobody.
-    await declineRequest(fixture, asked.request.id);
-    expect(
-      (
-        await store.requests.waitingOnUserPage({
-          limit: 100,
-          userId: fixture.userId,
-        })
-      ).requests,
-    ).toEqual([]);
-
-    // Home now gives the helper's Thread work of its own: it becomes one of
-    // Alex's tasks, and what it asks next holds up that work, not the old task.
-    // The declined question resumes the helper once before it can finish.
-    await end(helperRun, "completed");
-    await drainContinuations();
-    const helperResumed = await activateRun(
-      fixture,
-      (await queuedRun((await readToolRecords(store, helper)).thread.id)).id,
-    );
-    await reply(helperResumed, "Warranty: 10 years.");
-    await end(helperResumed, "completed");
-    expect((await assignmentRow(helper.assignmentId)).status).toBe("completed");
-    await drainReturns();
-    expect(await listedFlag((await readToolRecords(store, helper)).thread.id)).toBe(false);
-    const adopted = await delegate(fixture.token, {
-      task: "Now compare return shipping",
-      threadId: (await readToolRecords(store, helper)).thread.id,
-    });
-    expect(await listedFlag((await readToolRecords(store, helper)).thread.id)).toBe(true);
-    const listedEvents = await database
-      .selectFrom("deploymentEvents")
-      .select(["data", "threadId"])
-      .where("type", "=", "thread.listed")
-      .execute();
-    expect(listedEvents).toEqual([
-      {
-        data: expect.objectContaining({
-          thread: expect.objectContaining({
-            id: (await readToolRecords(store, helper)).thread.id,
-            listed: true,
-          }),
-        }),
-        threadId: (await readToolRecords(store, helper)).thread.id,
-      },
-    ]);
-    const adoptedRun = await activateRun(fixture, (await readToolRecords(store, adopted)).run!.id);
-    expect(
-      await store.resolvePlaceActor({
-        agentBindingId: `run:${adoptedRun.runId}`,
-        ownerId: fixture.userId,
-      }),
-    ).toMatchObject({
-      threadId: (await readToolRecords(store, helper)).thread.id,
-      home: false,
-    });
-    expect(
-      await store.resolvePlaceActor({
-        agentBindingId: `run:${helperRun.runId}`,
-        ownerId: fixture.userId,
-      }),
-    ).toBeNull();
-    const askedAgain = await openDurableRequest(fixture, adoptedRun);
-    const rewaiting = await store.requests.waitingOnUserPage({
-      limit: 100,
-      userId: fixture.userId,
-    });
-    expect(
-      rewaiting.requests.map(({ assignments, request }) => ({
-        assignments,
-        id: request.id,
-      })),
-    ).toEqual([
-      {
-        assignments: [
-          {
-            id: adopted.assignmentId,
-            parentThreadId: fixture.parentThreadId,
-            workerThread: {
-              id: (await readToolRecords(store, helper)).thread.id,
-              title: "Warranty check",
-            },
-          },
-        ],
-        id: askedAgain.request.id,
-      },
-    ]);
-    acceptanceEvidence.push({
-      adoptedAssignmentId: adopted.assignmentId,
-      caseId: "waiting-on-you",
-      helperAssignmentId: helper.assignmentId,
-      helperThreadId: (await readToolRecords(store, helper)).thread.id,
-      taskAssignmentId: task.assignmentId,
-    });
-  }, 60_000);
-  it("never copies a result into Home once its person cannot read the task's Workspace", async () => {
-    const fixture = await createFixture({
-      home: true,
-    });
-    const shared = await createWorkspace(fixture.userId, "Customer launch");
-    const task = await delegate(fixture.token, {
-      task: "Draft the launch announcement",
-      title: "Launch announcement",
-    });
-    const worker = await activateRun(fixture, (await readToolRecords(store, task)).run!.id);
-    await reply(worker, "Draft: private launch details.");
-    await end(worker, "completed");
-    // Alex leaves the Workspace; it keeps an owner of its own.
-    const remainingOwner = await store.createUser("Remaining owner");
-    await addMembership(shared.id, remainingOwner, "owner", fixture.userId);
-    await database
-      .updateTable("workspaceMemberships")
-      .set({
-        revokedAt: new Date(),
-        revokedBy: remainingOwner,
-        state: "revoked",
-      })
-      .where("userId", "=", fixture.userId)
-      .execute();
-    await drainReturns();
-    expect(await assignmentRow(task.assignmentId)).toMatchObject({
-      resultReason: "execution-authority-unavailable",
-      resultStatus: "undeliverable",
-    });
-    expect(await returnMessages(fixture.parentThreadId)).toEqual([]);
-    acceptanceEvidence.push({
-      assignmentId: task.assignmentId,
-      caseId: "revoked-worker-result",
-    });
-  });
-  function listedFlag(threadId: ThreadId) {
-    return database
-      .selectFrom("threads")
-      .select("listed")
-      .where("id", "=", threadId)
-      .executeTakeFirstOrThrow()
-      .then(({ listed }) => listed);
-  }
-
-  /**
-   * One user, a Deployment-owned Main Runner, and a second Runner the same user
-   * lent to this Deployment — the shape `runner.enrollment.createLocal` produces.
-   */
   async function createFixture(
-    options: {
-      /** The assigning Thread is the person's Home rather than one of their tasks. */
-      readonly home?: boolean;
-      readonly project?: boolean;
-      readonly lentDriverKind?: ReturnType<typeof HarnessIdSchema.parse>;
-    } = {},
+    options: { readonly lentDriverKind?: ReturnType<typeof HarnessIdSchema.parse> } = {},
   ) {
-    const userId = await store.createUser("Alex");
-    const mainEnvironmentId = createId("environment");
-    const lentEnvironmentId = createId("environment");
-    const mainRunnerId = createId("runner");
-    const lentRunnerId = createId("runner");
-    await enrollRunner({
-      createdBy: userId,
-      driverKind: nativeDriver,
+    const path = await mkdtemp(join(tmpdir(), "personal-delegation-"));
+    directories.push(path);
+    const personal = await seedPersonalFixture(database, path);
+    const {
+      userId,
       environmentId: mainEnvironmentId,
-      name: "Main runner",
       runnerId: mainRunnerId,
-      runnerKind: "main",
-    });
-    await enrollRunner({
-      createdBy: userId,
-      driverKind: options.lentDriverKind ?? nativeDriver,
-      environmentId: lentEnvironmentId,
-      name: "Lent Mac",
-      runnerId: lentRunnerId,
-      runnerKind: "local",
-    });
-    const workspace = await createTestWorkspace(store, {
-      kind: options.project ? "project" : "main",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: lentEnvironmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      createdBy: userId,
-      ...(options.workspaceId
-        ? {
-            id: options.workspaceId,
-          }
-        : {}),
-      idempotencyKey: `delegation-workspace-${randomUUID()}`,
-      name: "Main workspace",
-      status: "ready",
-    });
+      agentHome,
+    } = personal;
+    const lentEnvironmentId = mainEnvironmentId;
+    const lentRunnerId = mainRunnerId;
+    folders = personalTestFolders(store, personal);
     const mainHarness = await store.createHarnessInstance({
       config: {},
-      driverKind: nativeDriver,
-      environmentId: mainEnvironmentId,
-      name: "Opensteer",
-      sourceId: sourceForDriver(nativeDriver),
-      stateKind: "isolated",
-    });
-    const lentHarness = await store.createHarnessInstance({
-      config: {},
       driverKind: options.lentDriverKind ?? nativeDriver,
-      environmentId: lentEnvironmentId,
-      // The whole point of lending a personal computer: the person's own CLI
-      // sign-in, which only a user-owned Runner may reach.
-      name: "My Claude Code",
+      environmentId: mainEnvironmentId,
+      name: "Personal engine",
       sourceId: sourceForDriver(options.lentDriverKind ?? nativeDriver),
       stateKind: "ambient",
     });
-    for (const [environmentId, harness] of [
-      [mainEnvironmentId, mainHarness],
-      [lentEnvironmentId, lentHarness],
-    ] as const) {
-      await store.recordHarnessCatalogs({
-        catalogs: [readyCatalog(harness.id, harness.driverKind)],
-        environmentId,
-        expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
-      });
-    }
+    const lentHarness = mainHarness;
+    await store.recordHarnessCatalogs({
+      catalogs: [readyCatalog(mainHarness.id, mainHarness.driverKind)],
+      environmentId: mainEnvironmentId,
+      expectedRevisions: new Map([[mainHarness.id, mainHarness.runtimeRevision]]),
+    });
     const { thread: parent } = await store.createThread({
       createdBy: userId,
       environmentId: mainEnvironmentId,
       harnessInstanceId: mainHarness.id,
       idempotencyKey: `delegation-parent-${randomUUID()}`,
       modelSelection: testModelSelection,
-      title: options.home ? "Chat" : "Release coordination",
-      ...(options.home
-        ? {
-            home: true,
-          }
-        : {}),
+      title: "Release coordination",
+      folder: agentHome,
     });
     const turn = await commands.enqueueThreadInput({
       content: [
@@ -3226,6 +2514,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       token,
     };
     return {
+      ...personal,
       mainEnvironmentId,
       lentEnvironmentId,
       lentHarnessInstanceId: lentHarness.id,
@@ -3317,6 +2606,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       .innerJoin("threads", "threads.id", "runs.threadId")
       .select([
         "runs.environmentId",
+        "runs.harnessInstanceId",
         "runs.nextRunnerOrdinal",
         "runs.providerSessionId",
         "threads.id as threadId",
@@ -3324,8 +2614,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       .where("runs.id", "=", runId)
       .executeTakeFirstOrThrow();
     if (!target.providerSessionId) throw new Error(`Run ${runId} has no provider session`);
-    const lent = target.environmentId === fixture.lentEnvironmentId;
-    const runnerId = lent ? fixture.lentRunnerId : fixture.mainRunnerId;
+    const runnerId = fixture.runnerId;
     const pending = await database
       .selectFrom("commands")
       .select("id")
@@ -3342,7 +2631,7 @@ integration("cross-environment delegation reaches the Runner", () => {
         continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
         driverKind: nativeDriver,
       },
-      harnessInstanceId: lent ? fixture.lentHarnessInstanceId : fixture.mainHarnessInstanceId,
+      harnessInstanceId: target.harnessInstanceId,
       leaseTokenHash: `lease-${randomUUID()}`,
       runnerBootId: "boot-1",
       runnerId,
@@ -3352,7 +2641,7 @@ integration("cross-environment delegation reaches the Runner", () => {
     // The native session each Run resumes, so a Thread's next Run may start.
     await store.bindProviderSession({
       bindingGeneration: binding.bindingGeneration,
-      harnessInstanceId: lent ? fixture.lentHarnessInstanceId : fixture.mainHarnessInstanceId,
+      harnessInstanceId: target.harnessInstanceId,
       providerSessionId: target.providerSessionId,
       providerSessionReference: `native-session-${target.threadId}`,
       runId,
@@ -3535,9 +2824,14 @@ integration("cross-environment delegation reaches the Runner", () => {
   }
 
   /** The parent Run hands out work through the Host path an automation also uses. */
-  function delegateFromParent(fixture: Fixture, workspaceId: WorkspaceId, title: string) {
+  function delegateFromParent(
+    fixture: Fixture,
+    folder: import("@opensteer/core").TaskFolder,
+    title: string,
+  ) {
     return commands.delegateThread({
       accessMode: "auto",
+      folder,
       createdBy: fixture.userId,
       environmentId: fixture.lentEnvironmentId,
       harnessInstanceId: fixture.lentHarnessInstanceId,
@@ -3661,51 +2955,6 @@ integration("cross-environment delegation reaches the Runner", () => {
     await continuations.close();
     expect(errors).toEqual([]);
   }
-  async function createWorkspace(userId: UserId, name: string, id?: WorkspaceId) {
-    const main = await store.findMainWorkspaceForOwner(userId);
-    if (!main) throw new Error("Owner Main is missing");
-    return createTestWorkspace(store, {
-      kind: "project",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: main.backing.ownerEnvironmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      createdBy: userId,
-      ...(id
-        ? {
-            id,
-          }
-        : {}),
-      idempotencyKey: `worker-workspace-${randomUUID()}`,
-      name,
-      status: "ready",
-    });
-  }
-  async function addMembership(
-    workspaceId: WorkspaceId,
-    userId: UserId,
-    role: "collaborator" | "owner",
-    invitedBy: UserId,
-  ): Promise<void> {
-    await database
-      .insertInto("workspaceMemberships")
-      .values({
-        generation: 1,
-        id: createId("workspaceMembership"),
-        invitedBy,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        role,
-        state: "active",
-        updatedAt: new Date(),
-        userId,
-      })
-      .executeTakeFirstOrThrow();
-  }
 
   /**
    * The dispatcher with every collaborator outside the durable path stubbed:
@@ -3740,7 +2989,7 @@ integration("cross-environment delegation reaches the Runner", () => {
       pluginsTokens: {
         issue,
       } as never,
-      onWorkspaceEvent: vi.fn(),
+      onDeploymentEvent: vi.fn(),
       publicUrl: new URL("https://delegation.opensteer.test"),
       requestResponseVault: {} as never,
       runners: {
@@ -3784,104 +3033,10 @@ integration("cross-environment delegation reaches the Runner", () => {
         issue,
       } as never,
       triggers: {} as never,
-      workspaceAccess: {
-        plan: async () => ({
-          kind: "none",
-        }),
-      } as never,
-      workspaces: {
-        ensureExecutionReady: async () => undefined,
-      } as never,
-    });
-  }
-  async function enrollRunner(input: {
-    readonly createdBy: UserId;
-    readonly driverKind: ReturnType<typeof HarnessIdSchema.parse>;
-    readonly environmentId: EnvironmentId;
-    readonly name: string;
-    readonly runnerId: RunnerId;
-    readonly runnerKind: "main" | "local";
-  }): Promise<void> {
-    if (!(await store.getDeployment())) {
-      await store.ensureDeployment({
-        canonicalOrigin: "https://delegation.opensteer.test",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "server",
-        },
-      });
-    }
-    const pair = generateKeyPairSync("ed25519");
-    const descriptor: RunnerDescriptor = {
-      bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-      capabilities: ["filesystem"],
-      modules: {
-        agents: {
-          environmentIds: [input.environmentId],
-          harnessDrivers: [
-            {
-              accessModes: [...ThreadAccessModeSchema.options],
-              driverKind: input.driverKind,
-              readiness: "configured",
-              sources: [
-                {
-                  fields: [],
-                  kind: "first-party",
-                  label: input.driverKind,
-                  quota: "none",
-                  sourceId: sourceForDriver(input.driverKind),
-                  stateKinds: ["ambient", "isolated"],
-                },
-              ],
-            },
-          ],
-
-          maxConcurrentRuns: 4,
-          // A lent computer is single-user, so it may offer the person's own CLI.
-          providerStateModes: input.runnerKind === "local" ? ["ambient", "isolated"] : ["isolated"],
-        },
+      folders: { assertAvailable: (folder) => folders.assertAvailable(folder) },
+      teamRequestContext: async () => {
+        throw new Error("Unexpected team request");
       },
-      name: input.name,
-      runnerId: input.runnerId,
-      runnerKind: input.runnerKind,
-      runtimeVersion: "test",
-    };
-    const suffix = randomUUID();
-    const enrollmentTokenHash = `sha256:${createHash("sha256").update(`delegation-${suffix}`, "utf8").digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: input.createdBy,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `delegation-runner-${suffix}`,
-      ...(input.runnerKind === "main"
-        ? {
-            mainEnrollmentPurpose: "initial" as const,
-          }
-        : {}),
-      name: descriptor.name,
-      requestFingerprint: `sha256:delegation-${suffix}`,
-      runnerKind: input.runnerKind,
-      tokenHash: enrollmentTokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor,
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256")
-        .update(
-          pair.publicKey.export({
-            format: "der",
-            type: "spki",
-          }),
-        )
-        .digest("base64url")}`,
-      publicKeyPem: pair.publicKey
-        .export({
-          format: "pem",
-          type: "spki",
-        })
-        .toString(),
     });
   }
 });

@@ -176,8 +176,13 @@ integration("Run tool authority", () => {
   }
 
   /** A Run held mid-turn, and the agent-tools URL and secret its engine was given. */
-  async function heldRun(active: VerticalStack, workspaceId: WorkspaceId, captureFile: string) {
+  async function heldRun(
+    active: VerticalStack,
+    folder: import("@opensteer/core").TaskFolder,
+    captureFile: string,
+  ) {
     const threadId = await active.createThread({
+      folder,
       modelSelection,
       title: "Held",
     });
@@ -340,8 +345,8 @@ integration("Run tool authority", () => {
   }
   it("stops an engine's tools at Stop while its Runner records how the Run ended", async () => {
     const { active, captureFile, release } = await start();
-    const workspace = await active.createWorkspace("Stopped work");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Stopped work");
+    const held = await heldRun(active, workspace, captureFile);
     const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
     expect(hostRefusesEngineToken).toBe(true);
     const before = await engineToolCall(held);
@@ -378,8 +383,8 @@ integration("Run tool authority", () => {
       capabilityClock: clock,
       runCapabilityLifetimeSeconds: lifetimeSeconds,
     });
-    const workspace = await active.createWorkspace("Long work");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Long work");
+    const held = await heldRun(active, workspace, captureFile);
     const before = await engineToolCall(held);
     expect(before).toBe(200);
     // Well past the expiry of every token the dispatch issued.
@@ -415,8 +420,8 @@ integration("Run tool authority", () => {
       capabilityClock: clock,
       runCapabilityLifetimeSeconds: lifetimeSeconds,
     });
-    const workspace = await active.createWorkspace("Held session");
-    const held = await heldRun(active, workspace.id, captureFile);
+    const workspace = await active.createFolder("Held session");
+    const held = await heldRun(active, workspace, captureFile);
     const opened = await mcpMessage(held, {
       id: 1,
       method: "initialize",
@@ -497,8 +502,8 @@ integration("Run tool authority", () => {
       const { active, captureFile } = await start({
         engineArguments: [...engineArguments, "--ignore-interrupt"],
       });
-      const workspace = await active.createWorkspace("Runaway work");
-      const held = await heldRun(active, workspace.id, captureFile);
+      const workspace = await active.createFolder("Runaway work");
+      const held = await heldRun(active, workspace, captureFile);
       let detachedChild: number | undefined;
       await expect
         .poll(
@@ -551,34 +556,4 @@ integration("Run tool authority", () => {
     },
     180_000,
   );
-  it("stops an engine's tools once its Workspace is being deleted", async () => {
-    const { active, captureFile, release } = await start();
-    const workspace = await active.createWorkspace("Deleted work");
-    const held = await heldRun(active, workspace.id, captureFile);
-    const hostRefusesEngineToken = (await toolsStatus(active, held.token)) === 401;
-    expect(hostRefusesEngineToken).toBe(true);
-    const before = await engineToolCall(held);
-    expect(before).toBe(200);
-    const deletedAt = Date.now();
-    const deleted = await active.api["commands.dispatch"]({
-      idempotencyKey: `delete-${workspace.id}`,
-      type: "workspace.delete",
-    });
-    if (!deleted.ok) throw new Error(deleted.error.message);
-    const after = await engineToolCall(held);
-    const latencyMs = Date.now() - deletedAt;
-    expect([401, 403, "proxy-closed"]).toContain(after);
-    await release();
-    const runEnded = await runEnds(active, held.runId);
-    const grant = await grantOf(active, held.runId);
-    matrix.push({
-      after,
-      before,
-      event: "workspace-deletion",
-      grant,
-      hostRefusesEngineToken,
-      latencyMs,
-      runEnded,
-    });
-  }, 180_000);
 });
