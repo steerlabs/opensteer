@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { createId, type DeploymentId } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { NotificationPreviews } from "./notification-preview.js";
 import type { PushRegistration } from "./push-registration.js";
@@ -102,6 +102,34 @@ describe("private preview lifecycle", () => {
     await clear;
     expect(f.dispatch).not.toHaveBeenCalled();
     expect(f.native.erase).toHaveBeenCalledWith(f.deploymentId);
+  });
+  it("keeps each team's key registered beside whichever personal Opensteer is shown", async () => {
+    const f = fixture();
+    const attachment = (deploymentId: DeploymentId, dispatch: (command: unknown) => Promise<void>) => ({
+      deploymentId,
+      capabilities: ["notification-preview-v1" as const],
+      current: () => true,
+      dispatch,
+    });
+    const team = createId("deployment");
+    const teamDispatch = vi.fn(async (_command: unknown) => {});
+    f.controller.attach(attachment(f.deploymentId, f.dispatch));
+    f.controller.attach(attachment(team, teamDispatch));
+    // The phone switches to showing another personal computer.
+    f.controller.attach(attachment(createId("deployment"), async () => {}));
+    await f.controller.reconcile();
+    teamDispatch.mockClear();
+    await f.controller.reconcile();
+    expect(f.native.key).toHaveBeenCalledWith(team);
+    expect(teamDispatch).toHaveBeenCalledTimes(1);
+    // Signing out of the team erases its key alone.
+    await f.controller.clear(team);
+    expect(f.native.erase).toHaveBeenCalledWith(team);
+    teamDispatch.mockClear();
+    f.dispatch.mockClear();
+    await f.controller.reconcile();
+    expect(teamDispatch).not.toHaveBeenCalled();
+    expect(f.dispatch).toHaveBeenCalledTimes(1);
   });
   it("erases every Deployment on Account sign-out", async () => {
     const f = fixture();

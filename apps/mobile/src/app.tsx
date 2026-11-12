@@ -333,6 +333,7 @@ function mobileClient(): MobileRoot {
     client,
     directory: `${root}${storeName}`,
     files: privateFiles,
+    previews,
     transport: configuration.mock
       ? mockTeamTransport(mockTeams)
       : networkTeamTransport({

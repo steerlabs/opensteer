@@ -31,6 +31,7 @@ import {
 import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileClient, MobileTeamConnection } from "../client/mobile-client.js";
+import type { NotificationPreviews } from "../notifications/notification-preview.js";
 
 /**
  * Everything one team Host is reached through: typed calls, its socket and its
@@ -175,6 +176,7 @@ export class MobileTeams {
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
   readonly #files: PrivateFilesystem;
+  readonly #previews: NotificationPreviews | null;
   readonly #listeners = new Set<() => void>();
   readonly #sessions = new Map<string, TeamSessionClient>();
   readonly #states = new Map<string, { state: TeamState; detail: string | null }>();
@@ -183,6 +185,8 @@ export class MobileTeams {
   readonly #detachSessions = new Map<string, () => void>();
   #memo: z.infer<typeof TeamMemoSchema> | null = null;
   #selected: string | null = null;
+  /** Bumped by every selection, backgrounding and disposal; a slower, older one never wins. */
+  #selection = 0;
   /** The team last opened on each computer: the one kept connected while its drawer shows. */
   readonly #recent = new Map<string, string>();
   #foreground = true;
@@ -196,6 +200,8 @@ export class MobileTeams {
     readonly verify: (origin: string) => Promise<VerifiedHostEndpoint>;
     readonly files: PrivateFilesystem;
     readonly directory: string;
+    /** Where each signed-in team's notification preview key is registered. */
+    readonly previews?: NotificationPreviews | null;
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
   }) {
@@ -204,6 +210,7 @@ export class MobileTeams {
     this.#transport = options.transport;
     this.#verify = options.verify;
     this.#files = options.files;
+    this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
     const persistence = teamFilePersistence(options.files, `${options.directory}/teams`);
     this.registry = new TeamTransportRegistry("mobile", (scope) => {
@@ -224,20 +231,23 @@ export class MobileTeams {
   start(): void {
     if (this.#detachClient !== null) return;
     this.#detachClient = this.#client.subscribe(() => {
+      const shown = this.#snapshot.computerId;
       this.#publish();
+      // Another computer on screen: its team takes the one socket.
+      if (this.#snapshot.computerId !== shown) void this.select(this.#selected);
       this.#learnLinks();
     });
     void this.#loadMemo().then(() => {
       this.#publish();
       this.#learnLinks();
-      void this.select(null);
+      void this.select(this.#selected);
     });
   }
 
   /** The app went to the background or came back: no socket while nobody looks. */
   foreground(active: boolean): void {
     this.#foreground = active;
-    void this.select(active ? this.#selected : null);
+    void this.select(this.#selected);
   }
 
   /**
@@ -284,6 +294,7 @@ export class MobileTeams {
   }
 
   dispose(): void {
+    this.#selection++;
     this.#detachClient?.();
     this.#detachClient = null;
     for (const detach of this.#detachSessions.values()) detach();
@@ -390,6 +401,13 @@ export class MobileTeams {
           this.#publish();
         }),
       );
+      // The team seals a push preview only for a key this phone registered with it.
+      this.#previews?.attach({
+        deploymentId: DeploymentIdSchema.parse(teamId),
+        capabilities: connection.capabilities ?? [],
+        current: () => this.#sessions.get(teamId) === session && this.#signedIn(teamId),
+        dispatch: ({ type: _type, ...input }) => session.registerNotificationPreview(input),
+      });
     }
     this.#publish();
     return this.#sessions.get(teamId) ?? session;
@@ -401,6 +419,7 @@ export class MobileTeams {
    * stays current. None while the app is in the background.
    */
   async select(teamId: string | null): Promise<void> {
+    const generation = ++this.#selection;
     const { computerId } = this.#snapshot;
     if (teamId !== null && computerId !== null) this.#recent.set(computerId, teamId);
     const target = this.#foreground ? (teamId ?? this.#ambient()) : null;
@@ -409,14 +428,16 @@ export class MobileTeams {
       await this.registry.select(null);
       return;
     }
+    const current = () => generation === this.#selection;
     try {
       const session = await this.session(target);
       const userId = this.#memo?.users[target];
-      if (userId === undefined) return;
+      if (userId === undefined || !current()) return;
       await this.registry.select({ teamDeploymentId: target, userId });
-      if (session.getSnapshot().bootstrap !== null) this.#setState(target, "live", null);
+      if (current() && session.getSnapshot().bootstrap !== null)
+        this.#setState(target, "live", null);
     } catch (error) {
-      this.#fail(target, error);
+      if (current()) this.#fail(target, error);
     }
   }
 
