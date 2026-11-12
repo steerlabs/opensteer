@@ -340,6 +340,24 @@
     "file": "tests/browser-sessions-identities.integration.test.ts",
     "name": [
       "Browser Sessions through a whole deployment",
+      "opens pages independently of unrelated start work and reports pre-submission unavailability honestly"
+    ],
+    "area": "Browser",
+    "owner": "Browser maintainers",
+    "status": "investigating",
+    "firstSeen": "2026-11-12T19:34:18Z",
+    "deadline": "2026-11-19T19:34:18Z",
+    "sha": "3c7eadff8545a492ccd6236fba0a22f2cab428c2",
+    "evidence": [
+      "CI integration (4) failed in the file's cleanup, not in the case's assertions: BrowserRuntime.shutdown() rejected with \"Browser shutdown persistence did not finish.\" (reason runtime-shutdown.queue-timeout) under its 5,000 ms cap. The case took 17,467 ms. https://github.com/steerlabs/opensteer/actions/runs/43290449320/job/131435072345",
+      "The parent commit 0030fd676995ec667f18f6b70a42dd9e7e0e7055 passed CI with identical Host, Runner and runtime code; the failing commit changed only apps/web app-shell and a web interaction test. The same shutdown timeout is recorded for tests/browser-tab-groups.integration.test.ts.",
+      "Acceptance: bound what Runtime shutdown waits on so cleanup finishes under its unchanged 5,000 ms cap on a loaded runner, keep the empty-cleanup-failures assertion, and pass the file under the normal integration workload before removing this record."
+    ]
+  },
+  {
+    "file": "tests/browser-sessions-identities.integration.test.ts",
+    "name": [
+      "Browser Sessions through a whole deployment",
       "reports a refused final-save lease promptly with its typed reason"
     ],
     "area": "Runner",
