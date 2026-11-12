@@ -225,7 +225,6 @@ export function TeamSideFor({
     onBrowseChannels: () => go(teamPath(teamId, "browse")),
     onNewChannel: canCreate ? () => go(teamPath(teamId, "browse?new=1")) : undefined,
     onNewMessage: () => go(teamPath(teamId, "people")),
-    onMoreDms: () => go(teamPath(teamId, "people")),
     onRemoveFromSidebar: () =>
       void forget(teamId).catch((error: unknown) => toast.error(actionErrorMessage(error))),
     onRetry: () =>

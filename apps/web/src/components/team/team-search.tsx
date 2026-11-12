@@ -35,6 +35,8 @@ export const noSearchFilters: SearchFilters = {
  */
 export function TeamSearch({
   channels,
+  onMoreChannels,
+  loadingChannels = false,
   filters,
   header,
   hasMore = false,
@@ -47,6 +49,8 @@ export function TeamSearch({
   results,
 }: {
   readonly channels: readonly ChannelOption[];
+  readonly onMoreChannels?: (() => void) | undefined;
+  readonly loadingChannels?: boolean;
   readonly filters: SearchFilters;
   readonly header?: ReactNode;
   readonly hasMore?: boolean;
@@ -112,6 +116,8 @@ export function TeamSearch({
                 mark: <ChannelGlyph kind={entry.kind} />,
               })),
             ]}
+            onMore={onMoreChannels}
+            loadingMore={loadingChannels}
             onPick={(id) => onFilters({ ...filters, channelId: id })}
             selected={filters.channelId}
           />
@@ -277,6 +283,8 @@ function FilterMenu({
   onPick,
   options,
   selected,
+  onMore,
+  loadingMore = false,
 }: {
   readonly icon: ReactNode;
   readonly label: string;
@@ -288,6 +296,8 @@ function FilterMenu({
     readonly mark?: ReactNode;
   }[];
   readonly selected: string | null;
+  readonly onMore?: (() => void) | undefined;
+  readonly loadingMore?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement | null>(null);
@@ -327,6 +337,17 @@ function FilterMenu({
               </span>
             </button>
           ))}
+          {onMore ? (
+            <button
+              className="picker__row"
+              disabled={loadingMore}
+              onClick={onMore}
+              role="menuitem"
+              type="button"
+            >
+              {loadingMore ? "Loading…" : "More channels"}
+            </button>
+          ) : null}
         </Popover>
       ) : null}
     </>

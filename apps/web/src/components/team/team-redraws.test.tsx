@@ -110,7 +110,6 @@ describe("what redraws in team chat", () => {
         row(id, id === "launch" ? launchMentions : 0),
       ),
       dms: [],
-      moreDms: 0,
     });
     const actions = { onOpenChannel: () => undefined };
     const rerender = render(<TeamSide actions={actions} team={view(0)} />);

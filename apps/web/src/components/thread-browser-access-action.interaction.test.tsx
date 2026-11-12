@@ -10,8 +10,6 @@ const shell = vi.hoisted(() => ({
   reportActionError: vi.fn(),
   snapshot: {
     browserProfiles: [{ id: "personal", name: "Personal", revision: 1 }],
-    browserProfileGrants: [{ profileId: "personal", workspaceId: "workspace" }],
-    workspaces: [{ id: "workspace", kind: "project", name: "Marketplace" }],
   },
 }));
 vi.mock("./app-shell.js", () => ({ useShell: () => shell }));
@@ -30,7 +28,6 @@ it("keeps a failed approval beside the selected profile and retries without an e
   root = createRoot(container);
   const request = {
     id: "request",
-    targetWorkspaceId: "workspace",
     payload: { kind: "browser.access", suggestion: { kind: "existing", profileId: "personal" } },
   } as unknown as Request;
   await act(async () => root?.render(<ThreadBrowserRequestAction request={request} />));

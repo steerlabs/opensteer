@@ -82,8 +82,10 @@ export function TeamComposer({
   readonly typing?: readonly PersonView[];
 }) {
   const ready = agent.kind === "ready";
-  const [localText, setLocalText] = useState("");
-  const text = draft ?? localText;
+  const [text, setLocalText] = useState(draft ?? "");
+  useEffect(() => {
+    if (draft !== undefined) setLocalText(draft);
+  }, [draft]);
   const setText = (value: string) => {
     setLocalText(value);
     onDraft?.(value);

@@ -324,12 +324,6 @@ export function ThreadPane({
         onClose={onClose}
         title="Thread"
       />
-      <MessageRow actions={actions} editing={editingId === root.id} inThread message={root} />
-      <div className="thread-pane__rule" role="separator">
-        <span>
-          {root.thread?.replyCount ? plural(root.thread.replyCount, "reply", "replies") : "Replies"}
-        </span>
-      </div>
       <MessageList
         actions={actions}
         cardActions={cardActions}
@@ -337,6 +331,26 @@ export function ThreadPane({
         firstUnreadId={null}
         flashId={flashId}
         hasOlder={hasOlder}
+        header={
+          <>
+            <div data-row-id={root.id}>
+              <MessageRow
+                actions={actions}
+                editing={editingId === root.id}
+                inThread
+                message={root}
+                onEditingChange={(id, editing) => onEditingChange?.(editing ? id : null)}
+              />
+            </div>
+            <div className="thread-pane__rule" role="separator">
+              <span>
+                {root.thread?.replyCount
+                  ? plural(root.thread.replyCount, "reply", "replies")
+                  : "Replies"}
+              </span>
+            </div>
+          </>
+        }
         inThread
         items={replies}
         label="Thread replies"

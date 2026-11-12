@@ -397,4 +397,40 @@ describe("team session lifecycle", () => {
       f.stop();
     }
   });
+  it("clears a revoked channel on revalidation while keeping membership and other channel drafts", async () => {
+    const f = fixture();
+    try {
+      const otherId = TeamChannelIdSchema.parse(createId("teamChannel"));
+      f.host.channels.set(otherId, { ...f.host.channels.get(mockTeamChannelId)!, id: otherId });
+      await f.client.load();
+      f.client.selectChannel(mockTeamChannelId);
+      await f.client.setDraft(channelScope, "Revoked channel text");
+      await f.client.setDraft({ kind: "channel", channelId: otherId }, "Keep other channel");
+      const read = f.host.read.bind(f.host);
+      vi.spyOn(f.host, "read").mockImplementation((name, input) => {
+        if (name === "team.bootstrap.get")
+          return Promise.resolve({
+            ...f.host.bootstrap,
+            sidebar: {
+              ...f.host.sidebar(),
+              accessRevision: "2",
+              channels: f.host
+                .sidebar()
+                .channels.filter((row) => row.channel.id !== mockTeamChannelId),
+            },
+          });
+        if (name === "team.channel.get")
+          throw new OpensteerError({ code: "forbidden", message: "Channel access removed" });
+        return read(name, input);
+      });
+      f.host.dispose();
+      await vi.waitFor(() => expect(f.client.getSnapshot().channel).toBeNull(), { timeout: 1000 });
+      expect(f.client.getSnapshot().ended).toBeNull();
+      expect(f.client.getSnapshot().bootstrap?.member.userId).toBe(mockTeamUserId);
+      expect(Object.values(f.client.getSnapshot().drafts)).toEqual(["Keep other channel"]);
+      expect(f.client.getSnapshot().contentGeneration).toBeGreaterThan(0);
+    } finally {
+      f.stop();
+    }
+  });
 });

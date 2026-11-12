@@ -20,7 +20,7 @@ import { placeSelection, type PlaceSelection, type WorkspaceNavigation } from ".
  * It never chooses anything itself; only the person's controls navigate.
  */
 export interface WorkspaceState {
-  /** How many tasks (Chat included) need the reader: the drawer button carries it. */
+  /** How many tasks need the reader: the drawer button carries it. */
   readonly attention: number;
   readonly nav: WorkspaceNavigation;
   readonly openWebLink: (address: string) => void;

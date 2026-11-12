@@ -505,7 +505,6 @@ async function runDesktop(
     portalOrigin: loaded.config.portalUrl,
     releaseDirectory: loaded.config.personal.releaseDirectory,
     userEnvironment: personalUserEnvironment,
-    workspaceRoot: loaded.config.personal.workspaceRoot,
     log: reportEvent,
   });
   shutdown.add({

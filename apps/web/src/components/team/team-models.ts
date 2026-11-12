@@ -220,8 +220,6 @@ export interface TeamSidebarView {
   readonly connection: TeamConnection;
   readonly channels: readonly ChannelRowView[];
   readonly dms: readonly ChannelRowView[];
-  /** DMs beyond the eight shown. */
-  readonly moreDms: number;
 }
 
 /** The viewer's agent in a channel, which decides the composer's agent controls. */

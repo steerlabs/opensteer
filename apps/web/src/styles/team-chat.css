@@ -780,6 +780,10 @@ a.team-row__main:hover {
   padding: var(--space-12) 0 var(--space-8);
 }
 
+.tlist__header + .tlist__rows {
+  min-height: 0;
+}
+
 .tlist__older {
   margin: 0;
   padding: var(--space-12);
@@ -2888,10 +2892,4 @@ a.team-row__main:hover {
 
 .connection-line--amber > svg {
   color: var(--amber);
-}
-
-.thread-pane > .tmsg {
-  flex: none;
-  max-height: 30%;
-  overflow-y: auto;
 }
