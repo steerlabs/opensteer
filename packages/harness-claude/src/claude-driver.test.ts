@@ -3967,6 +3967,7 @@ async function context(
       url: "https://host.example/internal/v1/mcp",
     },
 
+    commandEnvironment: {},
     environment: {
       ANTHROPIC_API_KEY: "os_secret_api",
       CLAUDE_CONFIG_DIR: join(workspacePath, ".claude-user"),

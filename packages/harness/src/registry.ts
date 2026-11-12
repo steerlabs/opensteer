@@ -23,6 +23,7 @@ import type {
   HarnessInstalledEngine,
   HarnessInstanceDefinition,
   HarnessInstanceState,
+  HarnessLog,
   HarnessPreparationContext,
   HarnessProviderState,
   HarnessProviderStoreScope,
@@ -63,6 +64,7 @@ export class HarnessRegistry {
   readonly #preparations = new Map<string, PreparationEntry>();
   readonly #preparationListeners = new Set<(instanceId: HarnessInstanceId) => void>();
   readonly #installationResolver = new EngineInstallationResolver();
+  readonly #log: HarnessLog | undefined;
   #closed = false;
   /**
    * Every instance mutation and adapter creation runs on this one chain, so a
@@ -70,6 +72,10 @@ export class HarnessRegistry {
    * materializing an adapter for the entry it is about to replace.
    */
   #mutations: Promise<unknown> = Promise.resolve();
+
+  constructor(options: { readonly log?: HarnessLog } = {}) {
+    this.#log = options.log;
+  }
 
   /**
    * `installed` is the person's own install of this engine. Its scope says
@@ -695,6 +701,17 @@ export class HarnessRegistry {
     return this.#serialize(() => this.#adapter(instanceId));
   }
 
+  /**
+   * Tells the account's adapter, if one exists, that no engine process it
+   * started before now may serve a new session. It never creates an adapter.
+   */
+  recycle(instanceId: HarnessInstanceId): void {
+    void this.#instances
+      .get(instanceId)
+      ?.adapterPromise?.then((adapter) => adapter.recycle?.())
+      .catch(() => undefined);
+  }
+
   async #adapter(instanceId: HarnessInstanceId): Promise<HarnessAdapter> {
     const entry = this.#instances.get(instanceId);
     if (!entry) {
@@ -748,6 +765,7 @@ export class HarnessRegistry {
     const promise = driver.create({
       config: entry.state.definition.config,
       instanceId,
+      ...(this.#log ? { log: this.#log } : {}),
       sourceId: entry.state.definition.sourceId,
     });
     entry.adapterPromise = promise;

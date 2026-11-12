@@ -59,6 +59,7 @@ import {
   type HarnessSourceDescriptor,
   spawnSupervised,
   type HarnessProcessLaunchWrapper,
+  type HarnessSharedEngineLaunch,
   type HarnessRuntimeBoundary,
   type HarnessSession,
   type ResolvedAttachment,
@@ -93,7 +94,11 @@ import { type AgentHomeSkills, discoverAgentHomeSkills } from "../skills/agent-h
 import { BrowserCdpRelay } from "../browser/browser-cdp-relay.js";
 import { CredentialProxy } from "../credentials/credential-proxy.js";
 import { RunCredentials } from "../credentials/run-credentials.js";
-import { ExecutionContainment, type TerminationProof } from "./execution-containment.js";
+import {
+  ExecutionContainment,
+  executionScopeVariable,
+  type TerminationProof,
+} from "./execution-containment.js";
 import { warmEngineKey, WarmEnginePool, type WarmEngine } from "./warm-engine-pool.js";
 import { startProgramEndpoints, type ProgramEndpointSet } from "../agent/program-endpoints.js";
 import { TriggerProgramExecutor, type ProgramLaunchPlanner } from "../agent/program-executor.js";
@@ -1289,6 +1294,7 @@ export class RunnerRuntime {
         }
         const expiresAt = Date.now() + harnessAuthenticationLifetimeMs;
         if (started.status === "ready") {
+          this.#harnesses.recycle(harness.id);
           await this.#warm.evict((engine) => engine.harnessInstanceId === harness.id);
           if (this.#harnessAuthentications.get(harness.id) !== startingEntry) return;
           startupSignal.throwIfAborted();
@@ -1360,6 +1366,7 @@ export class RunnerRuntime {
   ): Promise<void> {
     if (this.#harnessAuthentications.get(harnessInstanceId) !== entry) return;
     if (state.status === "ready") {
+      this.#harnesses.recycle(harnessInstanceId as HarnessInstanceId);
       await this.#warm.evict((engine) => engine.harnessInstanceId === harnessInstanceId);
       if (this.#harnessAuthentications.get(harnessInstanceId) !== entry) return;
     }
@@ -2472,12 +2479,14 @@ export class RunnerRuntime {
       const writableRoots = [...new Set([workspace.path, workingDirectory])];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
+      // An engine that failed or was recycled while it waited serves no Run.
       if (
         warmEngine &&
-        command.inputs.some(
-          (message) =>
-            message.author.kind === "platform" && message.author.cause === "run-recovery",
-        )
+        (warmEngine.session.usable === false ||
+          command.inputs.some(
+            (message) =>
+              message.author.kind === "platform" && message.author.cause === "run-recovery",
+          ))
       ) {
         await this.#retireWarmEngine(warmEngine);
         warmEngine = undefined;
@@ -2717,8 +2726,7 @@ export class RunnerRuntime {
         launch?.wrapProcessLaunch ??
           (await this.#wrapProcessLaunch({ ...sandboxPlan, launchDirectory: undefined })),
       );
-      const environment = Object.freeze({
-        ...(launch?.environment ?? baseEnvironment),
+      const runVariables = {
         ...(context.specialistId
           ? {
               PLUGIN_ROOT: join(
@@ -2732,7 +2740,21 @@ export class RunnerRuntime {
         OPENSTEER_AGENT_WORKSPACE: workspace.path,
         OPENSTEER_BROWSER_CDP_WS: browserCdpUrl,
         OPENSTEER_BROWSER_HARNESS: this.#browserHarnessExecutable,
+      };
+      const environment = Object.freeze({
+        ...(launch?.environment ?? baseEnvironment),
+        ...runVariables,
       });
+      // The containment wrapper adds the scope to `environment` at launch; an
+      // engine that serves several Runs from one process sets it per command.
+      const commandEnvironment = Object.freeze({
+        ...(launch?.environment.PATH ? { PATH: launch.environment.PATH } : {}),
+        ...runVariables,
+        [executionScopeVariable]: this.#containment.scope(active.containmentScope),
+      });
+      const sharedEngine = this.#harnessSandbox
+        ? undefined
+        : await this.#sharedEngineLaunch(context.harnessInstanceId, baseEnvironment);
       const machineAccessContext = context.machineAccess;
       if (context.voiceCall && !adapter.capabilities.voiceCalls)
         throw new OpensteerError({
@@ -2749,6 +2771,7 @@ export class RunnerRuntime {
           token: proxied.secret,
           url: proxied.urls["agent-tools"],
         },
+        commandEnvironment,
         environment,
         environmentId: context.environmentId,
         history: context.history,
@@ -2778,6 +2801,7 @@ export class RunnerRuntime {
         platformGuide: context.agentTools.instructions,
         providerState,
         runtimeBoundary: this.#harnessRuntimeBoundary,
+        ...(sharedEngine ? { sharedEngine } : {}),
         signal: engineLifetime.signal,
         skills,
         threadId: context.threadId,
@@ -2977,6 +3001,16 @@ export class RunnerRuntime {
       await this.#settleLiveStreams(active).catch(() => undefined);
       if (active.interrupted)
         terminal = { data: { status: "interrupted" }, type: "run.interrupted" };
+      if (terminal.type === "run.failed") {
+        this.#logger?.error("run.failed", {
+          code: terminal.data.code,
+          driverKind: context.harness.driverKind,
+          harnessInstanceId: context.harnessInstanceId,
+          message: terminal.data.message,
+          runId: context.runId,
+          threadId: context.threadId,
+        });
+      }
       await this.#emit(active, terminal).catch(() => undefined);
       if (active.shutdown) await this.#pumpJournal(active).catch(() => undefined);
       active.voiceCall?.end();
@@ -3024,7 +3058,10 @@ export class RunnerRuntime {
       return false;
     }
     if ((await engine.session.releaseForReuse?.().catch(() => false)) !== true) return false;
-    if ((await this.#containment.isSingleTree(engine.scope).catch(() => false)) !== true) {
+    // A session on a shared engine leaves nothing of its Run running; one that
+    // owns its process leaves exactly the tree the Runner launched.
+    const expectedRoots = engine.session.engineProcess === "shared" ? 0 : 1;
+    if ((await this.#containment.liveRoots(engine.scope).catch(() => -1)) !== expectedRoots) {
       return false;
     }
     // Revoked or stopped while the engine was being checked: it ends with the Run.
@@ -3479,6 +3516,24 @@ export class RunnerRuntime {
       runtimeBoundary: this.#harnessRuntimeBoundary,
       stateDirectory: this.#privateStateDirectory,
       storeScope: this.#harnesses.providerStoreScope(driverKind),
+    };
+  }
+
+  /**
+   * An engine process several of the account's Runs share: it carries no Run's
+   * scope, so stopping one Run never sweeps it, and a dead Runner's is reaped
+   * with its boot.
+   */
+  async #sharedEngineLaunch(
+    harnessInstanceId: HarnessInstanceId,
+    environment: Readonly<Record<string, string>>,
+  ): Promise<HarnessSharedEngineLaunch> {
+    const workingDirectory = join(this.#privateStateDirectory, "engines", harnessInstanceId);
+    await mkdir(workingDirectory, { mode: 0o700, recursive: true });
+    return {
+      environment,
+      workingDirectory,
+      wrapProcessLaunch: this.#containment.wrap(`engine-${harnessInstanceId}`, (launch) => launch),
     };
   }
 

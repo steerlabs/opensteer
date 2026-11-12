@@ -156,6 +156,7 @@ export async function runEngine(input: {
       url: new URL("/agent", host.url).href,
     },
     environmentId: host.scope.environmentId,
+    commandEnvironment: {},
     environment: p.environment,
     harnessInstanceId: p.instanceId,
     history: [],

@@ -39,7 +39,15 @@ export interface CodexStdioClientOptions {
   readonly environment: Readonly<Record<string, string>>;
   readonly launch: CodexLaunch;
   readonly onFailure: (error: OpensteerError) => void;
-  readonly onMethodMessage: (message: CodexMethodMessage) => void;
+  /** `bytes` is the message's size on the wire. */
+  readonly onMethodMessage: (message: CodexMethodMessage, bytes: number) => void;
+  /**
+   * A request Codex has not answered in time. The request alone fails: one
+   * slow answer says nothing certain of the other conversations on the process.
+   */
+  readonly onRequestTimeout?: (method: string, params: unknown, error: OpensteerError) => void;
+  /** Values to keep out of stderr diagnostics besides credential-named variables. */
+  readonly redactions?: () => readonly string[];
   readonly signal: AbortSignal;
   /**
    * Present only for a Run's own app-server. Sign-in, sign-out, and inspection
@@ -61,7 +69,10 @@ export class CodexStdioClient {
   readonly #exit: Promise<ProcessExit>;
   readonly #onFailure: CodexStdioClientOptions["onFailure"];
   readonly #onMethodMessage: CodexStdioClientOptions["onMethodMessage"];
+  readonly #onRequestTimeout: CodexStdioClientOptions["onRequestTimeout"];
+  readonly #redactions: CodexStdioClientOptions["redactions"];
   readonly #pending = new Map<string, PendingRequest>();
+  readonly #timedOut = new Set<string>();
   readonly #spawned: Promise<void>;
   readonly #stderr: ByteTail;
   readonly #stderrSecrets: readonly string[];
@@ -80,6 +91,8 @@ export class CodexStdioClient {
     this.#config = options.config;
     this.#onFailure = options.onFailure;
     this.#onMethodMessage = options.onMethodMessage;
+    this.#onRequestTimeout = options.onRequestTimeout;
+    this.#redactions = options.redactions;
     this.#stderr = new ByteTail(options.config.maxStderrBytes);
     this.#stderrSecrets = Object.entries(options.environment)
       .filter(([name, value]) => credentialNamePattern.test(name) && value.length >= 4)
@@ -197,7 +210,9 @@ export class CodexStdioClient {
           ? undefined
           : setTimeout(() => {
               const current = this.#pending.get(key);
-              if (current !== pending) return;
+              if (current !== pending || !current) return;
+              this.#pending.delete(key);
+              this.#timedOut.add(key);
               const stderr = this.#stderrDiagnostic();
               const error = new OpensteerError({
                 code: "timeout",
@@ -205,7 +220,8 @@ export class CodexStdioClient {
                 message: `Codex app-server request ${method} timed out after ${timeoutMs}ms`,
                 retryable: true,
               });
-              this.#fail(error);
+              current.reject(error);
+              this.#onRequestTimeout?.(method, params, error);
             }, timeoutMs);
       timeout?.unref();
       pending = { method, reject, resolve, ...(timeout ? { timeout } : {}) };
@@ -292,7 +308,7 @@ export class CodexStdioClient {
   #processLine(line: Buffer): void {
     const message = parseCodexMessage(line);
     if (isMethodMessage(message)) {
-      this.#onMethodMessage(message);
+      this.#onMethodMessage(message, line.byteLength);
       return;
     }
     if (isResponseMessage(message)) this.#resolveResponse(message);
@@ -301,7 +317,11 @@ export class CodexStdioClient {
   #resolveResponse(message: CodexResponseMessage): void {
     const key = requestKey(message.id);
     const pending = this.#pending.get(key);
-    if (!pending) throw protocolError(`Codex app-server returned an unknown response id ${key}`);
+    // A request that timed out was already failed alone; its late answer is moot.
+    if (!pending) {
+      if (this.#timedOut.delete(key)) return;
+      throw protocolError(`Codex app-server returned an unknown response id ${key}`);
+    }
     this.#pending.delete(key);
     if (pending.timeout) clearTimeout(pending.timeout);
     if ("error" in message && message.error !== undefined) {
@@ -313,19 +333,22 @@ export class CodexStdioClient {
 
   async #write(message: JsonObject): Promise<void> {
     const data = Buffer.from(`${JSON.stringify(message)}\n`, "utf8");
-    if (data.byteLength > this.#config.maxProtocolLineBytes) {
-      const error = protocolError(
-        `Outbound Codex app-server message exceeded ${this.#config.maxProtocolLineBytes} bytes`,
+    // A message that could never fit fails alone; nothing was sent of it.
+    if (
+      data.byteLength >
+      Math.min(this.#config.maxProtocolLineBytes, this.#config.maxWriteBufferBytes)
+    ) {
+      throw protocolError(
+        `Outbound Codex app-server message of ${data.byteLength} bytes exceeds the write limit`,
       );
-      this.#fail(error);
-      throw error;
     }
-    if (this.#queuedWriteBytes + data.byteLength > this.#config.maxWriteBufferBytes) {
-      const error = protocolError(
-        `Codex app-server write buffer exceeded ${this.#config.maxWriteBufferBytes} bytes`,
-      );
-      this.#fail(error);
-      throw error;
+    // Several conversations write to one process: a full buffer waits its turn.
+    while (
+      this.#queuedWriteBytes > 0 &&
+      this.#queuedWriteBytes + data.byteLength > this.#config.maxWriteBufferBytes
+    ) {
+      await this.#writeTail;
+      this.#assertUsable();
     }
     this.#queuedWriteBytes += data.byteLength;
     const write = this.#writeTail.then(async () => {
@@ -377,7 +400,10 @@ export class CodexStdioClient {
   #stderrDiagnostic(): string {
     let stderr = this.stderrText();
     if (!stderr) return "";
-    for (const secret of this.#stderrSecrets) {
+    const secrets = [...this.#stderrSecrets, ...(this.#redactions?.() ?? [])]
+      .filter((secret) => secret.length >= 4)
+      .sort((left, right) => right.length - left.length);
+    for (const secret of secrets) {
       stderr = stderr.replaceAll(secret, "[REDACTED]");
       const prefixEnd = stderr.search(/[\s,;]+/u);
       const prefix = prefixEnd < 0 ? stderr : stderr.slice(0, prefixEnd);

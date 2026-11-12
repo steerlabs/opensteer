@@ -16,7 +16,6 @@ import {
   open,
   readdir,
   readlink,
-  realpath,
   rm,
   symlink,
   unlink,
@@ -34,6 +33,7 @@ import {
   RequestFormAnswersSchema,
   canonicalModelReference,
   createId,
+  createToolArguments,
   harnessUsageLimitFailureCode,
   heldToolCallTimeoutMs,
   normalizeToolOutput,
@@ -69,7 +69,6 @@ import {
   compatibleModelHint,
   compatibleEndpointHost,
   harnessTurnPreamble,
-  meetsMinimumVersion,
   nativeImageBase64Budget,
   nativeImageNeedsPreparation,
   prepareNativeImage,
@@ -98,6 +97,8 @@ import {
   type HarnessDriver,
   type HarnessDriverCreateContext,
   type HarnessEvent,
+  type HarnessLog,
+  type HarnessSharedEngineLaunch,
   type HarnessInspectionContext,
   type HarnessInspectionResult,
   type HarnessInput,
@@ -119,17 +120,18 @@ import {
   type SupervisedProcess,
 } from "@opensteer/harness";
 import { z } from "zod";
-import {
-  CodexHarnessConfigSchema,
-  MINIMUM_CODEX_CLI_VERSION,
-  type CodexHarnessConfig,
-} from "./config.js";
+import { CodexHarnessConfigSchema, type CodexHarnessConfig } from "./config.js";
 import {
   assertCodexFeatureBoundary,
   codexFeatureBoundary,
   codexFeatureBoundaryArgument,
   type CodexFeatureBoundary,
 } from "./features.js";
+import {
+  CodexAppServer,
+  assertSupportedCodexVersion,
+  type CodexThreadOwner,
+} from "./app-server.js";
 import { CodexStdioClient } from "./process.js";
 import {
   optionalString,
@@ -176,12 +178,21 @@ const codexIsolatedPermissionProfile = Object.freeze({
 const codexIntegrationOutputTokenLimit = 10_000;
 
 const codexAuthenticationTimeoutMs = 10 * 60_000;
-const agentToolsTokenEnvironmentVariable = "OPENSTEER_AGENT_TOOLS_TOKEN";
+
+/** The longest a stopped conversation has to close before its process is ended instead. */
+const codexThreadCloseMaxMs = 10_000;
 
 // Codex answers turn/steer with this JSON-RPC code for every precondition it
 // owns: no active turn, an expectedTurnId mismatch, and a review or compact
 // turn that cannot accept injected input.
 const codexInvalidRequestCode = -32_600;
+
+/** Notifications a Run cannot go on without reading; any other unreadable one is dropped. */
+const codexRunEndingNotifications: ReadonlySet<string> = new Set([
+  "thread/tokenUsage/updated",
+  "turn/completed",
+  "turn/started",
+]);
 
 /** Frames of a child held while nothing has yet said which agent started it. */
 const childFramesHeldMax = 64;
@@ -227,6 +238,8 @@ interface ActiveTurn {
   interruptPromise?: Promise<void>;
   interruptRequested: boolean;
   providerTurnId?: string;
+  /** Codex is running the root's turn: it started and has not completed. */
+  providerTurnOpen: boolean;
   readonly requestedBy: UserId;
   readonly runId: HarnessRunInput["runId"];
   started: boolean;
@@ -535,6 +548,7 @@ export class CodexHarnessDriver implements HarnessDriver {
       config,
       this.#dependencies.launch,
       codexSourceSelection(config, context.sourceId),
+      context.log,
     );
   }
 }
@@ -777,7 +791,9 @@ async function authenticateCodexHarness(
       }),
       "initialize result",
     );
-    assertSupportedVersion(requireString(initialized.userAgent, "initialize result.userAgent"));
+    assertSupportedCodexVersion(
+      requireString(initialized.userAgent, "initialize result.userAgent"),
+    );
     await client.notify("initialized", {});
     const account = requireObject(
       await client.request("account/read", { refreshToken: false }),
@@ -832,19 +848,33 @@ class CodexHarnessAdapter implements HarnessAdapter {
   readonly instanceId: HarnessInstanceId;
   readonly #config: CodexHarnessConfig;
   readonly #launch: CodexLaunch;
+  readonly #log: HarnessLog | undefined;
   readonly #source: CodexSourceSelection;
   readonly #sessions = new HarnessSessionRegistry<CodexHarnessSession>("Codex");
+  /** Every app-server this adapter started that has not ended. */
+  readonly #servers = new Set<CodexAppServer>();
+  /** The account's shared app-server, or its start in flight, and what it was started with. */
+  #shared: { readonly key: string; readonly server: Promise<CodexAppServer> } | undefined;
 
   constructor(
     instanceId: HarnessInstanceId,
     config: CodexHarnessConfig,
     launch: CodexLaunch,
     source: CodexSourceSelection,
+    log: HarnessLog | undefined,
   ) {
     this.instanceId = instanceId;
     this.#config = config;
     this.#launch = launch;
+    this.#log = log;
     this.#source = source;
+  }
+
+  recycle(): void {
+    const shared = this.#shared;
+    this.#shared = undefined;
+    void shared?.server.then((server) => server.recycle()).catch(() => undefined);
+    for (const server of this.#servers) server.recycle();
   }
 
   async generateText({
@@ -1033,25 +1063,143 @@ class CodexHarnessAdapter implements HarnessAdapter {
 
   async close(): Promise<void> {
     await this.#sessions.close();
+    this.#shared = undefined;
+    await Promise.allSettled([...this.#servers].map((server) => server.close()));
   }
 
   #open(context: HarnessSessionContext, mode: SessionMode): Promise<CodexHarnessSession> {
     return CodexHarnessSession.open(
       this.#config,
-      this.#launch,
-      this.#source,
       context,
       mode,
+      (lifetime) => this.#server(context, lifetime),
+      this.#log,
       (closed) => this.#sessions.release(closed),
     );
   }
+
+  /**
+   * The app-server a session runs on. Runs of one account share one, started
+   * from nothing that belongs to a Run. A voice call, or a Run whose engine
+   * must start inside its own sandbox, gets a process of its own, which lives
+   * until `lifetime` ends.
+   */
+  async #server(context: HarnessSessionContext, lifetime: AbortSignal): Promise<CodexAppServer> {
+    this.#sessions.assertOpen();
+    const shared = context.sharedEngine;
+    if (!shared || context.voiceCall || context.runtimeBoundary.kind !== "native-user") {
+      return this.#startServer(context, undefined, lifetime);
+    }
+    const key = JSON.stringify([
+      shared.environment,
+      shared.workingDirectory,
+      context.providerState.providerHomeDirectory ?? null,
+      context.providerState.kind,
+    ]);
+    const current = this.#shared;
+    if (current?.key === key) {
+      const server = await current.server.catch(() => undefined);
+      if (server?.usable) return server;
+      if (this.#shared === current) this.#shared = undefined;
+      if (this.#shared) return this.#server(context, lifetime);
+    } else if (current) {
+      this.#shared = undefined;
+      void current.server.then((server) => server.recycle()).catch(() => undefined);
+    }
+    const started = this.#startServer(context, shared, lifetime);
+    const entry = { key, server: started };
+    this.#shared = entry;
+    started.catch(() => {
+      if (this.#shared === entry) this.#shared = undefined;
+    });
+    return started;
+  }
+
+  async #startServer(
+    context: HarnessSessionContext,
+    shared: HarnessSharedEngineLaunch | undefined,
+    lifetime: AbortSignal,
+  ): Promise<CodexAppServer> {
+    const features = await codexFeatureBoundary(this.#launch);
+    const workingDirectory = shared?.workingDirectory ?? context.workspacePath;
+    if (shared) await mkdir(shared.workingDirectory, { recursive: true, mode: 0o700 });
+    const environment = await codexProcessEnvironment(
+      shared?.environment ?? context.environment,
+      context.providerState,
+      this.#source,
+      { ...context, config: this.#config, launch: this.#launch, workingDirectory },
+    );
+    // A call's text log can hold its session descriptions, so it lives in the
+    // call's private directory, removed when the call ends. Codex also keeps a
+    // TRACE SQLite log in the account's state home that nothing disables.
+    const callLog = context.voiceCall ? join(context.threadStateDirectory, "codex-log") : undefined;
+    if (callLog) await mkdir(callLog, { recursive: true, mode: 0o700 });
+    const server = await CodexAppServer.start({
+      appServerArgs: [
+        ...codexProcessBoundaryArgs(
+          features,
+          context.runtimeBoundary,
+          context.providerState,
+          environment,
+          context.writableRoots,
+          context,
+        ),
+        // A conversation no session holds unloads at once, so its next load
+        // takes that Run's configuration and nothing it ran outlives it.
+        "-c",
+        "thread_unload_delay_secs=0",
+        ...(callLog ? ["-c", `log_dir=${JSON.stringify(callLog)}`] : []),
+      ],
+      config: this.#config,
+      cwd: workingDirectory,
+      environment,
+      features,
+      launch: this.#launch,
+      ...(this.#log ? { log: this.#log } : {}),
+      onEnded: (ended) => this.#servers.delete(ended),
+      wrapProcessLaunch: shared?.wrapProcessLaunch ?? context.wrapProcessLaunch,
+      ...(shared ? {} : { dedicated: true as const, signal: lifetime }),
+    });
+    this.#servers.add(server);
+    if (callLog) {
+      // Refuse a managed override that would move the call's text log elsewhere.
+      const effective = requireObject(
+        requireObject(
+          await server.client
+            .request(
+              "config/read",
+              { cwd: context.workspacePath, includeLayers: false },
+              this.#config.startupTimeoutMs,
+            )
+            .catch(async (error: unknown) => {
+              await server.close();
+              throw error;
+            }),
+          "voice config",
+        ).config,
+        "effective voice config",
+      );
+      if (effective.log_dir !== callLog) {
+        await server.close();
+        throw protocolError("Codex would keep this voice call's log outside its private directory");
+      }
+    }
+    return server;
+  }
 }
 
-class CodexHarnessSession implements HarnessSession {
+class CodexHarnessSession implements HarnessSession, CodexThreadOwner {
   readonly events: AsyncIterable<HarnessEvent>;
+  readonly #acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>;
+  /**
+   * A process of this session's own ends when this does, last of all at stop:
+   * the Run's abort must not end it before its turns are told to stop.
+   */
+  readonly #processLifetime = new AbortController();
   readonly #config: CodexHarnessConfig;
-  readonly #launch: CodexLaunch;
-  readonly #source: CodexSourceSelection;
+  readonly #log: HarnessLog | undefined;
+  /** Each kind of frame this session could not read, warned of once. */
+  readonly #unreadable = new Set<string>();
   #context: HarnessSessionContext;
   /**
    * An answer that holds for the rest of the thread's runtime — Codex's
@@ -1068,11 +1216,12 @@ class CodexHarnessSession implements HarnessSession {
   readonly #tokenLedger = new CodexTokenLedger();
   /** Subagent threads used since the last release, which can hold background terminals too. */
   readonly #childThreads = new Set<string>();
+  /** Every subagent conversation this session has held; each unloads when it stops. */
+  readonly #ownedChildThreads = new Set<string>();
   readonly #childParents = new Map<string, { parentKey: string | null; title: string | null }>();
-  readonly #processLifetime = new AbortController();
   readonly #abortListener: () => void;
   #activeTurn: ActiveTurn | undefined;
-  #client: CodexStdioClient | undefined;
+  #server: CodexAppServer | undefined;
   #closed = false;
   #codexThreadId: string | undefined;
   #providerSessionReference: string | undefined;
@@ -1080,15 +1229,15 @@ class CodexHarnessSession implements HarnessSession {
 
   private constructor(
     config: CodexHarnessConfig,
-    launch: CodexLaunch,
-    source: CodexSourceSelection,
     context: HarnessSessionContext,
     resumed: boolean,
+    acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
+    log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
   ) {
+    this.#acquire = acquire;
     this.#config = config;
-    this.#launch = launch;
-    this.#source = source;
+    this.#log = log;
     this.#context = context;
     this.#resumed = resumed;
     this.#onClose = onClose;
@@ -1103,10 +1252,10 @@ class CodexHarnessSession implements HarnessSession {
 
   static async open(
     config: CodexHarnessConfig,
-    launch: CodexLaunch,
-    source: CodexSourceSelection,
     context: HarnessSessionContext,
     mode: SessionMode,
+    acquire: (lifetime: AbortSignal) => Promise<CodexAppServer>,
+    log: HarnessLog | undefined,
     onClose: (session: CodexHarnessSession) => void,
   ): Promise<CodexHarnessSession> {
     if (context.signal.aborted) {
@@ -1117,10 +1266,10 @@ class CodexHarnessSession implements HarnessSession {
     }
     const session = new CodexHarnessSession(
       config,
-      launch,
-      source,
       context,
       mode.type === "resume",
+      acquire,
+      log,
       onClose,
     );
     try {
@@ -1130,6 +1279,14 @@ class CodexHarnessSession implements HarnessSession {
       await session.#stop(false);
       throw error;
     }
+  }
+
+  get usable(): boolean {
+    return !this.#closed && !this.#publisher.unusable && this.#server?.usable === true;
+  }
+
+  get engineProcess(): "own" | "shared" {
+    return this.#server?.dedicated === false ? "shared" : "own";
   }
 
   get providerSessionReference(): string {
@@ -1185,6 +1342,7 @@ class CodexHarnessSession implements HarnessSession {
       nodes: new SubagentNodes((event) => this.#publish(event)),
       nodeTokens: new Map(),
       interruptRequested: run.signal.aborted,
+      providerTurnOpen: false,
       requestedBy: run.requestedBy,
       runId: run.runId,
       started: false,
@@ -1445,6 +1603,7 @@ class CodexHarnessSession implements HarnessSession {
     if (active.root !== "starting" || active.terminal) return;
     active.root = "executing";
     active.providerTurnId = turnId;
+    active.providerTurnOpen = true;
     this.#ownTurn(active, this.#requireCodexThreadId(), turnId);
     active.rootStart?.resolve();
     this.#publish({ data: { phase: "turn" }, type: "run.phase" });
@@ -1466,6 +1625,9 @@ class CodexHarnessSession implements HarnessSession {
     if (this.#context.voiceCall || context.voiceCall)
       throw new Error("A voice call cannot reuse a session.");
     if (this.#activeTurn) throw new Error("A Codex session cannot be rebound during a Run");
+    // The conversation's configuration was fixed when it loaded.
+    if (codexThreadIdentity(context) !== codexThreadIdentity(this.#context))
+      throw new Error("A Codex session cannot be rebound to a different command environment");
     this.#context = context;
   }
 
@@ -1478,6 +1640,7 @@ class CodexHarnessSession implements HarnessSession {
   async releaseForReuse(): Promise<boolean> {
     if (this.#closed || this.#publisher.unusable || this.#activeTurn) return false;
     if (this.#sessionApprovalGranted || this.#pendingRequests.size > 0) return false;
+    if (!this.#server?.usable) return false;
     try {
       const client = this.#requireClient();
       for (const threadId of [this.#requireCodexThreadId(), ...this.#childThreads]) {
@@ -1533,97 +1696,24 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   async #initialize(mode: SessionMode): Promise<void> {
-    const processEnvironment = {
-      ...(await codexProcessEnvironment(
-        this.#context.environment,
-        this.#context.providerState,
-        this.#source,
-        {
-          ...this.#context,
-          config: this.#config,
-          launch: this.#launch,
-          workingDirectory: this.#context.workspacePath,
-        },
-      )),
-      [agentToolsTokenEnvironmentVariable]: this.#context.agentTools.token,
-    };
-    const features = await codexFeatureBoundary(this.#launch);
-    // A call's text log can hold its session descriptions, so it lives in the
-    // call's private directory, removed when the call ends. Codex also keeps a
-    // TRACE SQLite log in the account's state home that nothing disables.
-    const callLog = this.#context.voiceCall
-      ? join(this.#context.threadStateDirectory, "codex-log")
-      : undefined;
-    if (callLog) await mkdir(callLog, { recursive: true, mode: 0o700 });
-    this.#client = await CodexStdioClient.start({
-      appServerArgs: [
-        ...codexProcessBoundaryArgs(
-          features,
-          this.#context.runtimeBoundary,
-          this.#context.providerState,
-          processEnvironment,
-          this.#context.writableRoots,
-          this.#context,
-        ),
-        ...(callLog ? ["-c", `log_dir=${JSON.stringify(callLog)}`] : []),
-      ],
-      config: this.#config,
-      cwd: this.#context.workspacePath,
-      environment: processEnvironment,
-      launch: this.#launch,
-      onFailure: (error) => this.#handleConnectionFailure(error),
-      onMethodMessage: (message) => this.#handleMethodMessage(message),
-      signal: this.#processLifetime.signal,
-      wrapProcessLaunch: this.#context.wrapProcessLaunch,
-    });
-    const initialize = requireObject(
-      await this.#client.lifecycleRequest("initialize", {
-        capabilities: {
-          experimentalApi: true,
-          mcpServerOpenaiFormElicitation: false,
-          requestAttestation: false,
-        },
-        clientInfo: {
-          name: "opensteer",
-          title: "Opensteer",
-          version: "0.0.0",
-        },
-      }),
-      "initialize result",
+    const server = await abortable(
+      this.#acquire(this.#processLifetime.signal),
+      this.#context.signal,
     );
-    assertSupportedVersion(requireString(initialize.userAgent, "initialize result.userAgent"));
-    await this.#client.notify("initialized", {});
-    if (callLog) {
-      // Refuse a managed override that would move the call's text log elsewhere.
-      const effective = requireObject(
-        requireObject(
-          await this.#client.request(
-            "config/read",
-            { cwd: this.#context.workspacePath, includeLayers: false },
-            this.#config.startupTimeoutMs,
-          ),
-          "voice config",
-        ).config,
-        "effective voice config",
-      );
-      if (effective.log_dir !== callLog)
-        throw protocolError("Codex would keep this voice call's log outside its private directory");
-    }
-    const skills = this.#context.skills?.skills ?? [];
-    assertUniqueSkillNames(skills);
-    await this.#client.request(
-      "skills/extraRoots/set",
-      { extraRoots: [...new Set(skills.map(({ path }) => dirname(path)))] },
-      this.#config.startupTimeoutMs,
-    );
+    this.#assertOpening();
+    this.#server = server;
+    server.attach(this, [
+      this.#context.agentTools.token,
+      ...Object.values(this.#context.commandEnvironment),
+    ]);
+    const client = server.client;
     const runtimeConfig = await codexThreadRuntimeConfig(
-      this.#client,
+      client,
       this.#context,
-      features,
-      skills,
+      server.features,
       this.#config.startupTimeoutMs,
     );
-
+    this.#assertOpening();
     const resume = mode.type === "resume";
     const prior = resume ? validateProviderReference(mode.reference) : undefined;
     const method = resume ? "thread/resume" : "thread/start";
@@ -1668,7 +1758,11 @@ class CodexHarnessSession implements HarnessSession {
       // the historical transcript back into the Runner's bounded transport.
       ...(resume && prior ? { excludeTurns: true, threadId: prior } : { serviceName: "opensteer" }),
     };
-    const result = requireObject(await this.#client.request(method, params), `${method} result`);
+    // What arrives for the conversation before its load answers waits for it.
+    if (prior) server.claim(prior, this);
+    // A stopped session waited for its conversation to close, or ended the
+    // process: this load takes this Run's configuration.
+    const result = requireObject(await client.request(method, params), `${method} result`);
     const thread = requireObject(result.thread, `${method} result.thread`);
     const reference = validateProviderReference(
       requireString(thread.id, `${method} result.thread.id`),
@@ -1678,14 +1772,25 @@ class CodexHarnessSession implements HarnessSession {
         `Codex thread/resume returned ${reference} while Opensteer requested ${prior}`,
       );
     }
+    server.claim(reference, this);
     this.#codexThreadId = reference;
+    if (this.#closed) {
+      // Stopped while Codex was loading it: nothing of it may stay loaded.
+      await this.#unload(server, undefined);
+      this.#assertOpening();
+    }
     this.#providerSessionReference = reference;
-    await assertCodexMcpBoundary(
-      this.#client,
-      reference,
-      this.#context,
-      this.#config.startupTimeoutMs,
-    );
+    await assertCodexMcpBoundary(client, reference, this.#context, this.#config.startupTimeoutMs);
+    this.#assertOpening();
+  }
+
+  #assertOpening(): void {
+    if (this.#closed || this.#context.signal.aborted) {
+      throw new OpensteerError({
+        code: "harness_error",
+        message: "Codex session was cancelled during startup",
+      });
+    }
   }
 
   async #interruptActive(active: ActiveTurn): Promise<void> {
@@ -1729,8 +1834,9 @@ class CodexHarnessSession implements HarnessSession {
       const failure = toHarnessError(error, "Failed to interrupt Codex turn");
       this.#publishFailure(active, failure);
       this.#publisher.latchUnusable(failure);
-      await this.#client?.close(0);
       this.#closeEventStream(failure);
+      // A turn that would not stop is stopped with the process it runs in.
+      await this.#server?.retire(failure);
     }
   }
 
@@ -1748,26 +1854,139 @@ class CodexHarnessSession implements HarnessSession {
       if (this.#context.voiceCall) {
         this.#context.voiceCall.end();
         const threadId = this.#requireCodexThreadId();
-        await this.#client
-          ?.request("thread/realtime/stop", { threadId }, 1_000)
+        await this.#server?.client
+          .request("thread/realtime/stop", { threadId }, 1_000)
           .catch(() => undefined);
         if (active.providerTurnId)
-          await this.#client
-            ?.request("turn/interrupt", { threadId, turnId: active.providerTurnId }, 1_000)
+          await this.#server?.client
+            .request("turn/interrupt", { threadId, turnId: active.providerTurnId }, 1_000)
             .catch(() => undefined);
         this.#publishTerminal(active, "interrupted");
       } else await this.#interruptActive(active).catch(() => undefined);
     }
     this.#respondingProviderRequests.clear();
-    this.#processLifetime.abort(new Error("Codex session stopped"));
+    const server = this.#server;
     try {
-      await this.#client?.close();
+      if (server?.dedicated) await server.close();
+      else if (server) await this.#unload(server, active);
     } finally {
+      server?.detach(this);
+      this.#processLifetime.abort(new Error("Codex session stopped"));
       if (this.#context.voiceCall)
         await rm(this.#context.threadStateDirectory, { recursive: true, force: true });
       this.#closeEventStream();
       if (notifyOwner && this.#providerSessionReference) this.#onClose(this);
     }
+  }
+
+  /**
+   * Leaves nothing of this session on the shared app-server. Its turns are
+   * stopped and its conversations unloaded, which is what ends their
+   * commands' terminals and code-mode sessions. A conversation Codex does not
+   * close cannot be proven stopped: the process ends, and the account's next
+   * session starts on a new one.
+   */
+  async #unload(server: CodexAppServer, active: ActiveTurn | undefined): Promise<void> {
+    if (server.failure) return;
+    const closeTimeoutMs = Math.min(codexThreadCloseMaxMs, this.#config.requestTimeoutMs);
+    const client = server.client;
+    const root = this.#codexThreadId;
+    // The Run's own end does not stop a turn Codex still runs for it.
+    if (active?.providerTurnId && active.providerTurnOpen && root) {
+      await Promise.allSettled([
+        ...[...active.childTurns].map(([threadId, turnId]) =>
+          client.request("turn/interrupt", { threadId, turnId }, closeTimeoutMs),
+        ),
+        client.request(
+          "turn/interrupt",
+          { threadId: root, turnId: active.providerTurnId },
+          closeTimeoutMs,
+        ),
+      ]);
+    }
+    const threads = [...this.#ownedChildThreads, ...(root ? [root] : [])];
+    const unloaded = await Promise.all(
+      threads.map((threadId) => server.unload(threadId, this, closeTimeoutMs)),
+    );
+    if (unloaded.every(Boolean)) return;
+    await server.retire(
+      new OpensteerError({
+        code: "harness_error",
+        message: "Codex did not close a stopped conversation, so its app-server was ended",
+        retryable: true,
+      }),
+    );
+  }
+
+  /** A frame of one of this session's conversations. A frame it cannot read ends only this session. */
+  receive(message: CodexMethodMessage): void {
+    try {
+      this.#claimNamedChildren(message);
+      this.#handleMethodMessage(message);
+    } catch (error) {
+      this.#unreadableFrame(message, error);
+    }
+  }
+
+  /**
+   * A subagent's conversation is this session's once one of its own names it:
+   * what arrived of it before then follows the frame that named it.
+   */
+  #claimNamedChildren(message: CodexMethodMessage): void {
+    const params = isRecord(message.params) ? message.params : undefined;
+    const item = params && isRecord(params.item) ? params.item : undefined;
+    if (!item) return;
+    const named =
+      item.type === "subAgentActivity"
+        ? [item.agentThreadId]
+        : item.type === "collabAgentToolCall"
+          ? [
+              ...(Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : []),
+              item.newThreadId,
+            ]
+          : [];
+    for (const threadId of named) {
+      if (typeof threadId !== "string" || !threadId || threadId === this.#codexThreadId) continue;
+      if (this.#ownedChildThreads.has(threadId)) continue;
+      try {
+        this.#server?.claim(threadId, this);
+        this.#ownedChildThreads.add(threadId);
+      } catch {
+        // Another session's conversation is never this one's subagent.
+      }
+    }
+  }
+
+  serverFailed(error: OpensteerError): void {
+    this.#handleConnectionFailure(error);
+  }
+
+  requestTimedOut(error: OpensteerError): void {
+    this.#handleConnectionFailure(error);
+  }
+
+  /**
+   * As T3 Code does, a notification this session cannot read is dropped and
+   * warned of once per kind. A request it cannot answer, or an unreadable
+   * start or end of a turn or usage reading, leaves the Run unable to go on
+   * truthfully: it fails, and the shared process and its other conversations do not.
+   */
+  #unreadableFrame(message: CodexMethodMessage, error: unknown): void {
+    const failure = toHarnessError(error, `Codex sent an unreadable ${message.method}`);
+    const kind = `${message.method}\u0000${failure.message}`;
+    if (!this.#unreadable.has(kind) && this.#unreadable.size < 64) {
+      this.#unreadable.add(kind);
+      this.#log?.("warn", "codex.frame.unreadable", {
+        method: message.method,
+        message: failure.message,
+      });
+    }
+    if (message.id !== undefined) {
+      void this.#server?.client
+        .respondError(message.id, -32_602, "Opensteer could not read this request")
+        .catch(() => undefined);
+    } else if (!codexRunEndingNotifications.has(message.method)) return;
+    this.#handleConnectionFailure(failure);
   }
 
   #handleMethodMessage(message: CodexMethodMessage): void {
@@ -2148,7 +2367,7 @@ class CodexHarnessSession implements HarnessSession {
           );
           this.#publish({
             data: {
-              arguments: descriptor.arguments,
+              arguments: createToolArguments(descriptor.arguments),
               callId: descriptor.callId,
               nodeId,
               tool: descriptor.tool,
@@ -2355,6 +2574,7 @@ class CodexHarnessSession implements HarnessSession {
     if (active.providerTurnId && active.providerTurnId !== turnId) return;
     this.#setActiveTurnId(active, turnId);
     const status = requireString(turn.status, "turn/completed params.turn.status");
+    active.providerTurnOpen = false;
     if (this.#context.voiceCall) {
       // A failed turn is one request that didn't go through, not the end of the call.
       this.#settleVoiceTurn();
@@ -2405,7 +2625,11 @@ class CodexHarnessSession implements HarnessSession {
     const descriptor = toolDescriptor(item);
     if (!descriptor) return;
     this.#publish({
-      data: { arguments: descriptor.arguments, callId: descriptor.callId, tool: descriptor.tool },
+      data: {
+        arguments: createToolArguments(descriptor.arguments),
+        callId: descriptor.callId,
+        tool: descriptor.tool,
+      },
       type: "tool.started",
     });
   }
@@ -2518,6 +2742,7 @@ class CodexHarnessSession implements HarnessSession {
     }
     if (!active.providerTurnId) {
       active.providerTurnId = turnId;
+      active.providerTurnOpen = true;
       this.#ownTurn(active, this.#requireCodexThreadId(), turnId);
       active.idReady.resolve();
     }
@@ -2645,7 +2870,8 @@ class CodexHarnessSession implements HarnessSession {
         active.toolLifetime.abort(failure);
         active.completion.resolve();
       }
-      void this.#client?.close(0);
+      this.#closeEventStream(failure);
+      void this.stop();
       throw failure;
     }
   }
@@ -2712,8 +2938,8 @@ class CodexHarnessSession implements HarnessSession {
       if (publishError) throw publishError;
       return;
     }
-    const client = this.#client;
-    if (!client) {
+    const client = this.#server?.client;
+    if (!client || client.failed) {
       if (publishError) throw publishError;
       return;
     }
@@ -2742,13 +2968,15 @@ class CodexHarnessSession implements HarnessSession {
   }
 
   #requireClient(): CodexStdioClient {
-    if (!this.#client) {
+    const server = this.#server;
+    if (!server) {
       throw new OpensteerError({
         code: "harness_error",
         message: "Codex app-server is not connected",
       });
     }
-    return this.#client;
+    if (server.failure) throw server.failure;
+    return server.client;
   }
 
   #requireCodexThreadId(): string {
@@ -2808,7 +3036,9 @@ async function inspectCodexHarness(
       }),
       "initialize result",
     );
-    assertSupportedVersion(requireString(initialized.userAgent, "initialize result.userAgent"));
+    assertSupportedCodexVersion(
+      requireString(initialized.userAgent, "initialize result.userAgent"),
+    );
     await client.notify("initialized", {});
     const account = requireObject(
       await client.request("account/read", { refreshToken: false }),
@@ -3390,7 +3620,9 @@ async function initializeCodexHome(
       ),
       "initialize result",
     );
-    assertSupportedVersion(requireString(initialized.userAgent, "initialize result.userAgent"));
+    assertSupportedCodexVersion(
+      requireString(initialized.userAgent, "initialize result.userAgent"),
+    );
     await client.notify("initialized", {});
   } finally {
     await client.close();
@@ -3705,11 +3937,15 @@ async function drainProcessOutput(process: SupervisedProcess): Promise<void> {
   await Promise.all([drainAsyncOutput(process.stdout), drainAsyncOutput(process.stderr)]);
 }
 
+/**
+ * Everything of a Run its conversation carries, so a process shared by an
+ * account's Runs holds none of it: the command environment, the Opensteer MCP
+ * token, and the features, tools and skills the conversation may use.
+ */
 async function codexThreadRuntimeConfig(
   client: CodexStdioClient,
   context: HarnessSessionContext,
   features: CodexFeatureBoundary,
-  selectedSkills: readonly { readonly fullName: string; readonly path: string }[],
   timeoutMs: number,
 ): Promise<JsonObject> {
   const configRead = requireObject(
@@ -3722,7 +3958,6 @@ async function codexThreadRuntimeConfig(
   );
   const effectiveConfig = requireObject(configRead.config, "config/read result.config");
   assertCodexProcessBoundary(configRead, effectiveConfig);
-  await assertCodexFeatureBoundary(client, features, timeoutMs);
   const configuredMcpServers = requireObject(
     effectiveConfig.mcp_servers,
     "config/read result.config.mcp_servers",
@@ -3737,17 +3972,13 @@ async function codexThreadRuntimeConfig(
     }
   }
 
-  const skillRules = await codexSkillRules(
-    client,
-    context.workspacePath,
-    selectedSkills,
-    timeoutMs,
-  );
   const runtimeConfig: JsonObject = {
     allow_login_shell: false,
     project_doc_max_bytes: 0,
+    // Codex applies these after its exclusions; none is a credential.
+    "shell_environment_policy.set": { ...context.commandEnvironment },
     "skills.bundled.enabled": false,
-    "skills.config": skillRules,
+    "skills.config": await codexSkillsDisabled(client, context.workspacePath, timeoutMs),
     features: { ...features },
     "tools.update_plan.enabled": false,
     web_search: "disabled",
@@ -3757,8 +3988,11 @@ async function codexThreadRuntimeConfig(
   }
   for (const [name, tools] of codexMcpTools(context.agentTools.tools)) {
     runtimeConfig[codexMcpConfigPath(name, "url")] = context.agentTools.url;
-    runtimeConfig[codexMcpConfigPath(name, "bearer_token_env_var")] =
-      agentToolsTokenEnvironmentVariable;
+    // Codex reads a bearer variable from its own process, which other Runs
+    // share; the header belongs to this conversation alone.
+    runtimeConfig[codexMcpConfigPath(name, "http_headers")] = {
+      Authorization: `Bearer ${context.agentTools.token}`,
+    };
     runtimeConfig[codexMcpConfigPath(name, "enabled_tools")] = tools;
     runtimeConfig[codexMcpConfigPath(name, "default_tools_approval_mode")] = "approve";
     runtimeConfig[codexMcpConfigPath(name, "required")] = true;
@@ -3850,15 +4084,16 @@ function codexShellEnvironmentPolicyApplied(value: unknown): boolean {
   );
 }
 
-async function codexSkillRules(
+/**
+ * Codex's own skill discovery finds skills for the whole process, which other
+ * Runs share. A conversation hides everything it finds; the model learns the
+ * Run's skills from Opensteer's catalog, as every other engine does.
+ */
+async function codexSkillsDisabled(
   client: CodexStdioClient,
   workspacePath: string,
-  selectedSkills: readonly { readonly fullName: string; readonly path: string }[],
   timeoutMs: number,
 ): Promise<readonly JsonObject[]> {
-  const expectedPaths = new Set(
-    await Promise.all(selectedSkills.map(({ path }) => realpath(join(path, "SKILL.md")))),
-  );
   const response = requireObject(
     await client.request("skills/list", { cwds: [workspacePath], forceReload: true }, timeoutMs),
     "skills/list result",
@@ -3870,20 +4105,13 @@ async function codexSkillRules(
   if (!Array.isArray(entry.skills)) {
     throw protocolError("Codex skills/list workspace entry.skills must be an array");
   }
-  const discoveredPaths = await Promise.all(
-    entry.skills.map(async (value, index) => {
-      const skill = requireObject(value, `skills/list skill ${index}`);
-      return realpath(requireString(skill.path, `skills/list skill ${index}.path`));
-    }),
-  );
-  const discovered = new Set(discoveredPaths);
-  const missing = [...expectedPaths].filter((path) => !discovered.has(path));
-  if (missing.length > 0) {
-    throw protocolError("Codex did not discover every Opensteer-selected Agent Skill", {
-      details: { missing },
-    });
-  }
-  return [...discovered].map((path) => ({ enabled: expectedPaths.has(path), path }));
+  return entry.skills.map((value, index) => ({
+    enabled: false,
+    path: requireString(
+      requireObject(value, `skills/list skill ${index}`).path,
+      `skills/list skill ${index}.path`,
+    ),
+  }));
 }
 
 function codexMcpTools(tools: readonly string[]): ReadonlyMap<string, readonly string[]> {
@@ -3969,21 +4197,6 @@ async function assertCodexMcpBoundary(
 function codexMcpConfigPath(name: string, property: string): string {
   const segment = /^[A-Za-z0-9_-]+$/u.test(name) ? name : JSON.stringify(name);
   return `mcp_servers.${segment}.${property}`;
-}
-
-function assertUniqueSkillNames(
-  skills: readonly { readonly fullName: string; readonly path: string }[],
-): void {
-  const names = new Set<string>();
-  for (const skill of skills) {
-    if (names.has(skill.fullName)) {
-      throw new OpensteerError({
-        code: "conflict",
-        message: `Codex cannot load duplicate Agent Skill name ${skill.fullName}`,
-      });
-    }
-    names.add(skill.fullName);
-  }
 }
 
 /**
@@ -4667,16 +4880,44 @@ function assertSameEnvironment(
   }
 }
 
-function assertSupportedVersion(userAgent: string): void {
-  // app-server intentionally brands its user agent for the invoking client in
-  // some launch environments (for example `opensteer/0.154.0`) and as Codex
-  // Desktop in others. The app-server version remains the first semver token.
-  const version = /(?:^|\s|\/)(\d+\.\d+\.\d+)(?:\s|$)/u.exec(userAgent)?.[1];
-  if (!version || !meetsMinimumVersion(version, MINIMUM_CODEX_CLI_VERSION)) {
-    throw protocolError(
-      `Codex CLI ${version ?? "of an unknown version"} is older than Opensteer supports; update it to ${MINIMUM_CODEX_CLI_VERSION} or newer`,
-      { details: { minimumVersion: MINIMUM_CODEX_CLI_VERSION, userAgent, version } },
-    );
+/**
+ * What a conversation's configuration was built from and keeps while loaded.
+ * A warm session serves a later Run only when this is the same.
+ */
+function codexThreadIdentity(context: HarnessSessionContext): string {
+  return JSON.stringify([
+    Object.entries(context.commandEnvironment).sort(([left], [right]) => left.localeCompare(right)),
+    context.agentTools.token,
+    context.agentTools.url,
+    context.agentTools.tools,
+    context.workspacePath,
+  ]);
+}
+
+/** Settles with `promise`, or rejects as soon as `signal` aborts. */
+async function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted)
+    throw new OpensteerError({
+      code: "harness_error",
+      message: "Codex session was cancelled during startup",
+    });
+  let onAbort: (() => void) | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        onAbort = () =>
+          reject(
+            new OpensteerError({
+              code: "harness_error",
+              message: "Codex session was cancelled during startup",
+            }),
+          );
+        signal.addEventListener("abort", onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
   }
 }
 
@@ -4782,7 +5023,7 @@ async function codexPrivateThreadConfig(
     project_doc_max_bytes: 0,
     developer_instructions: "",
     "skills.bundled.enabled": false,
-    "skills.config": await codexSkillRules(client, directory, [], timeoutMs),
+    "skills.config": await codexSkillsDisabled(client, directory, timeoutMs),
     "cloud.skills.enabled": false,
     "skills.include_instructions": false,
     "tools.experimental_request_user_input.enabled": false,

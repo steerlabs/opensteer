@@ -91,7 +91,9 @@ describe("Codex stdio process", () => {
     }
   });
 
-  it("attaches a bounded redacted stderr diagnostic to a timed-out request", async ({ signal }) => {
+  it("fails only a timed-out request, with a bounded redacted stderr diagnostic", async ({
+    signal,
+  }) => {
     const longSecret = "z".repeat(1_200);
     const fixture = await startLifecycleClient("timeout", longSecret);
     try {
@@ -103,13 +105,21 @@ describe("Codex stdio process", () => {
       }
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const request = fixture.client.request("initialize", {}, 100);
-      const rejected = expect(request).rejects.toMatchObject({
+      const rejected = request.then(
+        () => {
+          throw new Error("A request Codex never answered resolved");
+        },
+        (error: unknown) => error as OpensteerError,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      const error = await rejected;
+      expect(error).toMatchObject({
         code: "timeout",
         details: { method: "initialize", timeoutMs: 100 },
       });
-      await vi.advanceTimersByTimeAsync(100);
-      await rejected;
-      const error = await fixture.failure.promise;
+      // Other conversations on the process go on; the owner hears of it.
+      expect(fixture.client.failed).toBe(false);
+      expect(fixture.timedOut).toEqual(["initialize"]);
       const stderr = String(error.details?.stderr);
       expect(stderr).toContain("Codex provider startup blocked");
       expect(stderr).toContain("Bearer [REDACTED]");
@@ -120,7 +130,6 @@ describe("Codex stdio process", () => {
       expect(stderr).not.toContain("z".repeat(20));
       expect(stderr).not.toContain("HEAD-");
       expect(Buffer.byteLength(stderr, "utf8")).toBeLessThanOrEqual(1_024);
-      expect(fixture.client.failed).toBe(true);
     } finally {
       vi.useRealTimers();
       await fixture.close();
@@ -165,10 +174,12 @@ async function startLifecycleClient(
   readonly close: () => Promise<void>;
   readonly failure: ReturnType<typeof deferred<OpensteerError>>;
   readonly lifetime: AbortController;
+  readonly timedOut: string[];
 }> {
   const directory = await mkdtemp(join(tmpdir(), "opensteer-codex-process-test-"));
   const failure = deferred<OpensteerError>();
   const lifetime = new AbortController();
+  const timedOut: string[] = [];
   const client = await CodexStdioClient.start({
     config: CodexHarnessConfigSchema.parse({
       maxStderrBytes: 1_024,
@@ -183,12 +194,16 @@ async function startLifecycleClient(
     launch: { arguments: [lifecycleServer], executable: process.execPath },
     onFailure: failure.resolve,
     onMethodMessage: () => undefined,
+    onRequestTimeout: (method) => {
+      timedOut.push(method);
+    },
     signal: lifetime.signal,
   });
   return {
     client,
     failure,
     lifetime,
+    timedOut,
     close: async () => {
       lifetime.abort();
       await client.close(0);

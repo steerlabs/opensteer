@@ -621,6 +621,28 @@ describe("HarnessRegistry instance reconciliation", () => {
     expect(closed).toContain(secondId);
   });
 
+  it("recycles only an adapter that exists and hands each adapter the Runner's log", async () => {
+    const log = vi.fn();
+    const registry = new HarnessRegistry({ log });
+    const recycle = vi.fn();
+    const create = vi.fn<HarnessDriver["create"]>(async ({ instanceId }) => ({
+      ...adapter(instanceId, () => undefined),
+      recycle,
+    }));
+    registry.registerDriver(driver({ create }));
+    registry.configureInstance(definition);
+
+    registry.recycle(definition.id);
+    await nextTask();
+    expect(create).not.toHaveBeenCalled();
+
+    await registry.adapter(definition.id);
+    expect(create.mock.calls[0]?.[0].log).toBe(log);
+    registry.recycle(definition.id);
+    await vi.waitFor(() => expect(recycle).toHaveBeenCalledTimes(1), { timeout: 1_000 });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
   it("isolates one refused definition instead of poisoning the rest of the set", async () => {
     const registry = new HarnessRegistry();
     registry.registerDriver(

@@ -607,6 +607,11 @@ describe("RunnerRuntime", () => {
         },
         executable: "bwrap",
       });
+      // A sandbox wraps each Run's own engine process, so none is shared.
+      expect(context?.sharedEngine).toBeUndefined();
+      expect(context?.commandEnvironment[executionScopeVariable]).toBe(
+        wrapped?.environment[executionScopeVariable],
+      );
     } finally {
       await runtime.close();
     }
@@ -3016,11 +3021,13 @@ describe("RunnerRuntime", () => {
         return session;
       });
       const signedIn = deferred<{ status: "ready" }>();
+      const recycled: string[] = [];
       registry.registerDriver({
         ...catalogDriver(driver.kind),
         create: async (context) => ({
           ...(await driver.create(context)),
           capabilities: { ...driver.capabilities, warmReuse: true },
+          recycle: () => void recycled.push(context.instanceId),
         }),
         authenticate: async () =>
           change === "immediate-signin"
@@ -3042,7 +3049,7 @@ describe("RunnerRuntime", () => {
         dataDirectory: testPrivateStateRoot,
         listProcesses: async () => [],
       });
-      vi.spyOn(containment, "isSingleTree").mockResolvedValue(true);
+      vi.spyOn(containment, "liveRoots").mockResolvedValue(1);
       const put = vi.spyOn(WarmEnginePool.prototype, "put");
       const runtime = configuredRuntime({ environmentId, registry, containment });
       const first = executeCommand(environmentId, driver.kind);
@@ -3070,6 +3077,8 @@ describe("RunnerRuntime", () => {
             signedIn.resolve({ status: "ready" });
           }
           await vi.waitFor(() => expect(sessions[0]!.stop).toHaveBeenCalledTimes(1));
+          // A new sign-in serves no session from an engine process started before it.
+          expect(recycled).toEqual([account.id]);
         } else if (change === "logout") {
           await runtime.handleHarnessAuthentication({ action: "logout", harness: account });
           expect(sessions[0]!.stop).toHaveBeenCalledTimes(1);
@@ -3086,6 +3095,7 @@ describe("RunnerRuntime", () => {
           expect(sessions[0]!.stop).toHaveBeenCalledTimes(change === "unchanged" ? 0 : 1);
         }
         expect(sessions[1]!.stop).not.toHaveBeenCalled();
+        if (!change.endsWith("signin")) expect(recycled).toEqual([]);
       } finally {
         signedIn.resolve({ status: "ready" });
         await runtime.close();
@@ -3093,6 +3103,93 @@ describe("RunnerRuntime", () => {
       }
     },
   );
+
+  it("keeps a shared-engine session warm only when its Run left nothing running, and retires one that became unusable", async () => {
+    const registry = new HarnessRegistry();
+    const environmentId = createId("environment");
+    const sessions: (FakeHarnessSession & { usable: boolean })[] = [];
+    const driver = new FakeHarnessDriver("warm-shared-test", () => {
+      const session = Object.assign(new FakeHarnessSession(), {
+        engineProcess: "shared" as const,
+        releaseForReuse: async () => true,
+        usable: true,
+      });
+      vi.spyOn(session, "stop");
+      sessions.push(session);
+      return session;
+    });
+    registry.registerDriver({
+      ...catalogDriver(driver.kind),
+      create: async (context) => ({
+        ...(await driver.create(context)),
+        capabilities: { ...driver.capabilities, warmReuse: true },
+      }),
+    });
+    const containment = new ExecutionContainment({
+      bootId: "warm-shared-test",
+      dataDirectory: testPrivateStateRoot,
+      listProcesses: async () => [],
+    });
+    const liveRoots = vi.spyOn(containment, "liveRoots");
+    const put = vi.spyOn(WarmEnginePool.prototype, "put");
+    const runtime = configuredRuntime({ environmentId, registry, containment });
+    const bound: RunnerOperationalReport[] = [];
+    const sink: RunnerMessageSink = {
+      send: async (message) => {
+        if (message.type === "runner.session-bound") bound.push(message);
+      },
+    };
+    let command = executeCommand(environmentId, driver.kind);
+    const run = async () => {
+      await runtime.handleCommand(command, sink);
+      await waitUntil(() => runtime.activeRunIds().length === 0);
+      command = RunnerCommandSchema.parse({
+        ...command,
+        commandId: createId("command"),
+        context: {
+          ...command.context,
+          bindingGeneration: command.context.bindingGeneration + 1,
+          providerSessionReference: "fake-provider-session",
+          runId: createId("run"),
+        },
+      }) as Extract<RunnerCommand, { readonly type: "run.execute" }>;
+    };
+    try {
+      await reconcile(registry, command);
+      // Nothing of the Run lives on beside the shared engine: it is kept.
+      await run();
+      expect(put).toHaveBeenCalledTimes(1);
+      const warmScope = liveRoots.mock.calls[0]![0];
+      expect(driver.contexts[0]?.commandEnvironment[executionScopeVariable]).toBe(
+        containment.scope(warmScope),
+      );
+
+      // One live process tree is a command the Run left behind: the engine ends.
+      liveRoots.mockResolvedValueOnce(1);
+      await run();
+      expect(driver.contexts).toHaveLength(1);
+      expect(sessions[0]!.stop).toHaveBeenCalledTimes(1);
+      expect(put).toHaveBeenCalledTimes(1);
+
+      await run();
+      expect(driver.contexts).toHaveLength(2);
+      expect(put).toHaveBeenCalledTimes(2);
+      // Recycled or failed while it waited: the next Run starts cold.
+      sessions[1]!.usable = false;
+      await run();
+      expect(sessions[1]!.stop).toHaveBeenCalledTimes(1);
+      expect(driver.contexts).toHaveLength(3);
+      expect(bound.map((message) => "engineStart" in message && message.engineStart)).toEqual([
+        "cold",
+        "warm",
+        "cold",
+        "cold",
+      ]);
+    } finally {
+      await runtime.close();
+      put.mockRestore();
+    }
+  });
 
   it("cancels provider initialization before a sign-in challenge exists", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-authentication-startup-"));
@@ -3600,6 +3697,32 @@ describe("RunnerRuntime", () => {
       testBrowserHarnessExecutable,
     );
     expect(driver.context?.environment.PATH).toBe(process.env.PATH);
+    expect(driver.context?.environment[executionScopeVariable]).toBeUndefined();
+    // Every model command sees the Run's own variables, its scope among them;
+    // PATH only when machine access changed it.
+    expect(driver.context?.commandEnvironment).toEqual({
+      OPENSTEER_AGENT_WORKSPACE: "/runner/runs/test/workspace",
+      OPENSTEER_BROWSER_CDP_WS: driver.context?.environment.OPENSTEER_BROWSER_CDP_WS,
+      OPENSTEER_BROWSER_HARNESS: testBrowserHarnessExecutable,
+      [executionScopeVariable]: expect.stringMatching(
+        new RegExp(`\\.${command.context.runId}-${command.context.bindingGeneration}$`, "u"),
+      ),
+    });
+    // Without a sandbox the engine may be shared: nothing of the Run is in its launch.
+    const sharedEngine = driver.context?.sharedEngine;
+    expect(sharedEngine?.workingDirectory).toBe(
+      join(testPrivateStateRoot, "engines", command.context.harnessInstanceId),
+    );
+    expect(sharedEngine?.environment.PATH).toBe(process.env.PATH);
+    expect(sharedEngine?.environment.OPENSTEER_BROWSER_CDP_WS).toBeUndefined();
+    expect(
+      sharedEngine?.wrapProcessLaunch({
+        args: [],
+        cwd: sharedEngine.workingDirectory,
+        environment: {},
+        executable: "/opt/engine",
+      }).environment[executionScopeVariable],
+    ).toMatch(new RegExp(`\\.engine-${command.context.harnessInstanceId}$`, "u"));
     expect(messages[0]).toMatchObject({
       bindingGeneration: command.context.bindingGeneration,
       type: "runner.session-bound",
@@ -3668,7 +3791,8 @@ describe("RunnerRuntime", () => {
       const registry = new HarnessRegistry();
       registry.registerDriver(driver);
       const environmentId = createId("environment");
-      const runtime = configuredRuntime({ deploymentShape, environmentId, registry });
+      const logger = { error: vi.fn(), info: vi.fn() };
+      const runtime = configuredRuntime({ deploymentShape, environmentId, logger, registry });
       const command = resumedExecuteCommand(executeCommand(environmentId), requested);
       const messages: RunnerOperationalReport[] = [];
 
@@ -3690,6 +3814,20 @@ describe("RunnerRuntime", () => {
         expect(failures[0]).toMatchObject({
           event: { data: { message: "AI engine resumed a different provider session" } },
         });
+        // A failed Run leaves one line in the Runner's log, with nothing of its inputs.
+        expect(logger.error.mock.calls.filter(([message]) => message === "run.failed")).toEqual([
+          [
+            "run.failed",
+            {
+              code: "runner_execution_error",
+              driverKind: command.context.harness.driverKind,
+              harnessInstanceId: command.context.harnessInstanceId,
+              message: "AI engine resumed a different provider session",
+              runId: command.context.runId,
+              threadId: command.context.threadId,
+            },
+          ],
+        ]);
       } finally {
         await runtime.close();
       }

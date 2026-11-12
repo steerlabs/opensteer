@@ -1,4 +1,5 @@
 import { createCaptureRecordWriter } from "./capture-records.mjs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -71,7 +72,47 @@ let captureRunId = null;
 const lines = readline.createInterface({ input: process.stdin });
 let initialized = false;
 let modelListRequests = 0;
-let threadId = "codex-thread-1";
+/** Notification methods the client opted out of at initialize; Codex never sends them. */
+let optedOutNotifications = new Set();
+/**
+ * One server serves many threads, as Codex does: each thread keeps its own
+ * turn, effective settings and scenario state, and the work a request starts
+ * keeps the thread it was started for across timers and promises.
+ */
+const threads = new Map();
+/** A recorded child's spawning thread, by the thread whose item first names it. */
+const recordedParents = new Map();
+const threadScope = new AsyncLocalStorage();
+/** The id a root thread/start answers with when `--unique-threads` is off. */
+let reusedThreadId = "codex-thread-1";
+/** The thread started or resumed last; requests naming no thread read its config. */
+let lastThread = newThread("codex-thread-1");
+/** Server requests awaiting an answer, by wire id: the thread that asked and its own id. */
+const serverRequests = new Map();
+let childThreads = 0;
+let rootTurnStarts = 0;
+// Opt-in: the process dies abruptly once this many root turns have started
+// (`--exit-after-turn-start` alone means the first).
+const exitAfterTurnStart = (() => {
+  const argument = process.argv.find(
+    (value) => value === "--exit-after-turn-start" || value.startsWith("--exit-after-turn-start="),
+  );
+  if (!argument) return undefined;
+  return Number(argument.split("=")[1] ?? 1);
+})();
+// Opt-in: notifications Codex sends about the whole account, not a thread, during turns.
+const emitUnscoped = process.argv.includes("--emit-unscoped");
+// Opt-in: unsubscribing leaves the thread loaded, and it never closes.
+const neverClose = process.argv.includes("--never-close");
+// Opt-in: the first resume after an unsubscribe meets the thread still closing.
+const closingOnce = process.argv.includes("--closing-once");
+let closingOnceUsed = false;
+// Opt-in: each root turn starts a background terminal of its thread.
+const backgroundTerminal = process.argv.includes("--background-terminal");
+const diffBytes = Number(
+  process.argv.find((argument) => argument.startsWith("--diff-bytes="))?.slice(13) ??
+    9 * 1024 * 1024,
+);
 const ephemeralThreads = new Set();
 /** The model each naming thread was started with. */
 const ephemeralModels = new Map();
@@ -84,14 +125,9 @@ const backgroundModels = process.argv.includes("--background-models");
 const titleScriptPath = process.argv
   .find((argument) => argument.startsWith("--title-script="))
   ?.slice("--title-script=".length);
-let threadConfig = {};
-/** The MCP client an `mcp-session` engine keeps across its turns. */
-let sessionTools;
 let extraSkillRoots = [];
-let turnId = "codex-turn-1";
 let runScopedApprovalCalls = 0;
 const voiceNoteTurn = "voice-note-turn";
-let voiceNoteTurnOpen = false;
 // Opt-in: each root turn gets an id of its own, as Codex mints them.
 const uniqueTurns = process.argv.includes("--unique-turns");
 // Answers model/list this late, as an engine still starting up does.
@@ -101,7 +137,6 @@ const modelListDelayMs = Number(
     ?.slice("--model-list-delay-ms=".length) ?? 0,
 );
 const delayedModelLists = new WeakSet();
-const resolvedNativeChildRequests = new Set();
 // Codex's own default is a login shell; only the flag Opensteer passes turns it off.
 const allowLoginShell = !process.argv.includes("allow_login_shell=false");
 const shellEnvironmentPolicy = {
@@ -125,10 +160,19 @@ const singleResponse = process.argv.includes("--single-response");
 // Opt-in: the reading Codex restates when it resumes a thread arrives only
 // once the next turn has been asked for, before that turn starts.
 const deferResumeRestatement = process.argv.includes("--defer-resume-restatement");
-/** A resumed thread's restatement, held for the next turn when deferred. */
-let pendingRestatement;
 // Opt-in: a response's reading whose cached input exceeds its input.
 const impossibleUsage = process.argv.includes("--impossible-usage");
+/** A command that starts a detached child without its own environment, says its pid, and runs on. */
+const unmarkedChildCommand = `
+const child = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  detached: true,
+  env: { PATH: process.env.PATH ?? "" },
+  stdio: "ignore",
+});
+child.unref();
+process.stdout.write(child.pid + "\\n");
+setInterval(() => {}, 1000);
+`;
 // Opt-in: cleaning this thread's background terminals fails.
 const failCleanThread = process.argv
   .find((argument) => argument.startsWith("--fail-clean="))
@@ -147,8 +191,23 @@ if (scenario === "ignore-termination") {
 lines.on("line", (line) => {
   const message = JSON.parse(line);
   capture(message);
-  if (typeof message.method === "string") handleClientMethod(message);
-  else handleServerResponse(message);
+  if (typeof message.method === "string") {
+    const thread = requestThread(message);
+    if (thread) threadScope.run(thread, () => handleClientMethod(message));
+    else handleClientMethod(message);
+    return;
+  }
+  const request = serverRequests.get(message.id);
+  serverRequests.delete(message.id);
+  threadScope.run(request?.thread ?? lastThread, () =>
+    handleServerResponse(request ? { ...message, id: request.id } : message),
+  );
+});
+
+// A background terminal belongs to its thread's engine and ends with it.
+process.on("exit", () => {
+  for (const thread of threads.values())
+    for (const terminal of thread.terminals) terminal.kill("SIGKILL");
 });
 
 lines.on("close", () => {
@@ -158,6 +217,7 @@ lines.on("close", () => {
 });
 
 function handleClientMethod(message) {
+  const { id: threadId, turnId } = current();
   switch (message.method) {
     case "initialize":
       capture({
@@ -184,9 +244,10 @@ function handleClientMethod(message) {
           agentTools: Boolean(process.env.OPENSTEER_AGENT_TOOLS_TOKEN),
         },
       });
-      // Opt-in, for journeys that exercise exactly the token an engine holds.
-      if (process.argv.includes("--capture-tokens"))
-        capture({ fakeOpensteerTokens: { agentTools: process.env.OPENSTEER_AGENT_TOOLS_TOKEN } });
+      capture({ fakeInitializeCapabilities: message.params?.capabilities ?? null });
+      optedOutNotifications = new Set(
+        message.params?.capabilities?.optOutNotificationMethods ?? [],
+      );
       if (scenario === "handshake-timeout") return;
       if (scenario === "cold-preparation") {
         const readyPath = join(process.env.CODEX_HOME, "prepared");
@@ -542,81 +603,69 @@ function handleClientMethod(message) {
         },
       });
       break;
-    case "thread/start":
+    case "thread/start": {
       requireInitialized(message);
+      let threadId = reusedThreadId;
       if (message.params.ephemeral) {
         threadId = `codex-title-${randomUUID()}`;
         ephemeralThreads.add(threadId);
         ephemeralModels.set(threadId, message.params.model);
       } else if (process.argv.includes("--unique-threads"))
         threadId = `codex-thread-${randomUUID()}`;
-      captureRunId = threadId;
-      threadConfig = message.params.config ?? {};
-      if (process.env.FAKE_CODEX_TRUST_WRITE_PATH && message.params.sandbox !== "read-only") {
-        appendFileSync(process.env.FAKE_CODEX_TRUST_WRITE_PATH, "mutated\n");
-      }
-      send({ method: "thread/started", params: { thread: { id: threadId } } });
-      send({
-        id: message.id,
-        result: {
-          thread: { id: threadId },
-          ...(message.params.ephemeral ? { sandbox: { type: "readOnly" } } : {}),
-        },
+      const thread = loadThread(threadId, message);
+      threadScope.run(thread, () => {
+        if (process.env.FAKE_CODEX_TRUST_WRITE_PATH && message.params.sandbox !== "read-only") {
+          appendFileSync(process.env.FAKE_CODEX_TRUST_WRITE_PATH, "mutated\n");
+        }
+        send({ method: "thread/started", params: { thread: { id: threadId } } });
+        send({
+          id: message.id,
+          result: {
+            thread: { id: threadId },
+            ...(message.params.ephemeral ? { sandbox: { type: "readOnly" } } : {}),
+          },
+        });
       });
       break;
-    case "thread/resume":
+    }
+    case "thread/resume": {
       requireInitialized(message);
-      threadId = message.params.threadId;
-      captureRunId = threadId;
-      threadConfig = message.params.config ?? {};
-      // Codex keeps a thread's reading with its history, and on resuming it
-      // restates that reading, naming the thread's last turn, before any new
-      // turn (verified against Codex 0.156.0).
-      const stored = tokenUsage ? storedUsage()[threadId] : undefined;
-      if (stored) usageReadings.set(threadId, stored.reading);
-      const restate = stored
-        ? () => sendUsage("restated", threadId, stored.turnId, stored.reading)
-        : undefined;
-      if (scenario === "resume-missing") {
-        send({ id: message.id, error: { code: -32600, message: "no rollout found for thread" } });
+      const threadId = message.params.threadId;
+      reusedThreadId = threadId;
+      const closing = threads.get(threadId)?.closing;
+      if (closing === "held") {
+        // Codex is still unloading the thread an unsubscribe left; it closes shortly.
+        closingOnceUsed = true;
+        send({ id: message.id, error: { code: -32600, message: `thread ${threadId} is closing` } });
+        setTimeout(() => closeThread(threads.get(threadId)), 20);
         break;
       }
-      send({ method: "thread/started", params: { thread: { id: threadId } } });
-      send({
-        id: message.id,
-        result: {
-          thread: {
-            id: scenario === "resume-wrong-thread" ? "different-thread" : threadId,
-            turns:
-              scenario === "resume-large-history" && !message.params.excludeTurns
-                ? [
-                    {
-                      id: "historical-turn",
-                      status: "completed",
-                      items: [
-                        { id: "compaction", type: "contextCompaction" },
-                        ...Array.from({ length: 144 }, (_, index) => ({
-                          id: `historical-output-${index}`,
-                          type: "mcpToolCall",
-                          result: {
-                            content: [{ type: "text", text: "x".repeat(64 * 1024) }],
-                          },
-                        })),
-                      ],
-                    },
-                  ]
-                : [],
-          },
-        },
-      });
-      if (deferResumeRestatement) pendingRestatement = restate;
-      else restate?.();
+      if (closing) closeThread(threads.get(threadId));
+      threadScope.run(loadThread(threadId, message), () => resumeThread(message, threadId));
       break;
+    }
+    case "thread/unsubscribe": {
+      const thread = threads.get(message.params.threadId);
+      if (!thread?.loaded) {
+        send({ id: message.id, result: { status: "notLoaded" } });
+        break;
+      }
+      if (!thread.subscribed) {
+        send({ id: message.id, result: { status: "notSubscribed" } });
+        break;
+      }
+      thread.subscribed = false;
+      send({ id: message.id, result: { status: "unsubscribed" } });
+      if (neverClose) break;
+      if (closingOnce && !closingOnceUsed) thread.closing = "held";
+      else thread.closing = setTimeout(() => closeThread(thread), 0);
+      break;
+    }
     case "mcpServerStatus/list":
       requireInitialized(message);
       const ambientNames = scenario === "ambient-extensions" ? ["company.docs", "github"] : [];
       const managedNames = ["opensteer", "opensteer-direct"].filter(
-        (name) => threadConfig[`mcp_servers.${name}.enabled`] === true,
+        (name) => configValue(current().config, `mcp_servers.${name}.enabled`) === true,
       );
       send({
         id: message.id,
@@ -629,7 +678,9 @@ function handleClientMethod(message) {
               serverInfo: { name, version: "1.0.0" },
               tools: Object.fromEntries(
                 [
-                  ...(threadConfig[`mcp_servers.${name}.enabled_tools`] ?? []).filter(
+                  ...(
+                    configValue(current().config, `mcp_servers.${name}.enabled_tools`) ?? []
+                  ).filter(
                     (tool) =>
                       (name !== "opensteer" ||
                         ((scenario !== "previous-host" || tool !== "computer") &&
@@ -662,6 +713,13 @@ function handleClientMethod(message) {
       });
       break;
     case "turn/start":
+      if (!current().loaded) {
+        send({
+          id: message.id,
+          error: { code: -32600, message: `thread not found: ${message.params.threadId}` },
+        });
+        break;
+      }
       if (ephemeralThreads.has(message.params.threadId)) {
         handleTitleTurn(message);
         break;
@@ -669,16 +727,30 @@ function handleClientMethod(message) {
       // Opt-in: a command the model started that left the engine's process
       // group, as a daemonizing tool does; its Runner must still end it.
       if (process.argv.includes("--spawn-detached")) {
-        // `--spawn-unmarked` also starts it with an environment of its own,
-        // which drops the marker naming the execution it belongs to.
-        const unmarked = process.argv.includes("--spawn-unmarked");
-        const detached = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-          detached: true,
-          ...(unmarked ? { env: { PATH: process.env.PATH ?? "" } } : {}),
-          stdio: "ignore",
-        });
-        detached.unref();
-        capture({ fakeDetachedChild: detached.pid });
+        if (process.argv.includes("--spawn-unmarked")) {
+          // The model's still-running command, which carries its thread's
+          // environment, starts the child with an environment of its own: it
+          // drops the marker naming the execution it belongs to.
+          const command = spawn(process.execPath, ["-e", unmarkedChildCommand], {
+            env: threadEnvironment(),
+            stdio: ["ignore", "pipe", "ignore"],
+          });
+          const thread = current();
+          thread.terminals.add(command);
+          readline
+            .createInterface({ input: command.stdout })
+            .once("line", (pid) =>
+              threadScope.run(thread, () => capture({ fakeDetachedChild: Number(pid) })),
+            );
+        } else {
+          const detached = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+            detached: true,
+            env: threadEnvironment(),
+            stdio: "ignore",
+          });
+          detached.unref();
+          capture({ fakeDetachedChild: detached.pid });
+        }
       }
       handleTurnStart(message);
       break;
@@ -691,6 +763,14 @@ function handleClientMethod(message) {
         send({ id: message.id, error: { code: -32603, message: "terminal cleanup failed" } });
         break;
       }
+      // Only the named thread's terminals end; a sibling thread's keep running.
+      for (const terminal of threads.get(message.params.threadId)?.terminals ?? []) {
+        capture({
+          fakeBackgroundTerminalEnded: { pid: terminal.pid, threadId: message.params.threadId },
+        });
+        terminal.kill("SIGTERM");
+      }
+      threads.get(message.params.threadId)?.terminals.clear();
       send({ id: message.id, result: {} });
       break;
     case "thread/realtime/start":
@@ -750,7 +830,7 @@ function handleClientMethod(message) {
         if (scenario === "voice-note") {
           send({ method: "turn/started", params: { threadId, turn: { id: voiceNoteTurn } } });
           sendVoiceFinal(voiceNoteTurn, "the reply");
-          voiceNoteTurnOpen = true;
+          current().voiceNoteTurnOpen = true;
           break;
         }
         send({ method: "turn/started", params: { threadId, turn: { id: "voice-handoff" } } });
@@ -759,13 +839,13 @@ function handleClientMethod(message) {
     case "thread/inject_items":
       send({ id: message.id, result: {} });
       // Real Codex samples again for anything added to a running turn; a note draws an empty reply.
-      if (voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
+      if (current().voiceNoteTurnOpen) sendVoiceFinal(voiceNoteTurn, "");
       break;
     case "thread/realtime/appendText":
     case "thread/realtime/appendSpeech":
       send({ id: message.id, result: {} });
-      if (voiceNoteTurnOpen && message.params.text === "finish the turn") {
-        voiceNoteTurnOpen = false;
+      if (current().voiceNoteTurnOpen && message.params.text === "finish the turn") {
+        current().voiceNoteTurnOpen = false;
         send({
           method: "turn/completed",
           params: { threadId, turn: { id: voiceNoteTurn, status: "completed" } },
@@ -776,22 +856,30 @@ function handleClientMethod(message) {
       send({ id: message.id, result: {} });
       send({ method: "thread/realtime/closed", params: { threadId } });
       break;
-    case "thread/read":
+    case "thread/read": {
+      // Codex states a spawned child's parent; a child this fake only replays
+      // belongs to the thread that named it, or to the root that ran it.
+      const id = message.params.threadId;
+      const known = threads.get(id);
+      const parentThreadId = known
+        ? (known.parent?.id ?? null)
+        : (recordedParents.get(id) ?? (id.startsWith("codex-child-thread") ? current().id : null));
       send({
         id: message.id,
         result: {
-          thread: { id: message.params.threadId, model: "gpt-6-luna", reasoningEffort: "high" },
+          thread: { id, model: "gpt-6-luna", parentThreadId, reasoningEffort: "high" },
         },
       });
       break;
+    }
     case "turn/interrupt":
       send({ id: message.id, result: {} });
       // A child agent's thread is interrupted on its own, as Codex requires.
       if (message.params.threadId !== threadId) {
         capture({ childInterrupted: message.params.threadId });
         sendChildTurnCompleted(message.params.threadId, message.params.turnId, "interrupted");
-        const starting = followUpStart;
-        followUpStart = undefined;
+        const starting = current().followUpStart;
+        current().followUpStart = undefined;
         if (starting) setTimeout(starting, 50);
         break;
       }
@@ -807,6 +895,249 @@ function handleClientMethod(message) {
         error: { code: -32601, message: `Unexpected client method ${message.method}` },
       });
   }
+}
+
+/**
+ * Loads `threadId` with this request's settings. A thread still loaded keeps
+ * the settings it was loaded with and ignores new overrides, as Codex does;
+ * thread/start always applies its own.
+ */
+function loadThread(threadId, message) {
+  const known = threads.get(threadId);
+  const thread = known ?? newThread(threadId);
+  threads.set(threadId, thread);
+  const keep = message.method === "thread/resume" && known?.loaded;
+  if (!keep) {
+    const { config, history: _history, threadId: _threadId, ...settings } = message.params;
+    thread.config = config ?? {};
+    thread.settings = settings;
+  }
+  thread.loaded = true;
+  thread.subscribed = true;
+  lastThread = thread;
+  if (!message.params.ephemeral) reusedThreadId = threadId;
+  captureRunId = threadId;
+  // Opt-in, for journeys that exercise exactly the token a conversation holds.
+  const agentTools = process.argv.includes("--capture-tokens") ? opensteerToken(thread) : undefined;
+  if (agentTools)
+    threadScope.run(thread, () => capture({ fakeOpensteerTokens: { agentTools, threadId } }));
+  threadScope.run(thread, () =>
+    capture({
+      fakeThreadConfig: {
+        method: message.method,
+        threadId,
+        keptLoadedConfig: Boolean(keep),
+        config: thread.config,
+        settings: thread.settings,
+        environment: Object.fromEntries(
+          Object.entries(shellEnvironmentSet(thread.config)).map(([name, value]) => [
+            name,
+            String(value),
+          ]),
+        ),
+      },
+    }),
+  );
+  return thread;
+}
+
+/** Unloads a thread an unsubscribe left, ending its terminals and MCP sessions. */
+function closeThread(thread) {
+  if (!thread?.closing) return;
+  if (typeof thread.closing !== "string") clearTimeout(thread.closing);
+  thread.closing = undefined;
+  thread.loaded = false;
+  thread.sessionTools = undefined;
+  for (const terminal of thread.terminals) terminal.kill("SIGTERM");
+  thread.terminals.clear();
+  send({ method: "thread/closed", params: { threadId: thread.id } });
+}
+
+function resumeThread(message, threadId) {
+  // Codex keeps a thread's reading with its history, and on resuming it
+  // restates that reading, naming the thread's last turn, before any new
+  // turn (verified against Codex 0.156.0).
+  const thread = current();
+  const stored = tokenUsage ? storedUsage()[threadId] : undefined;
+  if (stored) usageReadings.set(threadId, stored.reading);
+  const restate = stored
+    ? () => sendUsage("restated", threadId, stored.turnId, stored.reading)
+    : undefined;
+  if (scenario === "resume-missing") {
+    thread.loaded = false;
+    send({ id: message.id, error: { code: -32600, message: "no rollout found for thread" } });
+    return;
+  }
+  send({ method: "thread/started", params: { thread: { id: threadId } } });
+  send({
+    id: message.id,
+    result: {
+      thread: {
+        id: scenario === "resume-wrong-thread" ? "different-thread" : threadId,
+        turns:
+          scenario === "resume-large-history" && !message.params.excludeTurns
+            ? [
+                {
+                  id: "historical-turn",
+                  status: "completed",
+                  items: [
+                    { id: "compaction", type: "contextCompaction" },
+                    ...Array.from({ length: 144 }, (_, index) => ({
+                      id: `historical-output-${index}`,
+                      type: "mcpToolCall",
+                      result: {
+                        content: [{ type: "text", text: "x".repeat(64 * 1024) }],
+                      },
+                    })),
+                  ],
+                },
+              ]
+            : [],
+      },
+    },
+  });
+  if (deferResumeRestatement) thread.pendingRestatement = restate;
+  else restate?.();
+}
+
+function newThread(id, parent) {
+  return {
+    id,
+    /** The root thread a child agent's thread was spawned from. */
+    parent,
+    turnId: "codex-turn-1",
+    config: {},
+    settings: {},
+    loaded: true,
+    subscribed: true,
+    /** A pending unload: its timer, or "held" under `--closing-once`. */
+    closing: undefined,
+    terminals: new Set(),
+    /** The MCP client the thread keeps across its turns, as Codex keeps one. */
+    sessionTools: undefined,
+    /** A resumed thread's restatement, held for the next turn when deferred. */
+    pendingRestatement: undefined,
+    childThreadId: undefined,
+    announced: false,
+    voiceNoteTurnOpen: false,
+    conversationSteers: [],
+    replayFrames: [],
+    backgroundTurns: 0,
+    backgroundChildDone: false,
+    /** A `--slow-follow-up-start` turn waiting to start. */
+    followUpStart: undefined,
+    resolvedNativeChildRequests: new Set(),
+    /** This thread's server request ids as sent, by the ids its scenario uses. */
+    serverRequestIds: new Map(),
+  };
+}
+
+/** The thread the work at hand belongs to. */
+function current() {
+  return threadScope.getStore() ?? lastThread;
+}
+
+/** The thread a client request names: a child agent's request runs as its root's. */
+function requestThread(message) {
+  const id = message.params?.threadId;
+  if (typeof id !== "string") return undefined;
+  const known = threads.get(id);
+  if (known) return known.parent ?? known;
+  // A turn on a thread this process never loaded still streams under its own id.
+  if (
+    message.method === "turn/start" ||
+    message.method === "turn/steer" ||
+    message.method === "thread/inject_items" ||
+    message.method.startsWith("thread/realtime/")
+  ) {
+    const thread = newThread(id);
+    threads.set(id, thread);
+    return thread;
+  }
+  return undefined;
+}
+
+/** This root thread's subagent: the first one this server spawns is `codex-child-thread-1`. */
+function childThreadOf(thread = current()) {
+  thread.childThreadId ??= `codex-child-thread-${++childThreads}`;
+  const id = thread.childThreadId;
+  if (!threads.has(id)) threads.set(id, newThread(id, thread));
+  return id;
+}
+
+/** Codex announces a spawned child's thread once, before any of its own notifications. */
+function announceChildThread(thread = current()) {
+  const id = childThreadOf(thread);
+  const child = threads.get(id);
+  if (!child.announced) {
+    child.announced = true;
+    send({
+      method: "thread/started",
+      params: {
+        thread: {
+          id,
+          source: { subAgent: { thread_spawn: { parent_thread_id: thread.id, depth: 1 } } },
+        },
+      },
+    });
+  }
+  return id;
+}
+
+/** A config value by its dotted key, whether the config spells it dotted or nested. */
+function configValue(config, key) {
+  if (config === null || typeof config !== "object") return undefined;
+  if (key in config) return config[key];
+  const parts = key.split(".");
+  for (let index = parts.length - 1; index > 0; index -= 1) {
+    const head = parts.slice(0, index).join(".");
+    if (!(head in config)) continue;
+    const value = configValue(config[head], parts.slice(index).join("."));
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
+/** `shell_environment_policy.set`, in either form, plus any `set.<NAME>` keys. */
+function shellEnvironmentSet(config) {
+  const set = configValue(config, "shell_environment_policy.set");
+  const variables = set && typeof set === "object" ? { ...set } : {};
+  for (const [key, value] of Object.entries(config ?? {}))
+    if (key.startsWith("shell_environment_policy.set."))
+      variables[key.slice("shell_environment_policy.set.".length)] = value;
+  return variables;
+}
+
+/** The environment a thread's commands run with: Codex applies `set` after inheriting. */
+function threadEnvironment(thread = current()) {
+  const environment = { ...process.env };
+  for (const [name, value] of Object.entries(shellEnvironmentSet(thread.config)))
+    environment[name] = String(value);
+  return environment;
+}
+
+/** The thread's Opensteer MCP server, reached with the credentials its config names. */
+function opensteerTools(thread = current()) {
+  const server = (property) => configValue(thread.config, `mcp_servers.opensteer.${property}`);
+  const tokenVariable = server("bearer_token_env_var");
+  return mcpClient(
+    server("url"),
+    (tokenVariable ? process.env[tokenVariable] : undefined) ??
+      process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
+    server("http_headers") ?? {},
+  );
+}
+
+/** The bearer token the thread's Opensteer MCP server is reached with, if any. */
+function opensteerToken(thread) {
+  const server = (property) => configValue(thread.config, `mcp_servers.opensteer.${property}`);
+  const header = server("http_headers")?.Authorization;
+  if (typeof header === "string" && header.startsWith("Bearer ")) return header.slice(7);
+  const tokenVariable = server("bearer_token_env_var");
+  return (
+    (tokenVariable ? process.env[tokenVariable] : undefined) ??
+    process.env.OPENSTEER_AGENT_TOOLS_TOKEN
+  );
 }
 
 function discoveredSkills() {
@@ -825,6 +1156,7 @@ function discoveredSkills() {
 
 /** Ephemeral, read-only naming has no tools, children or persisted conversation. */
 function handleTitleTurn(message) {
+  const { id: threadId } = current();
   const id = `codex-title-turn-${randomUUID()}`;
   const model = ephemeralModels.get(threadId);
   const script =
@@ -846,6 +1178,7 @@ function handleTitleTurn(message) {
 }
 
 function answerTitleTurn(id, script) {
+  const { id: threadId } = current();
   if (script.error || process.argv.includes("--title-error")) {
     sendTurnCompleted("failed", { message: script.error ?? "Naming unavailable" }, id);
     return;
@@ -866,10 +1199,13 @@ function answerTitleTurn(id, script) {
 }
 
 function handleTurnStart(message) {
+  const thread = current();
+  const threadId = thread.id;
   capture({ fakeTurn: { pid: process.pid, threadId } });
-  pendingRestatement?.();
-  pendingRestatement = undefined;
-  if (uniqueTurns) turnId = `codex-turn-${randomUUID()}`;
+  thread.pendingRestatement?.();
+  thread.pendingRestatement = undefined;
+  if (uniqueTurns) thread.turnId = `codex-turn-${randomUUID()}`;
+  const turnId = thread.turnId;
   if (scenario === "recovery-held") {
     recoveryHeldTurn(message);
     return;
@@ -884,6 +1220,23 @@ function handleTurnStart(message) {
         .replaceAll("$root", threadId)
         .replaceAll("$turn", turnId),
     );
+    for (const frame of frames) {
+      const item = frame.params?.item;
+      const named =
+        item?.type === "subAgentActivity"
+          ? [item.agentThreadId]
+          : item?.type === "collabAgentToolCall"
+            ? (item.receiverThreadIds ?? [])
+            : [];
+      for (const child of named)
+        if (child && !recordedParents.has(child)) recordedParents.set(child, frame.params.threadId);
+    }
+    // Codex knows every spawned thread's parent; one nothing names was the root's.
+    for (const frame of frames) {
+      const id = frame.params?.threadId;
+      if (typeof id === "string" && id !== threadId && !recordedParents.has(id))
+        recordedParents.set(id, threadId);
+    }
     if (scenario.endsWith("-perturbed")) {
       const activity = frames.findIndex((frame) => frame.params?.item?.type === "subAgentActivity");
       const childStart = frames.findIndex(
@@ -899,7 +1252,7 @@ function handleTurnStart(message) {
       const rootStarted = frames.findIndex((frame) => frame.method === "turn/started");
       if (approval > rootStarted) frames.splice(rootStarted + 1, 0, frames.splice(approval, 1)[0]);
     }
-    replayFrames = frames;
+    current().replayFrames = frames;
     replayNext();
     return;
   }
@@ -916,6 +1269,49 @@ function handleTurnStart(message) {
     params: { threadId, turn: { error: null, id: turnId, items: [], status: "inProgress" } },
   });
   if (restateUsage) restateThreadUsage(threadId, turnId);
+  if (emitUnscoped) {
+    send({
+      method: "account/rateLimits/updated",
+      params: { rateLimits: { limitId: "codex", primary: { usedPercent: 40 } } },
+    });
+    send({ method: "skills/changed", params: {} });
+    send({ method: "configWarning", params: { summary: "Fake config warning", details: null } });
+  }
+  if (backgroundTerminal) {
+    // A command the model left running, as unified exec keeps one per thread.
+    const terminal = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      env: threadEnvironment(thread),
+      stdio: "ignore",
+    });
+    thread.terminals.add(terminal);
+    terminal.once("exit", () => thread.terminals.delete(terminal));
+    capture({ fakeBackgroundTerminal: { pid: terminal.pid, threadId } });
+  }
+  if (exitAfterTurnStart !== undefined && ++rootTurnStarts >= exitAfterTurnStart) {
+    process.stderr.write("fake app-server crashed mid-turn\n");
+    setTimeout(() => process.exit(19), 5);
+    return;
+  }
+  if (scenario === "huge-diff") {
+    // Codex restates the turn's whole diff; an opted-out client never sees it.
+    send({
+      method: "turn/diff/updated",
+      params: { threadId, turnId, diff: "d".repeat(diffBytes) },
+    });
+    finishTurnWith("Diffed.");
+    return;
+  }
+  if (scenario === "malformed-notification") {
+    send({ method: "item/started", params: { threadId, turnId, item: null } });
+    send({ method: "item/completed", params: { threadId, turnId, item: "not an item" } });
+    send({ method: "item/agentMessage/delta", params: null });
+    finishTurnWith("Survived malformed notifications.");
+    return;
+  }
+  if (scenario === "malformed-turn-completed") {
+    send({ method: "turn/completed", params: { threadId, turn: "not a turn" } });
+    return;
+  }
 
   if (scenario === "direct-tools") {
     const item = {
@@ -1132,12 +1528,11 @@ function handleTurnStart(message) {
     // One MCP client for as long as this engine runs, as Codex keeps one: a
     // later turn calls its tools on the session the first turn opened.
     void (async () => {
-      sessionTools ??= await mcpClient(
-        threadConfig["mcp_servers.opensteer.url"],
-        process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-      );
-      const listed = await sessionTools.call("pending_request", { limit: 1 });
-      capture({ fakeMcpCall: { ok: true, pid: process.pid, sessionId: sessionTools.sessionId } });
+      current().sessionTools ??= await opensteerTools();
+      const listed = await current().sessionTools.call("pending_request", { limit: 1 });
+      capture({
+        fakeMcpCall: { ok: true, pid: process.pid, sessionId: current().sessionTools.sessionId },
+      });
       return JSON.stringify({ requests: listed.requests?.length ?? 0 });
     })().then(finishTurnWith, (error) => {
       capture({
@@ -1383,7 +1778,7 @@ function handleTurnStart(message) {
     sendSubagentActivity("spawn-1", "started");
     send({
       method: "turn/started",
-      params: { threadId: childThreadId, turn: childTurn("child-turn-1", "inProgress") },
+      params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
     });
     sendChildItem("item/completed", {
       content: [{ text: "Look up the release notes", type: "text" }],
@@ -1397,7 +1792,7 @@ function handleTurnStart(message) {
       status: "inProgress",
       type: "commandExecution",
     });
-    sendResponseUsage("response", childThreadId, "child-turn-1", responseUsage.childRuns);
+    sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childRuns);
     if (scenario === "subagents") sendChildApproval();
     // `subagents-hold` leaves the child working until it is interrupted.
     return;
@@ -1578,9 +1973,8 @@ function handleTurnStart(message) {
   });
 }
 
-const conversationSteers = [];
-
 function handleTurnSteer(message) {
+  const { id: threadId, turnId } = current();
   if (scenario === "conversation") {
     // Every message steered in is kept; one without `[hold]` ends the turn,
     // which then answers all of them in the order they arrived.
@@ -1588,7 +1982,7 @@ function handleTurnSteer(message) {
       .filter((item) => item.type === "text")
       .map((item) => item.text)
       .join("\n");
-    conversationSteers.push(text);
+    current().conversationSteers.push(text);
     send({ id: message.id, result: { turnId } });
     if (text.includes("[hold]")) return;
     send({
@@ -1609,14 +2003,14 @@ function handleTurnSteer(message) {
         item: {
           id: `conversation-handled-${randomUUID()}`,
           phase: "final_answer",
-          text: `Handled ${conversationSteers.length}: ${conversationSteers.join(" | ")}`,
+          text: `Handled ${current().conversationSteers.length}: ${current().conversationSteers.join(" | ")}`,
           type: "agentMessage",
         },
         threadId,
         turnId,
       },
     });
-    conversationSteers.length = 0;
+    current().conversationSteers.length = 0;
     sendTurnCompleted("completed");
     return;
   }
@@ -1665,6 +2059,7 @@ function handleTurnSteer(message) {
  * which messages reached the same turn.
  */
 function conversationTurn(input) {
+  const { id: threadId, turnId } = current();
   const texts = input.filter((item) => item.type === "text").map((item) => item.text);
   const joined = texts.join("\n");
   if (joined.includes("[approve]")) {
@@ -1716,9 +2111,8 @@ function conversationTurn(input) {
   sendTurnCompleted("completed");
 }
 
-const childThreadId = "codex-child-thread-1";
-
 function sendVoiceFinal(turnId, text) {
+  const { id: threadId } = current();
   send({
     method: "item/completed",
     params: {
@@ -1734,9 +2128,10 @@ function childTurn(id, status) {
 }
 
 function sendSubagentActivity(id, kind) {
+  const { id: threadId, turnId } = current();
   const item = {
     agentPath: "/root/researcher",
-    agentThreadId: childThreadId,
+    agentThreadId: childThreadOf(),
     id,
     kind,
     type: "subAgentActivity",
@@ -1746,7 +2141,7 @@ function sendSubagentActivity(id, kind) {
 }
 
 function sendChildItem(method, item, childTurnId = "child-turn-1") {
-  send({ method, params: { item, threadId: childThreadId, turnId: childTurnId } });
+  send({ method, params: { item, threadId: childThreadOf(), turnId: childTurnId } });
 }
 
 function sendChildApproval() {
@@ -1757,7 +2152,7 @@ function sendChildApproval() {
       command: "cat NOTES.md",
       itemId: "child-command-1",
       reason: "Read the release notes",
-      threadId: childThreadId,
+      threadId: childThreadOf(),
       turnId: "child-turn-1",
     },
   });
@@ -1772,6 +2167,7 @@ function sendChildTurnCompleted(childThread, childTurnId, status) {
 
 /** The child finishes, is followed up on as a new invocation, and the root answers. */
 function finishSubagents() {
+  const { id: threadId, turnId } = current();
   sendChildItem("item/completed", {
     aggregatedOutput: "v2 ships Friday",
     command: "cat NOTES.md",
@@ -1785,20 +2181,20 @@ function finishSubagents() {
     text: "The release notes say v2 ships Friday.",
     type: "agentMessage",
   });
-  sendResponseUsage("response", childThreadId, "child-turn-1", responseUsage.childAnswers);
-  sendChildTurnCompleted(childThreadId, "child-turn-1", "completed");
+  sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childAnswers);
+  sendChildTurnCompleted(childThreadOf(), "child-turn-1", "completed");
   sendSubagentActivity("followup-1", "interacted");
   send({
     method: "turn/started",
-    params: { threadId: childThreadId, turn: childTurn("child-turn-2", "inProgress") },
+    params: { threadId: childThreadOf(), turn: childTurn("child-turn-2", "inProgress") },
   });
   sendChildItem(
     "item/completed",
     { id: "child-answer-2", text: "Confirmed: Friday.", type: "agentMessage" },
     "child-turn-2",
   );
-  sendResponseUsage("response", childThreadId, "child-turn-2", responseUsage.childConfirms);
-  sendChildTurnCompleted(childThreadId, "child-turn-2", "completed");
+  sendResponseUsage("response", childThreadOf(), "child-turn-2", responseUsage.childConfirms);
+  sendChildTurnCompleted(childThreadOf(), "child-turn-2", "completed");
   sendResponseUsage("response", threadId, turnId, responseUsage.rootAnswers);
   send({
     method: "item/completed",
@@ -1816,16 +2212,16 @@ function finishSubagents() {
   sendTurnCompleted("completed");
 }
 
-let replayFrames = [];
 function replayNext() {
-  while (replayFrames.length) {
-    const frame = replayFrames.shift();
+  while (current().replayFrames.length) {
+    const frame = current().replayFrames.shift();
     send(frame);
     if (frame.id !== undefined) return;
   }
 }
 
 function handleServerResponse(message) {
+  const { id: threadId, turnId } = current();
   if (scenario.startsWith("recorded-")) {
     replayNext();
     return;
@@ -1867,8 +2263,8 @@ function handleServerResponse(message) {
     return;
   }
   if (message.id === "root-approval-rpc" || message.id === "child-approval-rpc") {
-    resolvedNativeChildRequests.add(message.id);
-    if (resolvedNativeChildRequests.size === 2) sendTurnCompleted("completed");
+    current().resolvedNativeChildRequests.add(message.id);
+    if (current().resolvedNativeChildRequests.size === 2) sendTurnCompleted("completed");
     return;
   }
 
@@ -2058,6 +2454,7 @@ function longStreamDelta(messageIndex, index) {
  * stops after its first answer has begun and waits for the release file.
  */
 async function longStreamTurn(held) {
+  const { id: threadId, turnId } = current();
   for (let message = 0; message < longStreamMessages; message += 1) {
     const reasoningId = `long-reasoning-${message}`;
     send({
@@ -2154,6 +2551,7 @@ async function longStreamTurn(held) {
 }
 
 async function durableStreamUntilReleased() {
+  const { id: threadId, turnId } = current();
   if (!releasePath) throw new Error("The sibling race needs a release file");
   for (let index = 0; index < 2; index += 1) {
     if (index === 1) await waitForRelease(`${releasePath}.sibling`);
@@ -2216,11 +2614,8 @@ async function notificationsTurn(input, turnThreadId, turnTurnId) {
   const results = [];
   for (const [, name, encoded] of text.matchAll(/\[\[call ([a-z_]+) ([A-Za-z0-9_-]+)\]\]/gu)) {
     try {
-      sessionTools ??= await mcpClient(
-        threadConfig["mcp_servers.opensteer.url"],
-        process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-      );
-      const result = await sessionTools.call(
+      current().sessionTools ??= await opensteerTools();
+      const result = await current().sessionTools.call(
         name,
         JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")),
       );
@@ -2251,6 +2646,7 @@ async function notificationsTurn(input, turnThreadId, turnTurnId) {
 }
 
 function finishTurnWith(text) {
+  const { id: threadId, turnId } = current();
   send({
     method: "item/completed",
     params: {
@@ -2270,7 +2666,7 @@ async function browserJourneyHarness(sessionId, program, targetId) {
       ...(sessionId ? ["--session", sessionId] : []),
       ...(targetId ? ["--tab", targetId] : []),
     ],
-    { env: process.env, timeout: 60_000 },
+    { env: threadEnvironment(), timeout: 60_000 },
   );
   const stdout = [];
   const stderr = [];
@@ -2296,10 +2692,7 @@ async function tabGroupJourney(input) {
     .map((p) => p.text)
     .join("\n");
   const plan = JSON.parse(/TAB_GROUP_JOURNEY:([^\n]+)/u.exec(text)[1]);
-  const tools = await mcpClient(
-    threadConfig["mcp_servers.opensteer.url"],
-    process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-  );
+  const tools = await opensteerTools();
   const report = { pages: [], calls: [] };
   for (const call of plan.calls ?? []) {
     try {
@@ -2348,10 +2741,7 @@ async function browserAgentTurn(input) {
   const checkProfile = /CHECK_PROFILE=(\S+)/u.exec(text)?.[1];
   if (checkProfile && uploadPage) {
     // A later Run: reopen the profile and read what it kept.
-    const tools = await mcpClient(
-      threadConfig["mcp_servers.opensteer.url"],
-      process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-    );
+    const tools = await opensteerTools();
     const opened = await tools.call("browser_session_open", { profileId: checkProfile });
     const result = await browserJourneyHarness(
       opened.session.id,
@@ -2365,10 +2755,7 @@ console.log(JSON.stringify(await js("document.cookie")));`,
     input.find((part) => part.type === "localImage")?.path ??
     /Readable path: ([^\n]+)/u.exec(text)?.[1];
   if (!uploadPage || !photo) throw new Error("The prompt names no upload page or attached photo");
-  const tools = await mcpClient(
-    threadConfig["mcp_servers.opensteer.url"],
-    process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-  );
+  const tools = await opensteerTools();
   const report = { photoName: basename(photo) };
 
   const first = await tools.call("browser_session_open", { fresh: true });
@@ -2509,10 +2896,7 @@ console.log(JSON.stringify(await js("document.cookie")));`,
  * "replacement": a dialog whose answer opens a second one.
  */
 async function browserDialogTurn(page, trigger) {
-  const tools = await mcpClient(
-    threadConfig["mcp_servers.opensteer.url"],
-    process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-  );
+  const tools = await opensteerTools();
   const opened = await tools.call("browser_session_open", { fresh: true });
   const timed = async (program) => {
     const started = Date.now();
@@ -2617,10 +3001,7 @@ async function browserProfilesTurn(input) {
   const plan = marker ? JSON.parse(marker) : {};
   const report = { inputText };
   try {
-    const tools = await mcpClient(
-      threadConfig["mcp_servers.opensteer.url"],
-      process.env.OPENSTEER_AGENT_TOOLS_TOKEN,
-    );
+    const tools = await opensteerTools();
     report.tools = (await tools.list()).tools.map((tool) => tool.name).sort();
     const call = (name, args, replayId) => {
       if (!report.tools.includes(name)) throw new Error(`${name} is not offered`);
@@ -2674,8 +3055,9 @@ async function browserProfilesTurn(input) {
 }
 
 /** The smallest Streamable HTTP MCP client: initialize once, then call tools. */
-async function mcpClient(url, token) {
-  if (!url || !token) throw new Error("The Opensteer MCP server is not configured");
+async function mcpClient(url, token, headers = {}) {
+  if (!url || (!token && Object.keys(headers).length === 0))
+    throw new Error("The Opensteer MCP server is not configured");
   let sessionId;
   let nextId = 1;
   const post = async (body) => {
@@ -2683,8 +3065,9 @@ async function mcpClient(url, token) {
       body: JSON.stringify(body),
       headers: {
         accept: "application/json, text/event-stream",
-        authorization: `Bearer ${token}`,
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
         "content-type": "application/json",
+        ...headers,
         ...(sessionId ? { "mcp-session-id": sessionId } : {}),
       },
       method: "POST",
@@ -2734,11 +3117,11 @@ async function mcpClient(url, token) {
   };
 }
 
-function sendTurnCompleted(status, error, id = turnId) {
+function sendTurnCompleted(status, error, id = current().turnId) {
   send({
     method: "turn/completed",
     params: {
-      threadId,
+      threadId: current().id,
       turn: {
         error: status === "failed" ? (error ?? { message: "fake failure" }) : null,
         id,
@@ -2767,12 +3150,35 @@ function requireInitialized(message) {
 }
 
 function send(message) {
+  const thread = current();
+  if (message.method !== undefined && message.id !== undefined) {
+    // Request ids are unique on a connection: a scenario id another thread
+    // still awaits an answer to goes out under a name of this thread's own.
+    let wireId = message.id;
+    if (serverRequests.has(wireId) && serverRequests.get(wireId).thread !== thread)
+      wireId = `${message.id}@${thread.id}`;
+    serverRequests.set(wireId, { id: message.id, thread });
+    thread.serverRequestIds.set(message.id, wireId);
+    message = { ...message, id: wireId };
+  } else if (message.method !== undefined) {
+    if (optedOutNotifications.has(message.method)) return;
+    // Codex sends nothing more about a thread this connection unsubscribed from.
+    const target = threads.get(message.params?.threadId);
+    if (target && !target.subscribed && message.method !== "thread/closed") return;
+    if (message.method === "serverRequest/resolved") {
+      const wireId = thread.serverRequestIds.get(message.params.requestId);
+      if (wireId !== undefined)
+        message = { ...message, params: { ...message.params, requestId: wireId } };
+    }
+  }
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
 function capture(message) {
   if (capturePath && process.argv.includes("--capture-records")) {
+    const scoped = threadScope.getStore()?.id;
     if (message.params?.threadId) captureRunId = message.params.threadId;
+    else if (scoped) captureRunId = scoped;
     // initialize has no thread yet. The immutable process identity correlates
     // its credentials with the later thread/start or thread/resume record.
     writeCaptureRecord(message, captureRunId);
@@ -2795,15 +3201,14 @@ function overrideValue(key) {
   return argument?.slice(key.length + 1);
 }
 
-let backgroundTurns = 0;
-
 /**
  * The root starts a researcher and answers while it works; a later message is
  * a turn of its own; the researcher finishes when the release file appears.
  */
 function backgroundTurn(message) {
-  backgroundTurns += 1;
-  const id = `codex-turn-${backgroundTurns}`;
+  const { id: threadId } = current();
+  current().backgroundTurns += 1;
+  const id = `codex-turn-${current().backgroundTurns}`;
   const turn = (status) => ({ error: null, id, items: [], status });
   const answerStart = () => send({ id: message.id, result: { turn: turn("inProgress") } });
   const announce = () =>
@@ -2823,7 +3228,7 @@ function backgroundTurn(message) {
     });
     send({ method: "turn/completed", params: { threadId, turn: turn("completed") } });
   };
-  if (backgroundTurns > 1) {
+  if (current().backgroundTurns > 1) {
     const noted = `Noted: ${message.params.input.map((part) => part.text ?? "").join(" ")}`;
     const respond = () => {
       sendResponseUsage("response", threadId, id, responseUsage.rootFollowsUp);
@@ -2835,7 +3240,7 @@ function backgroundTurn(message) {
     if (process.argv.includes("--slow-follow-up-start")) {
       // `--announce-before-answer` names the turn at once and answers the
       // request that started it only well after the Runner's stop grace.
-      followUpStart = process.argv.includes("--announce-before-answer")
+      current().followUpStart = process.argv.includes("--announce-before-answer")
         ? () => {
             announce();
             setTimeout(answerStart, 5_000);
@@ -2843,7 +3248,7 @@ function backgroundTurn(message) {
         : start;
       return;
     }
-    if (process.argv.includes("--child-ends-while-starting") && !backgroundChildDone) {
+    if (process.argv.includes("--child-ends-while-starting") && !current().backgroundChildDone) {
       // The child finishes while the root's new turn is still starting.
       finishBackgroundChild();
       setTimeout(() => {
@@ -2861,7 +3266,7 @@ function backgroundTurn(message) {
   sendSubagentActivity("spawn-1", "started");
   send({
     method: "turn/started",
-    params: { threadId: childThreadId, turn: childTurn("child-turn-1", "inProgress") },
+    params: { threadId: announceChildThread(), turn: childTurn("child-turn-1", "inProgress") },
   });
   sendChildItem("item/started", {
     command: "sleep 600",
@@ -2870,23 +3275,19 @@ function backgroundTurn(message) {
     status: "inProgress",
     type: "commandExecution",
   });
-  sendResponseUsage("response", childThreadId, "child-turn-1", responseUsage.childWorks);
+  sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childWorks);
   answer("The researcher is working in the background.");
   const watch = setInterval(() => {
-    if (backgroundChildDone) clearInterval(watch);
+    if (current().backgroundChildDone) clearInterval(watch);
     if (!releasePath || !existsSync(releasePath)) return;
     clearInterval(watch);
     finishBackgroundChild();
   }, 50);
 }
 
-let backgroundChildDone = false;
-/** A `--slow-follow-up-start` turn waiting to start. */
-let followUpStart;
-
 function finishBackgroundChild() {
-  if (backgroundChildDone) return;
-  backgroundChildDone = true;
+  if (current().backgroundChildDone) return;
+  current().backgroundChildDone = true;
   sendChildItem("item/completed", {
     aggregatedOutput: "done",
     command: "sleep 600",
@@ -2916,8 +3317,8 @@ function finishBackgroundChild() {
     text: "Background research finished.",
     type: "agentMessage",
   });
-  sendResponseUsage("response", childThreadId, "child-turn-1", responseUsage.childFinishes);
-  sendChildTurnCompleted(childThreadId, "child-turn-1", "completed");
+  sendResponseUsage("response", childThreadOf(), "child-turn-1", responseUsage.childFinishes);
+  sendChildTurnCompleted(childThreadOf(), "child-turn-1", "completed");
 }
 
 function tokens(inputTokens, cachedInputTokens, cacheWriteInputTokens, outputTokens, reasoning) {
@@ -3014,6 +3415,7 @@ function restateThreadUsage(thread, turn, label = "restated") {
  * and of a thread no Run here ran, and a compaction that resets the total.
  */
 function sendSeveralResponsesUsage() {
+  const { id: threadId, turnId } = current();
   sendResponseUsage("response", threadId, turnId, responseUsage.first);
   if (impossibleUsage) sendResponseUsage("impossible", threadId, turnId, tokens(100, 90, 20, 5, 0));
   restateThreadUsage(threadId, turnId, "duplicate");
@@ -3034,6 +3436,7 @@ function sendSeveralResponsesUsage() {
 
 /** Durable side effects and real child processes for restart-recovery acceptance. */
 function recoveryHeldTurn(message) {
+  const { id: threadId, turnId } = current();
   const input = JSON.stringify(message.params.input);
   const recovery = input.includes("Your conversation is intact.");
   const effect = process.argv.find((value) => value.startsWith("--effect-file="))?.slice(14);
@@ -3058,7 +3461,7 @@ function recoveryHeldTurn(message) {
       threadId,
       input: message.params.input,
       recovery,
-      scope: process.env.OPENSTEER_EXECUTION_SCOPE ?? null,
+      scope: threadEnvironment().OPENSTEER_EXECUTION_SCOPE ?? null,
       acceptedAt: Date.now(),
       priorPidsAlive,
     },
@@ -3072,11 +3475,13 @@ function recoveryHeldTurn(message) {
     params: { threadId, turn: { error: null, id: turnId, items: [], status: "inProgress" } },
   });
   if (process.argv.includes("--recovery-tool") && !recovery) {
+    const environment = threadEnvironment();
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      env: environment,
       stdio: "ignore",
     });
     capture({
-      recoveryChild: { pid: child.pid, scope: process.env.OPENSTEER_EXECUTION_SCOPE ?? null },
+      recoveryChild: { pid: child.pid, scope: environment.OPENSTEER_EXECUTION_SCOPE ?? null },
     });
     send({
       method: "item/started",
