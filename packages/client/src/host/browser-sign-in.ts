@@ -26,8 +26,22 @@ export function chromeExtensionConnectUrl(invitation: string): string {
   return `chrome-extension://${opensteerChromeExtensionId}/connect.html#${invitation}`;
 }
 
-export function chromeConnectPageUrl(origin: string, invitation: string): string {
-  return `${origin}${chromeConnectPagePath}#${invitation}`;
+const folderParameter = "&folder=";
+
+/**
+ * `extensionDirectory` is only for a hand-off to Chrome on the Host's own
+ * computer: it names the folder the desktop app keeps current, so that page
+ * says to load that folder rather than download a copy nothing updates.
+ */
+export function chromeConnectPageUrl(
+  origin: string,
+  invitation: string,
+  extensionDirectory: string | null = null,
+): string {
+  const folder = extensionDirectory
+    ? `${folderParameter}${encodeURIComponent(extensionDirectory)}`
+    : "";
+  return `${origin}${chromeConnectPagePath}#${invitation}${folder}`;
 }
 
 /** `github.com` for `https://github.com`. */
@@ -84,6 +98,8 @@ export function chromeConnectOrigins(pairing: Pick<BrowserSourcePairing, "destin
 /** What the public connect page can read from a link before anything is sent. */
 export interface ChromeConnectLink {
   readonly deploymentName: string;
+  /** The desktop-managed extension folder, read only on a loopback page. */
+  readonly extensionDirectory: string | null;
   readonly expiresAt: string;
   readonly invitation: string;
 }
@@ -95,7 +111,7 @@ export interface ChromeConnectLink {
  * forwarded a stranger's link would pair this Chrome with it in one click.
  */
 export function readChromeConnectLink(value: string, pageOrigin: string): ChromeConnectLink {
-  const invitation = decodeURIComponent(value.replace(/^#/u, "")).trim();
+  const { extensionDirectory, invitation } = splitChromeConnectFragment(value, pageOrigin);
   if (!invitation) {
     throw new Error(
       "This link is missing its connection code. Go back to Opensteer and choose Connect Chrome again.",
@@ -107,7 +123,35 @@ export function readChromeConnectLink(value: string, pageOrigin: string): Chrome
       "This link is for a different Opensteer. Open Opensteer and choose Connect Chrome there.",
     );
   }
-  return { deploymentName: decoded.deploymentName, expiresAt: decoded.expiresAt, invitation };
+  return {
+    deploymentName: decoded.deploymentName,
+    expiresAt: decoded.expiresAt,
+    extensionDirectory,
+    invitation,
+  };
+}
+
+/** The invitation, and the managed folder only when the page is on loopback. */
+export function splitChromeConnectFragment(
+  value: string,
+  pageOrigin: string,
+): { readonly extensionDirectory: string | null; readonly invitation: string } {
+  const fragment = value.replace(/^#/u, "");
+  const folderAt = fragment.indexOf(folderParameter);
+  const invitation = decodeURIComponent(
+    folderAt === -1 ? fragment : fragment.slice(0, folderAt),
+  ).trim();
+  if (folderAt === -1) return { extensionDirectory: null, invitation };
+  try {
+    if (!isLoopbackHostname(new URL(pageOrigin).hostname)) {
+      return { extensionDirectory: null, invitation };
+    }
+    const folder = decodeURIComponent(fragment.slice(folderAt + folderParameter.length));
+    const usable = folder.startsWith("/") && folder.length <= 4_096 && !folder.includes("\0");
+    return { extensionDirectory: usable ? folder : null, invitation };
+  } catch {
+    return { extensionDirectory: null, invitation };
+  }
 }
 
 function sameOrigin(left: string, right: string): boolean {

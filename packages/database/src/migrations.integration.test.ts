@@ -194,7 +194,7 @@ describe("fresh personal/team lineage", () => {
           database,
         )
       ).rows,
-    ).toEqual([{ name: personalTeamBaselineName }, { name: "0002_browser_source_binding" }]);
+    ).toEqual([{ name: personalTeamBaselineName }, { name: "0003_browser_source_binding" }]);
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],

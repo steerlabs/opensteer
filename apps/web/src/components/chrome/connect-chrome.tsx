@@ -53,8 +53,11 @@ export function ConnectChrome({
   invitation = null,
   onConnected,
   sourcesState,
+  linkExtensionDirectory = null,
 }: {
   readonly sourcesState?: BrowserSourcesState | null;
+  /** On the public page: the managed folder the desktop's local hand-off named. */
+  readonly linkExtensionDirectory?: string | null;
   readonly client: ConnectChromeClient | null;
   readonly compact?: boolean;
   readonly environment: ChromeConnectEnvironment;
@@ -209,7 +212,13 @@ export function ConnectChrome({
       const origin = environment.hostHere
         ? chromeConnectOrigins(pairing).here
         : (chromeConnectOrigins(pairing).elsewhere ?? chromeConnectOrigins(pairing).here);
-      const pageLink = chromeConnectPageUrl(origin, pairing.invitation);
+      // The desktop opens Chrome on this same computer, so that page can name
+      // the folder it keeps current; a copied link may be opened anywhere.
+      const pageLink = chromeConnectPageUrl(
+        origin,
+        pairing.invitation,
+        environment.place === "desktop" && environment.hostHere ? extensionDirectory : null,
+      );
       if (environment.place === "chromium") {
         const opened = environment.openExtensionConnect(pairing.invitation);
         setStage({
@@ -261,9 +270,11 @@ export function ConnectChrome({
           compact={compact}
           environment={environment}
           extensionDirectory={
-            client && (environment.hostHere || environment.place === "desktop")
-              ? extensionDirectory
-              : null
+            client
+              ? environment.hostHere || environment.place === "desktop"
+                ? extensionDirectory
+                : null
+              : linkExtensionDirectory
           }
         />
       );
