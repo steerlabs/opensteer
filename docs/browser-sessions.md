@@ -127,7 +127,8 @@ agent CDP, reports field kind, sensitivity and a caret, never values or surround
 replacement first verifies the exact text around the caret, else refuses. Rebuilding the hidden
 caret mirror between keystrokes would split Blink's Undo grouping, so the observer updates its nodes
 in place. Headless Chromium has an isolated in-memory clipboard behind a helper context agents
-cannot discover; Electron has none, so copy publishes plain text to the controlling viewer.
+cannot discover; Electron shares the machine clipboard, so copy publishes plain text to the
+controlling viewer and paste inserts the copy's plain text without touching that clipboard.
 Sensitive fields never publish. Clipboard data goes only to the consumer the Host assigns, never to
 Watch, and any agent command ends a person's page-write attribution. Diagnostics never hold text or
 clipboard bytes. Client adapters, the native proxies and their evidence follow the

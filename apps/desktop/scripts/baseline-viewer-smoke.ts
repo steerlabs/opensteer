@@ -36,7 +36,7 @@ import {
   type DesktopHostWebSocketEvent,
   type DesktopOpenHostWebSocketInput,
 } from "@opensteer/protocol/desktop";
-import { app, BrowserWindow, clipboard, ipcMain, Menu, protocol } from "electron";
+import { app, BrowserWindow, clipboard, ClipboardItem, ipcMain, Menu, protocol } from "electron";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -737,7 +737,10 @@ async function main() {
           async () => nativeWrites === 3 && (await clipboard.readText()) === "é",
           "menu cut result",
         );
-        await clipboard.writeText("menu-paste");
+        // A rich copy, like one from a web page, still pastes into this text-only engine.
+        await clipboard.write([
+          new ClipboardItem({ "text/plain": "menu-paste", "text/html": "<b>menu-paste</b>" }),
+        ]);
         await action("Paste");
         await wait(
           () => read<boolean>('document.querySelector("textarea").value==="menu-paste"'),

@@ -130,6 +130,7 @@ export async function runDisplayEditingJourney(directory: string) {
               type: "paste",
               items: [
                 { type: "text/plain", bytes: new TextEncoder().encode("line one\nline two 🦊") },
+                { type: "text/html", bytes: new TextEncoder().encode("<p>line one</p>") },
               ],
             });
             await Promise.all(completions);
@@ -170,7 +171,6 @@ export async function runDisplayEditingJourney(directory: string) {
               { kind: "command", command: "deleteBackward" },
               { kind: "paste", text: "line one\nline two 🦊" },
               { kind: "copy" },
-              { kind: "paste", items: [{ type: "text/html", size: 11 }] },
             ]);
             const producerEvents = fixture.sent.flatMap((message) =>
               message.type === "host.integrations.display.input" ||
@@ -178,7 +178,7 @@ export async function runDisplayEditingJourney(directory: string) {
                 ? message.events
                 : [],
             );
-            assert.deepEqual(producerEvents, mac ? events : events.slice(0, -1));
+            assert.deepEqual(producerEvents, events);
             assert.ok(
               baseline.every(
                 (message) =>

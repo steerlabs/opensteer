@@ -49,12 +49,16 @@ bytes come from trusted local paste events. Only active views receive clipboard 
 comes from the target, and empty or refused results leave the local clipboard alone. Connection or
 display generation changes retire pending operations.
 
+Clipboard items are representations of one copy. Adapters report every one they read and the
+reducer alone keeps what the target's `clipboard` accepts: a `text` target gets the copy's plain
+text and refuses only a copy without any, so a web page's text-and-HTML copy still pastes.
+
 ## Display viewers
 
 Phone and Mac display targets show preedit locally and receive one text edit on commit, using the
 same lease and sequence as pointer and scroll input. A receipt means dispatched, never applied. The
 Mac helper admits four pending batches per window, so pointer moves and wheel turns merge while a
-receipt is pending. Rich paste forwards metadata only so the target can refuse it. Cut needs
+receipt is pending. Phone and Mac targets take plain text only. Cut needs
 separate phone, Host and viewer agreement (`displayCut`); Mac targets never offer it, and sensitive
 phone fields disable export. No Android API level is inferred from the editing version. Baseline Mac
 app views and Mac task Watch stay view-only.

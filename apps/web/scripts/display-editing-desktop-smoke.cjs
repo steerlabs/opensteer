@@ -163,19 +163,14 @@ void app.whenReady().then(async () => {
     await key("v", true);
     await wait(
       () =>
-        js(
-          'displayEditingSmoke.events().some(e=>e.kind === "paste" && e.items?.some(i=>i.type === "text/html"))',
-        ),
-      "rich paste metadata",
+        js('displayEditingSmoke.events().some(e=>e.kind === "paste" && e.text === "rich fixture")'),
+      "rich paste as plain text",
     );
-    await wait(
-      () =>
-        js(
-          'document.querySelector(".phone-display__control").textContent.includes("support this edit")',
-        ),
-      "visible refusal",
+    assert.equal(
+      await js('displayEditingSmoke.events().some(e=>e.kind === "paste" && "items" in e)'),
+      false,
     );
-    records.push({ name: "Native rich paste is metadata with a visible refusal", passed: true });
+    records.push({ name: "Native rich paste types its plain text", passed: true });
     await js("displayEditingSmoke.mac(true)");
     await js('document.querySelector("textarea.remote-keyboard-input").focus()');
     await key("z", true);

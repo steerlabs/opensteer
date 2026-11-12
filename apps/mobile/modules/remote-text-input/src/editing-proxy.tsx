@@ -1,6 +1,7 @@
 import type { EditingContext } from "@opensteer/protocol/editing";
 import {
   createEditingState,
+  editingRefusalMessages,
   reduceEditing,
   type EditingProxyEvent,
   type EditingOperation,
@@ -145,7 +146,7 @@ export function NativeEditingProxy({
               result.operations.some((operation) => operation.kind !== "compose")
             )
               requestFinish((previous) => previous + 1);
-            setRefusal(result.refusal ? `Editing refused: ${result.refusal}` : null);
+            setRefusal(result.refusal ? editingRefusalMessages[result.refusal] : null);
             if (event.type === "blur") onDone();
             return result.instruction;
           }}

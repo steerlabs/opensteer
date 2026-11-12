@@ -1239,7 +1239,7 @@ describe("display editing receipt adapter", () => {
     expect(await pending).toBeUndefined();
     editing.dispose();
   });
-  it("forwards rich metadata but refuses cut/compose without inventing a native edit", async () => {
+  it("refuses rich paste, cut and compose without inventing a native edit", async () => {
     const { socket, editing } = await editingFixture();
     await expect(editing.send({ kind: "cut" })).rejects.toThrow("Cut");
     await expect(
@@ -1248,21 +1248,13 @@ describe("display editing receipt adapter", () => {
         composition: { contextId: "field", text: "preedit", selectionStart: 0, selectionEnd: 7 },
       }),
     ).rejects.toThrow("composition");
-    const pending = editing.send({
-      kind: "paste",
-      items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
-    });
-    expect(socket.messages("display.input").flatMap((message) => message.events)).toEqual([
-      { kind: "paste", items: [{ type: "text/html", size: 8 }] },
-    ]);
-    const rejected = expect(pending).rejects.toThrow("support");
-    socket.json({
-      type: "display.input.result",
-      sequence: 0,
-      outcome: "refused",
-      reason: "unsupported",
-    });
-    await rejected;
+    await expect(
+      editing.send({
+        kind: "paste",
+        items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
+      }),
+    ).rejects.toThrow("support");
+    expect(socket.messages("display.input")).toEqual([]);
     expect(editing.getSnapshot().receipt).toBe("This device doesn’t support this edit.");
     expect(JSON.stringify(editing.diagnostics)).not.toContain("<b>");
     editing.dispose();

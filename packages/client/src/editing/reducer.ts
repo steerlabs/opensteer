@@ -52,6 +52,12 @@ export interface EditingReduction extends EditingStep {
   readonly state: EditingState;
   readonly refusal?: "commands" | "clipboard" | "range-edits" | "too-large";
 }
+export const editingRefusalMessages: Record<NonNullable<EditingReduction["refusal"]>, string> = {
+  commands: "This target does not support that editing command.",
+  clipboard: "This target does not support that clipboard format or operation.",
+  "range-edits": "This target cannot verify a text replacement.",
+  "too-large": "This native edit exceeds the editing size limit.",
+};
 export function createEditingState(
   platform: EditingViewerPlatform,
   abilities: EditingTargetAbilities,
@@ -772,21 +778,13 @@ export function reduceEditing(previous: EditingState, event: EditingProxyEvent):
     case "paste": {
       prevent();
       interrupt();
-      if (state.abilities.basicInput) {
-        const text = event.items.find(
-          (item) => item.type === "text/plain" && item.name === undefined,
-        );
-        if (text) emit({ kind: "paste", items: [text] });
-        break;
-      }
-      if (
-        state.abilities.clipboard === "text" &&
-        event.items.some((item) => item.type !== "text/plain")
-      ) {
-        refusal = "clipboard";
-        break;
-      }
-      if (event.items.length) emit({ kind: "paste", items: event.items });
+      // Clipboard items are representations of one copy; a text target keeps its plain text.
+      const text = event.items.find(
+        (item) => item.type === "text/plain" && item.name === undefined,
+      );
+      const items = state.abilities.clipboard === "full" ? event.items : text ? [text] : [];
+      if (items.length) emit({ kind: "paste", items });
+      else if (event.items.length) refusal = "clipboard";
       break;
     }
   }

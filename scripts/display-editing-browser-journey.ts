@@ -160,9 +160,9 @@ try {
       );
       await page.keyboard.press("Meta+V");
       await page.waitForFunction(() =>
-        document
-          .querySelector(".phone-display__control")
-          ?.textContent?.includes("support this edit"),
+        (Reflect.get(window, "displayEditingSmoke") as DisplayEditingSmokeApi)
+          .events()
+          .some((event) => event.kind === "paste" && "text" in event && event.text === "rich"),
       );
       if (mac) {
         const box = await page.locator("canvas").boundingBox();
@@ -193,14 +193,7 @@ try {
         ),
       );
       assert.ok(wire.some((event) => event.kind === "copy"));
-      assert.ok(
-        wire.some(
-          (event) =>
-            event.kind === "paste" &&
-            "items" in event &&
-            event.items.some((item) => item.type === "text/html"),
-        ),
-      );
+      assert.ok(!wire.some((event) => event.kind === "paste" && "items" in event));
       if (mac)
         assert.ok(
           wire.some(
