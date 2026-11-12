@@ -397,56 +397,81 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
   );
 }
 
-/** Every channel the reader can see in the team, to open or join. */
+/** Every channel the reader can see in the team, to open or join, a page at a time. */
 export function TeamChannelsScreen(props: TeamParams): ReactNode {
   const { teamId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const { session, failure } = useTeamSession(teamId);
-  const [channels, setChannels] = useState<readonly TeamChannelSummary[] | null>(null);
-  useEffect(() => {
+  const [page, setPage] = useState<{
+    readonly channels: readonly TeamChannelSummary[];
+    readonly hasMore: boolean;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const read = (after: TeamChannelSummary["id"] | null): void => {
     if (session === null) return;
-    let current = true;
-    void session.rpc["team.channels.list"]({})
+    setLoading(true);
+    void session.rpc["team.channels.list"](after === null ? {} : { after })
       .then(unwrapRpcResult)
-      .then(
-        (page) => current && setChannels(page.channels),
-        () => undefined,
-      );
-    return () => {
-      current = false;
-    };
-  }, [session]);
-  if (session === null || channels === null) return <Waiting failure={failure} />;
+      .then((next) =>
+        setPage((held) => {
+          const kept = after === null ? [] : (held?.channels ?? []);
+          const known = new Set(kept.map((channel) => channel.id));
+          return {
+            channels: [...kept, ...next.channels.filter((channel) => !known.has(channel.id))],
+            hasMore: next.hasMore,
+          };
+        }),
+      )
+      .catch(failed)
+      .finally(() => setLoading(false));
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- one first page per session
+  useEffect(() => read(null), [session]);
+  if (session === null || page === null) return <Waiting failure={failure} />;
+  const last = page.channels.at(-1)?.id ?? null;
   return (
     <Screen edgeToEdge>
       <ScrollView contentContainerStyle={styles.page}>
         <RowGroup>
-          {channels
-            .filter((channel) => channel.kind === "public" || channel.kind === "private")
-            .map((channel) => (
+          {[
+            ...page.channels
+              .filter((channel) => channel.kind === "public" || channel.kind === "private")
+              .map((channel) => (
+                <LinkRow
+                  detail={
+                    channel.archivedAt === null
+                      ? channel.peopleOnly
+                        ? "People only"
+                        : null
+                      : "Archived"
+                  }
+                  icon={channel.kind === "private" ? "lock" : "number"}
+                  key={channel.id}
+                  label={channel.name}
+                  onPress={() => {
+                    const open = () =>
+                      navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
+                    if (channel.can.read) open();
+                    else if (channel.can.join)
+                      void command(session, {
+                        type: "team.channel.join",
+                        channelId: channel.id,
+                      }).then(open, failed);
+                  }}
+                />
+              )),
+            page.hasMore && last !== null ? (
               <LinkRow
-                detail={
-                  channel.archivedAt === null
-                    ? channel.peopleOnly
-                      ? "People only"
-                      : null
-                    : "Archived"
-                }
-                icon={channel.kind === "private" ? "lock" : "number"}
-                key={channel.id}
-                label={channel.name}
-                onPress={() => {
-                  const open = () =>
-                    navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
-                  if (channel.can.read) open();
-                  else if (channel.can.join)
-                    void command(session, {
-                      type: "team.channel.join",
-                      channelId: channel.id,
-                    }).then(open, failed);
-                }}
+                action
+                disabled={loading}
+                icon="ellipsis"
+                key="more"
+                label="More channels"
+                onPress={() => read(last)}
+                tone="ember"
               />
-            ))}
+            ) : null,
+          ]}
         </RowGroup>
       </ScrollView>
     </Screen>

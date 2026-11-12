@@ -146,6 +146,13 @@ export function TeamHomeScreen(props: StaticScreenProps<{ readonly teamId: strin
   return (
     <Screen edgeToEdge>
       <TeamPageList
+        canCreateChannel={session.getSnapshot().bootstrap?.can.createChannel === true}
+        onBrowseChannels={() => navigation.navigate("TeamChannels", { teamId })}
+        onLoadMore={() => {
+          if (sidebar.nextCursor !== null) void session.loadMoreSidebar().catch(() => undefined);
+        }}
+        onNewChannel={() => navigation.navigate("TeamNewChannel", { teamId })}
+        onNewMessage={() => navigation.navigate("TeamNewMessage", { teamId })}
         onOpenChannel={(channelId) => navigation.navigate("TeamChannel", { teamId, channelId })}
         onRemoveTeam={() => void teams.forget(teamId).then(() => navigation.popToTop())}
         paddingBottom={padding}

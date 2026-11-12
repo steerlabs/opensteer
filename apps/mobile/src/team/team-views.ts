@@ -111,7 +111,7 @@ export function drawerSection(input: {
   const dmRows = rows
     .filter((row) => row.channel.kind === "dm" || row.channel.kind === "group_dm")
     .sort((left, right) => compareIds(right.channel.latestMessageId, left.channel.latestMessageId));
-  const dms: DmRowView[] = dmRows.slice(0, 8).map((row) => ({
+  const dms: DmRowView[] = dmRows.map((row) => ({
     id: row.channel.id,
     people: [],
     label: row.channel.name,
@@ -135,7 +135,6 @@ export function drawerSection(input: {
               : "offline",
     channels,
     dms,
-    moreDms: Math.max(0, dmRows.length - 8),
   };
 }
 

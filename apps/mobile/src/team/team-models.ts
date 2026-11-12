@@ -282,8 +282,6 @@ export interface TeamDrawerSectionView {
   readonly state: "live" | "offline" | "update-app" | "update-server" | "removed";
   readonly channels: readonly ChannelRowView[];
   readonly dms: readonly DmRowView[];
-  /** DMs past the first eight. */
-  readonly moreDms: number;
 }
 
 export type ChannelRole = "manager" | "member";

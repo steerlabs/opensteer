@@ -1,5 +1,13 @@
-import { memo, type ReactNode } from "react";
-import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { memo, useCallback, useMemo, type ReactNode } from "react";
+import {
+  FlatList,
+  Platform,
+  Pressable,
+  StyleSheet,
+  View,
+  type ListRenderItemInfo,
+} from "react-native";
+import { NativeMenu } from "../thread/composer-menu.js";
 import { color, controlFontScaleLimit, material, radius, space, touchTarget } from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -14,19 +22,104 @@ import {
 } from "./team-marks.js";
 import type { ChannelRowView, DmRowView, TeamDrawerSectionView } from "./team-models.js";
 
+type PageRow =
+  | { readonly kind: "channels" }
+  | { readonly kind: "dms" }
+  | { readonly kind: "channel"; readonly channel: ChannelRowView }
+  | { readonly kind: "dm"; readonly dm: DmRowView };
+
 /**
  * A team's own page: its channels (alphabetical), then its direct messages
  * (newest first). Unread is bold; mentions of the reader are an ember count;
  * a DM never shows an unread total. The team's menu is the page's title menu.
+ * Each heading carries its way in: browse or make a channel, start a message.
  */
 export function TeamPageList(props: {
   readonly section: TeamDrawerSectionView;
+  /** The team lets the reader make channels. */
+  readonly canCreateChannel: boolean;
   readonly onOpenChannel: (channelId: string) => void;
+  readonly onBrowseChannels: () => void;
+  readonly onNewChannel: () => void;
+  readonly onNewMessage: () => void;
+  /** The end of the list is near: the team's next page of channels and DMs. */
+  readonly onLoadMore: () => void;
   /** A team the reader left or was removed from: take it off this phone. */
   readonly onRemoveTeam: () => void;
   readonly paddingBottom: number;
 }): ReactNode {
   const { section } = props;
+  const rows = useMemo(
+    (): readonly PageRow[] => [
+      { kind: "channels" },
+      ...section.channels.map((channel) => ({ kind: "channel" as const, channel })),
+      { kind: "dms" },
+      ...section.dms.map((dm) => ({ kind: "dm" as const, dm })),
+    ],
+    [section.channels, section.dms],
+  );
+  const { onOpenChannel, onBrowseChannels, onNewChannel, onNewMessage, canCreateChannel } = props;
+  const renderItem = useCallback(
+    ({ item }: ListRenderItemInfo<PageRow>) => {
+      switch (item.kind) {
+        case "channels":
+          return (
+            <Subhead label="Channels">
+              <NativeMenu
+                accessibilityLabel="Add channels"
+                options={[
+                  {
+                    icon: "magnifyingglass",
+                    id: "browse",
+                    label: "Browse channels",
+                    onPress: onBrowseChannels,
+                  },
+                  ...(canCreateChannel
+                    ? [
+                        {
+                          icon: "plus.square.on.square" as const,
+                          id: "new",
+                          label: "New channel",
+                          onPress: onNewChannel,
+                        },
+                      ]
+                    : []),
+                ]}
+                style={styles.headAction}
+              >
+                <Symbol name="plus" size={15} tint={color.muted} weight="semibold" />
+              </NativeMenu>
+            </Subhead>
+          );
+        case "dms":
+          return (
+            <Subhead label="Direct messages">
+              <Pressable
+                accessibilityLabel="New message"
+                accessibilityRole="button"
+                hitSlop={6}
+                onPress={onNewMessage}
+                style={({ pressed }) => [styles.headAction, pressed && styles.pressed]}
+              >
+                <Symbol name="square.and.pencil" size={15} tint={color.muted} weight="semibold" />
+              </Pressable>
+            </Subhead>
+          );
+        case "channel":
+          return (
+            <ChannelRow
+              channel={item.channel}
+              current={false}
+              id={item.channel.id}
+              onOpen={onOpenChannel}
+            />
+          );
+        case "dm":
+          return <DmRow current={false} dm={item.dm} onOpen={onOpenChannel} />;
+      }
+    },
+    [canCreateChannel, onBrowseChannels, onNewChannel, onNewMessage, onOpenChannel],
+  );
   if (section.state === "removed") {
     return (
       <View style={styles.removed}>
@@ -52,36 +145,47 @@ export function TeamPageList(props: {
     );
   }
   return (
-    <ScrollView contentContainerStyle={[styles.section, { paddingBottom: props.paddingBottom }]}>
-      <View style={section.state === "live" ? null : styles.dim}>
-        <AppText role="caption" style={styles.subhead} tone="muted">
-          Channels
-        </AppText>
-        {section.channels.map((channel) => (
-          <ChannelRow
-            channel={channel}
-            current={false}
-            key={channel.id}
-            onOpen={() => props.onOpenChannel(channel.id)}
-          />
-        ))}
-        {section.dms.length === 0 ? null : (
-          <AppText role="caption" style={styles.subhead} tone="muted">
-            Direct messages
-          </AppText>
-        )}
-        {section.dms.map((dm) => (
-          <DmRow current={false} dm={dm} key={dm.id} onOpen={() => props.onOpenChannel(dm.id)} />
-        ))}
-      </View>
-    </ScrollView>
+    <FlatList
+      contentContainerStyle={{ paddingBottom: props.paddingBottom }}
+      data={rows}
+      initialNumToRender={24}
+      keyExtractor={rowKey}
+      onEndReached={props.onLoadMore}
+      onEndReachedThreshold={0.8}
+      renderItem={renderItem}
+      style={section.state === "live" ? null : styles.dim}
+      windowSize={11}
+    />
+  );
+}
+
+function rowKey(row: PageRow): string {
+  switch (row.kind) {
+    case "channel":
+      return `c:${row.channel.id}`;
+    case "dm":
+      return `d:${row.dm.id}`;
+    default:
+      return row.kind;
+  }
+}
+
+function Subhead(props: { readonly label: string; readonly children: ReactNode }): ReactNode {
+  return (
+    <View style={styles.head}>
+      <AppText role="caption" style={styles.subhead} tone="muted">
+        {props.label}
+      </AppText>
+      {props.children}
+    </View>
   );
 }
 
 const ChannelRow = memo(function ChannelRow(props: {
   readonly channel: ChannelRowView;
   readonly current: boolean;
-  readonly onOpen: () => void;
+  readonly id: string;
+  readonly onOpen: (channelId: string) => void;
 }): ReactNode {
   const { channel } = props;
   const label = [
@@ -96,7 +200,7 @@ const ChannelRow = memo(function ChannelRow(props: {
       accessibilityLabel={label}
       accessibilityRole="button"
       accessibilityState={{ selected: props.current }}
-      onPress={props.onOpen}
+      onPress={() => props.onOpen(props.id)}
       style={({ pressed }) => [
         styles.row,
         props.current && styles.current,
@@ -123,7 +227,7 @@ const ChannelRow = memo(function ChannelRow(props: {
 const DmRow = memo(function DmRow(props: {
   readonly current: boolean;
   readonly dm: DmRowView;
-  readonly onOpen: () => void;
+  readonly onOpen: (channelId: string) => void;
 }): ReactNode {
   const { dm } = props;
   const one = dm.people.length === 1 ? dm.people[0]! : null;
@@ -132,7 +236,7 @@ const DmRow = memo(function DmRow(props: {
       accessibilityLabel={`${dm.label}${dm.mentions > 0 ? `, ${dm.mentions} mentions` : dm.unread ? ", unread" : ""}`}
       accessibilityRole="button"
       accessibilityState={{ selected: props.current }}
-      onPress={props.onOpen}
+      onPress={() => props.onOpen(dm.id)}
       style={({ pressed }) => [
         styles.row,
         props.current && styles.current,
@@ -174,7 +278,15 @@ const markWidth = 28;
 const styles = StyleSheet.create({
   current: { ...material.selected },
   dim: { opacity: 0.55 },
-  head: { alignItems: "center", flexDirection: "row", marginTop: space[12] },
+  head: { alignItems: "center", flexDirection: "row", justifyContent: "space-between" },
+  headAction: {
+    alignItems: "center",
+    borderRadius: radius.full,
+    height: 32,
+    justifyContent: "center",
+    marginTop: space[4],
+    width: touchTarget,
+  },
   headMain: {
     alignItems: "center",
     borderRadius: radius.md,
@@ -223,7 +335,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: space[10] - 1,
     paddingRight: space[12],
   },
-  section: { gap: 0 },
   subhead: { paddingBottom: space[2], paddingLeft: space[10], paddingTop: space[10] },
   tag: {
     backgroundColor: color.surfaceRaised,
