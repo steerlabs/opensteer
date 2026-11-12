@@ -1,4 +1,8 @@
 import {
+  administrationCommand,
+  type AdministrationCommandIdentity,
+} from "./administration-command.js";
+import {
   listPersonalSkillInventory,
   type PersonalSkillInventory,
 } from "./folder-skill-inventory-store.js";
@@ -258,75 +262,81 @@ export class PluginSettingsStore {
   async setEnabled(
     owner: UserId,
     input: import("zod").infer<typeof SettingsPluginEnableCommandSchema>,
+    administration?: AdministrationCommandIdentity,
   ) {
     const command = SettingsPluginEnableCommandSchema.parse(input);
     return withPersonalTransaction(this.database, async (tx) => {
       await requirePersonalOwner(tx, owner);
-      await lockCommandIdempotency(tx, owner, command.idempotencyKey);
-      const receipt = await findCommandByIdempotency(tx, owner, command.idempotencyKey);
-      if (receipt) {
-        const payload = receipt.payload;
-        if (
-          receipt.type !== command.type ||
-          typeof payload !== "object" ||
-          payload === null ||
-          !("request" in payload) ||
-          !isDeepStrictEqual(payload.request, command) ||
-          !("placement" in payload)
-        )
-          throw idempotencyConflict(command.idempotencyKey);
-        return {
-          type: command.type,
-          placement: PluginPlacementSummarySchema.parse(payload.placement),
-        };
-      }
-      const detail = await new PluginSettingsStore(tx, this.inventory).detail(
-        owner,
-        command.target,
-        undefined,
-        command.enabled,
-      );
-      if (detail.row.placement.revision !== command.expectedRevision)
-        throw new OpensteerError({
-          code: "conflict",
-          message: "Plugin setting changed; read it again",
-        });
-      const saved = await tx
-        .insertInto("pluginOwnerSettings")
-        .values({
-          ownerUserId: owner,
-          targetKey: pluginTargetKey(command.target),
-          target: command.target,
-          enabled: command.enabled,
-          revision: command.expectedRevision + 1,
-        })
-        .onConflict((conflict) =>
-          conflict.columns(["ownerUserId", "targetKey"]).doUpdateSet({
+      return administrationCommand(tx, administration, async () => {
+        if (!administration) {
+          await lockCommandIdempotency(tx, owner, command.idempotencyKey);
+          const receipt = await findCommandByIdempotency(tx, owner, command.idempotencyKey);
+          if (receipt) {
+            const payload = receipt.payload;
+            if (
+              receipt.type !== command.type ||
+              typeof payload !== "object" ||
+              payload === null ||
+              !("request" in payload) ||
+              !isDeepStrictEqual(payload.request, command) ||
+              !("placement" in payload)
+            )
+              throw idempotencyConflict(command.idempotencyKey);
+            return {
+              type: command.type,
+              placement: PluginPlacementSummarySchema.parse(payload.placement),
+            };
+          }
+        }
+        const detail = await new PluginSettingsStore(tx, this.inventory).detail(
+          owner,
+          command.target,
+          undefined,
+          command.enabled,
+        );
+        if (detail.row.placement.revision !== command.expectedRevision)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Plugin setting changed; read it again",
+          });
+        const saved = await tx
+          .insertInto("pluginOwnerSettings")
+          .values({
+            ownerUserId: owner,
+            targetKey: pluginTargetKey(command.target),
+            target: command.target,
             enabled: command.enabled,
-            revision: sql<number>`plugin_owner_settings.revision + 1`,
-          }),
-        )
-        .returning(["enabled", "revision"])
-        .executeTakeFirstOrThrow();
-      await tx
-        .insertInto("commands")
-        .values({
-          id: createId("command"),
-          actorPrincipalId: await principalIdForUser(tx, owner),
-          authoritySource: jsonValue({ kind: "user-session", userId: owner }),
-          requestedBy: owner,
-          idempotencyKey: command.idempotencyKey,
-          type: command.type,
-          payload: jsonValue({ request: command, placement: saved }),
-          status: "succeeded",
-          environmentId: null,
-          threadId: null,
-          runId: null,
-          dispatcherId: null,
-          lastError: null,
-        })
-        .execute();
-      return { type: command.type, placement: saved };
+            revision: command.expectedRevision + 1,
+          })
+          .onConflict((conflict) =>
+            conflict.columns(["ownerUserId", "targetKey"]).doUpdateSet({
+              enabled: command.enabled,
+              revision: sql<number>`plugin_owner_settings.revision + 1`,
+            }),
+          )
+          .returning(["enabled", "revision"])
+          .executeTakeFirstOrThrow();
+        if (!administration)
+          await tx
+            .insertInto("commands")
+            .values({
+              id: createId("command"),
+              actorPrincipalId: await principalIdForUser(tx, owner),
+              authoritySource: jsonValue({ kind: "user-session", userId: owner }),
+              requestedBy: owner,
+              idempotencyKey: command.idempotencyKey,
+              type: command.type,
+              payload: jsonValue({ request: command, placement: saved }),
+              status: "succeeded",
+              environmentId: null,
+              threadId: null,
+              runId: null,
+              dispatcherId: null,
+              lastError: null,
+            })
+            .execute();
+        return { type: command.type, placement: saved };
+      });
     });
   }
 

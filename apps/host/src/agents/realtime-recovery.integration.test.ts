@@ -382,7 +382,7 @@ async function desktopApp(
       canonicalOrigin,
       deploymentId,
       deploymentShape: {
-        kind: "server",
+        kind: "personal",
       },
       hostInstanceId: createId("hostInstance"),
       hostKey: {

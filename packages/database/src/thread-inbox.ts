@@ -2065,7 +2065,14 @@ async function lockThreadInputPreconditions(
     thread.doneAt &&
     input.policy !== "report" &&
     input.source.kind !== "human" &&
-    !input.teamRequest
+    !input.teamRequest &&
+    !(
+      input.source.kind === "trigger" &&
+      (await isMemoryPassWake(transaction, thread.id, {
+        kind: "trigger-occurrence",
+        occurrenceId: input.source.occurrenceId,
+      }))
+    )
   )
     throw new OpensteerError({ code: "conflict", message: "This task is Done. Reopen it first." });
   return {

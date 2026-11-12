@@ -513,7 +513,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
           }),
         },
       });
-    await remember("gpt-5.6-sol");
+    await remember(testModelSelection.modelId);
     // The model is left to the person's remembered choice.
     const call = (title: string) =>
       agent.client.callTool({
@@ -1032,7 +1032,9 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
       arguments: { threadId: f.thread.id },
     });
     await vi.waitFor(() => expect(subscribed).toHaveBeenCalledOnce(), { timeout: 2000 });
-    await new AgentConnectionStore(storeFixture.database).revoke(createId("user"), agent.id);
+    await expect(
+      new AgentConnectionStore(storeFixture.database).revoke(createId("user"), agent.id),
+    ).rejects.toMatchObject({ code: "forbidden" });
     expect(unsubscribed).not.toHaveBeenCalled();
     // Revocation closes the session, unless a Thread change wakes the wait first:
     // its recheck then answers with an error. Either way the wait fails.
@@ -1058,6 +1060,7 @@ describeStore("connected agents on the Opensteer MCP", (it) => {
   it("challenges an unauthenticated connection with its resource metadata", async ({
     storeFixture,
   }) => {
+    await storeFixture.createRunFixture("connection-challenge");
     const url = await serveMcp(storeFixture.store);
     const response = await fetch(url, {
       method: "POST",

@@ -44,6 +44,7 @@ import { BrowserTabGroupService } from "../browser/browser-tab-group-service.js"
 import { type RunToolScope, type RunToolTokenService } from "./run-tool-tokens.js";
 import { OpensteerMcpService } from "../mcp/opensteer-mcp-service.js";
 import { AgentCallerResolver } from "../mcp/agent-caller.js";
+import { readPersonalResources } from "../browser/personal-snapshot.js";
 const evidenceRoot = join(tmpdir(), "opensteer-title-review", randomUUID());
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
@@ -60,7 +61,9 @@ integration("agent-to-agent messaging round trip", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 4,
   });
-  const store = new OpensteerStore(database);
+  const store = new OpensteerStore(database, {
+    readPersonalResources: (input) => readPersonalResources(input, () => []),
+  });
   const realtime = new RealtimeHub({
     store,
   });
@@ -228,29 +231,17 @@ integration("agent-to-agent messaging round trip", () => {
       status: "no-device-connected",
       connectedDevices: 0,
     });
-    const otherSession = createBrowserSessionId();
-    await store.createBrowserSession({
-      id: otherSession,
-      runnerId: f.runnerId,
-      origin: "agent",
-      ownerId: strangerId,
-      placementKey: "other",
-      profileId: null,
-      runtimeId: "test",
-    });
-    await tabs.recordChanges(
-      otherSession,
-      [
-        {
-          id: BrowserSurfaceIdSchema.parse("private-tab"),
-          title: "Private",
-          url: "https://private.test",
-          order: 0,
-          openerId: null,
-        },
-      ],
-      [],
-    );
+    await expect(
+      store.createBrowserSession({
+        id: createBrowserSessionId(),
+        runnerId: f.runnerId,
+        origin: "agent",
+        ownerId: strangerId,
+        placementKey: "other",
+        profileId: null,
+        runtimeId: "test",
+      }),
+    ).rejects.toMatchObject({ code: "forbidden" });
     await expect(
       show(f.tokenA, {
         tabId: "private-tab",
@@ -1215,11 +1206,12 @@ integration("agent-to-agent messaging round trip", () => {
         expect(updates).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
-              threadId: fixture.threadA.id,
+              threadId: worker.id,
               data: {
                 assignment: expect.objectContaining({
                   id: assignment.id,
-                  revision: assignment.revision + 1,
+                  parentThreadId: fixture.threadA.id,
+                  revision: Number(assignment.revision) + 1,
                   status: assignment.status,
                   workerThread: expect.objectContaining({
                     title,
@@ -1234,10 +1226,6 @@ integration("agent-to-agent messaging round trip", () => {
       }
       expect(events).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
-            threadId: fixture.threadA.id,
-            type: "assignment.updated",
-          }),
           expect.objectContaining({
             threadId: worker.id,
             type: "assignment.updated",

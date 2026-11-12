@@ -221,14 +221,17 @@ export async function startPersonalRuntime(input: {
     cookie = signedIn.cookies.map((value) => `${value.name}=${value.value}`).join("; ");
   }
   async function stopRunner() {
-    runnerStop?.abort();
-    connection?.close();
-    await connecting;
-    await child?.close();
-    child = undefined;
-    await runner?.close();
-    runnerIntegrations?.close?.();
-    runner = undefined;
+    try {
+      await child?.close();
+      await runner?.close();
+    } finally {
+      child = undefined;
+      runner = undefined;
+      runnerStop?.abort();
+      connection?.close();
+      await connecting;
+      runnerIntegrations?.close?.();
+    }
   }
   async function startRunner() {
     lifetime.signal.throwIfAborted();
@@ -414,6 +417,7 @@ export async function startPersonalRuntime(input: {
       Promise.race([
         catalogs.promise,
         connecting.then(() => {
+          lifetime.signal.throwIfAborted();
           throw new Error("Runner closed before catalog commit");
         }),
       ]),

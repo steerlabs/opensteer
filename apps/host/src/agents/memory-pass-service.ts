@@ -87,10 +87,16 @@ export class MemoryPassService {
       .where("runnerId", "=", settings.agentHome.computerId)
       .executeTakeFirst();
     if (!environment || (await triggerProgramCompatibilityReason(store, environment.id, 3))) return;
-    const instructions = await this.options.readAgentInstructions(
-      settings.agentHome,
-      AbortSignal.timeout(10_000),
-    );
+    let instructions: string | null;
+    try {
+      instructions = await this.options.readAgentInstructions(
+        settings.agentHome,
+        AbortSignal.timeout(10_000),
+      );
+    } catch (error) {
+      this.options.onError(error);
+      return;
+    }
     const off =
       instructions !== null && /^Memory: off at the person's request/mu.test(instructions);
     const remembered = await this.remembered(settings.ownerId);

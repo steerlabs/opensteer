@@ -2,7 +2,6 @@ import { mkdtemp, mkdir, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createId, HarnessIdSchema, ModelSelectionSchema } from "@opensteer/core";
-import { PrincipalIdSchema } from "@opensteer/channel-core";
 import { createDatabase } from "@opensteer/database/connection";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
@@ -47,12 +46,12 @@ it("admits only hosting-computer folders, defaults to agent home and never subst
     });
     expect(admitted).toEqual({ computerId: personal.runnerId, path: chosen });
     const threadId = createId("thread"),
-      principalId = PrincipalIdSchema.parse(`pri_${crypto.randomUUID()}`),
       harnessInstanceId = createId("harnessInstance");
-    await database
-      .insertInto("principals")
-      .values({ id: principalId, kind: "user", userId: personal.userId, displayName: "Alex" })
-      .execute();
+    const { id: principalId } = await database
+      .selectFrom("principals")
+      .select("id")
+      .where("userId", "=", personal.userId)
+      .executeTakeFirstOrThrow();
     await database
       .insertInto("harnessInstances")
       .values({

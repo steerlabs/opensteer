@@ -5,6 +5,8 @@ import { createDatabase } from "./connection.js";
 import { MigrationLineageError, migrateToLatest, personalTeamBaselineName } from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
+import { seedPersonalFixture } from "./personal-fixture.test-support.js";
+import { AccountDirectoryStore } from "./account-directory-store.js";
 
 let clone: TestDatabase;
 let database: Kysely<DatabaseSchema>;
@@ -59,6 +61,109 @@ async function message(channel: string, owner: string, clientId = crypto.randomU
 }
 
 describe("fresh personal/team lineage", () => {
+  it("projects Account ownership changes and fences an acknowledgement from before revocation", async () => {
+    await migrateToLatest(database);
+    const { userId } = await seedPersonalFixture(database, "/tmp/fixture-agent-home");
+    const directory = new AccountDirectoryStore(database);
+    await directory.configureProvider({
+      issuer: "https://accounts.invalid",
+      providerId: "oidc:account",
+    });
+    const accountId = "account-owner";
+    const id = createId("authAccount");
+    await database
+      .insertInto("authAccounts")
+      .values({ id, userId, providerId: "oidc:account", accountId })
+      .execute();
+    const [pending] = await directory.claimPending();
+    expect(pending).toMatchObject({ userId, present: true, generation: 1 });
+    if (!pending) throw new Error("Owner directory projection was not queued");
+    await directory.refreshUser(userId);
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", userId)
+      .execute();
+    await expect(directory.complete(pending)).resolves.toBe(false);
+    const [removed] = await directory.claimPending();
+    expect(removed).toMatchObject({ userId, present: false, generation: 2 });
+    await database
+      .updateTable("users")
+      .set({ disabledAt: null })
+      .where("id", "=", userId)
+      .execute();
+    const [restored] = await directory.claimPending();
+    expect(restored).toMatchObject({ userId, present: true, generation: 3 });
+    await database.deleteFrom("authAccounts").where("id", "=", id).execute();
+    expect(await directory.claimPending()).toEqual([
+      expect.objectContaining({ userId, present: false, generation: 4 }),
+    ]);
+  });
+  it("preserves personal operation journals and production upsert identities", async () => {
+    await migrateToLatest(database);
+    const operation = (
+      await sql<{
+        dataType: string;
+      }>`select data_type from information_schema.columns where table_schema='public' and table_name='personal_remote_account_link' and column_name='account_operation'`.execute(
+        database,
+      )
+    ).rows;
+    expect(operation).toEqual([{ dataType: "jsonb" }]);
+    const revision = (
+      await sql<{
+        columnDefault: string;
+      }>`select column_default from information_schema.columns where table_schema='public' and table_name='delegations' and column_name='revision'`.execute(
+        database,
+      )
+    ).rows;
+    expect(revision).toEqual([{ columnDefault: "1" }]);
+    expect(
+      (
+        await sql`select table_name,column_name,data_type,is_nullable from information_schema.columns where table_schema='public' and ((table_name='plugin_owner_settings' and column_name='revision') or (table_name='personal_desktop_update' and column_name='detail')) order by table_name`.execute(
+          database,
+        )
+      ).rows,
+    ).toEqual([
+      {
+        tableName: "personal_desktop_update",
+        columnName: "detail",
+        dataType: "text",
+        isNullable: "YES",
+      },
+      {
+        tableName: "plugin_owner_settings",
+        columnName: "revision",
+        dataType: "integer",
+        isNullable: "NO",
+      },
+    ]);
+    const constraints = (
+      await sql<{
+        name: string;
+        definition: string;
+      }>`select conname as name,pg_get_constraintdef(oid) as definition from pg_constraint where conrelid in ('specialists'::regclass,'browser_session_uses'::regclass) and contype='u' order by conname`.execute(
+        database,
+      )
+    ).rows;
+    expect(constraints).toEqual([
+      {
+        name: "browser_session_uses_identity",
+        definition: "UNIQUE NULLS NOT DISTINCT (session_id, thread_id, run_id, tab_id)",
+      },
+      { name: "specialists_plugin_owner", definition: "UNIQUE (plugin_id, owner_user_id)" },
+    ]);
+    const indexes = await catalog();
+    expect(indexes.find(({ name }) => name === "delegations_result_message")?.definition).toMatch(
+      /^CREATE INDEX .*\(result_message_id\)/u,
+    );
+    expect(
+      indexes.find(({ name }) => name === "automation_failure_notices_occurrence_id_key")
+        ?.definition,
+    ).toContain("UNIQUE INDEX");
+    expect(indexes.find(({ name }) => name === "threads_creator_created")?.definition).toContain(
+      "created_by, created_at DESC, id DESC",
+    );
+  });
   it("applies both kinds' tables once and survives restart", async () => {
     await migrateToLatest(database);
     const before = await catalog();

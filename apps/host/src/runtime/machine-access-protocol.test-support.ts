@@ -80,6 +80,7 @@ export type { MachineAccessHost };
 
 const executeFile = promisify(execFile);
 export interface MachineAccessWireHost extends MachineAccessHost {
+  readonly hostingPrivateKey: KeyObject;
   readonly hostingRunnerEnrollmentToken: string;
   readonly ownerEnvironmentId: EnvironmentId;
 }
@@ -190,6 +191,10 @@ export async function startMachineAccessWireHost(
         ownerId: owner.id,
         ownerHeaders: headers,
         hostingComputerId: computerId,
+        get hostingPrivateKey() {
+          if (!hosting) throw new Error("The hosting Runner has not connected");
+          return hosting.primary.privateKey;
+        },
         agentHome,
         remoteAccess: options.remoteAccess ?? false,
         hostingRunnerEnrollmentToken: enrollment,

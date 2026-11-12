@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { PrincipalIdSchema } from "@opensteer/channel-core";
-import { systemPrincipalId } from "@opensteer/database";
 import { mkdir, realpath } from "node:fs/promises";
 import { OpensteerError, type EnvironmentId } from "@opensteer/core";
 import {
   personalDeploymentOwner,
+  initializePersonalSettings,
   personalSettings,
   requirePersonalOwner,
   withPersonalTransaction,
@@ -37,41 +35,7 @@ export async function initializePersonalState(
   if (!existing) await mkdir(config.agentHome, { recursive: true });
   const path = await realpath(config.agentHome);
   await withPersonalTransaction(database, async (transaction) => {
-    const owner = await transaction
-      .selectFrom("users")
-      .select("displayName")
-      .where("id", "=", ownerId)
-      .executeTakeFirstOrThrow();
-    await transaction
-      .insertInto("principals")
-      .values({ id: systemPrincipalId, kind: "system", userId: null, displayName: "Opensteer" })
-      .onConflict((c) => c.doNothing())
-      .execute();
-    await transaction
-      .insertInto("principals")
-      .values({
-        id: PrincipalIdSchema.parse(`pri_${randomUUID()}`),
-        kind: "user",
-        userId: ownerId,
-        displayName: owner.displayName,
-      })
-      .onConflict((c) => c.doNothing())
-      .execute();
-    await transaction
-      .insertInto("personalSettings")
-      .values({
-        singletonKey: "personal",
-        ownerId,
-        agentHomeComputerId: hosting.id,
-        agentHomePath: path,
-        voiceThreadId: null,
-        timeZone: null,
-        quietTaskDays: 0,
-        executionPreferences: { accessMode: "approval-required", history: [] },
-        backgroundModelPreferences: { roles: {}, excludedAccounts: [] },
-      })
-      .onConflict((c) => c.column("singletonKey").doNothing())
-      .execute();
+    await initializePersonalSettings(transaction, ownerId, { computerId: hosting.id, path });
   });
   const settings = await personalSettings(database);
   if (

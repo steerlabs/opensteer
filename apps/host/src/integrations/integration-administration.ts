@@ -60,13 +60,17 @@ export async function executeIntegrationAdministration(
     case "plugin.activation.set": {
       const target = { kind: "plugin" as const, pluginId: command.pluginId };
       const detail = await options.platform.store.settings.detail(actor.userId, target);
-      await options.platform.store.settings.setEnabled(actor.userId, {
-        type: "settings.plugin.enabled.set",
-        target,
-        enabled: command.active,
-        expectedRevision: detail.row.placement.revision,
-        idempotencyKey: command.idempotencyKey,
-      });
+      await options.platform.store.settings.setEnabled(
+        actor.userId,
+        {
+          type: "settings.plugin.enabled.set",
+          target,
+          enabled: command.active,
+          expectedRevision: detail.row.placement.revision,
+          idempotencyKey: command.idempotencyKey,
+        },
+        administration,
+      );
       return { type: command.type };
     }
     case "plugin.remove": {

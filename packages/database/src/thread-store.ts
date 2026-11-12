@@ -936,6 +936,7 @@ export async function getThreadForOwner(
       threadContinuationIdentitySelection,
     ])
     .where("threads.id", "=", threadId)
+    .where("threads.createdBy", "=", ownerId)
     .executeTakeFirst();
   return row ? threadFromRow(row) : null;
 }

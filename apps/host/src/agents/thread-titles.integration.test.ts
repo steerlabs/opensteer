@@ -674,6 +674,7 @@ integration.sequential("Thread title lifecycle", () => {
           commands,
           isEnvironmentConnected: () => true,
           store,
+          folders: personalTestFolders(store, f),
           tokens: {
             authenticate: async () => claims,
           },

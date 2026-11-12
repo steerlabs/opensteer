@@ -510,6 +510,8 @@ integration("Host vertical slice", () => {
       },
     );
     expect(bootstrap.environments).toEqual([]);
+    expect(bootstrap.personalSettings).toBeNull();
+    expect(bootstrap.can).toMatchObject({ createTasks: false, useVoice: false });
   });
 
   it("restarts Host and local Runner identity without the enrollment token", async () => {
@@ -2240,7 +2242,7 @@ integration("Host vertical slice", () => {
     expect(bootstrap.user.displayName).toBe("You");
     expect(bootstrap.sessionSurface).toBe("canonical");
     expect(bootstrap.sessionId).toMatch(/^ses_/u);
-    expect(bootstrap.personalSettings.agentHome).toEqual({
+    expect(bootstrap.personalSettings?.agentHome).toEqual({
       computerId: mainRunner.fence.runnerId,
       path: await realpath(join(dataDirectory, "home")),
     });
