@@ -47,7 +47,7 @@ describe("team review regressions", () => {
         mentions: [{ kind: "person", userId: f.member.userId }],
         attachmentIds: [],
       });
-      const headers = new Headers({ "x-opensteer-team-api-version": "1" });
+      const headers = new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) });
       const result = await f.team.rpc(
         headers,
         "commands.dispatch",
@@ -292,7 +292,7 @@ describe("team review regressions", () => {
       const session = await f.session(f.member.userId);
       const cancel = () =>
         f.team.rpc(
-          new Headers({ "x-opensteer-team-api-version": "1" }),
+          new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) }),
           "commands.dispatch",
           { type: "team.agent.request.cancel", requestId: request.id },
           async () => session,
@@ -325,7 +325,7 @@ describe("team review regressions", () => {
         ownerSession = await f.session(f.owner.userId);
       const rpc = (command: unknown, session = memberSession) =>
         f.team.rpc(
-          new Headers({ "x-opensteer-team-api-version": "1" }),
+          new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) }),
           "commands.dispatch",
           command,
           async () => session,

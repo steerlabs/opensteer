@@ -29,11 +29,18 @@ import {
 } from "./team-link.js";
 import { TeamChannelSummarySchema, TeamConsistentCutSchema } from "./team-chat.js";
 import { hostApi } from "./host-api.js";
+import {
+  readTeamFrame,
+  TeamClientFrameViewSchema,
+  TeamLinkClientFrameViewSchema,
+  TeamLinkServerFrameViewSchema,
+  TeamServerFrameViewSchema,
+} from "./team-views.js";
 
 describe("team boundary contracts", () => {
   it("negotiates team independently of the personal epoch", () => {
     expect(apiNegotiation("personal")).toEqual({ kind: "personal", apiVersion: hostApiVersion });
-    expect(apiNegotiation("team")).toEqual({ kind: "team", apiVersion: 1 });
+    expect(apiNegotiation("team")).toEqual({ kind: "team", apiVersion: teamApiVersion });
     expect(apiVersionHeader("team")).toBe("x-opensteer-team-api-version");
     for (const personalEpoch of [1, hostApiVersion, hostApiVersion + 100])
       expect(
@@ -202,6 +209,48 @@ describe("team boundary contracts", () => {
       }).success,
     ).toBe(false);
     expect(TeamChannelSummarySchema.safeParse(channel).success).toBe(false);
+  });
+  it("reads a newer peer's frames: unknown fields are dropped and unknown frame types skipped", () => {
+    const channelId = createId("teamChannel"),
+      requestId = createId("teamAgentRequest");
+    const newer = { future: { nested: true } };
+    const cases = [
+      [
+        TeamServerFrameViewSchema,
+        { type: "team.typing", channelId, rootId: null, userIds: [], ...newer },
+      ],
+      [TeamClientFrameViewSchema, { type: "team.presence", visible: true, watchedUserIds: [] }],
+      [
+        TeamLinkServerFrameViewSchema,
+        { type: "result", id: "1", result: { kind: "receipt", messageId: null, ...newer } },
+      ],
+      [
+        TeamLinkClientFrameViewSchema,
+        {
+          type: "status",
+          id: "1",
+          requestId,
+          state: "working",
+          steps: [{ kind: "read_files", count: 2, ...newer }],
+          ...newer,
+        },
+      ],
+    ] as const;
+    for (const [schema, frame] of cases) {
+      const read = readTeamFrame(schema, { ...frame, ...newer });
+      expect(read).not.toBeNull();
+      expect(JSON.stringify(read)).not.toContain("future");
+      expect(readTeamFrame(schema, { type: "team.future", ...newer })).toBeNull();
+      expect(() => readTeamFrame(schema, { type: frame.type })).toThrow();
+    }
+    expect(() =>
+      readTeamFrame(TeamLinkClientFrameViewSchema, {
+        type: "search",
+        id: "1",
+        requestId,
+        input: { query: "plans", ...newer },
+      }),
+    ).toThrow();
   });
   it("removes old human commands and requires a channel-scoped send identity", () => {
     expect(

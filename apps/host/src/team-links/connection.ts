@@ -3,8 +3,9 @@ import type { DeploymentId } from "@opensteer/core";
 import { OpensteerError } from "@opensteer/core";
 import { acceptsTeamApiVersion, teamApiVersion } from "@opensteer/deployment-authority";
 import {
+  readTeamFrame,
   TeamLinkClientFrameSchema,
-  TeamLinkServerFrameSchema,
+  TeamLinkServerFrameViewSchema,
   type PersonalTeamRequest,
   type TeamLinkServerFrame,
 } from "@opensteer/protocol";
@@ -89,13 +90,14 @@ export class TeamLinkConnection implements TeamLinkRpc {
           socket.terminate();
           return;
         }
-        let frame: TeamLinkServerFrame;
+        let frame: TeamLinkServerFrame | null;
         try {
-          frame = TeamLinkServerFrameSchema.parse(JSON.parse(bytes.toString()));
+          frame = readTeamFrame(TeamLinkServerFrameViewSchema, JSON.parse(bytes.toString()));
         } catch {
           socket.terminate();
           return;
         }
+        if (!frame) return;
         if (frame.type === "result" || frame.type === "error") {
           const pending = this.#calls.get(frame.id);
           if (pending) {

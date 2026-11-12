@@ -12,6 +12,7 @@ import { startTeamServices } from "./services.js";
 import { createId, type TeamActor, type KnowledgeTopicId } from "@opensteer/core";
 import { createTeamKnowledgeFixture } from "@opensteer/database/test-support/team-knowledge";
 import { hostApi } from "@opensteer/protocol";
+import { teamApiVersion } from "@opensteer/deployment-authority";
 import { teamChannelTopics } from "@opensteer/database";
 import { sql } from "kysely";
 import { TeamAccessStore } from "@opensteer/database/team-access";
@@ -1291,7 +1292,7 @@ describe("team transaction authority", () => {
       expect(authenticate).not.toHaveBeenCalled();
       await expect(
         services.rpc(
-          new Headers({ "x-opensteer-team-api-version": "1" }),
+          new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) }),
           "tasks.list",
           {},
           authenticate,
@@ -1299,7 +1300,7 @@ describe("team transaction authority", () => {
       ).rejects.toThrow("Personal routes");
       expect(authenticate).not.toHaveBeenCalled();
       const result = await services.rpc(
-        new Headers({ "x-opensteer-team-api-version": "1", "x-opensteer-api-version": "99999" }),
+        new Headers({ "x-opensteer-team-api-version": String(teamApiVersion), "x-opensteer-api-version": "99999" }),
         "team.bootstrap.get",
         {},
         authenticate,
@@ -1319,7 +1320,7 @@ describe("team transaction authority", () => {
         keyId: Buffer.alloc(16).toString("base64url"),
         key: Buffer.alloc(32).toString("base64url"),
       };
-      const headers = new Headers({ "x-opensteer-team-api-version": "1" });
+      const headers = new Headers({ "x-opensteer-team-api-version": String(teamApiVersion) });
       await expect(
         services.rpc(headers, "commands.dispatch", preview, async () => session),
       ).rejects.toThrow("Team access denied");

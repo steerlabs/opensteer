@@ -1,6 +1,7 @@
 import { OpensteerError, type TeamActor, type TeamChannelId, type UserId } from "@opensteer/core";
 import {
-  TeamClientFrameSchema,
+  readTeamFrame,
+  TeamClientFrameViewSchema,
   type TeamConsistentCut,
   type TeamServerFrameSchema,
 } from "@opensteer/protocol";
@@ -155,7 +156,8 @@ export class TeamRealtimeHub {
             reason: "api-version-mismatch",
             message: teamApiVersionRefusal,
           });
-        const frame = TeamClientFrameSchema.parse(raw);
+        const frame = readTeamFrame(TeamClientFrameViewSchema, raw);
+        if (!frame) return;
         peer.seen = Date.now();
         if (frame.type === "team.subscribe") {
           const subscription: Subscription = {
