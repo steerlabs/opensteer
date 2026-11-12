@@ -46,23 +46,8 @@ afterEach(() => {
   sessionStorage.clear();
 });
 const view: SettingsView = {
-  administrator: true,
   deployment: null,
   kind: "personal",
-  deploymentPolicy: {
-    ownership: "single-user",
-    personalRemoteAccess: true,
-    nativeWebLinks: true,
-    localOwnerClaim: true,
-    deploymentOwnsMainComputer: true,
-    nativePasswords: true,
-    deploymentComputerAccess: true,
-    sharing: false,
-    serviceManagement: false,
-    runnerEnrollmentMode: "reach-only",
-    projectConsent: "owner-wide",
-    localRunnerDefaultModules: ["shell"],
-  },
   machineOwner: true,
   name: "My Mac",
   facts: { desktop: false, onThisComputer: false, remote: false },
@@ -75,7 +60,6 @@ async function mount(
     empty?: boolean;
     configure?: (client: MockHostClient) => Promise<void>;
     client?: MockHostClientOptions;
-    policy?: SettingsView["deploymentPolicy"];
   } = {},
 ) {
   client = new MockHostClient({ latencyMs: 0, ...options.client });
@@ -111,11 +95,9 @@ async function mount(
       <MemoryRouter initialEntries={[path]}>
         <ToastProvider>
           {gmail ? (
-            <PluginAddSheet personal={false} product={gmail} />
+            <PluginAddSheet product={gmail} />
           ) : (
-            <PluginsSection
-              view={{ ...view, deploymentPolicy: options.policy ?? view.deploymentPolicy }}
-            />
+            <PluginsSection view={view} />
           )}
         </ToastProvider>
       </MemoryRouter>,
@@ -129,40 +111,7 @@ async function mount(
   return node;
 }
 describe("Plugins settings", () => {
-  it.each([true, false])(
-    "labels owner-wide placement independently of ownership: %s",
-    async (ownerWide) => {
-      const node = await mount("/settings/plugins", {
-        policy: {
-          ownership: ownerWide ? "members" : "single-user",
-          projectConsent: ownerWide ? "owner-wide" : "per-project",
-        },
-        configure: async (host) => {
-          const original = host.rpc;
-          const overview = unwrapRpcResult(await original["plugins.overview.get"]({}));
-          Object.defineProperty(host, "rpc", {
-            value: new Proxy(original, {
-              get: (target, key) =>
-                key === "plugins.overview.get"
-                  ? async () => ({
-                      ok: true,
-                      data: {
-                        ...overview,
-                        rows: overview.rows.map((row) => ({
-                          ...row,
-                          placement: { ...row.placement, personalEverywhere: true },
-                        })),
-                      },
-                    })
-                  : Reflect.get(target, key),
-            }),
-          });
-        },
-      });
-      expect(node.textContent?.includes("Everywhere")).toBe(ownerWide);
-    },
-  );
-  it("restores only reviewed placement after the Host confirms an OAuth return", async () => {
+  it("restores only the reviewed consent after the Host confirms an OAuth return", async () => {
     const attemptId = "ioa_00000000-0000-4000-8000-0000000000a1";
     let key = "";
     let dispatched: unknown[] = [];
@@ -174,11 +123,9 @@ describe("Plugins settings", () => {
             target: { kind: "service", definitionId: "google-gmail" },
           }),
         );
-        key = pluginConsentKey(snapshot.homeWorkspaceId!, snapshot.user!.id, attemptId);
+        key = pluginConsentKey(snapshot.deploymentId!, snapshot.user!.id, attemptId);
         storePluginConsent(key, {
           target: detail.row.target,
-          everywhere: false,
-          places: [snapshot.homeWorkspaceId!],
           access: "read",
           idempotencyKey: "returned-consent",
           command: null,
@@ -212,9 +159,9 @@ describe("Plugins settings", () => {
     });
     expect(dispatched).toContainEqual(
       expect.objectContaining({
-        type: "settings.plugin.placement.set",
+        type: "settings.plugin.enabled.set",
         idempotencyKey: "returned-consent",
-        personalEverywhere: null,
+        enabled: true,
       }),
     );
     expect(readPluginConsent(key)).toBeNull();
@@ -229,8 +176,6 @@ describe("Plugins settings", () => {
     const key = "test-consent";
     storePluginConsent(key, {
       target: detail.row.target,
-      everywhere: true,
-      places: [],
       access: "read",
       idempotencyKey: "uncertain-consent",
       command: null,
@@ -258,7 +203,7 @@ describe("Plugins settings", () => {
     expect(JSON.stringify(readPluginConsent(key))).not.toContain("launchTicket");
     expect(JSON.stringify(readPluginConsent(key))).not.toContain(detail.accounts[1]!.connectionId);
   });
-  it("requires server placement and explicit Add before opening sign-in", async () => {
+  it("requires an explicit Add before opening sign-in, then turns the service on", async () => {
     const node = await mount("/settings/plugins/add", { sheet: true });
     await act(async () => {
       await vi.waitFor(() => expect(node.textContent).toContain("Read and search mail"));
@@ -266,10 +211,7 @@ describe("Plugins settings", () => {
     const proceed = [...node.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Connect Gmail",
     )!;
-    expect(proceed.disabled).toBe(true);
     expect(node.textContent).not.toContain("Everywhere");
-    const choices = node.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    await act(async () => choices[0]!.click());
     expect(proceed.disabled).toBe(false);
     expect(node.querySelector('select[aria-label="Agent access"]')).toBeNull();
     expect(node.querySelectorAll('input:not([role="switch"])')).toHaveLength(0);
@@ -292,20 +234,9 @@ describe("Plugins settings", () => {
     )!;
     await act(async () => complete.click());
     expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "settings.plugin.placement.set",
-        mainIncluded: true,
-        personalEverywhere: null,
-      }),
+      expect.objectContaining({ type: "settings.plugin.enabled.set", enabled: true }),
     );
-    expect(dispatch.mock.calls[0]![0].type).toBe("settings.plugin.enabled.set");
-    const command = dispatch.mock.calls.find(
-      ([command]) => command.type === "settings.plugin.placement.set",
-    )![0];
-    if (command.type !== "settings.plugin.placement.set")
-      throw new Error("Placement command missing");
-    expect(JSON.stringify(command)).not.toContain(accounts[1]!.connectionId);
-    expect(node.textContent).toContain("Connected and turned on in your chosen places.");
+    expect(node.textContent).toContain("Connected and turned on.");
   });
   it("returns provider links into the Plugins service editor with one account list", async () => {
     const node = await mount("/settings/plugins?provider=google-gmail");
@@ -365,12 +296,11 @@ describe("Plugins settings", () => {
     )!;
     const detail = unwrapRpcResult(await client.rpc["plugins.detail.get"]({ target: row.target }));
     expect(detail.accounts).toHaveLength(2);
-    expect(detail.places.some((place) => place.selected)).toBe(true);
   });
   it("opens a composite identity with exact accounts and layered permission facts", async () => {
     const node = await mount(pluginPath({ kind: "service", definitionId: "google-gmail" }));
     await act(async () => {
-      await vi.waitFor(() => expect(node.textContent).toContain("Where it’s on"), {
+      await vi.waitFor(() => expect(node.textContent).toContain("What agents may do"), {
         timeout: 1500,
       });
     });
@@ -607,22 +537,4 @@ it("releases a rejected switch attempt before the next click", async () => {
   expect(second.idempotencyKey).not.toBe(first.idempotencyKey);
 });
 
-it("uses the explicitly selected provider account and access for Everywhere", async () => {
-  const node = await mount(pluginPath({ kind: "service", definitionId: "google-gmail" }));
-  const select = node.querySelector<HTMLSelectElement>('select[aria-label^="Access for "]')!;
-  expect(select).not.toBeNull();
-  await act(async () => {
-    select.value = "read-write";
-    select.dispatchEvent(new Event("change", { bubbles: true }));
-  });
-  const dispatch = vi.spyOn(client, "dispatch");
-  const everywhere = [...node.querySelectorAll<HTMLInputElement>("#plugin-placement input")][0]!;
-  await act(async () => everywhere.click());
-  const command = dispatch.mock.calls[0]![0];
-  expect(command.type).toBe("settings.plugin.placement.set");
-  if (command.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
-  expect(command.personalEverywhere?.accounts).toHaveLength(1);
-  expect(command.personalEverywhere?.accounts[0]?.access).toBe("read-write");
-  for (const project of command.projects)
-    expect(project.accounts).toEqual(command.personalEverywhere?.accounts);
-});
+
