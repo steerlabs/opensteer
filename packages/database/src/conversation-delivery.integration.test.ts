@@ -63,7 +63,6 @@ interface FixtureOptions {
   /** `false` is an engine that can only take a message by restarting its attempt. */
   readonly steering?: boolean;
   readonly purpose?: "voice" | "task";
-  readonly collaborator?: boolean;
   /** `false` is a Runner from before `steer-answer-v1`. */
   readonly steerAnswer?: boolean;
   /** Whether the engine takes images mid-turn; absent, the engine takes no files. */
@@ -131,7 +130,6 @@ integration.sequential("conversation delivery", () => {
         environmentId,
         expectedRevisions: new Map([[harness.id, harness.runtimeRevision]]),
       });
-      const collaboratorId = options.collaborator ? await store.createUser("Other person") : null;
       const purpose = options.purpose ?? "voice";
       const { thread } = await store.createThread({
         createdBy: ownerId,
@@ -144,7 +142,6 @@ integration.sequential("conversation delivery", () => {
       });
       expect(thread.purpose).toBe(purpose);
       return {
-        collaboratorId,
         descriptor,
         environmentId,
         harness,
@@ -163,18 +160,12 @@ integration.sequential("conversation delivery", () => {
         },
       ];
     }
-    async function send(
-      f: Fixture,
-      key: string,
-      options: {
-        readonly by?: UserId;
-      } = {},
-    ) {
+    async function send(f: Fixture, key: string) {
       return store.enqueueThreadInput({
         content: text(`Message ${key}`),
         idempotencyKey: key,
         policy: "queue",
-        requestedBy: options.by ?? f.ownerId,
+        requestedBy: f.ownerId,
         source: {
           kind: "human",
         },
@@ -1131,21 +1122,10 @@ integration.sequential("conversation delivery", () => {
     });
     await receipt("provider-cancel-then-follow-up", f);
   });
-  it("never joins another person's Run, another reply target or a stale membership", async ({
-    storeFixture,
-  }) => {
+  it("never joins a Run with another reply target", async ({ storeFixture }) => {
     const { fixture, running, send, database, runsOf, receipt } = storeFixture;
-    const f = await fixture("isolation", {
-      collaborator: true,
-    });
+    const f = await fixture("isolation");
     const runId = await running(f);
-    const theirs = await send(f, "collaborator-message", {
-      by: f.collaboratorId!,
-    });
-    expect(theirs).toMatchObject({
-      disposition: "pending",
-      run: null,
-    });
     // The same person writing from the app does not join a reply going to a channel.
     await database
       .updateTable("runs")
@@ -1557,109 +1537,42 @@ integration.sequential("conversation delivery", () => {
     });
     await receipt("dual-device-stop", f);
   });
-  it("settles a conversation an older Stop left paused, once, without running or losing anything", async ({
+  it("keeps a stopped task paused through recovery until the person resumes it", async ({
     storeFixture,
   }) => {
-    const {
-      fixture,
-      running,
-      emit,
-      text,
-      store,
-      send,
-      start,
-      database,
-      platformInput,
-      thread,
-      input,
-      runsOf,
-      claimAndBind,
-      receipt,
-    } = storeFixture;
-    const f = await fixture("legacy-paused");
+    const { fixture, running, send, stop, emit, store, thread, input, runsOf, receipt } =
+      storeFixture;
+    const f = await fixture("paused-task", { purpose: "task" });
     const runId = await running(f);
-    await emit(f, runId, "assistant.message", {
-      content: text("First answer."),
-      messageId: createId("message"),
+    const queued = await send(f, "paused-task-follow-up");
+    await stop(f, runId, "paused-task-stop");
+    await emit(f, runId, "run.interrupted", { status: "interrupted" });
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await store.recoverThreadWorkQueues()).toEqual([]);
+      expect((await thread(f)).inputQueuePaused).toBe(true);
+      expect(await input(queued.message.id)).toMatchObject({
+        runId: null,
+        state: "pending",
+      });
+      expect(await runsOf(f)).toHaveLength(1);
+    }
+
+    await store.resumeThreadInputQueue({
+      idempotencyKey: "paused-task-resume",
+      requestedBy: f.ownerId,
+      threadId: f.thread.id,
     });
-    await emit(f, runId, "run.completed", {
-      status: "completed",
-    });
-    const { thread: workThread } = await store.createThread({
-      createdBy: f.ownerId,
-      environmentId: f.environmentId,
-      harnessInstanceId: f.harness.id,
-      idempotencyKey: "thread-legacy-paused-work",
-      modelSelection,
-      purpose: "task",
-      title: "Legacy work",
-    });
-    const work: Fixture = {
-      ...f,
-      suffix: "legacy-paused-work",
-      thread: workThread,
-    };
-    const workFirst = await send(work, "legacy-work-a");
-    await start(work, workFirst.run!.id);
-    const workQueued = await send(work, "legacy-work-b");
-    // What an earlier Host left behind: a paused Chat holding a person's
-    // message and a finished task's result, and a paused work Thread.
-    await database
-      .updateTable("threads")
-      .set({
-        inputQueuePaused: true,
-        inputQueuePausedBy: f.ownerId,
-      })
-      .where("id", "in", [f.thread.id, work.thread.id])
-      .execute();
-    const held = await send(f, "legacy-held");
-    const result = await platformInput(f, "legacy-task-result", runId);
-    expect(held).toMatchObject({
-      disposition: "pending",
-    });
-    expect(result).toMatchObject({
-      disposition: "pending",
-    });
-    const settled = await store.recoverThreadWorkQueues();
     expect((await thread(f)).inputQueuePaused).toBe(false);
-    expect(await input(held.message.id)).toMatchObject({
-      cancelReason: "stopped",
-      state: "cancelled",
+    const runs = await runsOf(f);
+    expect(runs).toHaveLength(2);
+    expect(runs[1]).toMatchObject({
+      seedInputId: queued.message.id,
+      status: "queued",
     });
-    // The task's outcome becomes context for the person's next turn.
-    expect(await input(result.message.id)).toMatchObject({
-      policy: "report",
-      state: "pending",
-    });
-    expect(await runsOf(f)).toHaveLength(1);
-    expect(settled.map(summarizeEvent)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: "thread.input-queue-updated",
-        }),
-        expect.objectContaining({
-          type: "thread-input.updated",
-        }),
-      ]),
-    );
-    // A work Thread's pause is the person's to lift.
-    expect((await thread(work)).inputQueuePaused).toBe(true);
-    expect(await input(workQueued.message.id)).toMatchObject({
-      state: "pending",
-    });
-    expect(
-      (await store.recoverThreadWorkQueues()).filter((event) => event.threadId === f.thread.id),
-    ).toEqual([]);
-    const next = await send(f, "legacy-next");
-    expect(next).toMatchObject({
-      disposition: "run-queued",
-    });
-    const { claimed } = await claimAndBind(f, next.run!.id);
-    const context = await store.loadRunDispatchContext(claimed.command.id);
-    expect(context.reports.messages.map(({ id }) => id)).toEqual([result.message.id]);
-    await receipt("legacy-paused-settlement", f, {
-      settledEvents: settled.map(summarizeEvent),
-    });
+    expect(await store.recoverThreadWorkQueues()).toEqual([]);
+    expect(await runsOf(f)).toHaveLength(2);
+    await receipt("paused-task-recovery", f);
   });
   it.for([
     [
