@@ -950,7 +950,6 @@
     "tests/harness-vendor-pins.test.ts": 1507,
     "tests/helper-data-contracts.test.ts": 1517,
     "tests/host-response-tolerance.test.ts": 1503,
-    "tests/init-team.test.ts": 2235,
     "tests/install-beta-mac-local.test.ts": 1830,
     "tests/integration-marks.test.ts": 1507,
     "tests/integration-parallelism-child.test.ts": 1672,

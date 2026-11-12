@@ -51,7 +51,6 @@
     "bench:mac-display": "tsx scripts/bench-mac-display.ts",
     "bench:browser-stream": "tsx scripts/bench-browser-stream.ts",
     "dev:team": "OPENSTEER_DEPLOYMENT_KIND=team OPENSTEER_DEV_SERVICES=host,web tsx scripts/dev.ts",
-    "init:team": "tsx scripts/init-team.ts",
     "verify:team-deployment": "node scripts/verify-team-deployment.mjs"
   },
   "devDependencies": {

@@ -19,14 +19,7 @@ services:
       timeout: 5s
       retries: 20
   host:
-    build:
-      context: ../..
-      dockerfile: deploy/container/Containerfile
-      target: host
-      args: &build-args
-        OPENSTEER_AGENT_PHONE_MODE: none
-        OPENSTEER_RELEASE_VERSION: ${OPENSTEER_RELEASE_VERSION:?required}
-        OPENSTEER_SOURCE_REVISION: ${OPENSTEER_SOURCE_REVISION:?required}
+    image: ghcr.io/steerlabs/opensteer-team-host:${OPENSTEER_TEAM_VERSION:?required}
     restart: unless-stopped
     environment:
       OPENSTEER_DEPLOYMENT_KIND: team
@@ -60,17 +53,11 @@ services:
       retries: 12
     stop_grace_period: 45s
   gateway:
-    build:
-      context: ../..
-      dockerfile: deploy/container/Containerfile
-      target: gateway
-      args: *build-args
+    image: ghcr.io/steerlabs/opensteer-team-gateway:${OPENSTEER_TEAM_VERSION:?required}
     restart: unless-stopped
     environment:
       OPENSTEER_SITE_ADDRESS: ${OPENSTEER_GATEWAY_SITE_ADDRESS:-${OPENSTEER_CANONICAL_ORIGIN}}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
+    volumes: [caddy-data:/data]
     networks: [edge]
     ports: ["${OPENSTEER_HTTP_BIND:-0.0.0.0}:80:80", "${OPENSTEER_HTTPS_BIND:-0.0.0.0}:443:443"]
     depends_on:

@@ -509,3 +509,11 @@ COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/loc
 COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
 ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
 EXPOSE 80 443
+
+FROM ${CADDY_IMAGE} AS team-gateway
+COPY deploy/team/Caddyfile /etc/caddy/Caddyfile
+COPY --from=web-build /source/apps/web/dist /srv/opensteer-web
+COPY --from=opensteer-release-record --chmod=0755 /release/release.json /usr/local/share/opensteer/release.json
+COPY --from=opensteer-release-record --chmod=0444 /release/release.json /usr/local/share/opensteer/release.json
+ENV OPENSTEER_RELEASE_RECORD=/usr/local/share/opensteer/release.json
+EXPOSE 80 443

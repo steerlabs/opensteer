@@ -14,8 +14,10 @@ apps/desktop/release
 apps/runner/native-fs-helper/opensteer-native-fs
 apps/runner/native-fs-helper/opensteer-native-fs-test
 coverage
-deploy/self-host/secrets
-deploy/self-host/state
+deploy/team/config.env
+deploy/team/secrets
+deploy/team/state
+deploy/team/update.log
 node_modules
 playwright-report
 test-results

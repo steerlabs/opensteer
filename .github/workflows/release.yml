@@ -323,6 +323,77 @@ jobs:
           digest=$(gcloud artifacts docker images describe "$IMAGE:$SHA" --format='value(image_summary.digest)')
           echo "IMAGE_REF=$IMAGE@$digest" >> "$GITHUB_ENV"
       - run: bash .github/scripts/deploy-account.sh "$IMAGE_REF" "$SHA"
+  team-image-build:
+    # Insiders publish the team images; Stable reuses that version's images unchanged.
+    needs: preflight
+    if: needs.preflight.outputs.superseded != 'true'
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      SHA: ${{ needs.preflight.outputs.sha }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+      # The image records its release identity, which requires the derived version stamp.
+      - run: node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.SHA, process.env.VERSION)'
+      - name: Build and push by digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          bash .github/scripts/team-images.sh build "$PLATFORM" "$RUNNER_TEMP/team-images"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: team-images-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/team-images/
+          if-no-files-found: error
+  team-images:
+    needs: [preflight, team-image-build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      host_image: ${{ steps.publish.outputs.host_image }}
+      gateway_image: ${{ steps.publish.outputs.gateway_image }}
+    env:
+      SHA: ${{ needs.preflight.outputs.sha }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: team-images-*
+          path: ${{ runner.temp }}/team-images
+          merge-multiple: true
+      - id: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          bash .github/scripts/team-images.sh publish "$RUNNER_TEMP/team-images"
   draft:
     needs: [preflight, build]
     if: ${{ !cancelled() && needs.build.result == 'success' }}
@@ -351,8 +422,8 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: pnpm desktop:public-release draft --dir "$RUNNER_TEMP/prepared" --repo steerlabs/opensteer
   publish-insider:
-    needs: [preflight, discover, draft, account]
-    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
+    needs: [preflight, discover, draft, account, team-images]
+    if: ${{ !cancelled() && needs.discover.result == 'success' && needs.account.result == 'success' && needs['team-images'].result == 'success' && needs.preflight.outputs.channel == 'beta' && (github.event_name == 'push' || inputs.publish) && needs.discover.outputs.skip == 'false' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -376,8 +447,8 @@ jobs:
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
   publish-stable:
-    needs: [preflight, discover, draft]
-    if: ${{ !cancelled() && needs.preflight.outputs.channel == 'stable' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') && inputs.publish }}
+    needs: [preflight, discover, draft, team-images]
+    if: ${{ !cancelled() && needs['team-images'].result == 'success' && needs.preflight.outputs.channel == 'stable' && (needs.draft.result == 'success' || needs.discover.outputs.reuse == 'true') && inputs.publish }}
     runs-on: ubuntu-latest
     environment: publish
     permissions:

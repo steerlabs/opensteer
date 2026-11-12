@@ -299,7 +299,7 @@ describe("container build context", () => {
     ]);
   });
 
-  it("makes the immutable record the final non-empty layer of all eight images", async () => {
+  it("makes the immutable record the final non-empty layer of every image", async () => {
     const containerfile = await readFile(resolve("deploy/container/Containerfile"), "utf8");
     const targetNames = [
       "host",
@@ -310,6 +310,7 @@ describe("container build context", () => {
       "channel-runtime",
       "browser-runtime",
       "gateway",
+      "team-gateway",
     ];
     for (const name of targetNames) {
       const start = containerfile.indexOf(` AS ${name}\n`);

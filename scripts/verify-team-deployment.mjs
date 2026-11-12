@@ -4,27 +4,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const repositoryRoot = resolve(import.meta.dirname, "..");
-const packageManifest = JSON.parse(readFileSync(resolve(repositoryRoot, "package.json"), "utf8"));
-const sourceRevisionResult = spawnSync(
-  "git",
-  ["-C", repositoryRoot, "rev-parse", "--verify", "HEAD^{commit}"],
-  { encoding: "utf8", shell: false, stdio: ["ignore", "pipe", "pipe"] },
-);
-if (sourceRevisionResult.status !== 0) {
-  fail(sourceRevisionResult.stderr.trim() || "Could not resolve the source revision.");
-}
-const sourceRevision = sourceRevisionResult.stdout.trim();
-if (!/^[a-f0-9]{40}$/u.test(sourceRevision)) fail("The source revision is invalid.");
-const packageVersion =
-  packageManifest && typeof packageManifest === "object" && !Array.isArray(packageManifest)
-    ? packageManifest.version
-    : undefined;
-if (
-  typeof packageVersion !== "string" ||
-  !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/u.test(packageVersion)
-) {
-  fail("The root package version is invalid.");
-}
 const composeFiles = [resolve(repositoryRoot, "deploy/team/compose.yaml")];
 const arguments_ = ["compose", "--file", composeFiles[0], "config", "--format", "json"];
 const canonicalOrigin = process.env.OPENSTEER_CANONICAL_ORIGIN || "https://team.example.test";
@@ -34,8 +13,7 @@ const rendered = spawnSync("docker", arguments_, {
   encoding: "utf8",
   env: {
     ...process.env,
-    OPENSTEER_RELEASE_VERSION: process.env.OPENSTEER_RELEASE_VERSION || packageVersion,
-    OPENSTEER_SOURCE_REVISION: process.env.OPENSTEER_SOURCE_REVISION || sourceRevision,
+    OPENSTEER_TEAM_VERSION: process.env.OPENSTEER_TEAM_VERSION || "0.0.0",
     OPENSTEER_CANONICAL_ORIGIN: canonicalOrigin,
   },
 });

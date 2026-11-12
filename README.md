@@ -36,9 +36,9 @@ Chromium that the tests drive. Native desktop and mobile builds also need their
 platform toolchains; see [apps/desktop](apps/desktop/README.md) and
 [apps/mobile](apps/mobile/README.md).
 
-To run your own server instead, follow the
-[self-hosting guide](deploy/self-host/). Compose builds the images locally;
-configure credentials and public origins before starting services.
+To run a team server for shared chat and knowledge, follow the
+[team server guide](deploy/team/README.md). It runs the published images with
+Docker Compose; no Node or source build is needed.
 
 ## Why we're building this
 

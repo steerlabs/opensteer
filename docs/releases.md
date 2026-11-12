@@ -12,9 +12,10 @@ pair again, and the old Account/Connect entry remains removable. Test reset only
 fixtures or a VM.
 
 Team servers update through the [deploy/team recipe](../deploy/team/README.md), with hourly
-scheduler-driven build-before-replace updates. A failed build leaves the running stack in place;
-there is no desktop team supervisor. Stable and Beta select the corresponding published tags.
-Personal Host epoch and team API version advance independently.
+scheduler-driven pull-before-replace updates. A failed pull leaves the running stack in place;
+there is no desktop team supervisor. Stable and Beta select the corresponding published tags,
+and each tag's version names the images it runs. Personal Host epoch and team API version
+advance independently.
 
 ## Build inputs and local proof
 
@@ -151,6 +152,18 @@ must never recreate or replace an established native directory, and named profil
 unavailable until every owning storage root reconciles its inventory ([profile
 authority](browser-sessions.md#profile-state)). Restoring runtime storage backwards too is outside
 this guarantee.
+
+## Team images
+
+The team Host (`host` target, kind set at runtime) and team gateway (`team-gateway`) publish to
+`ghcr.io/steerlabs/opensteer-team-host` and `-team-gateway` as one linux/amd64 and linux/arm64
+index per version, each architecture built on its own native runner. An insider publishes
+version `X.Y.Z` before its tag; Stable promotion reuses that `X.Y.Z`, so Stable
+runs the bytes Beta ran. GHCR tags are mutable, so [team-images.sh](../.github/scripts/team-images.sh)
+writes a version once and refuses one that records another source. There are no moving channel
+tags: the release tags are the channel feed. The `team-images` job outputs `host_image` and
+`gateway_image` as digest references for deployments in the same run. Tim makes both packages
+public once, after their first push.
 
 ## Account service
 

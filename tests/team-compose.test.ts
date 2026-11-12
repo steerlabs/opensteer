@@ -26,4 +26,25 @@ describe("team Compose contract", () => {
     expect(Object.keys(document.services).sort()).toEqual(["gateway", "host", "postgres"]);
     expect(document.services.postgres?.ports).toBeUndefined();
   });
+
+  it("runs the published team images, whose gateway proxies to a configurable Host", async () => {
+    const compose = parse(await readFile(resolve("deploy/team/compose.yaml"), "utf8"));
+    for (const [service, image] of [
+      ["host", "opensteer-team-host"],
+      ["gateway", "opensteer-team-gateway"],
+    ] as const) {
+      expect(compose.services[service].image).toBe(
+        `ghcr.io/steerlabs/${image}:\${OPENSTEER_TEAM_VERSION:?required}`,
+      );
+      expect(compose.services[service].build).toBeUndefined();
+    }
+    expect(compose.services.gateway.volumes).toEqual(["caddy-data:/data"]);
+    const caddyfile = await readFile(resolve("deploy/team/Caddyfile"), "utf8");
+    expect(caddyfile.match(/reverse_proxy .+/gu)).toEqual([
+      "reverse_proxy {$OPENSTEER_HOST_UPSTREAM:host:4310}",
+    ]);
+    expect(await readFile(resolve("deploy/container/Containerfile"), "utf8")).toContain(
+      "AS team-gateway\nCOPY deploy/team/Caddyfile /etc/caddy/Caddyfile\n",
+    );
+  });
 });
