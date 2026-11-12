@@ -2596,5 +2596,5 @@ export function operationDetail(error: unknown, fallback: string): string {
  * drawer and driven by its own session, and is never the selected Deployment.
  */
 export function isPersonalConnection(connection: DeploymentConnection): boolean {
-  return connection.kind === "personal";
+  return connection.authority.document.deploymentShape.kind === "personal";
 }

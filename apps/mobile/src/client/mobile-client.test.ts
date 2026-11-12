@@ -2837,6 +2837,10 @@ describe("MobileClient sign-in", () => {
       `${opensteerMobileHostOAuthCallback}?code=host-code&iss=https%3A%2F%2Fhost.example.com&state=${state}`,
     );
     await settle();
+    await client.catalog.upsert({
+      ...asInput(testDeploymentConnection({ kind: "team", deploymentId: serverId })),
+      kind: "personal",
+    });
     for (const action of ["select", "openDeployment"] as const) {
       await expect(client[action](serverId)).rejects.toThrow(
         /team cannot be opened as a computer/u,

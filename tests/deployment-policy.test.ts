@@ -130,7 +130,8 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
-      "connection.kind": 5,
+      "connection.kind": 4,
+      "connection.authority.document.deploymentShape.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
