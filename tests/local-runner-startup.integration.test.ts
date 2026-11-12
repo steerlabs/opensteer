@@ -70,7 +70,7 @@ integration("local Runner startup with a real credentialed worker", () => {
       try {
         host = await startPersonalMachineHost({ databaseUrl: database.url, remoteAccess: true });
         const descriptor = HostDescriptorSchema.parse(
-          await (await fetch(`${host.origin}/.well-known/opensteer`)).json(),
+          await (await fetch(new URL("/.well-known/opensteer", host.origin))).json(),
         );
         const now = new Date().toISOString();
         const catalog = DeploymentCatalogSchema.parse({
@@ -89,7 +89,7 @@ integration("local Runner startup with a real credentialed worker", () => {
             },
           ],
           revision: 1,
-          schemaVersion: 4,
+          schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
           selectedDeploymentId: host.runtime.deployment.id,
           updatedAt: now,
         });

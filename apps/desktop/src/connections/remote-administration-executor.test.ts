@@ -20,7 +20,7 @@ it("executes Host intent once, reports progress, and resumes across its own sock
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+      deploymentShape: { kind: "personal" },
     },
     localOrigin: "http://127.0.0.1:4310",
     observedAt: new Date().toISOString(),

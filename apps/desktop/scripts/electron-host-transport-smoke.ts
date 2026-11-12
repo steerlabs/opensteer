@@ -184,7 +184,7 @@ async function run(): Promise<void> {
     bootstrapMethods: ["password"],
     createdAt: now,
     endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: null,
     name: "Transport smoke",
     reachability: "canonical",
@@ -194,7 +194,7 @@ async function run(): Promise<void> {
   let catalog: DeploymentCatalog = DeploymentCatalogSchema.parse({
     deployments: [connection],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
     updatedAt: now,
   });

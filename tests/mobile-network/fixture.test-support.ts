@@ -1,3 +1,12 @@
+import {
+  connectCallerMachine,
+  createMachineAccessDatabase,
+  dispatchCallerRun,
+  startPrivateMachineHost,
+} from "../../apps/host/src/integrations/personal-machine.test-support.js";
+import { HarnessInstanceIdSchema } from "../../packages/core/src/index.js";
+import { createBrowserSessionId } from "../../packages/protocol/src/index.js";
+
 import type { MachineAccessHost } from "../../apps/host/src/runtime/machine-access.test-support.js";
 import type { createDatabase } from "../../packages/database/src/connection.js";
 import type { PendingAgentEvent } from "../../packages/protocol/src/index.js";
@@ -45,6 +54,104 @@ import {
 } from "../../packages/core/src/index.js";
 import { PendingAgentEventSchema } from "../../packages/protocol/src/index.js";
 import { eventFromRow, jsonValue } from "../../packages/database/src/store-primitives.js";
+
+export async function startMobileNetworkHost(databaseUrl: string): Promise<MobileNetworkHost> {
+  const clone = await createMachineAccessDatabase(databaseUrl);
+  let host: Awaited<ReturnType<typeof startPrivateMachineHost>> | undefined;
+  try {
+    host = await startPrivateMachineHost(clone.url, { remoteAccess: true });
+    const active = host;
+    return {
+      ...active,
+      database: active.store.database,
+      connectHostingCaller: async () => {
+        const caller = await connectCallerMachine(active, {
+          name: "Benchmark computer",
+          maxConcurrentRuns: 8,
+          token: active.hostingRunnerEnrollmentToken,
+        });
+        return {
+          runnerId: caller.runnerId,
+          environmentId: caller.environmentId,
+          harnessInstanceId: HarnessInstanceIdSchema.parse(caller.harnessInstanceId),
+          startRun: async (input) => {
+            const run = await dispatchCallerRun(active, caller, input);
+            return {
+              ...run,
+              openLiveRequest: async () => {
+                await run.openLiveRequest();
+              },
+            };
+          },
+          commitEvent: async (event) => {
+            await active.store.commitRunnerEvent({
+              environmentId: caller.environmentId,
+              event,
+              runnerId: caller.runnerId,
+              runnerBootId: caller.primary.bootId,
+            });
+          },
+          close: () => caller.close(),
+        };
+      },
+      seedSuspendedTabs: async (caller, count) => {
+        const createdAt = new Date();
+        for (let index = 0; index < count; index++) {
+          const id = createBrowserSessionId();
+          await active.store.database.transaction().execute(async (transaction) => {
+            await transaction
+              .insertInto("browserSessions")
+              .values({
+                id,
+                tabGroupId: id,
+                tabRevision: 1,
+                origin: "person",
+                opener: null,
+                placementKey: `runner:${caller.runnerId}:browser`,
+                profileId: null,
+                runnerId: caller.runnerId,
+                runtimeId: "benchmark-browser",
+                state: "closed",
+                createdAt,
+                updatedAt: createdAt,
+                closedAt: null,
+              })
+              .execute();
+            await transaction
+              .insertInto("personalTabs")
+              .values({
+                id: `benchmark-${index}`,
+                groupId: id,
+                sessionId: id,
+                title: `Saved tab ${index}`,
+                url: `https://example.test/${index}`,
+                order: 0,
+                openerId: null,
+                state: "suspended",
+                createdAt,
+                closedAt: null,
+              })
+              .execute();
+          });
+        }
+      },
+      close: async () => {
+        try {
+          await active.close();
+        } finally {
+          await clone.drop();
+        }
+      },
+    };
+  } catch (error) {
+    try {
+      await host?.close();
+    } finally {
+      await clone.drop();
+    }
+    throw error;
+  }
+}
 
 export type SeedName = "light" | "heavy" | "busy-subagents";
 

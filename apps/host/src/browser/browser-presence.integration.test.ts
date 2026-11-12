@@ -966,14 +966,15 @@ integration("Browser presence and conversation usage", () => {
       (snapshot) =>
         snapshot.browserSessions.length === 150 &&
         snapshot.browserSessions.every(
-          (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+          (session) => (snapshot.browserTabs?.sessionTabs(session.id) ?? []).length === 64,
         ),
     );
     const loaded = client.getSnapshot().browserSessions;
     expect(loaded).toHaveLength(150);
     expect(
       loaded.every(
-        (session) => (session.browserTabs?.sessionTabs(session?.id) ?? []).length === 64,
+        (session) =>
+          (client.getSnapshot().browserTabs?.sessionTabs(session.id) ?? []).length === 64,
       ),
     ).toBe(true);
     const occupied = { tabs: client.getSnapshot().browserTabs!.sessionTabs(sessionId) };

@@ -2,6 +2,8 @@ import { mkdtemp, mkdir, writeFile, readFile, access, rm } from "node:fs/promise
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { previousReleaseDeploymentCatalog } from "@opensteer/client/test-support";
+import { emptyDeploymentCatalog } from "@opensteer/client/connections";
 import { createId } from "@opensteer/core";
 import { desktopDeploymentPaths } from "../app/application-paths.js";
 import { NativePersonalDeploymentCredentials } from "../secrets/personal-deployment-credentials.js";
@@ -72,6 +74,22 @@ describe("Personal old database reset", () => {
     expect(await reset.pending()).toBeNull();
   });
 
+  it("finishes Start fresh with a signed previous-release catalog set aside intact", async () => {
+    const { root, reset, plan } = await fixture();
+    const catalog = plan.entries[2]!;
+    const previous = JSON.stringify(previousReleaseDeploymentCatalog);
+    await writeFile(catalog.source, previous, { mode: 0o600 });
+
+    await reset.execute(plan);
+
+    expect(await readFile(catalog.destination, "utf8")).toBe(previous);
+    await expect(access(catalog.source)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await reset.pending()).toBeNull();
+    const resumed = new PersonalDataReset({ dataDirectory: root, cryptography });
+    expect(await resumed.pending()).toBeNull();
+    expect(await resumed.needsFreshStart()).toBe(true);
+  });
+
   it.each([0, 1, 2, 3, 4])("reset-crash-after-each-rename %s", async (crashIndex) => {
     const { root, reset, plan } = await fixture(async (index) => {
       if (index === crashIndex) throw new Error("crash");
@@ -101,7 +119,7 @@ describe("Personal old database reset", () => {
     await writeFile(
       plan.entries[2]!.source,
       JSON.stringify({
-        schemaVersion: 4,
+        schemaVersion: emptyDeploymentCatalog().schemaVersion,
         revision: 0,
         updatedAt: null,
         deployments: [],

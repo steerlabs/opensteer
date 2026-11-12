@@ -1,15 +1,15 @@
+import { callMcpTool } from "../../host/src/mcp/call-tool.test-support.js";
 import { createId } from "@opensteer/core";
 import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
-import { configurePersonalRemoteAccess } from "../../host/src/runtime/personal-machine.test-support.js";
 /**
  * Chrome sign-ins v2, end to end, on real parts only: the built extension in a
  * disposable Chromium profile ("the user's everyday Chrome"), the in-process
  * Host on a disposable PostgreSQL database serving the built web app, the
- * hosted Browser Runtime as its own process enrolled as a browser-only Runner
- * over the relay protocol, and agents calling the Host's MCP tools with the
- * capability token the Host dispatched to their Run. Only the agent computer
- * is scripted: it speaks the real Runner protocol but runs no AI engine.
+ * Browser Runtime as its own process offered by the hosting Runner, and agents
+ * calling the Host's MCP tools with the capability token dispatched to their Run.
+ * The hosting Runner drives
+ * a fixture engine through its real CLI protocol.
  *
  * Ways this journey can fail, each asserted below:
  *  1. The web page cannot find the extension, or the handoff to its connect tab
@@ -63,7 +63,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createDatabase } from "../../../packages/database/src/index.js";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
@@ -151,7 +151,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
   }, 360_000);
 
-  afterAll(async () => {
+  afterEach(async () => {
     restoreConsole();
     const cleanupErrors: unknown[] = [];
     for (const cleanup of cleanups.reverse())
@@ -180,8 +180,10 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           parts: {
             everydayChrome: "Playwright Chromium, persistent disposable profile, built extension",
             host: "in-process createHostRuntime, disposable PostgreSQL, built web app served",
-            browserRuntime: "apps/browser-runtime/src/main.ts as a browser-only Runner (relay)",
-            agent: "scripted Runner; tools called through the Host's MCP endpoint",
+            browserRuntime:
+              "apps/browser-runtime/src/main.ts through the hosting Runner’s local bridge",
+            agent:
+              "hosting Runner with a fixture CLI; tools called through the Host’s MCP endpoint",
           },
           sensitiveValues: "redacted",
         },
@@ -239,8 +241,14 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     const url = (host: string, path: string) => `https://${host}:${site.port}${path}`;
 
     const runCommands: RunExecute[] = [];
+    const hostedRuntime = await startHostedBrowserRuntime({
+      directory: join(scratch, "browser-runtime"),
+      logs: runtimeLogs,
+    });
+    cleanups.push(() => stopProcess(hostedRuntime.child));
     const personal = await startPersonalRuntime({
       databaseUrl: hostDatabaseUrl,
+      browser: hostedRuntime.bridge,
       agentHome: { computerId: createId("runner"), path: join(scratch, "home") },
       engineArguments: ["--scenario=interrupt"],
       maxConcurrentRuns: 4,
@@ -279,10 +287,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       origin: hostOrigin,
       [hostApiVersionHeader]: String(hostApiVersion),
     };
-    await configurePersonalRemoteAccess(
-      { runtime, ownerHeaders: headers },
-      { schemaVersion: 1, mode: "private", routeOrigin: "https://personal.browser-source.test" },
-    );
     const rpc = {
       command: async <Input extends { readonly type: string }>(input: Input) =>
         testRpcData(
@@ -294,24 +298,18 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       sources: () => testRpcData(hostOrigin, "browser.sources.get", {}, { headers }),
     };
 
-    await step("hosted Browser Runtime enrolls as a browser-only Runner", async () => {
-      const enrollment = await rpc.command({
-        allowedModules: ["browser"],
-        name: "Hosted browsers",
-        type: "runner.enrollment.createLocal",
-      });
-      const hostedRuntime = await startHostedBrowserRuntime({
-        directory: join(scratch, "browser-runtime"),
-        enrollmentToken: String(enrollment.token),
-        hostOrigin,
-        logs: runtimeLogs,
-      });
-      cleanups.push(() => stopProcess(hostedRuntime));
+    await step("the hosting computer offers its Browser Runtime", async () => {
       await waitFor(
         "the hosted runtime to be a Browser placement",
         async () => {
           const { browser } = await testRpcData(hostOrigin, "bootstrap.get", {}, { headers });
-          return browser.available && browser.placements.some((placement) => placement.available);
+          return (
+            browser.available &&
+            browser.placements.some(
+              (placement) =>
+                placement.available && placement.runnerId === personal.agentHome.computerId,
+            )
+          );
         },
         60_000,
       );
@@ -520,15 +518,14 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       return run?.status === "running" ? message : undefined;
     });
     const parentRun = { token: parentMessage.command.context.agentTools.token };
-    const agent = await AgentTools.connect(hostOrigin, parentRun.token);
-    const signIn = async (tools: AgentTools, sessionId: string, target: string) => {
-      const result = AgentBrowserSignInResultSchema.parse(
-        await tools.call("sign_in", {
-          reason: "The account page shows the user signed out.",
-          sessionId,
-          site: target,
-        }),
-      );
+    const signIn = async (sessionId: string, target: string) => {
+      const response = await callMcpTool(hostOrigin, parentRun.token, "sign_in", {
+        reason: "The account page shows the user signed out.",
+        sessionId,
+        site: target,
+      });
+      if (response.isError) throw new Error(`sign_in failed: ${JSON.stringify(response.content)}`);
+      const result = AgentBrowserSignInResultSchema.parse(response.structuredContent);
       agentResults.push(result);
       return result;
     };
@@ -539,7 +536,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         .where("kind", "=", "browser.sign-in")
         .execute();
 
-    const heldSignIn = signIn(agent, sessionOne, url("www.beta.test", "/account"));
+    const heldSignIn = signIn(sessionOne, url("www.beta.test", "/account"));
     void heldSignIn.catch(() => undefined);
     const pendingRequestId = await step(
       "agent: a site without a grant opens one sign-in Request",
@@ -556,7 +553,8 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           kind: "browser.sign-in",
           payload: { kind: "browser.sign-in", sessionId: sessionOne, site: "https://beta.test" },
           status: "pending",
-          threadId,
+          originatingThreadId: threadId,
+          originatingRunId: parentMessage.command.context.runId,
         });
         return request!.id;
       },
@@ -597,7 +595,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
 
     await step("agent: a standing grant signs a new session in with no Request", async () => {
       const before = (await signInRequests()).length;
-      const result = await signIn(agent, sessionTwo, "beta.test");
+      const result = await signIn(sessionTwo, "beta.test");
       expect(result).toEqual({
         profileName: null,
         site: "https://beta.test",
@@ -618,7 +616,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           (await rpc.sources()).sources.every((source) => !source.connected),
         );
         const before = await signInRequests();
-        heldOfflineSignIn = signIn(agent, sessionTwo, "https://www.alpha.test/");
+        heldOfflineSignIn = signIn(sessionTwo, "https://www.alpha.test/");
         void heldOfflineSignIn.catch(() => undefined);
         const request = await vi.waitFor(
           async () => {
@@ -821,7 +819,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       }
     });
 
-    await agent.close();
     completed = true;
   }, 600_000);
 });
@@ -986,19 +983,14 @@ async function extensionConnections(worker: Worker): Promise<ExtensionConnection
 
 // ---- Hosted Browser Runtime ----
 
-/**
- * The shipped Browser Runtime entry point, configured the way a hosted browser
- * service is: it enrolls with the Host as a browser-only Runner and relays the
- * Host's sessions into its own Chromium. The Chromium it launches resolves the
- * synthetic `.test` sites to loopback and accepts their self-signed certificate;
- * that is this test's network, not a change to the Runtime.
- */
+// The hosting Runner offers this loopback bridge; Chromium uses only synthetic sites.
 async function startHostedBrowserRuntime(input: {
   readonly directory: string;
-  readonly enrollmentToken: string;
-  readonly hostOrigin: string;
   readonly logs: string[];
-}): Promise<ChildProcess> {
+}): Promise<{
+  child: ChildProcess;
+  bridge: { bridgeToken: string; runtimeId: string; url: URL };
+}> {
   await mkdir(join(input.directory, "profiles"), { recursive: true });
   await mkdir(join(input.directory, "data"), { recursive: true });
   const wrapper = join(input.directory, "chromium");
@@ -1009,6 +1001,8 @@ async function startHostedBrowserRuntime(input: {
       .join(" ")} "$@"\n`,
   );
   await chmod(wrapper, 0o755);
+  const bridgeToken = randomBytes(32).toString("base64url");
+  const runtimeId = "hosted-browsers-e2e";
   const child = spawn(
     join(repositoryRoot, "apps/browser-runtime/node_modules/.bin/tsx"),
     ["src/main.ts"],
@@ -1018,35 +1012,47 @@ async function startHostedBrowserRuntime(input: {
         HOME: process.env.HOME,
         PATH: process.env.PATH,
         TMPDIR: process.env.TMPDIR,
-        OPENSTEER_BROWSER_BRIDGE_TOKEN: randomBytes(32).toString("base64url"),
+        OPENSTEER_BROWSER_BRIDGE_TOKEN: bridgeToken,
         OPENSTEER_BROWSER_HEADLESS: "true",
         OPENSTEER_BROWSER_PORT: "0",
         OPENSTEER_BROWSER_PROFILE_ROOT: join(input.directory, "profiles"),
-        OPENSTEER_BROWSER_PROFILE_STATE_INTERNAL_URL: input.hostOrigin,
-        OPENSTEER_BROWSER_RELAY_HOST_URL: input.hostOrigin,
         OPENSTEER_BROWSER_RUNTIME_DATA_DIR: join(input.directory, "data"),
-        OPENSTEER_BROWSER_RUNTIME_ID: "hosted-browsers-e2e",
+        OPENSTEER_BROWSER_RUNTIME_ID: runtimeId,
         OPENSTEER_BROWSER_RUNTIME_NAME: "Hosted browsers",
         OPENSTEER_CHROMIUM_EXECUTABLE: wrapper,
         OPENSTEER_MODE: "development",
-        OPENSTEER_RUNNER_ENROLLMENT_TOKEN: input.enrollmentToken,
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
   child.stdout?.on("data", (chunk: Buffer) => input.logs.push(chunk.toString("utf8")));
   child.stderr?.on("data", (chunk: Buffer) => input.logs.push(chunk.toString("utf8")));
-  await waitFor(
-    "the Browser Runtime to start",
-    async () => {
-      if (child.exitCode !== null) {
-        throw new Error(`Browser Runtime exited: ${redact(input.logs.join("")).slice(-2_000)}`);
-      }
-      return input.logs.join("").includes("browser-runtime.ready");
-    },
-    60_000,
-  );
-  return child;
+  try {
+    await waitFor(
+      "the Browser Runtime to start",
+      async () => {
+        if (child.exitCode !== null) {
+          throw new Error(`Browser Runtime exited: ${redact(input.logs.join("")).slice(-2_000)}`);
+        }
+        return input.logs.join("").includes("browser-runtime.ready");
+      },
+      60_000,
+    );
+    const ready = input.logs
+      .join("")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { event: string; port: number })
+      .find((line) => line.event === "browser-runtime.ready");
+    if (!ready) throw new Error("Browser Runtime omitted its bridge address");
+    return {
+      child,
+      bridge: { bridgeToken, runtimeId, url: new URL(`http://127.0.0.1:${ready.port}`) },
+    };
+  } catch (error) {
+    await stopProcess(child);
+    throw error;
+  }
 }
 
 async function stopProcess(child: ChildProcess): Promise<void> {
@@ -1172,102 +1178,6 @@ type RunExecute = Extract<HostToRunnerMessage, { type: "host.command" }> & {
     { type: "run.execute" }
   >;
 };
-
-/** A minimal MCP Streamable HTTP client, as an agent's engine speaks to the Host. */
-class AgentTools {
-  readonly #endpoint: string;
-  readonly #token: string;
-  readonly #session: string;
-  readonly #protocolVersion: string;
-  #nextId = 2;
-
-  private constructor(endpoint: string, token: string, session: string, protocolVersion: string) {
-    this.#endpoint = endpoint;
-    this.#token = token;
-    this.#session = session;
-    this.#protocolVersion = protocolVersion;
-  }
-
-  static async connect(origin: string, token: string): Promise<AgentTools> {
-    const endpoint = `${origin}/internal/v1/mcp`;
-    const response = await mcpPost(endpoint, token, null, null, {
-      id: 1,
-      jsonrpc: "2.0",
-      method: "initialize",
-      params: {
-        capabilities: {},
-        clientInfo: { name: "chrome-sign-ins-e2e", version: "1.0.0" },
-        protocolVersion: "2025-06-18",
-      },
-    });
-    const session = response.headers.get("mcp-session-id");
-    const body = (await response.json()) as { result?: { protocolVersion?: string } };
-    if (!response.ok || !session || !body.result?.protocolVersion) {
-      throw new Error(`MCP initialize failed: HTTP ${response.status}`);
-    }
-    const tools = new AgentTools(endpoint, token, session, body.result.protocolVersion);
-    await mcpPost(endpoint, token, session, tools.#protocolVersion, {
-      jsonrpc: "2.0",
-      method: "notifications/initialized",
-    });
-    return tools;
-  }
-
-  async call(name: string, args: Record<string, unknown>): Promise<unknown> {
-    const response = await mcpPost(
-      this.#endpoint,
-      this.#token,
-      this.#session,
-      this.#protocolVersion,
-      {
-        id: this.#nextId++,
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: { arguments: args, name },
-      },
-    );
-    const body = (await response.json()) as {
-      error?: { message?: string };
-      result?: { content?: { text?: string }[]; isError?: boolean; structuredContent?: unknown };
-    };
-    if (body.error) throw new Error(`MCP ${name} failed: ${body.error.message ?? "error"}`);
-    if (body.result?.isError) {
-      throw new Error(`Tool ${name} failed: ${body.result.content?.[0]?.text ?? "error"}`);
-    }
-    return body.result?.structuredContent;
-  }
-
-  async close(): Promise<void> {
-    await fetch(this.#endpoint, {
-      headers: {
-        authorization: `Bearer ${this.#token}`,
-        "mcp-protocol-version": this.#protocolVersion,
-        "mcp-session-id": this.#session,
-      },
-      method: "DELETE",
-    }).catch(() => undefined);
-  }
-}
-
-function mcpPost(
-  endpoint: string,
-  token: string,
-  session: string | null,
-  protocolVersion: string | null,
-  body: Record<string, unknown>,
-): Promise<Response> {
-  return fetch(endpoint, {
-    body: JSON.stringify(body),
-    headers: {
-      accept: "application/json, text/event-stream",
-      authorization: `Bearer ${token}`,
-      "content-type": "application/json",
-      ...(session ? { "mcp-session-id": session } : {}),
-      ...(protocolVersion ? { "mcp-protocol-version": protocolVersion } : {}),
-    },
-    method: "POST",
-  });
-}
 
 // ---- Utilities ----
 

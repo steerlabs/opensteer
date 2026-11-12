@@ -9,6 +9,7 @@ import { encodeBase64Url } from "@opensteer/shared/base64url";
 import { describe, expect, it, vi } from "vitest";
 import {
   DeploymentConnectionSchema,
+  DeploymentCatalogSchema,
   type AccountDeploymentConnectionSource,
   type DeploymentCatalog,
   type DeploymentConnection,
@@ -1312,7 +1313,7 @@ function catalogFor(connection: DeploymentConnection): DeploymentCatalog {
   return {
     deployments: [connection],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: connection.authority.document.deploymentId,
     updatedAt: "2026-08-11T18:00:00.000Z",
   };

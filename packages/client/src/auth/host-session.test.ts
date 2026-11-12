@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { establishedCookieSession, testDiscoveryEnvelope } from "../test-support/index.js";
 import {
   DeploymentConnectionSchema,
+  DeploymentCatalogSchema,
   type AccountDeploymentConnectionSource,
   type DeploymentCatalog,
   type DeploymentConnection,
@@ -514,7 +515,7 @@ function catalogFor(
   return {
     deployments: [...deployments],
     revision: 1,
-    schemaVersion: 4,
+    schemaVersion: DeploymentCatalogSchema.shape.schemaVersion.value,
     selectedDeploymentId: selected.authority.document.deploymentId,
     updatedAt: "2026-08-22T10:00:00.000Z",
   };

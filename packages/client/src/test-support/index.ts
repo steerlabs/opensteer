@@ -8,3 +8,4 @@ export * from "./mcp-presentation-scenarios.js";
 export * from "./browser-snapshot.js";
 
 export * from "./browser-fixtures.js";
+export * from "./previous-release-catalog.js";

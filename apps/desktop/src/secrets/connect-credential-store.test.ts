@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 
 describe("DesktopConnectCredentialStore", () => {
-  it("migrates signed legacy discovery while preserving credentials and rejecting a different key", async () => {
+  it("refreshes equivalent signed discovery while preserving credentials and rejecting a different key", async () => {
     const store = new DesktopConnectCredentialStore({
       cryptography: fakeCryptography(),
       dataDirectory: await temporaryDirectory(),
@@ -55,22 +55,23 @@ describe("DesktopConnectCredentialStore", () => {
         ).toString("base64url"),
       },
     };
-    const legacyDiscovery = {
-      ...current.discovery,
-      deploymentShape: { backing: "local-directory" as const, kind: "personal" as const },
+    const { deploymentShape, ...identity } = current.discovery;
+    const previousDiscovery = {
+      deploymentShape,
+      ...identity,
     };
     const previous = {
       ...state,
       credential: { ...state.credential!, hostKeyFingerprint: fingerprintForSpki(spki) },
       authority: {
         ...current,
-        discovery: legacyDiscovery,
+        discovery: previousDiscovery,
         discoveryEnvelope: {
           ...current.discoveryEnvelope,
-          document: legacyDiscovery,
+          document: previousDiscovery,
           signature: sign(
             null,
-            hostDiscoverySigningBytes(legacyDiscovery),
+            hostDiscoverySigningBytes(previousDiscovery),
             keys.privateKey,
           ).toString("base64url"),
         },
@@ -254,7 +255,6 @@ function connectState() {
       hostInstanceId,
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
         kind: "personal" as const,
       },
     },
