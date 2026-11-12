@@ -905,6 +905,22 @@ export async function revokeRunner(
             : []),
         ]),
       );
+  const tabGroups = (transaction: Transaction<DatabaseSchema>) =>
+    sessions(transaction)
+      .clearSelect()
+      .select("tabGroupId")
+      .where(({ not, exists, selectFrom }) =>
+        not(
+          exists(
+            selectFrom("browserSessions as newer")
+              .select("newer.id")
+              .whereRef("newer.tabGroupId", "=", "browserSessions.tabGroupId")
+              .where(
+                sql<boolean>`(newer.created_at, newer.id) > (browser_sessions.created_at, browser_sessions.id)`,
+              ),
+          ),
+        ),
+      );
   let runIds = new Set<RunId>();
   let sessionIds = new Set<BrowserSessionId>();
   const recheck = async (transaction: Transaction<DatabaseSchema>) => {
@@ -940,6 +956,13 @@ export async function revokeRunner(
             .execute(databaseOperationOptions())
         ).map(({ id }) => id),
       );
+      await transaction
+        .selectFrom("personalTabs")
+        .select("id")
+        .where("groupId", "in", tabGroups(transaction))
+        .orderBy("id")
+        .forNoKeyUpdate()
+        .execute(databaseOperationOptions());
     })(personalTransaction);
     return (async (transaction) =>
       administrationCommand(transaction, options.administration, async () => {
@@ -979,6 +1002,17 @@ export async function revokeRunner(
           )
         )
           throw new TransactionScopeChanged();
+        await transaction
+          .updateTable("personalTabs")
+          .set({ closedAt: revokedAt })
+          .where("groupId", "in", tabGroups(transaction))
+          .where("closedAt", "is", null)
+          .execute(databaseOperationOptions());
+        await transaction
+          .updateTable("browserSessions")
+          .set((eb) => ({ tabRevision: eb("tabRevision", "+", 1) }))
+          .where("id", "in", tabGroups(transaction))
+          .execute(databaseOperationOptions());
         const deletedBrowserProfiles = await archiveRunnerBrowserProfiles(
           transaction,
           profileIds,

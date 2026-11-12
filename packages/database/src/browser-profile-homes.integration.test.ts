@@ -9,6 +9,7 @@ import {
   enrollTestRunner,
   type StoreFixture,
 } from "./store.integration.test-support.js";
+import { personalReachableGrant } from "./runner-store.js";
 import { listEligibleBrowserRunners } from "./browser-home-store.js";
 
 async function computer(
@@ -29,11 +30,17 @@ async function computer(
     ...(options.managed ? { ownerUserId: ownerId } : {}),
     name: runnerId,
     tokenSuffix: runnerId,
-    allowedModules: browser ? ["browser"] : ["integrations"],
+    allowedModules: personalReachableGrant,
     modules: browser
       ? { browser: { runtimeId: runnerId, wireVersion: 2 } }
       : { integrations: { platform: "android", protocolVersion: 4 } },
   });
+  if (!browser)
+    await fixture.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["integrations"]'::jsonb` })
+      .where("id", "=", runnerId)
+      .execute();
   return runnerId;
 }
 
@@ -199,6 +206,47 @@ describeStore("browser profile homes", (it) => {
         })
         .execute();
     }
+    const oldGuest = createBrowserSessionId();
+    await fixture.store.createBrowserSession({
+      id: oldGuest,
+      runnerId: home,
+      origin: "agent",
+      ownerId: run.userId,
+      profileId: null,
+      placementKey: `runner:${home}`,
+      runtimeId: "browser",
+    });
+    await fixture.database
+      .updateTable("browserSessions")
+      .set({ state: "closed", closedAt: new Date() })
+      .where("id", "=", oldGuest)
+      .execute();
+    const replacementGuest = createBrowserSessionId();
+    await fixture.store.createBrowserSession({
+      id: replacementGuest,
+      tabGroupId: oldGuest,
+      runnerId: run.runnerId,
+      origin: "agent",
+      ownerId: run.userId,
+      profileId: null,
+      placementKey: `runner:${run.runnerId}`,
+      runtimeId: "browser",
+    });
+    await fixture.database
+      .insertInto("personalTabs")
+      .values({
+        id: "replacement-guest-tab",
+        sessionId: replacementGuest,
+        groupId: oldGuest,
+        createdAt: new Date(),
+        order: 0,
+        openerId: null,
+        state: "suspended",
+        title: "Reopened elsewhere",
+        url: "https://retained.test/",
+        closedAt: null,
+      })
+      .execute();
     const removed = await fixture.store.revokeRunner(home, run.userId, {
       administration: {
         requestedBy: run.userId,
@@ -216,10 +264,20 @@ describeStore("browser profile homes", (it) => {
     expect(
       await fixture.database.selectFrom("browserHistoryEntries").selectAll().execute(),
     ).toEqual([]);
-    expect(await fixture.database.selectFrom("personalTabs").select("closedAt").execute()).toEqual([
-      { closedAt: expect.any(Date) },
-      { closedAt: expect.any(Date) },
-    ]);
+    expect(
+      await fixture.database
+        .selectFrom("personalTabs")
+        .select("closedAt")
+        .where("groupId", "!=", oldGuest)
+        .execute(),
+    ).toEqual([{ closedAt: expect.any(Date) }, { closedAt: expect.any(Date) }]);
+    expect(
+      await fixture.database
+        .selectFrom("personalTabs")
+        .select("closedAt")
+        .where("id", "=", "replacement-guest-tab")
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ closedAt: null });
     expect(
       await fixture.database
         .selectFrom("browserProfileDeletions")
