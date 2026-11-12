@@ -1,4 +1,4 @@
-import { type TeamChannelId, createId } from "@opensteer/core";
+import { OpensteerError, type TeamChannelId, createId } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
@@ -163,9 +163,9 @@ export class MockTeamHost {
                   return {
                     ok: false,
                     error: {
-                      code: "internal",
+                      code: error instanceof OpensteerError ? error.code : "internal",
                       message: error instanceof Error ? error.message : "Mock team request failed.",
-                      retryable: true,
+                      retryable: error instanceof OpensteerError ? error.retryable : true,
                     },
                   };
                 }

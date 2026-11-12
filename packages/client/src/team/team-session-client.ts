@@ -1,5 +1,10 @@
 import type { TeamFileUpload } from "./files.js";
-import { type TeamChannelId, type TeamMessageId, type UserId } from "@opensteer/core";
+import {
+  OpensteerError,
+  type TeamChannelId,
+  type TeamMessageId,
+  type UserId,
+} from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamServerFrameSchema,
@@ -52,6 +57,8 @@ export interface TeamSessionSnapshot {
   readonly presence: Readonly<Record<string, boolean>>;
   readonly search: SearchPage | null;
   readonly error: string | null;
+  readonly ended: "removed" | "sign-in" | "viewer-changed" | null;
+  readonly contentGeneration: number;
 }
 export interface TeamSessionOptions {
   readonly scope: TeamCacheScope;
@@ -82,6 +89,8 @@ export class TeamSessionClient {
     presence: {},
     search: null,
     error: null,
+    ended: null,
+    contentGeneration: 0,
   };
   #socket: WebSocketClient | null = null;
   #generation = 0;
@@ -104,6 +113,8 @@ export class TeamSessionClient {
   #contentGeneration = 0;
   #connectionGeneration = 0;
   #sidebarGeneration = 0;
+  #searchInput: SearchInput | null = null;
+  #searchMore: Promise<void> | null = null;
   constructor(options: TeamSessionOptions) {
     this.#options = options;
     this.rpc = options.rpc;
@@ -131,8 +142,10 @@ export class TeamSessionClient {
         if (
           bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
           bootstrap.member.userId !== this.#options.scope.userId
-        )
-          throw new Error("Team session identity changed.");
+        ) {
+          await this.remove("viewer-changed");
+          return;
+        }
         const state = saved ? TeamSavedStateSchema.parse(saved) : { drafts: {}, pending: [] };
         const pending =
           revision === this.#stateRevision
@@ -157,9 +170,14 @@ export class TeamSessionClient {
                 ]),
           pending,
         });
-      })().finally(() => {
-        this.#loading = null;
-      });
+      })()
+        .catch(async (error: unknown) => {
+          await this.#authorizationFailure(error);
+          throw error;
+        })
+        .finally(() => {
+          this.#loading = null;
+        });
     }
     await this.#loading;
     if (connect) this.connect();
@@ -204,19 +222,51 @@ export class TeamSessionClient {
       this.#connectionGeneration++;
       this.#update({ connection: "offline", typing: {}, presence: {} });
       if (!this.#connected || this.#removed) return;
-      this.#reconnectTimer = setTimeout(
-        () => {
-          this.#reconnectTimer = null;
-          this.connect();
-        },
-        Math.min(12000, 300 * 2 ** Math.min(this.#attempt++, 6)),
-      );
+      const generation = this.#connectionGeneration;
+      void this.#revalidate().finally(() => {
+        if (
+          generation !== this.#connectionGeneration ||
+          !this.#connected ||
+          this.#removed ||
+          this.#disposed
+        )
+          return;
+        this.#reconnectTimer = setTimeout(
+          () => {
+            this.#reconnectTimer = null;
+            this.connect();
+          },
+          Math.min(12000, 300 * 2 ** Math.min(this.#attempt++, 6)),
+        );
+      });
     };
     socket.addEventListener("close", closed);
     socket.addEventListener("error", () => {
       socket.close();
       closed();
     });
+  }
+  async #authorizationFailure(error: unknown): Promise<void> {
+    if (!(error instanceof OpensteerError)) return;
+    if (error.code === "unauthorized") await this.remove("sign-in");
+    else if (error.code === "forbidden" || error.code === "not_found") await this.remove("removed");
+  }
+  async #revalidate(): Promise<void> {
+    const lifetime = this.#lifetime;
+    try {
+      const bootstrap = await this.rpc["team.bootstrap.get"]({}).then(unwrapRpcResult);
+      if (lifetime !== this.#lifetime) return;
+      if (
+        bootstrap.teamId !== this.#options.scope.teamDeploymentId ||
+        bootstrap.member.userId !== this.#options.scope.userId
+      ) {
+        await this.remove("viewer-changed");
+        return;
+      }
+      this.#update({ bootstrap });
+    } catch (error) {
+      if (lifetime === this.#lifetime) await this.#authorizationFailure(error);
+    }
   }
   #fresh(view: TeamTimeline | null): TeamTimeline | null {
     return view ? emptyTeamTimeline(view.subscriptionId, view.generation, view.scope) : null;
@@ -266,8 +316,32 @@ export class TeamSessionClient {
       ? emptyTeamTimeline("thread", ++this.#generation, { kind: "thread", channelId, rootId })
       : null;
     this.#update({ thread });
-    if (thread) this.#subscribe(thread);
-    else
+    if (thread) {
+      this.#subscribe(thread);
+      const lifetime = this.#lifetime;
+      void this.rpc["team.message.get"]({ channelId, messageId: rootId! })
+        .then(unwrapRpcResult)
+        .then((root) => {
+          const current = this.#snapshot.thread;
+          if (lifetime !== this.#lifetime || current?.generation !== thread.generation) return;
+          if (root.threadRootId !== null) throw new Error("A thread must open from its root.");
+          this.#update({
+            thread: {
+              ...current,
+              messages: [root, ...current.messages.filter((row) => row.id !== root.id)],
+            },
+          });
+        })
+        .catch((error: unknown) => {
+          if (
+            lifetime === this.#lifetime &&
+            this.#snapshot.thread?.generation === thread.generation
+          )
+            this.#update({
+              error: error instanceof Error ? error.message : "Could not open thread.",
+            });
+        });
+    } else
       this.#send({
         type: "team.subscribe",
         teamApiVersion,
@@ -285,7 +359,9 @@ export class TeamSessionClient {
     if (this.#removed || this.#disposed) return;
     const selected = this.#snapshot[view];
     if (!selected) return;
-    const anchor = direction === "before" ? selected.messages[0]?.id : selected.messages.at(-1)?.id;
+    const selectedRoot = selected.scope.kind === "thread" ? selected.scope.rootId : null;
+    const replies = selected.messages.filter((row) => row.id !== selectedRoot);
+    const anchor = direction === "before" ? replies[0]?.id : replies.at(-1)?.id;
     if (direction !== "newest" && !anchor) return;
     const page =
       direction === "newest" ? ({ direction } as const) : { direction, messageId: anchor! };
@@ -304,6 +380,61 @@ export class TeamSessionClient {
     if (lifetime !== this.#lifetime || !current || selected.generation !== current.generation)
       return;
     this.#update({ [view]: reduceTeamPage(current, result, selected.generation, direction) });
+  }
+  async landMessage(
+    channelId: TeamChannelId,
+    messageId: TeamMessageId,
+  ): Promise<TeamMessage | null> {
+    if (this.#removed || this.#disposed) return null;
+    const lifetime = this.#lifetime,
+      content = this.#contentGeneration;
+    const message = await this.rpc["team.message.get"]({ channelId, messageId }).then(
+      unwrapRpcResult,
+    );
+    if (lifetime !== this.#lifetime || content !== this.#contentGeneration) return null;
+    if (this.#snapshot.channel?.scope.channelId !== channelId) this.selectChannel(channelId);
+    const rootId = message.threadRootId;
+    if (
+      rootId &&
+      (this.#snapshot.thread?.scope.kind !== "thread" ||
+        this.#snapshot.thread.scope.rootId !== rootId)
+    )
+      this.selectThread(channelId, rootId);
+    const view = rootId ? "thread" : "channel",
+      selected = this.#snapshot[view];
+    if (!selected) return null;
+    const read = (direction: "before" | "after") =>
+      selected.scope.kind === "channel"
+        ? this.rpc["team.messages.page"]({ channelId, page: { direction, messageId } }).then(
+            unwrapRpcResult,
+          )
+        : this.rpc["team.thread.page"]({
+            channelId,
+            rootId: selected.scope.rootId,
+            page: { direction, messageId },
+          }).then(unwrapRpcResult);
+    const [before, after] = await Promise.all([read("before"), read("after")]);
+    const current = this.#snapshot[view];
+    if (
+      lifetime !== this.#lifetime ||
+      content !== this.#contentGeneration ||
+      current?.generation !== selected.generation
+    )
+      return null;
+    let next = reduceTeamPage(
+      { ...current, messages: current.messages.filter((row) => rootId && row.id === rootId) },
+      before,
+      selected.generation,
+      "before",
+    );
+    next = reduceTeamPage(
+      next,
+      { ...after, messages: [message, ...after.messages] },
+      selected.generation,
+      "after",
+    );
+    this.#update({ [view]: { ...next, hasMore: before.hasMore } });
+    return message;
   }
   receive(frame: z.infer<typeof TeamServerFrameSchema>): void {
     if (this.#removed) return;
@@ -332,6 +463,7 @@ export class TeamSessionClient {
           channel: channel ? emptyTeamTimeline("channel", ++this.#generation, channel.scope) : null,
           thread: thread ? emptyTeamTimeline("thread", ++this.#generation, thread.scope) : null,
           search: null,
+          contentGeneration: this.#contentGeneration,
         });
         this.#files.clear();
         this.#fileBytes = 0;
@@ -524,16 +656,68 @@ export class TeamSessionClient {
         ...input,
       }),
       createdAt: new Date().toISOString(),
+      failure: null,
     };
     this.#update({ pending: [...this.#snapshot.pending, pending] });
-    await this.#save();
-    if (this.#snapshot.connection === "connected") await this.#transmit(pending, this.#lifetime);
+    try {
+      await this.#save();
+    } catch (error) {
+      this.#update({ pending: this.#snapshot.pending.filter((row) => row !== pending) });
+      throw error;
+    }
+    if (this.#snapshot.connection === "connected")
+      void this.#transmit(pending, this.#lifetime).catch((error: unknown) =>
+        this.#update({
+          error: error instanceof Error ? error.message : "Could not confirm sent message.",
+        }),
+      );
     return pending.command.clientMessageId;
   }
+  async discardPending(clientMessageId: string): Promise<void> {
+    if (this.#removed || this.#disposed) return;
+    this.#update({
+      pending: this.#snapshot.pending.filter(
+        (row) => row.command.clientMessageId !== clientMessageId,
+      ),
+    });
+    await this.#save();
+  }
+  async editPending(clientMessageId: string, text: string): Promise<void> {
+    const pending = this.#snapshot.pending.find(
+      (row) => row.command.clientMessageId === clientMessageId,
+    );
+    if (!pending?.failure) throw new Error("Only a refused message can be edited.");
+    const scope: TeamScope = pending.command.threadRootId
+      ? {
+          kind: "thread",
+          channelId: pending.command.channelId,
+          rootId: pending.command.threadRootId,
+        }
+      : { kind: "channel", channelId: pending.command.channelId };
+    await this.setDraft(scope, text);
+    await this.discardPending(clientMessageId);
+  }
+  async #fail(sends: readonly PendingTeamSend[], error: OpensteerError): Promise<void> {
+    const ids = new Set(sends.map((row) => row.command.clientMessageId));
+    this.#update({
+      pending: this.#snapshot.pending.map((row) =>
+        ids.has(row.command.clientMessageId)
+          ? { ...row, failure: error.message.slice(0, 2048) }
+          : row,
+      ),
+    });
+    await this.#save();
+  }
   async #transmit(pending: PendingTeamSend, lifetime: number): Promise<void> {
-    const result = await this.rpc["commands.dispatch"](pending.command).then(unwrapRpcResult);
-    if (lifetime !== this.#lifetime || result.type !== "team.message.send") return;
-    await this.#confirm([result.message]);
+    try {
+      const result = await this.rpc["commands.dispatch"](pending.command).then(unwrapRpcResult);
+      if (lifetime !== this.#lifetime || result.type !== "team.message.send") return;
+      await this.#confirm([result.message]);
+    } catch (error) {
+      if (lifetime !== this.#lifetime) return;
+      if (!(error instanceof OpensteerError) || error.retryable) throw error;
+      await this.#fail([pending], error);
+    }
   }
   async #confirm(messages: readonly TeamMessage[]): Promise<void> {
     const confirmed = new Set(
@@ -561,16 +745,24 @@ export class TeamSessionClient {
       connectionGeneration === this.#connectionGeneration &&
       this.#snapshot.connection === "connected";
     const operation = (async () => {
-      const pending = [...this.#snapshot.pending];
+      const pending = this.#snapshot.pending.filter((row) => !row.failure);
       const channels = new Set(pending.map((send) => send.command.channelId));
       for (const channelId of channels) {
         const sends = pending.filter((send) => send.command.channelId === channelId);
         for (let index = 0; index < sends.length; index += 50) {
           const batch = sends.slice(index, index + 50);
-          const stored = await this.rpc["team.messages.check"]({
-            channelId,
-            clientMessageIds: batch.map((send) => send.command.clientMessageId),
-          }).then(unwrapRpcResult);
+          let stored;
+          try {
+            stored = await this.rpc["team.messages.check"]({
+              channelId,
+              clientMessageIds: batch.map((send) => send.command.clientMessageId),
+            }).then(unwrapRpcResult);
+          } catch (error) {
+            if (!current()) return;
+            if (!(error instanceof OpensteerError) || error.retryable) throw error;
+            await this.#fail(batch, error);
+            continue;
+          }
           if (!current()) return;
           await this.#confirm(stored.messages);
           for (const send of batch) {
@@ -622,9 +814,36 @@ export class TeamSessionClient {
     if (this.#removed || this.#disposed) return;
     const generation = ++this.#searchGeneration,
       lifetime = this.#lifetime;
+    this.#searchInput = input;
+    this.#update({ search: null });
     const search = await this.rpc["team.search"]({ input }).then(unwrapRpcResult);
     if (generation === this.#searchGeneration && lifetime === this.#lifetime)
       this.#update({ search });
+  }
+  loadMoreSearch(): Promise<void> {
+    if (this.#searchMore) return this.#searchMore;
+    const { search } = this.#snapshot,
+      input = this.#searchInput;
+    const before = search?.results.at(-1)?.message.id;
+    if (this.#removed || this.#disposed || !input || !search?.hasMore || !before)
+      return Promise.resolve();
+    const generation = this.#searchGeneration,
+      lifetime = this.#lifetime;
+    const operation = this.rpc["team.search"]({ input: { ...input, before } })
+      .then(unwrapRpcResult)
+      .then((page) => {
+        if (generation !== this.#searchGeneration || lifetime !== this.#lifetime) return;
+        const results = [...search.results, ...page.results].filter(
+          (row, index, rows) =>
+            rows.findIndex((other) => other.message.id === row.message.id) === index,
+        );
+        this.#update({ search: { ...page, results } });
+      })
+      .finally(() => {
+        if (this.#searchMore === operation) this.#searchMore = null;
+      });
+    this.#searchMore = operation;
+    return operation;
   }
   async file(
     file: z.infer<typeof TeamFileSchema>,
@@ -692,7 +911,7 @@ export class TeamSessionClient {
     socket?.close();
     this.#update({ connection: "offline", typing: {}, presence: {} });
   }
-  async remove(): Promise<void> {
+  async remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
     this.#removed = true;
     this.#lifetime++;
     this.disconnect();
@@ -706,6 +925,8 @@ export class TeamSessionClient {
       pending: [],
       drafts: {},
       search: null,
+      ended,
+      contentGeneration: ++this.#contentGeneration,
     });
     await this.#persist.catch(() => undefined);
     await this.#options.persistence.remove(this.#options.scope);

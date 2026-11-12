@@ -66,11 +66,15 @@ function belongs(message: TeamMessage, scope: TeamScope): boolean {
       : message.id === scope.rootId || message.threadRootId === scope.rootId)
   );
 }
-function ordered(messages: Iterable<TeamMessage>, older = false): TeamMessage[] {
+function ordered(messages: Iterable<TeamMessage>, scope: TeamScope, older = false): TeamMessage[] {
   const rows = [...messages].sort((a, b) =>
     BigInt(a.id) < BigInt(b.id) ? -1 : BigInt(a.id) > BigInt(b.id) ? 1 : 0,
   );
-  return older ? rows.slice(0, teamTimelineMaxMessages) : rows.slice(-teamTimelineMaxMessages);
+  const root = scope.kind === "thread" ? rows.find((row) => row.id === scope.rootId) : null;
+  const replies = root ? rows.filter((row) => row !== root) : rows;
+  const limit = teamTimelineMaxMessages - (root ? 1 : 0);
+  const retained = older ? replies.slice(0, limit) : replies.slice(-limit);
+  return root ? [root, ...retained] : retained;
 }
 export function reduceTeamCut(state: TeamTimeline, input: TeamConsistentCut): TeamTimeline {
   const cut = TeamConsistentCutSchema.parse(input);
@@ -93,7 +97,11 @@ export function reduceTeamCut(state: TeamTimeline, input: TeamConsistentCut): Te
     throw new Error("A resumed cut requires its cached snapshot.");
   const messages = new Map(
     (cut.type === "snapshot"
-      ? state.messages.filter((row) => compareSequence(row.changeSeq, cut.throughSeq) > 0)
+      ? state.messages.filter(
+          (row) =>
+            compareSequence(row.changeSeq, cut.throughSeq) > 0 ||
+            (state.scope.kind === "thread" && row.id === state.scope.rootId),
+        )
       : state.messages
     ).map((row) => [row.id, row] as const),
   );
@@ -114,7 +122,7 @@ export function reduceTeamCut(state: TeamTimeline, input: TeamConsistentCut): Te
   return {
     ...state,
     channel: cut.channel,
-    messages: ordered(messages.values()),
+    messages: ordered(messages.values(), state.scope),
     requests: [...requests.values()].slice(-200),
     throughSeq: cut.throughSeq,
     linkPresence: cut.linkPresence,
@@ -143,7 +151,11 @@ export function reduceTeamPage(
   }
   return {
     ...state,
-    messages: ordered(rows.values(), direction === "before"),
+    channel:
+      state.throughSeq === null || compareSequence(page.throughSeq, state.throughSeq) >= 0
+        ? page.channel
+        : state.channel,
+    messages: ordered(rows.values(), state.scope, direction === "before"),
     hasMore: page.hasMore,
   };
 }
