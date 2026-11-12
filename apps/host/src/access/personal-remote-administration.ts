@@ -170,12 +170,13 @@ export class PersonalRemoteAdministration {
           effective.action === "rotate" ||
           (effective.action === "configure" && effective.mode === "connect")
         ) {
-          // The same rule PersonalRemoteAccessService.configure applies when the intent runs.
+          // The same rule PersonalRemoteAccessService.configure applies, under its
+          // own lock, when the intent runs. A plain read: locking the link here,
+          // after the session row, would invert the Account-operation lock order.
           const account = await transaction
             .selectFrom("personalRemoteAccountLink")
             .select(["state", "accountOperation"])
             .where("singletonKey", "=", "opensteer-account")
-            .forShare()
             .executeTakeFirst();
           if (account?.state !== "active" || account.accountOperation?.kind === "unlink")
             throw new OpensteerError({
