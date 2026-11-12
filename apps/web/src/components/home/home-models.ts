@@ -3,7 +3,7 @@ import type { ChannelKind, TeamTileView } from "../team/team-models.js";
 
 /**
  * What the personal screens draw: one person, their agent, and their tasks
- * grouped by folder. Wiring maps the personal client's records onto these.
+ * and their source or folder. Wiring maps the personal client's records onto these.
  */
 
 export type TaskMarkView = Parameters<typeof TaskMark>[0]["mark"];
@@ -44,18 +44,6 @@ export interface TaskRowView {
   readonly status: string | null;
   readonly updatedAt: string;
   readonly canBeDone?: boolean | undefined;
-}
-
-/** The loudest thing a folded folder holds, so folding never hides an ask. */
-export type FolderSignal = "needs-you" | "working" | "failed" | "unread" | null;
-
-export interface FolderGroupView {
-  readonly folder: FolderView;
-  readonly tasks: readonly TaskRowView[];
-  /** Open tasks beyond those shown. */
-  readonly more: number;
-  readonly signal: FolderSignal;
-  readonly needsYou: number;
 }
 
 export interface ComputerView {

@@ -882,11 +882,10 @@ button.side-needs:hover {
 }
 
 /* Rows: the open sheet's row is a plate — the active tab when the place is
-   in the middle, Chat or the task when the conversation is; one outline for
+   in the middle, the task when the conversation is; one outline for
    the conversation docked beside the place; hover links a task to its tabs
    and back. Every row keeps a 1px rim, transparent at rest, so a state never
    moves a row by a pixel. */
-.side-home,
 .side-task,
 .side-tab,
 .side-new {
@@ -902,11 +901,6 @@ button.side-needs:hover {
     border-color var(--duration-fast) var(--ease-out);
 }
 
-.side-home {
-  margin: 0 var(--space-6) var(--space-2);
-}
-
-.side-home:hover,
 .side-task:hover,
 .side-tab:hover,
 .side-result.is-selected {
@@ -919,8 +913,6 @@ button.side-needs:hover {
   --ring-bg: var(--cutout-match);
   background-color: var(--fill-match);
 }
-
-.side-home.is-filled,
 .side-task.is-filled,
 .side-tab.is-active,
 .side-tab.is-active:hover {
@@ -938,15 +930,12 @@ button.side-needs:hover {
 
 /* The conversation docked beside the place: lit like the selection, a step
    quieter, so the place's own row stays the one that reads as chosen. */
-.side-home.is-open,
 .side-task.is-open {
   --ring-bg: var(--cutout-quiet);
   border-color: var(--rim-selected);
   background: var(--sheen) var(--fill-quiet);
   box-shadow: var(--edge-plate);
 }
-
-.side-home__main,
 .side-task__main,
 .side-tab__main,
 .side-new__main {
@@ -961,224 +950,13 @@ button.side-needs:hover {
   color: var(--text-soft);
   text-align: left;
 }
-
-.side-home__main:hover,
 .side-task__main:hover {
   text-decoration: none;
 }
-
-.side-home__main:focus-visible,
 .side-task__main:focus-visible,
 .side-tab__main:focus-visible,
 .side-new__main:focus-visible {
   outline-offset: -2px;
-}
-
-.side-home__title {
-  flex: 1;
-  min-width: 0;
-  color: var(--text);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-strong);
-}
-
-.side-home__spinner {
-  width: 12px;
-  height: 12px;
-}
-
-.side-bang {
-  display: grid;
-  place-items: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--amber);
-  color: #1b120e;
-  font: 800 10.5px/1 var(--font-sans);
-}
-
-/* Done: one quiet line that opens Done in place of Tasks. Its button covers
-   the whole row; only the "+N" beside the count answers on its own. */
-.side-done__main {
-  color: var(--muted);
-  font-size: var(--text-md);
-  font-weight: var(--weight-medium);
-}
-
-.side-done__main::after {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  content: "";
-}
-
-.side-done__main .icon {
-  width: 16px;
-  height: 16px;
-  margin-inline: 2px;
-}
-
-.side-done:hover .side-done__main {
-  color: var(--text-soft);
-}
-
-.side-done__count {
-  flex: none;
-  padding-right: var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-}
-
-.side-done__moved {
-  position: relative;
-  z-index: 1;
-  flex: none;
-  height: 18px;
-  margin-right: var(--space-8);
-  padding: 0 var(--space-6);
-  border-radius: var(--radius-full);
-  background: var(--ember-wash);
-  box-shadow: inset 0 0 0 1px var(--ember-line);
-  color: var(--ember-bright);
-  font-size: var(--text-3xs);
-  font-weight: var(--weight-bold);
-  font-variant-numeric: tabular-nums;
-  line-height: 18px;
-  animation: rise-in var(--duration-med) var(--ease-out);
-}
-
-.side-done__moved:hover,
-.side-done__moved[aria-expanded="true"] {
-  background: color-mix(in srgb, var(--ember) 18%, transparent);
-}
-
-@media (any-pointer: coarse) {
-  .side-done__moved::after {
-    position: absolute;
-    inset: -12px -6px;
-    content: "";
-  }
-}
-
-/* Done open in place of Tasks: back, its name, and how many it holds. */
-.side-head--done {
-  padding-left: var(--space-4);
-}
-
-.side-head--done .side-head__title {
-  color: var(--text-soft);
-}
-
-.side-head__back {
-  width: var(--control-height-sm);
-  height: var(--control-height-sm);
-  color: var(--text-soft);
-}
-
-.side-head__back svg {
-  width: 14px;
-  height: 14px;
-}
-
-.side-head__count {
-  flex: none;
-  padding-right: var(--space-10);
-  color: var(--muted);
-  font-size: var(--text-sm);
-  font-variant-numeric: tabular-nums;
-}
-
-/* When Done tasks went there: lined up with the titles below. */
-.side-day__title {
-  margin: 0;
-  padding: var(--space-10) var(--space-10) var(--space-4) 38px;
-  color: var(--muted);
-  font-size: var(--text-xs);
-  font-weight: var(--weight-medium);
-}
-
-.side-day:first-child .side-day__title {
-  padding-top: var(--space-2);
-}
-
-/* The card the "+N" opens: what moved, why, and the way back. */
-.popover.popover--quiet-moved {
-  width: min(300px, calc(100vw - 20px));
-  min-width: 0;
-  padding: var(--space-6);
-}
-
-.quiet-moved__title {
-  margin: 0;
-  padding: var(--space-6) var(--space-8) 0;
-  color: var(--text);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-strong);
-}
-
-.quiet-moved__why {
-  margin: 0;
-  padding: var(--space-2) var(--space-8) var(--space-8);
-  color: var(--muted);
-  font-size: var(--text-sm);
-}
-
-.quiet-moved__rows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.quiet-moved__row {
-  display: flex;
-  align-items: center;
-  border-radius: var(--radius-sm);
-}
-
-.quiet-moved__row:hover {
-  background-color: var(--fill-quiet);
-}
-
-.quiet-moved__open {
-  display: flex;
-  flex: 1;
-  align-items: center;
-  gap: var(--space-10);
-  min-width: 0;
-  min-height: var(--control-height);
-  padding: var(--space-4) var(--space-8);
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  text-align: left;
-}
-
-.quiet-moved__name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quiet-moved__back {
-  flex: none;
-  margin-right: var(--space-4);
-  color: var(--muted);
-}
-
-.quiet-moved__row:hover .quiet-moved__back,
-.quiet-moved__back:focus-visible {
-  color: var(--text);
-}
-
-.quiet-moved__actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-top: var(--space-6);
-  padding: var(--space-8) var(--space-4) var(--space-2);
-  border-top: 1px solid var(--line);
 }
 
 .side-task.has-ask .side-task__main {
@@ -3068,8 +2846,6 @@ button.start-apps__row--away:focus-visible {
   .workspace--phone-stage .thread--sheet > .conv-header {
     display: none;
   }
-
-  .side-home__main,
   .side-task__main,
   .side-tab__main,
   .side-new__main {
@@ -3088,7 +2864,6 @@ button.start-apps__row--away:focus-visible {
 
 /* Fingers: every row, mark and close lands under a thumb. */
 @media (any-pointer: coarse) {
-  .side-home__main,
   .side-task__main,
   .side-tab__main,
   .side-new__main,

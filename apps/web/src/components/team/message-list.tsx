@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { observeTeamMessages } from "../../team/message-visibility.js";
 import { Icon } from "../icon.js";
 import { useStableActions } from "../use-stable-actions.js";
 import { useWindowedRows } from "../workspace/windowed-rows.js";
@@ -41,6 +42,7 @@ export function MessageList({
   firstUnreadId,
   flashId = null,
   hasOlder,
+  inThread = false,
   intro,
   items,
   label,
@@ -49,6 +51,7 @@ export function MessageList({
   onLoadOlder,
   onMarkRead,
   onReadThrough,
+  onVisibleMessage,
   openThreadId = null,
 }: {
   readonly actions?: MessageActions | undefined;
@@ -59,6 +62,8 @@ export function MessageList({
   /** A deep link's message: scrolled to and flashed once. */
   readonly flashId?: string | null;
   readonly hasOlder: boolean;
+  readonly inThread?: boolean;
+  readonly onVisibleMessage?: ((id: string) => void) | undefined;
   /** The start of the channel, shown once there is nothing older. */
   readonly intro?: ReactNode;
   readonly items: readonly TimelineItem[];
@@ -85,6 +90,7 @@ export function MessageList({
   );
   const anchor = useRef<{ readonly id: string; readonly top: number } | null>(null);
   const lastId = useRef<string | null>(null);
+  const landed = useRef<string | null>(null);
   const [newBelow, setNewBelow] = useState(0);
   const [unreadAbove, setUnreadAbove] = useState(false);
 
@@ -125,6 +131,17 @@ export function MessageList({
     measure();
     // Only the first paint chooses where to open.
   }, []);
+
+  useLayoutEffect(() => {
+    const list = scroller.current;
+    if (!list || !flashId || landed.current === flashId) return;
+    const row = list.querySelector<HTMLElement>(`[data-row-id="${CSS.escape(flashId)}"]`);
+    if (!row) return;
+    list.scrollTop = row.offsetTop - list.clientHeight / 2;
+    landed.current = flashId;
+    atEnd.current = false;
+    measure();
+  }, [flashId, items]);
 
   // Every later change: follow at the end, otherwise hold the row under the eye.
   useLayoutEffect(() => {
@@ -213,6 +230,19 @@ export function MessageList({
     };
   }, [newestId, onReadThrough]);
 
+  const drawnKeys = plan
+    .flatMap((entry) => ("index" in entry ? [keys[entry.index]] : []))
+    .join(",");
+  useEffect(() => {
+    const list = scroller.current;
+    if (!list || !onVisibleMessage) return;
+    return observeTeamMessages(
+      list,
+      [...list.querySelectorAll<HTMLElement>("[data-row-id]")],
+      onVisibleMessage,
+    );
+  }, [onVisibleMessage, items, drawnKeys]);
+
   const firstUnreadIndex = firstUnreadId ? keys.indexOf(firstUnreadId) : -1;
   const unreadCount =
     firstUnreadIndex < 0 ? 0 : items.slice(firstUnreadIndex).filter(isMessage).length;
@@ -254,9 +284,16 @@ export function MessageList({
         tabIndex={-1}
       >
         <div className="tlist__rows" ref={rowsRef}>
-          {loadingOlder ? (
-            <p className="tlist__older">Loading earlier messages…</p>
-          ) : hasOlder ? null : (
+          {hasOlder ? (
+            <button
+              className="tlist__older"
+              disabled={loadingOlder}
+              onClick={onLoadOlder}
+              type="button"
+            >
+              {loadingOlder ? "Loading earlier messages…" : "Earlier messages"}
+            </button>
+          ) : (
             intro
           )}
           {plan.map((entry, order) => {
@@ -294,6 +331,7 @@ export function MessageList({
                     editing={editingId === id}
                     flash={flashId === id}
                     grouped={!newDay && !newLine && joins(previous, item.message)}
+                    inThread={inThread}
                     message={item.message}
                     onEditingChange={onEditing}
                     open={openThreadId === id}

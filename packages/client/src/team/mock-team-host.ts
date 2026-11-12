@@ -176,6 +176,18 @@ export class MockTeamHost {
   sidebar(): TeamSidebar {
     return {
       accessRevision: SequenceSchema.parse("1"),
+      totalMentionCount: [...this.messages.values()].filter((message) => {
+        const channel = this.channels.get(message.channelId);
+        return (
+          channel?.can.read &&
+          !channel.can.join &&
+          !message.deletedAt &&
+          BigInt(message.id) > BigInt(this.#reads.get(message.channelId) ?? "0") &&
+          message.mentions.some(
+            (mention) => mention.kind === "person" && mention.userId === this.userId,
+          )
+        );
+      }).length,
       nextCursor: null,
       channels: [...this.channels.values()].map(
         ({ instructionsMarkdown: _instructions, instructionsRevision: _revision, ...channel }) => ({
@@ -187,7 +199,9 @@ export class MockTeamHost {
             (message) =>
               message.channelId === channel.id &&
               BigInt(message.id) > BigInt(this.#reads.get(channel.id) ?? "0") &&
-              message.mentions.some((mention) => mention.userId === this.userId),
+              message.mentions.some(
+                (mention) => mention.kind === "person" && mention.userId === this.userId,
+              ),
           ).length,
           lastReadMessageId: this.#reads.has(channel.id)
             ? TeamMessageIdSchema.parse(this.#reads.get(channel.id))
@@ -201,7 +215,7 @@ export class MockTeamHost {
   #sidebarPage(after?: string, channelIds?: readonly TeamChannelId[]): TeamSidebar {
     const sidebar = this.sidebar(),
       rows = sidebar.channels
-        .filter((row) => !row.channel.archivedAt && !row.channel.can.join)
+        .filter((row) => !row.channel.archivedAt && row.channel.can.read && !row.channel.can.join)
         .sort((a, b) => a.channel.id.localeCompare(b.channel.id))
         .filter((row) => !after || row.channel.id > after)
         .filter((row) => !channelIds || channelIds.includes(row.channel.id)),
@@ -433,6 +447,17 @@ export class MockTeamHost {
           registered: true,
         };
       const command = TeamCommandSchema.parse(common);
+      if (command.type === "team.member.remove") {
+        const member = this.members.find((row) => row.userId === command.userId);
+        if (!member) throw new OpensteerError({ code: "not_found", message: "Member not found" });
+        if (
+          member.role === "owner" &&
+          this.members.filter((row) => row.role === "owner" && row.state === "active").length === 1
+        )
+          throw new OpensteerError({ code: "conflict", message: "The last owner cannot leave" });
+        member.state = "removed";
+        return { type: command.type };
+      }
       if (command.type === "team.dm.open") {
         const people = [...new Set([this.userId, ...command.participants])].sort();
         const held = [...this.#directParticipants].find(
@@ -775,27 +800,36 @@ export class MockTeamHost {
     }
     if (name === "team.search") {
       const { input: query } = hostApi[name].payload.parse(input);
+      const matches = [...this.messages.values()]
+        .filter(
+          (row) =>
+            row.plainText.includes(query.query) &&
+            (!query.before || BigInt(row.id) < BigInt(query.before)) &&
+            (!query.channelId || row.channelId === query.channelId) &&
+            (!query.authorUserId || row.authorUserId === query.authorUserId) &&
+            (!query.threadRootId || row.threadRootId === query.threadRootId) &&
+            (!query.hasFile || row.attachments.length > 0) &&
+            (!query.threadsOnly || row.threadRootId !== null),
+        )
+        .sort((a, b) => Number(BigInt(b.id) - BigInt(a.id)));
       return {
-        results: [...this.messages.values()]
-          .filter((row) => row.plainText.includes(query.query))
-          .slice(0, 50)
-          .map((message) => ({
-            message,
-            source: {
-              teamId: this.teamId,
-              channelId: message.channelId,
-              threadRootId: message.threadRootId ?? message.id,
-              messageId: message.id,
-              audience: {
-                teamName: "Acme",
-                channelName: this.channels.get(message.channelId)?.name ?? "general",
-                channelKind: "public",
-                memberCount: 1,
-                peopleOnly: false,
-              },
+        results: matches.slice(0, 50).map((message) => ({
+          message,
+          source: {
+            teamId: this.teamId,
+            channelId: message.channelId,
+            threadRootId: message.threadRootId ?? message.id,
+            messageId: message.id,
+            audience: {
+              teamName: "Acme",
+              channelName: this.channels.get(message.channelId)?.name ?? "general",
+              channelKind: "public",
+              memberCount: 1,
+              peopleOnly: false,
             },
-          })),
-        hasMore: false,
+          },
+        })),
+        hasMore: matches.length > 50,
       };
     }
     throw new Error(`Mock read not implemented: ${name}`);

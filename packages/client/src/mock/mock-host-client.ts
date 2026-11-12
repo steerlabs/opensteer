@@ -1903,9 +1903,11 @@ function mockNeedsYou(
   const start = before ? Number(before) : 0;
   if (!Number.isSafeInteger(start) || start < 0 || start > rows.length)
     throw new Error("Invalid Needs-you cursor.");
-  const entries = rows.slice(start, start + limit),
+  const entries = rows
+      .slice(start, start + limit)
+      .map((entry) => hostApi["needsYou.get"].success.shape.entries.element.parse(entry)),
     end = start + entries.length;
-  return hostApi["needsYou.get"].success.parse({
+  return {
     count: rows.length,
     entries,
     window: {
@@ -1914,7 +1916,7 @@ function mockNeedsYou(
       nextBefore: end < rows.length ? String(end) : null,
       totalItems: rows.length,
     },
-  });
+  };
 }
 
 function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
@@ -1941,6 +1943,7 @@ function mockHostApiHandlers(client: MockHostState): HostApiHandlers {
           client.teamFolders.get(JSON.stringify([teamId, channelId])) ??
           client.getSnapshot().personalSettings!.agentHome,
       }),
+    "teams.replyTask.get": async () => rpcSuccess({ taskId: null, throughSequence: null }),
     "teams.threadTask.get": async ({ teamId, channelId, threadRootId }) =>
       rpcSuccess(
         hostApi["teams.threadTask.get"].success.parse({
@@ -4662,7 +4665,9 @@ export class MockHostClient implements HostClient {
 
   /** The preview's task lists always hold every task, so there is no earlier page. */
   async loadEarlierTasks(): Promise<void> {}
-  async loadEarlierNeedsYou(): Promise<void> {}
+  async loadEarlierNeedsYou(): Promise<void> {
+    this.#state.loadEarlierNeedsYou();
+  }
 
   async loadDoneTasks(deploymentId?: string): Promise<void> {
     if (this.#state.getSnapshot().quietTasksAvailable) this.#state.loadDoneTasks(deploymentId);
@@ -6316,7 +6321,10 @@ class MockHostState {
     };
     const tasks = this.taskList(null);
     this.snapshot = { ...this.snapshot, tasks, activeTasks: this.activeTaskEntries(tasks) };
-    this.snapshot = { ...this.snapshot, needsYou: mockNeedsYou(this.snapshot) };
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
   }
 
   private readonly acceptedCommands = new Map<
@@ -11574,7 +11582,10 @@ class MockHostState {
         savedViewReadiness: { tasksReady: true },
       };
     }
-    this.snapshot = { ...this.snapshot, needsYou: mockNeedsYou(this.snapshot) };
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
     this.runPlaces.flush();
     this.emit();
   }
@@ -11591,6 +11602,16 @@ class MockHostState {
 
   /** The Done lists a screen asked for, by `doneTasks` key. */
   private readonly doneTaskScopes = new Set<string>();
+
+  private needsYouLimit = 50;
+  loadEarlierNeedsYou(): void {
+    this.needsYouLimit += 50;
+    this.snapshot = {
+      ...this.snapshot,
+      needsYou: mockNeedsYou(this.snapshot, undefined, this.needsYouLimit),
+    };
+    this.emit();
+  }
 
   loadDoneTasks(deploymentId?: string): void {
     this.doneTaskScopes.add(deploymentId ?? mainDoneTasks);

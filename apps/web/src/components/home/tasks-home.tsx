@@ -130,8 +130,14 @@ export function AllTasksPage({
   readonly rows: readonly TaskRowView[];
 }) {
   const list = useRef<HTMLUListElement | null>(null);
-  const keys = rows.map((row) => row.id);
-  const plan = useWindowedRows({ list, keys, estimate: () => 52, pinned: [], all: false });
+  const keys = filter === "needs-you" ? needsYou.map((item) => item.id) : rows.map((row) => row.id);
+  const plan = useWindowedRows({
+    list,
+    keys,
+    estimate: () => (filter === "needs-you" ? 160 : 52),
+    pinned: [],
+    all: false,
+  });
   return (
     <div className="thread all-tasks">
       {header}
@@ -153,12 +159,29 @@ export function AllTasksPage({
         needsYou.length === 0 ? (
           <p className="all-tasks__empty">{emptyWords[filter]}</p>
         ) : (
-          <ul aria-label="Needs you" className="needs-you-list all-tasks__list">
-            {needsYou.map((item) => (
-              <li key={item.id}>
-                <NeedsYouCard actions={actions} item={item} pending={pending === item.id} />
+          <ul aria-label="Needs you" className="needs-you-list all-tasks__list" ref={list}>
+            {plan.map((row, index) => {
+              if ("spacer" in row)
+                return <li aria-hidden key={`spacer:${index}`} style={{ height: row.spacer }} />;
+              const item = needsYou[row.index]!;
+              return (
+                <li data-motion-key={item.id} key={item.id}>
+                  <NeedsYouCard actions={actions} item={item} pending={pending === item.id} />
+                </li>
+              );
+            })}
+            {actions.onLoadMore ? (
+              <li className="all-tasks__more">
+                <button
+                  className="sidebar__more"
+                  disabled={loadingMore}
+                  onClick={actions.onLoadMore}
+                  type="button"
+                >
+                  {loadingMore ? "Loading…" : "Show more"}
+                </button>
               </li>
-            ))}
+            ) : null}
           </ul>
         )
       ) : rows.length === 0 ? (

@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link, useLocation } from "react-router";
 import type { TeamTaskOrigin } from "@opensteer/core";
 import { TaskSource } from "../components/home/personal-sidebar.js";
 import { Icon } from "../components/icon.js";
@@ -14,6 +14,19 @@ import { channelKind } from "./team-view-models.js";
  */
 export function TaskSourceChip({ origin }: { readonly origin: TeamTaskOrigin }) {
   const source = useTaskSourceView(origin);
+  const location = useLocation();
+  const state = location.state as { teamReturn?: { pathname?: unknown; search?: unknown } } | null;
+  const back = state?.teamReturn;
+  const target =
+    back &&
+    typeof back.pathname === "string" &&
+    back.pathname.startsWith(`/teams/${origin.teamId}/c/${origin.channelId}`) &&
+    typeof back.search === "string"
+      ? { pathname: back.pathname, search: back.search }
+      : {
+          pathname: channelPath(origin.teamId, origin.channelId, { threadId: origin.threadRootId }),
+          search: location.search,
+        };
   if (!source) return null;
   if (!source.available)
     return (
@@ -25,7 +38,7 @@ export function TaskSourceChip({ origin }: { readonly origin: TeamTaskOrigin }) 
     <Link
       className="task-source-chip"
       title={`Open the thread in ${channelLabel(source.channel)}`}
-      to={channelPath(origin.teamId, origin.channelId, { threadId: origin.threadRootId })}
+      to={target}
     >
       <TaskSource source={source} />
       <span className="task-source__note">· thread</span>

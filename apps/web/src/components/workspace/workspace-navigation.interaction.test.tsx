@@ -6,8 +6,15 @@ import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { mockTeamId, mockTeamChannelId } from "@opensteer/client/team";
 import { placeList, type HostSnapshot } from "@opensteer/client/host";
-import { BrowserSurfaceIdSchema } from "@opensteer/core";
+import {
+  BrowserSurfaceIdSchema,
+  createId,
+  TeamAgentRequestIdSchema,
+  ThreadIdSchema,
+  TeamMessageIdSchema,
+} from "@opensteer/core";
 import { createBrowserSessionId } from "@opensteer/protocol";
 
 import { rememberPlace } from "./navigation.js";
@@ -15,6 +22,7 @@ import { rememberPlace } from "./navigation.js";
 import {
   root,
   client,
+  teamHost,
   history,
   goTo,
   resize,
@@ -605,5 +613,90 @@ describe("a channel and back", () => {
     await settle();
     expect(history.at(-1)).toMatchObject({ path: channel.path, search: channel.search });
     expect(document.querySelector(".place")).toBeNull();
+  });
+  it("the source chip restores a docked channel exactly after Open task", async () => {
+    await mount("/", {
+      team: true,
+      hostClient: (source) => {
+        const taskId = delegating(source),
+          originalRead = source.getSnapshot;
+        const origin = {
+          teamId: mockTeamId,
+          channelId: mockTeamChannelId,
+          threadRootId: TeamMessageIdSchema.parse("1"),
+        };
+        let held: HostSnapshot | null = null,
+          published: HostSnapshot | null = null;
+        Object.defineProperty(source, "getSnapshot", {
+          value: () => {
+            const snapshot = originalRead();
+            if (snapshot !== held) {
+              held = snapshot;
+              published = {
+                ...snapshot,
+                threads: snapshot.threads.map((thread) =>
+                  thread.id === taskId ? { ...thread, teamOrigin: origin } : thread,
+                ),
+              };
+            }
+            return published!;
+          },
+        });
+        const rpc = source.rpc;
+        Object.defineProperty(source, "rpc", {
+          value: new Proxy(rpc, {
+            get(target, property) {
+              if (property === "teams.threadTask.get")
+                return async () => ({
+                  ok: true,
+                  data: { taskId: ThreadIdSchema.parse(delegating(source)) },
+                });
+              return Reflect.get(target, property);
+            },
+          }),
+        });
+        return source;
+      },
+    });
+    const taskId = delegating(client),
+      host = teamHost!;
+    const channelId = host.bootstrap.sidebar.channels[0]!.channel.id;
+    const root = host.post({ channelId, bodyMarkdown: "Ask my agent" });
+    host.setRequest({
+      id: TeamAgentRequestIdSchema.parse(createId("teamAgentRequest")),
+      ownerUserId: host.userId,
+      channelId,
+      threadRootId: root.id,
+      triggerMessageId: root.id,
+      state: "working",
+      steps: [],
+      createdAt: root.createdAt,
+      acceptedAt: root.createdAt,
+      expiresAt: "2027-01-01T00:00:00Z",
+      finishedAt: null,
+      replyMessageId: null,
+      failureCode: null,
+      changeSeq: root.changeSeq,
+    });
+    await act(async () =>
+      goTo!(`/teams/${host.teamId}/c/${channelId}/t/${root.id}${tabSearch(pageTab())}`),
+    );
+    await act(async () => {
+      await vi.waitFor(
+        () => expect(document.querySelector(".agent-card__controls button")).not.toBeNull(),
+        { timeout: 1000 },
+      );
+    });
+    const before = history.at(-1)!;
+    const open = [...document.querySelectorAll<HTMLButtonElement>(".thread-pane button")].find(
+      (button) => button.textContent === "Open task",
+    );
+    expect(open).toBeTruthy();
+    await click(open!);
+    expect(history.at(-1)!.path).toBe(`/tasks/${taskId}`);
+    await click(element(".task-source-chip"));
+    expect(history.at(-1)).toMatchObject({ path: before.path, search: before.search });
+    expect(element(".workspace__conversation .thread-pane")).toBeTruthy();
+    expect(element(".place")).toBeTruthy();
   });
 });

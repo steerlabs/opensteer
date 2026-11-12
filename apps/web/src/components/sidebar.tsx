@@ -9,7 +9,6 @@ import {
   memo,
   useCallback,
   useEffect,
-  useId,
   useMemo,
   useRef,
   useState,
@@ -64,7 +63,6 @@ import { voiceRowKey } from "./voice-cursor.js";
 import { deploymentNameFrom } from "./deployment-name.js";
 import { selectedDeploymentFrom } from "../desktop/desktop-deployment-selection.js";
 import { Icon } from "./icon.js";
-import { Dialog } from "./dialog.js";
 import { Popover } from "./popover.js";
 import { createPortal } from "react-dom";
 import { actionErrorMessage, fromLivePage } from "../ui-utils.js";
@@ -270,7 +268,7 @@ export function Sidebar({
   const { list } = directory;
   // A handful in order of urgency; everything else is one click away in All tasks.
   const live = useMemo(() => {
-    const rows = liveTasks(list, openRowThreadId);
+    const rows = liveTasks(list);
     const needs = rows.filter((row) => row.tone === "needs-you").length;
     return rows.slice(0, Math.max(liveRowLimit, needs));
   }, [list, openRowThreadId]);
@@ -1583,8 +1581,6 @@ function SidebarFooter({
   const places = useDesktopPlaces();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
-  const [switchingComputer, setSwitchingComputer] = useState(false);
-  const switchTitleId = useId();
   const anchorRef = useRef<HTMLButtonElement | null>(null);
   // An Account sign-in that ended on its own is worth a mark, not a banner:
   // the place in use is unaffected, and the menu says what to do.
@@ -1604,7 +1600,6 @@ function SidebarFooter({
     ...(onThisComputer && places
       ? [{ icon: "check-circle" as const, label: "Setup", onSelect: () => go(setupPath, false) }]
       : []),
-    { icon: "folder", label: "Projects", onSelect: () => go("/projects", true) },
     { icon: "bolt", label: "Automations", onSelect: () => go("/automations", true) },
     { icon: "settings", label: "Settings", onSelect: () => go("/settings", false) },
   ];
@@ -1661,27 +1656,7 @@ function SidebarFooter({
               </button>
             ))}
           </div>
-          {places ? (
-            <div className="picker__section">
-              <button
-                className="picker__row"
-                onClick={() => {
-                  setOpen(false);
-                  setSwitchingComputer(true);
-                }}
-                role="menuitem"
-                type="button"
-              >
-                <span aria-hidden className="picker__check picker__check--icon">
-                  <Icon name="repeat" />
-                </span>
-                <span className="picker__label-stack">
-                  <span className="picker__label">Switch computer…</span>
-                  {signInEnded ? <span className="picker__detail">Sign in again</span> : null}
-                </span>
-              </button>
-            </div>
-          ) : null}
+          {places ? <PlaceMenuPlaces onClose={() => setOpen(false)} places={places} /> : null}
           {places ? (
             <PlaceAccountFooter
               account={places.snapshot.account}
@@ -1692,16 +1667,6 @@ function SidebarFooter({
             />
           ) : null}
         </Popover>
-      ) : null}
-      {switchingComputer && places ? (
-        <Dialog
-          labelledBy={switchTitleId}
-          onClose={() => setSwitchingComputer(false)}
-          returnFocusTo={anchorRef.current}
-          title="Switch computer"
-        >
-          <PlaceMenuPlaces onClose={() => setSwitchingComputer(false)} places={places} />
-        </Dialog>
       ) : null}
       {signingOut && places ? (
         <SignOutDialog

@@ -288,4 +288,113 @@ describe("team session lifecycle", () => {
       f.stop();
     }
   });
+  it("leaves through Host membership removal and keeps the session when the last owner is refused", async () => {
+    const f = fixture();
+    try {
+      await f.client.load();
+      await f.client.setDraft(channelScope, "Retain if refused");
+      await expect(f.client.leave()).rejects.toThrow("last owner");
+      expect(f.client.getSnapshot().bootstrap).not.toBeNull();
+      expect(Object.values(f.client.getSnapshot().drafts)).toEqual(["Retain if refused"]);
+      f.host.members.push({ ...f.host.bootstrap.member, userId: createId("user") });
+      await f.client.leave();
+      expect(f.host.bootstrap.member.state).toBe("removed");
+      expect(f.client.getSnapshot().ended).toBe("removed");
+      expect(await f.persistence.load(scope)).toBeNull();
+      expect(f.host.socketCount).toBe(0);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("pages a saved search and discards a late page after the query changes", async () => {
+    const f = fixture();
+    try {
+      await seed(f.host, 75);
+      await f.client.load();
+      await f.client.search({ query: "match" });
+      expect(f.client.getSnapshot().search?.results).toHaveLength(50);
+      await f.client.loadMoreSearch();
+      expect(f.client.getSnapshot().search?.results).toHaveLength(75);
+      expect(f.client.getSnapshot().search?.hasMore).toBe(false);
+      await f.client.search({ query: "match" });
+      const read = f.host.read.bind(f.host),
+        gate = Promise.withResolvers<void>();
+      vi.spyOn(f.host, "read").mockImplementation(async (name, input) => {
+        if (name === "team.search" && (input as { input: { before?: string } }).input.before)
+          await gate.promise;
+        return read(name, input);
+      });
+      const page = f.client.loadMoreSearch();
+      await f.client.search({ query: "not found" });
+      gate.resolve();
+      await page;
+      expect(f.client.getSnapshot().search?.results).toEqual([]);
+    } finally {
+      f.stop();
+    }
+  });
+  it("keeps an authorized anchor when the first live cut arrives after its RPC page", async () => {
+    const f = fixture();
+    try {
+      await seed(f.host, 120);
+      await f.client.load(false);
+      await f.client.landMessage(mockTeamChannelId, TeamMessageIdSchema.parse("2"));
+      f.client.connect();
+      await vi.waitFor(() => expect(f.client.getSnapshot().connection).toBe("connected"), {
+        timeout: 1000,
+      });
+      expect(f.client.getSnapshot().channel?.messages.some((row) => row.id === "2")).toBe(true);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("uses the authoritative mention total before every channel page is loaded", async () => {
+    const f = fixture();
+    try {
+      const template = f.host.channels.get(mockTeamChannelId)!;
+      for (let index = 2; index <= 51; index++) {
+        const id = TeamChannelIdSchema.parse(
+          `tch_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+        );
+        f.host.channels.set(id, { ...template, id });
+      }
+      const target = TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000051");
+      const message = f.host.post({
+        channelId: target,
+        bodyMarkdown: "Mention",
+        mentions: [{ userId: f.host.userId, kind: "person" }],
+      });
+      await f.client.load();
+      expect(f.client.getSnapshot().sidebar?.channels).toHaveLength(50);
+      expect(f.client.getSnapshot().sidebar?.totalMentionCount).toBe(1);
+      await f.client.loadMoreSidebar();
+      expect(f.client.getSnapshot().sidebar?.totalMentionCount).toBe(1);
+      await f.client.markRead(target, message.id);
+      expect(f.client.getSnapshot().sidebar?.totalMentionCount).toBe(0);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it("pages thread matches on the Host before limiting results", async () => {
+    const f = fixture();
+    try {
+      await seed(f.host, 1);
+      await seed(f.host, 60, "1");
+      await seed(f.host, 100);
+      await f.client.load();
+      await f.client.search({ query: "match", threadsOnly: true });
+      expect(f.client.getSnapshot().search?.results).toHaveLength(50);
+      expect(
+        f.client.getSnapshot().search?.results.every((row) => row.message.threadRootId === "1"),
+      ).toBe(true);
+      await f.client.loadMoreSearch();
+      expect(f.client.getSnapshot().search?.results).toHaveLength(60);
+      expect(f.client.getSnapshot().search?.results.at(-1)?.message.id).toBe("2");
+    } finally {
+      f.stop();
+    }
+  });
 });
