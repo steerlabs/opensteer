@@ -60,7 +60,7 @@ import { ThreadStepScreen } from "./screens/thread-step.js";
 import { ThreadScreen } from "./screens/thread.js";
 import { WorkspaceBrowserScreen } from "./screens/workspace-browser.js";
 import { SidebarShell } from "./sidebar/sidebar-shell.js";
-import { AllTasksScreen } from "./screens/all-tasks.js";
+import { DoneTasksScreen } from "./screens/done-tasks.js";
 import { TeamHomeScreen } from "./team/team-home-screen.js";
 import {
   TeamChannelScreen,
@@ -92,6 +92,7 @@ import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-s
 import { FolderPickerScreen } from "./home/folder-picker-screen.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
+import { QuietlyMovedScreen } from "./threads/quietly-moved-sheet.js";
 import { Pane } from "./ui/pane.js";
 import { thisPhoneNoun } from "./computers/phone-noun.js";
 
@@ -165,11 +166,18 @@ const RootStack = createNativeStackNavigator({
     // Home: the new-task composer, holding its one unsent draft.
     // The root every other screen of a Deployment is pushed over.
     Home: { screen: HomeScreen, options: { title: "Tasks" } },
-    // Every task on one filter (All, Needs you, Running, Unread, Read, Done),
-    // from the drawer's All tasks row or its amber Needs you pill.
-    AllTasks: {
-      screen: AllTasksScreen,
-      options: { ...destinationOptions(), title: "All tasks" },
+    // Every task in Done, newest Done first, from the last line of the drawer's Tasks.
+    DoneTasks: { screen: DoneTasksScreen, options: { headerLargeTitle: true, title: "Done" } },
+    // The tasks just moved to Done for the reader, from "+N" on that line.
+    QuietlyMoved: {
+      screen: QuietlyMovedScreen,
+      options: {
+        headerShown: false,
+        presentation: "formSheet",
+        sheetAllowedDetents: [0.6, 0.95],
+        sheetGrabberVisible: true,
+        title: "Moved to Done for you",
+      },
     },
     // A team's page from its drawer row: channels, then DMs; its menu is the title.
     TeamHome: { screen: TeamHomeScreen, options: { title: "" } },
@@ -636,10 +644,8 @@ type OpensteerRootParamList = {
     readonly teamId?: string | undefined;
     readonly channelId?: string | undefined;
   };
-  readonly AllTasks: {
-    readonly deploymentId: string;
-    readonly filter?: import("@opensteer/client/host").AllTasksFilter | undefined;
-  };
+  readonly DoneTasks: { readonly deploymentId: string };
+  readonly QuietlyMoved: { readonly deploymentId: string };
   readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
   readonly AddIphone: { readonly deploymentId: string };

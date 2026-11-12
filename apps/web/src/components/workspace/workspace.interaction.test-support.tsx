@@ -16,7 +16,7 @@ import { AppShell } from "../app-shell.js";
 import { AutomationDetailPage } from "../automations/automation-detail.js";
 import { AutomationsPage } from "../automations/automations-page.js";
 import { ComputersPage } from "../computers-page.js";
-import { AllTasksRoute, HomeRoute } from "../home/home-route.js";
+import { HomeRoute } from "../home/home-route.js";
 import { SettingsRedirect } from "../settings/settings-redirect.js";
 import { SettingsSectionRoute, SettingsShell } from "../settings/settings-shell.js";
 import { ThreadRoute } from "../thread-view.js";
@@ -187,7 +187,6 @@ async function mount(
                   }
                 >
                   <Route index element={<HomeRoute />} />
-                  <Route path="tasks" element={<AllTasksRoute />} />
                   <Route path="tasks/:threadId" element={<ThreadRoute />} />
                   <Route path="teams/:teamId/*" element={<TeamRoutes />} />
                   <Route path="live" element={<LiveRedirect />} />

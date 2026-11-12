@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
-import { createId, TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
-import { mockCardUseRequest } from "@opensteer/client/mock";
+import { TeamChannelIdSchema, OpensteerError } from "@opensteer/core";
 import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -10,7 +9,6 @@ import {
   settle,
   goTo,
   history,
-  client,
   teamHost,
   teamSession,
   write,
@@ -140,22 +138,6 @@ describe("sending in a channel", () => {
     expect(document.activeElement).toBe(tasks);
   });
 
-  it("reaches a second Needs you request page, keeping two asks on one task as separate cards", async () => {
-    const request = mockCardUseRequest();
-    const requests = Array.from({ length: 55 }, (_, index) => ({
-      ...request,
-      id: createId("request"),
-      presentation: { ...request.presentation, title: `Ask ${index + 1}` },
-    }));
-    await mount("/tasks?filter=needs-you", { mock: { pendingRequests: requests } });
-    expect(client.getSnapshot().needsYou?.entries).toHaveLength(50);
-    expect(document.querySelectorAll(".needs-card").length).toBeGreaterThan(1);
-    const more = element<HTMLButtonElement>(".all-tasks__more button");
-    await click(more);
-    expect(client.getSnapshot().needsYou?.entries.length).toBeGreaterThan(50);
-    expect(client.getSnapshot().needsYou?.window.hasMore).toBe(false);
-    expect(document.querySelector(".all-tasks__more")).toBeNull();
-  });
   it("keeps text locally if draft storage refuses it before send admission", async () => {
     await openChannel();
     vi.spyOn(teamSession!, "setDraft").mockRejectedValue(new Error("Storage full"));

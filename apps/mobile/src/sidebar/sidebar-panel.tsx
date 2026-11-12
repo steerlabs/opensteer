@@ -2,16 +2,19 @@ import Animated from "react-native-reanimated";
 import { move } from "../ui/motion.js";
 import { SavedTasks } from "./saved-tasks.js";
 import {
-  liveTasks,
+  doneTaskList,
   listedRowThreadId,
+  quietlyMoved,
+  quietSeenScope,
   sameTaskListSource,
+  taskAttention,
   taskList,
   taskTime,
+  type DoneTaskList,
   type HostClient,
   type HostSnapshot,
   type PlaceItem,
   type PersonalSurfaceDestination,
-  type AllTasksFilter,
   type TaskList,
   type TaskRow,
 } from "@opensteer/client/host";
@@ -27,6 +30,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
   type ReactNode,
 } from "react";
@@ -55,6 +59,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { operationDetail } from "../client/mobile-client.js";
 import { DeploymentMarkView } from "../threads/deployment-mark.js";
 import {
   deploymentIdentity,
@@ -84,18 +89,21 @@ import { useTeamsSnapshot } from "../team/team-context.js";
 import { MentionCount, TeamTile } from "../team/team-marks.js";
 
 /** The root places the drawer switches between. */
-export type SidebarDestination = "Home" | "AllTasks" | "Schedules" | "Tabs";
+export type SidebarDestination = "Home" | "Schedules" | "Tabs";
 
 export interface SidebarActions {
   /** Closes the drawer and hands focus back to whatever opened it. */
   readonly close: () => void;
   /** Home: a new task's composer. */
   readonly onHome: () => void;
-  /** Every task, on one of All tasks' filters. */
-  readonly onOpenAllTasks: (deploymentId: string, filter: AllTasksFilter) => void;
+  /** The Done page: every task in Done, newest Done first. */
+  readonly onOpenDone: (deploymentId: string) => void;
+  /** The sheet naming the tasks just moved to Done for the reader. */
+  readonly onOpenQuietlyMoved: (deploymentId: string) => void;
   /** Shows exactly this tab, app or phone, alone. */
   readonly onOpenPlace: (destination: PersonalSurfaceDestination) => void;
-  readonly onOpenTask: (deploymentId: string, threadId: string) => void;
+  /** A task, at the request named when one is. */
+  readonly onOpenTask: (deploymentId: string, threadId: string, requestId?: string) => void;
   /** A team's own page: its channels, then its direct messages. */
   readonly onOpenTeam: (teamId: string) => void;
   readonly onSchedules: () => void;
@@ -104,15 +112,14 @@ export interface SidebarActions {
   readonly onTabs: () => void;
 }
 
-/**
- * What the drawer shows of one Deployment's work: the shared task list, read
- * into the live handful (needs you, new results, running) and how many tasks
- * All tasks holds.
- */
+/** What the drawer shows of one Deployment's work: the shared task list and its Done. */
 interface SidebarModel {
+  /** Done, newest Done first, once read from a Host that keeps one. */
+  readonly done: DoneTaskList | null;
   readonly list: TaskList;
   /** The Host has sent its first page of tasks. */
   readonly loaded: boolean;
+  readonly quietScope: string | null;
 }
 
 /**
@@ -162,12 +169,37 @@ function useSidebarModel(
       openThreadId: openThreadId === null ? null : listedRowThreadId(snapshot, openThreadId),
       previous: shelves.list,
     });
-    const model = { list, loaded: snapshot.tasks !== null };
+    const model = {
+      done: doneTaskList(snapshot),
+      list,
+      loaded: snapshot.tasks !== null,
+      quietScope: quietSeenScope(snapshot),
+    };
     cached.current = { model, snapshot, openThreadId };
     shelves.list = model.list;
     return model;
   }, [hostClient, openThreadId, shelves]);
   return useSyncExternalStore(subscribe, read, read);
+}
+
+/**
+ * Reads Done once a Host that keeps one is signed in; the Host client keeps it
+ * current from then on.
+ */
+function useDoneList(hostClient: HostClient | null): void {
+  useEffect(() => {
+    if (hostClient === null) return;
+    let asked = false;
+    const ask = (): void => {
+      const snapshot = hostClient.getSnapshot();
+      if (asked || snapshot.quietTasksAvailable !== true || snapshot.session !== "authenticated")
+        return;
+      asked = true;
+      void hostClient.loadDoneTasks().catch(() => undefined);
+    };
+    ask();
+    return hostClient.subscribe(ask);
+  }, [hostClient]);
 }
 
 const noReplies: ReadonlySet<string> = new Set();
@@ -208,8 +240,8 @@ function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity 
 }
 
 /**
- * The drawer: the reader's live tasks — what needs them, new results, what is
- * running — in that order, then All tasks for everything else; Automations;
+ * The drawer: every open task — working, with anything waiting on the reader
+ * first, then ready — until the Host moves it to Done, and Done's line; Automations;
  * one row per team this computer is in, each opening its own page; then the
  * Deployment's tabs, and below them Settings and which computer this is.
  *
@@ -258,6 +290,15 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
   const identity = useDeploymentIdentity(deploymentId);
   const userId = useHostUserId(hostClient);
   const replies = useUnsentReplies(visible ? deploymentId : null, userId);
+  const client = useMobileClient();
+  const seen = useSyncExternalStore(
+    client.quietSeen.subscribe,
+    client.quietSeen.getSnapshot,
+    client.quietSeen.getSnapshot,
+  );
+  useDoneList(hostClient);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  const [earlierFailure, setEarlierFailure] = useState<string | null>(null);
   const heading = useRef<TextInstance>(null);
   const retained = useRetainedScroll(props.scroll);
 
@@ -287,22 +328,39 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     if (hostClient === null || selectedThreadId === null) return selectedThreadId;
     return listedRowThreadId(hostClient.getSnapshot(), selectedThreadId);
   }, [hostClient, selectedThreadId]);
-  const live = useMemo(() => {
-    if (model === null) return null;
-    const { list } = model;
-    return {
-      rows: liveTasks(list),
-      needsYou: list.working.filter((row) => row.tone === "needs-you").length,
-      // Every task All tasks holds until Done.
-      total: list.working.length + list.ready.length,
-    };
-  }, [model]);
+  const loadEarlier = useCallback(() => {
+    if (hostClient === null || loadingEarlier) return;
+    setLoadingEarlier(true);
+    setEarlierFailure(null);
+    void hostClient
+      .loadEarlierTasks()
+      .catch((error: unknown) =>
+        setEarlierFailure(operationDetail(error, "Earlier tasks could not be loaded.")),
+      )
+      .finally(() => setLoadingEarlier(false));
+  }, [hostClient, loadingEarlier]);
+  const openNeedsYou = useCallback(() => {
+    if (hostClient === null || deploymentId === null || model === null) return;
+    const first = model.list.working.find((task) => task.tone === "needs-you");
+    if (first === undefined) return;
+    const ask = taskAttention(hostClient.getSnapshot()).find(
+      ({ threadId }) => threadId === first.threadId,
+    );
+    actions.onOpenTask(deploymentId, first.threadId, ask?.requestId);
+  }, [actions, deploymentId, hostClient, model]);
   // The Thread in front has its draft in front of the reader already.
   const unsentReply = (threadId: string): boolean =>
     threadId !== selectedRowId && replies.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
-  const shown = live?.rows ?? [];
+  const list = model?.list ?? null;
+  const shown = list === null ? [] : [...list.working, ...list.ready];
+  const needsYou = list?.working.filter((task) => task.tone === "needs-you").length ?? 0;
+  const doneCount = model?.done?.total ?? list?.done.length ?? 0;
+  const moved =
+    model === null || seen === null || model.quietScope === null
+      ? []
+      : quietlyMoved(model.done, seen[model.quietScope] ?? null, now);
 
   return (
     <View
@@ -357,19 +415,16 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
             capturedAt={savedTasks.capturedAt}
           />
         ) : null}
-        {model === null || live === null || deploymentId === null ? null : !model.loaded ? (
+        {model === null || list === null || deploymentId === null ? null : !model.loaded ? (
           <View style={styles.loading}>
             <ActivityIndicator color={color.muted} />
           </View>
         ) : (
           <>
-            <TasksHead
-              needsYou={live.needsYou}
-              onNeedsYou={() => actions.onOpenAllTasks(deploymentId, "needs-you")}
-            />
+            <TasksHead needsYou={needsYou} onNeedsYou={openNeedsYou} />
             {shown.length === 0 ? (
               <AppText role="caption" style={styles.empty} tone="muted">
-                {live.total === 0
+                {doneCount === 0 && !list.hasMore
                   ? "Ask your agent for something and it shows up here while it works."
                   : "You’re all caught up."}
               </AppText>
@@ -389,21 +444,40 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                 </Animated.View>
               ))
             )}
-            <DestinationRow
-              accessibilityLabel={`All tasks, ${live.total}`}
-              accessory={
-                <Text
-                  maxFontSizeMultiplier={controlFontScaleLimit}
-                  style={[type.caption, styles.count]}
-                >
-                  {String(live.total)}
-                </Text>
-              }
-              current={destination === "AllTasks"}
-              icon="list.bullet"
-              label="All tasks"
-              onPress={() => actions.onOpenAllTasks(deploymentId, "all")}
-            />
+            {!list.hasMore ? null : (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ busy: loadingEarlier }}
+                disabled={loadingEarlier}
+                onPress={loadEarlier}
+                style={({ pressed }) => [styles.more, pressed && styles.pressed]}
+              >
+                {loadingEarlier ? (
+                  <ActivityIndicator color={color.muted} size="small" />
+                ) : (
+                  <AppText
+                    maxFontSizeMultiplier={controlFontScaleLimit}
+                    role="caption"
+                    tone="muted"
+                  >
+                    Show more
+                  </AppText>
+                )}
+              </Pressable>
+            )}
+            {earlierFailure === null ? null : (
+              <AppText role="caption" style={styles.empty} tone="danger">
+                {earlierFailure}
+              </AppText>
+            )}
+            {doneCount === 0 && moved.length === 0 ? null : (
+              <DoneLine
+                count={doneCount}
+                moved={moved.length}
+                onOpen={() => actions.onOpenDone(deploymentId)}
+                onOpenMoved={() => actions.onOpenQuietlyMoved(deploymentId)}
+              />
+            )}
           </>
         )}
 
@@ -581,7 +655,7 @@ function useTeamMentions(session: TeamSessionClient | null): number {
 
 /**
  * "Tasks", with the amber pill when something needs the reader: the pill
- * opens All tasks on its Needs you filter.
+ * opens the first task that does, at its request.
  */
 function TasksHead(props: {
   readonly needsYou: number;
@@ -599,7 +673,7 @@ function TasksHead(props: {
       </AppText>
       {props.needsYou === 0 ? null : (
         <Pressable
-          accessibilityHint="Opens All tasks on Needs you"
+          accessibilityHint="Opens the first task that needs you"
           accessibilityLabel={
             props.needsYou === 1 ? "1 task needs you" : `${props.needsYou} tasks need you`
           }
@@ -617,6 +691,70 @@ function TasksHead(props: {
           </Text>
         </Pressable>
       )}
+    </View>
+  );
+}
+
+/**
+ * Done, as one quiet line at the end of Tasks: it opens the Done page. Tasks
+ * the Host just moved there for the reader add a "+N" that names them.
+ */
+function DoneLine(props: {
+  readonly count: number;
+  readonly moved: number;
+  readonly onOpen: () => void;
+  readonly onOpenMoved: () => void;
+}): ReactNode {
+  const [pressed, setPressed] = useState(false);
+  const press = {
+    onPress: props.onOpen,
+    onPressIn: () => setPressed(true),
+    onPressOut: () => setPressed(false),
+  };
+  return (
+    <View style={[styles.shelf, pressed && styles.pressed]}>
+      <Pressable
+        accessibilityLabel={`Done, ${props.count} ${props.count === 1 ? "task" : "tasks"}`}
+        accessibilityRole="button"
+        style={styles.shelfOpen}
+        {...press}
+      >
+        <View style={styles.shelfMark}>
+          <Symbol name="checkmark.circle" size={15} tint={color.muted} />
+        </View>
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="secondary" tone="muted">
+          Done
+        </AppText>
+      </Pressable>
+      {props.moved === 0 ? null : (
+        <Pressable
+          accessibilityLabel={`${props.moved} ${
+            props.moved === 1 ? "task" : "tasks"
+          } moved to Done for you`}
+          accessibilityRole="button"
+          hitSlop={{ bottom: space[12], left: space[8], right: space[4], top: space[12] }}
+          onPress={props.onOpenMoved}
+          style={({ pressed: chipPressed }) => [styles.moved, chipPressed && styles.movedPressed]}
+        >
+          <AppText
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            role="caption"
+            style={styles.movedText}
+          >
+            {`+${props.moved}`}
+          </AppText>
+        </Pressable>
+      )}
+      <Pressable
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        style={styles.shelfCount}
+        {...press}
+      >
+        <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.count}>
+          {String(props.count)}
+        </AppText>
+      </Pressable>
     </View>
   );
 }

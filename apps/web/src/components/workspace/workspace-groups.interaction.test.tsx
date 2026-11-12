@@ -559,12 +559,14 @@ describe("task marks", () => {
     await click(element('[data-action="change-icon"]'));
   }
   it("shows a task's subject and separate working state in its row and header", async () => {
-    // Running work the sidebar's handful has no room for is on All tasks.
-    await mount("/tasks?filter=running");
-    const row = element<HTMLAnchorElement>("a.home-task--working");
+    await mount("/");
+    const row = [...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]")].find(
+      (candidate) =>
+        candidate.querySelector(".task-state")?.getAttribute("data-state") === "working",
+    );
+    if (!row) throw new Error("The sidebar lists no working task");
     const icon = element(".task-mark", row).getAttribute("data-icon");
-    expect(element(".task-state", row).getAttribute("data-state")).toBe("working");
-    await click(row);
+    await click(element(".side-task__main", row));
     expect(element(".conv-header .task-mark").getAttribute("data-icon")).toBe(icon);
     // Working shows on the task's mark and is spoken with its name, never as a word beside it.
     expect(element(".conv-header__mark > .working-ring").getAttribute("aria-hidden")).toBe("true");

@@ -10,7 +10,7 @@ import {
 import { ErrorNotice, OnboardingCard } from "./components/onboarding-card.js";
 import { BrandMark } from "./components/brand.js";
 import { AppShell } from "./components/app-shell.js";
-import { AllTasksRoute, HomeRoute } from "./components/home/home-route.js";
+import { HomeRoute } from "./components/home/home-route.js";
 import { VoiceRoute } from "./components/voice-route.js";
 import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
@@ -534,7 +534,6 @@ export function App({
               }
             >
               <Route index element={<HomeRoute />} />
-              <Route path="tasks" element={<AllTasksRoute />} />
               <Route path="tasks/:threadId" element={<ThreadRoute />} />
               <Route path="voice" element={<VoiceRoute />} />
               <Route path="teams/:teamId/*" element={<TeamRoutes />} />
