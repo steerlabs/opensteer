@@ -1050,10 +1050,10 @@ integration.sequential("Thread title lifecycle", () => {
       color: thread.color,
     });
     const unread = (value: typeof snapshot) =>
-      value.readStates.map(({ threadId, readSequence, unreadSequence }) => ({
-        threadId,
-        readSequence,
-        unreadSequence,
+      value.threads.map(({ id, lastVisitedAt, latestRunCompletedAt }) => ({
+        id,
+        lastVisitedAt,
+        latestRunCompletedAt,
       }));
     expect(unread(snapshot)).toEqual(unread(before));
     expect(snapshot.messages).toEqual(before.messages);

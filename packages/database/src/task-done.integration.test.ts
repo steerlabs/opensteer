@@ -586,17 +586,17 @@ integration.sequential("Shared task Done", () => {
     ]);
     // Reading it is touching it.
     await database
-      .insertInto("threadReadMarkers")
+      .insertInto("threadVisits")
       .values({
         threadId: f.thread.id,
         userId: f.userId,
-        sequence: "0",
+        lastVisitedAt: new Date(),
         updatedAt: new Date(),
       })
       .execute();
     expect(await quiet()).toEqual([]);
     await database
-      .updateTable("threadReadMarkers")
+      .updateTable("threadVisits")
       .set({
         updatedAt: daysAgo(4),
       })
@@ -725,6 +725,21 @@ integration.sequential("Shared task Done", () => {
         status: "interrupted",
         completedAt: new Date(),
       })
+      .where("threadId", "=", f.thread.id)
+      .execute();
+    const completed = await database
+      .selectFrom("runs")
+      .select("completedAt")
+      .where("threadId", "=", f.thread.id)
+      .executeTakeFirstOrThrow();
+    await store.notificationState.visit({
+      threadId: f.thread.id,
+      userId: f.userId,
+      visitedAt: completed.completedAt!.toISOString(),
+    });
+    await database
+      .updateTable("threadVisits")
+      .set({ updatedAt: daysAgo(4) })
       .where("threadId", "=", f.thread.id)
       .execute();
     await database

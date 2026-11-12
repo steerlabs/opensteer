@@ -134,7 +134,7 @@ it("moves a task only when a person asks it for something", async () => {
     ...base,
     activeTasks: [],
     threads: [],
-    threadReadStates: {},
+    threadVisits: {},
     tasks: { ...base.tasks!, entries },
   }));
   const node = document.createElement("div");

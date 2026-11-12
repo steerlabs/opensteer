@@ -1311,10 +1311,10 @@ export interface AutomationFailureNoticeTable {
   createdAt: Generated<Date>;
 }
 
-export interface ThreadReadMarkerTable {
+export interface ThreadVisitTable {
   threadId: ThreadId;
   userId: UserId;
-  sequence: ColumnType<string, number | string, number | string>;
+  lastVisitedAt: Timestamp;
   updatedAt: Timestamp;
 }
 
@@ -2081,7 +2081,7 @@ export interface DatabaseSchema extends KnowledgeTables {
   triggerControlRequests: TriggerControlRequestTable;
   deploymentEvents: DeploymentEventTable;
   automationFailureNotices: AutomationFailureNoticeTable;
-  threadReadMarkers: ThreadReadMarkerTable;
+  threadVisits: ThreadVisitTable;
 
   credentials: CredentialTable;
   credentialVaultCanaries: CredentialVaultCanaryTable;

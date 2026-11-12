@@ -2,7 +2,12 @@ import { createId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDatabase } from "./connection.js";
-import { MigrationLineageError, migrateToLatest, personalTeamBaselineName } from "./migrations.js";
+import {
+  MigrationLineageError,
+  migrateToLatest,
+  personalTeamBaselineName,
+  threadVisitsMigrationName,
+} from "./migrations.js";
 import type { DatabaseSchema } from "./schema.js";
 import { cloneTestDatabase, type TestDatabase } from "./test-database.test-support.js";
 import { seedPersonalFixture } from "./personal-fixture.test-support.js";
@@ -190,7 +195,7 @@ describe("fresh personal/team lineage", () => {
     expect(await catalog()).toEqual(before);
     expect(
       (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
-    ).toEqual([{ name: personalTeamBaselineName }]);
+    ).toEqual([{ name: personalTeamBaselineName }, { name: threadVisitsMigrationName }]);
   });
   it.each([
     ["app_versions", "size_bytes", "integer", "NO"],
@@ -387,4 +392,103 @@ describe("fresh personal/team lineage", () => {
       (await catalog()).find((row) => row.name === "team_requests_resume")?.definition,
     ).toContain("channel_id, change_seq");
   });
+});
+
+it("migrates baseline read positions, including the declared message-only and newer-active exceptions", async () => {
+  const { migrationProvider } = await import("./migrations.js");
+  const migrations = await migrationProvider().getMigrations();
+  await migrateToLatest(database, {
+    getMigrations: async () => ({
+      [personalTeamBaselineName]: migrations[personalTeamBaselineName]!,
+    }),
+  });
+  const person = await seedPersonalFixture(database, "/tmp/opensteer-visit-migration");
+  const principal = await database
+    .selectFrom("principals")
+    .select("id")
+    .where("userId", "=", person.userId)
+    .executeTakeFirstOrThrow();
+  await sql`insert into harness_instances(id,environment_id,driver_kind,name,config,runtime_revision,state_kind,enabled,is_default,source_id) values('harness',${person.environmentId},'codex','Codex','{}',1,'isolated',true,true,'codex')`.execute(
+    database,
+  );
+  await sql`insert into causal_chains(id,max_delegations,max_autonomous_runs,used_delegations,used_autonomous_runs) values('chain',100,100,0,0)`.execute(
+    database,
+  );
+  const completedAt = new Date("2026-01-02T00:00:00.000Z");
+  const updatedAt = new Date("2026-01-03T00:00:00.000Z");
+  const cases = [
+    { name: "missing-marker", status: "completed", unread: true },
+    { name: "read", status: "completed", marker: 1, unread: false },
+    { name: "unread-failed", status: "failed", marker: 0, unread: true },
+    { name: "interrupted", status: "interrupted", unread: true },
+    { name: "newer-active", status: "completed", active: true, unread: false },
+    { name: "blank-only", blank: true, unread: false },
+    { name: "message-after-completion", status: "completed", afterCompletion: true, unread: false },
+    { name: "blank-completion", status: "completed", blank: true, unread: true },
+    { name: "voice", status: "completed", voice: true, unread: true },
+    { name: "future-read", status: "completed", marker: 1, future: true, unread: false },
+  ];
+  for (const item of cases) {
+    const id = `thr_${item.name}`;
+    await sql`insert into threads(id,lineage_root_thread_id,purpose,listed,title,icon_source,color,environment_id,harness_instance_id,model_selection,created_by,created_by_principal_id)
+      values(${id},${id},${item.voice ? "voice" : "task"},${!item.voice},${item.name},'provisional','blue',${person.environmentId},'harness','{}',${person.userId},${principal.id})`.execute(
+      database,
+    );
+    await sql`insert into messages(id,thread_id,sequence,kind,actor_principal_id,author,content,created_at)
+      values(${`msg_${item.name}`},${id},1,'assistant',${principal.id},'{"kind":"agent"}',${JSON.stringify([{ type: "text", text: item.blank ? "" : "Reply" }])},${item.future ? new Date("2099-01-01") : item.afterCompletion ? updatedAt : completedAt})`.execute(
+      database,
+    );
+    if (item.status) {
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,activation_input_id,causal_chain_id,access_mode,status,completed_at)
+        values(${`run_${item.name}`},${id},${person.environmentId},'harness','{}',${person.userId},${principal.id},'{}',0,${`msg_${item.name}`},${`msg_${item.name}`},'chain','full-access',${item.status},${item.future ? new Date("2099-01-01") : completedAt})`.execute(
+        database,
+      );
+    }
+    if (item.active)
+      await sql`insert into runs(id,thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,run_ordinal,seed_input_id,activation_input_id,causal_chain_id,access_mode,status)
+      select 'run_active',thread_id,environment_id,harness_instance_id,model_selection,requested_by,actor_principal_id,authority_source,1,seed_input_id,activation_input_id,causal_chain_id,access_mode,'running' from runs where id = ${`run_${item.name}`}`.execute(
+        database,
+      );
+    if (item.marker !== undefined)
+      await sql`insert into thread_read_markers(thread_id,user_id,sequence,updated_at) values(${id},${person.userId},${item.marker},${updatedAt})`.execute(
+        database,
+      );
+  }
+  await migrateToLatest(database);
+  const { threadUnreadPredicate, latestRunCompletion } = await import("./thread-visits.js");
+  const rows = (
+    await sql<{
+      id: string;
+      unread: boolean;
+      lastVisitedAt: Date;
+      updatedAt: Date;
+    }>`select thread.id, visit.last_visited_at, visit.updated_at,
+    ${threadUnreadPredicate(latestRunCompletion(sql`thread.id`), sql`visit.last_visited_at`)} as unread
+    from threads thread join thread_visits visit on visit.thread_id = thread.id order by thread.id`.execute(
+      database,
+    )
+  ).rows;
+  for (const item of cases) {
+    const row = rows.find((row) => row.id === `thr_${item.name}`)!;
+    expect(row.unread, item.name).toBe(item.unread);
+    if (item.marker !== undefined) expect(row.updatedAt).toEqual(updatedAt);
+    if (item.status && !item.active && !item.future)
+      expect(row.lastVisitedAt).toEqual(new Date(completedAt.getTime() - (item.unread ? 1 : 0)));
+  }
+  expect(
+    (
+      await sql<{
+        present: boolean;
+      }>`select to_regclass('thread_read_markers') is not null as present`.execute(database)
+    ).rows[0]?.present,
+  ).toBe(false);
+  expect(
+    (
+      await sql<{
+        future: boolean;
+      }>`select exists(select 1 from runs where completed_at > now()) or exists(select 1 from messages where created_at > now()) as future`.execute(
+        database,
+      )
+    ).rows[0]?.future,
+  ).toBe(false);
 });

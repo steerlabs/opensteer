@@ -374,7 +374,7 @@ describe("Host signing keys", () => {
     try {
       const discovery = await app.inject({ method: "GET", url: "/.well-known/opensteer" });
       expect(discovery.statusCode).toBe(200);
-      expect(discovery.json().apiVersion).toBe(54);
+      expect(discovery.json().apiVersion).toBe(55);
       expect(discovery.headers["cache-control"]).toBe("no-store");
       expect(discovery.json()).toEqual({
         kind: "personal",
@@ -628,11 +628,11 @@ describe("rpc envelope", () => {
     const listRunners = vi.fn(async () => ({ nextCursor: null, runners: [] as const }));
     const app = await machinesServer({ authenticateSession, listRunners });
     try {
-      expect(hostApiVersion).toBe(54);
+      expect(hostApiVersion).toBe(55);
       for (const legacyHostApiVersion of [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
         26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48,
-        49, 50, 51, 52,
+        49, 50, 51, 52, 53, 54,
       ]) {
         const legacyEpoch = await injectRpcRequest(
           app,
@@ -2069,7 +2069,7 @@ describe("thread event history route", () => {
         purpose: "task" as const,
         teamOrigin: null,
       }),
-      readState: { threadId, readSequence: null, unreadSequence: null, asOfSequence: "1" },
+      asOfSequence: "1",
       events: [
         {
           createdAt: request.resolvedAt,

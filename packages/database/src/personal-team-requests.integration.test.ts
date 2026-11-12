@@ -61,7 +61,7 @@ describeStore("personal team reply watermark", (it) => {
         threadRootId,
         replyMessageId: TeamMessageIdSchema.parse("42"),
       };
-      const empty = { taskId: null, throughSequence: null };
+      const empty = { taskId: null, completedAt: null };
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
       const run = await startPersonalQueuedRunFixture(f.store, admitted.receipt.runId!);
       const replyId = createId("message");
@@ -119,12 +119,15 @@ describeStore("personal team reply watermark", (it) => {
         expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
         return;
       }
-      const message = await f.database
-        .selectFrom("messages")
-        .select("sequence")
-        .where("id", "=", replyId)
+      const completed = await f.database
+        .selectFrom("runs")
+        .select("completedAt")
+        .where("id", "=", run.runId)
         .executeTakeFirstOrThrow();
-      const expected = { taskId: admitted.receipt.taskId, throughSequence: message.sequence };
+      const expected = {
+        taskId: admitted.receipt.taskId,
+        completedAt: completed.completedAt!.toISOString(),
+      };
       expect(await requests.replyTask(personal.userId, input)).toEqual(expected);
       for (const wrong of [
         { ...input, teamId: createId("deployment") },
@@ -163,15 +166,33 @@ describeStore("personal team reply watermark", (it) => {
         }),
       });
       expect(await requests.replyTask(personal.userId, input)).toEqual(expected);
+      await f.store.commitRunnerEvent({
+        environmentId: personal.environmentId,
+        runnerId: personal.runnerId,
+        runnerBootId: privateRun.runnerBootId,
+        event: pendingEvent({
+          type: "run.completed",
+          environmentId: personal.environmentId,
+          bindingGeneration: privateRun.bindingGeneration,
+          ordinal: 2,
+          runId: privateRun.runId,
+          threadId: admitted.receipt.taskId,
+          data: { status: "completed" },
+        }),
+      });
+      const privateCompletion = (await f.store.getThreadForOwner(expected.taskId, personal.userId))!
+        .latestRunCompletedAt!;
+      expect(privateCompletion > expected.completedAt).toBe(true);
       const state = new NotificationStateStore(f.database);
-      await state.markRead({
+      await state.visit({
         threadId: expected.taskId,
         userId: personal.userId,
-        throughSequence: expected.throughSequence,
+        visitedAt: expected.completedAt,
       });
-      const read = await state.getReadState({ threadId: expected.taskId, userId: personal.userId });
-      expect(read.readSequence).toBe(expected.throughSequence);
-      expect(BigInt(read.unreadSequence!)).toBeGreaterThan(BigInt(expected.throughSequence));
+      const read = await f.store.getThreadForOwner(expected.taskId, personal.userId);
+      expect(read?.lastVisitedAt).toBe(expected.completedAt);
+      expect(read?.latestRunCompletedAt).toBe(privateCompletion);
+      expect(read!.lastVisitedAt! < read!.latestRunCompletedAt!).toBe(true);
       await requests.publication(teamId, requestId, "blocked");
       expect(await requests.replyTask(personal.userId, input)).toEqual(empty);
     });

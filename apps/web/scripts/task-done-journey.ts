@@ -40,7 +40,7 @@ const state = (page: Page, id: string) =>
     const snapshot = (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot();
     return {
       thread: snapshot.threads.find((thread) => thread.id === threadId),
-      read: snapshot.threadReadStates[threadId],
+      read: snapshot.threadVisits[threadId],
       runs: snapshot.runQueue.filter((run) => run.threadId === threadId),
     };
   }, id);
@@ -146,7 +146,7 @@ try {
   await step(page, "05-unread-done-stays-ready", async () => {
     await groupRow(page, "ready", unread).waitFor();
     const before = await state(page, unread);
-    expectThat(before, before.read?.unreadSequence != null, "fixture has no unread result");
+    expectThat(before, before.thread?.unread === true, "fixture has no unread result");
     await sidebarDone(page, unread);
     await page.waitForFunction(
       (id) =>
@@ -159,7 +159,7 @@ try {
     const observed = await state(page, unread);
     expectThat(
       observed,
-      observed.read?.unreadSequence != null && (await groupRow(page, "done", unread).count()) === 0,
+      observed.thread?.unread === true && (await groupRow(page, "done", unread).count()) === 0,
       "Done hid the unread result",
     );
     return observed;
@@ -172,8 +172,9 @@ try {
       .waitFor();
     await page.waitForFunction(
       (id) =>
-        (Reflect.get(window, "opensteerMock") as MockHostClient).getSnapshot().threadReadStates[id]
-          ?.unreadSequence === null,
+        (Reflect.get(window, "opensteerMock") as MockHostClient)
+          .getSnapshot()
+          .threads.find((thread) => thread.id === id)?.unread === false,
       unread,
     );
     await page.locator(".side-home__main").click();

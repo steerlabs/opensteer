@@ -1,4 +1,5 @@
 export { lockDeploymentEvents } from "./personal-transaction.js";
+import { latestRunCompletion } from "./thread-visits.js";
 import { markThreadStatePending } from "./thread-state-pending.js";
 import { recordPersonWaited } from "./run-visibility.js";
 import { MessageAuthorSchema, type RunId } from "@opensteer/core";
@@ -36,6 +37,15 @@ export async function appendHostDeploymentEvent(
     .returningAll()
     .executeTakeFirstOrThrow();
   const createdAt = new Date();
+  if (input.type === "thread.state-changed") {
+    const row = await transaction
+      .selectNoFrom(latestRunCompletion(sql`${input.threadId}`).as("completedAt"))
+      .executeTakeFirstOrThrow();
+    input = {
+      ...input,
+      data: { ...input.data, latestRunCompletedAt: row.completedAt?.toISOString() ?? null },
+    };
+  }
   const event = AgentEventSchema.parse({
     ...input,
     data: await stampRunContext(transaction, input.type, input.runId, input.data),

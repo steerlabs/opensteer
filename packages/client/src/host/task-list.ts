@@ -17,7 +17,7 @@ import { threadStartHold } from "./thread-activity.js";
 import { compareTaskOrder, mergeTaskEntries } from "./task-entries.js";
 import { conversationSurfaces, type SurfaceItem } from "./surfaces.js";
 import { formatRelativeTime } from "./thread-list-model.js";
-import { isThreadUnread } from "./thread-read-state.js";
+import { isThreadUnread } from "./thread-unread.js";
 
 /** What a task is doing, in the order a reader has to care. */
 export type TaskTone = "needs-you" | "working" | "waiting" | "failed" | "finished";
@@ -89,7 +89,7 @@ const taskListSourceKeys = [
   "connection",
   "machines",
   "tasks",
-  "threadReadStates",
+  "threadVisits",
   "waitingRequests",
   "threads",
   "environments",
@@ -211,7 +211,10 @@ function arrange(
 ): TaskList {
   // An unread Done task waits in Ready, though only a Done list may hold it.
   const unreadDone = doneEntries.filter(({ thread }) =>
-    isThreadUnread(snapshot.threadReadStates[thread.id]),
+    isThreadUnread({
+      ...thread,
+      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
+    }),
   );
   const entries = mergeTaskEntries(tasks?.entries ?? [], activeTasks, unreadDone).filter(
     ({ thread }) => thread.listed && thread.purpose === "task",
@@ -304,7 +307,10 @@ function rowOf(
     quietlyDone: thread.doneAt !== null && thread.doneReason === "quiet",
     // The Host also refuses an active channel conversation, which a client cannot tell apart.
     canBeDone: thread.purpose === "task",
-    unread: isThreadUnread(snapshot.threadReadStates[thread.id]),
+    unread: isThreadUnread({
+      ...thread,
+      lastVisitedAt: snapshot.threadVisits[thread.id] ?? thread.lastVisitedAt,
+    }),
     // A Stop pauses the queue: the task waits for the person alone, as a finished one does.
     stopped:
       tone === "finished" ||

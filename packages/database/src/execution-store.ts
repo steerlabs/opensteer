@@ -47,6 +47,8 @@ import {
 import {
   messagesFromRows,
   threadPendingRequestsSelection,
+  threadVisitSelection,
+  threadLatestRunCompletedAtSelection,
   threadProviderSessionSelection,
   threadContinuationIdentitySelection,
   runFromRow,
@@ -398,6 +400,8 @@ export async function loadRunDispatchContext(
       .selectAll()
       .select([
         threadPendingRequestsSelection,
+        threadVisitSelection,
+        threadLatestRunCompletedAtSelection,
         threadProviderSessionSelection,
         threadContinuationIdentitySelection,
       ])

@@ -8,7 +8,6 @@ import {
   type TeamTaskOrigin,
   type TeamMessageId,
   type UserId,
-  SequenceSchema,
 } from "@opensteer/core";
 import { PersonalTeamRequestSchema, type PersonalTeamRequest } from "@opensteer/protocol";
 import type { Kysely, Selectable } from "kysely";
@@ -144,7 +143,7 @@ export class PersonalTeamRequestsStore {
   ) {
     return this.database.transaction().execute(async (tx) => {
       await requirePersonalOwner(tx, ownerId);
-      const empty = { taskId: null, throughSequence: null };
+      const empty = { taskId: null, completedAt: null };
       const request = await tx
         .selectFrom("personalTeamRequests as p")
         .innerJoin("threads as t", "t.id", "p.localTaskId")
@@ -154,7 +153,7 @@ export class PersonalTeamRequestsStore {
             .onRef("r.seedInputId", "=", "p.localInputId")
             .onRef("r.teamRequestId", "=", "p.requestId"),
         )
-        .select(["t.id as taskId", "r.id as runId"])
+        .select(["t.id as taskId", "r.id as runId", "r.completedAt"])
         .where("t.createdBy", "=", ownerId)
         .where("t.teamId", "=", input.teamId)
         .where("t.channelId", "=", input.channelId)
@@ -185,7 +184,7 @@ export class PersonalTeamRequestsStore {
         .where("addressedToUserId", "is", null)
         .executeTakeFirst();
       return message
-        ? { taskId: request.taskId, throughSequence: SequenceSchema.parse(message.sequence) }
+        ? { taskId: request.taskId, completedAt: request.completedAt!.toISOString() }
         : empty;
     });
   }
