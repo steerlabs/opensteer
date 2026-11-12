@@ -1167,7 +1167,11 @@ export async function toolOutputForOwner(
   const row = await database
     .selectFrom("deploymentEvents")
     .innerJoin("threads", "threads.id", "deploymentEvents.threadId")
+    .innerJoin("personalSettings", "personalSettings.ownerId", "threads.createdBy")
+    .innerJoin("users", "users.id", "personalSettings.ownerId")
     .selectAll("deploymentEvents")
+    .where("personalSettings.ownerId", "=", input.ownerId)
+    .where("users.disabledAt", "is", null)
     .where("threads.id", "=", input.threadId)
     .where("deploymentEvents.runId", "=", input.runId)
     .where("deploymentEvents.type", "=", "tool.completed")

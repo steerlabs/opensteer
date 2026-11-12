@@ -272,12 +272,18 @@ async function requestCandidates(
     requiredActor: request.requiredActor,
   });
   if (userIds.length === 0) return [];
+  const recipients = await transaction
+    .selectFrom("users")
+    .select("id")
+    .where("id", "in", userIds)
+    .where("disabledAt", "is", null)
+    .execute();
   const title = await threadTitle(transaction, event.threadId);
   if (!title) return [];
   const body =
     plainTextExcerpt(requestTitleText(request.presentation), notificationBodyMaxCharacters) ??
     "Opensteer needs your answer";
-  return userIds.map((userId) => ({
+  return recipients.map(({ id: userId }) => ({
     body,
     kind: "request-opened",
     messageId: null,
@@ -436,17 +442,18 @@ async function personAnswered(
   };
 }
 
-/** Notifications use the task's own title. */
+/** Voice speaks as Opensteer; task notifications name their task. */
 async function threadTitle(
   transaction: Transaction<DatabaseSchema>,
   threadId: ThreadId,
 ): Promise<string | null> {
   const thread = await transaction
     .selectFrom("threads")
-    .select(["threads.title"])
+    .select(["threads.title", "threads.purpose"])
     .where("threads.id", "=", threadId)
     .executeTakeFirst();
   if (!thread) return null;
+  if (thread.purpose === "voice") return "Opensteer";
   return plainTextExcerpt(thread.title, notificationTitleMaxCharacters) ?? "Opensteer";
 }
 
