@@ -41,11 +41,20 @@ export function ChannelScreenBody(
     readonly channel: ChannelHeaderView;
     /** Nothing older to load: the start of the channel is drawn above its first message. */
     readonly atStart: boolean;
+    /** A new team's welcome, at the very start of #general. */
+    readonly welcome?: ReactNode;
   },
 ): ReactNode {
   const { channel } = props;
   return (
-    <PlaceLayout {...props}>{props.atStart ? <PlaceStart channel={channel} /> : null}</PlaceLayout>
+    <PlaceLayout {...props}>
+      {props.atStart ? (
+        <>
+          <PlaceStart channel={channel} />
+          {props.welcome}
+        </>
+      ) : null}
+    </PlaceLayout>
   );
 }
 

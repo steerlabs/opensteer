@@ -26,6 +26,7 @@ import {
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   UserIdSchema,
+  type TeamInviteSecret,
   type TeamPageLink,
 } from "@opensteer/core";
 import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
@@ -554,91 +555,87 @@ export class MobileTeams {
   > {
     const held = this.teamAt(origin);
     if (held !== null) return { kind: "held", team: held };
+    return { kind: "new", verified: await this.verifyTeam(origin) };
+  }
+
+  /** A team Host at an origin, verified through its signed discovery. Sends no credential. */
+  async verifyTeam(origin: string): Promise<VerifiedHostEndpoint> {
     const verified = await this.#verify(origin);
     if (verified.discovery.deploymentShape.kind !== "team")
       throw new Error(
         "That link isn't for a team. Ask whoever sent it for the team's invite link.",
       );
-    return { kind: "new", verified };
+    return verified;
   }
 
   /**
-   * Joining from an invite: the team enters this phone's catalog, the person
-   * signs in to it with their Opensteer Account, the invite admits them, and —
-   * when this phone holds their own Opensteer — their agent is linked.
+   * Entering a team whose server predates native team sessions: the team enters this
+   * phone's catalog, the person signs in to it with their Opensteer Account in the
+   * browser, and an invite, when given, admits them. Connecting their agent is the
+   * coordinator's next step, not this one's.
    */
-  async join(
-    intent: Extract<TeamLinkIntent, { kind: "invite" }>,
-    verified: VerifiedHostEndpoint | null,
-  ): Promise<string> {
-    let connection: DeploymentConnection;
-    if (verified !== null) {
-      const input = deploymentConnectionFromVerifiedEndpoints({
-        accountAccess: null,
-        endpoints: [verified],
-        kind: "team",
-        name: new URL(intent.origin).hostname,
-        source: { kind: "manual" },
-      });
-      await this.#client.catalog.upsert(input);
-      connection = (await this.#client.catalog.load()).deployments.find(
-        ({ authority }) => authority.document.deploymentId === verified.discovery.deploymentId,
-      )!;
-    } else {
-      const held = this.teamAt(intent.origin);
-      if (held === null) throw new TeamAccessError("This team is no longer on this phone.");
-      connection = this.#connection(held.teamId)!;
-    }
-    const teamId = connection.authority.document.deploymentId;
+  async signIn(
+    verified: VerifiedHostEndpoint,
+    invite: TeamInviteSecret | null,
+  ): Promise<TeamMember> {
+    const teamId = verified.discovery.deploymentId;
+    if (this.#connection(teamId) === null)
+      await this.#client.catalog.upsert(
+        deploymentConnectionFromVerifiedEndpoints({
+          accountAccess: null,
+          endpoints: [verified],
+          kind: "team",
+          name: new URL(verified.discovery.canonicalOrigin).hostname,
+          source: { kind: "manual" },
+        }),
+      );
+    const connection = (await this.#client.catalog.load()).deployments.find(
+      ({ authority }) => authority.document.deploymentId === teamId,
+    );
+    if (connection === undefined)
+      throw new TeamAccessError("This team is no longer on this phone.");
     if (!this.#signedIn(teamId)) await this.#client.signIn(teamId);
     if (!this.#signedIn(teamId)) throw new Error("Sign in to finish joining.");
     const transport = this.#transport(connection, {
       teamDeploymentId: teamId,
       userId: placeholderUser,
     });
-    const accepted = await transport.rpc["commands.dispatch"]({
-      type: "team.invite.accept",
-      selector: intent.selector,
-      verifier: intent.verifier,
-    });
-    if (!accepted.ok && accepted.error.code !== "conflict") {
-      throw new HostClientRequestError({
-        code: accepted.error.code,
-        message: accepted.error.message,
-        status: 400,
+    if (invite !== null) {
+      const accepted = await transport.rpc["commands.dispatch"]({
+        type: "team.invite.accept",
+        selector: invite.selector,
+        verifier: invite.verifier,
       });
+      if (!accepted.ok && accepted.error.code !== "conflict") {
+        throw new HostClientRequestError({
+          code: accepted.error.code,
+          message: accepted.error.message,
+          status: 400,
+        });
+      }
     }
     const bootstrap = unwrapRpcResult(await transport.rpc["team.bootstrap.get"]({}));
     this.#names.set(teamId, bootstrap.teamName);
     await this.#rememberUser(teamId, bootstrap.member.userId);
-    await this.session(teamId);
-    const { selection } = this.#client.getSnapshot();
-    if (selection.deploymentId !== null)
-      await this.#remember(selection.deploymentId, {
-        teamId,
-        origin: connection.authority.document.canonicalOrigin,
-        teamName: bootstrap.teamName,
-      });
-    if (selection.hostClient !== null && bootstrap.can.connectAgent) {
-      // Linking is best effort here: the person can always connect later from
-      // Ask my agent, and joining must not fail because a laptop is asleep.
-      await this.connect(teamId, selection.hostClient).catch(() => undefined);
-    }
-    return teamId;
+    await this.adopt({
+      teamId,
+      origin: connection.authority.document.canonicalOrigin,
+      teamName: bootstrap.teamName,
+    });
+    return bootstrap.member;
   }
 
   /**
-   * Links the reader's own Opensteer to the team: the team mints a one-time
-   * code on the reader's team session, and their own Opensteer redeems it with
-   * a secret only it ever holds.
+   * A team this phone now holds a session for joins the drawer of the computer
+   * being shown: that computer runs the agent the team asks.
    */
-  async connect(teamId: string, personal: HostClient): Promise<void> {
-    const session = await this.session(teamId);
-    const minted = unwrapRpcResult(
-      await session.rpc["commands.dispatch"]({ type: "team.link.code.create" }),
-    );
-    if (minted.type !== "team.link.code.create") throw new Error("The team did not make a code.");
-    await new PersonalTeamLinks(personal.rpc).join(minted.offer);
+  async adopt(team: LinkedTeam): Promise<void> {
+    const computerId = this.#client.getSnapshot().selection.deploymentId;
+    if (computerId === null) {
+      this.#publish();
+      return;
+    }
+    await this.#remember(computerId, team);
   }
 
   /** A code the team's web page showed, carried to the reader's own Opensteer. */

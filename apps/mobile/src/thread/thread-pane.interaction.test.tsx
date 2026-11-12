@@ -575,6 +575,7 @@ vi.mock("../team/team-marks.js", async (load) => ({
 }));
 vi.mock("../team/team-context.js", () => ({
   useTeamsSnapshot: () => ({ computerId: null, teams: [], unlinked: [], selected: null }),
+  useCoordinatorSnapshot: () => ({ hostedTeams: [], intents: [], watching: null, ready: [] }),
 }));
 vi.mock("../ui/icon-glyph.js", () => ({
   IconGlyph: (props: { icon: string; color: string }) => (
