@@ -11,7 +11,7 @@ import {
 import { NeedsYouPageSchema, type NeedsYouPage } from "@opensteer/protocol";
 import { sql, type Kysely } from "kysely";
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { requestFromRow } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import {
@@ -34,7 +34,7 @@ export function needsYouPage(
   const limit = boundedWindowLimit(input.limit, 50);
   const maxBytes = boundedWindowBytes(input.maxBytes, 256 * 1024);
   const cursor = input.before ? decodeWindowCursor(input.before, "request", input.userId) : null;
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.userId);

@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { sql } from "kysely";
 import {
@@ -196,7 +196,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
       },
     );
     console.info("Z4: starting personal hosts");
-    const engineArguments = ["--scenario=happy"];
+    const engineArguments = ["--scenario=happy", "--unique-threads"];
     for (const [index, human] of [session, devSession].entries()) {
       const database = await cloneTestDatabase("host");
       personalDatabases.push(database);
@@ -222,7 +222,7 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     const personal = personals[0]!;
     const folder = {
       computerId: personal.agentHome.computerId,
-      path: join(team.directory, "remembered-private-folder"),
+      path: join(await realpath(team.directory), "remembered-private-folder"),
     };
     await mkdir(folder.path);
     const personalLinks = new PersonalTeamLinks(personal.api);
@@ -424,7 +424,12 @@ it("proves team chat, a personal Runner and revocation end to end", async () => 
     );
 
     console.info("Z4: SQL continuation");
-    engineArguments.splice(0, engineArguments.length, "--scenario=notifications");
+    engineArguments.splice(
+      0,
+      engineArguments.length,
+      "--scenario=notifications",
+      "--unique-threads",
+    );
     await personal.restartRunner();
     const topic = (
       await sql<{

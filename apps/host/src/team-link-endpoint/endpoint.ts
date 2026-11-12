@@ -280,6 +280,10 @@ export class TeamLinkEndpoint {
       return {
         result: { kind: "receipt", messageId: await requests.receipt(linkId, frame.requestId) },
       };
+    if (frame.type === "accept")
+      return {
+        result: { kind: "accepted", request: await requests.accept(linkId, frame.requestId) },
+      };
     if (frame.type === "reply") {
       const existing = await requests.receipt(linkId, frame.requestId);
       if (existing !== null) return { result: { kind: "receipt", messageId: existing } };
@@ -307,9 +311,6 @@ export class TeamLinkEndpoint {
       await requests.authorize(linkId, frame.requestId, action);
       let result: TeamLinkResult;
       switch (frame.type) {
-        case "accept":
-          result = { kind: "accepted", request: await requests.accept(linkId, frame.requestId) };
-          break;
         case "context":
           result = { kind: "context", context: await requests.context(linkId, frame.requestId) };
           break;
