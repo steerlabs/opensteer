@@ -112,51 +112,8 @@ const messagingService: MachineSummary = {
   name: "Messaging service",
   status: "online",
 };
-const browserService: MachineSummary = {
-  ...byId(slackId),
-  allowedModules: ["browser", "shell"],
-  id: "rnr_55555555-5555-4555-8555-555555555555",
-  modules: { browser: { checkedAt: null, detail: null, readiness: "ready" } },
-  name: "Browser service",
-  status: "online",
-};
-const agentsModule = { agents: { checkedAt: null, detail: null, readiness: "ready" as const } };
-const serverComputer = (input: {
-  readonly id: string;
-  readonly name: string;
-  readonly online: boolean;
-}): MachineSummary => ({
-  ...macMini,
-  access: null,
-  apps: null,
-  computerUse: null,
-  detail: null,
-  device: { form: "server", platform: "linux" },
-  fullDiskAccess: null,
-  id: input.id,
-  lastSeenAt: input.online ? null : minutesAgo(130),
-  localWorkspaces: 0,
-  modules: agentsModule,
-  name: input.name,
-  ownership: "deployment",
-  pinnedThreads: 0,
-  revocable: true,
-  status: input.online ? "online" : "offline",
-});
 // The approval key the fake bridge reports is already registered, so the page
 // shows the settled state rather than trying to register one.
-const macbookWorking: MachineSummary = {
-  ...macbook,
-  allowedModules: ["agents", "browser", "integrations", "shell"],
-  modules: { ...macbook.modules, ...agentsModule },
-};
-const officeMini: MachineSummary = {
-  ...studio,
-  device: { form: "compact", platform: "macos" },
-  lastSeenAt: minutesAgo(125),
-  name: "Office Mac mini",
-};
-
 interface Scenario {
   readonly admin: boolean;
   readonly bridge: boolean;
@@ -166,7 +123,6 @@ interface Scenario {
     readonly name: string;
     readonly onThisComputer: boolean;
   } | null;
-  readonly kind: "personal" | "server";
   readonly local: DesktopLocalExecutionStatus | null;
   readonly machines: readonly MachineSummary[];
   readonly name: string;
@@ -209,12 +165,6 @@ const personalSessions = {
     phoneApp,
   ],
 } as const;
-const serverSessions = [
-  session({ current: true, form: "computer", label: "Chrome on Mac", seen: 0 }),
-  phoneApp,
-  session({ form: "mobile", label: "Safari on iPad", seen: 9 * 24 * 60 }),
-];
-
 function localStatus(input: {
   readonly enrolled: boolean;
   readonly mayRunAgents: boolean;
@@ -240,91 +190,9 @@ function localStatus(input: {
 
 const personal = {
   admin: true,
-  kind: "personal",
   name: "Mac mini",
   origin: "http://127.0.0.1:43100",
 } as const;
-const serverBase = {
-  admin: true,
-  kind: "server",
-  name: "Acme Research",
-  origin: "https://acme.example.com",
-  remoteAccess: "ready",
-} as const;
-const serverMachines = [
-  serverComputer({
-    id: "rnr_66666666-6666-4666-8666-666666666666",
-    name: "Main computer",
-    online: true,
-  }),
-  browserService,
-  messagingService,
-];
-const teamBase = {
-  kind: "server",
-  name: "Acme",
-  origin: "https://acme.example.com",
-  remoteAccess: "ready",
-} as const;
-const teamMachines: readonly MachineSummary[] = [
-  serverComputer({
-    id: "rnr_77777777-7777-4777-8777-777777777777",
-    name: "build-01",
-    online: true,
-  }),
-  serverComputer({
-    id: "rnr_88888888-8888-4888-8888-888888888888",
-    name: "gpu-box",
-    online: false,
-  }),
-  { ...macbookWorking, access: null, computerUse: null },
-  {
-    ...studio,
-    access: null,
-    apps: null,
-    computerUse: null,
-    id: "rnr_99999999-9999-4999-8999-999999999999",
-    lastSeenAt: null,
-    modules: {
-      integrations: { checkedAt: null, detail: null, readiness: "ready" },
-      shell: { checkedAt: null, detail: null, readiness: "ready" },
-    },
-    name: "Sam’s iMac",
-    ownerName: "Sam Kim",
-    ownership: "other",
-    status: "online",
-  },
-  {
-    ...macbookWorking,
-    access: null,
-    apps: null,
-    computerUse: null,
-    device: { form: "laptop", platform: "macos" },
-    id: "rnr_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-    name: "Priya’s MacBook Air",
-    ownerName: "Priya Rao",
-    ownership: "other",
-  },
-  {
-    ...macMini,
-    access: null,
-    allowedModules: ["agents", "shell"],
-    apps: null,
-    computerUse: null,
-    device: null,
-    enrollmentId: "ren_pending",
-    expiresAt: new Date(Date.now() + 8 * 60_000).toISOString(),
-    fullDiskAccess: null,
-    id: "ren_pending",
-    modules: { agents: { checkedAt: null, detail: null, readiness: "unavailable" } },
-    name: "Lab server",
-    ownership: "mine",
-    revocable: false,
-    status: "pending",
-  },
-  browserService,
-  messagingService,
-];
 
 const scenarios: Readonly<Record<string, Scenario>> = {
   "personal-home": {
@@ -423,58 +291,6 @@ const scenarios: Readonly<Record<string, Scenario>> = {
     machines: [macMiniMessagesUnfinished, macbook, studio, messagingService],
     remoteAccess: "ready",
   },
-  "server-desktop-offer": {
-    ...serverBase,
-    sessions: serverSessions,
-    bridge: true,
-    deployment: {
-      access: "native",
-      kind: "self-hosted",
-      name: "Acme Research",
-      onThisComputer: false,
-    },
-    local: localStatus({ enrolled: false, mayRunAgents: true }),
-    machines: serverMachines,
-  },
-  "server-desktop-added": {
-    ...serverBase,
-    sessions: serverSessions,
-    bridge: true,
-    deployment: {
-      access: "native",
-      kind: "self-hosted",
-      name: "Acme Research",
-      onThisComputer: false,
-    },
-    local: localStatus({ enrolled: true, mayRunAgents: true, runAgents: true }),
-    machines: [...serverMachines, macbookWorking, officeMini],
-  },
-  "server-browser": {
-    ...serverBase,
-    sessions: serverSessions,
-    bridge: false,
-    deployment: null,
-    local: null,
-    machines: [...serverMachines, macbookWorking, officeMini],
-  },
-  "team-admin": {
-    ...teamBase,
-    sessions: serverSessions,
-    admin: true,
-    bridge: false,
-    deployment: null,
-    local: null,
-    machines: teamMachines,
-  },
-  "team-member": {
-    ...teamBase,
-    sessions: serverSessions.slice(0, 1),
-    admin: false,
-    bridge: false,
-    deployment: null,
-    local: null,
-    machines: [],
-  },
 };
 
 function fakeBridge(_scenario: Scenario): OpensteerDesktopBridge {
@@ -504,53 +320,12 @@ const client = new MockHostClient({ latencyMs: 0, sessions: scenario.sessions })
 const snapshot: ShellContext["snapshot"] = {
   ...base,
   connection: "connected",
-  deploymentPolicy:
-    scenario.kind === "personal"
-      ? {
-          ownership: "single-user",
-          personalRemoteAccess: true,
-          nativeWebLinks: true,
-          localOwnerClaim: true,
-          deploymentOwnsMainComputer: true,
-          nativePasswords: true,
-          deploymentComputerAccess: true,
-          sharing: false,
-          serviceManagement: false,
-          runnerEnrollmentMode: "reach-only",
-          projectConsent: "owner-wide",
-          localRunnerDefaultModules: ["shell"],
-        }
-      : {
-          ownership: "members",
-          personalRemoteAccess: false,
-          nativeWebLinks: false,
-          localOwnerClaim: false,
-          deploymentOwnsMainComputer: false,
-          nativePasswords: false,
-          deploymentComputerAccess: false,
-          sharing: true,
-          serviceManagement: true,
-          runnerEnrollmentMode: "unrestricted",
-          projectConsent: "per-project",
-          localRunnerDefaultModules: ["agents", "browser", "shell"],
-        },
-  deploymentShape: {
-    defaultWorkspaceBacking: "local-directory",
-    kind: scenario.kind,
-  },
   identityConfig: base.identityConfig && {
     ...base.identityConfig,
-    deployment: {
-      kind: scenario.kind === "personal" ? "personal" : "self-hosted",
-      name: scenario.name,
-    },
+    deployment: { kind: "personal", name: scenario.name },
     publicOrigin: scenario.origin,
   },
   machines: [...scenario.machines],
-  user: base.user && {
-    ...base.user,
-    instanceRole: scenario.admin ? "administrator" : "user",
-  },
 };
 const desktopDeployment = scenario.deployment
   ? DesktopDeploymentSummarySchema.parse({
@@ -569,9 +344,6 @@ const noOp = () => undefined;
 const context: ShellContext = {
   actionError: null,
   clearActionError: noOp,
-  clearHomeHandoff: noOp,
-  homeHandoff: null,
-  homeThreadId: null,
   createThreadAndSend: async () => null,
   defaultPlacement: undefined,
   deploymentAccess: null,
@@ -587,14 +359,11 @@ const context: ShellContext = {
   refreshHarnessCatalog: async () => undefined,
   leaveSettings: noOp,
   openMobileNavigation: noOp,
-  openNewWorkspace: noOp,
-  openSharing: noOp,
   performLocalExecutionAction: async () => undefined,
   placements: [],
   rememberExecution: noOp,
   reportActionError: noOp,
   setTaskDone: noOp,
-  writeInChat: noOp,
   snapshot,
 };
 

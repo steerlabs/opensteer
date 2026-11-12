@@ -1,7 +1,7 @@
 import "@fontsource-variable/inter/wght.css";
 import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
-import type { HostClient, WorkspaceSummary } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import type {
   ComputerAppSetupRequest,
   IntegrationConnectionSummary,
@@ -76,14 +76,12 @@ const machine = {
   fullDiskAccess: scenario === "setup" ? false : true,
   id: runnerId,
   lastSeenAt: null,
-  localWorkspaces: 0,
   modules: { integrations: { checkedAt: null, detail: null, readiness: "ready" } },
   name: "Alex’s MacBook Pro",
-  ownership: view === "admin" ? "other" : "mine",
+  ownership: "mine",
   pinnedThreads: 0,
   revocable: true,
   status: online ? "online" : "offline",
-  unlinkedLocalFolders: 0,
 } as MachineSummary;
 const connections = access
   ? [
@@ -128,39 +126,6 @@ const hostClient = {
   dispatch: async (command: { type: string }) => ({ type: command.type }),
   rpc: { "integration.grants.list": async () => ({ ok: true, data: { grants: [] } }) },
 } as unknown as HostClient;
-const workspaces = [
-  {
-    description: "",
-    fileCount: 0,
-    harnessLabel: "Codex",
-    icon: null,
-    id: "wsp_00000000-0000-4000-8000-000000000001",
-    kind: "main",
-    machineName: null,
-    name: "Main",
-    runnerLabel: machine.name,
-    status: "ready",
-    storageIssue: null,
-    color: "blue",
-    updatedAt: "2026-09-19T00:00:00.000Z",
-  },
-  {
-    description: "",
-    fileCount: 0,
-    harnessLabel: "Codex",
-    icon: "mail",
-    id: "wsp_00000000-0000-4000-8000-000000000002",
-    kind: "project",
-    machineName: null,
-    name: "Morning Email Summarizer",
-    runnerLabel: machine.name,
-    status: "ready",
-    storageIssue: null,
-    color: "blue",
-    updatedAt: "2026-09-19T00:00:00.000Z",
-  },
-] as WorkspaceSummary[];
-
 createRoot(document.getElementById("root")!).render(
   <MemoryRouter>
     <main className="page">
@@ -187,7 +152,6 @@ createRoot(document.getElementById("root")!).render(
           owned={view !== "admin"}
           platform={null}
           setupRequests={setupRequests}
-          workspaces={workspaces}
         />
       </div>
     </main>

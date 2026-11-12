@@ -283,9 +283,6 @@ function useShellContext(): ShellContext {
   return {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -301,14 +298,11 @@ function useShellContext(): ShellContext {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot: { ...live, connection: "connected" },
   };
 }
@@ -369,7 +363,6 @@ function Fixture() {
                   onError={noOp}
                   queue={queue}
                   viewerUserId={author.userId}
-                  workspaces={[]}
                 />
               ) : null
             }
@@ -535,7 +528,6 @@ async function seed(file: File): Promise<ArtifactContentPart> {
     mediaType: file.type,
     name: file.name,
     sizeBytes: file.size,
-    workspaceId: threads[0]!.workspaceId,
   });
   return artifactPart(await client.uploadAttachment({ attachmentId: reserved.id, source: file }));
 }

@@ -53,7 +53,7 @@ const smoke = {
     const ownerDestination = destination;
     const snapshot = owner.getSnapshot();
     const finderPlace = placeList(snapshot).find((place) => place.destination.kind === "browser");
-    const finderThread = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId);
+    const finderThread = snapshot.threads.find((thread) => thread.purpose === "task");
     if (!finderPlace || finderPlace.destination.kind !== "browser" || !finderThread)
       throw Error("No fixture browser viewfinder exists.");
     const finder = {
@@ -123,10 +123,10 @@ const smoke = {
     });
     function Owner() {
       const snapshot = owner.getSnapshot();
-      const nav = useWorkspaceNavigation(
-        { deploymentId: snapshot.deploymentId, userId: snapshot.user?.id ?? null },
-        snapshot.homeThreadId,
-      );
+      const nav = useWorkspaceNavigation({
+        deploymentId: snapshot.deploymentId,
+        userId: snapshot.user?.id ?? null,
+      });
       return (
         <WorkspaceProvider attention={0} nav={nav} openDrawer={() => undefined}>
           <TabCloserProvider hostClient={owner}>

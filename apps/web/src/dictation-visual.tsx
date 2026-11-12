@@ -13,11 +13,9 @@ import "@fontsource-variable/fraunces/wght.css";
 import "./styles/index.css";
 
 const client = new MockHostClient({ latencyMs: 0 });
-const workspaceId = client.getSnapshot().workspaces[0]!.id;
 const file = new File(["Design review"], "review-notes.txt", { type: "text/plain" });
 const reservation = await client.createAttachment({
   idempotencyKey: `dictation-visual:${crypto.randomUUID()}`,
-  workspaceId,
   name: file.name,
   mediaType: file.type,
   sizeBytes: file.size,
@@ -138,7 +136,7 @@ function Fixture() {
           onSend={async () => {}}
           placeholder="What should Opensteer do?"
           variant={layout === "conversation" ? "conversation" : "work"}
-          attachments={{ client, scope: "dictation-visual", workspaceId }}
+          attachments={{ client, scope: "dictation-visual", deploymentId: client.getSnapshot().deploymentId! }}
           restore={{
             key: 1,
             text: "Please review before Friday.",

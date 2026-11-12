@@ -93,9 +93,6 @@ function useShellContext(): ShellContext {
   return {
     actionError: null,
     clearActionError: noOp,
-    clearHomeHandoff: noOp,
-    homeHandoff: null,
-    homeThreadId: null,
     createThreadAndSend: async () => null,
     defaultPlacement: undefined,
     deploymentAccess: null,
@@ -111,14 +108,11 @@ function useShellContext(): ShellContext {
     refreshHarnessCatalog: async () => undefined,
     leaveSettings: noOp,
     openMobileNavigation: noOp,
-    openNewWorkspace: noOp,
-    openSharing: noOp,
     performLocalExecutionAction: async () => undefined,
     placements: [],
     rememberExecution: noOp,
     reportActionError: noOp,
     setTaskDone: noOp,
-    writeInChat: noOp,
     snapshot: { ...snapshot, connection: "connected" },
   };
 }
@@ -202,8 +196,6 @@ function ToolbarView() {
           sessionId="bss_preview"
           site={pageSite}
           url={url}
-          workspaceId="wsp_00000000-0000-4000-8000-000000000001"
-          workspaceName="Main"
         />
       ) : null}
     </main>
