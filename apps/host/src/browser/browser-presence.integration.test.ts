@@ -741,9 +741,9 @@ integration("Browser presence and conversation usage", () => {
       bootstrapNotices: 0,
       taskNotices: 0,
     });
-    const brief = `Continue in sessionId ${sessionId}, tabId voice-page; ask me in Chat.`;
+    const brief = `Continue in sessionId ${sessionId}, tabId voice-page; ask me in the receiving task.`;
     const handoff = await callMcpTool(host.origin, run.toolsToken, "thread_send", {
-      threadId: "home",
+      threadId: chat.thread.id,
       delivery: "queue",
       message: brief,
     });

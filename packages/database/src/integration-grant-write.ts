@@ -75,6 +75,15 @@ export async function writeIntegrationGrantInTransaction(
   await validateIntegrationGrantInTransaction(transaction, input);
   if (input.isDefault) {
     await transaction
+      .selectFrom("integrationGrants")
+      .select("id")
+      .where("ownerUserId", "=", input.ownerUserId)
+      .where("installationId", "=", input.installationId)
+      .where("revokedAt", "is", null)
+      .orderBy("id", "asc")
+      .forNoKeyUpdate()
+      .execute();
+    await transaction
       .updateTable("integrationGrants")
       .set({ isDefault: false, updatedAt: new Date() })
       .where("ownerUserId", "=", input.ownerUserId)

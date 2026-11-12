@@ -1,4 +1,5 @@
 import { emptyAutomaticModelConfig } from "@opensteer/core";
+import { testRunnerDescriptor } from "@opensteer/database/test-support/store";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 
 import { mkdtemp, realpath, rm } from "node:fs/promises";
@@ -151,6 +152,15 @@ integration("messaging end to end", () => {
     ownerUserId = personal.userId;
     environmentId = personal.environmentId;
     agentsRunnerId = personal.runnerId;
+    await store.authenticateRunnerConnection({
+      ...testRunnerDescriptor({
+        environmentId,
+        runnerId: agentsRunnerId,
+        runnerKind: "main",
+        name: "Hosting computer",
+      }),
+      capabilities: ["filesystem", "steer-answer-v1"],
+    });
     await enrollMessagingRunner();
     folder = personal.agentHome;
     const harness = await store.createHarnessInstance({

@@ -756,6 +756,16 @@ export class IntegrationPlatformService {
           continue;
         }
       }
+      const grants = await this.#store.listGrants({ ownerUserId: input.ownerUserId });
+      const existing = grants.find(
+        (grant) =>
+          grant.installationId === detail.installationId &&
+          grant.connectionId === input.connectionId &&
+          grant.status === "active",
+      );
+      const connection = (await this.#listConnections(input.ownerUserId)).find(
+        ({ id }) => id === input.connectionId,
+      );
       try {
         const resolved = await this.#store.requests.resolveIntegrationAccessRequest({
           providerAuthorizations,
@@ -763,7 +773,15 @@ export class IntegrationPlatformService {
           resolvedBy: input.ownerUserId,
           response: {
             kind: "external",
-            value: { connectionId: input.connectionId, decision: "fulfilled" },
+            value: {
+              connectionId: input.connectionId,
+              decision: "fulfilled",
+              access: existing?.access === "read-write" ? "read-write" : detail.access,
+              alias:
+                existing?.alias ??
+                (connection?.displayName.trim().slice(0, 80) || input.connectionId),
+              isDefault: existing?.isDefault ?? false,
+            },
           },
         });
         for (const event of resolved.events) this.#onDeploymentEvent(event);

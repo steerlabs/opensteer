@@ -1,5 +1,5 @@
 import { personalSettings } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 
 import { isPlaceContentPart } from "@opensteer/core";
 import "./connection.js";
@@ -111,7 +111,7 @@ export class NotificationStore {
       Date.parse(event.createdAt) + notificationPushWindowMilliseconds <= this.#now().getTime()
     )
       return [];
-    return withPersonalTransaction(this.#database, async (transaction) =>
+    return withPersonalReadTransaction(this.#database, async (transaction) =>
       (await candidatesFor(transaction, event)).map((candidate) => {
         const subjectId =
           candidate.kind === "reply-published"
@@ -202,7 +202,7 @@ export class NotificationStore {
    * of publication because a person can link or lose one at any time.
    */
   async accountSubjects(userId: UserId): Promise<readonly string[]> {
-    return withPersonalTransaction(this.#database, (transaction) =>
+    return withPersonalReadTransaction(this.#database, (transaction) =>
       accountSubjectsForUsers(transaction, [userId]),
     );
   }

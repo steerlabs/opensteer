@@ -1,6 +1,6 @@
 import { runAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import { issueRunGrant, type RevokedRunGrant } from "./run-grants.js";
 import { pendingReplacementAttempt } from "./run-attempts.js";
@@ -930,7 +930,7 @@ export async function assertActiveExecutionBinding(
   },
   executionNow: () => number = Date.now,
 ): Promise<void> {
-  await withPersonalTransaction(database, (transaction) =>
+  await withPersonalReadTransaction(database, (transaction) =>
     assertActiveExecutionBindingInStore(transaction, input, executionNow),
   );
 }
@@ -941,7 +941,7 @@ export async function assertActiveGrant(
   },
   executionNow: () => number = Date.now,
 ): Promise<void> {
-  await withPersonalTransaction(database, (transaction) =>
+  await withPersonalReadTransaction(database, (transaction) =>
     assertActiveGrantInStore(transaction, input, executionNow),
   );
 }

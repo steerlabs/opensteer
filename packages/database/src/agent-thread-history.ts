@@ -1,5 +1,5 @@
 import { requirePersonalOwner } from "./personal-settings-store.js";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   MessageIdSchema,
   OpensteerError,
@@ -86,7 +86,7 @@ export async function readAgentThreadRecent(
     readonly runLimit: number;
   },
 ) {
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       if (!(await canRead(tx, input.threadId, input.ownerId))) return null;
@@ -168,7 +168,7 @@ export async function readAgentThreadActivity(
       code: "bad_request",
       message: "Activity cursor is invalid",
     });
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       if (!(await canRead(tx, input.threadId, input.ownerId))) return null;

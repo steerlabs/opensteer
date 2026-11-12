@@ -101,7 +101,7 @@ function fixture() {
     },
     async sql(_id, input) {
       wire.push(input);
-      return { columns: [], rows: [], sources: [], truncated: false };
+      return { columns: [], rows: [], truncated: false };
     },
     async reply(_id, bodyMarkdown, attachmentIds) {
       wire.push({ bodyMarkdown, attachmentIds });
@@ -175,7 +175,6 @@ describe("Run-bound team tool adapter", () => {
     });
     expect(sql.output.parse(await f.adapter.sql(f.run, input))).toMatchObject({
       rows: [],
-      sources: [],
       source: f.source,
     });
     expect(f.wire).toEqual([input]);
