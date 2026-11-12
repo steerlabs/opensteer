@@ -35,8 +35,11 @@ that exact team Host and app; it proves identity, never membership. The team Hos
 against Account's published keys and, in one transaction, spends it and either signs in an active
 member or admits a newcomer through the invite sent beside it. It then issues the same native
 tokens a browser sign-in would. Older teams keep the browser sign-in. An invite re-admits a
-removed person only if it was created after their removal, on every admission path. A team just
-joined shows from its verified discovery until Account's directory lists it.
+removed person only if it was created after their removal, on every admission path. The
+assertion is requested and exchanged where the credential lives (desktop main, the phone's secure
+storage); neither it nor the tokens reach a renderer. A team just joined shows from its verified
+discovery until Account's directory lists it, and is restored from the device's connection intent
+if the app restarts before then.
 
 ## Access and removal
 
