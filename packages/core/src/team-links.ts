@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { opensteerNativeClient, type OpensteerNativeApplication } from "./identity.js";
 import {
   DeploymentIdSchema,
   TeamChannelIdSchema,
@@ -10,12 +11,17 @@ export const TeamOriginSchema = z.url().refine((value) => {
   const url = new URL(value);
   return url.protocol === "https:" && url.origin === value && !url.username && !url.password;
 }, "Team origin must be a canonical HTTPS origin");
+/**
+ * What an invite link carries: the selector names the invite row, the verifier proves possession.
+ * The verifier travels only in a URL fragment or a request body, never a path, query or log.
+ */
+export const TeamInviteSecretSchema = z.strictObject({
+  selector: z.string().regex(/^[A-Za-z0-9_-]{24,96}$/),
+  verifier: z.string().regex(/^[A-Za-z0-9_-]{24,128}$/),
+});
+export type TeamInviteSecret = z.infer<typeof TeamInviteSecretSchema>;
 export const TeamPageTargetSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("invite"),
-    selector: z.string().regex(/^[A-Za-z0-9_-]{24,96}$/),
-    verifier: z.string().regex(/^[A-Za-z0-9_-]{24,128}$/),
-  }),
+  z.strictObject({ kind: z.literal("invite"), ...TeamInviteSecretSchema.shape }),
   z.strictObject({ kind: z.literal("channel"), channelId: TeamChannelIdSchema }),
   z.strictObject({
     kind: z.literal("message"),
@@ -64,19 +70,25 @@ export function parseTeamPageLink(value: string): TeamPageLink | null {
     return null;
   }
 }
-export function teamPageAppLink(link: TeamPageLink, applicationScheme: string): string {
-  if (!/^[a-z][a-z0-9+.-]*$/i.test(applicationScheme))
-    throw new Error("Invalid application scheme");
-  return `${applicationScheme}:/team?${new URLSearchParams({ url: teamPageUrl(link) })}`;
+/** Each application claims its own scheme, so a link opens exactly the app it names. */
+export function teamAppScheme(application: OpensteerNativeApplication): string {
+  return opensteerNativeClient(application).applicationId;
+}
+/** `<scheme>:/team?url=<team page URL>`: the one app link for invites, channels and messages. */
+export function teamPageAppLink(
+  link: TeamPageLink,
+  application: OpensteerNativeApplication,
+): string {
+  return `${teamAppScheme(application)}:/team?${new URLSearchParams({ url: teamPageUrl(link) })}`;
 }
 export function parseTeamPageAppLink(
   value: string,
-  applicationScheme: string,
+  application: OpensteerNativeApplication,
 ): TeamPageLink | null {
   try {
     const url = new URL(value);
     if (
-      url.protocol !== `${applicationScheme}:` ||
+      url.protocol !== `${teamAppScheme(application)}:` ||
       url.host ||
       url.pathname !== "/team" ||
       url.hash ||

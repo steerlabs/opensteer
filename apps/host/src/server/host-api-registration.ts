@@ -46,6 +46,7 @@ export const hostApiScopes = {
   "team.groups.list": "session",
   "team.group.get": "session",
   "team.invites.list": "session",
+  "team.invite.current.get": "session",
   "team.audit.page": "session",
   "team.notices.page": "session",
   "team.knowledge.topics.list": "session",

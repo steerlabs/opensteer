@@ -194,9 +194,7 @@ const desktopOAuthLinks = {
 const mcpAuthorizationLinks = new McpAuthorizationLinks(
   new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
 );
-const teamLinks = new DesktopTeamLinks(
-  new URL(embeddedRelease.oauth.hostCallback).protocol.slice(0, -1),
-);
+const teamLinks = new DesktopTeamLinks();
 const webLinks = new DesktopWebLinks((message) => {
   void app
     .whenReady()

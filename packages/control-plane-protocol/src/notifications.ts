@@ -231,7 +231,7 @@ export function teamNotificationDeepLink(targetInput: TeamNotificationTarget): s
         origin: target.origin,
         target: { kind: "message", channelId: target.channelId, messageId: target.messageId },
       },
-      "com.opensteer.mobile",
+      "mobile",
     );
   return `com.opensteer.mobile:/team-notice?${new URLSearchParams({ origin: target.origin, teamId: target.teamId, noticeId: target.noticeId })}`;
 }

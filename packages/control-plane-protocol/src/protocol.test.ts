@@ -17,6 +17,7 @@ import {
   HostAccountAdoptionProofCredentialSchema,
   HostAccountAdoptionProofIdSchema,
   HostAccountAdoptionBundleSchema,
+  TeamIdentityAssertionClaimsSchema,
   adoptedHostProvisioningBundle,
 } from "./index.js";
 
@@ -53,6 +54,9 @@ describe("control-plane protocol", () => {
       "connect-operation-superseded",
       "push-not-configured",
       "device-limit",
+      "hosted-team-limit-reached",
+      "hosted-team-address-taken",
+      "hosted-team-owner-required",
     ]);
     expect(
       ControlPlaneErrorResponseSchema.safeParse({
@@ -216,6 +220,43 @@ describe("control-plane protocol", () => {
       ],
     });
     expect(response.deployments).toHaveLength(1);
+  });
+
+  it("binds a team identity assertion to one Account and one team Host for at most a minute", () => {
+    const issuer = "https://account.example";
+    const subject = ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`);
+    const claims = {
+      tokenUse: "opensteer-team-identity",
+      iss: issuer,
+      aud: "https://acme.teams.example",
+      sub: subject,
+      iat: 1_000,
+      exp: 1_060,
+      jti: `tig_${crypto.randomUUID()}`,
+      account: { issuer, subject },
+      email: "person@example.test",
+      displayName: "Person",
+      authority: {
+        canonicalOrigin: "https://acme.teams.example",
+        deploymentId: createId("deployment"),
+        hostInstanceId: createId("hostInstance"),
+        hostKeyFingerprint: `sha256:${"k".repeat(43)}`,
+      },
+      surface: "mobile",
+    };
+    expect(TeamIdentityAssertionClaimsSchema.safeParse(claims).success).toBe(true);
+    for (const change of [
+      { exp: 1_061 },
+      { exp: 1_000 },
+      { aud: "https://other.teams.example" },
+      { account: { issuer: "https://other-account.example", subject } },
+      { surface: "browser" },
+      { email: "Person@example.test" },
+      { membership: "member" },
+    ])
+      expect(TeamIdentityAssertionClaimsSchema.safeParse({ ...claims, ...change }).success).toBe(
+        false,
+      );
   });
 
   it("requires a one-use proof for the full current self-hosted authority", () => {

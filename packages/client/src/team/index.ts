@@ -6,4 +6,6 @@ export * from "./transport-registry.js";
 export * from "./mock-team-host.js";
 export * from "./paged-list.js";
 export * from "./files.js";
+export * from "./account-teams.js";
+export * from "./team-coordinator.js";
 export * from "../mock/mock-team-world.js";

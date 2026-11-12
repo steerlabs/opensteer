@@ -1,11 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useParams } from "react-router";
-import {
-  opensteerDesktopApplicationId,
-  parseTeamPageLink,
-  teamPageAppLink,
-  type TeamPageLink,
-} from "@opensteer/core";
+import { parseTeamPageLink, teamPageAppLink, type TeamPageLink } from "@opensteer/core";
 import { createHttpHostApiClient } from "@opensteer/client/host";
 import {
   teamApiVersion,
@@ -110,7 +105,7 @@ function SharedLinkLanding({
       title={link.target.kind === "message" ? "A message from your team" : "A channel in your team"}
     >
       <div className="onboarding__actions">
-        <a className="btn btn--primary" href={teamPageAppLink(link, opensteerDesktopApplicationId)}>
+        <a className="btn btn--primary" href={teamPageAppLink(link, "desktop")}>
           Open in Opensteer
         </a>
         <button className="btn" onClick={onContinue} type="button">

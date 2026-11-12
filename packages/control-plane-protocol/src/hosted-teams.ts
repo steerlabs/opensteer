@@ -1,3 +1,4 @@
+import { DeploymentIdSchema, TeamOriginSchema } from "@opensteer/core";
 import { z } from "zod";
 
 /** Every hosted team is served at `https://<slug>.<hostedTeamsDomain>`. */
@@ -105,3 +106,72 @@ export type HostedTeamStatusReport = z.infer<typeof HostedTeamStatusReportSchema
 export const hostedTeamsDesiredPath = "/v1/hosted-teams/desired";
 export const hostedTeamStatusPath = (id: HostedTeamId) =>
   `/v1/hosted-teams/${encodeURIComponent(id)}/status`;
+
+/*
+ * The Account JSON API native apps and the portal use to create, follow and remove hosted
+ * teams, with the same Account session bearer as other native Account calls. Requests are
+ * strict; responses tolerate fields a newer Account adds.
+ */
+export const accountHostedTeamsPath = "/v1/account/hosted-teams";
+export const accountHostedTeamAvailabilityPath = `${accountHostedTeamsPath}/availability`;
+export const accountHostedTeamPath = (id: HostedTeamId) =>
+  `${accountHostedTeamsPath}/${encodeURIComponent(id)}`;
+export const accountHostedTeamRetryPath = (id: HostedTeamId) =>
+  `${accountHostedTeamPath(id)}/retry`;
+
+/** Bounded by the Account Deployment name the team becomes. */
+export const HostedTeamNameSchema = z.string().trim().min(1).max(120);
+
+/**
+ * What a person waits on. `ready` means the team Host is configured, its creator is committed
+ * as owner and its directory entry is published, not merely that the pod is up.
+ */
+export const HostedTeamStageSchema = z.enum([
+  "reserving",
+  "starting",
+  "configuring",
+  "ready",
+  "failed",
+  "deleting",
+]);
+export type HostedTeamStage = z.infer<typeof HostedTeamStageSchema>;
+
+export const HostedTeamAvailabilityQuerySchema = z.strictObject({ slug: z.string().max(256) });
+export const HostedTeamAvailabilityResponseSchema = z.discriminatedUnion("available", [
+  z.object({ available: z.literal(true) }),
+  z.object({ available: z.literal(false), reason: z.enum(["invalid", "reserved", "taken"]) }),
+]);
+export type HostedTeamAvailability = z.infer<typeof HostedTeamAvailabilityResponseSchema>;
+
+/** Replaying a `requestId` returns the team it created instead of creating another. */
+export const CreateHostedTeamRequestSchema = z.strictObject({
+  requestId: z.uuid(),
+  name: HostedTeamNameSchema,
+  slug: HostedTeamSlugSchema,
+});
+export type CreateHostedTeamRequest = z.infer<typeof CreateHostedTeamRequestSchema>;
+
+export const HostedTeamViewSchema = z.object({
+  id: HostedTeamIdSchema,
+  name: HostedTeamNameSchema,
+  // Not the input rule: a newly reserved label must not make an existing team unreadable.
+  slug: z.string().min(3).max(32),
+  origin: TeamOriginSchema,
+  /** Present once Account adopted the team's Host. */
+  deploymentId: DeploymentIdSchema.optional(),
+  stage: HostedTeamStageSchema,
+  /** Why the last attempt failed; present only at `failed`. */
+  error: z.object({ message: z.string().min(1).max(1_000) }).optional(),
+});
+export type HostedTeamView = z.infer<typeof HostedTeamViewSchema>;
+
+export const ListHostedTeamsResponseSchema = z.object({
+  teams: z.array(HostedTeamViewSchema).max(100),
+});
+
+/**
+ * `POST …/:id/retry` answers the team view. `DELETE …/:id` cancels a team still being set up
+ * (its creator may) or deletes a ready one (team owners only) and answers it at `deleting`;
+ * a team already gone answers `not_found`.
+ */
+export const HostedTeamResponseSchema = HostedTeamViewSchema;

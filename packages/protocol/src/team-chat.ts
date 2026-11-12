@@ -185,6 +185,8 @@ export const TeamBootstrapSchema = z.strictObject({
   member: TeamMemberSchema,
   can: TeamCanSchema,
   sidebar: TeamSidebarSchema,
+  /** The channel the team was created with, where a new owner or member lands; null without one. */
+  generalChannelId: TeamChannelIdSchema.nullable().optional(),
 });
 export const TeamSearchInputSchema = z.strictObject({
   query: z.string().trim().min(1).max(256),

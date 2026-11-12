@@ -85,6 +85,26 @@ export const TeamInviteSchema = z.strictObject({
   createdBy: UserIdSchema,
   createdAt: IsoDateTimeSchema,
 });
+/** How long a reset invite works, in days: the only choices a manager is offered. */
+export const TeamInviteExpiryDaysSchema = z.union([z.literal(1), z.literal(7), z.literal(30)]);
+export type TeamInviteExpiryDays = z.infer<typeof TeamInviteExpiryDaysSchema>;
+/** `null` admits until the invite expires or is reset. */
+export const TeamInviteMaxUsesSchema = z.number().int().min(1).max(1000).nullable();
+/**
+ * The team's one reusable invite, shown only to people who may manage invites. `url` is the
+ * canonical `https://<team>/invite/<selector>#<verifier>`, redisplayable on any of their devices.
+ */
+export const TeamCurrentInviteSchema = z.strictObject({
+  id: TeamInviteIdSchema,
+  url: z.url(),
+  expiresInDays: TeamInviteExpiryDaysSchema,
+  expiresAt: IsoDateTimeSchema,
+  maxUses: TeamInviteMaxUsesSchema,
+  usedCount: z.number().int().nonnegative(),
+  createdBy: UserIdSchema,
+  createdAt: IsoDateTimeSchema,
+});
+export type TeamCurrentInvite = z.infer<typeof TeamCurrentInviteSchema>;
 export const TeamAuditSchema = z.strictObject({
   id: SequenceSchema,
   occurredAt: IsoDateTimeSchema,
