@@ -25,7 +25,6 @@ import {
   createId,
   defaultTaskSymbol,
   ThreadIdSchema,
-  WorkspaceIdSchema,
   RunnerIdSchema,
 } from "@opensteer/core";
 import { computerUseStops } from "@opensteer/client/integrations";
@@ -43,7 +42,7 @@ function TestWorkspace({
   readonly children: React.ReactNode;
   readonly onShow?: WorkspaceNavigation["showPlace"];
 }) {
-  const nav = useWorkspaceNavigation({ deploymentId: null, userId: null }, null);
+  const nav = useWorkspaceNavigation({ deploymentId: null, userId: null });
   return (
     <WorkspaceProvider
       attention={0}
@@ -649,20 +648,17 @@ it("opens the exact phone from its conversation chip and keeps Stop and the step
 });
 
 describe("task mark bylines", () => {
-  it("resolves a live ordinary task, falls back for an unknown author, and keeps project attribution", async () => {
+  it("resolves a live ordinary task and falls back for an unknown author", async () => {
     const mock = new MockHostClient();
     try {
       await mock.load();
       const snapshot = mock.getSnapshot();
       const thread = snapshot.threads.find((thread) => thread.icon === "plane")!;
-      const main = snapshot.workspaces.find((workspace) => workspace.kind === "main")!;
-      const project = snapshot.workspaces.find((workspace) => workspace.name === "Travel")!;
       const author = {
         kind: "agent" as const,
         displayName: thread.title,
         runId: createId("run"),
         threadId: ThreadIdSchema.parse(thread.id),
-        workspaceName: main.name,
       };
       const entry: MessageEntry = { ...note, author, body: "Here is the result." };
       const container = document.createElement("div");
@@ -673,12 +669,7 @@ describe("task mark bylines", () => {
         act(async () =>
           root.render(
             <MemoryRouter>
-              <AgentTranscript
-                entries={[message]}
-                attachmentReader={mock}
-                homeThreadId={snapshot.homeThreadId}
-                workspaces={snapshot.workspaces}
-              />
+              <AgentTranscript entries={[message]} attachmentReader={mock} />
             </MemoryRouter>,
           ),
         );
@@ -702,20 +693,6 @@ describe("task mark bylines", () => {
         container.querySelector(".msg--assistant__author .task-mark")?.getAttribute("data-icon"),
       ).toBe(defaultTaskSymbol);
       expect(container.querySelector(".msg--assistant__author .task-mark svg")).not.toBeNull();
-      await draw({
-        ...entry,
-        author: {
-          ...author,
-          workspaceName: project.name,
-          displayName: project.name,
-        },
-      });
-      expect(
-        container
-          .querySelector(".msg--assistant__author .workspace-orb")
-          ?.getAttribute("data-color"),
-      ).toBe("blue");
-      expect(container.querySelector(".msg--assistant__author")?.textContent).toBe("Travel");
     } finally {
       mock.dispose();
     }
@@ -801,7 +778,6 @@ describe("page rail", () => {
             occupants: [
               {
                 threadId: ThreadIdSchema.parse("thr_00000000-0000-4000-8000-000000000001"),
-                home: false,
                 holding: true,
                 acting: true,
                 lastActiveAt: run.createdAt,

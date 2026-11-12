@@ -13,16 +13,10 @@ import {
   removeLocalComputer,
 } from "./app-shell.js";
 
-it.each(["personal", "server"] as const)(
-  "keeps local enrollment modules for an older %s bootstrap",
-  (kind) => {
-    expect(localEnrollmentModules({ deploymentShape: { kind } })).toEqual(
-      kind === "personal"
-        ? ["browser", "integrations", "messaging", "shell"]
-        : ["agents", "browser", "shell"],
-    );
-  },
-);
+it("lends another computer's browser, integrations, messaging and shell, never its agents", () => {
+  // Agents run only on the computer hosting a Personal Deployment.
+  expect(localEnrollmentModules).toEqual(["browser", "integrations", "messaging", "shell"]);
+});
 
 const bridge = {} as OpensteerDesktopBridge;
 

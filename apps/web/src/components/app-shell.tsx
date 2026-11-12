@@ -191,17 +191,17 @@ export type LocalExecutionAction =
   | { readonly kind: "add"; readonly name: string; readonly runAgents: boolean }
   | { readonly kind: "set-run-agents"; readonly runAgents: boolean };
 
+/** What another computer lends when it joins: agents run only on the hosting computer. */
+export const localEnrollmentModules = ["browser", "integrations", "messaging", "shell"] as const;
+
 /**
  * The Deployment whose local Runner slot this window supervises, if any.
  *
  * Every Deployment a desktop attaches to has a slot — a Personal one reached
- * over its access route can be joined as a reachable computer just like a
- * server. The one exception is the Personal Deployment hosted on this very
- * computer: there the local Runner is its Main, which the Deployment owns
- * rather than a computer anybody adds or removes.
+ * over its access route can be joined as a reachable computer. The one
+ * exception is the Personal Deployment hosted on this very computer: its
+ * Runner is the hosting computer, which nobody adds or removes.
  */
-export const localEnrollmentModules = ["shell"] as const;
-
 export function localRunnerSlotDeploymentId(input: {
   readonly desktopBridge: OpensteerDesktopBridge | null;
   readonly desktopDeployment: DesktopDeploymentSummary | null;
