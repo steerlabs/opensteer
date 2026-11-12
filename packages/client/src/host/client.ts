@@ -1332,6 +1332,10 @@ export interface HostClient {
     selection: Pick<ExecutionSelection, "harnessInstanceId" | "modelSelection">,
     continuation?: { expectedProviderSessionId: string | null },
   ): Promise<ThreadSummary>;
+  bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void>;
   updateMachineAccess(input: {
     readonly expectedRevision: number;
     readonly policy: MachineAccessPolicy;

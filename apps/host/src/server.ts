@@ -1794,6 +1794,11 @@ export async function createHostServer(
                   dependencies.integrations.continuations.notify();
                 return;
               }
+              case "device.access":
+                throw new OpensteerError({
+                  code: "forbidden",
+                  message: "Device access Requests are not yet supported",
+                });
               case "machine.full-disk-access":
                 await dependencies.machineFullDiskAccess.decline(input);
                 return;
@@ -2075,7 +2080,17 @@ export async function createHostServer(
         harnessCatalogReconciliations.schedule(target.environment.id, [target.harness.id]);
         return { ...envelope, type: command.type };
       }
+      case "machine.session.bind":
+        throw new OpensteerError({
+          code: "forbidden",
+          message: "Device session binding is not yet supported",
+        });
       case "machine.access.update": {
+        if (command.policy.browser !== undefined || command.policy.apps !== undefined)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Device access switches are not yet supported",
+          });
         await requireMachineAccessManagement(
           dependencies.store,
           {
@@ -2166,6 +2181,11 @@ export async function createHostServer(
         );
         return { type: command.type };
       case "runner.enrollment.createLocal": {
+        if (command.access !== undefined)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Initial device access is not yet supported",
+          });
         const enrollment = await dependencies.runnerAuthenticator.createEnrollment({
           allowedModules: command.allowedModules,
           createdBy: userId,
@@ -2183,6 +2203,11 @@ export async function createHostServer(
         };
       }
       case "runner.enrollment.createPhone": {
+        if (command.access !== undefined)
+          throw new OpensteerError({
+            code: "forbidden",
+            message: "Initial device access is not yet supported",
+          });
         // Where the phone will reach this Host is settled before anything is
         // minted: a token for an address no phone can use is one nobody can
         // redeem, and a Personal Deployment with remote access off has none.

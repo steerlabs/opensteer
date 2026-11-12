@@ -529,6 +529,13 @@ describeStore("agents answering task questions", (it) => {
         requestedServerId: null,
       },
       "integration.install": { kind: "integration.install", reason, manifest: {} },
+      "device.access": {
+        kind: "device.access",
+        reason,
+        machineId: s.f.runnerId,
+        machineName: "Mac",
+        access: "files",
+      },
       "machine.full-disk-access": {
         kind: "machine.full-disk-access",
         reason,

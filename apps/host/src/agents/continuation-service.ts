@@ -311,6 +311,8 @@ export async function continuationMessage(
     throw new Error("The Request continuation outbox contains an ineligible Request");
   }
   switch (request.kind) {
+    case "device.access":
+      throw new Error("Device access continuations are not yet supported");
     case "integration.input":
       throw new Error("Device input returns inside its tool call and cannot have a continuation");
     case "machine.full-disk-access": {

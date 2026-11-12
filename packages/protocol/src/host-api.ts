@@ -235,6 +235,7 @@ import {
   ComputerViewRenewResultSchema,
 } from "./computer-view.js";
 
+import { DeviceInitialAccessSchema, DeviceSessionBindingProofSchema } from "./devices.js";
 import { MachineSummarySchema } from "./machines.js";
 import { defineRpc, type RpcClient, type RpcHandlers } from "./rpc.js";
 import { RunnerModuleNameSchema } from "./runner-identity.js";
@@ -630,9 +631,16 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     type: z.literal("machine.rename"),
   }),
   z.strictObject({
+    idempotencyKey: idempotencyKeySchema,
+    machineId: RunnerIdSchema,
+    proof: DeviceSessionBindingProofSchema,
+    type: z.literal("machine.session.bind"),
+  }),
+  z.strictObject({
     /** The revision the editor last read; a stale one conflicts and ends nothing. */
     expectedRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     idempotencyKey: idempotencyKeySchema,
+    // Omitted fields keep the stored values.
     policy: MachineAccessPolicySchema,
     runnerId: RunnerIdSchema,
     type: z.literal("machine.access.update"),
@@ -694,6 +702,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     allowedModules: z.array(RunnerModuleNameSchema).min(1).max(5),
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(120),
+    access: DeviceInitialAccessSchema.optional(),
     type: z.literal("runner.enrollment.createLocal"),
   }),
 
@@ -706,6 +715,7 @@ const otherCommandInputSchema = z.discriminatedUnion("type", [
     idempotencyKey: idempotencyKeySchema,
     name: z.string().trim().min(1).max(120),
     profile: z.literal("iphone").optional(),
+    access: DeviceInitialAccessSchema.optional(),
     type: z.literal("runner.enrollment.createPhone"),
   }),
   /**
@@ -1182,6 +1192,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
   harnessAuthenticationEnvelopeSchema.extend({ type: z.literal("harness.authentication.cancel") }),
   z.object({ type: z.literal("machine.revoke") }),
   z.object({ type: z.literal("machine.rename") }),
+  z.object({ type: z.literal("machine.session.bind") }),
   z.discriminatedUnion("outcome", [
     z.object({
       outcome: z.literal("updated"),

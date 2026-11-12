@@ -24,6 +24,7 @@ describe("agent answer classification", () => {
     "integration.access": false,
     "integration.install": false,
     "machine.full-disk-access": false,
+    "device.access": false,
     "computer.app.access": false,
     "integration.input": false,
   };

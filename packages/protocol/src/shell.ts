@@ -218,6 +218,8 @@ export function machineAccessShareIssues(shares: readonly MachineAccessShare[]):
  */
 export const MachineAccessPolicySchema = z
   .strictObject({
+    browser: z.boolean().optional(),
+    apps: z.boolean().optional(),
     reach: MachineAccessReachSchema,
     commands: z.boolean(),
     forwarding: z.boolean(),
@@ -240,6 +242,18 @@ export const MachineAccessPolicyViewSchema = z
     }
   });
 export type MachineAccessPolicy = z.infer<typeof MachineAccessPolicySchema>;
+
+export function deviceAccess(policy: Pick<MachineAccessPolicy, "browser" | "apps" | "reach">): {
+  browser: boolean;
+  apps: boolean;
+  files: boolean;
+} {
+  return {
+    browser: policy.browser ?? true,
+    apps: policy.apps ?? true,
+    files: policy.reach !== "nobody",
+  };
+}
 
 export const machineAccessPolicyDefault: MachineAccessPolicy = Object.freeze({
   reach: "nobody",

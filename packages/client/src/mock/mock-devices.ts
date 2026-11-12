@@ -159,3 +159,28 @@ export function mockLightsServerSetup(userId: string, now: Date): ComputerAppSet
     threadTitle: "Connect the desk lights",
   });
 }
+
+export function mockDeviceAccessRequest(userId: string): Request {
+  const template = mockTvPairingRequest(userId);
+  return RequestSchema.parse({
+    ...template,
+    id: "req_0192f4a1-dddd-4000-8000-0000000000d3",
+    callId: "mock-device-access",
+    kind: "device.access",
+    payload: {
+      kind: "device.access",
+      machineId: "rnr_33333333-3333-4333-8333-333333333333",
+      machineName: "Alex’s MacBook Pro",
+      access: "apps",
+      reason: "Read the project files on this Mac.",
+    },
+    presentation: {
+      kind: "external",
+      subject: { kind: "device.access", id: "rnr_33333333-3333-4333-8333-333333333333" },
+      title: "Let your agent use Apps on Alex’s MacBook Pro?",
+      detail:
+        "Read the project files on this Mac. Per-app, browser profile and macOS permissions may still be needed.",
+    },
+    requiredActor: "owner",
+  });
+}

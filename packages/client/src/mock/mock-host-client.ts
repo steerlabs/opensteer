@@ -27,6 +27,7 @@ import {
 } from "@opensteer/protocol";
 import { browserProfileHomeCommand } from "../host/browser-access.js";
 import {
+  mockDeviceAccessRequest,
   mockDevicePlugins,
   mockDeviceTasks,
   mockLightsServerSetup,
@@ -1491,6 +1492,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "ready",
     },
     fullDiskAccess: true,
+    kind: "home",
     id: "rnr_11111111-1111-4111-8111-111111111111",
     lastSeenAt: null,
 
@@ -1549,6 +1551,7 @@ const mockMachines: readonly MachineSummary[] = [
       activeSessions: [],
       ownerReachAvailable: true,
       policy: {
+        apps: false,
         commands: false,
         forwarding: false,
         reach: "owner",
@@ -1574,6 +1577,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "permission-required",
     },
     fullDiskAccess: false,
+    kind: "computer",
     id: "rnr_33333333-3333-4333-8333-333333333333",
     lastSeenAt: "2026-09-13T08:12:00.000Z",
 
@@ -1608,6 +1612,7 @@ const mockMachines: readonly MachineSummary[] = [
     expiresAt: null,
     computerUse: null,
     fullDiskAccess: true,
+    kind: "computer",
     id: "rnr_44444444-4444-4444-8444-444444444444",
     lastSeenAt: "2026-09-16T21:40:00.000Z",
 
@@ -1653,6 +1658,7 @@ const mockMachines: readonly MachineSummary[] = [
       state: "ready",
     },
     fullDiskAccess: null,
+    kind: "agent-phone",
     id: mockAgentPhoneRunnerId,
     lastSeenAt: null,
 
@@ -2827,6 +2833,9 @@ async function executeMockCommand(
     case "machine.rename":
       await client.renameMachine(command.machineId, command.name);
       return rpcSuccess({ type: command.type });
+    case "machine.session.bind":
+      await client.bindDeviceSession(command.machineId);
+      return rpcSuccess({ type: command.type });
     case "machine.access.update": {
       const revision = await client.updateMachineAccess(
         command.runnerId,
@@ -2902,7 +2911,7 @@ async function executeMockCommand(
       return rpcSuccess({ type: command.type });
     case "runner.enrollment.createLocal":
       return rpcSuccess({
-        ...(await client.createLocalRunnerEnrollment(command.name)),
+        ...(await client.createLocalRunnerEnrollment(command.name, command.access)),
         type: command.type,
       });
 
@@ -2912,6 +2921,7 @@ async function executeMockCommand(
           command.name,
           command.profile,
           command.idempotencyKey,
+          command.access,
         )),
         type: command.type,
       });
@@ -4773,6 +4783,18 @@ export class MockHostClient implements HostClient {
     return result.ended;
   }
 
+  async bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void> {
+    const result = await this.dispatch({
+      ...input,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+      type: "machine.session.bind",
+    });
+    if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
+  }
+
   async updateMachineAccess(input: {
     readonly expectedRevision: number;
     readonly policy: MachineAccessPolicy;
@@ -5855,6 +5877,7 @@ class MockHostState {
     {
       readonly name: string;
       readonly profile: "iphone" | null;
+      readonly access: import("@opensteer/protocol").DeviceInitialAccess | undefined;
       readonly result: {
         readonly enrollmentId: string;
         readonly expiresAt: string;
@@ -5989,12 +6012,24 @@ class MockHostState {
           absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
           createdAt: "2026-09-14T00:00:00.000Z",
           current: true,
-          deviceLabel: "Chrome on Mac",
+          deviceId: "rnr_33333333-3333-4333-8333-333333333333",
+          deviceLabel: "Opensteer for Mac",
           expiresAt: "2026-09-21T00:00:00.000Z",
           form: "computer",
           id: createId("authSession"),
           lastSeenAt: "2026-09-14T00:00:00.000Z",
         },
+        ...["Chrome on Mac", "Opensteer for iPhone"].map((deviceLabel) => ({
+          absoluteExpiresAt: "2026-10-14T00:00:00.000Z",
+          createdAt: "2026-09-14T00:00:00.000Z",
+          current: false,
+          deviceLabel,
+          deviceId: null,
+          expiresAt: "2026-09-21T00:00:00.000Z",
+          form: "computer" as const,
+          id: createId("authSession"),
+          lastSeenAt: "2026-09-14T00:00:00.000Z",
+        })),
       ]),
     ];
     this.latencyMs = options.latencyMs ?? 420;
@@ -7679,6 +7714,7 @@ class MockHostState {
   }
 
   async revokeMachine(machineId: string): Promise<void> {
+    this.sessions = this.sessions.filter((session) => session.deviceId !== machineId);
     // The profiles that live on it go with it, as the Host deletes them.
     this.update({
       ...this.snapshot,
@@ -7690,7 +7726,22 @@ class MockHostState {
     });
   }
 
+  async bindDeviceSession(machineId: string): Promise<void> {
+    if (!this.snapshot.machines.some((machine) => machine.id === machineId))
+      throw new Error("Device not found");
+    const session = this.sessions.find((entry) => entry.current);
+    if (!session) throw new Error("Sign in first");
+    if (session.deviceId && session.deviceId !== machineId)
+      throw new Error("Session is already bound to another device");
+    this.sessions = this.sessions.map((entry) =>
+      entry.current ? { ...entry, deviceId: machineId } : entry,
+    );
+  }
+
   async revokeSession(sessionId?: string): Promise<void> {
+    const bound = this.sessions.find((session) => session.id === sessionId)?.deviceId;
+    const machine = this.snapshot.machines.find((entry) => entry.id === bound);
+    if (machine?.revocable) await this.revokeMachine(machine.id);
     this.sessions = this.sessions.filter((session) => session.id !== sessionId);
   }
 
@@ -7909,7 +7960,7 @@ class MockHostState {
     }
     const setup = mockLightsServerSetup(mockUserId, this.now());
     this.computerAppSetupRequests.set(setup.id, setup);
-    return [mockTvPairingRequest(mockUserId)];
+    return [mockTvPairingRequest(mockUserId), mockDeviceAccessRequest(mockUserId)];
   }
 
   listComputerAppSetupRequests(): ComputerAppSetupRequest[] {
@@ -8674,7 +8725,10 @@ class MockHostState {
     return grant;
   }
 
-  async createLocalRunnerEnrollment(name: string) {
+  async createLocalRunnerEnrollment(
+    name: string,
+    access?: import("@opensteer/protocol").DeviceInitialAccess,
+  ) {
     const expiresAt = new Date(this.now().getTime() + 10 * 60_000).toISOString();
     const enrollmentId = `ren_${crypto.randomUUID()}`;
     this.update({
@@ -8683,7 +8737,21 @@ class MockHostState {
         ...this.snapshot.machines,
         {
           tabOpenedAt: null,
-          access: null,
+          access: access
+            ? {
+                activeSessions: [],
+                ownerReachAvailable: true,
+                revision: 1,
+                policy: {
+                  browser: access.browser,
+                  apps: access.apps,
+                  reach: access.files ? "owner" : "nobody",
+                  commands: true,
+                  forwarding: true,
+                  shares: [],
+                },
+              }
+            : null,
           // A row still waiting to connect has reported no apps either.
           apps: null,
           allowedModules: ["agents", "shell"],
@@ -8694,6 +8762,7 @@ class MockHostState {
           // A row that is still waiting to connect has reported nothing yet.
           computerUse: null,
           fullDiskAccess: null,
+          kind: "computer",
           id: enrollmentId,
           lastSeenAt: null,
 
@@ -8728,7 +8797,10 @@ class MockHostState {
       ...this.snapshot,
       machines: this.snapshot.machines.map((entry) =>
         entry.id === machineId && entry.access
-          ? { ...entry, access: { ...entry.access, policy, revision } }
+          ? {
+              ...entry,
+              access: { ...entry.access, policy: { ...entry.access.policy, ...policy }, revision },
+            }
           : entry,
       ),
     });
@@ -8779,10 +8851,15 @@ class MockHostState {
     name: string,
     profile: "iphone" | undefined,
     idempotencyKey: string,
+    access?: import("@opensteer/protocol").DeviceInitialAccess,
   ) {
     const existing = this.phoneEnrollments.get(idempotencyKey);
     if (existing) {
-      if (existing.name !== name || existing.profile !== (profile ?? null))
+      if (
+        existing.name !== name ||
+        existing.profile !== (profile ?? null) ||
+        JSON.stringify(existing.access) !== JSON.stringify(access)
+      )
         throw mockConflict(
           "Idempotency key is already bound to a different Runner enrollment request",
         );
@@ -8796,7 +8873,21 @@ class MockHostState {
         ...this.snapshot.machines,
         {
           tabOpenedAt: null,
-          access: null,
+          access: access
+            ? {
+                activeSessions: [],
+                ownerReachAvailable: true,
+                revision: 1,
+                policy: {
+                  browser: access.browser,
+                  apps: access.apps,
+                  reach: access.files ? "owner" : "nobody",
+                  commands: true,
+                  forwarding: true,
+                  shares: [],
+                },
+              }
+            : null,
           apps: null,
           allowedModules: ["integrations"],
           detail: null,
@@ -8805,6 +8896,7 @@ class MockHostState {
           expiresAt,
           computerUse: null,
           fullDiskAccess: null,
+          kind: "phone",
           id: enrollmentId,
           lastSeenAt: null,
 
@@ -8825,7 +8917,7 @@ class MockHostState {
       pairing: mockAgentPhonePairingTarget,
       token: `mock-phone-runner-enrollment-token-${enrollmentId}`,
     };
-    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result });
+    this.phoneEnrollments.set(idempotencyKey, { name, profile: profile ?? null, result, access });
     return result;
   }
 
@@ -12647,7 +12739,18 @@ function createInitialSnapshot(): HostSnapshot {
       setupState: "complete",
       signupPolicy: "closed",
     },
-    machines: mockMachines.map((machine) => ({ ...machine })),
+    machines: [
+      ...mockMachines.map((machine) => ({ ...machine })),
+      {
+        ...mockMachines[3]!,
+        id: "rnr_55555555-5555-4555-8555-555555555555",
+        name: "Tim’s iPhone",
+        kind: "phone",
+        device: { form: "phone", platform: "ios", app: "opensteer" },
+        computerUse: null,
+        tabOpenedAt: null,
+      },
+    ],
     ownerName: "Alex",
     session: "authenticated",
     sessionSurface: "canonical",

@@ -107,6 +107,7 @@ export const teamApiVersionRefusal = `Update Opensteer: this team server needs t
  * advertise capabilities an older client has never heard of.
  */
 export const HostCapabilitySchema = z.enum([
+  "devices-v1",
   "automatic-models-v1",
   "notification-preview-v1",
   "tab-reopen-v1",

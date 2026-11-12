@@ -560,6 +560,15 @@ export function desktopPreviewBridge(
       emitAccess();
     },
 
+    signDeviceSessionBinding: async () => {
+      throw new Error("not implemented");
+    },
+    leaveDeployment: async () => {
+      throw new Error("not implemented");
+    },
+    setUpDevice: async () => {
+      throw new Error("not implemented");
+    },
     startLocalRunner: async (input) => {
       const parsed = DesktopStartLocalRunnerInputSchema.parse(input);
       if (selection.selectedDeploymentId !== parsed.deploymentId) {

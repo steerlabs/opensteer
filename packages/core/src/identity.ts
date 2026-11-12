@@ -29,6 +29,7 @@ export const SessionDeviceFormSchema = z.enum(["computer", "mobile"]);
 export type SessionDeviceForm = z.infer<typeof SessionDeviceFormSchema>;
 
 export const AuthSessionSummarySchema = z.strictObject({
+  deviceId: z.string().min(1).max(255).nullable().optional(),
   absoluteExpiresAt: z.iso.datetime({ offset: true }),
   createdAt: z.iso.datetime({ offset: true }),
   current: z.boolean(),

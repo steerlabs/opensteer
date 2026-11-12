@@ -1156,6 +1156,15 @@ export class HttpHostClient {
     const parsedCommand = hostApi["commands.dispatch"].payload.parse(
       browserProfileHomeCommand(command, this.#snapshot.browserProfileHomes),
     );
+    const needsDevices =
+      parsedCommand.type === "machine.session.bind" ||
+      (parsedCommand.type === "machine.access.update" &&
+        (parsedCommand.policy.browser !== undefined || parsedCommand.policy.apps !== undefined)) ||
+      ((parsedCommand.type === "runner.enrollment.createLocal" ||
+        parsedCommand.type === "runner.enrollment.createPhone") &&
+        parsedCommand.access !== undefined);
+    if (needsDevices && !this.#capabilities?.includes("devices-v1"))
+      throw new Error("Update this Opensteer to use device setup and access switches.");
     if (parsedCommand.type === "thread.icon.set") {
       if (!this.#snapshot.taskMarksAvailable)
         throw new Error("This Host does not support task marks.");
@@ -3018,6 +3027,18 @@ export class HttpHostClient {
    * machines are read back rather than patched: `activeSessions` is the Host's
    * answer about live sessions and this client has no standing to guess it.
    */
+  async bindDeviceSession(input: {
+    readonly machineId: string;
+    readonly proof: import("@opensteer/protocol").DeviceSessionBindingProof;
+  }): Promise<void> {
+    const result = await this.dispatch({
+      ...input,
+      idempotencyKey: globalThis.crypto.randomUUID(),
+      type: "machine.session.bind",
+    });
+    if (result.type !== "machine.session.bind") throw new Error("Device binding command mismatch.");
+  }
+
   async updateMachineAccess(input: {
     readonly expectedRevision: number;
     readonly policy: MachineAccessPolicy;
