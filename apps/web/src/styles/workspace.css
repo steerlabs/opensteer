@@ -4108,3 +4108,36 @@ html[data-tab-sorting] * {
   width: 14px;
   height: 14px;
 }
+
+/* "All tasks": a quiet row under the live tasks, at the rows' own scale. */
+.side-all .side-task__main {
+  color: var(--muted);
+}
+
+.side-all .side-task__main:is(:hover, [aria-current="page"]) {
+  color: var(--text);
+}
+
+.side-all .side-task__main > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-inline: var(--space-4);
+}
+
+.side-all .side-task__text {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.side-all__count {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.side-all__chevron.side-all__chevron {
+  width: 12px;
+  height: 12px;
+  margin-inline: 0;
+}

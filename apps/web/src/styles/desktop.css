@@ -64,6 +64,12 @@ html.electron-shell .sidebar__header :is(.brand-link, .brand-lockup, .sidebar__t
   margin-left: var(--desktop-titlebar-leading-inset);
 }
 
+/* On a Mac the window's own controls stand where the name would; the
+   sidebar's buttons keep their place at the right, as they always have. */
+html.electron-shell--macos .sidebar__title {
+  visibility: hidden;
+}
+
 /* Titlebar insets are measured from the window edge, but desktop page headers
    start after the sidebar. Convert the leading inset into the small remainder
    that still extends past a collapsed rail so every routed titlebar places its

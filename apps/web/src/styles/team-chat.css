@@ -280,6 +280,13 @@
     border-color var(--duration-fast) var(--ease-out);
 }
 
+/* Tasks and the chosen side read whole; the other teams give way first. */
+.side-switch__segment:first-child,
+.side-switch__segment.is-chosen {
+  flex-shrink: 0;
+  max-width: 60%;
+}
+
 .side-switch__segment.is-chosen {
   border-color: var(--rim-selected);
   background: var(--sheen) var(--fill-plate-hover);
@@ -1165,6 +1172,13 @@ a.team-row__main:hover {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* A card or picture never runs past a narrow column; long names end in an ellipsis. */
+.team-files__images > li,
+.team-files__cards > li {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .team-image {

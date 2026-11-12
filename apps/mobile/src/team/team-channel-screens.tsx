@@ -1,5 +1,5 @@
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
-import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
+import { PersonalTeamLinks, readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
 import { teamScopeKey, type TeamSessionClient, type TeamTimeline } from "@opensteer/client/team";
 import {
   TeamAgentRequestIdSchema,
@@ -337,6 +337,20 @@ function Place(props: {
       }, 1_000);
       return () => clearTimeout(timer);
     }, [channelId, following, newest, session]),
+  );
+  // Reading your agent's reply in its thread reads its task on your computer.
+  const repliedToMe =
+    rootId !== null &&
+    view.messages.some(
+      (message) => message.authorKind === "agent" && message.authorUserId === viewerId,
+    );
+  useFocusEffect(
+    useCallback(() => {
+      if (!repliedToMe || rootId === null || personal === null) return;
+      void readTeamReply(personal, { teamId, channelId, threadRootId: rootId }).catch(
+        () => undefined,
+      );
+    }, [channelId, personal, repliedToMe, rootId, teamId]),
   );
   const arrivedWhileAway = useRef(0);
   const lastNewest = useRef(newest);

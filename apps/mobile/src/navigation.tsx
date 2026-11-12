@@ -635,7 +635,7 @@ type OpensteerRootParamList = {
   };
   readonly AllTasks: {
     readonly deploymentId: string;
-    readonly filter?: import("./sidebar/live-tasks.js").AllTasksFilter | undefined;
+    readonly filter?: import("@opensteer/client/host").AllTasksFilter | undefined;
   };
   readonly TeamHome: { readonly teamId: string };
   readonly AddDeployment: undefined;
