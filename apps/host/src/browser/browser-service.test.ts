@@ -4977,38 +4977,25 @@ describe("BrowserService", () => {
     });
   });
 
-  it.each(["guest", "legacy"] as const)(
-    "refuses an agent %s on the only browser when it runs no agents",
-    async (identity) => {
-      const keys = generateKeyPairSync("ed25519");
-      const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
-        targetedStreaming: true,
-      });
-      const ownerId = createId("user");
-
-      const runner = testRunner({ agents: false });
-      const repository = new MemoryBrowserRepository(ownerId);
-      const profile = repository.addHostedProfile("Legacy");
-
-      const service = placementService({
-        keys,
+  it("opens an agent Guest on the only reachable browser without an agents module", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const runtime = await startFakeRuntime(keys.publicKey, "host-primary", {
+      targetedStreaming: true,
+    });
+    const ownerId = createId("user");
+    const runner = testRunner({ agents: false });
+    const service = placementService({ keys, ownerId, runtime, runners: [runner], personal: true });
+    await expect(
+      service.openAgentSession({
+        agentBindingId: "run:guest",
         ownerId,
-
-        runtime,
-        repository,
-        runners: [runner],
-      });
-      await expect(
-        service.openAgentSession({
-          agentBindingId: "run:guest",
-          ownerId,
-
-          ...(identity === "guest" ? { fresh: true as const } : { profileId: profile.id }),
-        }),
-      ).rejects.toMatchObject({ code: "runner_offline" });
-      expect(runtime.connectionCount()).toBe(0);
-    },
-  );
+        fresh: true,
+      }),
+    ).resolves.toMatchObject({
+      session: { placement: { kind: "runner", runnerId: runner.runnerId } },
+    });
+    expect(runtime.connectionCount()).toBe(1);
+  });
 
   it.each(["person", "agent"] as const)(
     "opens a homed profile on a browser-only device for a %s",
@@ -5147,11 +5134,25 @@ describe("BrowserService", () => {
       kind: "runner",
       runnerId: phone.runnerId,
     });
+    const openAgent = () =>
+      service.openAgentSession({
+        agentBindingId: "run:personal-guest",
+        ownerId,
+        fresh: true,
+      });
+    expect((await openAgent()).session.placement).toEqual({
+      kind: "runner",
+      runnerId: main.runnerId,
+    });
     runners.splice(0, 1);
     await expect(open("offline-main")).rejects.toMatchObject({
       reason: "browser-placement-unavailable",
     });
-    expect(runtime.connectionCount()).toBe(2);
+    expect((await openAgent()).session.placement).toEqual({
+      kind: "runner",
+      runnerId: phone.runnerId,
+    });
+    expect(runtime.connectionCount()).toBe(4);
   });
 
   it("falls back to the only connected computer and refuses to guess between many", async () => {

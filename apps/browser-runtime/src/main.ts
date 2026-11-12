@@ -220,7 +220,7 @@ async function startBrowserRelay(options: {
       },
       name: options.name,
       runnerId: current.runnerId,
-      runnerKind: "managed",
+      runnerKind: "local",
       runtimeVersion: "0.0.0",
     }),
     ...(options.enrollmentToken ? { enrollmentToken: options.enrollmentToken } : {}),
