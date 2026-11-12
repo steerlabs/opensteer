@@ -299,6 +299,7 @@ create table personal_team_requests (
   "publication_state" text not null check (publication_state in ('pending', 'accepted', 'blocked')),
   "terminal_state" text check (terminal_state in ('done', 'failed', 'stopped', 'cancelled')),
   "accepted_message_id" bigint,
+  "explicit_reply" boolean not null default false,
   "source" jsonb not null,
   "created_at" timestamptz not null default now(),
   "finished_at" timestamptz,

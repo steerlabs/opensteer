@@ -20,12 +20,16 @@ it("shares a reproducible busy world with scoped asks in pages and live cuts", a
   } as const;
   const cut = host.cut(scope, "thread", 1, null);
   expect(cut.requests).toHaveLength(6);
-  expect(cut.linkPresence).toEqual(host.linkPresence);
+  expect(cut.linkPresence.map((entry) => entry.ownerUserId).sort()).toEqual(
+    cut.requests.map((row) => row.ownerUserId).sort(),
+  );
+  expect(cut.linkPresence).toEqual(expect.arrayContaining(host.linkPresence));
   const asks = await host.rpc["team.agent.requests.get"]({
     channelId: scope.channelId,
     rootId: scope.rootId,
   });
-  expect(asks.ok && asks.data.requests).toEqual(cut.requests);
+  expect(asks.ok && asks.data.requests).toHaveLength(cut.requests.length);
+  expect(asks.ok && asks.data.requests).toEqual(expect.arrayContaining(cut.requests));
   const page = await host.rpc["team.thread.page"]({
     channelId: scope.channelId,
     rootId: scope.rootId,
@@ -33,7 +37,7 @@ it("shares a reproducible busy world with scoped asks in pages and live cuts", a
   });
   expect(
     page.ok && page.data.messages.find((message) => message.id === scope.rootId)?.requests,
-  ).toEqual(cut.requests);
+  ).toEqual(expect.arrayContaining(cut.requests));
   const other = host.members[1]!;
   const reply = host.post({
     channelId: scope.channelId,
@@ -45,7 +49,7 @@ it("shares a reproducible busy world with scoped asks in pages and live cuts", a
   expect(host.messages.get(scope.rootId)?.replySummary.repliers).toContain(other.userId);
   const update = host.cut(scope, "thread", 1, cut.throughSeq);
   expect(update.type).toBe("resumed");
-  expect(update.requests).toEqual(cut.requests);
+  expect(update.requests).toEqual([]);
   const completed = host.setRequest({
     ...request,
     state: "done",

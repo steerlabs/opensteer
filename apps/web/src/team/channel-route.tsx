@@ -10,7 +10,7 @@ import {
 } from "@opensteer/core";
 import { teamPageUrl } from "@opensteer/core";
 import type { TeamChannel, TeamFileSchema } from "@opensteer/protocol";
-import { readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
+import { watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
 import { teamScopeKey, type TeamTimeline } from "@opensteer/client/team";
 import { TeamPreviewUrls } from "./preview-urls.js";
 import type { z } from "zod";
@@ -58,8 +58,6 @@ import {
 } from "./team-view-models.js";
 
 type TeamFile = z.infer<typeof TeamFileSchema>;
-const noReadStates = {};
-const noSubscribe = () => () => undefined;
 
 /** Where in a channel the address points. */
 interface ChannelPlace {
@@ -613,10 +611,6 @@ function ChannelScreenFor({
           request.state === "working" ||
           request.state === "needs_you"),
     ) ?? false;
-  const personalReadStates = useSyncExternalStore(
-    hostClient?.subscribe ?? noSubscribe,
-    () => hostClient?.getSnapshot().threadReadStates ?? noReadStates,
-  );
   const readVisibleReply = useCallback(
     (messageId: string) => {
       if (!hostClient || !links || !place.threadId) return;
@@ -627,12 +621,12 @@ function ChannelScreenFor({
         !message.agentRequestId
       )
         return;
-      void readTeamReply(hostClient, {
+      return watchTeamReplyRead(hostClient, {
         teamId: team.teamId,
         channelId,
         threadRootId: place.threadId,
         replyMessageId: messageId,
-      }).catch(() => undefined);
+      });
     },
     [
       hostClient,
@@ -642,7 +636,6 @@ function ChannelScreenFor({
       words.viewerUserId,
       team.teamId,
       channelId,
-      personalReadStates,
     ],
   );
   const threadPane =

@@ -31,7 +31,8 @@ it("reads each mounted reply only after it remains visible in a focused window",
   second.dataset.rowId = "reply-2";
   root.append(first, second);
   document.body.append(root);
-  const seen = vi.fn();
+  const leave = vi.fn();
+  const seen = vi.fn(() => leave);
   let stop = observeTeamMessages(root, [first, second], seen);
   const entry = (row: HTMLElement, visible: boolean) =>
     intersect(
@@ -52,6 +53,7 @@ it("reads each mounted reply only after it remains visible in a focused window",
   await vi.advanceTimersByTimeAsync(1000);
   expect(seen.mock.calls).toEqual([["reply-1"]]);
   entry(first, false);
+  expect(leave).toHaveBeenCalledTimes(1);
   entry(second, true);
   await vi.advanceTimersByTimeAsync(500);
   focus.mockReturnValue(false);
@@ -70,4 +72,5 @@ it("reads each mounted reply only after it remains visible in a focused window",
   expect(seen).toHaveBeenCalledTimes(3);
   stop();
   expect(disconnect).toHaveBeenCalledTimes(2);
+  expect(leave).toHaveBeenCalledTimes(3);
 });

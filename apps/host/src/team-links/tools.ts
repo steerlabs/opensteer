@@ -96,7 +96,9 @@ export class TeamRunTools {
   }
 
   async reply(runId: RunId, bodyMarkdown: string, attachmentIds: readonly TeamBlobId[] = []) {
-    return this.#publisher.reply(await this.#request(runId), bodyMarkdown, attachmentIds);
+    const request = await this.#request(runId);
+    await this.#requests.prepareExplicitReply(request.teamId, request.requestId);
+    return this.#publisher.reply(request, bodyMarkdown, attachmentIds);
   }
 
   async sql(runId: RunId, value: z.infer<typeof TeamSqlInputSchema>) {

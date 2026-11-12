@@ -907,6 +907,95 @@ describe("team transaction authority", () => {
     }
   });
 
+  it("bounds link presence to returned request owners, including changed owners on resume", async () => {
+    const c = await channel();
+    const root = (await send(c.id)).message;
+    const owners = Array.from({ length: 201 }, () => createId("user")).sort();
+    await fixture.database
+      .insertInto("users")
+      .values(
+        owners.map((id, index) => ({
+          id,
+          displayName: `Owner ${index}`,
+          email: `owner-${index}@example.invalid`,
+          emailVerified: true,
+        })),
+      )
+      .execute();
+    await fixture.database
+      .insertInto("teamMembers")
+      .values(
+        owners.map((userId, index) => ({
+          userId,
+          handle: `owner-${index}`,
+          role: "member" as const,
+          state: "active" as const,
+        })),
+      )
+      .execute();
+    const links = owners.map(() => createId("teamLink"));
+    await fixture.database
+      .insertInto("teamLinks")
+      .values(
+        owners.map((ownerUserId, index) => ({
+          id: links[index]!,
+          ownerUserId,
+          state: "active" as const,
+          codeHash: randomUUID(),
+          codeExpiresAt: new Date(),
+          credentialHash: randomUUID(),
+          personalDeploymentId: createId("deployment"),
+        })),
+      )
+      .execute();
+    const statuses = owners.map((ownerUserId, index) => ({
+      id: createId("teamAgentRequest"),
+      ownerUserId,
+      channelId: c.id,
+      threadRootId: root.id,
+      triggerMessageId: root.id,
+      linkId: links[index]!,
+      state: "queued" as const,
+      steps: sql<[]>`'[]'::jsonb`,
+      createdAt: new Date(1000 * index),
+      changeSeq: root.changeSeq,
+    }));
+    await fixture.database.insertInto("teamAgentRequests").values(statuses).execute();
+    const scope = { kind: "thread" as const, channelId: c.id, rootId: root.id };
+    const snapshot = await chat.resume(owner, {
+      subscriptionId: "t",
+      generation: 1,
+      scope,
+      sinceSeq: null,
+    });
+    expect(snapshot.type).toBe("snapshot");
+    expect(snapshot.requests).toHaveLength(200);
+    expect(snapshot.linkPresence).toHaveLength(200);
+    expect(snapshot.linkPresence.map((entry) => entry.ownerUserId).sort()).toEqual(
+      snapshot.requests.map((request) => request.ownerUserId).sort(),
+    );
+    expect(snapshot.linkPresence).toContainEqual({ ownerUserId: owners[200], online: false });
+    await access.contentWrite(owner, c.id, async (tx) => {
+      const changeSeq = String(BigInt(snapshot.throughSeq) + 1n);
+      await tx.updateTable("teamChannels").set({ changeSeq }).where("id", "=", c.id).execute();
+      await tx
+        .updateTable("teamAgentRequests")
+        .set({ state: "working", changeSeq })
+        .where("id", "=", statuses[0]!.id)
+        .execute();
+    });
+    const resumed = await chat.resume(owner, {
+      subscriptionId: "t",
+      generation: 1,
+      scope,
+      sinceSeq: snapshot.throughSeq,
+    });
+    expect(resumed.type).toBe("resumed");
+    expect(resumed.requests.map((request) => request.id)).toEqual([statuses[0]!.id]);
+    expect(resumed.linkPresence).toContainEqual({ ownerUserId: owners[0], online: false });
+    expect(resumed.linkPresence.length).toBeLessThanOrEqual(200);
+  });
+
   it("rechecks authenticated files, cancels an agent stream on people-only, and interrupts an upload on removal", async () => {
     const directory = await mkdtemp(join(tmpdir(), "opensteer-team-files-"));
     const store = new TeamFilesStore(access),

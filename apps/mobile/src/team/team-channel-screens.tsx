@@ -1,5 +1,5 @@
 import { MenuView, type MenuComponentRef } from "@expo/ui/community/menu";
-import { PersonalTeamLinks, readTeamReply, unwrapRpcResult } from "@opensteer/client/host";
+import { PersonalTeamLinks, watchTeamReplyRead, unwrapRpcResult } from "@opensteer/client/host";
 import { teamScopeKey, type TeamSessionClient, type TeamTimeline } from "@opensteer/client/team";
 import {
   TeamAgentRequestIdSchema,
@@ -22,7 +22,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { ActivityIndicator, AppState, Pressable, StyleSheet, View } from "react-native";
@@ -403,32 +402,29 @@ function Place(props: {
   const [visible, setVisible] = useState<ReadonlySet<string>>(() => new Set());
   const replyInView =
     rootId === null ? null : ownReplyInView(view.messages, viewerId, rootId, visible);
-  const readStates = useSyncExternalStore(
-    useCallback(
-      (listener: () => void) => personal?.subscribe(listener) ?? (() => undefined),
-      [personal],
-    ),
-    useCallback(() => personal?.getSnapshot().threadReadStates ?? null, [personal]),
-  );
-  const readReplies = useRef(new Set<string>());
   useFocusEffect(
     useCallback(() => {
       if (replyInView === null || rootId === null || personal === null) return;
-      if (readReplies.current.has(replyInView) || AppState.currentState !== "active") return;
-      // False until the publication and the task's read state have reached this
-      // phone; the read state changing is what asks again.
-      void readTeamReply(personal, {
-        teamId,
-        channelId,
-        threadRootId: rootId,
-        replyMessageId: replyInView,
-      }).then(
-        (read) => {
-          if (read) readReplies.current.add(replyInView);
-        },
-        () => undefined,
-      );
-    }, [channelId, personal, readStates, replyInView, rootId, teamId]),
+      let stop: (() => void) | undefined;
+      const changed = () => {
+        stop?.();
+        stop =
+          AppState.currentState === "active"
+            ? watchTeamReplyRead(personal, {
+                teamId,
+                channelId,
+                threadRootId: rootId,
+                replyMessageId: replyInView,
+              })
+            : undefined;
+      };
+      const subscription = AppState.addEventListener("change", changed);
+      changed();
+      return () => {
+        subscription.remove();
+        stop?.();
+      };
+    }, [channelId, personal, replyInView, rootId, teamId]),
   );
   const arrivedWhileAway = useRef(0);
   const lastNewest = useRef(newest);

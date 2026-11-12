@@ -17,7 +17,6 @@ import { cloneTestDatabase } from "@opensteer/database/test-support/database";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import { PersonalTeamLinksStore } from "@opensteer/database/personal-team-links-store";
 import { PersonalTeamRequestsStore } from "@opensteer/database/personal-team-requests-store";
-import { PrincipalIdSchema } from "@opensteer/channel-core";
 import { teamPreviewMaxBytes } from "@opensteer/protocol";
 import { createLiveTeamFixture } from "../team/live-team.test-support.js";
 import { TeamRunFileTransfers } from "./files.js";
@@ -68,15 +67,6 @@ it("uploads a real image and bounded preview from the personal Host and binds it
     const request = await team.ask();
     await team.team.requests.accept(team.linkId, request.id);
     const context = await team.team.requests.context(team.linkId, request.id);
-    await database
-      .insertInto("principals")
-      .values({
-        id: PrincipalIdSchema.parse(`pri_${randomUUID()}`),
-        kind: "user",
-        userId: personal.userId,
-        displayName: "Alex",
-      })
-      .execute();
     const harnessInstanceId = createId("harnessInstance");
     await database
       .insertInto("harnessInstances")

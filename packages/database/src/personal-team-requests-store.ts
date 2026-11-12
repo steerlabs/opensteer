@@ -3,6 +3,7 @@ import {
   OpensteerError,
   type DeploymentId,
   type RunId,
+  type ThreadId,
   type TeamAgentRequestId,
   type TeamTaskOrigin,
   type TeamMessageId,
@@ -17,8 +18,10 @@ import { eventFromRow } from "./deployment-events.js";
 
 export class PersonalTeamRequestsStore {
   readonly database: Kysely<DatabaseSchema>;
-  constructor(database: Kysely<DatabaseSchema>) {
+  readonly #onPublished: ((taskId: ThreadId) => Promise<void>) | undefined;
+  constructor(database: Kysely<DatabaseSchema>, onPublished?: (taskId: ThreadId) => Promise<void>) {
     this.database = database;
+    this.#onPublished = onPublished;
   }
 
   async get(
@@ -114,9 +117,22 @@ export class PersonalTeamRequestsStore {
     state: "accepted" | "blocked",
     messageId: PersonalTeamRequest["replyMessageId"] = null,
   ): Promise<void> {
-    await this.database
+    const request = await this.database
       .updateTable("personalTeamRequests")
       .set({ publicationState: state, acceptedMessageId: messageId })
+      .where("teamDeploymentId", "=", teamId)
+      .where("requestId", "=", requestId)
+      .returning("localTaskId")
+      .executeTakeFirst();
+    if (request && state === "accepted" && messageId !== null)
+      await this.#onPublished?.(request.localTaskId);
+  }
+
+  async prepareExplicitReply(teamId: DeploymentId, requestId: TeamAgentRequestId): Promise<void> {
+    // Persist before sending: even a lost receipt must never attribute this reply to a later final.
+    await this.database
+      .updateTable("personalTeamRequests")
+      .set({ explicitReply: true })
       .where("teamDeploymentId", "=", teamId)
       .where("requestId", "=", requestId)
       .execute();
@@ -146,6 +162,7 @@ export class PersonalTeamRequestsStore {
         .where("p.teamDeploymentId", "=", input.teamId)
         .where("p.acceptedMessageId", "=", input.replyMessageId)
         .where("p.publicationState", "=", "accepted")
+        .where("p.explicitReply", "=", false)
         .where("r.status", "=", "completed")
         .executeTakeFirst();
       if (!request) return empty;
