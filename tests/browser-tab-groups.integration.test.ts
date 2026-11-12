@@ -1,4 +1,9 @@
 import { browserRows } from "../apps/host/src/browser/browser-rows.test-support.js";
+import { withTimeout } from "@opensteer/shared/withTimeout";
+import {
+  hostApiVersion,
+  hostApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 /**
  * Failure journeys, written before the backend:
  * - Failed Runtime disposal can become false close success; dead memberships can exhaust limits.
@@ -330,7 +335,7 @@ integration("personal tab order", () => {
     });
   }, 120_000);
 
-  it("revalidates discovered groups when a source or anchor closes before tab locks", async () => {
+  it("serializes group moves after a source or anchor closes", async () => {
     const stack = await deployment();
     const db = stack.host.store.database;
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
@@ -343,23 +348,30 @@ integration("personal tab order", () => {
       });
       const barrier = pauseAfterLock(
         db,
-        (node) =>
-          /"name":"browser_?tab_?group_?members"/iu.test(node) && !node.includes("ForUpdate"),
+        (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
       );
-      const moving = new BrowserTabGroupStore(barrier.database).move(owner.id, {
-        item: { groupId: grouped.groupId },
-        to: { groupId: null, before: { tabId: b.tabId } },
-        idempotencyKey: randomUUID(),
-      });
-      const outcome = moving.then(
-        (layout) => ({ layout }),
-        (error: unknown) => ({ error }),
+      const closing = new PersonalTabStore(barrier.database).close(
+        owner.id,
+        closed === "source" ? a.tabId : b.tabId,
       );
+      let outcome: Promise<unknown>;
       try {
-        await barrier.reached;
-        await new PersonalTabStore(db).close(owner.id, closed === "source" ? a.tabId : b.tabId);
+        await withTimeout(barrier.reached, 5_000, {
+          timeoutError: () => new Error("Tab close never reached its personal transaction fence"),
+        });
+        outcome = new BrowserTabGroupStore(db)
+          .move(owner.id, {
+            item: { groupId: grouped.groupId },
+            to: { groupId: null, before: { tabId: b.tabId } },
+            idempotencyKey: randomUUID(),
+          })
+          .then(
+            (layout) => ({ layout }),
+            (error: unknown) => ({ error }),
+          );
       } finally {
         barrier.release();
+        await closing;
       }
       expect(await outcome).toMatchObject({
         error: { code: closed === "source" ? "not_found" : "conflict" },
@@ -370,7 +382,7 @@ integration("personal tab order", () => {
         assertions: [
           "closed source never resurrects",
           "closed anchor never changes destination",
-          "scope revalidated after layout lock",
+          "move observes the committed close after the personal event fence",
         ],
       });
     }
@@ -1020,17 +1032,25 @@ integration("agent organization and durable ownership", () => {
     const owner = await db.selectFrom("users").select("id").executeTakeFirstOrThrow();
     const person = await stack.host.store.createUser("Second reader");
     const groups = new BrowserTabGroupStore(db);
+    const groupService = new BrowserTabGroupService({
+      groups,
+      browser: stack.host.browser,
+      publish: () => undefined,
+    });
     const one = await groups.group(owner.id, {
       tabIds: [first.tabId],
       title: "My research",
       idempotencyKey: "personal",
     });
     await expect(
-      groups.group(person, {
-        tabIds: [first.tabId],
-        title: "Other person's layout",
-        idempotencyKey: "other",
-      }),
+      groupService.group(
+        { kind: "person", ownerId: person },
+        {
+          tabIds: [first.tabId],
+          title: "Other person's layout",
+          idempotencyKey: "other",
+        },
+      ),
     ).rejects.toMatchObject({ code: "forbidden" });
     const movedOne = await groups.move(owner.id, {
       item: { tabIds: [second.tabId] },
@@ -1038,7 +1058,7 @@ integration("agent organization and durable ownership", () => {
       idempotencyKey: randomUUID(),
     });
     expect(movedOne.order).toEqual([second.tabId, first.tabId]);
-    await expect(groups.layout(person)).rejects.toMatchObject({ code: "forbidden" });
+    expect(await groups.layout(person)).toEqual({ revision: 0, groups: [], order: [] });
     const named = await db
       .selectNoFrom((eb) => eb.fn<string>("current_database", []).as("name"))
       .executeTakeFirstOrThrow();
@@ -1052,12 +1072,20 @@ integration("agent organization and durable ownership", () => {
       browser: stack.host.browser,
       publish: () => undefined,
     });
+    const threadId = await stack.createThread({
+      title: "Organize saved tabs",
+      modelSelection: ModelSelectionSchema.parse({
+        modelId: "gpt-5.6-sol",
+        providerId: "openai",
+        options: {},
+      }),
+    });
     const actor = {
       kind: "agent" as const,
       ownerId: owner.id,
 
-      threadId: createId("thread"),
-      agentBindingId: "pool-journey",
+      threadId,
+      agentBindingId: `thread:${threadId}`,
     };
     await Promise.all(
       Array.from({ length: 4 }, () =>
@@ -1109,22 +1137,27 @@ integration("agent organization and durable ownership", () => {
     });
     const barrier = pauseAfterLock(
       db,
-      (node) => /"name":"browser_?tab_?group_?members"/iu.test(node) && !node.includes("ForUpdate"),
+      (node) => /"name":"personal_?tabs"/iu.test(node) && node.includes("ForNoKeyUpdate"),
     );
-    const lateRegroup = new BrowserTabGroupStore(barrier.database).group(owner.id, {
-      tabIds: [second.tabId],
-      groupId: closingGroup.groupId,
-      idempotencyKey: randomUUID(),
-    });
-    const lateOutcome = lateRegroup.then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error }),
-    );
+    const closingThird = new PersonalTabStore(barrier.database).close(owner.id, third.tabId);
+    let lateOutcome: Promise<unknown>;
     try {
-      await barrier.reached;
-      await stack.host.browser.closePersonalTab(owner.id, third.tabId);
+      await withTimeout(barrier.reached, 5_000, {
+        timeoutError: () => new Error("Group close never reached its personal transaction fence"),
+      });
+      lateOutcome = groups
+        .group(owner.id, {
+          tabIds: [second.tabId],
+          groupId: closingGroup.groupId,
+          idempotencyKey: randomUUID(),
+        })
+        .then(
+          (result) => ({ result }),
+          (error: unknown) => ({ error }),
+        );
     } finally {
       barrier.release();
+      await closingThird;
     }
     expect(await lateOutcome).toMatchObject({ error: { code: "not_found" } });
     expect((await groups.layout(owner.id)).groups[0]?.tabIds).toEqual([second.tabId]);
@@ -1206,7 +1239,11 @@ integration("agent organization and durable ownership", () => {
     const view = new WebSocket(
       new URL(`/v1/browser-sessions/${personBrowser.sessionId}/connect`, stack.hostOrigin),
       {
-        headers: { cookie: stack.sessionCookie, origin: stack.hostOrigin.origin },
+        headers: {
+          cookie: stack.sessionCookie,
+          origin: stack.hostOrigin.origin,
+          [hostApiVersionHeader]: String(hostApiVersion),
+        },
       },
     );
     cleanup.push(async () => {

@@ -1415,6 +1415,9 @@ importers:
       '@opensteer/core':
         specifier: workspace:*
         version: link:../core
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../deployment-authority
       '@opensteer/protocol':
         specifier: workspace:*
         version: link:../protocol

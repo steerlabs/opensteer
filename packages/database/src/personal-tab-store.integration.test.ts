@@ -111,12 +111,11 @@ integration.sequential("durable personal tabs", () => {
         id: groupId,
         runnerId,
         origin: "agent" as const,
-        ownerId,
         placementKey: "test",
         profileId: null,
         runtimeId: "test",
       };
-      await store.createBrowserSession(session);
+      await store.createBrowserSession({ ...session, ownerId });
       const first = {
         id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
         title: "One",
@@ -390,7 +389,12 @@ integration.sequential("durable personal tabs", () => {
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     await tabs.bind(f.groupId, replacement, f.first.id);
     await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
     await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
@@ -410,7 +414,12 @@ integration.sequential("durable personal tabs", () => {
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     await tabs.bind(f.groupId, replacement, f.first.id);
     await tabs.recordChanges(replacement, [f.first], []);
     const before = await tabs.read(f.ownerId, f.groupId);
@@ -448,7 +457,12 @@ integration.sequential("durable personal tabs", () => {
     const url = `https://tabs.test/${"x".repeat(9000)}#/document/42`;
     await tabs.recordChanges(f.groupId, [{ ...f.first, url }], []);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     await tabs.bind(f.groupId, replacement, f.first.id);
     const now = Date.now();
     const newer = Array.from({ length: 100 }, (_, index) => ({
@@ -543,7 +557,7 @@ integration.sequential("durable personal tabs", () => {
       )
       .execute();
     const id = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id });
+    await store.createBrowserSession({ ...f.session, ownerId: f.ownerId, id });
     expect(
       (
         await tabs.recordChanges(
@@ -578,7 +592,12 @@ integration.sequential("durable personal tabs", () => {
     const f = await fixture();
     await tabs.recordChanges(f.groupId, [f.first], []);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     const profile = await store.createBrowserProfile({
       idempotencyKey: "personal-tab-store.integration.test-browser-profile-1",
       name: "Saved Guest",
@@ -596,8 +615,26 @@ integration.sequential("durable personal tabs", () => {
       .where("id", "=", profile.id)
       .execute();
     expect(await store.getBrowserProfile(profile.id, f.ownerId)).toBeNull();
+    expect(await store.getBrowserSessionForOwner(replacement, f.ownerId)).toBeNull();
     expect((await tabs.read(f.ownerId, f.groupId))?.tabs?.[0]?.id).toBe(f.first.id);
     expect(await tabs.read(f.strangerId, f.groupId)).toBeNull();
+    await database
+      .updateTable("users")
+      .set({ disabledAt: new Date() })
+      .where("id", "=", f.ownerId)
+      .execute();
+    expect(await tabs.read(f.ownerId, f.groupId)).toBeNull();
+    await database
+      .updateTable("users")
+      .set({ disabledAt: null })
+      .where("id", "=", f.ownerId)
+      .execute();
+    await database
+      .updateTable("browserProfiles")
+      .set({ ownerId: f.strangerId })
+      .where("id", "=", profile.id)
+      .execute();
+    expect(await tabs.read(f.ownerId, f.groupId)).toBeNull();
   });
   it("persists an icon-only change once, then holds it through same-URL silence and failures", async ({
     storeFixture,
@@ -669,7 +706,12 @@ integration.sequential("durable personal tabs", () => {
     const before = (await tabs.read(f.ownerId, f.groupId))!.tabs!;
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     await tabs.bind(f.groupId, replacement, f.first.id);
     await tabs.recordChanges(replacement, [{ ...f.first, title: "", url: "about:blank" }], []);
     await tabs.recordChanges(
@@ -719,7 +761,7 @@ integration.sequential("durable personal tabs", () => {
     await tabs.recordChanges(f.groupId, [{ ...f.first, favicon: iconA }], []);
     const ref = (await tabs.read(f.ownerId, f.groupId))!.tabs![0]!.iconRef!;
     const other = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: other });
+    await store.createBrowserSession({ ...f.session, ownerId: f.ownerId, id: other });
     const otherTab = {
       ...f.second,
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
@@ -819,7 +861,7 @@ integration.sequential("durable personal tabs", () => {
     const { fixture, store, tabs, allowReopen } = storeFixture;
     const f = await fixture();
     const other = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: other });
+    await store.createBrowserSession({ ...f.session, ownerId: f.ownerId, id: other });
     const originals = Array.from({ length: 8 }, (_, index) => ({
       ...f.first,
       id: BrowserSurfaceIdSchema.parse(`surface_${randomUUID()}`),
@@ -909,7 +951,7 @@ integration.sequential("durable personal tabs", () => {
     }));
     for (let offset = 0; offset < descriptors.length; offset += 64) {
       const id = offset === 0 ? f.groupId : createBrowserSessionId();
-      if (offset) await store.createBrowserSession({ ...f.session, id });
+      if (offset) await store.createBrowserSession({ ...f.session, ownerId: f.ownerId, id });
       await database
         .insertInto("personalTabs")
         .values(
@@ -958,7 +1000,12 @@ integration.sequential("durable personal tabs", () => {
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
     await tabs.suspend(f.groupId);
     const replacement = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id: replacement, tabGroupId: f.groupId });
+    await store.createBrowserSession({
+      ...f.session,
+      ownerId: f.ownerId,
+      id: replacement,
+      tabGroupId: f.groupId,
+    });
     await tabs.bind(f.groupId, replacement, f.first.id);
     await tabs.close(f.ownerId, f.first.id);
     const reopened = await tabs.reopen(f.ownerId, allowReopen);
@@ -1009,7 +1056,7 @@ integration.sequential("durable personal tabs", () => {
     );
     cascadeEvidence.push({ afterGroupDeletionAndPruning: layout });
   });
-  it("serializes a close during reopen using tab-before-layout locks", async ({ storeFixture }) => {
+  it("serializes a close during reopen at the personal event fence", async ({ storeFixture }) => {
     const { fixture, tabs, database, allowReopen } = storeFixture;
     const f = await fixture();
     await tabs.recordChanges(f.groupId, [f.first, f.second], []);
@@ -1040,7 +1087,7 @@ integration.sequential("durable personal tabs", () => {
             (
               await sql<{ query: string }>`select query from pg_stat_activity
         where datname=current_database() and application_name='personal-tabs-test'
-        and wait_event_type='Lock' and query like '%browser_sessions%'`.execute(database)
+        and wait_event_type='Lock' and query like '%deployment_event_state%'`.execute(database)
             ).rows.length,
         )
         .toBe(1);
@@ -1063,6 +1110,7 @@ integration.sequential("durable personal tabs", () => {
       const id = createBrowserSessionId();
       await store.createBrowserSession({
         ...f.session,
+        ownerId: f.ownerId,
         id,
         origin: index === 149 ? "trigger" : "agent",
       });
@@ -1086,7 +1134,7 @@ integration.sequential("durable personal tabs", () => {
     const { fixture, store, tabs } = storeFixture;
     const f = await fixture();
     const id = createBrowserSessionId();
-    await store.createBrowserSession({ ...f.session, id, origin: "trigger" });
+    await store.createBrowserSession({ ...f.session, ownerId: f.ownerId, id, origin: "trigger" });
     expect((await tabs.recordChanges(id, [f.first], [])).changed).toBe(false);
     expect(await tabs.list(f.ownerId)).toEqual([]);
   });

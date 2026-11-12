@@ -13,7 +13,7 @@ import { z } from "zod";
 import type { NativeProfileOpenTiming } from "../apps/browser-runtime/src/browser/playwright-launcher.js";
 import { ownChild } from "../apps/host/src/agents/owned-child.test-support.js";
 import type { BrowserOpenTiming } from "../packages/browser-runtime-core/src/runtime.js";
-import type { BrowserProfileId } from "../packages/core/src/index.js";
+import { RunnerIdSchema, type BrowserProfileId } from "../packages/core/src/index.js";
 import { RealtimeHub } from "../packages/orchestration/src/realtime-hub.js";
 import type { BrowserTabOpenResult } from "../packages/protocol/src/index.js";
 import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser-bridge.js";
@@ -423,16 +423,8 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
       expect(deletion.state, "Runtime did not acknowledge physical profile erasure").toBe(
         "deleted",
       );
-      expect(broadNotices).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(Array),
-        "browser.profile-reconciled",
-      );
-      expect(broadNotices).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(Array),
-        "browser.profile-deletions",
-      );
+      expect(broadNotices).toHaveBeenCalledWith([owner.id], "browser.profile-reconciled");
+      expect(broadNotices).toHaveBeenCalledWith([owner.id], "browser.profile-deletions");
     },
     { timeout: 10_000 },
   );
@@ -469,7 +461,7 @@ it("advertises exact prepared storage through the reachable Personal browser com
       const bootstrap = await stack.api["bootstrap.get"]({});
       expect(
         bootstrap.ok && bootstrap.data.browser.available,
-        "Standalone browser auxiliary stream never became ready",
+        `Standalone browser auxiliary stream never became ready: ${browser.diagnostics()}`,
       ).toBe(true);
     },
     { timeout: 15_000 },
@@ -478,6 +470,14 @@ it("advertises exact prepared storage through the reachable Personal browser com
   if (!machines.ok) throw new Error(machines.error.message);
   const browserComputers = machines.data.machines.filter((machine) => machine.modules.browser);
   expect(browserComputers).toHaveLength(1);
+  expect(browserComputers[0]).toMatchObject({ ownership: "mine", status: "online" });
+  expect(
+    await stack.host.store.database
+      .selectFrom("runners")
+      .select(["kind", "ownerKind"])
+      .where("id", "=", RunnerIdSchema.parse(browserComputers[0]!.id))
+      .executeTakeFirstOrThrow(),
+  ).toEqual({ kind: "local", ownerKind: "user" });
   const created = await stack.api["commands.dispatch"]({
     type: "browser.profile.create",
     input: {

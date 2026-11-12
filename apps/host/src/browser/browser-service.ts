@@ -1110,7 +1110,11 @@ export class BrowserService {
   }
 
   async closePersonalTab(ownerId: UserId, tabId: BrowserSurfaceId, person = true) {
-    const row = await this.#personalTabs?.close(ownerId, tabId, person);
+    let row = await this.#personalTabs?.close(ownerId, tabId, person);
+    if (!row) {
+      await this.flushPendingTabDescriptors();
+      row = await this.#personalTabs?.close(ownerId, tabId, person);
+    }
     if (!row) throw new OpensteerError({ code: "not_found", message: "Browser tab not found." });
     const marks = this.#personUseGroups.get(row.groupId);
     marks?.tabs.delete(tabId);
@@ -3818,20 +3822,7 @@ export class BrowserService {
       boundRunnerId || input.placement || !profile
         ? null
         : await this.#repository.findBrowserSessionHoldingProfilePlacement(profile.id);
-    const standaloneServices = new Set(
-      this.#personal
-        ? []
-        : homes
-            .filter((home) => home.kind === "managed" && home.ownerKind === "deployment")
-            .map((home) => home.id),
-    );
-    const placements = this.#eligiblePlacements(homes).filter(
-      (candidate) =>
-        origin === "person" ||
-        boundRunnerId !== undefined ||
-        candidate.agents === true ||
-        standaloneServices.has(candidate.runnerId),
-    );
+    const placements = this.#eligiblePlacements(homes);
     const placement =
       (boundRunnerId ? { kind: "runner" as const, runnerId: boundRunnerId } : input.placement) ??
       (placementHolder
@@ -4365,6 +4356,11 @@ export class BrowserService {
         code: "bad_request",
         message: `That computer does not run a connected browser. These do: ${browserMachineChoices(connected)}.`,
       });
+    }
+    if (this.#personal) {
+      const main = homes.find((home) => home.kind === "main");
+      const hostingBrowser = connected.find((placement) => placement.runnerId === main?.id);
+      if (hostingBrowser) return placementSelector(hostingBrowser);
     }
     if (environmentId) {
       const colocated = connected.filter((placement) =>

@@ -25,8 +25,8 @@ function ownerAuthority<Value extends { selectFrom: (table: string) => unknown }
     get(target, key, receiver) {
       if (key === "selectFrom")
         return (table: string) =>
-          table === "personalSettings"
-            ? owner.database.selectFrom("personalSettings")
+          table === "personalSettings" || table === "deployments" || table === "users"
+            ? owner.database.selectFrom(table)
             : target.selectFrom(table);
       return Reflect.get(target, key, receiver);
     },
