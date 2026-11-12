@@ -145,11 +145,13 @@ integration("Expo external engine sign-in recovery", () => {
       }
       // The model appears with the ready catalog; it becomes selectable once the
       // engine's availability settles, which can take another render.
-      await act(async () => {
-        await expect
-          .poll(() => button(model.displayName)?.disabled, { timeout: 10_000 })
-          .toBe(false);
-      });
+      await vi.waitFor(
+        async () => {
+          await act(async () => {});
+          expect(button(model.displayName)?.disabled).toBe(false);
+        },
+        { timeout: 10_000 },
+      );
       expect(refresh).toHaveBeenCalledExactlyOnceWith({
         environmentId: active.environmentId,
         harnessInstanceId: active.harnessInstanceId,
