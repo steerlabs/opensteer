@@ -345,6 +345,34 @@ describe("editing reducer: scripted ordering regressions (native fixtures are se
       ]).operations.map((o) => o.kind),
     ).toEqual(["paste"]);
   });
+  it("pastes a text target the plain text of a rich copy and refuses one without any", () => {
+    const bytes = (value: string) => new TextEncoder().encode(value);
+    const plain = { type: "text/plain", bytes: bytes("hi") };
+    const html = { type: "text/html", bytes: bytes("<b>hi</b>") };
+    const image = { type: "image/png", bytes: bytes("png") };
+    const file = { type: "text/plain", name: "notes.txt", bytes: bytes("file") };
+    const paste = (target: EditingTargetAbilities, items: (typeof plain)[]) => {
+      const state = reduceEditing(createEditingState("mac", target), { type: "context", context });
+      const step = reduceEditing(state.state, { type: "paste", items });
+      return { operations: step.operations, refusal: step.refusal };
+    };
+    const text = { ...abilities, clipboard: "text" } as const;
+    const basic = { ...text, basicInput: true, rangeEdits: false };
+    expect(paste(abilities, [plain, html, image])).toEqual({
+      operations: [{ kind: "paste", items: [plain, html, image] }],
+      refusal: undefined,
+    });
+    for (const target of [text, basic])
+      expect(paste(target, [html, file, plain, image])).toEqual({
+        operations: [{ kind: "paste", items: [plain] }],
+        refusal: undefined,
+      });
+    expect(paste(text, [image, file])).toEqual({ operations: [], refusal: "clipboard" });
+    expect(paste({ ...abilities, clipboard: "none" }, [plain])).toEqual({
+      operations: [],
+      refusal: "clipboard",
+    });
+  });
   it("gates target abilities and keeps preedit local without live composition", () => {
     const target = {
       ...abilities,

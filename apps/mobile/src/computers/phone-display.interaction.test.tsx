@@ -586,21 +586,15 @@ it("accepts input without a button, maps touch, edits, reports receipts, copies 
   expect(container.textContent).toContain("The field changed");
   await act(async () => state.proxy?.onEvent({ type: "cut" }));
   expect(container.textContent).toContain("Cut isn’t supported");
+  const batches = input().length;
   await act(async () =>
     state.proxy?.onEvent({
       type: "paste",
       items: [{ type: "text/html", bytes: new TextEncoder().encode("<b>x</b>") }],
     }),
   );
-  await act(async () =>
-    socket.json({
-      type: "display.input.result",
-      sequence: input().at(-1)?.sequence,
-      outcome: "refused",
-      reason: "unsupported",
-    }),
-  );
-  expect(container.textContent).toContain("doesn’t support this edit");
+  expect(input()).toHaveLength(batches);
+  expect(container.textContent).toContain("does not support that clipboard format");
   await act(async () => state.proxy?.onEvent({ type: "copy" }));
   const sequence = input().at(-1)?.sequence;
   await act(async () =>

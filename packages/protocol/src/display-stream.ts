@@ -240,7 +240,7 @@ export const DisplayInputEventSchema = z.union([
     kind: z.literal("paste"),
     text: z.string().min(1).max(displayPasteTextMaxLength),
   }),
-  // Metadata alone lets a text-only display refuse rich clipboard input before uploading bytes.
+  // Older viewers send rich clipboard metadata for the display to refuse; current ones paste text.
   z.strictObject({ kind: z.literal("paste"), items: EditingClipboardItemsSchema }),
   // A mouse on a Mac app: buttons, hover and modifiers, unlike a phone's touch.
   z.strictObject({

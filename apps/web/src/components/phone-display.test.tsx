@@ -854,19 +854,13 @@ describe("negotiated phone viewer wire", () => {
     await settle();
     expect(write).toHaveBeenCalledTimes(1);
   });
-  it("pastes plain text, sends rich metadata for refusal, and shows limited/stale reasons", async () => {
+  it("pastes the plain text of rich copies and shows limited/stale reasons", async () => {
     const field = await negotiatedPhone();
     trustedPaste(field, { "text/plain": "one\ntwo 🦊" });
     trustedPaste(field, { "text/plain": "rich", "text/html": "<b>rich</b>" });
     expect(remoteEvents()).toEqual([
       { kind: "paste", text: "one\ntwo 🦊" },
-      {
-        kind: "paste",
-        items: [
-          { type: "text/plain", size: 4 },
-          { type: "text/html", size: 11 },
-        ],
-      },
+      { kind: "paste", text: "rich" },
     ]);
     const batch = inputs().at(-1)!;
     act(() =>

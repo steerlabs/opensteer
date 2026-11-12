@@ -13,12 +13,12 @@ import {
   type DisplayLease,
 } from "./phone-display-stream.js";
 
-/** Rich data is forwarded as metadata so the producer explicitly refuses it. */
+/** Phone and Mac producers insert only literal text. */
 export const displayEditingAbilities: EditingTargetAbilities = {
   composition: false,
   rangeEdits: true,
   commands: true,
-  clipboard: "full",
+  clipboard: "text",
 };
 
 export interface DisplayEditingSnapshot {
@@ -231,24 +231,24 @@ export class DisplayEditingSession {
           })),
         );
         if (!metadata.success) throw this.#refuse("too-large", refusalWords["too-large"]);
-        if (operation.items.some((item) => item.type !== "text/plain")) {
-          events = [{ kind: "paste", items: metadata.data }];
-        } else {
-          const text = operation.items
-            .map((item) => new TextDecoder("utf-8", { fatal: true }).decode(item.bytes))
-            .join("");
-          events = [];
-          let piece = "";
-          for (const character of text) {
-            if (piece.length + character.length > displayPasteTextMaxLength) {
-              events.push({ kind: "paste", text: piece });
-              piece = "";
-            }
-            piece += character;
-          }
-          if (piece) events.push({ kind: "paste", text: piece });
-          if (!events.length) return undefined;
+        if (operation.items.some((item) => item.type !== "text/plain" || item.name)) {
+          this.#count(this.diagnostics.operations, operation.kind);
+          throw this.#refuse("unsupported", refusalWords.unsupported);
         }
+        const text = operation.items
+          .map((item) => new TextDecoder("utf-8", { fatal: true }).decode(item.bytes))
+          .join("");
+        events = [];
+        let piece = "";
+        for (const character of text) {
+          if (piece.length + character.length > displayPasteTextMaxLength) {
+            events.push({ kind: "paste", text: piece });
+            piece = "";
+          }
+          piece += character;
+        }
+        if (piece) events.push({ kind: "paste", text: piece });
+        if (!events.length) return undefined;
         break;
       }
     }
