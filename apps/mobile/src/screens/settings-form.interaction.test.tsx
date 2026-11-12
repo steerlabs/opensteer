@@ -184,15 +184,9 @@ describe("Settings on a phone", () => {
     expect(document.body.textContent).not.toContain("Passwords");
   });
 
-  it("keeps project mutes while this phone isn't registered for notifications", async () => {
-    await render({ agents: [{ muted: true, name: "Research", workspaceId: "wks_research" }] });
-    expect(document.body.textContent).toContain("Notifications from projects");
-  });
-
   it("shows no Account or notifications in a build without an Account service", async () => {
     await render({
       account: null,
-      agents: [{ muted: false, name: "Research", workspaceId: "wks_research" }],
       notifications: null,
     });
     expect(document.body.textContent).not.toContain("Opensteer Account");
@@ -242,7 +236,6 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
   const props: SettingsFormProps = {
     account: { action: null, detail: null, initial: null, subtitle: null, title: "Signed out" },
     accountError: null,
-    agents: [],
     computers: [],
     deployment: {
       action: { disabled: false, kind: "switch-deployment", label: "Switch" },
@@ -259,7 +252,6 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       preferences: null,
     },
     onAccountAction: vi.fn(),
-    onAgentMuteChange: vi.fn(),
     onComputerAction: vi.fn(),
     onDeploymentAction: vi.fn(),
     onNotificationAction: vi.fn(),

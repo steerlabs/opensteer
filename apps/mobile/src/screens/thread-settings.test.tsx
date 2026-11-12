@@ -56,8 +56,7 @@ describe("Expo engine/account/model journeys", () => {
   let snapshot: HostSnapshot;
   const listeners = new Set<() => void>();
 
-  it("starts a new Chat and a task on the AI last picked, and Chat on the ranked model before any pick", () => {
-    const home = base.threads.find(({ id }) => id === base.homeThreadId)!;
+  it("starts a task on the AI last picked", () => {
     const taskChoice = {
       environmentId: EnvironmentIdSchema.parse(cursor.environmentId),
       harnessInstanceId: HarnessInstanceIdSchema.parse(cursor.harnessInstanceId),
@@ -92,21 +91,10 @@ describe("Expo engine/account/model journeys", () => {
         ),
       })),
       executionPreferences: { ...base.executionPreferences, history: [taskChoice] },
-      homeThreadId: null,
       voiceThreadId: null,
-      threads: base.threads.filter(({ id }) => id !== home.id),
     };
 
-    expect(firstMessageExecution("home", ranked).selection).toEqual(taskChoice);
-    expect(firstMessageExecution("task", ranked).selection).toEqual(taskChoice);
-    const unpicked: HostSnapshot = {
-      ...ranked,
-      executionPreferences: { ...ranked.executionPreferences, history: [] },
-    };
-    expect(firstMessageExecution("home", unpicked).selection).toMatchObject({
-      harnessInstanceId: codex.harnessInstanceId,
-      modelSelection: { modelId: "gpt-6.1-terra", options: { effort: "high" } },
-    });
+    expect(firstMessageExecution(ranked).selection).toEqual(taskChoice);
   });
 
   const access = vi.fn(async (threadId: string, mode: ThreadAccessMode) => {
@@ -128,12 +116,7 @@ describe("Expo engine/account/model journeys", () => {
     snapshot = next;
     for (const listener of listeners) listener();
   }
-  async function mount(
-    draft = false,
-    auto = false,
-    history: readonly ExecutionSelection[] = [],
-    home = false,
-  ) {
+  async function mount(draft = false, auto = false, history: readonly ExecutionSelection[] = []) {
     snapshot = {
       ...base,
       connection: "connected",
@@ -174,7 +157,7 @@ describe("Expo engine/account/model journeys", () => {
     await act(async () =>
       root!.render(
         draft ? (
-          <NewThreadScreen route={{ params: { deploymentId: "test-deployment", home } }} />
+          <NewThreadScreen route={{ params: { deploymentId: "test-deployment" } }} />
         ) : (
           <ThreadSettingsScreen
             route={{ params: { deploymentId: "test-deployment", threadId: original.id } }}
@@ -433,14 +416,6 @@ describe("Expo engine/account/model journeys", () => {
     expect(navigation.goBack).toHaveBeenCalled();
   });
 
-  it("keeps a Chat choice out of the task execution history", async () => {
-    await mount(true, false, [], true);
-    await press("Cursor");
-    await press(cursor.models[0]!.displayName);
-    expect(remember).not.toHaveBeenCalled();
-    expect(navigation.goBack).toHaveBeenCalled();
-  });
-
   it("blocks a draft's send until the person selects an enforceable access mode", async () => {
     await mount(true, true, [
       {
@@ -453,7 +428,7 @@ describe("Expo engine/account/model journeys", () => {
     const onSend = vi.fn();
     function Draft() {
       const { snapshot: live } = useHostSnapshot(mobile.hostClient!);
-      const execution = firstMessageExecution("task", live);
+      const execution = firstMessageExecution(live);
       const input = useRef<import("react-native").TextInputInstance | null>(null);
       const staged = {
         items: [],
@@ -467,10 +442,8 @@ describe("Expo engine/account/model journeys", () => {
           blocker={firstMessageBlocker({
             attachmentsReady: true,
             connected: true,
-            conflict: null,
             execution,
-            target: "task",
-            workspace: live.workspaces.find((w) => w.status === "ready")!,
+            folder: live.personalSettings?.agentHome ?? null,
           })}
           held={false}
           execution={execution}

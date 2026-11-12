@@ -54,11 +54,12 @@ integration("chat attachment delivery through a whole deployment", () => {
         stateKind: "isolated",
       },
     });
-    const workspace = await stack.createWorkspace("Attachment verification");
+    const folder = await stack.createFolder("Attachment verification");
     const bootstrap = await stack.api["bootstrap.get"]({});
     if (!bootstrap.ok) throw new Error(bootstrap.error.message);
     expect(bootstrap.data.deploymentId).toBe((await stack.host.store.getDeployment())?.id);
     const threadId = await stack.createThread({
+      folder,
       title: "Verify attachment transport",
       modelSelection: ModelSelectionSchema.parse({
         modelId: "gpt-5.6-sol",
@@ -78,11 +79,10 @@ integration("chat attachment delivery through a whole deployment", () => {
     })
       .png()
       .toBuffer();
-    const file = await upload(stack, workspace.id, "data.bin", "application/octet-stream", binary);
-    const image = await upload(stack, workspace.id, "red.png", "image/png", png);
+    const file = await upload(stack, "data.bin", "application/octet-stream", binary);
+    const image = await upload(stack, "red.png", "image/png", png);
     const unselected = await upload(
       stack,
-      workspace.id,
       "private-draft.txt",
       "text/plain",
       Buffer.from("Never sent to the engine"),
@@ -238,7 +238,6 @@ integration("chat attachment delivery through a whole deployment", () => {
 });
 async function upload(
   stack: VerticalStack,
-  workspaceId: WorkspaceId,
   name: string,
   mediaType: string,
   bytes: Buffer,

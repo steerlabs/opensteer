@@ -2,7 +2,6 @@ import type { ScheduleAnchor } from "@opensteer/client/host";
 import type { ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
 import { color, controlFontScaleLimit, space } from "../theme.js";
-import { ChatOrb } from "../ui/chat-orb.js";
 import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 
@@ -42,16 +41,12 @@ export function ScheduleGroupHead(props: {
   );
 }
 
-/** The thread a schedule runs in, by the mark the sidebar gives it: Chat's orb, or the task's. */
+/** The task a schedule runs in, by the mark the drawer gives it. */
 export function AnchorMark(props: {
   readonly anchor: ScheduleAnchor;
   readonly size: 16 | 20 | 22;
 }): ReactNode {
-  return props.anchor.home ? (
-    <ChatOrb size={props.size} />
-  ) : (
-    <TaskMark mark={props.anchor.mark} quiet={!props.anchor.visible} size={props.size} />
-  );
+  return <TaskMark mark={props.anchor.mark} quiet={!props.anchor.visible} size={props.size} />;
 }
 
 const styles = StyleSheet.create({

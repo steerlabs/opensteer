@@ -245,7 +245,7 @@ export const material = {
   },
   accent: surface(color.ember, accentRim, alpha(light, 0.5), alpha(light, 0.16)),
   /**
-   * A mark in its own colour — a profile's disc, the Chat orb — lit like the
+   * A mark in its own colour — a profile's disc, the agent orb — lit like the
    * accent. Its colour is the person's, so the rim deepens whatever hue is
    * there; the caller supplies the fill and the shape.
    */
@@ -320,7 +320,7 @@ export const controlFontScaleLimit = 1.6;
 export const headerFontScaleLimit = 1.2;
 
 /**
- * A Deployment's independent identity palette, kept apart from task and project marks.
+ * A Deployment's independent identity palette, kept apart from task marks.
  */
 export const deploymentPaint = {
   violet: { fill: "#342d3e", ink: "#cfc4dd" },

@@ -38,13 +38,29 @@ import { NavigationContainerRefContext, type InitialState } from "@react-navigat
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, useSafeAreaInsets } from "react-native-safe-area-context";
 import { mockIphoneRunnerId, type MockHostClient } from "@opensteer/client/mock";
+import type { MockTeamHost } from "@opensteer/client/team";
+import { verifyAccessEndpoint } from "@opensteer/client/connections";
+import { MobileTeams } from "./team/mobile-teams.js";
+import { MobileTeamsProvider } from "./team/team-context.js";
+import { mockTeamTransport, networkTeamTransport } from "./team/team-transport.js";
+import { createTransportNetwork } from "./platform/host-network.js";
 import { createNetworkHostPort } from "./client/host-port.js";
 import { createMockHostPort } from "./client/mock-host-port.js";
 import { OpenComputer } from "./screens/open-computer.js";
 import { MobileClient, operationDetail } from "./client/mobile-client.js";
-import { mockDeploymentConnections, mockDeploymentId } from "./client/mock-mode.js";
+import {
+  mockDeploymentConnections,
+  mockDeploymentId,
+  mockTeamId,
+  mockTeamOrigin,
+} from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
-import { resolveApplicationLink, routeComputerLink, routePairingLink } from "./links.js";
+import {
+  computerForTeam,
+  resolveApplicationLink,
+  routeComputerLink,
+  routePairingLink,
+} from "./links.js";
 import { Navigation, navigationTheme } from "./navigation.js";
 import { navigationRef } from "./navigation-ref.js";
 import {
@@ -114,7 +130,6 @@ const configuration = readMobileConfiguration(
     EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: process.env.EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN,
     EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: process.env.EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE,
     EXPO_PUBLIC_OPENSTEER_MOCK: process.env.EXPO_PUBLIC_OPENSTEER_MOCK,
-    EXPO_PUBLIC_OPENSTEER_MOCK_HOME: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_HOME,
     EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM,
     EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS,
     EXPO_PUBLIC_OPENSTEER_MOCK_PHONE: process.env.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE,
@@ -146,6 +161,7 @@ interface MobileRoot {
   readonly client: MobileClient;
   readonly iphone: IphoneAppsController;
   readonly notifications: MobileNotifications;
+  readonly teams: MobileTeams;
 }
 
 let singleton: MobileRoot | null = null;
@@ -273,8 +289,6 @@ function mobileClient(): MobileRoot {
     hostPort: configuration.mock
       ? createMockHostPort({
           hosts: mockHosts,
-          initialHome: configuration.mockHome,
-          team: configuration.mockTeam,
           subagents: configuration.mockSubagents,
         })
       : createNetworkHostPort({
@@ -310,7 +324,40 @@ function mobileClient(): MobileRoot {
       void previews.reconcile().catch(() => {});
     });
   }
-  singleton = { broker, client, iphone, notifications };
+  // The teams of the computer being shown, each its own Host reached directly,
+  // so team chat keeps working when that computer is off.
+  const mockTeams = new Map<string, MockTeamHost>();
+  const teams = new MobileTeams({
+    client,
+    directory: `${root}${storeName}`,
+    files: privateFiles,
+    transport: configuration.mock
+      ? mockTeamTransport(mockTeams)
+      : networkTeamTransport({
+          catalog: client.catalog,
+          credentials: client.teamCredentials,
+          network: createTransportNetwork({
+            fetch: mobileHostFetch,
+            openWebSocket: openReactNativeSocket,
+          }),
+        }),
+    verify: (origin) =>
+      configuration.mock
+        ? Promise.reject(new Error("Mock mode holds its one team already."))
+        : verifyAccessEndpoint({
+            fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
+            kind: "canonical",
+            origin,
+          }),
+    ...(configuration.mock
+      ? {
+          seed: {
+            [mockDeploymentId]: [{ teamId: mockTeamId, origin: mockTeamOrigin, teamName: "Acme" }],
+          },
+        }
+      : {}),
+  });
+  singleton = { broker, client, iphone, notifications, teams };
   return singleton;
 }
 
@@ -326,7 +373,7 @@ const startupRefusal: StartupFailure | null =
     : { detail: configuration.refusal, title: "This build cannot run" };
 
 export function App(): ReactNode {
-  const [{ broker, client, iphone, notifications }] = useState(mobileClient);
+  const [{ broker, client, iphone, notifications, teams }] = useState(mobileClient);
   const [startupFailure, setStartupFailure] = useState<StartupFailure | null>(startupRefusal);
   const [initialNavigationState, setInitialNavigationState] = useState<InitialState | null>(null);
   const [linkFailure, setLinkFailure] = useState<string | null>(null);
@@ -343,6 +390,8 @@ export function App(): ReactNode {
   const waitingUrl = useRef<string | null>(null);
   /** A pairing link that arrived before the navigator; it opens over the first stack. */
   const waitingPairing = useRef<PairingOffer | null>(null);
+  /** A team link that arrived before the navigator; it opens over the first stack. */
+  const waitingTeamLink = useRef<(() => void) | null>(null);
   const initialized = useRef(false);
   const observedRootSelection = useRef<string | null | undefined>(undefined);
   const deferredRootSelection = useRef<string | null | undefined>(undefined);
@@ -461,6 +510,9 @@ export function App(): ReactNode {
     }
     const pairing = waitingPairing.current;
     if (pairing !== null) offerPairing(pairing);
+    const teamLink = waitingTeamLink.current;
+    waitingTeamLink.current = null;
+    teamLink?.();
   };
 
   useEffect(() => {
@@ -518,6 +570,25 @@ export function App(): ReactNode {
         return;
       }
       if (outcome.kind === "ignore") return;
+      if (outcome.kind === "team" || outcome.kind === "team-notice") {
+        setLinkFailure(null);
+        const team = teams.teamAt(outcome.origin);
+        const shown = client.getSnapshot().selection.deploymentId;
+        const move =
+          team === null
+            ? null
+            : computerForTeam({ shown, computersInTeam: teams.computersIn(team.teamId) });
+        if (move !== null) await client.select(move).catch(() => undefined);
+        const open = (): void => {
+          if (outcome.kind === "team-notice" && team !== null)
+            navigationRef.navigate("TeamNotices", { teamId: team.teamId });
+          else if (outcome.kind === "team")
+            navigationRef.navigate("JoinTeam", { link: outcome.page });
+        };
+        if (navigationRef.isReady()) open();
+        else waitingTeamLink.current = open;
+        return;
+      }
       setLinkFailure(null);
       const destination =
         outcome.kind === "authorize-agent"
@@ -646,7 +717,17 @@ export function App(): ReactNode {
       detachBroker();
       notifications.stop();
     };
-  }, [broker, client, notifications, observeRootSelection, offerPairing, openComputer]);
+  }, [broker, client, notifications, observeRootSelection, offerPairing, openComputer, teams]);
+
+  useEffect(() => {
+    if (startupRefusal !== null) return;
+    teams.start();
+    // No team socket while nobody looks; the team in front reconnects on return.
+    const state = AppState.addEventListener("change", (next) =>
+      teams.foreground(next === "active"),
+    );
+    return () => state.remove();
+  }, [teams]);
 
   useEffect(() => {
     /**
@@ -758,13 +839,15 @@ export function App(): ReactNode {
                       />
                     )}
                     <AppLinksProvider value={appLinks}>
-                      <Navigation
-                        initialState={initialNavigationState}
-                        onReady={handleNavigatorReady}
-                        onStateChange={syncDeferredRootSelection}
-                        ref={navigationRef}
-                        theme={navigationTheme}
-                      />
+                      <MobileTeamsProvider teams={teams}>
+                        <Navigation
+                          initialState={initialNavigationState}
+                          onReady={handleNavigatorReady}
+                          onStateChange={syncDeferredRootSelection}
+                          ref={navigationRef}
+                          theme={navigationTheme}
+                        />
+                      </MobileTeamsProvider>
                     </AppLinksProvider>
                     <ConnectionPill />
                     <OpenComputer />

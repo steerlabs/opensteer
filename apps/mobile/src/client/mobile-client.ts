@@ -37,6 +37,7 @@ import {
   type DeploymentConnection,
   type DeploymentConnectionInput,
   type DesktopUpdates,
+  type HostCredentialProvider,
   type PrivateFilesystem,
 } from "@opensteer/client/connections";
 import {
@@ -116,10 +117,18 @@ export interface MobileClientState {
   readonly catalog: DeploymentCatalog;
   readonly directory: MobileDirectoryState;
   readonly rows: readonly DeploymentRow[];
+  /** The teams this phone can reach: their own Hosts, never the selection. */
+  readonly teams: readonly MobileTeamConnection[];
   readonly selection: MobileSelection;
   /** The last write to this device's own storage that did not land, in words. */
   readonly storageFailure: string | null;
   readonly savedViewFailure: string | null;
+}
+
+export interface MobileTeamConnection {
+  readonly connection: DeploymentConnection;
+  /** A credential for the team's Host is held; drawing this never reaches the network. */
+  readonly signedIn: boolean;
 }
 
 export interface MobileDirectoryState {
@@ -308,6 +317,7 @@ export class MobileClient {
     catalog: emptyDeploymentCatalog(),
     directory: idleDirectoryState(),
     rows: [],
+    teams: [],
     selection: detachedSelection("loading"),
     storageFailure: null,
     savedViewFailure: null,
@@ -1328,6 +1338,11 @@ export class MobileClient {
     });
   }
 
+  /** What a pinned team transport presents: the team Host's own credential, nothing else. */
+  readonly teamCredentials: HostCredentialProvider = {
+    authorizationHeader: (connection) => this.#host.credentials.authorization(connection),
+  };
+
   async signInHost(connection: DeploymentConnection): Promise<void> {
     await this.oauth.beginHostSignIn(connection);
   }
@@ -1788,15 +1803,16 @@ export class MobileClient {
       }
       const catalog = await this.catalog.load();
       if (this.#pendingComputer !== null) return;
-      if (catalog.deployments.length === 1) {
-        const id = catalog.deployments[0]!.authority.document.deploymentId;
+      const personal = catalog.deployments.filter(isPersonalConnection);
+      if (personal.length === 1) {
+        const id = personal[0]!.authority.document.deploymentId;
         const attempt = await this.#selectLocallyNow(
           id,
           false,
           () => this.#pendingComputer === null,
         );
         if (attempt !== null) void this.#attachSelection(id, attempt).catch(noop);
-      } else if (catalog.deployments.length > 1) {
+      } else if (personal.length > 1) {
         await this.#selectionFile.write(null);
         this.#selectionPreference = null;
       }
@@ -2393,7 +2409,7 @@ export class MobileClient {
       else this.#credentialed.delete(deploymentId);
     }
     const attachedId = this.#attachedDeploymentId;
-    const rows = catalog.deployments.map((connection) => {
+    const rows = catalog.deployments.filter(isPersonalConnection).map((connection) => {
       const deploymentId = connection.authority.document.deploymentId;
       const attached = deploymentId === attachedId;
       return describeDeploymentRow(connection, {
@@ -2430,6 +2446,12 @@ export class MobileClient {
       catalog,
       directory: this.#directoryState,
       rows,
+      teams: catalog.deployments
+        .filter((connection) => !isPersonalConnection(connection))
+        .map((connection) => ({
+          connection,
+          signedIn: this.#credentialed.has(connection.authority.document.deploymentId),
+        })),
       selection: {
         connection,
         deploymentId: attachedId,
@@ -2575,4 +2597,12 @@ function signedOutAccountState(): DesktopAccountAuthState {
 /** The message a screen shows for a failed operation, with nothing leaked. */
 export function operationDetail(error: unknown, fallback: string): string {
   return clientPublicDetail(error, fallback);
+}
+
+/**
+ * A team is its own Host beside the person's Opensteer: it is listed in the
+ * drawer and driven by its own session, and is never the selected Deployment.
+ */
+export function isPersonalConnection(connection: DeploymentConnection): boolean {
+  return connection.authority.document.deploymentShape.kind !== "team";
 }

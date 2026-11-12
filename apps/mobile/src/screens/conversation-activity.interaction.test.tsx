@@ -11,12 +11,11 @@ import type {
   TranscriptEntry,
 } from "@opensteer/client/host";
 import { MockHostClient } from "@opensteer/client/mock";
-import { createId, RunIdSchema, ThreadIdSchema, WorkspaceIdSchema } from "@opensteer/core";
+import { createId, RunIdSchema, ThreadIdSchema } from "@opensteer/core";
 import { BrowserSurfaceIdSchema } from "@opensteer/protocol";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ThreadHeaderState } from "../thread/thread-pane.js";
 
 /*
  * Run details: what one of Opensteer's replies did, in a native sheet opened on
@@ -122,12 +121,11 @@ vi.mock("../ui/primitives.js", () => ({
   monoFontFamily: "monospace",
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
-vi.mock("../ui/workspace-mark.js", () => ({
-  WorkspaceDot: () => null,
-  WorkspaceMark: () => null,
-  WorkspaceIconGlyph: () => null,
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
 }));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../markdown/markdown.js", () => ({
   Markdown: ({ text }: { readonly text: string }) => <p>{text}</p>,
   PlainProse: ({ text }: { readonly text: string }) => <p>{text}</p>,
@@ -157,7 +155,6 @@ vi.mock("../thread/folded-page.js", () => ({ FoldedPage: () => null }));
 vi.mock("../navigation-header.js", () => ({ browserHeaderActions: () => ({}) }));
 
 const { ConversationActivityScreen } = await import("./conversation-activity.js");
-const { useThreadHeader } = await import("./thread-header.js");
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 const roots: Root[] = [];
@@ -173,10 +170,7 @@ afterEach(() => {
 
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
 const base = new MockHostClient({ automations: "absent", latencyMs: 0 }).getSnapshot();
-const chatId = ThreadIdSchema.parse(base.homeThreadId);
-const workspaceId = WorkspaceIdSchema.parse(
-  base.threads.find(({ id }) => id === chatId)?.workspaceId,
-);
+const taskId = ThreadIdSchema.parse(base.threads[0]!.id);
 const at = "2026-10-09T10:00:00.000Z";
 const later = "2026-10-09T10:05:00.000Z";
 
@@ -201,9 +195,7 @@ function wrote(body: string, runId: string, createdAt = at): MessageEntry {
       displayName: "Opensteer",
       kind: "agent",
       runId: RunIdSchema.parse(runId),
-      threadId: chatId,
-      workspaceId,
-      workspaceName: "Main",
+      threadId: taskId,
     },
     body,
     createdAt,
@@ -279,7 +271,7 @@ function snapshotWith(entries: readonly TranscriptEntry[]): HostSnapshot {
     inputQueues: {},
     network: "online",
     session: "authenticated",
-    transcripts: { ...base.transcripts, [chatId]: [...entries] },
+    transcripts: { ...base.transcripts, [taskId]: [...entries] },
   };
 }
 
@@ -320,7 +312,7 @@ function activity(turnKey?: string, messageId?: string): HTMLElement {
   const params = {
     messageId,
     deploymentId,
-    threadId: chatId,
+    threadId: taskId,
     ...(turnKey === undefined ? {} : { turnKey }),
   };
   return render(<ConversationActivityScreen route={{ params }} />);
@@ -377,12 +369,11 @@ describe("Run details", () => {
       ],
       viewerError: null,
       viewerState: "synchronized",
-      workspaceId,
     } as BrowserSessionSummary;
     const browserUses = [
       {
         sessionId: "exact-browser",
-        threadId: chatId,
+        threadId: taskId,
         runId: runA,
         tabId: "used-tab",
         firstUsedAt: at,
@@ -402,7 +393,7 @@ describe("Run details", () => {
         deploymentId,
         sessionId: "exact-browser",
         tabId: "used-tab",
-        threadId: chatId,
+        threadId: taskId,
       },
       type: "PUSH",
     });
@@ -456,7 +447,7 @@ describe("Run details", () => {
     expect(harness.navigate).toHaveBeenCalledWith("ThreadStep", {
       deploymentId,
       entryId: lookupA.id,
-      threadId: chatId,
+      threadId: taskId,
     });
   });
 
@@ -496,53 +487,5 @@ describe("Run details", () => {
 
     expect(sheet.textContent).toContain("Nothing yet");
     expect(sheet.querySelector('[role="alert"]')).toBeNull();
-  });
-});
-
-describe("the conversation's title", () => {
-  function Header(props: {
-    readonly header: ThreadHeaderState;
-    readonly hostClient: HostClient;
-  }): ReactNode {
-    useThreadHeader({
-      deploymentId,
-      fallbackTitle: "Chat",
-      header: props.header,
-      hostClient: props.hostClient,
-      threadId: chatId,
-    });
-    return null;
-  }
-
-  function title(
-    header: ThreadHeaderState,
-    hostClient = fakeHost(snapshotWith([])).client,
-  ): HTMLElement {
-    render(<Header header={header} hostClient={hostClient} />);
-    const options = harness.setOptions.mock.calls.at(-1)?.[0] as
-      { readonly headerTitle?: unknown } | undefined;
-    if (typeof options?.headerTitle !== "function") throw new Error("No title was set.");
-    const draw = options.headerTitle as () => ReactNode;
-    return render(<>{draw()}</>);
-  }
-
-  const chatHeader: ThreadHeaderState = {
-    connectionLabel: null,
-    task: null,
-    title: "Chat",
-    workspaceName: null,
-    workspaceColor: null,
-    workspaceIcon: null,
-    icon: null,
-    color: null,
-    isHome: true,
-    isVoice: false,
-  };
-
-  it("is only the conversation's name: Run details open from the transcript", () => {
-    const bar = title(chatHeader);
-    expect(bar.textContent).toContain("Chat");
-    expect(bar.querySelector("[data-chat-orb]")).not.toBeNull();
-    expect(bar.querySelector("button")).toBeNull();
   });
 });

@@ -11,7 +11,7 @@ import {
   type NativeMenuSection,
 } from "../thread/composer-menu.js";
 import { barItemWidth, useBarTitleWidth } from "../ui/bar-title.js";
-import { ChatOrb } from "../ui/chat-orb.js";
+import { AgentOrb } from "../team/team-marks.js";
 import { GlassSurface, useLiquidGlass } from "../ui/glass.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol } from "../ui/symbol.js";
@@ -21,7 +21,7 @@ import { opensteerAppGlyph } from "./agent-surface.js";
 import { ToolbarMenu } from "./toolbar.js";
 
 /** Where Ask starts work about the page. */
-export type AskTarget = "chat" | "task" | "thread";
+export type AskTarget = "task" | "thread";
 
 /**
  * The product's orb at a bar item's size, in its own colours: UIKit would
@@ -54,7 +54,7 @@ export interface AppMenu {
  * An app's name is the title and carries the app's menu; on iOS the app runs
  * under the bar, as a conversation does. Android keeps Material's opaque bar,
  * the menu behind its overflow button. Ask is the bar's one action, a native
- * menu: Ask in Chat, once Chat exists, and New task. A place a Thread made is
+ * menu: New task, and the agents working here. A place a Thread made is
  * asked about in that Thread, so there Ask is one button rather than a menu.
  *
  * The bar is set again only when what it shows changes; its handlers are
@@ -67,8 +67,6 @@ export function usePageHeader(props: {
   readonly app: AppMenu | null;
   /** Ask goes to the Thread that made this place, with no choice to offer. */
   readonly asksThread: boolean;
-  /** Chat exists to ask in; before its first message, only a task can be started. */
-  readonly chat: boolean;
   /** The page's own bar has Ask in its More, beside a Thread, so the native bar offers none. */
   readonly noAsk: boolean;
   readonly onAsk: (target: AskTarget) => void;
@@ -82,7 +80,7 @@ export function usePageHeader(props: {
   const glass = useLiquidGlass();
   const latest = useRef(props);
   latest.current = props;
-  const { agents, asksThread, chat, noAsk, title, verticalBar } = props;
+  const { agents, asksThread, noAsk, title, verticalBar } = props;
   const isApp = props.app !== null;
   const appClosable = props.app?.closable === true;
   const appLive = props.app?.live === true;
@@ -95,7 +93,7 @@ export function usePageHeader(props: {
   useLayoutEffect(() => {
     const ask = (target: AskTarget) => latest.current.onAsk(target);
     const open = (threadId: string) => latest.current.onOpenAgent(threadId);
-    const choices = askChoices({ asksThread: false, chat, onAsk: ask });
+    const choices = askChoices({ asksThread: false, onAsk: ask });
     const here = isApp ? [] : agentChoices(agents, open);
     // Over nothing, in the vertical bar: no row, so no title and no ground over the page.
     const noRow = verticalBar && !isApp;
@@ -109,7 +107,7 @@ export function usePageHeader(props: {
             onReload: () => latest.current.app?.onReload(),
             onReport: () => latest.current.app?.onReport(),
           },
-          askChoices({ asksThread, chat, onAsk: ask }),
+          askChoices({ asksThread, onAsk: ask }),
         )
       : null;
     const askControl = asksThread ? (
@@ -120,11 +118,11 @@ export function usePageHeader(props: {
         onPress={() => ask("thread")}
         style={styles.ask}
       >
-        <ChatOrb size={22} />
+        <AgentOrb size={22} />
       </Pressable>
     ) : (
       <NativeMenu
-        accessibilityHint="Starts work about this page in Chat or a new task"
+        accessibilityHint="Starts a new task about this page"
         accessibilityLabel="Ask"
         onPresent={noop}
         onSettle={noop}
@@ -132,7 +130,7 @@ export function usePageHeader(props: {
         style={styles.ask}
         title="Ask about this page"
       >
-        <ChatOrb size={22} />
+        <AgentOrb size={22} />
       </NativeMenu>
     );
     navigation.setOptions({
@@ -181,7 +179,7 @@ export function usePageHeader(props: {
                     type: "button",
                   }
                 : {
-                    accessibilityHint: "Starts work about this page in Chat or a new task",
+                    accessibilityHint: "Starts a new task about this page",
                     accessibilityLabel: "Ask",
                     // Marks can't stand in a native item, so a working agent is the green glint.
                     ...(agents.unnamedActing || agents.agents.some(({ acting }) => acting)
@@ -214,7 +212,6 @@ export function usePageHeader(props: {
     appLive,
     appOpensThread,
     asksThread,
-    chat,
     glass,
     isApp,
     navigation,
@@ -229,12 +226,11 @@ const threadHint = "Opens the conversation that made this app";
 
 /**
  * Ask's choices as a menu draws them: in the Thread that made the place, or
- * in Chat, once it exists, and a new task. The bar draws them, and so does the
+ * a new task. The bar draws them, and so does the
  * page's own More while its bar is put away beside a Thread.
  */
 export function askChoices(props: {
   readonly asksThread: boolean;
-  readonly chat: boolean;
   readonly onAsk: (target: AskTarget) => void;
 }): readonly NativeMenuOption[] {
   const { onAsk } = props;
@@ -246,12 +242,7 @@ export function askChoices(props: {
     label: "New task",
     onPress: () => onAsk("task"),
   };
-  return props.chat
-    ? [
-        { icon: "bubble.left", id: "chat", label: "Ask in Chat", onPress: () => onAsk("chat") },
-        newTask,
-      ]
-    : [newTask];
+  return [newTask];
 }
 
 /** Who is here, as menu rows that open their Threads. */
@@ -399,27 +390,25 @@ const askMarks = 2;
  */
 export const PageAsk = memo(function PageAsk(props: {
   readonly agents: PlaceAgents;
-  /** Chat exists to ask in; before its first message, only a task can be started. */
-  readonly chat: boolean;
   readonly onAsk: (target: AskTarget) => void;
   readonly onOpenAgent: (threadId: string) => void;
 }): ReactNode {
-  const { agents, chat, onAsk, onOpenAgent } = props;
+  const { agents, onAsk, onOpenAgent } = props;
   const words = placeAgentsWords(agents);
   return (
     <ToolbarMenu
-      accessibilityHint="Opens who is here, or starts work about this page in Chat or a new task"
+      accessibilityHint="Opens who is here, or starts a new task about this page"
       face={
         agents.agents.length > 0 ? (
           <AgentMarks agents={agents.agents.slice(0, askMarks)} />
         ) : agents.unnamedActing ? (
           <ActingDot grouped size={8} />
         ) : (
-          <ChatOrb size={22} />
+          <AgentOrb size={22} />
         )
       }
       label={words === null ? "Ask" : `${words.label}. Ask`}
-      sections={[agentChoices(agents, onOpenAgent), askChoices({ asksThread: false, chat, onAsk })]}
+      sections={[agentChoices(agents, onOpenAgent), askChoices({ asksThread: false, onAsk })]}
       title="Ask about this page"
     />
   );

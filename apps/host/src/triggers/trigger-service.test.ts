@@ -11,7 +11,6 @@ import { TriggerScheduleLoop, TriggerService } from "./trigger-service.js";
 describe("TriggerService", () => {
   afterEach(() => vi.useRealTimers());
   it("carries MCP retry identity into manual Trigger admission", async () => {
-    const workspaceId = createId("workspace");
     const enqueueManual = vi.fn(async () => ({
       event: {
         trigger: {},
@@ -63,7 +62,6 @@ describe("TriggerService", () => {
     const ownerId = createId("user");
     const anchorThreadId = createId("thread");
     const service = new TriggerService({
-      homeThread: async () => null,
       threads: {
         getThreadForOwner: async () => ({
           environmentId: createId("environment"),
@@ -113,7 +111,6 @@ describe("TriggerService", () => {
     const anchorThreadId = createId("thread");
     const triggerId = createId("trigger");
     const revisionId = createId("triggerRevision");
-    const workspaceId = createId("workspace");
     const create = vi.fn(async (input: Parameters<TriggerStore["create"]>[0]) => ({
       revision: TriggerRevisionSchema.parse({
         createdAt: new Date().toISOString(),
@@ -142,13 +139,12 @@ describe("TriggerService", () => {
       wasDuplicate: false,
     }));
     const service = new TriggerService({
-      homeThread: async () => null,
       threads: {
-        getThreadForOwner: async () => null,
+        getThreadForOwner: async () => ({ environmentId: createId("environment") }) as never,
       },
       runnerStore: {
-        getEnvironment: vi.fn(),
-        runnerCapabilities: vi.fn(),
+        getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
+        runnerCapabilities: async () => ["trigger-program-v3"],
       },
       onOccurrenceQueued: vi.fn(),
       publicUrl: new URL("https://opensteer.example/base/"),
@@ -206,13 +202,12 @@ describe("TriggerService", () => {
       trigger: {},
     }));
     const service = new TriggerService({
-      homeThread: async () => null,
       threads: {
-        getThreadForOwner: async () => null,
+        getThreadForOwner: async () => ({ environmentId: createId("environment") }) as never,
       },
       runnerStore: {
-        getEnvironment: vi.fn(),
-        runnerCapabilities: vi.fn(),
+        getEnvironment: async () => ({ runnerId: createId("runner") }) as never,
+        runnerCapabilities: async () => ["trigger-program-v3"],
       },
       onOccurrenceQueued,
       publicUrl: new URL("https://opensteer.example"),
@@ -260,8 +255,6 @@ describe("TriggerService", () => {
     vi.useFakeTimers();
     const onChanged = vi.fn();
     const onOccurrenceQueued = vi.fn();
-    const queuedWorkspaceId = createId("workspace");
-    const pausedWorkspaceId = createId("workspace");
     const claimDueSchedules = vi
       .fn()
       .mockResolvedValueOnce({
@@ -273,11 +266,11 @@ describe("TriggerService", () => {
             id: createId("triggerOccurrence"),
           },
         ],
-        workspaceIds: [queuedWorkspaceId, pausedWorkspaceId],
+        changed: true,
       })
       .mockResolvedValue({
         occurrences: [],
-        workspaceIds: [],
+        changed: false,
       });
     const loop = new TriggerScheduleLoop({
       onChanged,
@@ -291,9 +284,7 @@ describe("TriggerService", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(claimDueSchedules).toHaveBeenCalledTimes(1);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);
-    // A due Trigger that was paused or moved on without an Occurrence still
-    // changed; its Workspace is told once, and a queued one is not told twice.
-    expect(onChanged.mock.calls).toEqual([[pausedWorkspaceId]]);
+    expect(onChanged.mock.calls).toEqual([[]]);
     await vi.advanceTimersByTimeAsync(1_000);
     expect(claimDueSchedules).toHaveBeenCalledTimes(2);
     expect(onOccurrenceQueued).toHaveBeenCalledTimes(1);

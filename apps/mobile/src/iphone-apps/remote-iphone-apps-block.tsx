@@ -47,13 +47,6 @@ export function RemoteIphoneAppsBlock(props: {
   const { busy, failureFor, run } = useBlockActions(props.canRespond, props.onChanged);
   // The app being turned off, whose switch shows off until the Host's answer lands.
   const [turningOff, setTurningOff] = useState<string | null>(null);
-  if (machine.ownership === "other") {
-    return (
-      <AppText role="secondary" tone="muted">
-        {`${machine.ownerName ?? "Its owner"} chooses which apps agents can use on ${machine.name}.`}
-      </AppText>
-    );
-  }
   if (props.data === null) {
     return (
       <View accessibilityLabel="Loading apps" style={styles.loading}>

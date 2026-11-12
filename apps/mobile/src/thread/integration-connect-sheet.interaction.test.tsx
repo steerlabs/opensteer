@@ -205,7 +205,7 @@ const personalSource = {
   providerApplicationRevision: 3,
 };
 
-const mainConnectAllows = mainAccessDetail("Main", "Slack");
+const mainConnectAllows = mainAccessDetail("Alex’s Opensteer", "Slack");
 
 describe("IntegrationConnectCard", () => {
   it("does not render for streaming updates in an unrelated thread", async () => {
@@ -215,30 +215,6 @@ describe("IntegrationConnectCard", () => {
     await act(async () => client.streamUnrelatedThread());
     expect(cardRenders.mock.calls.length).toBe(before);
   });
-  it("loads an older target Workspace before showing its Connect card", async () => {
-    const client = fakeClient({ sources: [hosted] });
-    const workspaces = client.getSnapshot().workspaces;
-    client.setWorkspaces([], true);
-    const load = vi.spyOn(client, "loadEarlierWorkspaces").mockImplementation(async () => {
-      client.setWorkspaces(workspaces, false);
-    });
-    await render(client);
-    expect(load).toHaveBeenCalledOnce();
-    expect(buttons()).toContain("Connect");
-  });
-  it("offers Decline when the target Workspace is unavailable", async () => {
-    const client = fakeClient({ sources: [hosted] });
-    client.setWorkspaces([], false);
-    await render(client, request(), {}, false);
-    expect(text()).toContain("The target Workspace is no longer available.");
-    await click("Not now");
-    expect(client.dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response: { kind: "external", value: { decision: "declined" } },
-      }),
-    );
-  });
-
   describe("Cancel while a sign-in waits", () => {
     const waits =
       (settle: (reject: (reason: Error) => void, resolve: (value: unknown) => void) => void) =>
@@ -281,7 +257,7 @@ describe("IntegrationConnectCard", () => {
         );
 
       it("says so instead of Cancelled, then shows the completion that won", async () => {
-        const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+        const client = fakeClient({ sources: [hosted], selected: hosted });
         const id = "con_00000000-0000-4000-8000-0000000000ce";
         let settle = (_status: unknown) => {};
         beginIntegrationAuthorization.mockImplementation(
@@ -329,7 +305,7 @@ describe("IntegrationConnectCard", () => {
     });
 
     it("shows the connection when it finished before Cancel reached the Host", async () => {
-      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind: "main" });
+      const client = fakeClient({ sources: [hosted], selected: hosted });
       const id = "con_00000000-0000-4000-8000-0000000000cd";
       beginIntegrationAuthorization.mockImplementation(
         waits((_reject, resolve) => {
@@ -345,14 +321,14 @@ describe("IntegrationConnectCard", () => {
     });
   });
 
-  it.each(["main", "project"] as const)(
-    "connects %s from one tap and shows the committed result in place",
-    async (workspaceKind) => {
-      const client = fakeClient({ sources: [hosted], selected: hosted, workspaceKind });
+  it.each(["settled by the Host", "still pending"] as const)(
+    "connects from one tap and shows the committed result in place (%s)",
+    async (requestState) => {
+      const client = fakeClient({ sources: [hosted], selected: hosted });
       const id = "con_00000000-0000-4000-8000-0000000000cc";
       beginIntegrationAuthorization.mockImplementation(async () => {
         client.setConnections([connection(id)]);
-        if (workspaceKind === "main") client.settleRequest();
+        if (requestState === "settled by the Host") client.settleRequest();
         return completed(id);
       });
       await render(client);
@@ -368,8 +344,8 @@ describe("IntegrationConnectCard", () => {
       const grants = client.dispatch.mock.calls.filter(
         ([command]) => command.type === "request.respond",
       );
-      expect(grants).toHaveLength(workspaceKind === "main" ? 0 : 1);
-      if (workspaceKind === "project")
+      expect(grants).toHaveLength(requestState === "settled by the Host" ? 0 : 1);
+      if (requestState === "still pending")
         expect(grants[0]?.[0]).toMatchObject({
           response: { value: { access: "read", connectionId: id, decision: "fulfilled" } },
         });
@@ -380,7 +356,6 @@ describe("IntegrationConnectCard", () => {
     "keeps the old mobile selection pending after consent is %s",
     async (status) => {
       const client = fakeClient({
-        workspaceKind: "project",
         sources: [hosted],
         connections: [connection("old")],
       });
@@ -425,7 +400,7 @@ describe("IntegrationConnectCard", () => {
   });
 
   it("does not grant a different mobile request when consent finishes", async () => {
-    const client = fakeClient({ workspaceKind: "project", sources: [hosted] });
+    const client = fakeClient({ sources: [hosted] });
     let complete!: (value: ReturnType<typeof completed>) => void;
     beginIntegrationAuthorization.mockImplementation(
       () =>
@@ -459,27 +434,24 @@ describe("IntegrationConnectCard", () => {
     expect(text()).not.toContain("connected ·");
   });
 
-  it.each(["main", "project"] as const)(
-    "discloses %s access before catalog Connect without expanding details",
-    async (workspaceKind) => {
-      const client = fakeClient({ isAdministrator: true, workspaceKind, sources: [] });
-      const catalogRequest = preinstallRequest();
-      await render(
-        client,
-        {
-          ...(catalogRequest as object),
-          payload: {
-            ...(catalogRequest as unknown as { payload: object }).payload,
-            access: "read-write",
-          },
-        } as never,
-        {},
-        false,
-      );
-      expect(text()).toContain(workspaceKind === "main" ? "All tasks in Main" : "Read and write");
-      expect(buttons()).toContain("Connect");
-    },
-  );
+  it("discloses access before catalog Connect without expanding details", async () => {
+    const client = fakeClient({ isAdministrator: true, sources: [] });
+    const catalogRequest = preinstallRequest();
+    await render(
+      client,
+      {
+        ...(catalogRequest as object),
+        payload: {
+          ...(catalogRequest as unknown as { payload: object }).payload,
+          access: "read-write",
+        },
+      } as never,
+      {},
+      false,
+    );
+    expect(text()).toContain("All your tasks");
+    expect(buttons()).toContain("Connect");
+  });
 
   it("installs from the access sheet without resolving the request", async () => {
     const client = fakeClient({ isAdministrator: true, sources: [] });
@@ -559,13 +531,11 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
-  // The ways it could fail, as on the web card: connecting on a request for
-  // Main also answers it with nothing said first, or said only on the review,
-  // so the key form, the browser sign-in, or a key repair that opens straight
-  // on its key connects in silence; Main promised only the access the request
-  // asked for, when its tasks use every operation of every account it
-  // connects; or the sheet promises that for a project Workspace, whose
-  // account still waits for Allow.
+  // The ways it could fail, as on the web card: connecting also answers the
+  // request with nothing said first, or said only on the review, so the key
+  // form, the browser sign-in, or a key repair that opens straight on its key
+  // connects in silence; or it promises only the access the request asked for,
+  // when the person's tasks use every operation of every account it connects.
   it("connects an API key without leaving the access sheet", async () => {
     const client = fakeClient({ requirementKind: "api-key", sources: [] });
     await render(client);
@@ -593,17 +563,16 @@ describe("IntegrationConnectCard", () => {
   it.each([
     {
       returnsConnectionId: true,
-      behavior: "fulfills a project request with API-key account A when account B sorts first",
+      behavior: "fulfills a request with API-key account A when account B sorts first",
     },
     {
       returnsConnectionId: false,
-      behavior: "waits for explicit Use on an older Host before granting project access",
+      behavior: "waits for explicit Use on an older Host before granting access",
     },
   ])("$behavior", async ({ returnsConnectionId }) => {
     const client = fakeClient({
       requirementKind: "api-key",
       sources: [],
-      workspaceKind: "project",
     });
     const accountA = keyConnection(
       "con_00000000-0000-4000-8000-0000000000a1",
@@ -737,17 +706,6 @@ describe("IntegrationConnectCard", () => {
       );
     },
   );
-
-  it("promises nothing about connecting for a project Workspace", async () => {
-    await render(fakeClient({ requirementKind: "api-key", sources: [], workspaceKind: "project" }));
-
-    expect(text()).toContain("Connect Slack");
-    expect(text()).toContain("Read only · 1 of 2 operations");
-    expect(text()).not.toContain("connecting also allows this request");
-    await press("Connect");
-    expect(text()).toContain("API token");
-    expect(text()).not.toContain("connecting also allows this request");
-  });
 
   // The way it could fail: a tap before the key appears; no reason; nothing
   // saying an agent proposed the integration the key is for, since the
@@ -1042,39 +1000,11 @@ describe("IntegrationConnectCard", () => {
       connections: [connection(connectionId)],
       selected: hosted,
       sources: [hosted],
-      workspaceKind: "project",
     });
     await render(client, request("read-write"));
 
     expect(text()).toContain("Read and write");
     expect(text()).not.toContain("Allow changes");
-    await press("Allow");
-
-    expect(client.dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        response: expect.objectContaining({
-          value: expect.objectContaining({ access: "read-write", connectionId }),
-        }),
-        type: "request.respond",
-      }),
-    );
-  });
-
-  it("lets a read request opt into write access", async () => {
-    const connectionId = "con_00000000-0000-4000-8000-0000000000aa";
-    const client = fakeClient({
-      connections: [connection(connectionId)],
-      selected: hosted,
-      sources: [hosted],
-      workspaceKind: "project",
-    });
-    await render(client, request("read"));
-
-    // The access in one line, counted in the grammar a person reads.
-    expect(text()).toContain("Read only · 1 of 2 operations");
-    expect(text()).not.toContain("1 operations");
-    await click("Allow changes");
-    expect(text()).toContain("Read and write · 2 operations");
     await press("Allow");
 
     expect(client.dispatch).toHaveBeenCalledWith(
@@ -1237,7 +1167,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "project",
     });
     await render(client);
 
@@ -1259,7 +1188,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac()],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "project",
     });
     await render(client, request("read"));
 
@@ -1276,7 +1204,7 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
-  it("does not fulfill a Main request just by requesting setup", async () => {
+  it("does not fulfill a request just by requesting setup", async () => {
     const onClose = vi.fn();
     const onResponded = vi.fn();
     const client = fakeClient({
@@ -1297,7 +1225,7 @@ describe("IntegrationConnectCard", () => {
     );
   });
 
-  it("keeps an insufficient Main request pending after choosing its computer", async () => {
+  it("keeps an insufficient request pending after choosing its computer", async () => {
     const onResponded = vi.fn();
     const client = fakeClient({
       machines: [mac()],
@@ -1338,7 +1266,6 @@ describe("IntegrationConnectCard", () => {
       machines: [mac(), mac({ id: macBookId, name: "MacBook" })],
       requirementKind: "computer",
       sources: [],
-      workspaceKind: "project",
     });
     await render(client);
 
@@ -1431,7 +1358,10 @@ describe("IntegrationConnectCard", () => {
 
     expect(client.dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
-        response: { kind: "external", value: { connectionId: null, decision: "fulfilled" } },
+        response: {
+          kind: "external",
+          value: expect.objectContaining({ connectionId: null, decision: "fulfilled" }),
+        },
         type: "request.respond",
       }),
     );
@@ -1616,7 +1546,6 @@ function request(
     },
     presentation: { kind: "external", title: "Connect Slack" },
     status: "pending",
-    targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
   } as never;
 }
 
@@ -1684,7 +1613,6 @@ function fakeClient(input: {
   readonly provider?: "github" | "slack";
   /** Attached from another device, as a phone always is to a Personal Opensteer. */
   readonly remote?: boolean;
-  readonly workspaceKind?: "main" | "project";
 }) {
   const provider = input.provider ?? "slack";
   let sources = input.sources;
@@ -1692,16 +1620,9 @@ function fakeClient(input: {
   let requestPending = true;
   const listeners = new Set<() => void>();
   let snapshot = {
-    workspaceWindow: { hasMore: false, itemCount: 1 },
+    identityConfig: { deployment: { name: "Alex’s Opensteer" } },
     threadActivities: { unrelated: 0 },
     machines: [...(input.machines ?? [])],
-    workspaces: [
-      {
-        id: "wsp_00000000-0000-4000-8000-000000000001",
-        kind: input.workspaceKind ?? "main",
-        name: input.workspaceKind === "project" ? "Support" : "Main",
-      },
-    ],
   };
   const dispatch = vi.fn(
     async (command: {
@@ -1724,15 +1645,6 @@ function fakeClient(input: {
   );
   return {
     dispatch,
-    loadEarlierWorkspaces: async () => {},
-    setWorkspaces(workspaces: typeof snapshot.workspaces, hasMore: boolean) {
-      snapshot = {
-        ...snapshot,
-        workspaces,
-        workspaceWindow: { hasMore, itemCount: workspaces.length },
-      };
-      for (const listener of listeners) listener();
-    },
     streamUnrelatedThread() {
       snapshot = {
         ...snapshot,

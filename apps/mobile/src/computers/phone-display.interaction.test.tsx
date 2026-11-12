@@ -288,7 +288,6 @@ async function setup(
       PlaceEnteredEventViewSchema.parse({
         eventId: createId("event"),
         environmentId: createId("environment"),
-        workspaceId: createId("workspace"),
         threadId,
         runId,
         type: "place.entered",
@@ -1234,7 +1233,7 @@ it("reopens an ended Mac view by app name and the same window, replacing its rou
     name: "WorkspaceBrowser",
     params: {
       deploymentId: "deployment",
-      scope: "workspace",
+      scope: "tabs",
       appKey: "com.apple.notes",
       machineId: "machine",
       viewId: "new-owner",
@@ -1332,9 +1331,7 @@ it("keeps passive native decoded pixels while the session binding is missing or 
   expect(state.decoded).toHaveLength(2);
   expect(state.decoded.at(-1)?.epoch).not.toBe(oldEpoch);
   expect(state.pixels).toBe(true);
-  await act(async () =>
-    view.move!({ machines: [{ ...machine, ownership: "other", computerUse: null }] }),
-  );
+  await act(async () => view.move!({ machines: [{ ...machine, computerUse: null }] }));
   expect(state.epoch).not.toBe(before);
 });
 

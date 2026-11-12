@@ -1,5 +1,4 @@
 import { formatRelativeTime, messageAuthorName, type HostClient } from "@opensteer/client/host";
-import { useHostSnapshot } from "@opensteer/client/react";
 import type { ThreadMessagePage } from "@opensteer/protocol";
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, useRef, useState, type ReactNode } from "react";
@@ -62,7 +61,6 @@ function ThreadFind(props: {
 }): ReactNode {
   const navigation = useNavigation();
   const listInsets = useListContentInsets(space[24]);
-  const { snapshot } = useHostSnapshot(props.hostClient);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<readonly FoundMessage[] | null>(null);
   const [nextBefore, setNextBefore] = useState<string | null>(null);
@@ -109,19 +107,16 @@ function ThreadFind(props: {
     (messageId: string): void => {
       if (opening.current) return;
       opening.current = true;
-      // Back to the conversation this sheet was opened over, never a second
-      // copy of it: Chat is the root route, a task the Thread beneath.
+      // Back to the task this sheet was opened over, never a second copy of it.
       navigation.dispatch(
-        snapshot.homeThreadId === props.threadId
-          ? StackActions.popTo("Home", { deploymentId: props.deploymentId, messageId })
-          : StackActions.popTo("Thread", {
-              deploymentId: props.deploymentId,
-              messageId,
-              threadId: props.threadId,
-            }),
+        StackActions.popTo("Thread", {
+          deploymentId: props.deploymentId,
+          messageId,
+          threadId: props.threadId,
+        }),
       );
     },
-    [navigation, props.deploymentId, props.threadId, snapshot.homeThreadId],
+    [navigation, props.deploymentId, props.threadId],
   );
 
   const renderItem = useCallback(
@@ -133,9 +128,7 @@ function ThreadFind(props: {
         style={({ pressed }) => [styles.result, pressed && styles.pressed]}
       >
         <View style={styles.resultHead}>
-          <AppText role="secondaryMedium">
-            {messageAuthorName(item.author, item.kind, snapshot.homeThreadId)}
-          </AppText>
+          <AppText role="secondaryMedium">{messageAuthorName(item.author)}</AppText>
           <AppText role="caption" tone="muted">
             {formatRelativeTime(item.createdAt)}
           </AppText>
@@ -145,7 +138,7 @@ function ThreadFind(props: {
         </AppText>
       </Pressable>
     ),
-    [open, snapshot.homeThreadId],
+    [open],
   );
 
   return (

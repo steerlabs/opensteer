@@ -306,7 +306,7 @@ describe("RunnerAuthenticator identity refusals", () => {
           environmentIds: [environmentId],
           harnessDrivers: [],
           localStorage: {
-            storageAuthorityId: createId("storageAuthority"),
+            storageAuthorityId: "removed-authority",
             bindings: [],
             truncated: false,
           },

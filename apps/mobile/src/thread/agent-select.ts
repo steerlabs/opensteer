@@ -6,7 +6,6 @@ function readerInputs(snapshot: HostSnapshot): readonly unknown[] {
     snapshot.assignments,
     snapshot.connection,
     snapshot.environments,
-    snapshot.homeThreadId,
     snapshot.network,
     snapshot.requests,
     snapshot.threads,

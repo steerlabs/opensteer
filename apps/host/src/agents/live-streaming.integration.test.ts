@@ -75,7 +75,6 @@ interface TranscriptEntryView {
 }
 interface LiveClient {
   activateThread(threadId: string): void;
-  activateWorkspace(workspaceId: string): void;
   dispose(): void;
   getSnapshot(): {
     readonly transcripts: Record<string, readonly TranscriptEntryView[]>;
@@ -129,7 +128,7 @@ integration("live streaming across the deployment", () => {
     });
     return stack;
   }
-  async function viewer(threadId: ThreadId, workspaceId: string): Promise<LiveClient> {
+  async function viewer(threadId: ThreadId): Promise<LiveClient> {
     const active = stack!;
     const clientModulePath = "@opensteer/client/host";
     const { HttpHostClient } = (await import(clientModulePath)) as {
@@ -169,7 +168,6 @@ integration("live streaming across the deployment", () => {
     });
     clients.push(client);
     await client.load();
-    client.activateWorkspace(workspaceId);
     client.activateThread(threadId);
     return client;
   }
@@ -204,12 +202,13 @@ integration("live streaming across the deployment", () => {
     temporary.push(scratch);
     const releaseFile = join(scratch, "release");
     const active = await start(releaseFile);
-    const workspace = await active.createWorkspace("Live streaming");
+    const folder = await active.createFolder("Live streaming");
     const threadId = await active.createThread({
       modelSelection,
       title: "Stream a long answer",
+      folder,
     });
-    const early = await viewer(threadId, workspace.id);
+    const early = await viewer(threadId);
     const queued = await active.queueMessage({
       text: "Write at length.",
       threadId,
@@ -237,7 +236,7 @@ integration("live streaming across the deployment", () => {
     });
 
     // A reader that arrives mid-stream draws the whole stream so far.
-    const late = await viewer(threadId, workspace.id);
+    const late = await viewer(threadId);
     await waitFor(() => streamEntry(late)?.body === heldText, 30_000, "late reader stream");
 
     // A reader whose connection drops mid-stream resumes on the same text.
@@ -333,8 +332,9 @@ integration("live streaming across the deployment", () => {
     const scratch = await mkdtemp(join(tmpdir(), "opensteer-live-"));
     temporary.push(scratch);
     const active = await start(join(scratch, "release"));
-    const workspace = await active.createWorkspace("Interrupted stream");
+    const workspace = await active.createFolder("Interrupted stream");
     const threadId = await active.createThread({
+      folder: workspace,
       modelSelection,
       title: "Stop mid-answer",
     });
@@ -349,7 +349,7 @@ integration("live streaming across the deployment", () => {
     await waitFor(async () => (await runStatus(runId)).status === "interrupted", 30_000, "stop");
 
     // A reader opening the Thread afterwards sees what the turn had said.
-    const reader = await viewer(threadId, workspace.id);
+    const reader = await viewer(threadId);
     await waitFor(
       () =>
         (reader.getSnapshot().transcripts[threadId] ?? []).some(
@@ -374,12 +374,14 @@ integration("live streaming across the deployment", () => {
     temporary.push(scratch);
     const releaseFile = join(scratch, "release");
     const active = await start(releaseFile, 2);
-    const workspace = await active.createWorkspace("Refusal isolation");
+    const workspace = await active.createFolder("Refusal isolation");
     const refusedThread = await active.createThread({
+      folder: workspace,
       modelSelection,
       title: "Refused",
     });
     const healthyThread = await active.createThread({
+      folder: workspace,
       modelSelection,
       title: "Healthy",
     });

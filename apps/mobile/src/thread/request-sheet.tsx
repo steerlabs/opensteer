@@ -1,13 +1,10 @@
 import {
   browserAccessChoices,
   browserAccessGrantable,
-  browserAccessGrantLabel,
   browserAccessHomeChoice,
   browserAccessInitialName,
   browserAccessInitialSelection,
-  browserAccessProfileNote,
   browserAccessResponse,
-  browserAccessWarning,
   browserSiteLabel,
   canRespondToRequests,
   cardChoiceLabel,
@@ -19,15 +16,12 @@ import {
   fullAccessRequestBody,
   mutationIdempotencyKey,
   passwordSignInAccountList,
-  passwordSignInAllowLabel,
   passwordSignInAllowRemembers,
   passwordSignInConsent,
   passwordSignInExpiry,
   passwordSignInNoAccount,
-  passwordSignInOnceLabel,
   passwordSignInOtherAccounts,
   passwordSignInPrivacy,
-  passwordSignInReasonLabel,
   type BrowserAccessSelection,
   type HostClient,
   type PasswordSignInAccount,
@@ -715,7 +709,6 @@ function RequestBody(props: {
           reason={reason}
           requestId={request.id}
           responder={responder}
-          workspaceId={request.targetWorkspaceId}
         />
       ) : request.kind === "browser.sign-in" && request.payload.kind === "browser.sign-in" ? (
         <BrowserSignInBody
@@ -724,7 +717,6 @@ function RequestBody(props: {
           payload={request.payload}
           reason={reason}
           responder={responder}
-          workspaceId={request.targetWorkspaceId}
         />
       ) : (
         <Notice
@@ -737,9 +729,8 @@ function RequestBody(props: {
 }
 
 /**
- * Which browser profile a Workspace's agents may use, including empty creation.
- * Profiles come from the Host snapshot, never from the agent's words; a
- * profile already available to the Workspace says so and completes at once.
+ * Which browser profile the person's agents may use, including empty creation.
+ * Profiles come from the Host snapshot, never from the agent's words.
  */
 function BrowserAccessBody(props: {
   readonly canRespond: boolean;
@@ -767,7 +758,7 @@ function BrowserAccessBody(props: {
         ? browserAccessInitialSelection(suggestion, profiles)
         : null;
   const name = session.browserName ?? (suggestion ? browserAccessInitialName(suggestion) : "");
-  const choices = browserAccessChoices(snapshot, props.request.targetWorkspaceId);
+  const choices = browserAccessChoices(snapshot);
   const hereId = useHereDeviceId(snapshot.deploymentId ?? "");
   const homes = browserAccessHomeChoice(snapshot, hereId, props.request);
   // The person's pick stands while it is still on offer; the default follows the list.
@@ -786,7 +777,7 @@ function BrowserAccessBody(props: {
       <View style={styles.group}>
         {choices.profiles.map((profile, index) => (
           <FormChoiceRow
-            description={browserAccessProfileNote(choices, profile) ?? undefined}
+            description={undefined}
             disabled={busy}
             hint="Choose one"
             key={profile.id}
@@ -852,7 +843,8 @@ function BrowserAccessBody(props: {
         </View>
       ) : null}
       <AppText role="caption" tone="muted">
-        {browserAccessWarning(choices)}
+        Your agent gets full control of the profile you choose, including every signed-in account,
+        cookie and tab in it.
       </AppText>
       <ResponseStatus failure={props.failure} reason={props.reason} />
       <AnswerRow>
@@ -866,7 +858,7 @@ function BrowserAccessBody(props: {
         <AnswerPill
           busy={props.pendingId === "browser-access-grant"}
           disabled={disabled || !browserAccessGrantable(selection, name, profiles)}
-          label={browserAccessGrantLabel(selection, choices)}
+          label={selection?.kind === "new" ? "Create and allow" : "Allow"}
           onPress={() => props.onRespond(selection, name, home)}
           tone="primary"
         />
@@ -911,14 +903,12 @@ function BrowserSignInBody(props: {
   readonly payload: Extract<RequestPayload, { kind: "browser.sign-in" }>;
   readonly reason: string | null;
   readonly responder: RequestResponder;
-  readonly workspaceId: string;
 }): ReactNode {
   const { responder } = props;
   const { session } = responder;
   const { site } = props.payload;
   const domain = browserSiteLabel(site);
   const live = useChromeInspection(props.hostClient, site, props.canRespond);
-  const workspaceName = useWorkspaceName(props.hostClient, props.workspaceId);
   const availability = signInAvailability(live.inspection);
   const choices = availability?.kind === "choices" ? availability.choices : [];
   const selected =
@@ -941,7 +931,7 @@ function BrowserSignInBody(props: {
         {`Your agent wants to use your ${domain} sign-in from ${selected?.name ?? "Chrome"}.`}
       </AppText>
       <AppText role="caption" tone="soft">
-        {`Agents in ${workspaceName} will be able to use ${domain} as you.`}
+        {`Your agent will be able to use ${domain} as you.`}
       </AppText>
       <View
         accessibilityLiveRegion="polite"
@@ -1008,14 +998,6 @@ function BrowserSignInBody(props: {
   );
 }
 
-function useWorkspaceName(hostClient: HostClient, workspaceId: string): string {
-  return useHostSelector(
-    hostClient,
-    (snapshot) =>
-      snapshot.workspaces.find(({ id }) => id === workspaceId)?.name ?? "this Workspace",
-  );
-}
-
 /** Often enough that the expiry never lags its deadline by more than a moment. */
 const expiryTickMs = 5_000;
 
@@ -1026,11 +1008,9 @@ function PasswordSignInBody(props: {
   readonly reason: string | null;
   readonly requestId: string;
   readonly responder: RequestResponder;
-  readonly workspaceId: string;
 }): ReactNode {
   const { canRespond, hostClient, requestId, responder } = props;
   const { session } = responder;
-  const workspaceName = useWorkspaceName(hostClient, props.workspaceId);
   const [now, setNow] = useState(() => new Date());
   const [query, setQuery] = useState("");
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -1066,7 +1046,6 @@ function PasswordSignInBody(props: {
         payload={props.payload}
         reason={props.reason}
         responder={responder}
-        workspaceName={workspaceName}
       />
     );
   }
@@ -1110,12 +1089,12 @@ function PasswordSignInBody(props: {
     <View style={styles.section}>
       <AppText role="secondary" tone="soft">
         {chosen
-          ? passwordSignInConsent(workspaceName, props.payload.site, chosen.username, 5)
-          : passwordSignInPrivacy(props.payload.site, props.payload.permissionVersion)}
+          ? passwordSignInConsent(props.payload.site, chosen.username)
+          : passwordSignInPrivacy(props.payload.site)}
       </AppText>
       <View>
         <AppText role="caption" tone="muted">
-          {passwordSignInReasonLabel}
+          Agent’s reason
         </AppText>
         <AppText role="secondary" selectable>
           {props.payload.reason}
@@ -1161,7 +1140,7 @@ function PasswordSignInBody(props: {
       ) : null}
       {chosen && card?.stage === "approval" ? (
         <AppText role="caption" tone="muted">
-          {passwordSignInAllowRemembers(workspaceName, chosen.username)}
+          {passwordSignInAllowRemembers(chosen.username)}
         </AppText>
       ) : null}
       <AppText role="caption" tone="muted">
@@ -1182,14 +1161,14 @@ function PasswordSignInBody(props: {
             <AnswerPill
               busy={session.pendingId === "password-once"}
               disabled={disabled}
-              label={passwordSignInOnceLabel}
+              label="Only this time"
               onPress={() => approve(chosen, false)}
               tone="secondary"
             />
             <AnswerPill
               busy={session.pendingId === "password-allow"}
               disabled={disabled}
-              label={passwordSignInAllowLabel}
+              label="Allow"
               onPress={() => approve(chosen, true)}
               tone="primary"
             />
@@ -1208,7 +1187,6 @@ function CardUseBody(props: {
   readonly payload: Extract<RequestPayload, { kind: "browser.password-sign-in" }>;
   readonly reason: string | null;
   readonly responder: RequestResponder;
-  readonly workspaceName: string;
 }): ReactNode {
   const { responder } = props;
   const { session } = responder;
@@ -1221,11 +1199,11 @@ function CardUseBody(props: {
   return (
     <View style={styles.section}>
       <AppText role="secondary" tone="soft">
-        {cardUseConsent(props.workspaceName, props.payload.site, props.payload.expiresAt)}
+        {cardUseConsent(props.payload.site, props.payload.expiresAt)}
       </AppText>
       <View>
         <AppText role="caption" tone="muted">
-          {passwordSignInReasonLabel}
+          Agent’s reason
         </AppText>
         <AppText role="secondary">{props.payload.reason}</AppText>
       </View>

@@ -76,7 +76,7 @@ export function useHostUserId(hostClient: HostClient | null): string | null {
 const unavailableSavedSurface = { source: "pending" } as const;
 
 /** Saved values are presentation only. All Host hooks above remain live-only. */
-export function useSavedSurface<Surface extends "home" | "tasks">(
+export function useSavedSurface<Surface extends "tasks">(
   deploymentId: string | null,
   surface: Surface,
 ): import("../client/saved-view-presentation.js").SavedPresentationState[Surface] {

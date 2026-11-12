@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { SettingsComputerEnrollment } from "./settings-computer-enrollment.js";
 import { Sheet } from "../ui/sheet.js";
 import { NativeSettingsPage } from "./native-settings-page.js";
@@ -61,7 +60,6 @@ export function DevicesSettingsController(): ReactNode {
     const enrollment = iphoneApps.snapshot.enrollment;
     return computersSettingsRows({
       apps: apps.data,
-      deploymentPolicy: hostDeploymentPolicy(snapshot) ?? null,
       deploymentName,
       here:
         !iphoneApps.snapshot.supported || selection.deploymentId === null
@@ -143,9 +141,7 @@ export function DevicesSettingsController(): ReactNode {
         />
       </SettingsPageLayout>
       <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
-        {adding &&
-        selection.hostClient &&
-        selection.hostClient.getSnapshot().user?.instanceRole === "administrator" ? (
+        {adding && selection.hostClient ? (
           <SettingsComputerEnrollment host={selection.hostClient} />
         ) : null}
         <NativeSettingsPage

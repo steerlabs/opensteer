@@ -1,6 +1,8 @@
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { testReadyHarnessCatalog } from "@opensteer/database/test-support/store";
+import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import {
@@ -10,7 +12,6 @@ import {
   OpensteerError,
   provisionalThreadTitle,
   SequenceSchema,
-  ThreadAccessModeSchema,
   type AgentEvent,
   type Message,
   type Run,
@@ -22,7 +23,7 @@ import {
   createDatabase,
   migrateToLatest,
   OpensteerStore,
-  WorkspaceTabStore,
+  PersonalTabStore,
 } from "@opensteer/database";
 import { CommandService, KeyedAdmissionQueue, RealtimeHub } from "@opensteer/orchestration";
 import {
@@ -31,10 +32,9 @@ import {
   createBrowserSessionId,
   HarnessInputSchema,
   mintComputerUseSessionId,
-  type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -70,7 +70,7 @@ integration("agent-to-agent messaging round trip", () => {
       flushPendingTabDescriptors: async () => undefined,
       agentReachableSavedSession: BrowserService.prototype.agentReachableSavedSession,
       agentMayAccessSession: BrowserService.prototype.agentMayAccessSession,
-      listGrantedProfiles: async () => [],
+      listAgentProfiles: async () => [],
       tabOccupants: () => [],
       tabStateOf: () => undefined,
     } as unknown as BrowserService,
@@ -85,7 +85,7 @@ integration("agent-to-agent messaging round trip", () => {
   const commands = new CommandService({
     admission,
     onExecutionQueued: vi.fn(),
-    onWorkspaceEvent: vi.fn(),
+    onDeploymentEvent: vi.fn(),
     store,
   });
   const computerUse = {
@@ -98,6 +98,7 @@ integration("agent-to-agent messaging round trip", () => {
       >(),
   };
   const drainRunPlaces = vi.fn(async (_runId: Run["id"]) => undefined);
+  let folders: ReturnType<typeof personalTestFolders>;
   const service = new ProductToolsTestClient({
     computerUse,
     browserTabs,
@@ -121,14 +122,13 @@ integration("agent-to-agent messaging round trip", () => {
       createProfile: unexpected,
       closeAgentSession: unexpected,
       listAgentSessions: unexpected,
-      listGrantedProfiles: unexpected,
+      listAgentProfiles: unexpected,
       openAgentSession: unexpected,
       requestAccess: unexpected,
     },
     canRunHarness: () => true,
     commands,
     isEnvironmentConnected: () => true,
-    onWorkspaceEvent: vi.fn(),
     store,
     tokens: {
       authenticate: async (token: string) => {
@@ -137,26 +137,9 @@ integration("agent-to-agent messaging round trip", () => {
         return claims;
       },
     } as unknown as RunToolTokenService,
-    defaultWorkspaceBacking: "local-directory",
-    environmentWorkspaceBackings: () => ["local-directory"],
-    workspaceMounts: {
-      mount: async ({ workspace }) => ({
-        path: `/Main/Projects/${workspace.slug}`,
-      }),
-    },
-    workspaces: {
-      create: async (input) => {
-        const main = await store.findMainWorkspaceForOwner(input.createdBy);
-        if (!main) throw new Error("Owner Main is missing");
-        return createTestWorkspace(store, {
-          ...input,
-          backing: {
-            ...main.backing,
-            bindingId: createId("workspaceBinding"),
-          },
-          status: "ready",
-        });
-      },
+    folders: {
+      resolve: (...args) => folders.resolve(...args),
+      canExecute: (id) => folders.canExecute(id),
     },
   });
   beforeAll(async () => {
@@ -164,25 +147,7 @@ integration("agent-to-agent messaging round trip", () => {
   });
   beforeEach(async () => {
     claimsByToken.clear();
-    await sql`
-      truncate table
-        workspace_events,
-        agent_control_requests,
-        commands,
-        thread_inputs,
-        causal_chains,
-        delegations,
-        messages,
-        runs,
-        threads,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
+    await sql`truncate table deployments, users restart identity cascade`.execute(database);
     await sql`
       insert into principals(id, kind, user_id, display_name)
       values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
@@ -195,19 +160,6 @@ integration("agent-to-agent messaging round trip", () => {
   it("authorizes person_show against saved-tab ownership and Thread visibility", async () => {
     const f = await createMessagingFixture();
     const strangerId = await store.createUser("Other person");
-    const otherWorkspace = await createTestWorkspace(store, {
-      createdBy: strangerId,
-      idempotencyKey: randomUUID(),
-      name: "Private",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-    });
     const otherThreadId = createId("thread");
     const original = await database
       .selectFrom("threads")
@@ -227,13 +179,14 @@ integration("agent-to-agent messaging round trip", () => {
     await store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "test",
       profileId: null,
       runtimeId: "test",
     });
     const tabId = BrowserSurfaceIdSchema.parse("saved-gmail");
-    const tabs = new WorkspaceTabStore(database);
+    const tabs = new PersonalTabStore(database);
     await tabs.recordChanges(
       sessionId,
       [
@@ -279,7 +232,8 @@ integration("agent-to-agent messaging round trip", () => {
     await store.createBrowserSession({
       id: otherSession,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: strangerId,
       placementKey: "other",
       profileId: null,
       runtimeId: "test",
@@ -322,6 +276,7 @@ integration("agent-to-agent messaging round trip", () => {
     const legacyFrames: import("@opensteer/protocol").HostToClientMessage[] = [];
     const subscription = {
       afterSequence: SequenceSchema.parse("0"),
+      deploymentId: f.deploymentId,
       userId: f.userId,
     };
     const opted = () =>
@@ -504,6 +459,7 @@ integration("agent-to-agent messaging round trip", () => {
       const frames: import("@opensteer/protocol").HostToClientMessage[] = [];
       const release = await realtime.subscribe({
         afterSequence: SequenceSchema.parse("0"),
+        deploymentId: f.deploymentId,
         userId: f.userId,
         personShow: "accept",
         sink: {
@@ -600,12 +556,13 @@ integration("agent-to-agent messaging round trip", () => {
     await store.createBrowserSession({
       id: sessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "test",
       profileId: null,
       runtimeId: "test",
     });
-    const tabs = new WorkspaceTabStore(database);
+    const tabs = new PersonalTabStore(database);
     const rows = Array.from(
       {
         length: 70,
@@ -624,7 +581,8 @@ integration("agent-to-agent messaging round trip", () => {
     await store.createBrowserSession({
       id: recentSessionId,
       runnerId: f.runnerId,
-      origin: "workspace",
+      origin: "agent",
+      ownerId: f.userId,
       placementKey: "recent",
       profileId: null,
       runtimeId: "test",
@@ -730,7 +688,6 @@ integration("agent-to-agent messaging round trip", () => {
         kind: "agent",
         runId: fixture.runA.id,
         threadId: fixture.threadA.id,
-        workspaceName: "Main workspace",
       },
       content: [
         {
@@ -798,7 +755,6 @@ integration("agent-to-agent messaging round trip", () => {
         kind: "agent",
         runId: (await readToolRecords(store, outbound.result)).run!.id,
         threadId: fixture.threadB.id,
-        workspaceName: "Main workspace",
       },
       kind: "input",
       threadId: fixture.threadA.id,
@@ -1136,107 +1092,11 @@ integration("agent-to-agent messaging round trip", () => {
         .executeTakeFirstOrThrow(),
     ).toEqual(before);
   });
-  it.each([undefined, "Explicit legacy title"])(
-    "replays legacy agent delegation receipts with title %s and rejects changed intent",
-    async (title) => {
-      const fixture = await createMessagingFixture();
-      const task = "Research contract changes " + "with the full instructions ".repeat(14);
-      const request = {
-        requestId: randomUUID(),
-        type: "thread.delegate",
-        task,
-        ...(title === undefined
-          ? {}
-          : {
-              title,
-            }),
-      };
-      const response = await service.handle(fixture.tokenA, request);
-      if (response.type !== "thread.delegate.result") throw new Error("Expected delegation");
-      expect(await service.handle(fixture.tokenA, request)).toMatchObject({
-        type: "thread.delegate.result",
-        result: {
-          threadId: response.result.threadId,
-          assignmentId: response.result.assignmentId,
-        },
-      });
-      await expect(
-        service.handle(fixture.tokenA, {
-          ...request,
-          task: task + " changed",
-        }),
-      ).rejects.toMatchObject({
-        code: "conflict",
-      });
-      await sql`update commands set payload = (payload - 'titleSource' - 'callerIntent') ||
-        jsonb_build_object('title', ${title ?? task.slice(0, 240)}::text)
-        where payload->>'type' = 'thread.delegate' and thread_id = ${(await readToolRecords(store, response.result)).thread.id}`.execute(
-        database,
-      );
-      const replay = await service.handle(fixture.tokenA, request);
-      expect(replay).toMatchObject({
-        type: "thread.delegate.result",
-        result: {
-          threadId: response.result.threadId,
-          assignmentId: response.result.assignmentId,
-        },
-      });
-      for (const changed of [
-        {
-          task: task + " changed",
-        },
-        {
-          title: "Changed explicit name",
-        },
-      ]) {
-        await expect(
-          service.handle(fixture.tokenA, {
-            ...request,
-            ...changed,
-          }),
-        ).rejects.toMatchObject({
-          code: "conflict",
-        });
-      }
-      await titleEvidence(`legacy-agent-${title === undefined ? "untitled" : "chosen"}`, {
-        replay,
-      });
-    },
-  );
-  it("creates a Project while storing the requested colour", async () => {
-    const f = await createMessagingFixture();
-    const response = await service.handle(f.tokenA, {
-      type: "project.create",
-      requestId: randomUUID(),
-      name: "Travel",
-      color: "teal",
-    });
-    if (response.type !== "project.create.result") throw new Error("Expected Project");
-    expect(response).toMatchObject({
-      slug: "travel",
-      path: "/Main/Projects/travel",
-    });
-    expect(await store.getWorkspaceForOwner(response.workspace.id, f.userId)).toMatchObject({
-      color: "teal",
-    });
-  });
+
   it.each(["rename", "generated", "icon", "generated-icon"] as const)(
-    "republishes completed cross-Workspace assignment titles after %s",
+    "republishes completed assignment titles after %s",
     async (mode) => {
       const fixture = await createMessagingFixture();
-      const workspace = await createTestWorkspace(store, {
-        backing: {
-          kind: "local-directory",
-          generation: 1,
-          bindingId: createId("workspaceBinding"),
-          ownerEnvironmentId: fixture.environmentId,
-          storageAuthorityId: createId("storageAuthority"),
-        },
-        createdBy: fixture.userId,
-        idempotencyKey: randomUUID(),
-        name: "Worker workspace",
-        status: "ready",
-      });
       const response = await service.handle(fixture.tokenA, {
         requestId: randomUUID(),
         type: "thread.delegate",
@@ -1299,9 +1159,9 @@ integration("agent-to-agent messaging round trip", () => {
       });
       expect(reused.assignment.status).toBe("open");
       const head = await database
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=")
+        .selectFrom("deploymentEventState")
+        .select("sequence")
+        .where("deploymentId", "=", fixture.deploymentId)
         .executeTakeFirstOrThrow();
       const title =
         mode === "rename"
@@ -1315,7 +1175,7 @@ integration("agent-to-agent messaging round trip", () => {
         const changed = new CommandService({
           admission,
           onExecutionQueued: () => undefined,
-          onWorkspaceEvent: (event) => events.push(event),
+          onDeploymentEvent: (event) => events.push(event),
           store,
         });
         await (mode === "icon"
@@ -1347,7 +1207,7 @@ integration("agent-to-agent messaging round trip", () => {
       const updates = await database
         .selectFrom("deploymentEvents")
         .selectAll()
-        .where("sequence", ">", head.eventSequence)
+        .where("sequence", ">", head.sequence)
         .where("type", "=", "assignment.updated")
         .execute();
       expect(updates).toHaveLength(2);
@@ -1384,60 +1244,10 @@ integration("agent-to-agent messaging round trip", () => {
           }),
         ]),
       );
-      const otherOwner = await store.createUser("Parent workspace owner");
-      const tokenHash = `sha256:${randomUUID()}`;
-      const invitation = await store.createWorkspaceInvitation({
-        createdBy: fixture.userId,
-        expiresAt: new Date(Date.now() + 60_000),
-        idempotencyKey: randomUUID(),
-        intendedEmail: null,
-        requestFingerprint: `sha256:${randomUUID()}`,
-        role: "owner",
-        selector: randomUUID(),
-        tokenHash,
-        type: "link",
-      });
-      await store.acceptWorkspaceInvitation({
-        selector: invitation.selector,
-        tokenHash,
-        userEmail: "parent-owner@titles.test",
-        userEmailVerified: true,
-        userId: otherOwner,
-      });
-      const parentHead = await database
-        .selectFrom("workspaces")
-        .select("eventSequence")
-        .where("id", "=")
-        .executeTakeFirstOrThrow();
-      await database
-        .updateTable("workspaceMemberships")
-        .set({
-          state: "revoked",
-          revokedAt: new Date(),
-          revokedBy: fixture.userId,
-        })
-        .where("userId", "=", fixture.userId)
-        .execute();
-      const hidden = await store.renameThread({
-        idempotencyKey: randomUUID(),
-        requestedBy: fixture.userId,
-        threadId: worker.id,
-        title: "Private worker title",
-      });
-      expect(hidden.events?.filter((event) => event.type === "assignment.updated")).toHaveLength(2);
-      expect(hidden.events?.some((event) => true)).toBe(false);
-      expect(
-        await database
-          .selectFrom("deploymentEvents")
-          .select("eventId")
-          .where("sequence", ">", parentHead.eventSequence)
-          .execute(),
-      ).toEqual([]);
       await titleEvidence(`completed-${mode}`, {
         before,
         updates,
         events,
-        hidden,
       });
     },
   );
@@ -1646,27 +1456,11 @@ integration("agent-to-agent messaging round trip", () => {
     }
   });
   async function createMessagingFixture(voice = false) {
-    const userId = await store.createUser("Alex");
-    const runnerId = createId("runner");
-    const environmentId = createId("environment");
-    await enrollTestRunner({
-      createdBy: userId,
-      environmentId,
-      runnerId,
-    });
-    const mainWorkspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: environmentId,
-        storageAuthorityId: createId("storageAuthority"),
-      },
-      createdBy: userId,
-      idempotencyKey: `messaging-main-${randomUUID()}`,
-      name: "Main workspace",
-      status: "ready",
-    });
+    const path = join(evidenceRoot, randomUUID());
+    await mkdir(path, { recursive: true });
+    const personal = await seedPersonalFixture(database, path);
+    const { userId, runnerId, environmentId, agentHome } = personal;
+    folders = personalTestFolders(store, personal);
     const harnessInstance = await store.createHarnessInstance({
       config: {
         model: "test",
@@ -1677,23 +1471,13 @@ integration("agent-to-agent messaging round trip", () => {
       sourceId: "native",
       stateKind: "isolated",
     });
-    const chat = voice
-      ? await store.createThread({
-          createdBy: userId,
-          environmentId,
-          harnessInstanceId: harnessInstance.id,
-          idempotencyKey: `voice-home-${randomUUID()}`,
-          modelSelection: testModelSelection,
-          title: "Chat",
-          home: true,
-        })
-      : null;
+    await store.recordHarnessCatalogs({
+      environmentId,
+      catalogs: [testReadyHarnessCatalog(harnessInstance.id)],
+      expectedRevisions: new Map([[harnessInstance.id, harnessInstance.runtimeRevision]]),
+    });
     const { thread: threadA } = await store.createThread({
-      ...(chat
-        ? {
-            parentThreadId: chat.thread.id,
-          }
-        : {}),
+      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
@@ -1702,6 +1486,7 @@ integration("agent-to-agent messaging round trip", () => {
       title: "Contract coordination",
     });
     const { thread: threadB } = await store.createThread({
+      folder: agentHome,
       createdBy: userId,
       environmentId,
       harnessInstanceId: harnessInstance.id,
@@ -1709,8 +1494,6 @@ integration("agent-to-agent messaging round trip", () => {
       modelSelection: testModelSelection,
       title: "Client research",
     });
-    expect().toBe(true);
-    expect().toBe(true);
     const humanTurn = await commands.enqueueThreadInput({
       content: [
         {
@@ -1768,7 +1551,7 @@ integration("agent-to-agent messaging round trip", () => {
       }),
     );
     return {
-      environmentId,
+      ...personal,
       harnessInstanceId: harnessInstance.id,
       humanCommandId: humanTurn.command.id,
       runA: humanTurn.run,
@@ -1860,87 +1643,6 @@ integration("agent-to-agent messaging round trip", () => {
       .where("type", "=", "run.execute")
       .executeTakeFirstOrThrow();
     return row.id;
-  }
-  async function enrollTestRunner(input: {
-    readonly createdBy: UserId;
-    readonly environmentId: ReturnType<typeof createId<"environment">>;
-    readonly runnerId: ReturnType<typeof createId<"runner">>;
-  }): Promise<void> {
-    if (!(await store.getDeployment())) {
-      await store.ensureDeployment({
-        canonicalOrigin: "https://agent-messaging.opensteer.test",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: {
-          defaultWorkspaceBacking: "local-directory",
-          kind: "server" as const,
-        },
-      });
-    }
-    const pair = generateKeyPairSync("ed25519");
-    const publicKeyPem = pair.publicKey
-      .export({
-        format: "pem",
-        type: "spki",
-      })
-      .toString();
-    const publicKeyDer = pair.publicKey.export({
-      format: "der",
-      type: "spki",
-    });
-    const descriptor: RunnerDescriptor = {
-      bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-      capabilities: ["filesystem", "task-done-v1"],
-      modules: {
-        agents: {
-          environmentIds: [input.environmentId],
-          harnessDrivers: [
-            {
-              accessModes: [...ThreadAccessModeSchema.options],
-              driverKind: HarnessIdSchema.parse("native"),
-              readiness: "configured",
-              steering: true,
-              sources: [
-                {
-                  fields: [],
-                  kind: "first-party",
-                  label: "Native",
-                  quota: "none",
-                  sourceId: "native",
-                  stateKinds: ["isolated"],
-                },
-              ],
-            },
-          ],
-
-          maxConcurrentRuns: 4,
-          providerStateModes: ["isolated"],
-        },
-      },
-      name: "Main runner",
-      runnerId: input.runnerId,
-      runnerKind: "main",
-      runtimeVersion: "test",
-    };
-    const suffix = randomUUID();
-    const enrollmentTokenHash = `sha256:${createHash("sha256").update(`agent-messaging-${suffix}`, "utf8").digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: input.createdBy,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `agent-messaging-runner-${suffix}`,
-      mainEnrollmentPurpose: "initial",
-      name: descriptor.name,
-      requestFingerprint: `sha256:agent-messaging-${suffix}`,
-      runnerKind: "main",
-      tokenHash: enrollmentTokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor,
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-      publicKeyPem,
-    });
   }
 });
 function testClaims(input: {

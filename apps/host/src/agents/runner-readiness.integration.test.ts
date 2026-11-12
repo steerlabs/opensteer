@@ -262,7 +262,7 @@ const evidence: unknown[] = [];
     },
     90_000,
   );
-  it.each(["restart", "child restart", "crash", "companion"] as const)(
+  it.each(["restart", "child restart", "crash"] as const)(
     "%s ignores a stale ready catalog until the new boot commits its own",
     async (kind) => {
       const held = Promise.withResolvers<WireRecord>();
@@ -314,10 +314,7 @@ const evidence: unknown[] = [];
                   (catalog) =>
                     catalog.driverKind === "codex" &&
                     catalog.status === "ready" &&
-                    (!active ||
-                      (kind === "companion"
-                        ? catalog.harnessInstanceId !== active.harnessInstanceId
-                        : catalog.harnessInstanceId === active.harnessInstanceId)),
+                    (!active || catalog.harnessInstanceId === active.harnessInstanceId),
                 )
               )
                 return true;
@@ -337,16 +334,12 @@ const evidence: unknown[] = [];
         )!;
         expect(prior.catalog.status).toBe("ready");
         gate = true;
-        operation = (
-          kind === "companion"
-            ? stack.startAdditionalRunner()
-            : kind === "crash"
-              ? stack.crashRunner()
-              : stack.restartRunner()
-        ).then(async () => {
-          proceeded = true;
-          return stack.api["bootstrap.get"]({});
-        });
+        operation = (kind === "crash" ? stack.crashRunner() : stack.restartRunner()).then(
+          async () => {
+            proceeded = true;
+            return stack.api["bootstrap.get"]({});
+          },
+        );
         void operation.catch(() => undefined);
         // Observe the actual new-boot response, rather than waiting an elapsed interval.
         let timeout: NodeJS.Timeout | undefined;
@@ -373,10 +366,7 @@ const evidence: unknown[] = [];
         const response = RunnerToHostMessageSchema.parse(pending);
         if (response.type !== "runner.harness-catalog")
           throw new Error("Expected catalog response");
-        const accountId =
-          kind === "companion"
-            ? response.catalogs.find((catalog) => catalog.driverKind === "codex")!.harnessInstanceId
-            : stack.harnessInstanceId;
+        const accountId = stack.harnessInstanceId;
         const harness = (await stack.host.store.getHarnessInstance(accountId))!;
         await stack.host.store.recordHarnessCatalogs({
           environmentId: harness.environmentId,

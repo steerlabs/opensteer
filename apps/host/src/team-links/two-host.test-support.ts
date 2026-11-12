@@ -381,7 +381,11 @@ export async function createTwoHostLinkFixture() {
       async sql() {
         await beforeSqlReturn?.();
         return {
-          result: { columns: ["count"], rows: [[10]], sources: [], truncated: false },
+          result: {
+            columns: [{ name: "count", postgresType: "int8" }],
+            rows: [[10]],
+            truncated: false,
+          },
           reauthorize: async () => sqlAllowed,
         };
       },

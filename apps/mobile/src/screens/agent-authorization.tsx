@@ -11,7 +11,6 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Linking } from "react-native";
 import { AgentAuthorizationForm } from "./agent-authorization-form.js";
-import { agentAuthorizationEverything } from "./agent-authorization-form.types.js";
 import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
 import { agentConnectionExpired, agentConnectionFailure } from "./external-agents-model.js";
 
@@ -38,7 +37,6 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
   const [loadError, setLoadError] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [mode, setMode] = useState<ThreadAccessMode>("approval-required");
-  const [reach, setReach] = useState("user");
   const [busy, setBusy] = useState<"allow" | "deny" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
@@ -58,7 +56,6 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
         if (controller.signal.aborted) return;
         setConsent(result);
         setLabel(result.clientName);
-        setReach(result.workspaces[0]?.id ?? "user");
       })
       .catch((failure: unknown) => {
         if (!controller.signal.aborted)
@@ -80,7 +77,7 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
     void answerAgentConnection(
       host,
       consent,
-      approve ? { kind: "approve", label, accessMode: mode, reach } : { kind: "deny" },
+      approve ? { kind: "approve", label, accessMode: mode } : { kind: "deny" },
     )
       // The browser finishes the redirect back to the agent, unless another
       // request has replaced this one meanwhile: that answer is not on screen.
@@ -129,9 +126,6 @@ function AgentAuthorization(props: { readonly host: HostClient; readonly request
       onDeny={() => decide(false)}
       onLabel={setLabel}
       onMode={setMode}
-      onReach={setReach}
-      reach={reach}
-      reaches={[...consent.workspaces, { id: "user", name: agentAuthorizationEverything }]}
       title={`Allow ${consent.clientName} to use Opensteer?`}
     />
   );

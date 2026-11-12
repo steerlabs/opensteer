@@ -255,7 +255,7 @@ it("opens a single window, dismissing the sheet before pushing the exact window 
       name: "WorkspaceBrowser",
       params: {
         deploymentId: "deployment",
-        scope: "workspace",
+        scope: "tabs",
         machineId: w.app.machineId,
         appKey: "com.apple.notes",
         viewId: "opened",
@@ -344,13 +344,6 @@ it.each(["unmount", "blur"])(
     expect(state.dispatch).not.toHaveBeenCalled();
   },
 );
-it("does not list someone else's approved apps", async () => {
-  const w = await setup();
-  w.snapshot.machines = w.snapshot.machines.map((m) => ({ ...m, ownership: "other" as const }));
-  await w.render();
-  expect(container.textContent).toContain("No apps to open yet");
-  expect(w.windows).not.toHaveBeenCalled();
-});
 it("switches to an existing owner view of the exact window without opening again", async () => {
   const w = await setup();
   // Create the real Host projection before replacing its open RPC with the assertion spy.

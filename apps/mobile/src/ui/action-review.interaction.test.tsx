@@ -56,7 +56,7 @@ async function setup() {
   await client.load();
   snapshot = seedBrowserSnapshot(
     seedBrowserSnapshot(
-      { ...client.getSnapshot(), workspaceTabRestoreVersion: undefined } as HostSnapshot,
+      { ...client.getSnapshot(), tabRestoreVersion: undefined } as HostSnapshot,
       undefined,
     ),
   );

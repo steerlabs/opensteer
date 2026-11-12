@@ -1,3 +1,4 @@
+import { TeamMessageIdSchema } from "@opensteer/core";
 import { expect, it } from "vitest";
 import { createId } from "@opensteer/core";
 import { RunAgentToolsPlanSchema } from "@opensteer/protocol";
@@ -38,8 +39,8 @@ it("loads current sourced channel instructions without changing permanent team i
   const source = {
     teamId: createId("deployment"),
     channelId: createId("teamChannel"),
-    threadRootId: "1",
-    messageId: "2",
+    threadRootId: TeamMessageIdSchema.parse("1"),
+    messageId: TeamMessageIdSchema.parse("2"),
     audience: {
       teamName: "Acme",
       channelName: "Support",

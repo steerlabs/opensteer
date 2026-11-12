@@ -16,7 +16,7 @@ import {
 const now = "2026-08-22T12:00:00.000Z";
 const ownerId = createId("user");
 const threadId = createId("thread");
-const workspaceId = createId("workspace");
+
 const definitionId = "google-gmail";
 const proposalDigest = "0123456789abcdef0123456789abcdef0123456789a";
 const installationId = createIntegrationId("installation");
@@ -70,13 +70,15 @@ describe("ContinuationService", () => {
       id: createId("request"),
       kind: "browser.password-sign-in",
       payload: {
+        scope: "personal",
+        permissionVersion: 6,
         kind: "browser.password-sign-in",
         computerName: "Test Mac",
         runnerId: createId("runner"),
         expiresAt: now,
         operationId: crypto.randomUUID(),
         reason: "Read email",
-        sessionId: createBrowserSessionId(),
+
         site: "https://example.com",
       },
     });
@@ -97,13 +99,15 @@ describe("ContinuationService", () => {
       ...answered,
       kind: "browser.password-sign-in",
       payload: {
+        scope: "personal",
+        permissionVersion: 6,
         kind: "browser.password-sign-in",
         computerName: "Test Mac",
         runnerId: createId("runner"),
         expiresAt: now,
         operationId: crypto.randomUUID(),
         reason: "Read email",
-        sessionId: createBrowserSessionId(),
+
         site: "https://example.com",
       },
       resolvedAt: null,
@@ -151,18 +155,7 @@ describe("ContinuationService", () => {
     expect(input.content[0].text).toContain("pending_request");
     expect(fixture.recordContinuationAttempt).toHaveBeenCalledTimes(3);
   });
-  it("settles historical Guest-save continuations without delivering agent instructions", async () => {
-    const request = fulfilledRequest("browser.profile.save");
-    const fixture = makeService([request]);
-    fixture.service.notify();
-    await fixture.service.close();
-    expect(fixture.enqueueThreadInput).not.toHaveBeenCalled();
-    expect(fixture.recordContinuationAttempt).toHaveBeenCalledWith({
-      requestId: request.id,
-      status: "undeliverable",
-      reason: "Guest profile saving has been removed.",
-    });
-  });
+
   it("drains every durable kind through one outbox and one idempotency shape", async () => {
     const requests = [
       fulfilledRequest("browser.access"),
@@ -336,7 +329,7 @@ describe("continuationMessage", () => {
       else expect(message).toContain(offer);
     },
   );
-  it.each(["browser.access", "browser.profile.save"] as const)(
+  it.each(["browser.access"] as const)(
     "names the exact Host-recorded profile for %s",
     async (kind) => {
       const profile = {
@@ -360,37 +353,34 @@ describe("continuationMessage", () => {
       );
     },
   );
-  it.each(["browser.access", "browser.profile.save"] as const)(
+  it.each(["browser.access"] as const)(
     "does not guess the profile for historical %s rows",
     async (kind) => {
       const request = fulfilledRequest(kind);
       expect(await continuationMessage(request, inventory())).toBe(
         kind === "browser.access"
-          ? `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles this Workspace can use. Continue the task.`
+          ? `Request ${request.id} was fulfilled. Browser profile access is now available; browser_profile_list shows the profiles your Opensteer can use. Continue the task.`
           : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
       );
     },
   );
-  it.each(["browser.access", "browser.profile.save"] as const)(
-    "preserves the declined %s text",
-    async (kind) => {
-      const request = RequestSchema.parse({
-        ...fulfilledRequest(kind),
-        response: {
-          kind: "external",
-          value: {
-            decision: "declined",
-          },
+  it.each(["browser.access"] as const)("preserves the declined %s text", async (kind) => {
+    const request = RequestSchema.parse({
+      ...fulfilledRequest(kind),
+      response: {
+        kind: "external",
+        value: {
+          decision: "declined",
         },
-        status: "declined",
-      });
-      expect(await continuationMessage(request, inventory())).toBe(
-        kind === "browser.access"
-          ? `Request ${request.id} was declined by the user. Browser profiles this Workspace could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`
-          : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
-      );
-    },
-  );
+      },
+      status: "declined",
+    });
+    expect(await continuationMessage(request, inventory())).toBe(
+      kind === "browser.access"
+        ? `Request ${request.id} was declined by the user. Browser profiles your Opensteer could already use are unchanged: browser_profile_list shows them. Do not request this access again unless the user asks.`
+        : `Request ${request.id} is historical. Open a named browser profile before signing in, or ask for one with browser_profile_request; Guest sign-ins cannot be saved.`,
+    );
+  });
   it.each([
     {
       outcome: "interrupted",
@@ -419,13 +409,15 @@ describe("continuationMessage", () => {
       ...fulfilledRequest("browser.access"),
       kind: "browser.password-sign-in",
       payload: {
+        scope: "personal",
+        permissionVersion: 6,
         kind: "browser.password-sign-in",
         computerName: "Test Mac",
         expiresAt: now,
         operationId: crypto.randomUUID(),
         reason: "Read the invoice",
         runnerId: createId("runner"),
-        sessionId: "bss_test",
+
         site: "https://example.com",
       },
       response: {
@@ -439,14 +431,14 @@ describe("continuationMessage", () => {
     expect(message).not.toContain("the user did not sign in another way");
     expect(message).toContain("sign_in");
   });
-  it("uses the live Workspace ref on every surface without inventing a session", async () => {
+  it("uses the live personal ref on every surface without inventing a session", async () => {
     const request = RequestSchema.parse({
       ...fulfilledRequest("browser.access"),
       kind: "browser.password-sign-in",
       payload: {
         kind: "browser.password-sign-in",
-        scope: "workspace",
-        permissionVersion: 5,
+        scope: "personal",
+        permissionVersion: 6,
         computerName: "Vault Mac",
         expiresAt: now,
         operationId: crypto.randomUUID(),
@@ -490,7 +482,7 @@ describe("continuationMessage", () => {
       `Request ${request.id} was fulfilled. Gmail is installed and ready. Call integration_search now to pick up its tools and continue the task.`,
     );
   });
-  it("says an installation with no Workspace grant is not yet usable", async () => {
+  it("says an installation with no personal grant is not yet usable", async () => {
     const request = fulfilledRequest("integration.install");
     expect(
       await continuationMessage(
@@ -502,10 +494,10 @@ describe("continuationMessage", () => {
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail is installed and its account connection works, but this Workspace holds no access grant yet. Call integration_search now, then call integration_request with this integration and the access class the task needs.`,
+      `Request ${request.id} was fulfilled. Gmail is installed and its account connection works, but your Opensteer holds no access grant yet. Call integration_search now, then call integration_request with this integration and the access class the task needs.`,
     );
   });
-  it("reports a missing Workspace grant after fulfillment", async () => {
+  it("reports a missing personal grant after fulfillment", async () => {
     const request = fulfilledRequest("integration.access");
     expect(
       await continuationMessage(
@@ -513,12 +505,12 @@ describe("continuationMessage", () => {
         inventory(
           entry({
             code: "ACCESS_GRANT_REQUIRED",
-            detail: "No grant in this Workspace",
+            detail: "No personal grant",
           }),
         ),
       ),
     ).toBe(
-      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. This Workspace still holds no access grant (No grant in this Workspace).`,
+      `Request ${request.id} was fulfilled. Gmail read access was granted for connectionless operations. Your Opensteer still holds no access grant (No personal grant).`,
     );
   });
   it("sends the agent to integration_request when the installation has no account", async () => {
@@ -729,7 +721,7 @@ function computerAppAccessRequest(status: "declined" | "fulfilled") {
       title: "Wants to use Notes on Alex's Mac",
     },
     requestedBy: ownerId,
-    requiredActor: "workspace-owner",
+    requiredActor: "owner",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
@@ -901,11 +893,7 @@ function triggerOriginatedRequest(): Request {
 }
 function fulfilledRequest(
   kind:
-    | "browser.access"
-    | "browser.profile.save"
-    | "integration.access"
-    | "integration.install"
-    | "machine.full-disk-access",
+    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
   account?:
     | {
         readonly accountIdentifier: string | null;
@@ -948,13 +936,13 @@ function fulfilledRequest(
         : {
             kind: "external",
             subject: {
-              id: workspaceId,
-              kind: "workspace",
+              id: threadId,
+              kind: "thread",
             },
             title: "Request",
           },
     requestedBy: ownerId,
-    requiredActor: kind === "integration.install" ? "administrator" : "requester",
+    requiredActor: kind === "integration.install" ? "owner" : "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
@@ -987,11 +975,7 @@ function fulfilledRequest(
 }
 function payloadFor(
   kind:
-    | "browser.access"
-    | "browser.profile.save"
-    | "integration.access"
-    | "integration.install"
-    | "machine.full-disk-access",
+    "browser.access" | "integration.access" | "integration.install" | "machine.full-disk-access",
   proposal: boolean,
 ) {
   switch (kind) {
@@ -1002,12 +986,6 @@ function payloadFor(
         suggestion: {
           kind: "user_choice" as const,
         },
-      };
-    case "browser.profile.save":
-      return {
-        kind,
-        reason: "Reuse the login",
-        sessionId: "browser-session-1",
       };
     case "integration.access":
       return {

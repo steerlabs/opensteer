@@ -91,18 +91,6 @@ function Body(props: AgentAuthorizationFormProps): ReactNode {
           />
         ))}
       </Section>
-      <Section title="What it can reach">
-        {props.reaches.map((reach) => (
-          <Choice
-            key={reach.id}
-            detail={null}
-            disabled={busy}
-            selected={reach.id === props.reach}
-            title={reach.name}
-            onPress={() => props.onReach(reach.id)}
-          />
-        ))}
-      </Section>
       <Section footer={<Footer text={agentAuthorizationFinePrint} />} title="Name">
         <Name busy={busy} label={props.label} onLabel={props.onLabel} />
       </Section>

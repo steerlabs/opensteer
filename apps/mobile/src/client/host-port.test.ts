@@ -40,6 +40,7 @@ it.each([false, true])(
         return Response.json(connection.personalAccessRoute);
       if (url.endsWith("/.well-known/opensteer"))
         return Response.json({
+          kind: "personal",
           authority,
           apiVersion: hostApiVersion - 1,
           bootstrapMethods: ["connect-grant"],

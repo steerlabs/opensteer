@@ -145,7 +145,10 @@ vi.mock("../ui/screen.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: (props: { name: string }) => <i data-symbol={props.name} />,
 }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-mark="chat" /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-mark="chat" />,
+}));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: (props: { quiet?: boolean }) => <i data-mark="task" data-quiet={props.quiet} />,
 }));
@@ -512,26 +515,6 @@ describe("One schedule", () => {
     ]);
   });
 
-  it("returns to Chat for a schedule that runs in Chat, and opens a run's reply where it was written", async () => {
-    const f = host();
-    const summary = await named(f, "Morning email summary");
-    expect(summary.anchorThreadId).toBe(f.snapshot().homeThreadId);
-    const screen = detailScreen(summary.id);
-    await shown(screen, "Runs in Chat", "the schedule never loaded");
-    expect(button(screen, "Runs in Chat").querySelector('[data-mark="chat"]')).not.toBeNull();
-    press(button(screen, "Runs in Chat"));
-    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
-    const replied = wire.downstreamRuns[0]!;
-    press(button(screen, /Opensteer replied in Chat/));
-    expect(pushed()).toEqual([
-      { payload: { name: "Home", params: { deploymentId } }, type: "POP_TO" },
-      {
-        payload: { name: "Home", params: { deploymentId, messageId: replied.run.seedInputId } },
-        type: "POP_TO",
-      },
-    ]);
-  });
-
   it("offers no way into a thread this reader cannot see", async () => {
     const f = host();
     const summary = await named(f, "GitHub deploys");
@@ -559,11 +542,11 @@ describe("One schedule", () => {
       };
     });
     const list = listScreen();
-    await shown(list, "Unavailable thread", "the list never named the unavailable thread");
+    await shown(list, "Unavailable task", "the list never named the unavailable thread");
     expect(button(list, /^GitHub deploys\./).querySelector("[data-quiet]")).not.toBeNull();
     const screen = detailScreen(summary.id);
-    await shown(screen, "That thread isn’t available to you", "the schedule never loaded");
-    const anchor = button(screen, "Runs in Unavailable thread");
+    await shown(screen, "That task isn’t available to you", "the schedule never loaded");
+    const anchor = button(screen, "Runs in Unavailable task");
     expect(anchor.disabled).toBe(true);
     press(anchor);
     expect(pushed()).toEqual([]);

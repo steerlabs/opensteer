@@ -402,7 +402,6 @@ export class IphoneAppsController {
             definitionId: found.definitionId,
             reason: found.reason ?? null,
             threadTitle: found.threadTitle ?? null,
-            workspaceName: found.workspaceName ?? null,
             createdAt: found.createdAt ?? new Date().toISOString(),
             expiresAt: found.expiresAt ?? new Date().toISOString(),
           }
@@ -1239,7 +1238,6 @@ interface HostRecord {
     readonly runnerId: string;
     readonly reason?: string | null;
     readonly threadTitle?: string | null;
-    readonly workspaceName?: string | null;
     readonly createdAt?: string;
     readonly expiresAt?: string;
   }[];
