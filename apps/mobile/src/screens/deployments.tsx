@@ -240,13 +240,7 @@ const TeamSignal = memo(function TeamSignal(props: {
       (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
       [session],
     ),
-    useCallback(
-      () =>
-        session
-          ?.getSnapshot()
-          .sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ?? 0,
-      [session],
-    ),
+    useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]),
   );
   return (
     <View

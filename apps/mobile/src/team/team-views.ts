@@ -121,7 +121,7 @@ export function drawerSection(input: {
   return {
     team: { id: input.teamId, name: input.name, imageUri: null },
     folded: input.folded,
-    mentionTotal: rows.reduce((total, row) => total + row.mentionCount, 0),
+    mentionTotal: input.sidebar?.totalMentionCount ?? 0,
     unread: rows.some((row) => row.unread && row.notificationLevel !== "muted"),
     state:
       input.state === "update-app"
@@ -383,6 +383,30 @@ function workedSummary(request: TeamAgentRequest): string {
   const finished = Date.parse(request.finishedAt ?? request.createdAt);
   const minutes = Math.max(1, Math.round((finished - started) / 60_000));
   return `Worked ${minutes}m · ${steps === 1 ? "1 step" : `${steps} steps`}`;
+}
+
+/**
+ * The newest reply by the reader's own agent that is on screen in a thread: the
+ * one whose task reading it reads. A later reply arriving in an open thread is
+ * a new one to read; a reply scrolled out of view is none.
+ */
+export function ownReplyInView(
+  messages: readonly Pick<TeamMessage, "id" | "authorKind" | "authorUserId">[],
+  viewerId: string,
+  rootId: string,
+  visible: ReadonlySet<string>,
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (
+      message.id !== rootId &&
+      message.authorKind === "agent" &&
+      message.authorUserId === viewerId &&
+      visible.has(message.id)
+    )
+      return message.id;
+  }
+  return null;
 }
 
 /** A message this phone sent that the team has not confirmed yet, drawn in place. */

@@ -654,10 +654,7 @@ export class MobileTeams {
    * its preview key, credential and catalog entry) is removed.
    */
   async leave(teamId: string): Promise<void> {
-    const session = await this.session(teamId);
-    const userId = this.#memo?.users[teamId];
-    if (userId === undefined) throw new TeamAccessError("This team is no longer on this phone.");
-    unwrapRpcResult(await session.rpc["commands.dispatch"]({ type: "team.member.remove", userId }));
+    await (await this.session(teamId)).leave();
     const personal = this.#client.getSnapshot().selection.hostClient;
     // A computer that is off keeps a link the team already refuses for a removed member.
     if (personal !== null)

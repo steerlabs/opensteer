@@ -22,9 +22,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
@@ -61,6 +62,7 @@ import {
   channelHeader,
   mentionOptions,
   messageView,
+  ownReplyInView,
   timelineItems,
   typingLine,
   type MemberDirectory,
@@ -396,19 +398,37 @@ function Place(props: {
       return () => clearTimeout(timer);
     }, [channelId, following, newest, session]),
   );
-  // Reading your agent's reply in its thread reads its task on your computer.
-  const repliedToMe =
-    rootId !== null &&
-    view.messages.some(
-      (message) => message.authorKind === "agent" && message.authorUserId === viewerId,
-    );
+  // Reading your agent's reply in its thread reads its task on your computer:
+  // that reply, once it is on screen in front, through what it published only.
+  const [visible, setVisible] = useState<ReadonlySet<string>>(() => new Set());
+  const replyInView =
+    rootId === null ? null : ownReplyInView(view.messages, viewerId, rootId, visible);
+  const readStates = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => personal?.subscribe(listener) ?? (() => undefined),
+      [personal],
+    ),
+    useCallback(() => personal?.getSnapshot().threadReadStates ?? null, [personal]),
+  );
+  const readReplies = useRef(new Set<string>());
   useFocusEffect(
     useCallback(() => {
-      if (!repliedToMe || rootId === null || personal === null) return;
-      void readTeamReply(personal, { teamId, channelId, threadRootId: rootId }).catch(
+      if (replyInView === null || rootId === null || personal === null) return;
+      if (readReplies.current.has(replyInView) || AppState.currentState !== "active") return;
+      // False until the publication and the task's read state have reached this
+      // phone; the read state changing is what asks again.
+      void readTeamReply(personal, {
+        teamId,
+        channelId,
+        threadRootId: rootId,
+        replyMessageId: replyInView,
+      }).then(
+        (read) => {
+          if (read) readReplies.current.add(replyInView);
+        },
         () => undefined,
       );
-    }, [channelId, personal, repliedToMe, rootId, teamId]),
+    }, [channelId, personal, readStates, replyInView, rootId, teamId]),
   );
   const arrivedWhileAway = useRef(0);
   const lastNewest = useRef(newest);
@@ -718,6 +738,7 @@ function Place(props: {
               .loadPage(rootId === null ? "channel" : "thread", "before")
               .catch(() => undefined),
           onFollowingChange: setFollowing,
+          onVisibleMessages: setVisible,
         },
         banner,
         composer,

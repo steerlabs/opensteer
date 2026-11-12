@@ -7,6 +7,7 @@ import {
   type ListRenderItemInfo,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type ListViewToken,
 } from "react-native";
 import { color, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
 import { GlassSurface } from "../ui/glass.js";
@@ -38,7 +39,11 @@ export interface TimelineActions extends MessageRowActions {
   readonly onLoadOlder: () => void;
   /** The reader is (or is no longer) within `followDistance` of the newest message. */
   readonly onFollowingChange: (following: boolean) => void;
+  /** The messages on screen now, as the list measures them. */
+  readonly onVisibleMessages?: (messageIds: ReadonlySet<string>) => void;
 }
+
+const viewability = { itemVisiblePercentThreshold: 50, minimumViewTime: 250 };
 
 /**
  * A channel's, DM's or thread's messages, newest at the bottom.
@@ -103,6 +108,19 @@ export function Timeline(props: {
     () => list.current?.scrollToOffset({ offset: 0, animated: true }),
     [],
   );
+  // FlatList keeps the first callback it is given, so the current actions are read through a ref.
+  const latest = useRef(actions);
+  latest.current = actions;
+  const onViewableItemsChanged = useRef(
+    ({ viewableItems }: { viewableItems: readonly ListViewToken[] }) => {
+      const ids = new Set<string>();
+      for (const { item } of viewableItems) {
+        const row = item as TimelineItem;
+        if (row.kind === "message") ids.add(row.message.id);
+      }
+      latest.current.onVisibleMessages?.(ids);
+    },
+  ).current;
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TimelineItem>) => (
       <TimelineRow
@@ -129,6 +147,8 @@ export function Timeline(props: {
         onEndReached={actions.onLoadOlder}
         onEndReachedThreshold={0.6}
         onScroll={onScroll}
+        onViewableItemsChanged={onViewableItemsChanged}
+        viewabilityConfig={viewability}
         // `scrollToIndex` needs somewhere to go before the row it names has been
         // measured: FlatList's own estimate, then one more layout pass lands on it.
         onScrollToIndexFailed={({ averageItemLength, index }) => {

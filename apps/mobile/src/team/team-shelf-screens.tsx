@@ -811,12 +811,13 @@ export function TeamSearchScreen(
           ...(channelId === null ? {} : { channelId: TeamChannelIdSchema.parse(channelId) }),
           ...(authorId === null ? {} : { authorUserId: UserIdSchema.parse(authorId) }),
           ...(hasFile ? { hasFile: true } : {}),
+          ...(inThreads ? { threadsOnly: true } : {}),
         })
         .catch(() => undefined)
         .finally(() => setSearching(false));
     }, 250);
     return () => clearTimeout(timer);
-  }, [authorId, channelId, hasFile, query, session]);
+  }, [authorId, channelId, hasFile, inThreads, query, session]);
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const channelName =
     snapshot.sidebar?.channels.find((row) => row.channel.id === channelId)?.channel.name ?? null;
@@ -826,24 +827,22 @@ export function TeamSearchScreen(
     thread: inThreads,
     file: hasFile,
   };
-  const results = (query.trim() === "" ? [] : (snapshot.search?.results ?? []))
-    .filter((row) => !inThreads || row.message.threadRootId !== null)
-    .map((row) => ({
-      message: messageView(row.message, {
-        viewerId,
-        members: directory,
-        previews: new Map(),
-        previous: null,
-        requests: [],
-        inThread: true,
-      }),
-      where:
-        row.message.threadRootId === null
-          ? `#${row.source.audience.channelName}`
-          : `#${row.source.audience.channelName} thread`,
-      match: query.trim(),
-      raw: row.message,
-    }));
+  const results = (query.trim() === "" ? [] : (snapshot.search?.results ?? [])).map((row) => ({
+    message: messageView(row.message, {
+      viewerId,
+      members: directory,
+      previews: new Map(),
+      previous: null,
+      requests: [],
+      inThread: true,
+    }),
+    where:
+      row.message.threadRootId === null
+        ? `#${row.source.audience.channelName}`
+        : `#${row.source.audience.channelName} thread`,
+    match: query.trim(),
+    raw: row.message,
+  }));
   const onFilter = (filter: "thread" | "file"): void => {
     if (filter === "thread") setInThreads((on) => !on);
     else setHasFile((on) => !on);

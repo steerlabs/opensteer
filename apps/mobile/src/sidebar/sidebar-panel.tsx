@@ -571,13 +571,7 @@ const TeamRow = memo(function TeamRow(props: {
 
 /** Mentions of the reader across a team, read from that team's own session only. */
 function useTeamMentions(session: TeamSessionClient | null): number {
-  const read = useCallback(
-    () =>
-      session
-        ?.getSnapshot()
-        .sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ?? 0,
-    [session],
-  );
+  const read = useCallback(() => session?.getSnapshot().sidebar?.totalMentionCount ?? 0, [session]);
   const subscribe = useCallback(
     (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
     [session],
