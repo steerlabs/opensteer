@@ -70,7 +70,7 @@ type filesDownloadResult struct {
 	metadata         filesDownloadMetadata
 }
 
-func executeFilesList(root *workspaceRoot, input request) (filesListResult, error) {
+func executeFilesList(root *filesystemRoot, input request) (filesListResult, error) {
 	if input.Offset < 0 || input.Offset > maxFilesDirectoryOffset || input.Limit < 1 || input.Limit > maxFilesPageEntries {
 		return filesListResult{}, userError("invalid-request", "Files directory page bounds are invalid")
 	}
@@ -91,9 +91,9 @@ func executeFilesList(root *workspaceRoot, input request) (filesListResult, erro
 	}
 	revision := nodeRevision(before)
 	if input.ExpectedDirectoryRevision != "" && input.ExpectedDirectoryRevision != revision {
-		return filesListResult{}, userError("concurrent-modification", "Workspace directory changed between pages")
+		return filesListResult{}, userError("concurrent-modification", "Task folder directory changed between pages")
 	}
-	file, err := duplicateNodeFile(directory, "workspace-files-directory")
+	file, err := duplicateNodeFile(directory, "task-folder-files-directory")
 	if err != nil {
 		return filesListResult{}, err
 	}
@@ -122,7 +122,7 @@ func executeFilesList(root *workspaceRoot, input request) (filesListResult, erro
 			name := candidate.Name()
 			stat, statErr := root.statNodeAt(directory, name)
 			if statErr != nil {
-				return filesListResult{}, userError("concurrent-modification", "Workspace directory changed while it was being listed")
+				return filesListResult{}, userError("concurrent-modification", "Task folder directory changed while it was being listed")
 			}
 			result.Entries = append(result.Entries, filesEntryFromStat(name, stat))
 			visited++
@@ -137,12 +137,12 @@ func executeFilesList(root *workspaceRoot, input request) (filesListResult, erro
 		return filesListResult{}, err
 	}
 	if nodeRevision(after) != revision {
-		return filesListResult{}, userError("concurrent-modification", "Workspace directory changed while it was being listed")
+		return filesListResult{}, userError("concurrent-modification", "Task folder directory changed while it was being listed")
 	}
 	return result, nil
 }
 
-func executeFilesReadRange(root *workspaceRoot, input request) (filesReadRangeResult, error) {
+func executeFilesReadRange(root *filesystemRoot, input request) (filesReadRangeResult, error) {
 	if input.Offset < 0 || input.Offset > maxJavaScriptSafeInt || input.MaxBytes < 1 || input.MaxBytes > maxFilesPreviewBytes {
 		return filesReadRangeResult{}, userError("invalid-request", "Files read range is invalid")
 	}
@@ -162,13 +162,13 @@ func executeFilesReadRange(root *workspaceRoot, input request) (filesReadRangeRe
 		return filesReadRangeResult{}, userError("not-regular", "Files key must name a regular file")
 	}
 	if before.size < 0 || before.size > maxJavaScriptSafeInt || input.Offset > before.size {
-		return filesReadRangeResult{}, userError("invalid-request", "Workspace file range is outside the supported bounds")
+		return filesReadRangeResult{}, userError("invalid-request", "Task folder file range is outside the supported bounds")
 	}
 	revision := nodeRevision(before)
 	if input.ExpectedFileRevision != "" && input.ExpectedFileRevision != revision {
-		return filesReadRangeResult{}, userError("concurrent-modification", "Workspace file changed between reads")
+		return filesReadRangeResult{}, userError("concurrent-modification", "Task folder file changed between reads")
 	}
-	file, err := duplicateNodeFile(handle, "workspace-files-preview")
+	file, err := duplicateNodeFile(handle, "task-folder-files-preview")
 	if err != nil {
 		return filesReadRangeResult{}, err
 	}
@@ -198,7 +198,7 @@ func executeFilesReadRange(root *workspaceRoot, input request) (filesReadRangeRe
 		return filesReadRangeResult{}, err
 	}
 	if nodeRevision(after) != revision {
-		return filesReadRangeResult{}, userError("concurrent-modification", "Workspace file changed while it was being read")
+		return filesReadRangeResult{}, userError("concurrent-modification", "Task folder file changed while it was being read")
 	}
 	return filesReadRangeResult{
 		BytesRead:     len(content),
@@ -209,7 +209,7 @@ func executeFilesReadRange(root *workspaceRoot, input request) (filesReadRangeRe
 	}, nil
 }
 
-func executeFilesDownload(root *workspaceRoot, input request) (*filesDownloadResult, error) {
+func executeFilesDownload(root *filesystemRoot, input request) (*filesDownloadResult, error) {
 	if input.Offset < 0 || input.Offset > maxJavaScriptSafeInt || input.Length < 0 || input.Length > maxJavaScriptSafeInt {
 		return nil, userError("invalid-request", "Files download range is invalid")
 	}
@@ -229,11 +229,11 @@ func executeFilesDownload(root *workspaceRoot, input request) (*filesDownloadRes
 		return nil, userError("not-regular", "Files key must name a regular file")
 	}
 	if stat.size < 0 || stat.size > maxJavaScriptSafeInt || input.Offset > stat.size {
-		return nil, userError("invalid-request", "Workspace file is outside the supported size bounds")
+		return nil, userError("invalid-request", "Task folder file is outside the supported size bounds")
 	}
 	revision := nodeRevision(stat)
 	if input.ExpectedFileRevision != "" && input.ExpectedFileRevision != revision {
-		return nil, userError("concurrent-modification", "Workspace file changed before download")
+		return nil, userError("concurrent-modification", "Task folder file changed before download")
 	}
 	length := input.Length
 	if length == 0 && input.Offset == 0 {
@@ -242,7 +242,7 @@ func executeFilesDownload(root *workspaceRoot, input request) (*filesDownloadRes
 	if length > stat.size-input.Offset {
 		return nil, userError("invalid-request", "Files download range exceeds the file")
 	}
-	file, err := duplicateNodeFile(handle, "workspace-files-download")
+	file, err := duplicateNodeFile(handle, "task-folder-files-download")
 	if err != nil {
 		return nil, err
 	}
@@ -290,17 +290,17 @@ func writeFilesDownloadTo(output io.Writer, download *filesDownloadResult) error
 		return err
 	}
 	if nodeRevision(after) != download.expectedRevision {
-		return userError("concurrent-modification", "Workspace file changed while it was being downloaded")
+		return userError("concurrent-modification", "Task folder file changed while it was being downloaded")
 	}
 	return nil
 }
 
-func assertExpectedFilesRoot(root *workspaceRoot, expected *directoryIdentityResult) error {
+func assertExpectedFilesRoot(root *filesystemRoot, expected *directoryIdentityResult) error {
 	if expected == nil {
-		return userError("invalid-request", "Files operation requires an expected Workspace root identity")
+		return userError("invalid-request", "Files operation requires an expected task folder root identity")
 	}
 	if !validExpectedRootIdentity(*expected) {
-		return userError("invalid-request", "Files operation expected Workspace root identity is invalid")
+		return userError("invalid-request", "Files operation expected task folder root identity is invalid")
 	}
 	handle, stat, err := root.openNode(nil)
 	if err != nil {
@@ -309,7 +309,7 @@ func assertExpectedFilesRoot(root *workspaceRoot, expected *directoryIdentityRes
 	closeNode(handle)
 	actual := directoryIdentityFromStat(stat)
 	if stat.kind != "directory" || actual != *expected {
-		return userError("root-replaced", "Managed Workspace directory identity no longer matches its binding")
+		return userError("root-replaced", "Managed task folder directory identity no longer matches its binding")
 	}
 	return nil
 }

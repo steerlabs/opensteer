@@ -81,7 +81,7 @@ func ensureDesktopPrivateRoot(rootPath string) (bool, error) {
 	return created, nil
 }
 
-func openDesktopPrivateRoot(rootPath string) (*workspaceRoot, error) {
+func openDesktopPrivateRoot(rootPath string) (*filesystemRoot, error) {
 	if rootPath == "" || !filepath.IsAbs(rootPath) || strings.ContainsRune(rootPath, 0) || len(rootPath) > 16*1024 {
 		return nil, userError("invalid-root", "Desktop private filesystem root is invalid")
 	}
@@ -104,24 +104,24 @@ func openDesktopPrivateRoot(rootPath string) (*workspaceRoot, error) {
 		unix.Close(current)
 		return nil, err
 	}
-	return &workspaceRoot{containment: platformContainment, device: uint64(stat.Dev), fd: current}, nil
+	return &filesystemRoot{containment: platformContainment, device: uint64(stat.Dev), fd: current}, nil
 }
 
-func (root *workspaceRoot) duplicateDesktopRootHandle() (nodeHandle, error) {
+func (root *filesystemRoot) duplicateDesktopRootHandle() (nodeHandle, error) {
 	fd, err := unix.Dup(root.fd)
 	return nodeHandle(fd), err
 }
 
-func (root *workspaceRoot) openDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) openDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	return root.openDirectoryAt(parent, name)
 }
 
-func (root *workspaceRoot) createDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
+func (root *filesystemRoot) createDesktopDirectoryAt(parent nodeHandle, name string) (nodeHandle, error) {
 	handle, _, err := root.createDirectoryAt(parent, name)
 	return handle, err
 }
 
-func (root *workspaceRoot) openDesktopNodeAt(parent nodeHandle, name string, directory bool) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openDesktopNodeAt(parent nodeHandle, name string, directory bool) (nodeHandle, nodeStat, error) {
 	if directory {
 		handle, err := root.openDirectoryAt(parent, name)
 		if err != nil {
@@ -137,7 +137,7 @@ func (root *workspaceRoot) openDesktopNodeAt(parent nodeHandle, name string, dir
 	return root.openNodeAt(parent, name)
 }
 
-func (root *workspaceRoot) openDesktopNode(parts []string, directory bool) (nodeHandle, nodeStat, error) {
+func (root *filesystemRoot) openDesktopNode(parts []string, directory bool) (nodeHandle, nodeStat, error) {
 	if len(parts) == 0 {
 		handle, err := root.duplicateDesktopRootHandle()
 		if err != nil {
@@ -158,7 +158,7 @@ func (root *workspaceRoot) openDesktopNode(parts []string, directory bool) (node
 	return root.openDesktopNodeAt(parent, name, directory)
 }
 
-func (root *workspaceRoot) openDesktopParent(parts []string, create bool) (nodeHandle, string, error) {
+func (root *filesystemRoot) openDesktopParent(parts []string, create bool) (nodeHandle, string, error) {
 	return root.openParent(parts, create)
 }
 
@@ -197,7 +197,7 @@ func assertDesktopPrivateNode(handle nodeHandle, directory bool) error {
 	return nil
 }
 
-func removeDesktopPrivateFileAt(root *workspaceRoot, parent nodeHandle, name string) (bool, error) {
+func removeDesktopPrivateFileAt(root *filesystemRoot, parent nodeHandle, name string) (bool, error) {
 	handle, stat, err := root.openDesktopNodeAt(parent, name, false)
 	if err != nil {
 		return false, err

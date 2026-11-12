@@ -234,13 +234,13 @@ func TestFilesOperationsUseIdentityBoundOpaqueSegmentsAndRevisions(t *testing.T)
 		Root:                 workspace,
 	})
 	if !hasHelperCode(err, "root-replaced") {
-		t.Fatalf("wrong Workspace root identity was accepted: %v", err)
+		t.Fatalf("wrong task folder root identity was accepted: %v", err)
 	}
 }
 
 func expectedRootIdentity(t *testing.T, workspace string) directoryIdentityResult {
 	t.Helper()
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,7 +300,7 @@ func TestSearchCountsSkippedSymlinksAgainstTheTraversalBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestEveryDescriptorAndListEntryEnforcesTheRootDevice(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(workspace, "target.txt"), []byte("safe"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +434,7 @@ func TestPinnedParentCannotBeRedirectedBySymlinkSwap(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestMutationsSerializeAndReplaceDetectsChangedIdentity(t *testing.T) {
 	if err := os.WriteFile(target, []byte("before"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestPostRenameFsyncFailureIsACommittedWarning(t *testing.T) {
 	if err := os.WriteFile(target, []byte("before"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	root, err := openWorkspaceRoot(workspace, false)
+	root, err := openTaskFolderRoot(workspace, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,7 +25,6 @@ const (
 )
 
 type request struct {
-	Destination               string                   `json:"destination,omitempty"`
 	CaseSensitive             bool                     `json:"caseSensitive,omitempty"`
 	Content                   string                   `json:"content,omitempty"`
 	ExpectedDirectoryRevision string                   `json:"expectedDirectoryRevision,omitempty"`
@@ -45,9 +44,9 @@ type request struct {
 	PathSegmentsBase64        []string                 `json:"pathSegmentsBase64,omitempty"`
 	Query                     string                   `json:"query,omitempty"`
 	ReplaceAll                bool                     `json:"replaceAll,omitempty"`
-	Resume                    bool                     `json:"resume,omitempty"`
-	Root                      string                   `json:"root"`
-	RootPolicy                string                   `json:"rootPolicy"`
+
+	Root       string `json:"root"`
+	RootPolicy string `json:"rootPolicy"`
 }
 
 type responseEnvelope struct {
@@ -110,11 +109,6 @@ type directoryIdentityResult struct {
 	FileID   string `json:"fileId"`
 	Kind     string `json:"kind"`
 	VolumeID string `json:"volumeId"`
-}
-
-type ensureRootResult struct {
-	Created  bool                    `json:"created"`
-	Identity directoryIdentityResult `json:"identity"`
 }
 
 type fileIdentity struct {
@@ -237,21 +231,14 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 	case "isolated-mount":
 		requireMountBoundary = input.Operation != "probe" && !allowNonMountRoot
 	case "managed-local":
-		// The Host and protected local Workspace registry authorize the exact
-		// root. This helper still enforces descriptor-relative traversal,
-		// no-follow semantics, and same-device containment inside that root.
+		// The Host authorizes the task folder; this helper enforces no-follow,
+		// descriptor-relative traversal and same-device containment within it.
 	case "desktop-private":
 		return executeDesktopPrivate(input)
 	default:
 		return nil, userError("invalid-root-policy", "Native filesystem root policy is invalid")
 	}
-	if input.Operation == "ensure-root" {
-		if input.RootPolicy != "managed-local" {
-			return nil, userError("invalid-root-policy", "Only a managed-local authority may create a Workspace root")
-		}
-		return ensureWorkspaceRoot(input.Root)
-	}
-	root, err := openWorkspaceRoot(input.Root, requireMountBoundary)
+	root, err := openTaskFolderRoot(input.Root, requireMountBoundary)
 	if err != nil {
 		return nil, err
 	}
@@ -268,12 +255,8 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 			"containment":    root.containment,
 			"platform":       runtime.GOOS,
 		}, nil
-	case "relocate-directory":
-		return root.relocateDirectory(input)
 	case "directory-identity":
 		return executeDirectoryIdentity(root, input)
-	case "ensure-directory":
-		return executeEnsureDirectory(root, input)
 	case "list":
 		return executeList(root, input)
 	case "read":
@@ -295,41 +278,7 @@ func executeWithRootPolicy(input request, allowNonMountRoot bool) (any, error) {
 	}
 }
 
-func executeEnsureDirectory(root *workspaceRoot, input request) (directoryIdentityResult, error) {
-	parts, _, err := relativeParts(input.Path, false)
-	if err != nil {
-		return directoryIdentityResult{}, err
-	}
-	parent, name, err := root.openParent(parts, true)
-	if err != nil {
-		return directoryIdentityResult{}, err
-	}
-	defer closeNode(parent)
-	if err := lockDirectory(parent); err != nil {
-		return directoryIdentityResult{}, err
-	}
-	defer unlockDirectory(parent)
-	handle, stat, err := root.createDirectoryAt(parent, name)
-	if err != nil && input.Resume && isAlreadyExists(err) {
-		handle, err = root.openDirectoryAt(parent, name)
-		if err == nil {
-			// Derive the resumed directory identity from the handle we will
-			// return, rather than reopening the name and leaving a replacement
-			// race between validation and identity capture.
-			stat, err = statNodeHandle(handle)
-		}
-	}
-	if err != nil {
-		if isAlreadyExists(err) {
-			return directoryIdentityResult{}, userError("already-exists", "Managed Workspace directory already exists")
-		}
-		return directoryIdentityResult{}, err
-	}
-	defer closeNode(handle)
-	return directoryIdentityFromStat(stat), nil
-}
-
-func executeDirectoryIdentity(root *workspaceRoot, input request) (directoryIdentityResult, error) {
+func executeDirectoryIdentity(root *filesystemRoot, input request) (directoryIdentityResult, error) {
 	parts, _, err := relativeParts(input.Path, true)
 	if err != nil {
 		return directoryIdentityResult{}, err
@@ -345,7 +294,7 @@ func executeDirectoryIdentity(root *workspaceRoot, input request) (directoryIden
 	return directoryIdentityFromStat(stat), nil
 }
 
-func executeList(root *workspaceRoot, input request) (listResult, error) {
+func executeList(root *filesystemRoot, input request) (listResult, error) {
 	if input.MaxDepth < 1 || input.MaxDepth > 5 || input.MaxEntries < 1 || input.MaxEntries > 2000 {
 		return listResult{}, userError("invalid-request", "Native filesystem list bounds are invalid")
 	}
@@ -369,7 +318,7 @@ func executeList(root *workspaceRoot, input request) (listResult, error) {
 }
 
 func visitList(
-	root *workspaceRoot,
+	root *filesystemRoot,
 	directoryFD nodeHandle,
 	prefix string,
 	depth int,
@@ -428,7 +377,7 @@ func visitList(
 	return nil
 }
 
-func executeRead(root *workspaceRoot, input request) (readResult, error) {
+func executeRead(root *filesystemRoot, input request) (readResult, error) {
 	parts, display, err := relativeParts(input.Path, false)
 	if err != nil {
 		return readResult{}, err
@@ -449,7 +398,7 @@ func executeRead(root *workspaceRoot, input request) (readResult, error) {
 	}, nil
 }
 
-func executeSearch(root *workspaceRoot, input request) (searchResult, error) {
+func executeSearch(root *filesystemRoot, input request) (searchResult, error) {
 	if input.MaxEntries < 1 || input.MaxEntries > 20000 || input.MaxResults < 1 || input.MaxResults > 500 || input.Query == "" || len(input.Query) > 2000 {
 		return searchResult{}, userError("invalid-request", "Native filesystem search bounds are invalid")
 	}
@@ -487,7 +436,7 @@ type searchState struct {
 	visited       int
 }
 
-func visitSearch(root *workspaceRoot, fd nodeHandle, stat nodeStat, display string, state *searchState) error {
+func visitSearch(root *filesystemRoot, fd nodeHandle, stat nodeStat, display string, state *searchState) error {
 	if state.visited >= state.maxEntries {
 		state.result.Truncated = true
 		return nil
@@ -594,7 +543,7 @@ func scanSearchFile(fd nodeHandle, stat nodeStat, display string, state *searchS
 	return nil
 }
 
-func executeWrite(root *workspaceRoot, input request) (writeResult, error) {
+func executeWrite(root *filesystemRoot, input request) (writeResult, error) {
 	parts, display, err := relativeParts(input.Path, false)
 	if err != nil {
 		return writeResult{}, err
@@ -619,7 +568,7 @@ func executeWrite(root *workspaceRoot, input request) (writeResult, error) {
 	return writeResult{BytesWritten: len(content), Durability: durability, Path: display}, nil
 }
 
-func executeReplace(root *workspaceRoot, input request) (replaceResult, error) {
+func executeReplace(root *filesystemRoot, input request) (replaceResult, error) {
 	if input.OldText == "" {
 		return replaceResult{}, userError("invalid-request", "The replacement source text is empty")
 	}
@@ -679,7 +628,7 @@ func readRegularFile(fd nodeHandle, stat nodeStat) ([]byte, error) {
 	if stat.size > maxFileBytes {
 		return nil, userError("file-too-large", "Text file exceeds the 1 MiB limit")
 	}
-	file, err := duplicateNodeFile(fd, "workspace-file")
+	file, err := duplicateNodeFile(fd, "task-folder-file")
 	if err != nil {
 		return nil, err
 	}
@@ -701,13 +650,13 @@ func readDirectory(fd nodeHandle, maximum int) ([]string, bool, error) {
 	if maximum < 1 || maximum > 20000 {
 		return nil, false, userError("invalid-request", "Native filesystem directory bound is invalid")
 	}
-	file, err := duplicateNodeFile(fd, "workspace-directory")
+	file, err := duplicateNodeFile(fd, "task-folder-directory")
 	if err != nil {
 		return nil, false, err
 	}
 	// Read at most one entry beyond the caller's remaining traversal budget.
 	// This preserves deterministic sorting within the admitted window without
-	// allocating an entire million-inode Workspace directory first.
+	// allocating an entire million-inode task folder directory first.
 	entries, err := file.ReadDir(maximum + 1)
 	_ = file.Close()
 	if err != nil && !errors.Is(err, io.EOF) {
