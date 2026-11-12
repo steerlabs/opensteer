@@ -17,6 +17,7 @@ import {
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import type { FastifyInstance } from "fastify";
+import { unversionedRoute } from "../server/unversioned-route.js";
 import type { HostAuthenticator } from "../identity/auth.js";
 import type { IntegrationDashboardService } from "./integration-dashboard-service.js";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
@@ -361,11 +362,15 @@ export function registerIntegrationPlatformRoutes(
   app: FastifyInstance,
   options: IntegrationPlatformRpcOptions,
 ): void {
-  app.get("/v1/integration-platform/mcp-oauth/client-metadata.json", (_request, reply) =>
-    reply
-      .header("cache-control", "public, max-age=3600")
-      .header("content-type", "application/json")
-      .send(options.mcpOauth.clientMetadataDocument()),
+  // Authorization servers fetch this document while a person signs in.
+  app.get(
+    "/v1/integration-platform/mcp-oauth/client-metadata.json",
+    { config: unversionedRoute },
+    (_request, reply) =>
+      reply
+        .header("cache-control", "public, max-age=3600")
+        .header("content-type", "application/json")
+        .send(options.mcpOauth.clientMetadataDocument()),
   );
 
   registerOAuthCallbackRoute(app, {

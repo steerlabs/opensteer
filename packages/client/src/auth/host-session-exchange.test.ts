@@ -15,6 +15,7 @@ import {
 } from "@opensteer/control-plane-protocol";
 import { sessionExchangePath } from "@opensteer/protocol";
 import {
+  statesApiVersion,
   type HostDiscoveryDocument,
   type HostDiscoveryEnvelope,
 } from "@opensteer/deployment-authority";
@@ -275,6 +276,9 @@ function exchangeFixture(application: NativeOAuthApplication = "desktop") {
     fetch: vi.fn(async (deploymentId, input, init) => {
       const url = String(input);
       requests.push({ deploymentId, init, url });
+      // Like the Host, refuse an unversioned request before reading it.
+      if (!statesApiVersion(Object.fromEntries(new Headers(init.headers)), "personal"))
+        return Response.json({}, { status: 400 });
       if (url.endsWith("/v1/auth/session")) {
         if (probeFailure.current) throw probeFailure.current;
         return new Response(null, { status: probeStatus.current });

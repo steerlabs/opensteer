@@ -1,5 +1,4 @@
 import type { FastifyInstance } from "fastify";
-import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
   DesktopSupervisorInputSchema,
   type DesktopSupervisorOutput,
@@ -97,11 +96,6 @@ export function registerPersonalRemoteExecutor(
         .catch(fail);
     });
     void (async () => {
-      if (
-        new URL(request.url, "http://host.invalid").searchParams.get("apiVersion") !==
-        String(hostApiVersion)
-      )
-        throw new Error("Unsupported supervisor protocol");
       authorize();
       if (closed) return;
       detach = administration.attachExecutor(socket);

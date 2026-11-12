@@ -19,7 +19,7 @@ import { startPersonalRuntime } from "../apps/host/src/runtime/personal-startup.
 import { waitForRealtimeMessage } from "../apps/host/src/agents/vertical-stack.test-support.js";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-it("refuses old Personal epochs before discovery parsing, RPC parsing and realtime dispatch", async () => {
+it("refuses old Personal epochs before discovery parsing, RPC parsing, routes and realtime dispatch", async () => {
   const database = await cloneTestDatabase("host"),
     directory = await mkdtemp(join(tmpdir(), "personal-negotiation-"));
   let runtime: Awaited<ReturnType<typeof startPersonalRuntime>> | undefined,
@@ -56,6 +56,22 @@ it("refuses old Personal epochs before discovery parsing, RPC parsing and realti
         }),
       ).rejects.toMatchObject({ code: "host-too-old" });
     }
+    // Every other route refuses an unversioned caller before authentication;
+    // only routes a browser or another service reaches are declared exempt.
+    const unversioned = (url: string) => runtime!.host.app.inject({ method: "GET", url });
+    expect((await unversioned("/v1/personal-remote-access")).json()).toMatchObject({
+      error: { reason: "unsupported-version" },
+    });
+    for (const url of [
+      "/v1/integration-platform/mcp-oauth/client-metadata.json",
+      "/v1/integration-platform/mcp-oauth/callback?state=x&code=y",
+      "/v1/integrations/oauth/callback/github?state=x&code=y",
+      `/v1/integration-authorizations/${crypto.randomUUID()}/launch?ticket=x`,
+      `/v1/apps/app/light/${"t".repeat(43)}/index.html`,
+    ])
+      expect(JSON.stringify((await unversioned(url)).body), url).not.toContain(
+        "unsupported-version",
+      );
     socket = new WebSocket(
       `${runtime.hostOrigin.origin.replace(/^http/u, "ws")}/v1/realtime?opensteer_api_version=${hostApiVersion}`,
       { headers: { cookie: runtime.sessionCookie, origin: runtime.hostOrigin.origin } },

@@ -14,7 +14,6 @@ import {
   ResumePersonalHostAccountLinkRequestSchema,
   PublishPersonalConnectProjectionRequestSchema,
   hostApi,
-  hostApiVersionHeader,
   type ConfigurePersonalRemoteAccessRequest,
   type PublishPersonalConnectProjectionRequest,
 } from "@opensteer/protocol";
@@ -38,7 +37,7 @@ import {
   type RunnerId,
 } from "@opensteer/core";
 import {
-  hostApiVersion,
+  apiVersionHeaders,
   hostKeyFingerprint,
   isPersonalHost,
 } from "@opensteer/deployment-authority";
@@ -133,15 +132,7 @@ const bootstrapMember = "bootstrap.get";
 const bootstrapDeclaration = hostApi[bootstrapMember];
 type PersonalHostBootstrap = z.output<(typeof bootstrapDeclaration)["success"]>;
 
-/**
- * The supervisor reaches the rpc group directly rather than through the typed
- * client, so it states the protocol epoch itself. The Host it talks to is the
- * one this app ships, but the Host refuses an unnegotiated request from
- * anybody, and being the supervisor is not an exemption.
- */
-const rpcVersionHeader: Readonly<Record<string, string>> = {
-  [hostApiVersionHeader]: String(hostApiVersion),
-};
+const personalVersionHeaders = apiVersionHeaders("personal");
 
 export function personalHostBootstrapUrl(origin: string): URL {
   const url = new URL(`/v1/rpc/${bootstrapMember}`, origin);
@@ -327,7 +318,6 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       true,
       "POST",
       {
-        ...rpcVersionHeader,
         "content-type": "application/json",
         origin: new URL(origin).origin,
       },
@@ -422,7 +412,6 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
       signal,
       true,
       "GET",
-      rpcVersionHeader,
     );
     if (!response.ok) throw await bootstrapRefusal(response);
     let body: unknown;
@@ -468,7 +457,9 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
         cache: "no-store",
         ...(body === undefined ? {} : { body }),
         credentials: credentials ? "include" : "omit",
-        headers: { accept: "application/json", ...headers },
+        // Desktop main reaches its Host without the typed client, so every
+        // request states the epoch here; the Host exempts nobody.
+        headers: { accept: "application/json", ...personalVersionHeaders, ...headers },
         method,
         redirect: "error",
         referrerPolicy: "no-referrer",
@@ -740,6 +731,7 @@ export class NativePersonalRemoteHostControl {
         credentials: input.authorization ? "omit" : "include",
         headers: {
           accept: "application/json",
+          ...personalVersionHeaders,
           ...(input.authorization ? { authorization: input.authorization } : {}),
           origin: input.origin,
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),

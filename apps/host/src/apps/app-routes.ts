@@ -1,6 +1,7 @@
 import type {} from "@fastify/websocket";
 import { Readable } from "node:stream";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
+import { unversionedRoute } from "../server/unversioned-route.js";
 import { appTunnelMaxFrameBytes } from "@opensteer/protocol";
 import { appCorsHeaders } from "./app-proxy.js";
 import { AppIdSchema } from "@opensteer/core";
@@ -35,7 +36,8 @@ export function registerAppRoutes(app: FastifyInstance, apps: AppService): void 
     proxy.addContentTypeParser("*", (_request, payload, done) => done(null, payload));
     proxy.all(
       "/v1/apps/:appId/:theme/:token/*",
-      { logLevel: "silent", bodyLimit: 32 * 1_024 * 1_024 },
+      // An app's own frame loads these documents and resources; its token is the authority.
+      { logLevel: "silent", bodyLimit: 32 * 1_024 * 1_024, config: unversionedRoute },
       async (request, reply) => {
         for (const [name, value] of Object.entries({ ...appFrameHeaders(), ...appCorsHeaders }))
           reply.header(name, value);

@@ -19,7 +19,7 @@ import {
   type AccountDeploymentDirectoryService,
   type AccountHostSessionGrant,
 } from "../connections/account-deployment-directory.js";
-import type { HostBootstrapMethod } from "@opensteer/deployment-authority";
+import { apiVersionHeaders, type HostBootstrapMethod } from "@opensteer/deployment-authority";
 import type { DesktopAccess, ResolvedConnection } from "../connections/connection-resolver.js";
 import { ClientOperationError, unrefTimer } from "../connections/operation-error.js";
 import { HostTransportError } from "../connections/host-transport-error.js";
@@ -338,6 +338,8 @@ export class HostSessionExchange {
         credentials: "include",
         headers: {
           accept: "application/json",
+          // Only Personal Hosts exchange sessions; team Hosts sign people in themselves.
+          ...apiVersionHeaders("personal"),
           origin,
           ...(input.body === undefined ? {} : { "content-type": "application/json" }),
         },

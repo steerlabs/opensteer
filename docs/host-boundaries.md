@@ -96,8 +96,12 @@ before authentication or parsing; discovery advertises kind and its API version.
 comments record each change. Bump it only when an older counterpart would misstate a meaning or
 act unsafely, because a mismatch stops every app on the other epoch. Clients check the raw discovery
 epoch before parsing identity, so an old Host gets an upgrade message, not a parse error; RPC and
-`client.subscribe` refuse a missing or mismatched epoch before dispatch. The epoch and optional
-capabilities live outside the signed Host identity.
+`client.subscribe` refuse a missing or mismatched epoch before dispatch. Every other personal `/v1/`
+route refuses one before authentication, except the few a browser navigation or another service
+reaches, which declare [`unversionedRoute`](../apps/host/src/server/unversioned-route.ts) at the
+route. Display sockets upgraded outside Fastify are not behind this check. Callers outside the typed client state the epoch with `apiVersionHeaders`, and their tests
+check it with `statesApiVersion`, the predicate the Host itself applies. The epoch and optional capabilities live
+outside the signed Host identity.
 
 [Version verification](../packages/deployment-authority/src/verification.test.ts) proves the update
 boundary. Older personal database lineages require Start fresh. Within an epoch:

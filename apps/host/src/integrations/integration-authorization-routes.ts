@@ -17,6 +17,7 @@ import {
   type HostApiServerContext,
 } from "@opensteer/protocol";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import { unversionedRoute } from "../server/unversioned-route.js";
 import { z } from "zod";
 import type { HostAuthenticator } from "../identity/auth.js";
 import {
@@ -121,6 +122,8 @@ export function registerIntegrationAuthorizationRoutes(
 ): void {
   app.get<{ Params: { attemptId: string } }>(
     "/v1/integration-authorizations/:attemptId/launch",
+    // A browser tab opens it; the one-use ticket is its authority.
+    { config: unversionedRoute },
     async (request, reply) => {
       const { attemptId } = AttemptParamsSchema.parse(request.params);
       const { ticket } = LaunchQuerySchema.parse(request.query);
@@ -190,7 +193,8 @@ export function registerOAuthCallbackRoute<Id, Prepared>(
   },
 ): void {
   const label = options.kind === "mcp" ? "MCP" : "Integration";
-  app.get(options.path, async (request, reply) => {
+  // The provider redirects the person's browser here.
+  app.get(options.path, { config: unversionedRoute }, async (request, reply) => {
     options.authenticator.requireCanonicalSurface(request.headers);
     const prepared = options.prepare(request);
     const parameters = new URL(request.url, "https://opensteer.invalid").searchParams;

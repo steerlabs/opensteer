@@ -287,11 +287,8 @@ import {
 import { drainConnectionsWithin } from "./server/connection-drain.js";
 import type { EgressService } from "./server/egress-service.js";
 import { createHostApiHandlers, type CoreCommand } from "./server/host-api-handlers.js";
-import {
-  registerHostApi,
-  requireNegotiatedVersion,
-  carryWebSocketVersion,
-} from "./server/host-api-registration.js";
+import { installPersonalVersionGate, registerHostApi } from "./server/host-api-registration.js";
+import { unversionedRoute } from "./server/unversioned-route.js";
 import { normalizeHostError } from "./server/http-errors.js";
 import { hostInternalRoutePaths } from "./server/internal-routes.js";
 import { requestAbortSignal } from "./server/request-abort-signal.js";
@@ -455,15 +452,7 @@ export async function createHostServer(
     realOrigins: dependencies.appRealOrigins,
   });
   appGateway.installHttp(app);
-  app.addHook("onRequest", async (request) => {
-    carryWebSocketVersion(request, "personal");
-    if (
-      request.url.startsWith("/v1/") &&
-      !request.url.startsWith("/v1/rpc/") &&
-      !request.url.startsWith("/v1/local-bootstrap")
-    )
-      requireNegotiatedVersion(request);
-  });
+  installPersonalVersionGate(app);
   app.addHook("onRequest", async (request) => {
     if (!request.url.startsWith("/v1/rpc/")) await rejectDuplicateCredentialHeaders(request);
   });
@@ -881,7 +870,8 @@ export async function createHostServer(
    * route does not exist on a Host reachable from another machine. */
   if (dependencies.localBootstrap) {
     const localBootstrap = dependencies.localBootstrap.service;
-    app.get("/v1/local-bootstrap", async (request, reply) => {
+    // Same-machine supervisors, the development web server among them, read it before attaching.
+    app.get("/v1/local-bootstrap", { config: unversionedRoute }, async (request, reply) => {
       // A browser can be made to issue a cross-origin GET, so refuse any request
       // that announces an origin other than this Host's own. Same-machine
       // supervisors send this Host's exact Origin.

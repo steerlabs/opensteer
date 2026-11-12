@@ -1,4 +1,4 @@
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import {
   DesktopSupervisorOutputSchema,
   type DesktopSupervisorInput,
@@ -102,7 +102,6 @@ export class DesktopSupervisor {
   #open(runtime: PersonalHostRuntimeRecord): void {
     const url = new URL("/v1/desktop-supervisor", runtime.localOrigin);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("apiVersion", String(hostApiVersion));
     const helloId = crypto.randomUUID();
     const socket = this.#options.network.openWebSocket(
       {
@@ -111,6 +110,7 @@ export class DesktopSupervisor {
         canonicalOrigin: runtime.discovery.canonicalOrigin,
         requestOrigin: runtime.localOrigin,
         authorization: this.#options.authorization(runtime),
+        headers: apiVersionHeaders("personal"),
       },
       {
         open: () =>
