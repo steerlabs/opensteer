@@ -162,7 +162,7 @@ function OpenApp(props: { readonly deploymentId: string; readonly hostClient: Ho
   }, [browserProfileHomes, browserProfiles, browsing, connection, hereId, hostClient, machines]);
   const openTab = useCallback(
     (profile: StartPageProfileChoice) => {
-      const target = newTabTarget({ browserProfileHomes, machines }, profile, hereId);
+      const target = newTabTarget({ browserProfileHomes, machines }, profile.identity, hereId);
       const opening = hostClient.beginBrowserTabOpen(target, {
         idempotencyKey: mutationIdempotencyKey("new-tab"),
       });

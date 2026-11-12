@@ -42,7 +42,9 @@ while the durable descriptor still permits reopening.
 
 A browser device declares abilities, not a device class. The Host places a session on its profile's
 home and admits only what that browser advertises; it never substitutes another home or infers
-abilities from a phone engine name. Host tab open, close, resume and context operations use the
+abilities from a phone engine name. Guest has no home: a person's own open names the device they are
+at when it lends a browser, else the Host chooses. A reply link to an address only the computer's own
+network reaches keeps the Host's choice, where the agent works. Host tab open, close, resume and context operations use the
 ordinary command channel even when the browser does not speak CDP; resume requires `surfaceState`.
 
 Backend negotiation pins one supported backend to an exact session. An advertised negotiation

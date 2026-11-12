@@ -55,6 +55,7 @@ import {
   canRespondToRequests,
   defaultThreadPlacement,
   mutationIdempotencyKey,
+  newTabTarget,
   reviewHostAction,
   sameStableHostSnapshot,
   threadPlacementOptions,
@@ -324,10 +325,6 @@ export function AppShell({
     deploymentId: snapshot.deploymentId,
     userId: snapshot.user?.id ?? null,
   });
-  const openWebLink = useCallback(
-    (address: string) => openWorkspaceWebLink(hostClient, nav, address, location.state),
-    [hostClient, nav, location.state],
-  );
   const { controller: dictation } = useDictation();
   const voice = useVoiceRuntime(hostClient, dictation, () => {
     // Settings and other full pages cover the conversation and any place beside it.
@@ -348,6 +345,7 @@ export function AppShell({
   }, [voice, location.key]);
   const webLinkNavigation = useRef(nav);
   webLinkNavigation.current = nav;
+  const webLinkHere = useRef<string | null>(null);
   const webLinkView = useRef({
     key: location.key,
     revision: 0,
@@ -386,7 +384,12 @@ export function AppShell({
       {
         deploymentId,
         userId,
-        identity: () => lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
+        target: () =>
+          newTabTarget(
+            hostClient.getSnapshot(),
+            lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
+            webLinkHere.current,
+          ),
       },
       () => {
         let pendingKey: string | null = null;
@@ -400,13 +403,7 @@ export function AppShell({
           },
         );
         return (link, acknowledge) =>
-          openDesktopWebLink(
-            link,
-            hostClient,
-            link.request!.identity,
-            select(link.receivedAt),
-            acknowledge,
-          );
+          openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
       },
       (error, actions) => {
         if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
@@ -515,6 +512,12 @@ export function AppShell({
       : (snapshot.environments.find((environment) => environment.id === hostedEnvironmentId)
           ?.runnerId ?? null);
   const thisMachineId = localRunnerId ?? hostingRunnerId;
+  webLinkHere.current = thisMachineId;
+  const openWebLink = useCallback(
+    (address: string) =>
+      openWorkspaceWebLink(hostClient, nav, address, location.state, thisMachineId),
+    [hostClient, nav, location.state, thisMachineId],
+  );
   const localActivationReady =
     hostingRunnerId !== null
       ? personalSetup?.state === "ready" && desktopDeployment?.access === "owner"

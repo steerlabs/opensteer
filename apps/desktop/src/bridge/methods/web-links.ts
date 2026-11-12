@@ -61,6 +61,7 @@ export class WebLinkDeliveryOwner {
           deploymentId: input.deploymentId,
           userId: input.userId,
           identity: input.bind.identity,
+          ...(input.bind.placement ? { placement: input.bind.placement } : {}),
         });
       this.links.acknowledge(input.acknowledgedId ?? input.dismissedId!);
       return null;

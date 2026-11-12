@@ -5,7 +5,12 @@ import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { act } from "react";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type MockInstance } from "vitest";
+import type { MockHostClient } from "@opensteer/client/mock";
+import type {
+  DesktopPersonalTabCommand,
+  DesktopWebLinkDelivery,
+} from "@opensteer/protocol/desktop";
 
 import {
   HostClientRequestError,
@@ -680,6 +685,108 @@ describe("a person's own view of an app on this Mac, in the desktop app", () => 
     await settle(80);
     expect(element(".owner-view__view-only").textContent).toBe("View only");
     expect(document.querySelector(".owner-view__use")).toBeNull();
+  });
+});
+
+describe("a desktop that is its own computer in another Mac's Opensteer", () => {
+  it("opens Guest from a reply's web link, New tab and another app's link on this Mac, not on the hosting Mac", async () => {
+    const deploymentId = "dep_00000000-0000-4000-8000-000000000001";
+    const studio = "rnr_88888888-8888-4888-8888-888888888888";
+    const status = {
+      available: true,
+      computerName: "Studio Mac",
+      deploymentId,
+      mayRunAgents: false,
+      platform: "macos",
+      runAgents: false,
+      runner: {
+        detail: "Running.",
+        enrolled: true,
+        environmentId: null,
+        runnerId: studio,
+        state: "running",
+      },
+      schemaVersion: 4,
+    };
+    let deliver: ((command: DesktopPersonalTabCommand) => void) | null = null;
+    const deliveries: DesktopWebLinkDelivery[] = [];
+    const desktopBridge = {
+      setBadgeCount: vi.fn(async () => undefined),
+      getLocalExecutionStatus: vi.fn(async () => status),
+      onLocalExecutionStatusChanged: () => () => undefined,
+      onPersonalTabCommand: (listener: typeof deliver) => {
+        deliver = listener;
+        return () => {
+          deliver = null;
+        };
+      },
+      webLinkDelivery: vi.fn(async (input: DesktopWebLinkDelivery) => {
+        deliveries.push(input);
+        if (!input.bind) return null;
+        const { id, ...request } = input.bind;
+        return {
+          ...webLink,
+          id,
+          request: { deploymentId: input.deploymentId, userId: input.userId, ...request },
+        };
+      }),
+    } as unknown as NonNullable<Parameters<typeof AppShell>[0]["desktopBridge"]>;
+    const webLink = {
+      type: "open-web-url",
+      id: "ffb4fd5c-8840-45ce-9497-42f387acb291",
+      url: "https://example.net/",
+    } as const;
+    const desktopDeployment = {
+      access: "owner",
+      activeOrigin: "https://mac-mini.example",
+      canonicalOrigin: "https://mac-mini.example",
+      id: deploymentId,
+      kind: "personal",
+      lastUsedAt: null,
+      name: "Mac mini",
+      onThisComputer: false,
+      routes: [],
+    } as unknown as NonNullable<Parameters<typeof AppShell>[0]["desktopDeployment"]>;
+    let open!: MockInstance<MockHostClient["beginBrowserTabOpen"]>;
+    await mount(
+      (source) => {
+        const snapshot = source.getSnapshot();
+        localStorage.setItem(
+          `opensteer.browse-with.v1:${encodeURIComponent(snapshot.deploymentId!)}:${encodeURIComponent(snapshot.user!.id)}`,
+          '{"kind":"guest"}',
+        );
+        open = vi.spyOn(source, "beginBrowserTabOpen");
+        return "/tasks/thr_00000000-0000-4000-8000-000000000002";
+      },
+      { shell: { desktopBridge, desktopDeployment } },
+    );
+    await settle(100);
+    const here = { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: studio } };
+    const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
+      (anchor) => anchor.textContent === "storage mount guide",
+    )!;
+    await click(link);
+    expect(open).toHaveBeenLastCalledWith(
+      here,
+      expect.objectContaining({ url: "https://storage.example/docs/mounts" }),
+    );
+    await click(element('.side-section--tabs .side-head__action[aria-label="New tab"]'));
+    await typeInto(element<HTMLInputElement>(".start-page__input"), "example.com");
+    await pressEnter(element(".start-page__input"));
+    expect(open).toHaveBeenLastCalledWith(
+      here,
+      expect.objectContaining({ url: "https://example.com/" }),
+    );
+    // A link clicked in another app, with Opensteer as the Mac's default browser.
+    await vi.waitFor(() => expect(deliver, "The link receiver never subscribed").not.toBeNull(), {
+      timeout: 1_000,
+    });
+    await act(async () => deliver!({ ...webLink, generation: deliveries[0]!.generation }));
+    await vi.waitFor(
+      () =>
+        expect(open).toHaveBeenLastCalledWith(here, expect.objectContaining({ url: webLink.url })),
+      { timeout: 1_000 },
+    );
   });
 });
 
