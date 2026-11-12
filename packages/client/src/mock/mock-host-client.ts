@@ -6815,10 +6815,7 @@ class MockHostState {
         providerSessionId: createId("providerSession"),
         continuationIdentity: null,
       };
-      this.snapshot = {
-        ...this.snapshot,
-        threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
-      };
+      this.publishThreadExecution(thread);
     }
     const timestamp = this.now().toISOString();
     const run: ActiveMockRun = {
@@ -9850,27 +9847,31 @@ class MockHostState {
       modelSelection: storedModelSelection(input.modelSelection, model),
       updatedAt: this.now().toISOString(),
     };
+    this.publishThreadExecution(updated);
+    return updated;
+  }
+
+  private publishThreadExecution(thread: ThreadSummary): void {
     // The Host records the switch as an event, and its marker is what that
     // event folds into, live or reloaded.
     const recorded = AgentEventSchema.parse({
-      createdAt: updated.updatedAt,
-      data: { thread: mockThread(updated) },
-      environmentId: updated.environmentId,
+      createdAt: thread.updatedAt,
+      data: { thread: mockThread(thread) },
+      environmentId: thread.environmentId,
       eventId: createId("event"),
       runId: null,
       sequence: String(++this.sequence),
-      threadId: updated.id,
+      threadId: thread.id,
       type: "thread.execution-updated",
     });
     this.update({
       ...this.snapshot,
-      threads: this.snapshot.threads.map((item) => (item.id === thread.id ? updated : item)),
+      threads: this.snapshot.threads.map((item) => (item.id === thread.id ? thread : item)),
       transcripts: {
         ...this.snapshot.transcripts,
         [thread.id]: foldTranscriptEvent(this.snapshot.transcripts[thread.id] ?? [], recorded),
       },
     });
-    return updated;
   }
 
   /** The streams a reply is still writing, as the Host's live read reports them. */
