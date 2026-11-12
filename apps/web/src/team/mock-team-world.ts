@@ -445,7 +445,7 @@ export async function seedBusyTeam(
   await markRead(host, dmJordan);
 
   // Threads and agents name their repliers, newest first, as the server keeps them.
-  for (const root of [...host.messages.values()]) {
+  for (const root of host.messages.values()) {
     if (root.threadRootId !== null) continue;
     const replies = [...host.messages.values()].filter((row) => row.threadRootId === root.id);
     if (replies.length === 0) continue;

@@ -575,7 +575,7 @@ function Place(props: {
     );
     if (target.exists) target.delete();
     target.create();
-    target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
+    await target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
     await Sharing.shareAsync(target.uri, { mimeType: file.mediaType, dialogTitle: file.filename });
   };
 

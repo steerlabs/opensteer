@@ -22,7 +22,15 @@ import {
   type AccessibilityActionEvent,
 } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
-import { color, material, controlFontScaleLimit, radius, space, touchTarget } from "../theme.js";
+import {
+  color,
+  controlFontScaleLimit,
+  headerFontScaleLimit,
+  material,
+  radius,
+  space,
+  touchTarget,
+} from "../theme.js";
 import { AppText } from "../ui/primitives.js";
 import { TaskMark } from "../ui/task-mark.js";
 import { useReducedMotion } from "react-native-reanimated";
@@ -213,9 +221,11 @@ export function TaskRowState(
 
 /** The one loud thing a list says: a question only the reader can answer. */
 export function NeedsYouTag(): ReactNode {
+  // It grows only as far as a bar's label: past that it would crowd out the
+  // title, and the amber ask under the title already says it.
   return (
     <View style={styles.tag}>
-      <AppText maxFontSizeMultiplier={controlFontScaleLimit} role="caption" style={styles.tagText}>
+      <AppText maxFontSizeMultiplier={headerFontScaleLimit} role="caption" style={styles.tagText}>
         Needs you
       </AppText>
     </View>
