@@ -9,6 +9,7 @@ import {
   touchTarget,
   type,
 } from "../theme.js";
+import { NativeMenu, type NativeMenuOption } from "../thread/composer-menu.js";
 import { AppText } from "../ui/primitives.js";
 import { Symbol, type SFSymbolName } from "../ui/symbol.js";
 import { TaskMark } from "../ui/task-mark.js";
@@ -45,8 +46,11 @@ export function SearchBody(props: {
   readonly query: string;
   readonly onQuery: (query: string) => void;
   readonly filters: SearchFilters;
-  /** Channel and author open a picker; thread and file toggle. */
-  readonly onFilter: (filter: SearchFilter) => void;
+  /** Thread and file toggle. */
+  readonly onFilter: (filter: Extract<SearchFilter, "thread" | "file">) => void;
+  /** Channel and author are chosen from the team's own channels and people. */
+  readonly channelChoices: readonly NativeMenuOption[];
+  readonly authorChoices: readonly NativeMenuOption[];
   readonly tasks: readonly SearchTaskResult[];
   readonly groups: readonly SearchMessageGroup[];
   readonly searching: boolean;
@@ -60,7 +64,8 @@ export function SearchBody(props: {
     props.query.trim() !== "" &&
     !props.searching &&
     props.tasks.length === 0 &&
-    props.groups.every((group) => group.results.length === 0);
+    // Older pages still to read are never "nothing".
+    props.groups.every((group) => group.results.length === 0 && !group.more);
   return (
     <View style={styles.fill}>
       <View style={styles.top}>
@@ -78,19 +83,19 @@ export function SearchBody(props: {
           keyboardShouldPersistTaps="handled"
           showsHorizontalScrollIndicator={false}
         >
-          <FilterChip
+          <FilterMenu
+            choices={props.channelChoices}
             icon="number"
             label={filters.channel ?? "In"}
             on={filters.channel !== null}
-            onPress={() => props.onFilter("channel")}
-            picker
+            title="Search in"
           />
-          <FilterChip
+          <FilterMenu
+            choices={props.authorChoices}
             icon="person"
             label={filters.author ?? "From"}
             on={filters.author !== null}
-            onPress={() => props.onFilter("author")}
-            picker
+            title="From"
           />
           <FilterChip
             icon="bubble.left"
@@ -142,7 +147,7 @@ export function SearchBody(props: {
           </View>
         )}
         {props.groups.map((group) =>
-          group.results.length === 0 ? null : (
+          group.results.length === 0 && !group.more ? null : (
             <View key={group.team.id} style={styles.group}>
               <View style={styles.groupHead}>
                 <TeamTile size={16} team={group.team} />
@@ -249,6 +254,45 @@ function plainText(markdown: string): string {
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** A picker chip: the platform's own menu of the choices, the one in force checked. */
+function FilterMenu(props: {
+  readonly choices: readonly NativeMenuOption[];
+  readonly icon: SFSymbolName;
+  readonly label: string;
+  readonly on: boolean;
+  readonly title: string;
+}): ReactNode {
+  return (
+    <NativeMenu
+      accessibilityLabel={`${props.title}: ${props.label}`}
+      options={props.choices}
+      title={props.title}
+      triggerStyle={[styles.chip, props.on && styles.chipOn]}
+    >
+      <Symbol
+        name={props.icon}
+        size={12}
+        tint={props.on ? color.ember : color.muted}
+        weight="semibold"
+      />
+      <AppText
+        maxFontSizeMultiplier={controlFontScaleLimit}
+        numberOfLines={1}
+        role="caption"
+        style={props.on ? styles.chipLabelOn : styles.chipLabel}
+      >
+        {props.label}
+      </AppText>
+      <Symbol
+        name="chevron.down"
+        size={10}
+        tint={props.on ? color.ember : color.muted}
+        weight="semibold"
+      />
+    </NativeMenu>
+  );
 }
 
 function FilterChip(props: {

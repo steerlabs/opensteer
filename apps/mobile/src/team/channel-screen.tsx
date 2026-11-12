@@ -22,6 +22,8 @@ interface PlaceBodyProps {
   readonly composer: TeamComposerProps;
   readonly items: readonly TimelineItem[];
   readonly jump: JumpView | null;
+  /** The message a link named, once it has been loaded. */
+  readonly anchorId: string | null;
   readonly typing: string | null;
 }
 
@@ -93,6 +95,7 @@ function PlaceLayout(props: PlaceBodyProps & { readonly children: ReactNode }): 
             clearance={clearance}
             intro={props.children}
             items={props.items}
+            anchorId={props.anchorId}
             jump={props.jump}
             typing={props.typing}
           />

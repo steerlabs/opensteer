@@ -111,7 +111,7 @@ export function drawerSection(input: {
   const dmRows = rows
     .filter((row) => row.channel.kind === "dm" || row.channel.kind === "group_dm")
     .sort((left, right) => compareIds(right.channel.latestMessageId, left.channel.latestMessageId));
-  const dms: DmRowView[] = dmRows.slice(0, 8).map((row) => ({
+  const dms: DmRowView[] = dmRows.map((row) => ({
     id: row.channel.id,
     people: [],
     label: row.channel.name,
@@ -121,7 +121,7 @@ export function drawerSection(input: {
   return {
     team: { id: input.teamId, name: input.name, imageUri: null },
     folded: input.folded,
-    mentionTotal: rows.reduce((total, row) => total + row.mentionCount, 0),
+    mentionTotal: input.sidebar?.totalMentionCount ?? 0,
     unread: rows.some((row) => row.unread && row.notificationLevel !== "muted"),
     state:
       input.state === "update-app"
@@ -135,7 +135,6 @@ export function drawerSection(input: {
               : "offline",
     channels,
     dms,
-    moreDms: Math.max(0, dmRows.length - 8),
   };
 }
 
@@ -386,6 +385,30 @@ function workedSummary(request: TeamAgentRequest): string {
   return `Worked ${minutes}m · ${steps === 1 ? "1 step" : `${steps} steps`}`;
 }
 
+/**
+ * The newest reply by the reader's own agent that is on screen in a thread: the
+ * one whose task reading it reads. A later reply arriving in an open thread is
+ * a new one to read; a reply scrolled out of view is none.
+ */
+export function ownReplyInView(
+  messages: readonly Pick<TeamMessage, "id" | "authorKind" | "authorUserId">[],
+  viewerId: string,
+  rootId: string,
+  visible: ReadonlySet<string>,
+): string | null {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (
+      message.id !== rootId &&
+      message.authorKind === "agent" &&
+      message.authorUserId === viewerId &&
+      visible.has(message.id)
+    )
+      return message.id;
+  }
+  return null;
+}
+
 /** A message this phone sent that the team has not confirmed yet, drawn in place. */
 function pendingView(
   send: PendingTeamSend,
@@ -406,7 +429,12 @@ function pendingView(
     edited: false,
     pinned: false,
     continued: false,
-    send: connected ? { kind: "sending" } : { kind: "queued" },
+    send:
+      send.failure !== null
+        ? { kind: "failed", reason: send.failure }
+        : connected
+          ? { kind: "sending" }
+          : { kind: "queued" },
     thread: null,
     agentRun: null,
   };

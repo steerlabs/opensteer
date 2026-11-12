@@ -51,6 +51,8 @@ const emptySnapshot: TeamSessionSnapshot = {
   presence: {},
   search: null,
   error: null,
+  ended: null,
+  contentGeneration: 0,
 };
 
 /**

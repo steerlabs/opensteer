@@ -31,6 +31,7 @@ import {
 import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileClient, MobileTeamConnection } from "../client/mobile-client.js";
+import type { NotificationPreviews } from "../notifications/notification-preview.js";
 
 /**
  * Everything one team Host is reached through: typed calls, its socket and its
@@ -175,6 +176,7 @@ export class MobileTeams {
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
   readonly #files: PrivateFilesystem;
+  readonly #previews: NotificationPreviews | null;
   readonly #listeners = new Set<() => void>();
   readonly #sessions = new Map<string, TeamSessionClient>();
   readonly #states = new Map<string, { state: TeamState; detail: string | null }>();
@@ -183,6 +185,8 @@ export class MobileTeams {
   readonly #detachSessions = new Map<string, () => void>();
   #memo: z.infer<typeof TeamMemoSchema> | null = null;
   #selected: string | null = null;
+  /** Bumped by every selection, backgrounding and disposal; a slower, older one never wins. */
+  #selection = 0;
   /** The team last opened on each computer: the one kept connected while its drawer shows. */
   readonly #recent = new Map<string, string>();
   #foreground = true;
@@ -196,6 +200,8 @@ export class MobileTeams {
     readonly verify: (origin: string) => Promise<VerifiedHostEndpoint>;
     readonly files: PrivateFilesystem;
     readonly directory: string;
+    /** Where each signed-in team's notification preview key is registered. */
+    readonly previews?: NotificationPreviews | null;
     /** Mock mode's computers and the teams each is in, before any computer has said. */
     readonly seed?: Readonly<Record<string, readonly LinkedTeam[]>>;
   }) {
@@ -204,6 +210,7 @@ export class MobileTeams {
     this.#transport = options.transport;
     this.#verify = options.verify;
     this.#files = options.files;
+    this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
     const persistence = teamFilePersistence(options.files, `${options.directory}/teams`);
     this.registry = new TeamTransportRegistry("mobile", (scope) => {
@@ -224,20 +231,26 @@ export class MobileTeams {
   start(): void {
     if (this.#detachClient !== null) return;
     this.#detachClient = this.#client.subscribe(() => {
+      const shown = this.#snapshot.computerId;
+      // Signed out of a team, here or by its own screen: its session and partition go.
+      for (const teamId of this.#sessions.keys())
+        if (!this.#signedIn(teamId)) void this.#signedOut(teamId);
       this.#publish();
+      // Another computer on screen: its team takes the one socket.
+      if (this.#snapshot.computerId !== shown) void this.select(this.#selected);
       this.#learnLinks();
     });
     void this.#loadMemo().then(() => {
       this.#publish();
       this.#learnLinks();
-      void this.select(null);
+      void this.select(this.#selected);
     });
   }
 
   /** The app went to the background or came back: no socket while nobody looks. */
   foreground(active: boolean): void {
     this.#foreground = active;
-    void this.select(active ? this.#selected : null);
+    void this.select(this.#selected);
   }
 
   /**
@@ -284,6 +297,7 @@ export class MobileTeams {
   }
 
   dispose(): void {
+    this.#selection++;
     this.#detachClient?.();
     this.#detachClient = null;
     for (const detach of this.#detachSessions.values()) detach();
@@ -315,6 +329,19 @@ export class MobileTeams {
     );
   }
 
+  /**
+   * The teams a computer of the reader's is in, as this phone last learnt, each
+   * with the session this phone holds for it (for its badge) if any.
+   */
+  teamsOn(
+    computerId: string,
+  ): readonly { readonly team: LinkedTeam; readonly session: TeamSessionClient | null }[] {
+    return (this.#memo?.computers[computerId] ?? []).map((team) => ({
+      team: { ...team, teamName: this.#names.get(team.teamId) ?? team.teamName },
+      session: this.#sessions.get(team.teamId) ?? null,
+    }));
+  }
+
   /** The computers of the reader's this phone knows to be in a team. */
   computersIn(teamId: string): readonly string[] {
     return Object.entries(this.#memo?.computers ?? {})
@@ -343,7 +370,11 @@ export class MobileTeams {
         }),
       );
     }
-    if (!this.#signedIn(teamId)) await this.#client.signIn(teamId);
+    if (!this.#signedIn(teamId) || this.#states.get(teamId)?.state === "signed-out") {
+      await this.#client.signIn(teamId);
+      this.#states.delete(teamId);
+      this.#publish();
+    }
   }
 
   /**
@@ -353,7 +384,8 @@ export class MobileTeams {
    */
   async session(teamId: string): Promise<TeamSessionClient> {
     const held = this.#sessions.get(teamId);
-    if (held !== undefined) return held;
+    if (held !== undefined && held.getSnapshot().ended === null) return held;
+    if (held !== undefined) this.#ended(teamId, held);
     const connection = this.#connection(teamId);
     if (connection === null) throw new TeamAccessError("This team is no longer on this phone.");
     await this.#loadMemo();
@@ -381,15 +413,26 @@ export class MobileTeams {
       this.#sessions.set(teamId, session);
       this.#detachSessions.set(
         teamId,
-        // Only a name change reaches the team list; rows and badges read the
-        // session themselves, so a typing frame redraws nothing else.
+        // Only a name change or the session ending reaches the team list; rows
+        // and badges read the session themselves, so a typing frame redraws nothing else.
         session.subscribe(() => {
+          if (session.getSnapshot().ended !== null) {
+            this.#ended(teamId, session);
+            return;
+          }
           const name = session.getSnapshot().bootstrap?.teamName;
           if (name === undefined || this.#names.get(teamId) === name) return;
           this.#names.set(teamId, name);
           this.#publish();
         }),
       );
+      // The team seals a push preview only for a key this phone registered with it.
+      this.#previews?.attach({
+        deploymentId: DeploymentIdSchema.parse(teamId),
+        capabilities: connection.capabilities ?? [],
+        current: () => this.#sessions.get(teamId) === session && this.#signedIn(teamId),
+        dispatch: ({ type: _type, ...input }) => session.registerNotificationPreview(input),
+      });
     }
     this.#publish();
     return this.#sessions.get(teamId) ?? session;
@@ -401,6 +444,7 @@ export class MobileTeams {
    * stays current. None while the app is in the background.
    */
   async select(teamId: string | null): Promise<void> {
+    const generation = ++this.#selection;
     const { computerId } = this.#snapshot;
     if (teamId !== null && computerId !== null) this.#recent.set(computerId, teamId);
     const target = this.#foreground ? (teamId ?? this.#ambient()) : null;
@@ -409,14 +453,16 @@ export class MobileTeams {
       await this.registry.select(null);
       return;
     }
+    const current = () => generation === this.#selection;
     try {
       const session = await this.session(target);
       const userId = this.#memo?.users[target];
-      if (userId === undefined) return;
+      if (userId === undefined || !current()) return;
       await this.registry.select({ teamDeploymentId: target, userId });
-      if (session.getSnapshot().bootstrap !== null) this.#setState(target, "live", null);
+      if (current() && session.getSnapshot().bootstrap !== null)
+        this.#setState(target, "live", null);
     } catch (error) {
-      this.#fail(target, error);
+      if (current()) this.#fail(target, error);
     }
   }
 
@@ -602,12 +648,15 @@ export class MobileTeams {
   }
 
   /**
-   * Leaving: the team is told, the link from the reader's Opensteer is cut,
-   * and everything this phone kept for the team — drafts, unsent messages, its
-   * credential and its catalog entry — is removed.
+   * Leaving: the team removes the reader's membership first — it alone decides,
+   * and refuses the last owner — then the link from the reader's Opensteer is
+   * cut and everything this phone kept for the team (drafts, unsent messages,
+   * its preview key, credential and catalog entry) is removed.
    */
   async leave(teamId: string): Promise<void> {
+    await (await this.session(teamId)).leave();
     const personal = this.#client.getSnapshot().selection.hostClient;
+    // A computer that is off keeps a link the team already refuses for a removed member.
     if (personal !== null)
       await new PersonalTeamLinks(personal.rpc).leave(teamId).catch(() => undefined);
     await this.forget(teamId);
@@ -617,10 +666,7 @@ export class MobileTeams {
   async forget(teamId: string): Promise<void> {
     const userId = this.#memo?.users[teamId];
     if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
-    this.#detachSessions.get(teamId)?.();
-    this.#detachSessions.delete(teamId);
-    this.#sessions.delete(teamId);
-    this.#members.delete(teamId);
+    this.#drop(teamId);
     this.#states.delete(teamId);
     if (this.#memo !== null) {
       const { [teamId]: _forgotten, ...users } = this.#memo.users;
@@ -642,6 +688,46 @@ export class MobileTeams {
       if (connection.source.kind === "manual") await this.#client.remove(teamId);
     }
     this.#publish();
+  }
+
+  /**
+   * The team ended this reader's session: they were removed, must sign in
+   * again, or the team's login now names someone else. The session has already
+   * purged its own partition; this phone stops holding it and says why.
+   */
+  #ended(teamId: string, session: TeamSessionClient): void {
+    if (this.#sessions.get(teamId) !== session) return;
+    const ended = session.getSnapshot().ended;
+    this.#drop(teamId);
+    void this.#previews?.clear(DeploymentIdSchema.parse(teamId));
+    if (ended === "viewer-changed") {
+      // Who the reader is gets learnt again, under the new login.
+      void this.#forgetUser(teamId).then(() => this.select(this.#selected));
+      return;
+    }
+    this.#setState(teamId, ended === "removed" ? "removed" : "signed-out", null);
+  }
+
+  /** Signed out of the team on this phone: its drafts and unsent messages go with it. */
+  async #signedOut(teamId: string): Promise<void> {
+    const userId = this.#memo?.users[teamId];
+    this.#drop(teamId);
+    if (userId !== undefined) await this.registry.remove({ teamDeploymentId: teamId, userId });
+    this.#publish();
+  }
+
+  #drop(teamId: string): void {
+    this.#detachSessions.get(teamId)?.();
+    this.#detachSessions.delete(teamId);
+    this.#sessions.delete(teamId);
+    this.#members.delete(teamId);
+  }
+
+  async #forgetUser(teamId: string): Promise<void> {
+    if (this.#memo === null || this.#memo.users[teamId] === undefined) return;
+    const { [teamId]: _forgotten, ...users } = this.#memo.users;
+    this.#memo = { ...this.#memo, users };
+    await this.#saveMemo();
   }
 
   #connection(teamId: string): DeploymentConnection | null {
@@ -776,8 +862,8 @@ export function teamFailure(error: unknown): TeamState {
   if (error instanceof HostVersionMismatchError)
     return error.code === "client-too-old" ? "update-app" : "update-server";
   if (error instanceof HostClientRequestError) {
-    if (error.code === "unauthorized" || error.code === "forbidden" || error.code === "not_found")
-      return "removed";
+    if (error.code === "unauthorized") return "signed-out";
+    if (error.code === "forbidden" || error.code === "not_found") return "removed";
     if (error.code === "version_mismatch" || error.code === "upgrade_required") return "update-app";
   }
   if (error instanceof TeamAccessError) return "removed";

@@ -16,6 +16,7 @@ import { ActivityIndicator, Alert, ScrollView, StyleSheet, View } from "react-na
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
+import type { NativeMenuOption } from "../thread/composer-menu.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
 import {
   AppText,
@@ -41,13 +42,7 @@ import {
 } from "./channel-shelves.js";
 import { LinkRow } from "./settings-rows.js";
 import { useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
-import type {
-  FileRowView,
-  MemberRowView,
-  SearchFilter,
-  ThingView,
-  TopicSummaryView,
-} from "./team-models.js";
+import type { FileRowView, MemberRowView, ThingView, TopicSummaryView } from "./team-models.js";
 import { SearchBody, type SearchFilters } from "./team-search.js";
 import {
   attachmentView,
@@ -816,12 +811,13 @@ export function TeamSearchScreen(
           ...(channelId === null ? {} : { channelId: TeamChannelIdSchema.parse(channelId) }),
           ...(authorId === null ? {} : { authorUserId: UserIdSchema.parse(authorId) }),
           ...(hasFile ? { hasFile: true } : {}),
+          ...(inThreads ? { threadsOnly: true } : {}),
         })
         .catch(() => undefined)
         .finally(() => setSearching(false));
     }, 250);
     return () => clearTimeout(timer);
-  }, [authorId, channelId, hasFile, query, session]);
+  }, [authorId, channelId, hasFile, inThreads, query, session]);
   const viewerId = snapshot.bootstrap?.member.userId ?? "";
   const channelName =
     snapshot.sidebar?.channels.find((row) => row.channel.id === channelId)?.channel.name ?? null;
@@ -831,46 +827,73 @@ export function TeamSearchScreen(
     thread: inThreads,
     file: hasFile,
   };
-  const results = (query.trim() === "" ? [] : (snapshot.search?.results ?? []))
-    .filter((row) => !inThreads || row.message.threadRootId !== null)
-    .map((row) => ({
-      message: messageView(row.message, {
-        viewerId,
-        members: directory,
-        previews: new Map(),
-        previous: null,
-        requests: [],
-        inThread: true,
-      }),
-      where:
-        row.message.threadRootId === null
-          ? `#${row.source.audience.channelName}`
-          : `#${row.source.audience.channelName} thread`,
-      match: query.trim(),
-      raw: row.message,
-    }));
-  const onFilter = (filter: SearchFilter): void => {
+  const results = (query.trim() === "" ? [] : (snapshot.search?.results ?? [])).map((row) => ({
+    message: messageView(row.message, {
+      viewerId,
+      members: directory,
+      previews: new Map(),
+      previous: null,
+      requests: [],
+      inThread: true,
+    }),
+    where:
+      row.message.threadRootId === null
+        ? `#${row.source.audience.channelName}`
+        : `#${row.source.audience.channelName} thread`,
+    match: query.trim(),
+    raw: row.message,
+  }));
+  const onFilter = (filter: "thread" | "file"): void => {
     if (filter === "thread") setInThreads((on) => !on);
-    else if (filter === "file") setHasFile((on) => !on);
-    else if (filter === "channel")
-      Alert.alert("Search in", undefined, [
-        { text: "Every channel", onPress: () => setChannelId(null) },
-        ...(props.route.params.channelId === undefined
-          ? []
-          : [{ text: "This channel", onPress: () => setChannelId(props.route.params.channelId!) }]),
-        { style: "cancel" as const, text: "Cancel" },
-      ]);
-    else
-      Alert.alert("From", undefined, [
-        { text: "Anyone", onPress: () => setAuthorId(null) },
-        { text: "Me", onPress: () => setAuthorId(viewerId) },
-        { style: "cancel" as const, text: "Cancel" },
-      ]);
+    else setHasFile((on) => !on);
   };
-  void members;
+  const channelChoices = useMemo(
+    (): readonly NativeMenuOption[] => [
+      {
+        id: "any",
+        label: "Every channel",
+        selected: channelId === null,
+        onPress: () => setChannelId(null),
+      },
+      ...(snapshot.sidebar?.channels ?? [])
+        .filter((row) => row.channel.archivedAt === null)
+        .map((row) => ({
+          id: row.channel.id,
+          label:
+            row.channel.kind === "dm" || row.channel.kind === "group_dm"
+              ? row.channel.name
+              : `#${row.channel.name}`,
+          selected: row.channel.id === channelId,
+          onPress: () => setChannelId(row.channel.id),
+        }))
+        .sort((left, right) => left.label.localeCompare(right.label)),
+    ],
+    [channelId, snapshot.sidebar?.channels],
+  );
+  const authorChoices = useMemo(
+    (): readonly NativeMenuOption[] => [
+      { id: "any", label: "Anyone", selected: authorId === null, onPress: () => setAuthorId(null) },
+      ...members
+        .filter((member) => member.state === "active")
+        .map((member) => ({
+          id: member.userId,
+          label: member.userId === viewerId ? "Me" : member.displayName,
+          selected: member.userId === authorId,
+          onPress: () => setAuthorId(member.userId),
+        }))
+        .sort(
+          (left, right) =>
+            Number(right.label === "Me") - Number(left.label === "Me") ||
+            left.label.localeCompare(right.label),
+        ),
+    ],
+    [authorId, members, viewerId],
+  );
   return (
     <Screen edgeToEdge>
       <SearchBody
+        authorChoices={authorChoices}
+        channelChoices={channelChoices}
         filters={filters}
         groups={[
           {
@@ -880,7 +903,7 @@ export function TeamSearchScreen(
           },
         ]}
         onFilter={onFilter}
-        onMore={() => undefined}
+        onMore={() => void session?.loadMoreSearch().catch(() => undefined)}
         onOpenMessage={(_team, result) => {
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
           if (raw === undefined) return;

@@ -22,9 +22,10 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, View } from "react-native";
+import { ActivityIndicator, AppState, Pressable, StyleSheet, View } from "react-native";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-context.js";
@@ -37,6 +38,7 @@ import {
   ThreadScreenBody,
   ThreadTitle,
 } from "./channel-screen.js";
+import { sendFromComposer } from "./composer-send.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
@@ -60,6 +62,7 @@ import {
   channelHeader,
   mentionOptions,
   messageView,
+  ownReplyInView,
   timelineItems,
   typingLine,
   type MemberDirectory,
@@ -86,19 +89,28 @@ type Navigation = NativeStackNavigationProp<RootParamList>;
 
 /** A channel or DM. Its tabs are rows in Details on a phone. */
 export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): ReactNode {
-  const { teamId, channelId } = props.route.params;
+  const { teamId, channelId, messageId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
   const view = snapshot.channel?.scope.channelId === channelId ? snapshot.channel : null;
+  const landing = useLanding(session, channelId, messageId ?? null, (reply) =>
+    navigation.replace("TeamThread", {
+      teamId,
+      channelId,
+      rootId: reply.threadRootId!,
+      replyId: reply.id,
+    }),
+  );
   useFocusEffect(
     useCallback(() => {
-      if (session === null) return;
+      // A link's message selects its own place; after that this is any other visit.
+      if (session === null || !landing.settled) return;
       if (session.getSnapshot().channel?.scope.channelId !== channelId)
         session.selectChannel(TeamChannelIdSchema.parse(channelId));
       else if (session.getSnapshot().thread !== null)
         session.selectThread(TeamChannelIdSchema.parse(channelId), null);
-    }, [channelId, session]),
+    }, [channelId, landing.settled, session]),
   );
   const people = useTeamMembers(teamId);
   const memberCount = useChannelMemberCount(session, channelId);
@@ -144,7 +156,14 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
         teamId={teamId}
         view={view}
       >
-        {(place) => <ChannelScreenBody {...place} atStart={!view.hasMore} channel={header} />}
+        {(place) => (
+          <ChannelScreenBody
+            {...place}
+            anchorId={landing.anchorId}
+            atStart={!view.hasMore}
+            channel={header}
+          />
+        )}
       </Place>
     </Screen>
   );
@@ -152,7 +171,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
 
 /** A thread under one message, pushed full screen; Back returns to its channel. */
 export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): ReactNode {
-  const { teamId, channelId, rootId } = props.route.params;
+  const { teamId, channelId, rootId, replyId } = props.route.params;
   const navigation = useNavigation<Navigation>();
   const place = useTeamSession(teamId);
   const { session, snapshot, team } = place;
@@ -160,16 +179,17 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
     snapshot.thread?.scope.kind === "thread" && snapshot.thread.scope.rootId === rootId
       ? snapshot.thread
       : null;
+  const landing = useLanding(session, channelId, replyId ?? null, null);
   useFocusEffect(
     useCallback(() => {
-      if (session === null) return;
+      if (session === null || !landing.settled) return;
       const held = session.getSnapshot().thread;
       if (held?.scope.kind !== "thread" || held.scope.rootId !== rootId)
         session.selectThread(
           TeamChannelIdSchema.parse(channelId),
           TeamMessageIdSchema.parse(rootId),
         );
-    }, [channelId, rootId, session]),
+    }, [channelId, landing.settled, rootId, session]),
   );
   const people = useTeamMembers(teamId);
   const channelName = view?.channel?.name ?? null;
@@ -206,6 +226,7 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
         {(place) => (
           <ThreadScreenBody
             {...place}
+            anchorId={landing.anchorId}
             replyCount={root.replySummary.count}
             root={rootView(root, place.viewerId, people.directory)}
           />
@@ -213,6 +234,45 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
       </Place>
     </Screen>
   );
+}
+
+/**
+ * A link's message, asked of the team once per screen: it is loaded with the
+ * pages around it, and its id comes back to be scrolled to once mounted. A
+ * reply named from a channel moves to its thread instead.
+ */
+function useLanding(
+  session: TeamSessionClient | null,
+  channelId: string,
+  messageId: string | null,
+  /** From a channel: a reply opens its thread. A thread passes null and holds its replies. */
+  onReply: ((reply: TeamMessage) => void) | null,
+): { readonly anchorId: string | null; readonly settled: boolean } {
+  const [landed, setLanded] = useState<{
+    readonly messageId: string;
+    readonly anchorId: string | null;
+  } | null>(null);
+  const asked = useRef<string | null>(null);
+  const reply = useRef(onReply);
+  reply.current = onReply;
+  useEffect(() => {
+    if (session === null || messageId === null || asked.current === messageId) return;
+    asked.current = messageId;
+    void session
+      .landMessage(TeamChannelIdSchema.parse(channelId), TeamMessageIdSchema.parse(messageId))
+      .then(
+        (message) => {
+          if (message?.threadRootId != null && reply.current !== null) reply.current(message);
+          else setLanded({ messageId, anchorId: message?.id ?? null });
+        },
+        // Gone, or no longer the reader's to see: the place opens as it would without it.
+        () => setLanded({ messageId, anchorId: null }),
+      );
+  }, [channelId, messageId, session]);
+  if (messageId === null) return { anchorId: null, settled: true };
+  return landed?.messageId === messageId
+    ? { anchorId: landed.anchorId, settled: true }
+    : { anchorId: null, settled: false };
 }
 
 function rootView(root: TeamMessage, viewerId: string, directory: MemberDirectory): MessageView {
@@ -338,19 +398,37 @@ function Place(props: {
       return () => clearTimeout(timer);
     }, [channelId, following, newest, session]),
   );
-  // Reading your agent's reply in its thread reads its task on your computer.
-  const repliedToMe =
-    rootId !== null &&
-    view.messages.some(
-      (message) => message.authorKind === "agent" && message.authorUserId === viewerId,
-    );
+  // Reading your agent's reply in its thread reads its task on your computer:
+  // that reply, once it is on screen in front, through what it published only.
+  const [visible, setVisible] = useState<ReadonlySet<string>>(() => new Set());
+  const replyInView =
+    rootId === null ? null : ownReplyInView(view.messages, viewerId, rootId, visible);
+  const readStates = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => personal?.subscribe(listener) ?? (() => undefined),
+      [personal],
+    ),
+    useCallback(() => personal?.getSnapshot().threadReadStates ?? null, [personal]),
+  );
+  const readReplies = useRef(new Set<string>());
   useFocusEffect(
     useCallback(() => {
-      if (!repliedToMe || rootId === null || personal === null) return;
-      void readTeamReply(personal, { teamId, channelId, threadRootId: rootId }).catch(
+      if (replyInView === null || rootId === null || personal === null) return;
+      if (readReplies.current.has(replyInView) || AppState.currentState !== "active") return;
+      // False until the publication and the task's read state have reached this
+      // phone; the read state changing is what asks again.
+      void readTeamReply(personal, {
+        teamId,
+        channelId,
+        threadRootId: rootId,
+        replyMessageId: replyInView,
+      }).then(
+        (read) => {
+          if (read) readReplies.current.add(replyInView);
+        },
         () => undefined,
       );
-    }, [channelId, personal, repliedToMe, rootId, teamId]),
+    }, [channelId, personal, readStates, replyInView, rootId, teamId]),
   );
   const arrivedWhileAway = useRef(0);
   const lastNewest = useRef(newest);
@@ -461,17 +539,23 @@ function Place(props: {
         });
         setEditing(null);
       } else {
-        setText("");
-        setStaged([]);
-        void session.setDraft(view.scope, "").catch(() => undefined);
         session.typing(channelId, rootId, false);
-        await session.send({
-          channelId,
-          threadRootId: rootId,
-          bodyMarkdown: body,
-          mentions: mentioned.slice(0, 20),
-          attachmentIds: files as never,
-        });
+        await sendFromComposer(
+          session,
+          view.scope,
+          {
+            channelId,
+            threadRootId: rootId,
+            bodyMarkdown: body,
+            mentions: mentioned.slice(0, 20),
+            attachmentIds: files as never,
+          },
+          () => {
+            // A pending draft save would put the sent words back.
+            if (draftTimer.current !== null) clearTimeout(draftTimer.current);
+            setStaged([]);
+          },
+        );
       }
       setText("");
       // After sending it stays as the reader left it, in a thread; a channel's
@@ -629,7 +713,16 @@ function Place(props: {
             const pending = snapshot.pending.find(
               (row) => row.command.clientMessageId === clientMessageId,
             );
-            if (pending !== undefined && choice === "edit") setText(pending.command.bodyMarkdown);
+            if (pending === undefined) return;
+            const done =
+              choice === "edit"
+                ? session
+                    .editPending(clientMessageId, pending.command.bodyMarkdown)
+                    .then(() => setText(pending.command.bodyMarkdown))
+                : session.discardPending(clientMessageId);
+            void done.catch((error: unknown) =>
+              setFailure(error instanceof Error ? error.message : "That didn't work."),
+            );
           },
           onCardAction: (requestId, action) => {
             if (action === "cancel" || action === "stop")
@@ -640,12 +733,12 @@ function Place(props: {
             else void openTask(requestId, null).catch(() => undefined);
           },
           onOpenCardTask: (requestId) => void openTask(requestId, null).catch(() => undefined),
-          onJump: () => setFollowing(true),
           onLoadOlder: () =>
             void session
               .loadPage(rootId === null ? "channel" : "thread", "before")
               .catch(() => undefined),
           onFollowingChange: setFollowing,
+          onVisibleMessages: setVisible,
         },
         banner,
         composer,

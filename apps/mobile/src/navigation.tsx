@@ -88,6 +88,7 @@ import {
   TeamSettingsScreen,
 } from "./team/team-admin-screens.js";
 import { ConnectOpensteerScreen, JoinTeamScreen } from "./team/team-join-screens.js";
+import { TeamNewChannelScreen, TeamNewMessageScreen } from "./team/team-create-screens.js";
 import { FolderPickerScreen } from "./home/folder-picker-screen.js";
 import { color } from "./theme.js";
 import { AroundScreen } from "./thread/around-sheet.js";
@@ -369,6 +370,8 @@ const RootStack = createNativeStackNavigator({
     TeamGroup: { screen: TeamGroupScreen, options: { title: "Group" } },
     TeamInvites: { screen: TeamInvitesScreen, options: { title: "Invites" } },
     TeamChannels: { screen: TeamChannelsScreen, options: { title: "Channels" } },
+    TeamNewChannel: { screen: TeamNewChannelScreen, options: { title: "New channel" } },
+    TeamNewMessage: { screen: TeamNewMessageScreen, options: { title: "New message" } },
     TeamAudit: { screen: TeamAuditScreen, options: { title: "Audit log" } },
     // Joining from a link, a pasted link or a notification: a sheet over Home.
     JoinTeam: {
@@ -621,6 +624,8 @@ type OpensteerRootParamList = {
   readonly TeamGroup: { readonly teamId: string; readonly groupId: string };
   readonly TeamInvites: { readonly teamId: string };
   readonly TeamChannels: { readonly teamId: string };
+  readonly TeamNewChannel: { readonly teamId: string };
+  readonly TeamNewMessage: { readonly teamId: string };
   readonly TeamAudit: { readonly teamId: string };
   /** A team page link the person opened or pasted, or none for the paste field. */
   readonly JoinTeam: { readonly link?: string | undefined } | undefined;
