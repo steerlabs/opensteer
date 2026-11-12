@@ -105,7 +105,10 @@ describe("private preview lifecycle", () => {
   });
   it("keeps each team's key registered beside whichever personal Opensteer is shown", async () => {
     const f = fixture();
-    const attachment = (deploymentId: DeploymentId, dispatch: (command: unknown) => Promise<void>) => ({
+    const attachment = (
+      deploymentId: DeploymentId,
+      dispatch: (command: unknown) => Promise<void>,
+    ) => ({
       deploymentId,
       capabilities: ["notification-preview-v1" as const],
       current: () => true,

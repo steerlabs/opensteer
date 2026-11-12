@@ -233,7 +233,7 @@ export class MobileTeams {
     this.#detachClient = this.#client.subscribe(() => {
       const shown = this.#snapshot.computerId;
       // Signed out of a team, here or by its own screen: its session and partition go.
-      for (const teamId of [...this.#sessions.keys()])
+      for (const teamId of this.#sessions.keys())
         if (!this.#signedIn(teamId)) void this.#signedOut(teamId);
       this.#publish();
       // Another computer on screen: its team takes the one socket.
