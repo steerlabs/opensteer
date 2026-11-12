@@ -1260,7 +1260,7 @@ interface AgentsWorkSessionOptions {
 }
 
 /** One connection's worth of agent work: harness catalogs, commands, storage. */
-class AgentsWorkSession implements RunnerWorkSession {
+export class AgentsWorkSession implements RunnerWorkSession {
   readonly #fileRequests = new Map<string, AbortController>();
   readonly #appRequests = new Map<string, { appId: string; controller: AbortController }>();
   readonly #options: AgentsWorkSessionOptions;
@@ -1270,16 +1270,12 @@ class AgentsWorkSession implements RunnerWorkSession {
   readonly #catalogResponses = new Set<Promise<void>>();
   readonly #authenticationResponses = new Set<Promise<void>>();
   readonly #modelServerResponses = new Set<Promise<void>>();
+  readonly #commandResponses = new Set<Promise<void>>();
   readonly #invalidatedHarnesses = new Set<HarnessInstanceId>();
   readonly #unsubscribePreparation: () => void;
   /**
-   * Commands and reconciles, one after another in the order the Host sent
-   * them: a Run is admitted against the profile set it follows, and a
-   * reconcile never overtakes a command sent before it. Either can take a
-   * while — replacing a profile waits for its engine to stop, a steer for its
-   * message to land — so nothing else waits behind them: sign-ins,
-   * inspections, discovery and storage reads go on, and so does the reading
-   * of the connection itself.
+   * Admit commands against the profile set they follow. Engine controls keep
+   * their receipts in flight without holding up Stop or revocation.
    */
   readonly #voiceResponses = new Set<Promise<void>>();
   readonly #initialSkills: Promise<void>;
@@ -1350,9 +1346,23 @@ class AgentsWorkSession implements RunnerWorkSession {
       case "host.command": {
         const command = message.command;
         void this.#inOrder(async () => {
-          await this.#options.sink.applyCommand(command, () =>
-            this.#options.agents.runtime.handleCommand(command, this.#options.sink),
-          );
+          const response = this.#options.sink
+            .applyCommand(command, () =>
+              this.#options.agents.runtime.handleCommand(command, this.#options.sink),
+            )
+            .finally(() => this.#commandResponses.delete(response));
+          this.#commandResponses.add(response);
+          if (
+            command.type === "run.steer" ||
+            command.type === "request.resolve" ||
+            command.type === "node.stop"
+          ) {
+            void response.catch((error: unknown) =>
+              this.#options.fail(`Runner command failed: ${safeErrorMessage(error)}`.slice(0, 120)),
+            );
+            return;
+          }
+          await response;
           // Admission alone cannot start execution: this heartbeat requests
           // the first lease grant measured from a moment the Runner chose.
           if (command.type === "run.execute") this.#options.heartbeatNow();
@@ -1410,7 +1420,7 @@ class AgentsWorkSession implements RunnerWorkSession {
     this.#lifetime.abort(new Error("Host connection stopped"));
     await withTimeout(
       Promise.allSettled([
-        this.#ordered,
+        this.#ordered.then(() => Promise.allSettled(this.#commandResponses)),
         this.#initialSkills,
         ...this.#catalogResponses,
         ...this.#authenticationResponses,
@@ -1423,12 +1433,12 @@ class AgentsWorkSession implements RunnerWorkSession {
   }
 
   settled(): boolean {
-    return this.#orderedPending === 0;
+    return this.#orderedPending === 0 && this.#commandResponses.size === 0;
   }
 
-  /** Runs `work` after every command and reconcile the Host sent before it. */
+  /** Orders admission without awaiting engine controls already in flight. */
   #inOrder<T>(work: () => Promise<T>): Promise<T> {
-    if (this.#orderedPending >= maximumQueuedInboundItems) {
+    if (this.#orderedPending + this.#commandResponses.size >= maximumQueuedInboundItems) {
       throw new Error("Runner has too many pending commands");
     }
     this.#orderedPending += 1;
@@ -1883,6 +1893,8 @@ function requiredEnvironmentId(identity: RunnerIdentity) {
 interface BufferedEffectScope {
   bytes: number;
   readonly messages: RunnerOperationalReport[];
+  pendingCommands: number;
+  releasing: boolean;
 }
 
 /**
@@ -1937,10 +1949,16 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
   ): Promise<void> {
     if (this.#closed) throw new Error("Host connection is closed");
     const scope = runnerCommandEffectScope(command);
-    if (scope && this.#scopes.has(scope)) {
-      throw new Error(`Runner command effect scope ${scope} already has an active barrier`);
+    if (scope) {
+      const barrier = this.#scopes.get(scope) ?? {
+        bytes: 0,
+        messages: [],
+        pendingCommands: 0,
+        releasing: false,
+      };
+      barrier.pendingCommands += 1;
+      this.#scopes.set(scope, barrier);
     }
-    if (scope) this.#scopes.set(scope, { bytes: 0, messages: [] });
     try {
       const decision = await apply();
       await this.#delegate.send(
@@ -1965,7 +1983,10 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
                 type: "runner.command-uncertain",
               },
       );
-      if (scope) await this.#release(scope);
+      if (scope) {
+        const barrier = this.#scopes.get(scope);
+        if (barrier && --barrier.pendingCommands === 0) await this.#release(scope);
+      }
     } catch (error) {
       if (scope) this.#discard(scope);
       throw error;
@@ -1982,9 +2003,10 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
 
   async #release(scope: string): Promise<void> {
     const barrier = this.#scopes.get(scope);
-    if (!barrier) return;
+    if (!barrier || barrier.releasing) return;
+    barrier.releasing = true;
     try {
-      for (;;) {
+      while (barrier.pendingCommands === 0) {
         const message = barrier.messages.shift();
         if (!message) break;
         const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -1993,7 +2015,8 @@ export class CausallyOrderedRunnerSink implements RunnerMessageSink {
         await this.#delegate.send(message);
       }
     } finally {
-      this.#discard(scope);
+      barrier.releasing = false;
+      if (barrier.pendingCommands === 0) this.#discard(scope);
     }
   }
 

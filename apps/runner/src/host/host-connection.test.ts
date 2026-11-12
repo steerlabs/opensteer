@@ -41,6 +41,7 @@ import {
 import WebSocket, { WebSocketServer } from "ws";
 import { describe, expect, it, vi } from "vitest";
 import {
+  AgentsWorkSession,
   CausallyOrderedRunnerSink,
   WebSocketMessageSink,
   ReconnectingHostConnection,
@@ -106,7 +107,146 @@ async function connectedSocketPair() {
   }
 }
 
+describe("AgentsWorkSession", () => {
+  it.each(["interrupt", "revoke"] as const)(
+    "%s overtakes an admitted steer but waits for execute admission",
+    async (stop) => {
+      const ids = {
+        environmentId: createId("environment"),
+        runId: createId("run"),
+        threadId: createId("thread"),
+      };
+      const execution = Promise.withResolvers<void>();
+      const steering = Promise.withResolvers<void>();
+      const calls: string[] = [];
+      const messages: RunnerOperationalReport[] = [];
+      const sink = new CausallyOrderedRunnerSink({
+        send: async (message) => void messages.push(message),
+      });
+      const runtime = {
+        observeFolderSkills: () => undefined,
+        subscribeHarnessPreparation: () => () => undefined,
+        handleCommand: async (command: RunnerCommand) => {
+          calls.push(command.type);
+          if (command.type === "run.execute") await execution.promise;
+          if (command.type === "run.steer") await steering.promise;
+          if (command.type === "run.interrupt") {
+            await sink.send(terminalEvent(ids));
+            steering.resolve();
+          }
+          return { status: "accepted" as const };
+        },
+        revokeRuns: () => {
+          calls.push("revoked");
+          steering.resolve();
+        },
+      } as unknown as RunnerRuntime;
+      const fail = vi.fn();
+      const fence: RunnerConnectionFence = {
+        bootId: RunnerBootIdSchema.parse(`rbt_${randomUUID()}`),
+        connectionGeneration: 1,
+        connectionId: RunnerConnectionIdSchema.parse(`rcn_${randomUUID()}`),
+        connectionLeaseId: RunnerConnectionLeaseIdSchema.parse(`rls_${randomUUID()}`),
+        runnerId: createId("runner"),
+      };
+      const work = new AgentsWorkSession({
+        agents: { runtime },
+        appTransport: {
+          controlCaPath: undefined,
+          hostUrl: new URL("http://localhost"),
+          mode: "development",
+        },
+        environmentId: () => ids.environmentId,
+        fail,
+        fence: new RunnerConnectionFenceLedger(),
+        heartbeatNow: () => undefined,
+        signal: new AbortController().signal,
+        sink,
+      });
+      const execute = {
+        type: "run.execute",
+        context: { runId: ids.runId },
+      } as RunnerCommand;
+      const steer = controlCommand("run.steer", ids);
+      const interrupt = controlCommand("run.interrupt", ids);
+      try {
+        await work.handle({ ...fence, type: "host.command", command: execute });
+        await work.handle({ ...fence, type: "host.command", command: steer });
+        await work.handle(
+          stop === "interrupt"
+            ? { ...fence, type: "host.command", command: interrupt }
+            : {
+                ...fence,
+                type: "host.runs.revoked",
+                revocations: [{ reason: "Stopped", runId: ids.runId }],
+              },
+        );
+        expect(calls).toEqual(["run.execute"]);
+        expect(work.settled()).toBe(false);
+        execution.resolve();
+        await vi.waitFor(() =>
+          expect([...calls], `${stop} never overtook the pending steer`).toEqual([
+            "run.execute",
+            "run.steer",
+            stop === "interrupt" ? "run.interrupt" : "revoked",
+          ]),
+        );
+        await vi.waitFor(() => expect(work.settled(), "Command receipts never settled").toBe(true));
+        expect(fail).not.toHaveBeenCalled();
+        if (stop === "interrupt") {
+          const receipt = messages.findIndex(
+            (message) => "commandId" in message && message.commandId === interrupt.commandId,
+          );
+          const event = messages.findIndex((message) => message.type === "runner.event");
+          expect(receipt).toBeGreaterThanOrEqual(0);
+          expect(event).toBeGreaterThan(receipt);
+          expect(messages.at(-1)).toMatchObject({
+            type: "runner.event",
+            event: { runId: ids.runId, type: "run.interrupted" },
+          });
+        }
+      } finally {
+        execution.resolve();
+        steering.resolve();
+        await work.close();
+        sink.close();
+      }
+    },
+  );
+});
+
 describe("CausallyOrderedRunnerSink", () => {
+  it("holds events until both a pending steer and its interrupt have receipts", async () => {
+    const ids = {
+      environmentId: createId("environment"),
+      runId: createId("run"),
+      threadId: createId("thread"),
+    };
+    const messages: RunnerOperationalReport[] = [];
+    const sink = new CausallyOrderedRunnerSink({
+      send: async (message) => void messages.push(message),
+    });
+    const steering = Promise.withResolvers<{ status: "accepted" }>();
+    const steer = sink.applyCommand(controlCommand("run.steer", ids), () => steering.promise);
+    try {
+      await sink.applyCommand(controlCommand("run.interrupt", ids), async () => {
+        await sink.send(terminalEvent(ids));
+        return { status: "accepted" };
+      });
+      expect(messages.map((message) => message.type)).toEqual(["runner.command-accepted"]);
+      steering.resolve({ status: "accepted" });
+      await steer;
+      expect(messages.map((message) => message.type)).toEqual([
+        "runner.command-accepted",
+        "runner.command-accepted",
+        "runner.event",
+      ]);
+    } finally {
+      steering.resolve({ status: "accepted" });
+      await steer;
+      sink.close();
+    }
+  });
   it("reports an uncertain steer without converting it to a refusal", async () => {
     const messages: RunnerOperationalReport[] = [];
     const sink = new CausallyOrderedRunnerSink({
@@ -175,7 +315,7 @@ describe("WebSocketMessageSink", () => {
     ledger.adopt(fence, new Date(Date.now() + 60_000).toISOString());
     const sink = new WebSocketMessageSink(socket, ledger);
     const reply = {
-      appId: "app_test",
+      appId: `app_${randomUUID()}`,
       ok: false,
       error: "Test app failure",
       fence: {
@@ -881,21 +1021,15 @@ describe("runnerWebSocketUrl", () => {
     try {
       await connection.run(abort.signal);
       expect(authorization).toBeUndefined();
-      expect(received).toContainEqual(
-        expect.objectContaining({
-          type: "runner.skills.report",
-          environmentId,
-          scanSequence: 1,
-          result: { status: "complete", skills: [], warnings: [] },
-        }),
-      );
-      const reportIndex = received.findIndex(
-        (message) => (message as { type: string }).type === "runner.skills.report",
-      );
       const commandIndex = received.findIndex(
         (message) => (message as { type: string }).type === "runner.command-rejected",
       );
-      expect(reportIndex).toBeGreaterThan(commandIndex);
+      const catalogIndex = received.findIndex((message) => {
+        const parsed = RunnerToHostMessageSchema.parse(message);
+        return parsed.type === "runner.harness-catalog" && parsed.requestId === "cold-catalog";
+      });
+      expect(commandIndex).toBeGreaterThanOrEqual(0);
+      expect(catalogIndex).toBeGreaterThan(commandIndex);
 
       expect(received[0]).toMatchObject({
         descriptor: {
