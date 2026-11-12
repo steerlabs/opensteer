@@ -623,12 +623,18 @@ export class MobileTeams {
   }
 
   /**
-   * Leaving: the team is told, the link from the reader's Opensteer is cut,
-   * and everything this phone kept for the team — drafts, unsent messages, its
-   * credential and its catalog entry — is removed.
+   * Leaving: the team removes the reader's membership first — it alone decides,
+   * and refuses the last owner — then the link from the reader's Opensteer is
+   * cut and everything this phone kept for the team (drafts, unsent messages,
+   * its preview key, credential and catalog entry) is removed.
    */
   async leave(teamId: string): Promise<void> {
+    const session = await this.session(teamId);
+    const userId = this.#memo?.users[teamId];
+    if (userId === undefined) throw new TeamAccessError("This team is no longer on this phone.");
+    unwrapRpcResult(await session.rpc["commands.dispatch"]({ type: "team.member.remove", userId }));
     const personal = this.#client.getSnapshot().selection.hostClient;
+    // A computer that is off keeps a link the team already refuses for a removed member.
     if (personal !== null)
       await new PersonalTeamLinks(personal.rpc).leave(teamId).catch(() => undefined);
     await this.forget(teamId);

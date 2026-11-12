@@ -1,4 +1,7 @@
-import { DeploymentConnectionSchema, type DeploymentConnection } from "@opensteer/client/connections";
+import {
+  DeploymentConnectionSchema,
+  type DeploymentConnection,
+} from "@opensteer/client/connections";
 import type { MockTeamHost, TeamCacheScope } from "@opensteer/client/team";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
 import type { HostApiClient } from "@opensteer/protocol";
@@ -14,7 +17,7 @@ import {
 } from "../client/mock-mode.js";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
 import { MobileTeams, type TeamTransport } from "./mobile-teams.js";
-import { mockTeamTransport } from "./team-transport.js";
+import { mockTeamReaderId, mockTeamTransport } from "./team-transport.js";
 
 const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
   .filter((row) => row.kind === "team")
@@ -32,7 +35,13 @@ const connections: readonly DeploymentConnection[] = mockDeploymentConnections()
  * The phone's teams over the real registry and mock team Hosts: Acme's first
  * bootstrap waits until the test lets it answer.
  */
-function fixture(options: { readonly previews?: Pick<NotificationPreviews, "attach"> } = {}) {
+function fixture(
+  options: {
+    readonly previews?: Pick<NotificationPreviews, "attach">;
+    /** Answers a team command in place of the mock team Host. */
+    readonly dispatch?: (command: { readonly type: string }) => unknown;
+  } = {},
+) {
   const hosts = new Map<string, MockTeamHost>();
   const mock = mockTeamTransport(hosts);
   let releaseAcme!: () => void;
@@ -41,19 +50,23 @@ function fixture(options: { readonly previews?: Pick<NotificationPreviews, "atta
   });
   const transport = (connection: DeploymentConnection, scope: TeamCacheScope): TeamTransport => {
     const inner = mock(connection, scope);
-    if (connection.authority.document.deploymentId !== mockTeamId) return inner;
+    const acme = connection.authority.document.deploymentId === mockTeamId;
     const rpc = new Proxy(inner.rpc, {
       get: (target, name, receiver) =>
-        name === "team.bootstrap.get"
+        name === "team.bootstrap.get" && acme
           ? async (input: never) => {
               await acmeAnswers;
               return target["team.bootstrap.get"](input);
             }
-          : Reflect.get(target, name, receiver),
+          : name === "commands.dispatch" && options.dispatch !== undefined
+            ? async (input: { readonly type: string }) =>
+                options.dispatch!(input) ?? target["commands.dispatch"](input as never)
+            : Reflect.get(target, name, receiver),
     }) as HostApiClient;
     return { ...inner, rpc };
   };
   const listeners = new Set<() => void>();
+  const signOut = vi.fn(async (_teamId: string) => undefined);
   let snapshot = {
     selection: { deploymentId: mockDeploymentId, hostClient: null },
     teams: connections.map((connection) => ({ connection, signedIn: true })),
@@ -64,7 +77,7 @@ function fixture(options: { readonly previews?: Pick<NotificationPreviews, "atta
       return () => listeners.delete(listener);
     },
     getSnapshot: () => snapshot,
-    signOut: async () => undefined,
+    signOut,
     remove: async () => undefined,
   } as unknown as MobileClient;
   const teams = new MobileTeams({
@@ -84,6 +97,7 @@ function fixture(options: { readonly previews?: Pick<NotificationPreviews, "atta
   return {
     teams,
     hosts,
+    signOut,
     releaseAcme,
     showComputer(deploymentId: string) {
       snapshot = { ...snapshot, selection: { deploymentId, hostClient: null } } as never;
@@ -134,6 +148,33 @@ describe("the one team socket a phone keeps", () => {
     await f.teams.forget(mockTeamId);
     expect(attachment.current()).toBe(false);
     expect(session.getSnapshot().bootstrap).toBeNull();
+    f.teams.dispose();
+  });
+
+  it("leaves through the team itself before forgetting it on this phone", async () => {
+    const sent: { readonly type: string }[] = [];
+    let refuse = true;
+    const f = fixture({
+      dispatch: (command) => {
+        if (command.type !== "team.member.remove") return undefined;
+        sent.push(command);
+        return refuse
+          ? {
+              ok: false,
+              error: { code: "conflict", message: "The last owner cannot leave", retryable: false },
+            }
+          : { ok: true, data: { type: "team.member.remove" } };
+      },
+    });
+    await f.teams.session(mockFamilyTeamId);
+    await expect(f.teams.leave(mockFamilyTeamId)).rejects.toThrow("The last owner cannot leave");
+    expect(f.teams.computersIn(mockFamilyTeamId)).toEqual([mockDeploymentId]);
+    expect(f.signOut).not.toHaveBeenCalled();
+    refuse = false;
+    await f.teams.leave(mockFamilyTeamId);
+    expect(sent.at(-1)).toEqual({ type: "team.member.remove", userId: mockTeamReaderId });
+    expect(f.teams.computersIn(mockFamilyTeamId)).toEqual([]);
+    expect(f.signOut).toHaveBeenCalledWith(mockFamilyTeamId);
     f.teams.dispose();
   });
 });
