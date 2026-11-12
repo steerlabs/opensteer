@@ -19,7 +19,7 @@ function fixture() {
     harnessInstanceId = createId("harnessInstance"),
     machineId = createId("runner"),
     profileId = createId("browserProfile"),
-    grantId = createId("browserProfileGrant");
+    grantId = crypto.randomUUID();
   const connectionId = createIntegrationId("connection");
   const harness = {
     id: harnessInstanceId,

@@ -24,10 +24,10 @@ beforeEach(() => {
 });
 it("reports failure when navigation is not ready", () => {
   vi.mocked(navigationRef.isReady).mockReturnValueOnce(false);
-  expect(show("d", { kind: "chat" })).toBe(false);
-  expect(show(null, { kind: "chat" })).toBe(false);
+  expect(show("d", { kind: "thread", threadId: "t" })).toBe(false);
+  expect(show(null, { kind: "thread", threadId: "t" })).toBe(false);
 });
-it("does not push an already visible task or exact tab and pops to the existing Home root", () => {
+it("does not push an already visible task or exact tab", () => {
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
     key: "task",
     name: "Thread",
@@ -38,7 +38,7 @@ it("does not push an already visible task or exact tab and pops to the existing 
   vi.mocked(navigationRef.getCurrentRoute).mockReturnValue({
     key: "tab",
     name: "WorkspaceBrowser" as const,
-    params: { deploymentId: "d", scope: "workspace", sessionId: "s", tabId: "one" },
+    params: { deploymentId: "d", scope: "tabs", sessionId: "s", tabId: "one" },
   });
   expect(
     show("d", { kind: "place", destination: { kind: "browser", sessionId: "s", tabId: "one" } }),
@@ -49,13 +49,6 @@ it("does not push an already visible task or exact tab and pops to the existing 
   ).toBe(true);
   expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
     expect.objectContaining({ type: "SET_PARAMS", source: "tab" }),
-  );
-  expect(show("d", { kind: "chat" })).toBe(true);
-  expect(navigationRef.dispatch).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      type: "POP_TO",
-      payload: { name: "Home", params: { deploymentId: "d" } },
-    }),
   );
 });
 
@@ -112,7 +105,7 @@ it("pushes the first place from a Thread or a different deployment", () => {
     {
       key: "browser",
       name: "WorkspaceBrowser" as const,
-      params: { deploymentId: "other", scope: "workspace" as const, sessionId: "s", tabId: "A" },
+      params: { deploymentId: "other", scope: "tabs" as const, sessionId: "s", tabId: "A" },
     },
   ]) {
     vi.mocked(navigationRef.getCurrentRoute).mockReturnValue(route);
@@ -131,7 +124,7 @@ it("replaces all destination fields when showing a different kind of place", () 
     name: "WorkspaceBrowser" as const,
     params: {
       deploymentId: "d",
-      scope: "workspace",
+      scope: "tabs",
       sessionId: "s",
       tabId: "A",
       popup: true,
@@ -155,7 +148,7 @@ it("replaces all destination fields when showing a different kind of place", () 
   for (const destination of destinations) {
     expect(show("d", { kind: "place", destination })).toBe(true);
     expect(paramsDestination(browser.params)).toEqual(destination);
-    expect(browser.params.scope).toBe("workspace");
+    expect(browser.params.scope).toBe("tabs");
     expect(browser.params.popup).toBe(false);
     expect(show("d", { kind: "place", destination })).toBe(false);
   }

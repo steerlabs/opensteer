@@ -1,3 +1,4 @@
+import { TeamMessageIdSchema } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { createId, type Thread } from "@opensteer/core";
 import { team_read, team_search, team_reply, sql } from "@opensteer/agent-tools/tools";
@@ -7,7 +8,7 @@ import { teamToolHandlers } from "./team.js";
 const origin = {
   teamId: createId("deployment"),
   channelId: createId("teamChannel"),
-  threadRootId: "1",
+  threadRootId: TeamMessageIdSchema.parse("1"),
 };
 function caller(runId = createId("run")): RunCaller {
   const thread = { id: createId("thread"), teamOrigin: origin } as Thread;
@@ -28,7 +29,7 @@ describe("per-Run team authority", () => {
       secondRequest = createId("teamAgentRequest");
     const source = {
       ...origin,
-      messageId: "1",
+      messageId: TeamMessageIdSchema.parse("1"),
       audience: {
         teamName: "Acme",
         channelName: "support",
@@ -37,7 +38,9 @@ describe("per-Run team authority", () => {
         peopleOnly: false,
       },
     };
-    const posted = vi.fn<TeamToolPort["reply"]>().mockResolvedValue({ messageId: "2", source });
+    const posted = vi
+      .fn<TeamToolPort["reply"]>()
+      .mockResolvedValue({ messageId: TeamMessageIdSchema.parse("2"), source });
     const port = { reply: posted } as unknown as TeamToolPort;
     const requestForRun = vi.fn(async (runId) =>
       runId === first.claims.runId ? firstRequest : secondRequest,
@@ -50,7 +53,7 @@ describe("per-Run team authority", () => {
           input: { bodyMarkdown: "Result", attachmentPaths: [] },
           operationKey: "post",
         }),
-      ).toEqual({ messageId: "2", source });
+      ).toEqual({ messageId: TeamMessageIdSchema.parse("2"), source });
     }
     expect(posted.mock.calls.map(([run]) => run.requestId)).toEqual([firstRequest, secondRequest]);
     expect(requestForRun.mock.calls.map(([id]) => id)).toEqual([

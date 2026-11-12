@@ -409,6 +409,8 @@ function thread(): Thread {
   const threadId = createId("thread");
   return {
     accessMode: "full-access",
+    folder: { computerId: createId("runner"), path: "/agent-home" },
+    teamOrigin: null,
     continuationIdentity: null,
     doneAt: null,
     doneReason: null,

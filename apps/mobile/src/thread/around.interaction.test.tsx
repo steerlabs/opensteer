@@ -200,7 +200,10 @@ vi.mock("../ui/primitives.js", () => ({
 vi.mock("../ui/symbol.js", () => ({
   Symbol: ({ name }: { readonly name: string }) => <i data-symbol={name} />,
 }));
-vi.mock("../ui/chat-orb.js", () => ({ ChatOrb: () => <i data-chat-orb /> }));
+vi.mock("../team/team-marks.js", async (load) => ({
+  ...(await load<typeof import("../team/team-marks.js")>()),
+  AgentOrb: () => <i data-chat-orb />,
+}));
 vi.mock("../ui/task-mark.js", () => ({
   TaskMark: ({ mark }: { readonly mark: { icon: string | null } }) => (
     <i data-task-icon={mark.icon} />
@@ -306,14 +309,15 @@ const header: ThreadHeaderState = {
   color: null,
   connectionLabel: null,
   icon: null,
-  isHome: false,
   isVoice: false,
+  placeKind: null,
+  placeName: null,
   task: null,
   title: "Conversation",
-  workspaceColor: null,
-  workspaceIcon: null,
-  workspaceName: null,
 };
+
+/** The mock task its schedules, pages and delegated tasks are around. */
+const anchorId = "thr_00000000-0000-4000-8000-000000000001";
 
 /** Mounts a conversation's bar and returns its trailing control, as each platform draws it. */
 function bar(client: HostClient, threadId: string) {
@@ -391,7 +395,7 @@ describe("the conversation's bar", () => {
 
   it("summarizes places, tasks and schedules in one glass item, says which place is worked in, and opens Around", async () => {
     const w = await world();
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const places = aroundPlaces(w.snapshot(), home);
     const working = places.filter((place) => place.working).length;
     expect(working).toBeGreaterThan(0);
@@ -425,7 +429,7 @@ describe("the conversation's bar", () => {
 
   it("is not redrawn by a streamed token, only by a change in what is around", async () => {
     const w = await world();
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const { writes } = bar(w.client, home);
     const before = writes();
     for (const text of ["Hel", "Hello", "Hello there"]) {
@@ -482,7 +486,7 @@ describe("the conversation's bar", () => {
   it("adds and removes a places-only control as live places appear and close", async () => {
     const w = await world();
     const original = w.snapshot();
-    const home = original.homeThreadId!;
+    const home = anchorId;
     const live = { ...original, assignments: {}, threadAutomations: {} };
     const empty = { ...live, browserSessions: [], machines: [] };
     w.move(empty);
@@ -497,7 +501,7 @@ describe("the conversation's bar", () => {
 
   it("keeps working on a Host without automations, showing places and tasks only", async () => {
     const w = await world({ automations: "absent" });
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const button = control(bar(w.client, home).android())!;
     expect(button.getAttribute("aria-label")).not.toContain("schedule");
     expect(button.querySelector('[data-symbol="clock"]')).toBeNull();
@@ -508,7 +512,7 @@ describe("the conversation's bar", () => {
 describe("Around this thread", () => {
   it("has a tile for each section with anything in it, and opens on the task that needs the reader", async () => {
     const w = await world();
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const places = aroundPlaces(w.snapshot(), home);
     const automations = w.snapshot().threadAutomations[home]!.length;
     const container = sheet(home);
@@ -524,13 +528,13 @@ describe("Around this thread", () => {
   it("opens on a place an agent works in when nothing needs the reader", async () => {
     const w = await world();
     w.move({ ...w.snapshot(), waitingRequests: [] });
-    expect(chosen(sheet(w.snapshot().homeThreadId!))).toBe("Places");
+    expect(chosen(sheet(anchorId))).toBe("Places");
   });
 
   it("keeps the reader's section as the Host changes, and gives way only when it empties", async () => {
     const w = await world();
     const original = w.snapshot();
-    const home = original.homeThreadId!;
+    const home = anchorId;
     const container = sheet(home);
     // What it opened on stops needing the reader: the sheet stays where it is.
     w.move({ ...w.snapshot(), waitingRequests: [] });
@@ -571,7 +575,7 @@ describe("Around this thread", () => {
 
   it("wraps four tiles two by two at large text sizes rather than squeezing their labels", async () => {
     const w = await world();
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const open = Object.values(w.snapshot().assignments).find(
       ({ parentThreadId }) => parentThreadId === home,
     )!;
@@ -648,7 +652,7 @@ describe("Around this thread", () => {
   it("pauses and resumes a schedule on what the Host confirms, and not while it is asked or offline", async () => {
     const w = await world();
     w.move({ ...w.snapshot(), connection: "connected" });
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const id = w
       .snapshot()
       .threadAutomations[home]!.find(({ name }) => name === "Morning email summary")!.id;
@@ -702,13 +706,13 @@ describe("Around this thread", () => {
 
   it("opens exactly the place or task pressed, working places first", async () => {
     const w = await world();
-    const home = w.snapshot().homeThreadId!;
+    const home = anchorId;
     const places = aroundPlaces(w.snapshot(), home);
     harness.routes = [
       { name: "Home", params: { deploymentId } },
       {
         name: "WorkspaceBrowser",
-        params: { deploymentId, scope: "workspace", sessionId: "page", tabId: "beside" },
+        params: { deploymentId, scope: "tabs", sessionId: "page", tabId: "beside" },
       },
       { name: "ThreadAround", params: { deploymentId, threadId: home } },
     ];

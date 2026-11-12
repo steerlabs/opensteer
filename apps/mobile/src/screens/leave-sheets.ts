@@ -1,4 +1,4 @@
-import { mainWorkspace, type HostClient } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useCallback, useMemo } from "react";
 import { newTaskDraftId, newTaskDraftKey } from "../client/thread-drafts.js";
@@ -7,11 +7,13 @@ import { useMobileClient } from "../ui/mobile-client-context.js";
 
 /** The full screens of a Deployment's stack, as opposed to the sheets over them. */
 const screenRoutes: ReadonlySet<string> = new Set([
+  "AllTasks",
   "Home",
   "NewTask",
-  "Project",
-  "Projects",
   "Tabs",
+  "TeamChannel",
+  "TeamHome",
+  "TeamThread",
   "TaskSearch",
   "Thread",
   "WorkspaceBrowser",
@@ -28,7 +30,7 @@ export function useLeaveSheets(
   hostClient: HostClient | null,
 ): {
   readonly openThread: (threadId: string) => void;
-  /** A new task in Main with `text` already in its composer. */
+  /** A new task in Agent home with `text` already in its composer. */
   readonly openNewTask: (text: string) => Promise<void>;
 } {
   const navigation = useNavigation();
@@ -43,11 +45,6 @@ export function useLeaveSheets(
     (threadId: string) => {
       if (deploymentId === null || hostClient === null) return;
       const destination = { deploymentId, threadId };
-      // Chat is the root under every sheet, and only ever shown there.
-      if (hostClient.getSnapshot().homeThreadId === threadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-        return;
-      }
       if (threadReturn(navigation.getState()?.routes ?? [], destination) === "pop-to") {
         navigation.dispatch(StackActions.popTo("Thread", destination));
         return;
@@ -62,13 +59,13 @@ export function useLeaveSheets(
       if (deploymentId === null || hostClient === null) return;
       const snapshot = hostClient.getSnapshot();
       const userId = snapshot.user?.id;
-      const workspaceId = mainWorkspace(snapshot)?.id;
-      if (userId === undefined || workspaceId === undefined) return;
+      const folder = snapshot.personalSettings?.agentHome;
+      if (userId === undefined || folder === undefined) return;
       const draftId = newTaskDraftId();
-      drafts.placeNewTaskDraft(deploymentId, userId, draftId, workspaceId);
+      drafts.placeNewTaskDraft(deploymentId, userId, draftId, folder);
       await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(draftId), text);
       popSheets();
-      navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId, workspaceId }));
+      navigation.dispatch(StackActions.push("NewTask", { deploymentId, draftId }));
     },
     [deploymentId, drafts, hostClient, navigation, popSheets],
   );

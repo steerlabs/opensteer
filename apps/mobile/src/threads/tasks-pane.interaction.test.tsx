@@ -70,7 +70,7 @@ it("keeps search pagination available without claiming unread pages have no matc
     session: "authenticated",
     tasks: {
       entries: [],
-      window: { ...snapshot.workspaceWindow, hasMore: true, nextBefore: "more" },
+      window: { byteCount: 0, itemCount: 0, totalItems: 1, hasMore: true, nextBefore: "more" },
     },
   });
   const loadMore = vi.spyOn(client, "loadEarlierTasks").mockResolvedValue();
@@ -86,7 +86,6 @@ it("keeps search pagination available without claiming unread pages have no matc
           onOpenTask={() => undefined}
           onSignIn={async () => undefined}
           query="older task"
-          workspaceId={null}
         />,
       ),
     );
@@ -107,7 +106,7 @@ it("keeps search pagination available without claiming unread pages have no matc
 it("moves a task only when a person asks it for something", async () => {
   const client = new MockHostClient({ latencyMs: 0 });
   const base = client.getSnapshot();
-  const template = base.tasks!.entries.find(({ thread }) => thread.role === "work")!;
+  const template = base.tasks!.entries[0]!;
   const a = {
     ...template,
     thread: {
@@ -146,7 +145,6 @@ it("moves a task only when a person asks it for something", async () => {
         deploymentId="test"
         hostClient={client}
         query=""
-        workspaceId={null}
         onOpenTask={() => {}}
         onSignIn={async () => {}}
       />,

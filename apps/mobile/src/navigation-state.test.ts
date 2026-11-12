@@ -109,14 +109,28 @@ describe("mobile root navigation", () => {
   });
 
   it("defers a selection change while modal work is open", () => {
+    // Joining a team from another computer selects that computer under the sheet.
+    for (const activeRouteName of ["Settings", "JoinTeam"])
+      expect(
+        selectionRootTransition({
+          activeRouteName,
+          baseDeploymentId: "dep_one",
+          baseRouteName: "Home",
+          deploymentId: "dep_two",
+        }),
+      ).toBe("defer");
+  });
+
+  it("settles on the joining computer's Home with the team's channel over it", () => {
+    // What the join sheet resets to once it has switched computers.
     expect(
       selectionRootTransition({
-        activeRouteName: "Settings",
-        baseDeploymentId: "dep_one",
+        activeRouteName: "TeamChannel",
+        baseDeploymentId: "dep_two",
         baseRouteName: "Home",
         deploymentId: "dep_two",
       }),
-    ).toBe("defer");
+    ).toBeNull();
   });
 
   it("replaces the root beneath a thread-bound sheet rather than deferring", () => {

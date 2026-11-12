@@ -14,7 +14,7 @@ export function phoneBrowserDescriptor(
     },
     navigationVersion: 1,
     navigationAttributionVersion: 1,
-    workspaceTabRestoreVersion: 1,
+    tabRestoreVersion: 1,
     popupFollowVersion: 1,
     sharedControl: 1,
     targetControl: 1,

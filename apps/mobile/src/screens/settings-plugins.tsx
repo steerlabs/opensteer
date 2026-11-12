@@ -1,4 +1,3 @@
-import { hostDeploymentPolicy } from "@opensteer/client/host";
 import { authorizeAiSharing, useAiSharing } from "../ui/ai-sharing.js";
 import {
   localMcpSecretServers,
@@ -18,11 +17,9 @@ import {
   type PluginAddConsent,
   type PluginCatalogProduct,
   settingsMutationRejected,
-  pluginPlacementAccounts,
   pluginGroups,
   pluginState,
   pluginTargetKey,
-  pluginPlacementLabel,
   pluginAccountRows,
   pluginsPageRows,
   fixDeviceDraftText,
@@ -84,13 +81,9 @@ function Plugins({
   const [serverEntries, setServerEntries] = useState<
     SettingsRpcData<"integration.platform.get">["installations"]
   >([]);
-  const [placementAccounts, setPlacementAccounts] = useState<
-    PluginDetailView["places"][number]["accounts"]
-  >([]);
   const [detailTarget, setDetailTarget] = useState(target);
   useEffect(() => {
     setDetailTarget(target);
-    setPlacementAccounts([]);
   }, [target]);
   const detailRead = useSettingsRead(
     host,
@@ -143,8 +136,6 @@ function Plugins({
   >(null);
   const [addInstalled, setAddInstalled] = useState(false);
   const addConsent = useRef<PluginAddConsent | null>(null);
-  const [addPlaces, setAddPlaces] = useState<string[]>([]);
-  const [addEverywhere, setAddEverywhere] = useState(false);
   const [addingOwn, setAddingOwn] = useState(false);
   const [ownKind, setOwnKind] = useState<"folder" | "mcp">("folder");
   const openAdd = (
@@ -156,10 +147,6 @@ function Plugins({
       const entry = platform.catalog.find((entry) => entry.definition.id === definitionId);
       if (!entry || !isCurrent()) throw new Error("Catalog changed");
       setAddEntry(entry);
-      if (add?.product.id !== product.id) {
-        setAddPlaces([]);
-        setAddEverywhere(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide");
-      }
       addConsent.current = null;
       setAddInstalled(false);
       setAdd({ product, definitionId });
@@ -190,8 +177,7 @@ function Plugins({
   const command = (key: string, value: HostApiCommandInput) =>
     run(key, async () => {
       const intent = JSON.stringify(
-        value.type === "settings.plugin.enabled.set" ||
-          value.type === "settings.plugin.placement.set"
+        value.type === "settings.plugin.enabled.set"
           ? { type: value.type, target: value.target }
           : { ...value, idempotencyKey: "" },
       );
@@ -289,7 +275,7 @@ function Plugins({
     if (directory.error) return [text("catalog-error", directory.error)];
     if (!toAdd) return [text("catalog-loading", "Loading…")];
     const own =
-      host.getSnapshot().user?.instanceRole === "administrator"
+      host.getSnapshot().user !== null
         ? [
             button("add-your-own", "Add your own…", () => {
               setFolder("");
@@ -465,116 +451,23 @@ function Plugins({
     });
     sections.push({
       key: "places",
-      title: "Where it’s on",
+      title: "On for your agent",
       rows: [
-        ...detail.accounts.map((account): NativeSettingsRow => ({
-          key: `access:${account.connectionId}`,
-          kind: "chips",
-          label: `Access for ${account.displayName}`,
-          value:
-            placementAccounts.find((a) => a.connectionId === account.connectionId)?.access ?? "",
-          choices: [
-            { value: "", label: "Choose access" },
-            { value: "read", label: "Read" },
-            { value: "read-write", label: "Read and update" },
-          ],
-          onChange: (access) =>
-            setPlacementAccounts((previous) => [
-              ...previous.filter((a) => a.connectionId !== account.connectionId),
-              ...(access === "read" || access === "read-write"
-                ? [
-                    {
-                      connectionId: account.connectionId,
-                      access: access === "read" ? ("read" as const) : ("read-write" as const),
-                    },
-                  ]
-                : []),
-            ]),
-        })),
-
-        ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
-          ? [
-              {
-                key: "everywhere",
-                kind: "toggle" as const,
-                label: "Everywhere, including new Projects",
-                value: row.placement.personalEverywhere,
-                disabled:
-                  pending !== null ||
-                  !row.permissions.canPlace ||
-                  ((row.target.kind === "service" || row.target.kind === "device-app") &&
-                    !placementAccounts.length &&
-                    !row.placement.personalEverywhere),
-                onChange: (enabled: boolean) =>
-                  command("everywhere", {
-                    type: "settings.plugin.placement.set",
-                    target: row.target,
-                    expectedRevision: row.placement.revision,
-                    mainIncluded: enabled || row.placement.mainIncluded,
-                    projects: detail.places
-                      .filter((place) => place.kind === "project" && (enabled || place.selected))
-                      .map((place) => ({
-                        workspaceId: place.workspaceId,
-                        accounts: pluginPlacementAccounts(
-                          enabled ? [] : place.accounts,
-                          placementAccounts,
-                          row.target.kind === "service" || row.target.kind === "device-app",
-                        ),
-                      })),
-                    personalEverywhere: enabled
-                      ? {
-                          accounts: pluginPlacementAccounts(
-                            [],
-                            placementAccounts,
-                            row.target.kind === "service" || row.target.kind === "device-app",
-                          ),
-                        }
-                      : null,
-                    idempotencyKey: mutationIdempotencyKey("settings-plugin-everywhere"),
-                  }),
-              },
-            ]
-          : []),
-        ...detail.places.map(
-          (place) =>
-            ({
-              key: place.workspaceId,
-              kind: "toggle",
-              label: place.name,
-              value: place.selected,
-              disabled:
-                pending !== null ||
-                !place.canSelect ||
-                !row.permissions.canPlace ||
-                ((row.target.kind === "service" || row.target.kind === "device-app") &&
-                  place.kind === "project" &&
-                  !place.selected &&
-                  !placementAccounts.length),
-              onChange: (selected) =>
-                command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
-                  type: "settings.plugin.placement.set",
-                  target: row.target,
-                  expectedRevision: row.placement.revision,
-                  mainIncluded: place.kind === "main" ? selected : row.placement.mainIncluded,
-                  projects: detail.places
-                    .filter(
-                      (p) =>
-                        p.kind === "project" &&
-                        (p.workspaceId === place.workspaceId ? selected : p.selected),
-                    )
-                    .map((p) => ({
-                      workspaceId: p.workspaceId,
-                      accounts: pluginPlacementAccounts(
-                        p.accounts,
-                        placementAccounts,
-                        row.target.kind === "service" || row.target.kind === "device-app",
-                      ),
-                    })),
-                  personalEverywhere: null,
-                  idempotencyKey: mutationIdempotencyKey("settings-plugin-placement"),
-                }),
-            }) as NativeSettingsRow,
-        ),
+        {
+          key: "enabled",
+          kind: "toggle",
+          label: "On",
+          value: row.placement.enabled,
+          disabled: pending !== null || !row.permissions.canPlace,
+          onChange: (enabled: boolean) =>
+            command(`${row.target.kind}:${pluginTargetKey(row.target)}`, {
+              type: "settings.plugin.enabled.set",
+              target: row.target,
+              expectedRevision: row.placement.revision,
+              enabled,
+              idempotencyKey: mutationIdempotencyKey("settings-plugin-enabled"),
+            }),
+        } as NativeSettingsRow,
       ],
     });
     sections.push({
@@ -644,10 +537,9 @@ function Plugins({
             `${key}:status`,
             pluginState(row).group === "Needs you" || pluginState(row).label === "Waiting"
               ? pluginState(row).label
-              : pluginPlacementLabel(
-                  row,
-                  hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide",
-                ),
+              : row.placement.enabled
+                ? "On"
+                : "Off",
           ),
         );
         if (group !== "Needs you") items.push(toggle(row));
@@ -865,39 +757,6 @@ function Plugins({
                     : [text(method.id, method.label)],
                 ),
               },
-              {
-                key: "places",
-                title: "Where it’s on",
-                rows: [
-                  ...(hostDeploymentPolicy(host.getSnapshot())?.projectConsent === "owner-wide"
-                    ? [
-                        {
-                          key: "everywhere",
-                          kind: "toggle" as const,
-                          label: "Everywhere, including new Projects",
-                          value: addEverywhere,
-                          disabled: addInstalled || pending !== null,
-                          onChange: setAddEverywhere,
-                        },
-                      ]
-                    : []),
-                  ...(!addEverywhere
-                    ? host.getSnapshot().workspaces.map((place) => ({
-                        key: place.id,
-                        kind: "toggle" as const,
-                        label: place.name,
-                        value: addPlaces.includes(place.id),
-                        disabled: addInstalled || pending !== null,
-                        onChange: (selected: boolean) =>
-                          setAddPlaces((places) =>
-                            selected
-                              ? [...places, place.id]
-                              : places.filter((id) => id !== place.id),
-                          ),
-                      }))
-                    : []),
-                ],
-              },
               ...(error
                 ? [{ key: "error", title: "Needs you", rows: [text("error", error)] }]
                 : []),
@@ -940,8 +799,6 @@ function Plugins({
                                 if (isCurrent()) {
                                   addConsent.current = {
                                     target,
-                                    everywhere: addEverywhere,
-                                    places: addPlaces,
                                     access: "read",
                                     idempotencyKey: mutationIdempotencyKey(
                                       "plugin-add-account-placement",

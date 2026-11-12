@@ -82,7 +82,7 @@ vi.mock("../computers/here-device.js", () => ({ useHereDeviceId: () => null }));
 vi.mock("@expo/ui/community/menu", () => ({
   MenuView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
 }));
-vi.mock("../ui/workspace-mark.js", () => ({ WorkspaceDot: () => null }));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ openDeployment: vi.fn() }),
   useMobileState: () => ({
@@ -209,16 +209,9 @@ function host(manage = true, empty = false) {
         computerId: string;
         state: "pending-computer" | "pending-restart";
       }[],
-      browserProfileGrants: [
-        { id: "grant-research", profileId: "bpr_work", workspaceId: "wsp_research" },
-      ],
-      workspaces: [
-        { id: "wsp_research", name: "Research", kind: "project" },
-        { id: "wsp_buyer", name: "Buyer", kind: "project" },
-      ],
       browserTabGroups: [],
-      workspaceTabRestoreVersion: 1,
-      activatingWorkspaceTabs: [],
+      tabRestoreVersion: 1,
+      activatingPersonalTabs: [],
       browserSessions: [],
       browserPlacements: [],
       machines: [{ id: "computer-delete", name: "Studio Mac" }],
@@ -243,9 +236,9 @@ describe("mobile browser profiles", () => {
   it("lists names and access, renames, and confirms before deleting", async () => {
     const { dispatch } = host();
     await render();
-    expect(text()).toContain("Opensteer can use every profile.");
+    expect(text()).toContain("Your agent can use every profile.");
     expect(text().indexOf("Personal")).toBeLessThan(text().indexOf("Work"));
-    await press("Work, Opensteer and Research");
+    await press("Work");
     await press("Browsing history for Work");
     expect(state.navigate).toHaveBeenCalledWith("BrowserHistory", {
       deploymentId: "deployment-a",
@@ -268,7 +261,7 @@ describe("mobile browser profiles", () => {
     );
     expect(state.alert?.title).toBe("Delete “Work”?");
     expect(state.alert?.message).toBe(
-      "Its sign-ins and site data are erased from this Opensteer. Research loses access. This can’t be undone.",
+      "Its sign-ins and site data are erased from this Opensteer. This can’t be undone.",
     );
     await act(async () =>
       state.alert?.buttons.find((entry) => entry.text === "Delete profile")?.onPress?.(),
@@ -301,25 +294,12 @@ describe("mobile browser profiles", () => {
     expect(text()).not.toContain("Deleted profile");
   });
 
-  it("hides Rename and Delete on older Hosts and still manages projects", async () => {
-    const { dispatch } = host(false);
+  it("hides Rename and Delete on older Hosts", async () => {
+    host(false);
     await render();
-    await press("Work, Opensteer and Research");
+    await press("Work");
     expect(text()).not.toContain("Rename");
     expect(text()).not.toContain("Delete");
-    await press("Projects");
-    await press("Research");
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "browser.profileGrant.revoke", grantId: "grant-research" }),
-    );
-    await press("Buyer");
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "browser.profile.grant",
-        profileId: "bpr_work",
-        workspaceId: "wsp_buyer",
-      }),
-    );
   });
 
   it("creates from the empty state and shows mutation failures inline", async () => {

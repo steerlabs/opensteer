@@ -160,10 +160,9 @@ export function Composer(props: {
   /** The line under the bar while this Thread's account is out of plan capacity. */
   readonly usageNotice?: UsageLimitNotice | null;
   readonly user: AuthenticatedUser;
-  /** Chat's composer, which offers the voice button beside the microphone. */
+  /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
-  readonly workspaceId: string | null;
 }): ReactNode {
   const aiSharing = useAiSharing();
   const surface = useMemo(
@@ -251,7 +250,6 @@ export function Composer(props: {
     draftKey: threadId,
     drafts,
     files: { deploymentId, threadId, userId },
-    workspaceId: props.workspaceId,
   });
   const attachmentsReady = staged.items.every((item) => draftAttachmentPart(item) !== null);
 
@@ -268,7 +266,6 @@ export function Composer(props: {
 
   // A Host with quiet-tasks-v1 reopens a Done task when it is written to.
   const done = useHostSelector(hostClient, (snapshot) =>
-    snapshot.sharedTaskDoneAvailable === true &&
     snapshot.threads.find((thread) => thread.id === threadId)?.doneAt != null
       ? snapshot.quietTasksAvailable === true
         ? "reopens"
@@ -694,11 +691,7 @@ export function Composer(props: {
   const hold = useCallback(() => setPresenting(true), []);
   const settle = useCallback(() => setPresenting(false), []);
 
-  const cannotAttach =
-    disabled ||
-    textHidden ||
-    props.workspaceId === null ||
-    staged.items.length >= attachmentMessageMaxCount;
+  const cannotAttach = disabled || textHidden || staged.items.length >= attachmentMessageMaxCount;
   const menuOptions: readonly NativeMenuOption[] = [
     {
       disabled: cannotAttach,

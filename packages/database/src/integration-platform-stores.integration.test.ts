@@ -1,9 +1,7 @@
-import { assertLineageCompatibleReuse } from "./resource-access.js";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import {
-  createId as createStorageFixtureId,
-  EnvironmentIdSchema as StorageFixtureEnvironmentIdSchema,
-} from "@opensteer/core";
+  personalFixtureOwner,
+  createPersonalRunFixturePort,
+} from "./personal-run-fixture.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -12,7 +10,7 @@ import {
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { pauseAfterLock } from "./lock-race.test-support.js";
 
-import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomUUID } from "node:crypto";
 import {
   IntegrationDefinitionSchema,
   createIntegrationId,
@@ -30,16 +28,10 @@ import {
   type RunId,
   type ThreadId,
   HarnessIdSchema,
-  ModelSelectionSchema,
-  ThreadAccessModeSchema,
   createId,
   type RequestId,
 } from "@opensteer/core";
-import {
-  HarnessInstanceCatalogSchema,
-  type PendingAgentEvent,
-  type RunnerDescriptor,
-} from "@opensteer/protocol";
+import { HarnessInstanceCatalogSchema } from "@opensteer/protocol";
 import { CamelCasePlugin, Kysely, PostgresDialect, sql } from "kysely";
 import { Pool } from "pg";
 import type { DatabaseSchema } from "./schema.js";
@@ -53,8 +45,6 @@ import {
   OpensteerStore,
 } from "./index.js";
 import { jsonValue } from "./store-primitives.js";
-import { enrollTestRunner } from "./store.integration.test-support.js";
-import { agentPhoneOwnerAccessMigration } from "./migrations.js";
 import {
   installIntegrationInTransaction,
   revokeComputerConnectionsInTransaction,
@@ -167,6 +157,7 @@ integration.sequential("PostgreSQL integration installation lookups", () => {
       });
       return { database, close: () => database.destroy() };
     });
+    await personalFixtureOwner(database, databaseUrl);
     const installations = new IntegrationInstallStore(database);
 
     return Object.freeze({ database, installations, databaseUrl });
@@ -266,7 +257,7 @@ integration.sequential("PostgreSQL integration installation lookups", () => {
       installations,
       "hosted-mail",
     );
-    const ownerUserId = await new OpensteerStore(database).createUser("OAuth repair owner");
+    const ownerUserId = (await personalFixtureOwner(database, storeFixture.databaseUrl)).userId;
     const application = await new IntegrationStore(database).saveProviderApplication({
       actorUserId: ownerUserId,
       application: {
@@ -548,6 +539,18 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       return { database, close: () => database.destroy() };
     });
     const platform = new IntegrationPlatformStore(database);
+    await personalFixtureOwner(database, databaseUrl);
+    await database
+      .insertInto("personalRemoteAccess")
+      .values({
+        singletonKey: "personal",
+        generation: 1,
+        mode: "private",
+        routeOrigin: "https://personal.test.invalid",
+        updatedAt: new Date(),
+      })
+      .onConflict((c) => c.column("singletonKey").doNothing())
+      .execute();
     const store = new OpensteerStore(database);
     async function stagedRequestRace(
       lock: (
@@ -613,7 +616,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
 
   it("reads one account identity within its owner", async ({ storeFixture }) => {
     const { store, platform, database } = storeFixture;
-    const ownerUserId = await store.createUser("Account owner");
+    const ownerUserId = (await personalFixtureOwner(database, databaseUrl!)).userId;
     const otherOwner = await store.createUser("Other account owner");
     const connectionId = createIntegrationId("connection");
     const credentialId = createId("credential");
@@ -642,9 +645,8 @@ integration.sequential("PostgreSQL integration uninstall", () => {
   it("orders provider tool reconciliation with grant creation without a deadlock", async ({
     storeFixture,
   }) => {
-    const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("Provider race owner");
-    const workspace = await createWorkspace(store, userId, "provider-lock-order");
+    const { platform, database } = storeFixture;
+    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const connectionId = createIntegrationId("connection");
@@ -716,7 +718,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       isDefault: true,
       ownerUserId: userId,
       providerAuthorizations: {},
-      workspaceId: workspace.id,
     });
     void granting.catch(() => undefined);
     let reconciling: Promise<void> | undefined;
@@ -746,7 +747,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         await database
           .selectFrom("integrationGrants")
           .select("id")
-          .where("workspaceId", "=", workspace.id)
+          .where("ownerUserId", "=", userId)
           .execute(),
       ).toHaveLength(1);
       expect(
@@ -768,7 +769,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
     const { store, platform, database } = storeFixture;
     const run = await runningRunFixture(store, "catalog-uninstall");
     const userId = run.userId;
-    const workspace = { id: run.workspaceId };
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     const tool = discoveredTool(createIntegrationId("tool"));
@@ -822,7 +822,6 @@ integration.sequential("PostgreSQL integration uninstall", () => {
         revokedAt: null,
         status: "active",
         updatedAt: new Date(),
-        workspaceId: workspace.id,
       })
       .executeTakeFirstOrThrow();
 
@@ -833,7 +832,7 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       .execute();
     const inventory = await platform.listDiscoveryInventory({
       ownerUserId: userId,
-      workspaceId: workspace.id,
+
       threadId: run.threadId,
       providerAuthorizations: {},
     });
@@ -873,8 +872,8 @@ integration.sequential("PostgreSQL integration uninstall", () => {
   it("removes the accounts of a proposed definition with the installation", async ({
     storeFixture,
   }) => {
-    const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("Proposal owner");
+    const { platform, database } = storeFixture;
+    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     await platform.install({
@@ -961,8 +960,8 @@ integration.sequential("PostgreSQL integration uninstall", () => {
   });
 
   it("removes the MCP account bound to an uninstalled server", async ({ storeFixture }) => {
-    const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("MCP owner");
+    const { platform, database } = storeFixture;
+    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     await platform.install({
@@ -1047,8 +1046,8 @@ integration.sequential("PostgreSQL integration uninstall", () => {
   it("does not mark a refreshed MCP credential as needing attention from a stale failure", async ({
     storeFixture,
   }) => {
-    const { store, platform, database } = storeFixture;
-    const userId = await store.createUser("MCP owner");
+    const { platform, database } = storeFixture;
+    const userId = (await personalFixtureOwner(database, databaseUrl!)).userId;
     const installationId = createIntegrationId("installation");
     const serverId = createIntegrationId("server");
     await platform.install({
@@ -1231,12 +1230,11 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       installationId,
       originatingRunId: run.runId,
       originatingThreadId: run.threadId,
-      originatingWorkspaceId: run.workspaceId,
+
       reason: "Reconnect the chosen account",
       requestedBy: userId,
       requestedConnectionId: connectionId,
       requestedServerId: serverId,
-      targetWorkspaceId: run.workspaceId,
     });
     const context = await platform.getMcpOAuthServer({
       requestId: opened.request.id,
@@ -1334,11 +1332,10 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       installationId,
       originatingRunId: fixture.runId,
       originatingThreadId: fixture.threadId,
-      originatingWorkspaceId: fixture.workspaceId,
+
       reason: "Read the records before the uninstall",
       requestedBy: fixture.userId,
       requestedServerId: serverId,
-      targetWorkspaceId: fixture.workspaceId,
     });
 
     const results = await stagedRequestRace(
@@ -1394,11 +1391,10 @@ integration.sequential("PostgreSQL integration uninstall", () => {
       installationId,
       originatingRunId: fixture.runId,
       originatingThreadId: fixture.threadId,
-      originatingWorkspaceId: fixture.workspaceId,
+
       reason: "Read the records before the uninstall",
       requestedBy: fixture.userId,
       requestedServerId: serverId,
-      targetWorkspaceId: fixture.workspaceId,
     });
 
     const mutation = await platform.uninstall({
@@ -1520,11 +1516,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       if (!(await store.getDeployment())) {
         await store.ensureDeployment({
           canonicalOrigin: "https://computer-apps.test.invalid",
-          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+          deploymentShape: { kind: "personal" },
           hostInstanceId: createId("hostInstance"),
         });
       }
-      const ownerUserId = existingOwnerUserId ?? (await store.createUser(`Owner ${suffix}`));
+      const personal = await personalFixtureOwner(database, databaseUrl);
+      const ownerUserId = existingOwnerUserId ?? personal.userId;
       const runnerId = createId("runner");
       await insertComputerRunner(runnerId, ownerUserId, `Mac ${suffix}`);
       const installationId = createIntegrationId("installation");
@@ -2233,7 +2230,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   it.for(["installation", "connection"] as const)(
     "fences grant creation before rechecking its %s parent",
     async (parent, { storeFixture }) => {
-      const { fixture, setApprovedComputerConnection, definition, store, database, platform } =
+      const { fixture, setApprovedComputerConnection, definition, database, platform } =
         storeFixture;
       const setup = await fixture(`grant-parent-${parent}`);
       const connected = await setApprovedComputerConnection({
@@ -2245,7 +2242,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.tools("read"),
       });
-      const workspace = await createWorkspace(store, setup.ownerUserId, "grant-parent-workspace");
       const held = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const blocker = database.transaction().execute(async (transaction) => {
@@ -2291,7 +2287,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         isDefault: true,
         ownerUserId: setup.ownerUserId,
         providerAuthorizations: {},
-        workspaceId: workspace.id,
       });
       void creating.then(
         () => {
@@ -2328,7 +2323,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           await database
             .selectFrom("integrationGrants")
             .select("id")
-            .where("workspaceId", "=", workspace.id)
+            .where("ownerUserId", "=", setup.ownerUserId)
             .execute(),
         ).toEqual([]);
       } finally {
@@ -2361,7 +2356,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         ownerUserId: setup.ownerUserId,
       }),
     ).resolves.toMatchObject({ connection: { displayName: "Renamed Mac" } });
-    const workspace = await createWorkspace(store, setup.ownerUserId, "computer-grant");
     await platform.createGrant({
       access: "read",
       alias: "Messages",
@@ -2371,7 +2365,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       isDefault: true,
       ownerUserId: setup.ownerUserId,
       providerAuthorizations: {},
-      workspaceId: workspace.id,
     });
     const foreignUserId = await store.createUser("Foreign grant owner");
     await expect(
@@ -2384,7 +2377,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         isDefault: false,
         ownerUserId: foreignUserId,
         providerAuthorizations: {},
-        workspaceId: workspace.id,
       }),
     ).rejects.toMatchObject({ code: "forbidden" });
     const revoked = await store.revokeRunner(setup.runnerId, setup.ownerUserId);
@@ -2497,11 +2489,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
+
         reason: `Need ${access} Messages access`,
         requestedBy: run.userId,
         requestedServerId: setup.serverId,
-        targetWorkspaceId: run.workspaceId,
       });
 
     const read = await request("read", "computer-request-read");
@@ -2600,12 +2591,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
       installationId: setup.installationId,
       originatingRunId: run.runId,
       originatingThreadId: run.threadId,
-      originatingWorkspaceId: run.workspaceId,
+
       reason: "Send from the chosen Mac",
       requestedBy: run.userId,
       requestedConnectionId: own.connection.id,
       requestedServerId: setup.serverId,
-      targetWorkspaceId: run.workspaceId,
     });
     const otherRunnerId = createId("runner");
     await insertComputerRunner(otherRunnerId, run.userId, "Other Mac");
@@ -2674,12 +2664,11 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
+
         reason: "Need Messages send access",
         requestedBy: run.userId,
         ...(requestedConnectionId ? { requestedConnectionId } : {}),
         requestedServerId: setup.serverId,
-        targetWorkspaceId: run.workspaceId,
       });
     const pinnedToFirst = await request("request-pinned-to-first-computer", first.connection.id);
     const pinnedToSecond = await request("request-pinned-to-second-computer", second.connection.id);
@@ -2729,7 +2718,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     async (resource, { storeFixture }) => {
       const { store, fixture, setApprovedComputerConnection, definition, platform, database } =
         storeFixture;
-      const run = await runningRunFixture(store, "fulfillment-order", { kind: "project" });
+      const run = await runningRunFixture(store, "fulfillment-order");
       const setup = await fixture("fulfillment-order", run.userId);
       const connected = await setApprovedComputerConnection({
         access: "read",
@@ -2749,7 +2738,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         isDefault: true,
         ownerUserId: run.userId,
         providerAuthorizations: {},
-        workspaceId: run.workspaceId,
       });
       const opened = await platform.requests.createIntegrationAccessRequest({
         access: "read",
@@ -2757,11 +2745,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
+
         reason: "Test atomic fulfillment",
         requestedBy: run.userId,
         requestedServerId: setup.serverId,
-        targetWorkspaceId: run.workspaceId,
       });
       const barrier = pauseAfterLock(database, (node) => node.includes(resource));
       const peer = barrier.database.transaction().execute(async (transaction) => {
@@ -2817,8 +2804,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   );
 
   it("locks revoked computer Grants before materialized Tools", async ({ storeFixture }) => {
-    const { fixture, setApprovedComputerConnection, definition, store, platform, database } =
-      storeFixture;
+    const { fixture, setApprovedComputerConnection, definition, platform, database } = storeFixture;
     const setup = await fixture("grant-tool-order");
     const connected = await setApprovedComputerConnection({
       access: "read",
@@ -2829,7 +2815,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: setup.runnerId,
       tools: setup.tools("read"),
     });
-    const workspace = await createWorkspace(store, setup.ownerUserId, "grant-tool-order");
     const grant = await platform.createGrant({
       access: "read",
       alias: "Messages",
@@ -2839,7 +2824,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       isDefault: true,
       ownerUserId: setup.ownerUserId,
       providerAuthorizations: {},
-      workspaceId: workspace.id,
     });
     const barrier = pauseAfterLock(database, (node) => /"name":"integration_?grants"/iu.test(node));
     const peer = barrier.database.transaction().execute(async (transaction) => {
@@ -2885,179 +2869,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       barrier.release();
       await Promise.allSettled([peer, removal]);
     }
-  });
-
-  it("validates computer fulfillment authority atomically for Main and project Workspaces", async ({
-    storeFixture,
-  }) => {
-    const {
-      database,
-      store,
-      fixture,
-      setApprovedComputerConnection,
-      definition,
-      insertComputerRunner,
-      platform,
-    } = storeFixture;
-    const run = await runningRunFixture(store, "computer-request-authority");
-    const setup = await fixture("request-authority", run.userId);
-    const project = await createTestWorkspace(store, {
-      backing: {
-        generation: 1,
-        kind: "local-directory",
-        bindingId: createStorageFixtureId("workspaceBinding"),
-        ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-          "env_00000000-0000-4000-8000-000000000001",
-        ),
-        storageAuthorityId: createStorageFixtureId("storageAuthority"),
-      },
-
-      createdBy: run.userId,
-      idempotencyKey: "computer-request-authority-project",
-      kind: "project",
-      name: "Computer request authority specialist",
-      status: "ready",
-    });
-    const own = await setApprovedComputerConnection({
-      access: "read",
-      actorUserId: run.userId,
-      createIfMissing: true,
-      definitionId: definition.id,
-      requestId: "computer-request-authority-own",
-      runnerId: setup.runnerId,
-      tools: setup.tools("read"),
-    });
-    const foreignUserId = await store.createUser("Foreign computer owner");
-    const foreignRunnerId = createId("runner");
-    await insertComputerRunner(foreignRunnerId, foreignUserId, "Foreign Mac");
-    const foreign = await setApprovedComputerConnection({
-      access: "read",
-      actorUserId: foreignUserId,
-      createIfMissing: true,
-      definitionId: definition.id,
-      requestId: "computer-request-authority-foreign",
-      runnerId: foreignRunnerId,
-      tools: setup.tools("read"),
-    });
-    const revokedRunnerId = createId("runner");
-    await insertComputerRunner(revokedRunnerId, run.userId, "Revoked Mac");
-    const revoked = await setApprovedComputerConnection({
-      access: "read",
-      actorUserId: run.userId,
-      createIfMissing: true,
-      definitionId: definition.id,
-      requestId: "computer-request-authority-revoked",
-      runnerId: revokedRunnerId,
-      tools: setup.tools("read"),
-    });
-    await platform.revokeComputerConnection({
-      connectionId: revoked.connection.id,
-      ownerUserId: run.userId,
-      requestId: "computer-request-authority-revoke",
-    });
-
-    const cases = [
-      { connectionId: own.connection.id, expected: "fulfilled" as const, name: "own" },
-      { connectionId: foreign.connection.id, expected: "forbidden" as const, name: "foreign" },
-      {
-        connectionId: createIntegrationId("connection"),
-        expected: "forbidden" as const,
-        name: "nonexistent",
-      },
-      {
-        connectionId: revoked.connection.id,
-        expected: "forbidden" as const,
-        name: "revoked",
-      },
-    ];
-    for (const target of [run.workspaceId, project.id]) {
-      for (const candidate of cases) {
-        const opened = await platform.requests.createIntegrationAccessRequest({
-          access: "read",
-          callId: `computer-request-${candidate.name}-${target}`,
-          installationId: setup.installationId,
-          originatingRunId: run.runId,
-          originatingThreadId: run.threadId,
-          originatingWorkspaceId: run.workspaceId,
-          reason: `Use ${candidate.name} Messages`,
-          requestedBy: run.userId,
-          requestedServerId: setup.serverId,
-          targetWorkspaceId: target,
-        });
-        const response =
-          target === run.workspaceId
-            ? {
-                kind: "external" as const,
-                value: { connectionId: candidate.connectionId, decision: "fulfilled" as const },
-              }
-            : {
-                kind: "external" as const,
-                value: {
-                  access: "read" as const,
-                  alias: "Messages",
-                  connectionId: candidate.connectionId,
-                  decision: "fulfilled" as const,
-                  isDefault: true,
-                },
-              };
-        const resolution = platform.requests.resolveIntegrationAccessRequest({
-          providerAuthorizations: {},
-          requestId: opened.request.id,
-          resolvedBy: run.userId,
-          response,
-        });
-        if (candidate.expected === "fulfilled") {
-          await expect(resolution).resolves.toMatchObject({ request: { status: "fulfilled" } });
-        } else {
-          await expect(resolution).rejects.toMatchObject({ code: "forbidden" });
-          await expect(platform.requests.get(opened.request.id)).resolves.toMatchObject({
-            response: null,
-            status: "pending",
-          });
-          expect(
-            await database
-              .selectFrom("requestContinuations")
-              .selectAll()
-              .where("requestId", "=", opened.request.id)
-              .execute(),
-          ).toEqual([]);
-        }
-      }
-    }
-
-    const write = await platform.requests.createIntegrationAccessRequest({
-      access: "read-write",
-      callId: "computer-request-read-only-ceiling",
-      installationId: setup.installationId,
-      originatingRunId: run.runId,
-      originatingThreadId: run.threadId,
-      originatingWorkspaceId: run.workspaceId,
-      reason: "Send with Messages",
-      requestedBy: run.userId,
-      requestedServerId: setup.serverId,
-      targetWorkspaceId: project.id,
-    });
-    await expect(
-      platform.requests.resolveIntegrationAccessRequest({
-        providerAuthorizations: {},
-        requestId: write.request.id,
-        resolvedBy: run.userId,
-        response: {
-          kind: "external",
-          value: {
-            access: "read-write",
-            alias: "Messages",
-            connectionId: own.connection.id,
-            decision: "fulfilled",
-            isDefault: true,
-          },
-        },
-      }),
-    ).rejects.toMatchObject({ code: "forbidden" });
-    await expect(platform.requests.get(write.request.id)).resolves.toMatchObject({
-      response: null,
-      status: "pending",
-    });
   });
 
   it("removes a live computer connection with its installation", async ({ storeFixture }) => {
@@ -3440,8 +3251,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       installationId: setup.installationId,
       originatingRunId: run.runId,
       originatingThreadId: run.threadId,
-      originatingWorkspaceId: run.workspaceId,
-      targetWorkspaceId: run.workspaceId,
+
       requestedBy: run.userId,
       requestedConnectionId: source.connection.id,
       requestedServerId: setup.serverId,
@@ -3451,6 +3261,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     const channels = new ChannelStore(database);
     const sender = { allowedExternalUserIds: [], mode: "anyone" };
     const connectionInput: Parameters<ChannelStore["createConnection"]>[0] = {
+      folder: run.folder,
       accessPolicy: {
         channels: { conversationIds: [], scope: "all", sender },
         directMessages: sender,
@@ -3478,7 +3289,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         scopeId: null,
         threadId: null,
       },
-      workspaceId: run.workspaceId,
     };
     const configured = await channels.createConnection(connectionInput);
     await channels.setRuntimeConnectionHealth({
@@ -3567,7 +3377,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
           linkByDirectMessage: "DM",
           linkCode: (code) => code,
           noRoute: "No route",
-          notAMember: "Not a member",
         },
         availableEngines: [
           { environmentId: placementEnvironmentId, driverKinds: [placementHarness.driverKind] },
@@ -3657,8 +3466,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         installationId: setup.installationId,
         originatingRunId: run.runId,
         originatingThreadId: run.threadId,
-        originatingWorkspaceId: run.workspaceId,
-        targetWorkspaceId: run.workspaceId,
+
         requestedBy: run.userId,
         requestedConnectionId: source.connection.id,
         requestedServerId: setup.serverId,
@@ -3668,6 +3476,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       const channels = new ChannelStore(database);
       const sender = { allowedExternalUserIds: [], mode: "anyone" };
       const connectionInput: Parameters<ChannelStore["createConnection"]>[0] = {
+        folder: run.folder,
         accessPolicy: {
           channels: { conversationIds: [], scope: "all", sender },
           directMessages: sender,
@@ -3695,7 +3504,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
           scopeId: null,
           threadId: null,
         },
-        workspaceId: run.workspaceId,
       };
       const configured = await channels.createConnection(connectionInput);
       await channels.setRuntimeConnectionHealth({
@@ -3760,9 +3568,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
             .execute();
         } else {
           await transaction
-            .selectFrom("workspaces")
-            .select("id")
-            .where("id", "=", run.workspaceId)
+            .selectFrom("personalSettings")
+            .select("ownerId")
+            .where("ownerId", "=", run.userId)
             .forUpdate()
             .execute();
         }
@@ -3779,7 +3587,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
             linkByDirectMessage: "Send a DM",
             linkCode: (code: string) => code,
             noRoute: "No route",
-            notAMember: "Not a member",
           },
           availableEngines: [
             { environmentId: run.environmentId, driverKinds: [HarnessIdSchema.parse("native")] },
@@ -3813,6 +3620,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
               })
             : arrival === "binding-first"
               ? channels.createBinding({
+                  folder: run.folder,
                   accessPolicy: connectionInput.accessPolicy,
                   accountId: configured.account.id,
                   createdBy: run.userId,
@@ -3823,7 +3631,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
                     scopeId: null,
                     threadId: null,
                   },
-                  workspaceId: run.workspaceId,
                 })
               : adopt();
       void first.catch(() => undefined);
@@ -4193,159 +4000,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
   });
 
-  it("keeps Main inheritance below a read-only connection ceiling", async ({ storeFixture }) => {
-    const { store, fixture, setApprovedComputerConnection, definition, platform } = storeFixture;
-    const run = await runningRunFixture(store, "main-ceiling");
-    const setup = await fixture("main-ceiling", run.userId);
-    const connected = await setApprovedComputerConnection({
-      access: "read",
-      actorUserId: setup.ownerUserId,
-      createIfMissing: true,
-      definitionId: definition.id,
-      requestId: "computer-main-connect",
-      runnerId: setup.runnerId,
-      tools: setup.tools("read"),
-    });
-    const callable = await platform.listCallableTools({
-      ownerUserId: setup.ownerUserId,
-      providerAuthorizations: {},
-      threadId: run.threadId,
-      workspaceId: run.workspaceId,
-    });
-    expect(callable.map(({ tool }) => tool.name)).toEqual(["query_messages"]);
-    expect(callable[0]?.grant).toMatchObject({
-      access: "read",
-      connectionId: connected.connection.id,
-      source: "main-inherited",
-    });
-    const inventory = await platform.listDiscoveryInventory({
-      ownerUserId: setup.ownerUserId,
-      providerAuthorizations: {},
-      threadId: run.threadId,
-      workspaceId: run.workspaceId,
-    });
-    expect(inventory[0]?.accounts).toContainEqual(
-      expect.objectContaining({
-        access: "read",
-        connectionId: connected.connection.id,
-      }),
-    );
-  });
-
-  it("inherits Main only when the lineage root has consent", async ({ storeFixture }) => {
-    const {
-      store,
-      fixture,
-      setApprovedComputerConnection,
-      definition,
-      insertLineageThread,
-      platform,
-    } = storeFixture;
-    const run = await runningRunFixture(store, "main-lineage");
-    const setup = await fixture("main-lineage", run.userId);
-    await setApprovedComputerConnection({
-      access: "read",
-      actorUserId: setup.ownerUserId,
-      createIfMissing: true,
-      definitionId: definition.id,
-      requestId: "main-lineage-connect",
-      runnerId: setup.runnerId,
-      tools: setup.tools("read"),
-    });
-    // A channel route runs as its creator without being them, so its root
-    // Thread withholds Main inheritance even in their own Main, and whatever it
-    // delegates inherits that lineage.
-    const channelRoot = await insertLineageThread(run.threadId, null);
-    const channelChild = await insertLineageThread(run.threadId, channelRoot);
-    const homeChild = await insertLineageThread(run.threadId, run.threadId);
-    const callable = async (threadId: ThreadId) =>
-      (
-        await platform.listCallableTools({
-          ownerUserId: run.userId,
-          providerAuthorizations: {},
-          threadId,
-          workspaceId: run.workspaceId,
-        })
-      ).map(({ grant, tool }) => [tool.name, "source" in grant ? grant.source : "grant"]);
-    const accounts = async (threadId: ThreadId) =>
-      (
-        await platform.listDiscoveryInventory({
-          ownerUserId: run.userId,
-          providerAuthorizations: {},
-          threadId,
-          workspaceId: run.workspaceId,
-        })
-      ).flatMap(({ accounts }) => accounts);
-
-    await expect(callable(run.threadId)).resolves.toEqual([["query_messages", "main-inherited"]]);
-    await expect(callable(homeChild)).resolves.toEqual([["query_messages", "main-inherited"]]);
-    await expect(callable(channelRoot)).resolves.toEqual([]);
-    await expect(callable(channelChild)).resolves.toEqual([]);
-    await expect(accounts(run.threadId)).resolves.not.toEqual([]);
-    await expect(accounts(channelRoot)).resolves.toEqual([]);
-    await expect(accounts(channelChild)).resolves.toEqual([]);
-    const { database } = storeFixture;
-    const browserRunnerId = createId("runner");
-    await enrollTestRunner(store, {
-      allowedModules: ["browser"],
-      createdBy: run.userId,
-      environmentId: createId("environment"),
-      modules: { browser: { runtimeId: "browser", wireVersion: 2 } },
-      name: "Owner's browser computer",
-      runnerId: browserRunnerId,
-      runnerKind: "local",
-      tokenSuffix: browserRunnerId,
-    });
-    const profile = await store.createBrowserProfile({
-      homeRunnerId: browserRunnerId,
-      name: "Owner",
-      idempotencyKey: "access-owner-profile",
-      ownerId: run.userId,
-    });
-    // The same guard resolves direct Thread callers and Run-backed browser callers.
-    await expect(
-      store.resolveResourceAccess({
-        ownerUserId: run.userId,
-        workspaceId: run.workspaceId,
-        threadId: channelRoot,
-      }),
-    ).resolves.toMatchObject({ access: null, inheritsMain: false });
-    await expect(
-      store.resolveResourceAccess({
-        ownerUserId: run.userId,
-        workspaceId: run.workspaceId,
-        threadId: homeChild,
-      }),
-    ).resolves.toMatchObject({ access: "read-write", inheritsMain: true });
-    await expect(
-      store.listActiveBrowserProfileGrantsForWorkspace(
-        run.workspaceId,
-        run.userId,
-        `run:${run.runId}`,
-      ),
-    ).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ profileId: profile.id, access: "read-write" }),
-      ]),
-    );
-    await expect(
-      store.listActiveBrowserProfileGrantsForWorkspace(
-        run.workspaceId,
-        run.userId,
-        `thread:${channelRoot}`,
-      ),
-    ).resolves.toEqual([]);
-    await expect(assertLineageCompatibleReuse(database, channelRoot, homeChild)).rejects.toThrow(
-      "Start a new task instead",
-    );
-    await expect(assertLineageCompatibleReuse(database, channelChild, homeChild)).rejects.toThrow(
-      "Start a new task instead",
-    );
-    await expect(
-      assertLineageCompatibleReuse(database, homeChild, channelChild),
-    ).resolves.toBeUndefined();
-  });
-
   // Computer use is the one definition whose connections name an app, so these
   // exercise the third component of a computer connection's identity.
 
@@ -4364,9 +4018,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         guiDigest,
         database,
       } = storeFixture;
-      const run = await runningRunFixture(store, `covered-order-${policy}`, {
-        kind: "project",
-      });
+      const run = await runningRunFixture(store, `covered-order-${policy}`);
       const setup = await guiFixture(`covered-order-${policy}`, run.userId);
       const connected = await approveApp({
         access: "read",
@@ -4377,7 +4029,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         tools: setup.gui.tools("read"),
       });
       if (policy === "automatic") await allowAutomatic(setup);
-      const otherWorkspace = await createWorkspace(store, run.userId, "covered-order-other");
       const errors: { code: unknown; message: string }[] = [];
       const racing = new Kysely<DatabaseSchema>({
         dialect: new PostgresDialect({
@@ -4430,7 +4081,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         isDefault: true,
         ownerUserId: run.userId,
         providerAuthorizations: {},
-        workspaceId: otherWorkspace.id,
       });
       void granting.catch(() => undefined);
       let asking: ReturnType<IntegrationPlatformStore["requestComputerAppAccess"]> | undefined;
@@ -4465,7 +4115,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
           threadId: run.threadId,
           threadTitle: null,
           tools: setup.gui.tools("read"),
-          workspaceId: run.workspaceId,
         });
         void asking.catch(() => undefined);
         // Discovery does not contend with the held server lock. Observe the
@@ -4498,7 +4147,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           await database
             .selectFrom("integrationGrants")
             .select("id")
-            .where("workspaceId", "=", otherWorkspace.id)
+            .where("ownerUserId", "=", run.userId)
             .execute(),
         ).toHaveLength(1);
       } finally {
@@ -4937,7 +4586,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     storeFixture,
   }) => {
     const { store, guiFixture, guiInput, notes, platform, allowAutomatic, database } = storeFixture;
-    const run = await runningRunFixture(store, "automatic-grant", { kind: "project" });
+    const run = await runningRunFixture(store, "automatic-grant");
     const setup = await guiFixture("automatic-grant", run.userId);
     const input = {
       ...guiInput({
@@ -4948,15 +4597,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      workspaceId: run.workspaceId,
     };
     await expect(platform.approveComputerAppAutomatically(input)).rejects.toMatchObject({
       code: "forbidden",
     });
     await allowAutomatic(setup);
-    await expect(
-      platform.approveComputerAppAutomatically({ ...input, workspaceId: createId("workspace") }),
-    ).rejects.toMatchObject({ code: "not_found" });
+    await expect(platform.approveComputerAppAutomatically({ ...input })).rejects.toMatchObject({
+      code: "not_found",
+    });
     expect(
       await database
         .selectFrom("integrationConnections")
@@ -4971,7 +4619,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     });
     expect(approved.grants).toEqual([
       expect.objectContaining({
-        workspaceId: run.workspaceId,
         connectionId: approved.connection.id,
         access: "read",
       }),
@@ -5000,7 +4647,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   }) => {
     const { store, guiFixture, approveApp, notes, database, allowAutomatic, platform, guiInput } =
       storeFixture;
-    const run = await runningRunFixture(store, "automatic-existing", { kind: "project" });
+    const run = await runningRunFixture(store, "automatic-existing");
     const setup = await guiFixture("automatic-existing", run.userId);
     const signed = await approveApp({
       access: "read-write",
@@ -5026,16 +4673,13 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      workspaceId: run.workspaceId,
     });
     expect(granted.connection.computer).toMatchObject({
       access: "read-write",
       policyRevision: null,
     });
     expect(granted.sessionReset).toBeNull();
-    expect(granted.grants).toEqual([
-      expect.objectContaining({ access: "read", workspaceId: run.workspaceId }),
-    ]);
+    expect(granted.grants).toEqual([expect.objectContaining({ access: "read" })]);
     expect(
       await database
         .selectFrom("integrationTools")
@@ -5061,7 +4705,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiDefinition,
       approveApp,
     } = storeFixture;
-    const run = await runningRunFixture(store, "blocked-automatic", { kind: "project" });
+    const run = await runningRunFixture(store, "blocked-automatic");
     const setup = await guiFixture("blocked-automatic", run.userId);
     await allowAutomatic(setup);
     const input = {
@@ -5073,7 +4717,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read-write"),
       }),
-      workspaceId: run.workspaceId,
     };
     const approved = await platform.approveComputerAppAutomatically(input);
     await platform.blockComputerApp({
@@ -5169,7 +4812,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiInput,
       database,
     } = storeFixture;
-    const run = await runningRunFixture(store, "automatic-pending", { kind: "project" });
+    const run = await runningRunFixture(store, "automatic-pending");
     const setup = await guiFixture("automatic-pending", run.userId);
     const pending = await askOnMac({
       access: "read",
@@ -5182,14 +4825,12 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ownerUserId: run.userId,
       runnerId: setup.runnerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     });
     expect((await platform.listComputerAppSetupRequests(run.userId))[0]).toMatchObject({
       kind: "app",
       reason: "Read the meeting notes.",
       threadTitle: "Prepare the meeting",
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     });
     await allowAutomatic(setup);
     const approved = await platform.approveComputerAppAutomatically({
@@ -5201,7 +4842,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: setup.runnerId,
         tools: setup.gui.tools("read"),
       }),
-      workspaceId: run.workspaceId,
     });
     expect(approved.fulfilledRequestIds).toEqual([pending.request.id]);
     expect(approved.grants).toHaveLength(1);
@@ -5506,7 +5146,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       guiInput,
       database,
     } = storeFixture;
-    const run = await runningRunFixture(store, "computer-use-grant", { kind: "project" });
+    const run = await runningRunFixture(store, "computer-use-grant");
     const setup = await guiFixture("computer-use-grant", run.userId);
     const ask = {
       access: "read" as const,
@@ -5519,7 +5159,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ownerUserId: run.userId,
       runnerId: setup.runnerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     };
     const opened = await askOnMac(ask);
     expect(opened.replayed).toBe(false);
@@ -5540,7 +5179,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         definitionId: "macos-app",
         runnerId: setup.runnerId,
         setupRequestId: opened.setupRequest.id,
-        workspaceId: run.workspaceId,
       },
       presentation: {
         kind: "external",
@@ -5611,7 +5249,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         access: "read",
         alias: "Notes",
         connectionId: consumed.connection.id,
-        workspaceId: run.workspaceId,
       }),
     ]);
     expect(consumed.requestEvents).toEqual(
@@ -5642,39 +5279,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
     await expect(platform.listComputerAppSetupRequests(run.userId)).resolves.toEqual([]);
   });
 
-  it("grants nothing extra when the asking Workspace is Main", async ({ storeFixture }) => {
-    const { store, guiFixture, askOnMac, calendar, guiDigest, guiDefinition, platform, guiInput } =
-      storeFixture;
-    const run = await runningRunFixture(store, "computer-use-main");
-    const setup = await guiFixture("computer-use-main", run.userId);
-    const opened = await askOnMac({
-      access: "read-write",
-      app: calendar,
-      definitionDigest: guiDigest,
-      definitionId: guiDefinition.id as "macos-app",
-      reason: "Find the task notes.",
-      threadTitle: "Review notes",
-      originatingRunId: run.runId,
-      ownerUserId: run.userId,
-      runnerId: setup.runnerId,
-      threadId: run.threadId,
-      workspaceId: run.workspaceId,
-    });
-    const consumed = await platform.setComputerConnection({
-      ...guiInput({
-        access: "read-write",
-        actorUserId: run.userId,
-        app: calendar,
-        requestId: "computer-use-main-consume",
-        runnerId: setup.runnerId,
-        tools: setup.gui.tools("read-write"),
-      }),
-      setupRequestId: opened.setupRequest.id,
-    });
-    expect(consumed.fulfilledRequestIds).toEqual([opened.request.id]);
-    expect(consumed.grants).toEqual([]);
-  });
-
   it("declines from anywhere but that Mac, and takes the approval with it", async ({
     storeFixture,
   }) => {
@@ -5693,7 +5297,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ownerUserId: run.userId,
       runnerId: setup.runnerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     });
     // Only "not now" is a person's to say from a phone.
     await expect(
@@ -5752,7 +5355,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ownerUserId: run.userId,
       runnerId: setup.runnerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     };
     const opened = await askOnMac(ask);
     const cancelled = await platform.cancelComputerAppSetup({
@@ -5854,7 +5456,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       platform,
       guiInput,
     } = storeFixture;
-    const run = await runningRunFixture(store, "identity-change", { kind: "project" });
+    const run = await runningRunFixture(store, "identity-change");
     const mac = await guiFixture("identity-change", run.userId);
     await approveApp({
       access: "read",
@@ -5878,7 +5480,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       ownerUserId: run.userId,
       runnerId: mac.runnerId,
       threadId: run.threadId,
-      workspaceId: run.workspaceId,
     });
     expect(opened.setupRequest.app).toEqual(resigned);
 
@@ -5924,7 +5525,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
   }) => {
     const { store, guiFixture, guiDigest, guiDefinition, askOnMac, notes, platform, guiInput } =
       storeFixture;
-    const run = await runningRunFixture(store, "identity-change-pending", { kind: "project" });
+    const run = await runningRunFixture(store, "identity-change-pending");
     const mac = await guiFixture("identity-change-pending", run.userId);
     const ask = {
       access: "read" as const,
@@ -5935,7 +5536,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       runnerId: mac.runnerId,
       threadId: run.threadId,
       threadTitle: "Notes",
-      workspaceId: run.workspaceId,
     };
     const first = await askOnMac({
       ...ask,
@@ -6010,7 +5610,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     // automatically, the other already has the app and needs only this
     // Workspace's grant. Each writes the Workspace and the Computer use
     // server; taken in opposite orders, they deadlock.
-    const first = await runningRunFixture(store, "lock-order", { kind: "project" });
+    const first = await runningRunFixture(store, "lock-order");
     const second = await anotherRunIn(store, first, "lock-order-second");
     const automatic = await guiFixture("lock-order", first.userId);
     const covered = { runnerId: createId("runner") };
@@ -6043,7 +5643,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         threadId: run.threadId,
         threadTitle: null,
         tools: (connectionId) => computerAppTools(computerUseDefinition, "read", connectionId),
-        workspaceId: first.workspaceId,
       });
 
     // A separate pool, so the barrier, both asks and the probe each hold a
@@ -6075,9 +5674,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       // the first lock it needs that the other might be holding.
       const barrier = wide.transaction().execute(async (transaction) => {
         await transaction
-          .selectFrom("workspaces")
-          .select("id")
-          .where("id", "=", first.workspaceId)
+          .selectFrom("personalSettings")
+          .select("ownerId")
+          .where("ownerId", "=", first.userId)
           .forUpdate()
           .execute();
         acquired.resolve();
@@ -6115,7 +5714,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
     async function setup(storeFixture: StoreFixture, suffix: string) {
       const { store, guiFixture, notes, guiDigest, guiDefinition, platform, guiInput, database } =
         storeFixture;
-      const run = await runningRunFixture(store, suffix, { kind: "project" });
+      const run = await runningRunFixture(store, suffix);
       const mac = await guiFixture(suffix, run.userId);
       const ask = (access: "read" | "read-write", app: ComputerAppIdentity = notes) => ({
         access,
@@ -6129,7 +5728,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         ownerUserId: run.userId,
         runnerId: mac.runnerId,
         threadId: run.threadId,
-        workspaceId: run.workspaceId,
       });
       const consume = (
         request: import("@opensteer/integration-core").ComputerAppSetupRequest,
@@ -6151,7 +5749,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         database
           .selectFrom("integrationGrants")
           .select(["access", "connectionId"])
-          .where("workspaceId", "=", run.workspaceId)
+          .where("ownerUserId", "=", run.userId)
           .where("revokedAt", "is", null)
           .execute();
       const status = (requestId: RequestId) =>
@@ -6278,7 +5876,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         reason: "Use Notes.",
         threadId: test.run.threadId,
         threadTitle: "Shopping list",
-        workspaceId: test.run.workspaceId,
       });
       // The picker's signature covered an approval that named no task.
       expect(joined.setupRequest.id).not.toBe(picked.id);
@@ -6383,7 +5980,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await database
         .updateTable("integrationGrants")
         .set({ revokedAt: new Date() })
-        .where("workspaceId", "=", test.run.workspaceId)
+        .where("ownerUserId", "=", test.run.userId)
         .execute();
       expect(await test.grants()).toEqual([]);
       const sessionId = createId("authSession");
@@ -6615,7 +6212,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
         runnerId: phoneId,
         threadId: run.threadId,
         threadTitle: "Deliveries",
-        workspaceId: run.workspaceId,
       };
     }
 
@@ -6643,7 +6239,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, database, askForApp, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-ask", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-ask");
       const setup = await phoneFixture(storeFixture, "phone-ask", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read-write"));
       expect(opened.setupRequest).toMatchObject({
@@ -6690,9 +6286,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
         computer: { access: "read-write", app: null, runnerId: setup.phone.phoneId },
         displayName: "Pixel phone-ask",
       });
-      expect(allowed.grants).toEqual([
-        expect.objectContaining({ access: "read-write", workspaceId: run.workspaceId }),
-      ]);
+      expect(allowed.grants).toEqual([expect.objectContaining({ access: "read-write" })]);
 
       // The phone is approved now, so another Thread's ask finds that
       // connection and asks only for a Workspace grant.
@@ -6707,7 +6301,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, notes, guiDigest, askForApp } = storeFixture;
-      const run = await runningRunFixture(store, "phone-and-mac", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-and-mac");
       const setup = await phoneFixture(storeFixture, "phone-and-mac", run.userId);
       const phone = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const mac = await askOnMac({
@@ -6735,7 +6329,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-widen", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-widen");
       const setup = await phoneFixture(storeFixture, "phone-widen", run.userId);
       const narrow = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const other = await anotherRunIn(store, run, "phone-widen-other");
@@ -6761,7 +6355,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform, database, askForApp } = storeFixture;
-      const run = await runningRunFixture(store, "phone-automatic", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-automatic");
       const setup = await phoneFixture(storeFixture, "phone-automatic", run.userId);
       // A setup request to stand in the forged envelope; nothing reads it.
       const phoneOpened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
@@ -6797,7 +6391,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform, setApprovedComputerConnection, definition } = storeFixture;
-      const run = await runningRunFixture(store, "phone-lower", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-lower");
       const setup = await phoneFixture(storeFixture, "phone-lower", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read-write"));
       await allowPhoneFromClient(storeFixture, setup, "read-write", opened.setupRequest);
@@ -6857,7 +6451,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       storeFixture,
     }) => {
       const { store, askOnMac, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-key", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-key");
       const setup = await phoneFixture(storeFixture, "phone-key", run.userId);
       const opened = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
       const mutation = {
@@ -6887,19 +6481,14 @@ integration.sequential("PostgreSQL computer app connections", () => {
       });
     });
 
-    it("settles covered phone Requests once, preserves wider asks and grants the right Workspaces", async ({
+    it("settles covered phone Requests once, preserves wider asks and maintains one personal grant", async ({
       storeFixture,
     }) => {
       const { store, askOnMac, platform, database } = storeFixture;
-      const run = await runningRunFixture(store, "phone-settle", { kind: "project" });
+      const run = await runningRunFixture(store, "phone-settle");
       const setup = await phoneFixture(storeFixture, "phone-settle", run.userId);
       const narrow = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
-      const workspace = await createWorkspace(store, run.userId, "phone-settle-other", "project");
-      const other = await startRunIn(
-        store,
-        { ...run, workspaceId: workspace.id },
-        "phone-settle-other",
-      );
+      const other = await startRunIn(store, { ...run }, "phone-settle-other");
       const otherNarrow = await askOnMac(phoneAsk(other, setup.phone.phoneId, "read"));
       const wideRun = await anotherRunIn(store, other, "phone-settle-wide");
       const wide = await askOnMac(phoneAsk(wideRun, setup.phone.phoneId, "read-write"));
@@ -6907,15 +6496,9 @@ integration.sequential("PostgreSQL computer app connections", () => {
       expect(allowed.created).toBe(true);
       const coveredIds = [narrow.request.id, otherNarrow.request.id].sort();
       expect([...allowed.fulfilledRequestIds].sort()).toEqual(coveredIds);
-      expect(
-        allowed.grants
-          .map(({ access, workspaceId }) => ({ access, workspaceId }))
-          .sort((a, b) => a.workspaceId.localeCompare(b.workspaceId)),
-      ).toEqual(
-        [run.workspaceId, other.workspaceId]
-          .sort()
-          .map((workspaceId) => ({ access: "read", workspaceId })),
-      );
+      expect(allowed.grants).toEqual([
+        expect.objectContaining({ access: "read", ownerUserId: run.userId }),
+      ]);
       await expect(platform.requests.get(wide.request.id)).resolves.toMatchObject({
         status: "pending",
       });
@@ -6930,9 +6513,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
       );
       expect(widened.created).toBe(false);
       expect(widened.fulfilledRequestIds).toEqual([wide.request.id]);
-      expect(widened.grants).toEqual([
-        expect.objectContaining({ access: "read-write", workspaceId: other.workspaceId }),
-      ]);
+      expect(widened.grants).toEqual([expect.objectContaining({ access: "read-write" })]);
       const ids = [...coveredIds, wide.request.id].sort();
       const continuations = await database
         .selectFrom("requestContinuations")
@@ -6942,16 +6523,10 @@ integration.sequential("PostgreSQL computer app connections", () => {
       expect(continuations.map(({ requestId }) => requestId).sort()).toEqual(ids);
       const grants = await database
         .selectFrom("integrationGrants")
-        .select(["access", "workspaceId"])
+        .select(["access", "ownerUserId"])
         .where("connectionId", "=", allowed.connection.id)
-        .orderBy("workspaceId")
         .execute();
-      expect(grants).toEqual(
-        [
-          { access: "read", workspaceId: run.workspaceId },
-          { access: "read-write", workspaceId: other.workspaceId },
-        ].sort((a, b) => a.workspaceId.localeCompare(b.workspaceId)),
-      );
+      expect(grants).toEqual([{ access: "read-write", ownerUserId: run.userId }]);
     });
 
     it("keeps Main phone Requests and declines answerable from any client", async ({
@@ -6967,8 +6542,7 @@ integration.sequential("PostgreSQL computer app connections", () => {
           installationId: setup.phone.installationId,
           originatingRunId: run.runId,
           originatingThreadId: run.threadId,
-          originatingWorkspaceId: run.workspaceId,
-          targetWorkspaceId: run.workspaceId,
+
           requestedBy: run.userId,
           requestedConnectionId: null,
           requestedServerId: setup.phone.serverId,
@@ -7000,63 +6574,6 @@ integration.sequential("PostgreSQL computer app connections", () => {
       await allowPhoneFromClient(storeFixture, setup, "read-write", wide.setupRequest);
       await expect(platform.requests.get(mainWide.request.id)).resolves.toMatchObject({
         status: "fulfilled",
-      });
-    });
-
-    it("migrates pre-upgrade phone Requests without changing their authority or settlement links", async ({
-      storeFixture,
-    }) => {
-      const { store, askOnMac, database, platform } = storeFixture;
-      const run = await runningRunFixture(store, "phone-upgrade", { kind: "project" });
-      const setup = await phoneFixture(storeFixture, "phone-upgrade", run.userId);
-      const pending = await askOnMac(phoneAsk(run, setup.phone.phoneId, "read"));
-      const other = await anotherRunIn(store, run, "phone-upgrade-decline");
-      const decline = await askOnMac(phoneAsk(other, setup.phone.phoneId, "read-write"));
-      const before = await database
-        .selectFrom("requests")
-        .selectAll()
-        .where("id", "in", [pending.request.id, decline.request.id])
-        .orderBy("id")
-        .execute();
-      for (const row of before) {
-        await database
-          .updateTable("requests")
-          .set({
-            presentation: jsonValue({ ...row.presentation, detail: "Old on-phone approval copy." }),
-          })
-          .where("id", "=", row.id)
-          .execute();
-      }
-      await sql`create table computer_use_approval_keys (runner_id text primary key)`.execute(
-        database,
-      );
-      try {
-        await agentPhoneOwnerAccessMigration.up(database);
-      } finally {
-        await sql`drop table computer_use_approval_keys`.execute(database);
-      }
-      const after = await database
-        .selectFrom("requests")
-        .selectAll()
-        .where("id", "in", [pending.request.id, decline.request.id])
-        .orderBy("id")
-        .execute();
-      expect(after.map(({ presentation: _, ...row }) => row)).toEqual(
-        before.map(({ presentation: _, ...row }) => row),
-      );
-      for (const row of after)
-        expect(row.presentation.detail).toContain("Allow or decline from any Opensteer app.");
-      await platform.declineComputerAppAccessRequest({
-        actorUserId: run.userId,
-        requestId: decline.request.id,
-      });
-      const allowed = await allowPhoneFromClient(storeFixture, setup, "read", pending.setupRequest);
-      expect(allowed.fulfilledRequestIds).toEqual([pending.request.id]);
-      expect(allowed.grants).toEqual([
-        expect.objectContaining({ access: "read", workspaceId: run.workspaceId }),
-      ]);
-      await expect(platform.requests.get(decline.request.id)).resolves.toMatchObject({
-        status: "declined",
       });
     });
   });
@@ -7200,127 +6717,25 @@ async function insertProviderConnection(
     .executeTakeFirstOrThrow();
 }
 
-async function createWorkspace(
-  store: OpensteerStore,
-  createdBy: ReturnType<typeof createId<"user">>,
-  suffix: string,
-  kind?: "main" | "project",
-) {
-  return createTestWorkspace(store, {
-    backing: {
-      generation: 1,
-      kind: "local-directory",
-      bindingId: createStorageFixtureId("workspaceBinding"),
-      ownerEnvironmentId: StorageFixtureEnvironmentIdSchema.parse(
-        "env_00000000-0000-4000-8000-000000000001",
-      ),
-      storageAuthorityId: createStorageFixtureId("storageAuthority"),
-    },
-
-    createdBy,
-    idempotencyKey: `workspace-${suffix}`,
-    ...(kind === undefined ? {} : { kind }),
-    name: `Workspace ${suffix}`,
-    status: "ready",
-  });
-}
-
-/** A Request may only be opened from a Run the Host has seen start. */
-async function runningRunFixture(
-  store: OpensteerStore,
-  suffix: string,
-  options: { readonly kind?: "main" | "project" } = {},
-) {
-  const userId = await store.createUser(`Owner ${suffix}`);
-  const runnerId = createId("runner");
-  const environmentId = createId("environment");
-  if (!(await store.getDeployment())) {
-    await store.ensureDeployment({
-      canonicalOrigin: "https://test-host.invalid",
-      deploymentShape: {
-        defaultWorkspaceBacking: "local-directory",
-        kind: "server" as const,
-      },
-      hostInstanceId: createId("hostInstance"),
-    });
-  }
-  const pair = generateKeyPairSync("ed25519");
-  const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-  const enrollmentTokenHash = `sha256:${createHash("sha256")
-    .update(`test-enrollment-${suffix}`, "utf8")
-    .digest("base64url")}`;
-  await store.createRunnerEnrollment({
-    allowedModules: ["agents"],
-    createdBy: userId,
-    expiresAt: new Date(Date.now() + 60_000),
-    id: `ren_${randomUUID()}`,
-    idempotencyKey: `test-runner-${suffix}`,
-    mainEnrollmentPurpose: "initial",
-    name: `Test runner ${suffix}`,
-    requestFingerprint: `sha256:test-runner-${suffix}`,
-    runnerKind: "main",
-    tokenHash: enrollmentTokenHash,
-  });
-  const descriptor: RunnerDescriptor = {
-    bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-    capabilities: ["filesystem"],
-    modules: {
-      agents: {
-        environmentIds: [environmentId],
-        harnessDrivers: [
-          {
-            accessModes: ThreadAccessModeSchema.options,
-            driverKind: HarnessIdSchema.parse("native"),
-            readiness: "configured",
-            sources: [
-              {
-                fields: [],
-                kind: "first-party",
-                label: "Native",
-                quota: "none",
-                sourceId: "native",
-                stateKinds: ["isolated"],
-              },
-            ],
-          },
-        ],
-        localStorage: null,
-        maxConcurrentRuns: 4,
-        providerStateModes: ["isolated"],
-        workspaceBackings: ["local-directory"],
-      },
-    },
-    name: `Runner ${suffix}`,
-    runnerId,
-    runnerKind: "main",
-    runtimeVersion: "test",
-  };
-  await store.enrollRunnerConnection({
-    descriptor,
-    enrollmentTokenHash,
-    publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-    publicKeyPem: pair.publicKey.export({ format: "pem", type: "spki" }).toString(),
-  });
-  const workspace = await createWorkspace(store, userId, suffix, options.kind);
-  const harnessInstance = await store.createHarnessInstance({
-    config: { model: "test" },
-    driverKind: HarnessIdSchema.parse("native"),
-    environmentId,
-    name: "Native",
-    sourceId: "native",
-    stateKind: "isolated",
-  });
-  return startRunIn(
-    store,
-    {
-      environmentId,
-      harnessInstanceId: harnessInstance.id,
-      runnerId,
-      userId,
-      workspaceId: workspace.id,
-    },
-    suffix,
+async function runningRunFixture(store: OpensteerStore, suffix: string) {
+  const personal = await personalFixtureOwner(
+    store.database,
+    process.env.OPENSTEER_TEST_DATABASE_URL!,
   );
+  const runs = createPersonalRunFixturePort(store);
+  const task = await runs.createTask({
+    ownerId: personal.userId,
+    folder: personal.agentHome,
+    suffix,
+  });
+  const started = await runs.startTask(task.threadId, "Start the work");
+  return {
+    ...personal,
+    folder: personal.agentHome,
+    harnessInstanceId: task.harnessInstance.id,
+    runId: started.runId,
+    threadId: task.threadId,
+  };
 }
 
 /** Another running Run in the same Workspace, on the same Runner, in a Thread of its own. */
@@ -7334,74 +6749,16 @@ async function anotherRunIn(
 
 async function startRunIn(
   store: OpensteerStore,
-  context: {
-    readonly environmentId: ReturnType<typeof createId<"environment">>;
-    readonly harnessInstanceId: Awaited<ReturnType<OpensteerStore["createHarnessInstance"]>>["id"];
-    readonly runnerId: ReturnType<typeof createId<"runner">>;
-    readonly userId: ReturnType<typeof createId<"user">>;
-    readonly workspaceId: Awaited<ReturnType<OpensteerStore["createWorkspace"]>>["id"];
-  },
+  context: Awaited<ReturnType<typeof runningRunFixture>>,
   suffix: string,
 ) {
-  const { environmentId, harnessInstanceId, runnerId, userId, workspaceId } = context;
-  const { thread } = await store.createThread({
-    createdBy: userId,
-    environmentId,
-    harnessInstanceId,
-    idempotencyKey: `thread-${suffix}`,
-    modelSelection: ModelSelectionSchema.parse({
-      modelId: "gpt-5.6-sol",
-      options: { effort: "low" },
-      providerId: "openai",
-    }),
-    title: `Thread ${suffix}`,
-    workspaceId,
-  });
-  const admitted = await store.enqueueThreadInput({
-    content: [{ text: "Start the work", type: "text" }],
-    idempotencyKey: `${suffix}-initial-turn`,
-    policy: "queue",
-    requestedBy: userId,
-    source: { kind: "human" },
-    threadId: thread.id,
-  });
-  if (!admitted.command || !admitted.run) throw new Error("Expected the input to queue a Run");
-  await store.claimCommand(admitted.command.id, `${suffix}-dispatcher`);
-  // One boot per Runner, whichever Run is bound to it.
-  const runnerBootId = `boot-${runnerId}`;
-  const binding = await store.acquireExecutionBinding({
-    bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-    continuationIdentity: {
-      continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-      driverKind: HarnessIdSchema.parse("native"),
-    },
-    harnessInstanceId,
-    leaseTokenHash: `${suffix}-lease`,
-    membershipGeneration: 1,
-    runnerBootId,
-    runnerId,
-    runId: admitted.run.id,
-    threadId: thread.id,
-  });
-  const started: PendingAgentEvent = {
-    bindingGeneration: binding.bindingGeneration,
-    data: { status: "running" },
-    emittedAt: new Date().toISOString(),
-    environmentId,
-    ordinal: 0,
-    runId: admitted.run.id,
-    threadId: thread.id,
-    type: "run.started",
-    workspaceId,
-  };
-  await store.commitRunnerEvent({ environmentId, event: started, runnerBootId, runnerId });
+  const runs = createPersonalRunFixturePort(store);
+  const task = await runs.createTask({ ownerId: context.userId, folder: context.folder, suffix });
+  const started = await runs.startTask(task.threadId, "Start the work");
   return {
-    environmentId,
-    harnessInstanceId,
-    runId: admitted.run.id,
-    runnerId,
-    threadId: thread.id,
-    userId,
-    workspaceId,
+    ...context,
+    harnessInstanceId: task.harnessInstance.id,
+    runId: started.runId,
+    threadId: task.threadId,
   };
 }

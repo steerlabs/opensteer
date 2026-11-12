@@ -1,3 +1,4 @@
+import { personalFixtureOwner } from "./personal-run-fixture.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
@@ -52,7 +53,7 @@ integration.sequential("PostgreSQL integration store", () => {
     storeFixture,
   }) => {
     const { store, integrations, attempts, database } = storeFixture;
-    const ownerUserId = await store.createUser("Integration owner");
+    const ownerUserId = (await personalFixtureOwner(database, storeFixture.databaseUrl)).userId;
     const applicationId = createIntegrationId("providerApplication");
     const application = await integrations.saveProviderApplication({
       actorUserId: ownerUserId,
@@ -197,11 +198,6 @@ integration.sequential("PostgreSQL integration store", () => {
     const now = new Date();
     const issuer = "https://accounts.example.test";
     const subject = `acct_${crypto.randomUUID()}`;
-    await database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", ownerUserId)
-      .execute();
     await database
       .insertInto("personalRemoteAccountLink")
       .values({

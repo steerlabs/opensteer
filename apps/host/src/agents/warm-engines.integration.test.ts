@@ -223,7 +223,7 @@ integration("Warm engines", () => {
     },
     async () => {
       const { active, captureFile, threadId } = await start();
-      const skillDirectory = join(active.mountedWorkspacePath, "skills", "a6-private-skill");
+      const skillDirectory = join(active.agentHome.path, "skills", "a6-private-skill");
       await mkdir(skillDirectory, {
         recursive: true,
       });
@@ -236,9 +236,9 @@ integration("Warm engines", () => {
       expect(await engineStart(active, first.runId)).toBe("cold");
       expect(await engineStart(active, second.runId)).toBe("warm");
       const workspace = await active.host.store.database
-        .selectFrom("workspaces")
-        .select("createdBy")
-        .where("id", "=", active.mainWorkspaceId)
+        .selectFrom("personalSettings")
+        .select("ownerId")
+        .where("singletonKey", "=", "personal")
         .executeTakeFirstOrThrow();
       const settings = new PluginSettingsStore(active.host.store.database);
       const target = {
@@ -247,7 +247,7 @@ integration("Warm engines", () => {
       };
       await vi.waitFor(
         async () => {
-          expect((await settings.detail(workspace.createdBy, target)).contents).toContainEqual({
+          expect((await settings.detail(workspace.ownerId, target)).contents).toContainEqual({
             name: "a6-private-skill",
             kind: "skill",
           });
@@ -770,7 +770,7 @@ integration("Warm engines", () => {
       const { active, captureFile, threadId } = await start();
       await run(active, threadId, "First question");
       // An engine reads its skill catalog when it starts.
-      const skill = join(active.mountedWorkspacePath, "skills", "release-notes");
+      const skill = join(active.agentHome.path, "skills", "release-notes");
       await mkdir(skill, {
         recursive: true,
       });

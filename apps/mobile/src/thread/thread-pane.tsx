@@ -32,11 +32,13 @@ import {
   type ThreadActivityIndicator,
   type TranscriptGroup,
   type TranscriptVoice,
-  type WorkspaceSummary,
   type ThreadSummary,
 } from "@opensteer/client/host";
 import { computerUseNowSummary, threadComputerUseNow } from "@opensteer/client/integrations";
-import { CHAT_THREAD_TITLE, type BrowserPageContentPart } from "@opensteer/core";
+import type { BrowserPageContentPart, TeamTaskOrigin } from "@opensteer/core";
+import { AudienceLine, TaskSourceChip } from "../home/task-source.js";
+import { useTeamsSnapshot } from "../team/team-context.js";
+import { folderLabel } from "../home/folder-label.js";
 import { useHostSnapshot, useThreadInputQueue } from "@opensteer/client/react";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { conversationActions } from "./conversation-actions.js";
@@ -46,7 +48,15 @@ import {
   useIsFocused,
   useNavigation,
 } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -161,12 +171,11 @@ type TranscriptItem =
 export interface ThreadHeaderState {
   readonly connectionLabel: string | null;
   readonly title: string;
-  readonly workspaceName: string | null;
-  readonly workspaceColor: WorkspaceSummary["color"];
-  readonly workspaceIcon: WorkspaceSummary["icon"];
+  /** Where the task works or came from: its folder, or "#support" for a team's ask. */
+  readonly placeName: string | null;
+  readonly placeKind: "folder" | "team" | null;
   readonly icon: ThreadSummary["icon"];
   readonly color: ThreadSummary["color"];
-  readonly isHome: boolean;
   readonly isVoice: boolean;
   /** The work this Thread is doing for another conversation, or null. */
   readonly task: TaskHeading | null;
@@ -180,12 +189,10 @@ export function sameThreadHeader(
     left !== null &&
     left.connectionLabel === right.connectionLabel &&
     left.title === right.title &&
-    left.workspaceName === right.workspaceName &&
-    left.workspaceColor === right.workspaceColor &&
-    left.workspaceIcon === right.workspaceIcon &&
+    left.placeName === right.placeName &&
+    left.placeKind === right.placeKind &&
     left.icon === right.icon &&
     left.color === right.color &&
-    left.isHome === right.isHome &&
     left.isVoice === right.isVoice &&
     sameTaskHeading(left.task, right.task)
   );
@@ -259,13 +266,12 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     network: snapshot.network,
     session: snapshot.session,
     user: snapshot.user,
-    homeThreadId: snapshot.homeThreadId,
+    agentHome: snapshot.personalSettings?.agentHome ?? null,
     voiceThreadId: snapshot.voiceThreadId,
     environments: snapshot.environments,
     harnesses: snapshot.harnesses,
     machines: snapshot.machines,
     waitingRequests: snapshot.waitingRequests,
-    workspaces: snapshot.workspaces,
     thread: snapshot.threads.find(({ id }) => id === threadId) ?? null,
     entries: snapshot.transcripts[threadId],
     window: snapshot.transcriptWindows[threadId],
@@ -275,9 +281,9 @@ function selectThreadPane(snapshot: HostSnapshot, threadId: string) {
     runQueue: snapshot.runQueue.filter((run) => run.threadId === threadId),
     // These helpers read requester/worker Threads and delegated work. Select their
     // answers against the full store so unrelated transcript maps cannot go stale.
-    task: snapshot.homeThreadId === threadId ? null : taskHeading(snapshot, threadId),
+    task: taskHeading(snapshot, threadId),
     outcomes: taskOutcomes(snapshot, threadId),
-    requester: snapshot.homeThreadId === threadId ? null : threadRequester(snapshot, threadId),
+    requester: threadRequester(snapshot, threadId),
   };
 }
 
@@ -297,8 +303,6 @@ function sameThreadPaneSelection(left: ThreadPaneSelection, right: ThreadPaneSel
         );
       case "runQueue":
         return sameEntries(left.runQueue, right.runQueue);
-      case "workspaces":
-        return sameWorkspaceMarks(left.workspaces, right.workspaces);
       default:
         return left[key] === right[key];
     }
@@ -416,8 +420,8 @@ function ThreadPaneForUser(
   const inView = usePaneInView();
   useFocusEffect(
     useCallback(() => {
-      // The Host holds one active Thread. Chat stays mounted under every task,
-      // a tablet shows a task beside the list and a narrow window keeps a
+      // The Host holds one active Thread. A task stays mounted under the one
+      // over it, a tablet shows a task beside the list and a narrow window keeps a
       // page's companion out of view, so the pane in front of the reader claims
       // it as it comes into view, not merely as it mounts.
       if (!inView) return;
@@ -474,9 +478,9 @@ function ThreadPaneForUser(
     }
     return titles;
   }, [entries, snapshot.waitingRequests]);
-  // A conversation (Chat, a direct message) reads as messages, each reply's
-  // steps in its Activity; work keeps its whole trace in view.
-  const conversational = thread?.role === "conversation";
+  // A voice conversation reads as messages, each reply's steps in its
+  // Activity; a task keeps its whole trace in view.
+  const conversational = thread?.purpose === "voice";
   // A manager the person talks to: no composer, and its calls open with a divider.
   const voiceThread = snapshot.voiceThreadId === threadId;
   const onCall = useVoiceOn();
@@ -659,28 +663,19 @@ function ThreadPaneForUser(
       loadEarlier();
   }, [failure, loadEarlier, loadingEarlier, pendingRequest, receiptId, requestId]);
 
-  // Every agent event stamps its own workspace's `updatedAt`, so
-  // `snapshot.workspaces` is a fresh array many times a second while a run
-  // streams. A transcript row reads a workspace's name and its mark and nothing
-  // else, so the array is held across rebuilds that change neither.
-  const heldWorkspaces = useRef<readonly WorkspaceSummary[]>(snapshot.workspaces);
-  const workspaces = useMemo(() => {
-    if (!sameWorkspaceMarks(heldWorkspaces.current, snapshot.workspaces)) {
-      heldWorkspaces.current = snapshot.workspaces;
-    }
-    return heldWorkspaces.current;
-  }, [snapshot.workspaces]);
-
-  // The navigation bar carries the Thread's name, its workspace and its state,
+  // The navigation bar carries the task's name, where it works and its state,
   // and it is fed primitives rather than the Thread: a title that has not
   // changed must not rebuild a header while the transcript streams under it.
-  const workspace =
-    thread === null ? null : (workspaces.find(({ id }) => id === thread.workspaceId) ?? null);
-  const isHome = snapshot.homeThreadId === threadId;
-  const headerTitle = isHome ? CHAT_THREAD_TITLE : (thread?.title ?? null);
-  const workspaceName = isHome || workspace?.kind === "main" ? null : (workspace?.name ?? null);
-  const workspaceColor = workspace?.color ?? null;
-  const workspaceIcon = workspace?.icon ?? null;
+  const headerTitle = thread?.title ?? null;
+  const teamOrigin = thread?.teamOrigin ?? null;
+  const channelName = useChannelName(teamOrigin?.teamId ?? null, teamOrigin?.channelId ?? null);
+  const placeKind = thread === null ? null : teamOrigin !== null ? "team" : "folder";
+  const placeName =
+    thread === null
+      ? null
+      : teamOrigin !== null
+        ? `#${channelName ?? "channel"}`
+        : folderLabel(thread.folder, snapshot.agentHome);
   const icon = thread?.icon ?? null;
   const markColor = thread?.color ?? null;
   // The split heading's own width, which the title's menu is sized to.
@@ -690,7 +685,7 @@ function ThreadPaneForUser(
     const next = snapshot.task;
     if (!sameTaskHeading(heldTask.current, next)) heldTask.current = next;
     return heldTask.current;
-  }, [isHome, snapshot, threadId]);
+  }, [snapshot, threadId]);
   // Held while it names the same conversation, so the list's header is not rebuilt as it streams.
   const found = snapshot.requester;
   const requesterThreadId = found?.threadId ?? null;
@@ -707,12 +702,10 @@ function ThreadPaneForUser(
       connectionLabel,
       task,
       title: headerTitle ?? "Thread",
-      workspaceName,
-      workspaceColor,
-      workspaceIcon,
+      placeName,
+      placeKind,
       icon,
       color: markColor,
-      isHome,
       isVoice: voiceThread,
     });
   }, [
@@ -720,12 +713,10 @@ function ThreadPaneForUser(
     headerTitle,
     onHeader,
     task,
-    workspaceName,
-    workspaceColor,
-    workspaceIcon,
+    placeName,
+    placeKind,
     icon,
     markColor,
-    isHome,
     voiceThread,
   ]);
 
@@ -845,13 +836,10 @@ function ThreadPaneForUser(
     [hostClient, openSurface, surfaceTurns, threadId],
   );
   /** Quotes a reply into this conversation's own composer, unsent. */
-  const replyWith = useCallback(
-    (message: MessageEntry): void => {
-      const quote = draftQuoteFrom(message, snapshot.homeThreadId);
-      setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-    },
-    [snapshot.homeThreadId],
-  );
+  const replyWith = useCallback((message: MessageEntry): void => {
+    const quote = draftQuoteFrom(message);
+    setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
+  }, []);
 
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, viewerUserId, conversational),
@@ -917,19 +905,12 @@ function ThreadPaneForUser(
     [groups, live, snapshot.machines],
   );
   const jumpToMac = computerNow !== null && !historical ? computerUseNowSummary(computerNow) : null;
-  // Chat is the root every stack of Threads begins from, so a message from it
-  // leads back there rather than opening Chat a second time over this task.
-  const homeThreadId = snapshot.homeThreadId;
   const openSource = useCallback(
     (sourceThreadId: string) => {
       if (sourceThreadId === threadId) return;
-      if (sourceThreadId === homeThreadId) {
-        navigation.dispatch(StackActions.popTo("Home", { deploymentId }));
-        return;
-      }
       onOpenThread(sourceThreadId);
     },
-    [deploymentId, homeThreadId, navigation, onOpenThread, threadId],
+    [onOpenThread, threadId],
   );
   const renderItem = useCallback(
     ({ item }: ListRenderItemInfo<TranscriptItem>) =>
@@ -956,10 +937,8 @@ function ThreadPaneForUser(
               onOpenThread={openSource}
               spacingTop={item.spacingTop}
               time={item.time}
-              homeThreadId={snapshot.homeThreadId}
               viewerUserId={viewerUserId}
               voiceThread={voiceThread}
-              workspaces={workspaces}
             />
           </TranscriptHostClientContext>
           {item.outcome === null ? null : (
@@ -980,10 +959,8 @@ function ThreadPaneForUser(
       replyWith,
       requestId,
       receiptId,
-      snapshot.homeThreadId,
       viewerUserId,
       voiceThread,
-      workspaces,
     ],
   );
 
@@ -1053,7 +1030,7 @@ function ThreadPaneForUser(
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
     () =>
-      thread?.role === "work" && inputQueue !== null ? (
+      thread !== null && !conversational && inputQueue !== null ? (
         <TranscriptHostClientContext value={hostClient}>
           <QueuedMessages
             canRespond={queueCanRespond}
@@ -1064,7 +1041,15 @@ function ThreadPaneForUser(
           />
         </TranscriptHostClientContext>
       ) : null,
-    [thread?.role, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
+    [
+      thread,
+      conversational,
+      inputQueue,
+      queueCanRespond,
+      hostClient,
+      restoreQueuedDraft,
+      viewerUserId,
+    ],
   );
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
@@ -1431,9 +1416,12 @@ function ThreadPaneForUser(
             </>
           ) : (
             <View>
+              {teamOrigin === null ? null : (
+                <TeamTaskSource channelName={channelName} origin={teamOrigin} />
+              )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
-                voice={isHome}
+                voice={false}
                 accessMode={thread.accessMode}
                 accessModes={placement?.accessModes ?? null}
                 canRespond={canRespond}
@@ -1473,8 +1461,8 @@ function ThreadPaneForUser(
                 page={companion?.page ?? null}
                 onChangeModel={openSettings}
                 placeholder={
-                  isHome
-                    ? "Ask anything…"
+                  teamOrigin !== null
+                    ? "Message your agent privately"
                     : threadComposerPlaceholder(items.length === 0 && !canLoadEarlier)
                 }
                 requests={dockableRequests}
@@ -1505,7 +1493,6 @@ function ThreadPaneForUser(
                 subagentTitles={subagentTitles}
                 threadId={thread.id}
                 user={snapshot.user}
-                workspaceId={thread.workspaceId}
               />
             </View>
           )}
@@ -1593,10 +1580,10 @@ function ThreadHeader(props: {
 }
 
 /** A message as a quote: who wrote it, and enough of it to recognize. */
-function draftQuoteFrom(message: MessageEntry, homeThreadId: string | null): ThreadDraftQuote {
+function draftQuoteFrom(message: MessageEntry): ThreadDraftQuote {
   const excerpt = message.body.replaceAll(/\s+/gu, " ").trim();
   return {
-    attribution: messageAuthorName(message.author, message.messageKind, homeThreadId),
+    attribution: messageAuthorName(message.author),
     excerpt: excerpt.length > 160 ? `${excerpt.slice(0, 159)}…` : excerpt,
     messageId: message.id,
   };
@@ -1702,26 +1689,6 @@ function sameEntries(left: readonly object[], right: readonly object[]): boolean
   return left.length === right.length && left.every((entry, index) => entry === right[index]);
 }
 
-/** Only a workspace's name and its mark ever reach a transcript row. */
-function sameWorkspaceMarks(
-  left: readonly WorkspaceSummary[],
-  right: readonly WorkspaceSummary[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every((workspace, index) => {
-      const other = right[index];
-      return (
-        workspace.id === other?.id &&
-        workspace.kind === other.kind &&
-        workspace.icon === other.icon &&
-        workspace.name === other.name &&
-        workspace.color === other.color
-      );
-    })
-  );
-}
-
 /** Opening reads back past turns it does not draw, so "nothing yet" waits for that. */
 function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean }): ReactNode {
   if (props.loading)
@@ -1747,6 +1714,7 @@ function EmptyThread(props: { readonly loading: boolean; readonly voice: boolean
 }
 
 const styles = StyleSheet.create({
+  teamSource: { gap: space[6], paddingBottom: space[6] },
   body: { flex: 1 },
   centred: { flex: 1, gap: space[12], justifyContent: "center" },
   // The title's menu sizes to its own words, so the column holds it at the
@@ -1786,3 +1754,56 @@ const styles = StyleSheet.create({
   jumpPressed: { ...material.floatPressed },
   passwords: { marginTop: space[10] },
 });
+
+/** A team channel's name, as the team this phone holds says it; null until it has. */
+function useChannelName(teamId: string | null, channelId: string | null): string | null {
+  const team = useTeamsSnapshot().teams.find((candidate) => candidate.teamId === teamId) ?? null;
+  const session = team?.session ?? null;
+  const read = useCallback(
+    () =>
+      session?.getSnapshot().sidebar?.channels.find((row) => row.channel.id === channelId)?.channel
+        .name ?? null,
+    [channelId, session],
+  );
+  const subscribe = useCallback(
+    (listener: () => void) => session?.subscribe(listener) ?? (() => undefined),
+    [session],
+  );
+  return useSyncExternalStore(subscribe, read, read);
+}
+
+/**
+ * Above a team task's composer: the way back to the thread that asked, and who
+ * sees what the agent posts. Words typed here stay private to the task.
+ */
+function TeamTaskSource(props: {
+  readonly origin: TeamTaskOrigin;
+  readonly channelName: string | null;
+}): ReactNode {
+  const navigation = useNavigation();
+  const team = useTeamsSnapshot().teams.find(
+    (candidate) => candidate.teamId === props.origin.teamId,
+  );
+  const place = `#${props.channelName ?? "channel"}`;
+  const available = team !== undefined && team.state !== "removed";
+  return (
+    <View style={styles.teamSource}>
+      <TaskSourceChip
+        onOpen={() =>
+          navigation.navigate("TeamThread", {
+            teamId: props.origin.teamId,
+            channelId: props.origin.channelId,
+            rootId: props.origin.threadRootId,
+          })
+        }
+        source={{
+          team: { id: props.origin.teamId, name: team?.name ?? "Team", imageUri: null },
+          place,
+          thread: "thread",
+          available,
+        }}
+      />
+      {available ? <AudienceLine text={`Replies post to ${place} in ${team.name}.`} /> : null}
+    </View>
+  );
+}

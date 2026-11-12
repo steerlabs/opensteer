@@ -42,7 +42,7 @@ const fitted = new Map<string, number>();
  * itself takes all the width it may. Measured once per text, text size and
  * column, and kept, so a row scrolled back into view lands at its width on its
  * first frame. The column is the pane's, not the window's: beside a page the
- * same words wrap narrower than in Chat alone.
+ * same words wrap narrower than in the conversation alone.
  */
 function useFit(words: string | null): {
   readonly onTextLayout: (event: TextLayoutEvent) => void;

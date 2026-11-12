@@ -80,7 +80,6 @@ it.each(["memory-light", "memory-nightly"] as const)(
         url: `http://127.0.0.1:${address.port}/mcp`,
       };
       const threadId = createId("thread");
-      const workspaceId = createId("workspace");
       const triggerId = createId("trigger");
       const revisionId = createId("triggerRevision");
       for (const refusal of [
@@ -114,13 +113,6 @@ it.each(["memory-light", "memory-nightly"] as const)(
           program: memoryPassProgram(role),
           revisionId,
           triggerId,
-          workspaceAccess: {
-            generation: 1,
-            kind: "local-directory",
-            bindingId: createId("workspaceBinding"),
-            ownerEnvironmentId: createId("environment"),
-            storageAuthorityId: createId("storageAuthority"),
-          },
         });
         const output = await new TriggerProgramExecutor({
           nodeExecutable: process.execPath,
@@ -135,6 +127,7 @@ it.each(["memory-light", "memory-nightly"] as const)(
           workspace: {
             instructions: undefined,
             path: directory,
+            agentHomePath: directory,
           },
         });
         expect(output.status).toBe(

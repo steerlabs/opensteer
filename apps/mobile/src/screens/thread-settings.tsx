@@ -79,11 +79,6 @@ export type ThreadSettingsScreenProps = StaticScreenProps<{
 export type NewThreadScreenProps = StaticScreenProps<{
   readonly conversation?: boolean;
   readonly deploymentId: string;
-  /**
-   * Set when the choice is for Chat's first message. Chat uses its ranked
-   * model default; a new task uses the person's task execution preference.
-   */
-  readonly home?: boolean;
   /** The Send whose choice this sheet answers, when Send opened it. */
   readonly pickerAttemptId?: string;
 }>;
@@ -1073,12 +1068,11 @@ function ModelPickerList(
 
 /**
  * Which AI a first message starts its Thread on, chosen before that Thread
- * exists. Task choices become the person's latest task default; Chat choices
- * stay in this picker visit and return directly to Chat's first message.
+ * exists. A choice becomes the person's latest task default.
  */
 export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
   const navigation = useNavigation();
-  const { deploymentId, home = false, pickerAttemptId, conversation } = props.route.params;
+  const { deploymentId, pickerAttemptId, conversation } = props.route.params;
   const { selection } = useMobileState();
   const unavailable = selection.deploymentId !== deploymentId || selection.hostClient === null;
   useEffect(() => {
@@ -1098,9 +1092,8 @@ export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
     <SubscribedNewThread
       conversation={conversation ?? false}
       deploymentId={deploymentId}
-      home={home}
       hostClient={selection.hostClient}
-      key={`${deploymentId}:${home ? "home" : "task"}`}
+      key={deploymentId}
       {...(pickerAttemptId === undefined ? {} : { pickerAttemptId })}
     />
   );
@@ -1109,7 +1102,6 @@ export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
 function SubscribedNewThread(props: {
   readonly conversation: boolean;
   readonly deploymentId: string;
-  readonly home: boolean;
   readonly hostClient: HostClient;
   readonly pickerAttemptId?: string;
 }): ReactNode {
@@ -1129,15 +1121,9 @@ function SubscribedNewThread(props: {
   const acceptedChoice = useRef<ExecutionSelection | null>(null);
   const pendingChoice = useRef<Promise<ExecutionSelection | null> | null>(null);
   const preferences = snapshot.executionPreferences;
-  const execution = useMemo(
-    () => firstMessageExecution(props.home ? "home" : "task", snapshot, chosen),
-    [chosen, props.home, snapshot],
-  );
+  const execution = useMemo(() => firstMessageExecution(snapshot, chosen), [chosen, snapshot]);
   const placements = execution.placements;
-  const pickerPreferences = useMemo(
-    () => (props.home ? { ...preferences, history: [] } : preferences),
-    [preferences, props.home],
-  );
+  const pickerPreferences = useMemo(() => preferences, [preferences]);
   const displayed = execution.selection ?? execution.blocked;
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(snapshot),
@@ -1263,7 +1249,7 @@ function SubscribedNewThread(props: {
         return;
       }
       if (change.optionValues !== undefined && displayed !== null) {
-        const latest = props.home ? chosen : lastExecutionSelection(live.executionPreferences);
+        const latest = lastExecutionSelection(live.executionPreferences);
         if (
           latest !== null &&
           (latest.environmentId !== displayed.environmentId ||
@@ -1278,7 +1264,7 @@ function SubscribedNewThread(props: {
       const selectedRoute = selectionForRoute(
         { model: descriptor, placement },
         displayed,
-        props.home ? [] : live.executionPreferences.history,
+        live.executionPreferences.history,
       );
       const next: ExecutionSelection = {
         ...selectedRoute,
@@ -1295,9 +1281,9 @@ function SubscribedNewThread(props: {
       working.current = true;
       setApplyingKey(change.busyKey);
       setFailure(null);
-      const saved = props.home
-        ? Promise.resolve(validated)
-        : props.hostClient.rememberExecution({ selection: validated }).then(() => validated);
+      const saved = props.hostClient
+        .rememberExecution({ selection: validated })
+        .then(() => validated);
       const outcome = saved.then(
         () => {
           acceptedChoice.current = validated;
@@ -1321,16 +1307,7 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [
-      chosen,
-      client,
-      close,
-      disabledReason,
-      displayed,
-      props.deploymentId,
-      props.home,
-      props.hostClient,
-    ],
+    [chosen, client, close, disabledReason, displayed, props.deploymentId, props.hostClient],
   );
 
   const changeAccess = useCallback(
@@ -1351,11 +1328,7 @@ function SubscribedNewThread(props: {
         return;
       }
       const livePlacements = threadPlacementOptions(live.environments, live.harnesses);
-      const liveSelection = firstMessageExecution(
-        props.home ? "home" : "task",
-        live,
-        chosen,
-      ).selection;
+      const liveSelection = firstMessageExecution(live, chosen).selection;
       const placement =
         liveSelection === null ? null : placementForSelection(livePlacements, liveSelection);
       const reason = accessModeUnavailableReason(
@@ -1391,7 +1364,7 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [chosen, client, props.deploymentId, props.home, props.hostClient],
+    [chosen, client, props.deploymentId, props.hostClient],
   );
 
   const chooseModel = useCallback(
@@ -1443,8 +1416,7 @@ function SubscribedNewThread(props: {
       onFailure={setFailure}
       footer={
         <View style={styles.startThread}>
-          {/* A task choice is recorded as the latest task default; a Chat
-              choice returns through its picker visit. Either way there is
+          {/* The choice is recorded as the latest task default, so there is
               nothing left to apply here. */}
           <PrimaryButton label="Done" onPress={close} />
         </View>

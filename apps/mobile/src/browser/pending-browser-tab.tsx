@@ -158,7 +158,7 @@ export const PendingBrowserTabRows = memo(function PendingBrowserTabRows({
         navigation.dispatch(
           StackActions.push("WorkspaceBrowser", {
             deploymentId,
-            scope: "workspace",
+            scope: "tabs",
             pendingBrowserTab: pending.idempotencyKey,
           }),
         )

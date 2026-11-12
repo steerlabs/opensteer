@@ -203,7 +203,7 @@ function AttachedSubagent(props: {
     useCallback(
       (host: HostSnapshot) => {
         const thread = host.threads.find(({ id }) => id === threadId);
-        return thread ? conversationName(thread.id, thread.title, host.homeThreadId) : null;
+        return thread ? conversationName(thread.title) : null;
       },
       [threadId],
     ),
@@ -246,14 +246,12 @@ function AttachedSubagent(props: {
     (target: string | null) => {
       const stack = navigation.getState();
       const routes = stack?.routes ?? [];
-      const home = hostClient.getSnapshot().homeThreadId === threadId;
       const index = routes.findLastIndex((route, at) => {
         if (at >= (stack?.index ?? 0)) return false;
         const params = isRecord(route.params) ? route.params : null;
         if (params?.["deploymentId"] !== deploymentId) return false;
         return target === null
-          ? (route.name === "Thread" && params["threadId"] === threadId) ||
-              (route.name === "Home" && home)
+          ? route.name === "Thread" && params["threadId"] === threadId
           : route.name === "Subagent" && params["nodeId"] === target;
       });
       if (index >= 0 && stack) {
@@ -263,9 +261,7 @@ function AttachedSubagent(props: {
       navigation.dispatch(
         target !== null
           ? StackActions.replace("Subagent", { deploymentId, nodeId: target, threadId })
-          : home
-            ? StackActions.popTo("Home", { deploymentId })
-            : StackActions.replace("Thread", { deploymentId, threadId }),
+          : StackActions.replace("Thread", { deploymentId, threadId }),
       );
     },
     [deploymentId, hostClient, navigation, threadId],

@@ -8,7 +8,6 @@ import { actionRow, ErrorText, LinkRow, Section, styles } from "./settings-form-
 import type { SettingsFormProps } from "./settings-form.types.js";
 import {
   privacyPolicyUrl,
-  projectNotificationsFooter,
   quietTaskChoices,
   quietTasksFooter,
   quietTasksTitle,
@@ -21,11 +20,9 @@ export function GeneralSettingsForm(
     | "desktopUpdate"
     | "notifications"
     | "notificationError"
-    | "agents"
     | "onDeploymentAction"
     | "onNotificationAction"
     | "onPreferenceChange"
-    | "onAgentMuteChange"
     | "storageError"
     | "quietTasks"
     | "version"
@@ -126,20 +123,6 @@ export function GeneralSettingsForm(
             ]}
           </RowGroup>
           <ErrorText detail={quietTasks.error} />
-        </Section>
-      )}
-      {notifications === null || props.agents.length === 0 ? null : (
-        <Section footer={projectNotificationsFooter} label="Notifications from projects">
-          <RowGroup>
-            {props.agents.map((agent) => (
-              <SwitchRow
-                key={agent.workspaceId}
-                label={agent.name}
-                onChange={(enabled) => props.onAgentMuteChange(agent.workspaceId, !enabled)}
-                value={!agent.muted}
-              />
-            ))}
-          </RowGroup>
         </Section>
       )}
       {

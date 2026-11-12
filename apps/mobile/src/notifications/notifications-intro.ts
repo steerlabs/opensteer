@@ -42,7 +42,7 @@ export function createNotificationsIntroFile(options: {
 
 /**
  * The one-time ask for notifications, the first time this phone is on a
- * computer's Chat with a live connection. Only a phone the Account can still
+ * computer's Home with a live connection. Only a phone the Account can still
  * reach and the system can still ask is offered it: a privately paired phone
  * has no Account to send through, and a phone that already answered has
  * nothing to ask. Sending a first message still asks if this never did.
@@ -61,8 +61,8 @@ export class NotificationsIntro {
   }
 
   /** Whether the intro belongs on screen now, given where the person is. */
-  async due(where: { readonly connected: boolean; readonly onChat: boolean }): Promise<boolean> {
-    if (!where.connected || !where.onChat || !this.#askable()) return false;
+  async due(where: { readonly connected: boolean; readonly onHome: boolean }): Promise<boolean> {
+    if (!where.connected || !where.onHome || !this.#askable()) return false;
     this.#shown ??= this.#file.read();
     return !(await this.#shown) && this.#askable();
   }

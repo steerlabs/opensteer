@@ -151,8 +151,9 @@ describe("engine qualification", () => {
         const active = stack;
         const model = active.catalog.models.find((candidate) => candidate.isDefault);
         if (!model) throw new Error("The engine has no default model");
-        const workspace = await active.createWorkspace(`${engine.label} Request hold`);
+        const workspace = await active.createFolder(`${engine.label} Request hold`);
         const threadId = await active.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
@@ -398,7 +399,6 @@ describe("engine qualification", () => {
       const model = active.catalog.models.find((candidate) => candidate.isDefault);
       if (!model) throw new Error("The engine has no default model");
       const threadId = await active.createThread({
-        home: true,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
@@ -485,15 +485,13 @@ describe("engine qualification", () => {
       const native =
         harnesses.driverCapabilities(HarnessIdSchema.parse(engine.driverKind))?.steering === true;
       const model = active.catalog.models.find((candidate) => candidate.isDefault)!;
-      const workspaceId = active.mainWorkspaceId;
       const threadId = await active.createThread({
-        home: true,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
           providerId: model.providerId,
         }),
-        title: "Chat",
+        title: "Conversation continuity",
       });
       const database = active.host.store.database;
       const input = (messageId: string) =>
@@ -800,8 +798,9 @@ describe("engine qualification", () => {
           ]),
         );
       }
-      const workspace = await stack.createWorkspace(`${engine.label} qualification`);
+      const workspace = await stack.createFolder(`${engine.label} qualification`);
       const threadId = await stack.createThread({
+        folder: workspace,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
@@ -936,6 +935,7 @@ describe("engine qualification", () => {
       // The engine's supervised mode must surface a real Opensteer Request
       // before an MCP shell call, then continue after a client answers it.
       const approvalThreadId = await stack.createThread({
+        folder: workspace,
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
           options: {},
@@ -1105,6 +1105,7 @@ describe("engine qualification", () => {
           name: "two-colors.png",
         });
         const imageThreadId = await stack.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: imageModel.modelId,
             options: {},
@@ -1469,9 +1470,8 @@ describe("live Home handoff between native engines", () => {
       providerId: claudeModel.providerId,
     });
     const threadId = await stack.createThread({
-      home: true,
       modelSelection: codexSelection,
-      title: "Chat",
+      title: "Conversation continuity",
     });
     const sourceCode = randomUUID();
     const first = await stack.sendMessage({
@@ -1917,22 +1917,22 @@ async function waitForRunStatus(
 
 /** Waits until the Run has begun writing its answer, live or recorded. */
 async function waitForAssistantText(active: VerticalStack, runId: string): Promise<void> {
-  const deadline = Date.now() + 300_000;
-  for (;;) {
-    const live = await active.api["thread.live.get"]({
-      threadId: await threadOf(active, runId),
-    });
-    const written = live.ok
-      ? live.data.runs
-          .filter((run) => run.progress.runId === runId)
-          .flatMap((run) => run.progress.items)
-          .filter((item) => item.stream === "assistant")
-          .reduce((length, item) => length + item.text.length, 0)
-      : 0;
-    if (written > 200) return;
-    if (Date.now() > deadline) throw new Error("Timed out waiting for the answer to start");
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
+  await vi.waitFor(
+    async () => {
+      const live = await active.api["thread.live.get"]({
+        threadId: await threadOf(active, runId),
+      });
+      const written = live.ok
+        ? live.data.runs
+            .filter((run) => run.progress.runId === runId)
+            .flatMap((run) => run.progress.items)
+            .filter((item) => item.stream === "assistant")
+            .reduce((length, item) => length + item.text.length, 0)
+        : 0;
+      expect(written, "Timed out waiting for the answer to start").toBeGreaterThan(200);
+    },
+    { timeout: 300_000, interval: 100 },
+  );
 }
 async function threadOf(active: VerticalStack, runId: string) {
   const run = await active.host.store.database

@@ -4,8 +4,13 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import { createId, type ThreadAccessMode } from "@opensteer/core";
 import { AgentConnectionStore } from "@opensteer/database";
-import { createStoreFixture } from "@opensteer/database/test-support/store";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import {
+  createStoreFixture,
+  seedPersonalOwnerResources,
+} from "@opensteer/database/test-support/store";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ownTestDatabaseProducer } from "@opensteer/database/test-support/database";
 import { IdentityService } from "@opensteer/identity";
 import { rpcSuccess, type HostApiHandlers } from "@opensteer/protocol";
@@ -42,7 +47,7 @@ async function fixture() {
   const deployment = await fixture.store.ensureDeployment({
     canonicalOrigin: origin,
     hostInstanceId: createId("hostInstance"),
-    deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
+    deploymentShape: { kind: "personal" },
   });
   const enrollment = randomBytes(32).toString("base64url");
   const identity = new IdentityService(database, {
@@ -63,6 +68,15 @@ async function fixture() {
     .getSetCookie()
     .map((value) => value.split(";", 1)[0])
     .join("; ");
+  const folder = await mkdtemp(join(tmpdir(), "opensteer-mcp-oauth-"));
+  await ownTestDatabaseProducer(fixture.databaseUrl, async () => ({
+    close: () => rm(folder, { recursive: true, force: true }),
+  }));
+  await seedPersonalOwnerResources(database, {
+    deploymentId: deployment.id,
+    userId: owner.user.id,
+    path: folder,
+  });
   const authenticator = new HostAuthenticator({ identity, publicUrl: new URL(origin) });
   const keys = generateKeyPairSync("ed25519");
   const connections = new AgentConnectionStore(database, () => new Date(now));
@@ -150,14 +164,7 @@ async function fixture() {
     const requestId = new URL(authorization.headers.location!, origin).searchParams.get("request")!;
     return { clientId, requestId, query };
   }
-  async function authorize(
-    mode: ThreadAccessMode = "approval-required",
-    reach:
-      | { kind: "user" }
-      | { kind: "workspace"; workspaceId: import("@opensteer/core").WorkspaceId } = {
-      kind: "user",
-    },
-  ) {
+  async function authorize(mode: ThreadAccessMode = "approval-required") {
     const { clientId, requestId, query } = await begin();
     const read = await injectRpcRequest(
       app,
@@ -173,7 +180,7 @@ async function fixture() {
         type: "connection.authorize",
         requestId,
         idempotencyKey: "consent",
-        decision: { kind: "approve", label: "My agent", accessMode: mode, reach },
+        decision: { kind: "approve", label: "My agent", accessMode: mode },
       },
       headers,
     );
@@ -283,7 +290,6 @@ integration("external MCP OAuth over HTTP", () => {
       connectionId: row.id,
       userId: f.owner.user.id,
       accessMode: "full-access",
-      reach: { kind: "user" },
     });
     const sessionHeaders = {
       ...mcpHeaders,
@@ -485,65 +491,25 @@ integration("external MCP OAuth over HTTP", () => {
     expect(await f.connections.list(f.owner.user.id)).toEqual([]);
   });
 
-  it("intersects Workspace consent with live ownership and keeps foreign records private", async () => {
+  it("requires the personal owner and refuses a disabled owner's credential", async () => {
     const f = await fixture();
-    const workspace = await createTestWorkspace(f.store, {
-      createdBy: f.owner.user.id,
-      name: "Project",
-      kind: "project",
-      idempotencyKey: "mcp-project",
-      status: "ready",
-      backing: {
-        kind: "local-directory",
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-        bindingId: createId("workspaceBinding"),
-        generation: 1,
-      },
-    });
-    const grant = await f.authorize("auto", { kind: "workspace", workspaceId: workspace.id });
+    const grant = await f.authorize("auto");
     const token = (await f.exchange(grant)).json().access_token as string;
     const caller = await f.oauth.authenticator.authenticate(token);
-    expect(caller.reach).toEqual({ kind: "workspace", workspaceId: workspace.id });
     const other = await f.store.createUser("Other");
-    expect(await f.connections.list(other)).toEqual([]);
-    await f.connections.revoke(other, caller.connectionId);
+    await expect(f.connections.list(other)).rejects.toMatchObject({ code: "forbidden" });
+    await expect(f.connections.revoke(other, caller.connectionId)).rejects.toMatchObject({
+      code: "forbidden",
+    });
     await expect(f.oauth.authenticator.authenticate(token)).resolves.toMatchObject({
       connectionId: caller.connectionId,
     });
-    await f.database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: workspace.id,
-        userId: other,
-        role: "owner",
-        state: "active",
-        generation: 1,
-        invitedBy: f.owner.user.id,
-        joinedAt: new Date(f.now()),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(f.now()),
-      })
-      .execute();
-    await f.database
-      .updateTable("workspaceMemberships")
-      .set({ state: "revoked", revokedAt: new Date(f.now()), revokedBy: other })
-      .where("workspaceId", "=", workspace.id)
-      .where("userId", "=", f.owner.user.id)
-      .execute();
-    await expect(f.oauth.authenticator.authenticate(token)).rejects.toMatchObject({
-      code: "unauthorized",
-    });
-    const userGrant = await f.authorize();
-    const userToken = (await f.exchange(userGrant)).json().access_token as string;
     await f.database
       .updateTable("users")
       .set({ disabledAt: new Date(f.now()) })
       .where("id", "=", f.owner.user.id)
       .execute();
-    await expect(f.oauth.authenticator.authenticate(userToken)).rejects.toMatchObject({
+    await expect(f.oauth.authenticator.authenticate(token)).rejects.toMatchObject({
       code: "unauthorized",
     });
   });

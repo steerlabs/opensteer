@@ -744,8 +744,9 @@ qualification("local endpoint qualification", () => {
         expect(configured.unavailableReason).toBeUndefined();
         expect(configured.needsContextWindow).toBeUndefined();
         expect(configured.contextWindow).toBe(8_192);
-        const workspace = await stack.createWorkspace("Wire-only endpoint qualification");
+        const workspace = await stack.createFolder("Wire-only endpoint qualification");
         const threadId = await stack.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: configured.modelId,
             options: {},
@@ -770,7 +771,7 @@ qualification("local endpoint qualification", () => {
         expect(interrupted.events.map((event) => event.type)).toContain("run.interrupted");
         await vi.waitFor(
           async () => {
-            const snapshot = await stack!.host.store.workspaceSnapshot(workspace.id);
+            const snapshot = await stack!.host.store.deploymentSnapshot();
             expect(snapshot.threads.find((thread) => thread.id === threadId)?.status).toBe("idle");
           },
           {
@@ -813,6 +814,7 @@ qualification("local endpoint qualification", () => {
         expect(reset.needsContextWindow).toBe(true);
         await expect(
           stack.createThread({
+            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: reset.modelId,
               options: {},
@@ -896,8 +898,9 @@ qualification("local endpoint qualification", () => {
           contextWindow: 131_072,
         });
         expect(configured.acceptsImages).toBe(true);
-        const workspace = await stack.createWorkspace("Wire-only photo delivery");
+        const workspace = await stack.createFolder("Wire-only photo delivery");
         const threadId = await stack.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: configured.modelId,
             options: {},
@@ -1010,8 +1013,9 @@ qualification("local endpoint qualification", () => {
           const configured = await active.configureModel("local-vision:1", {
             contextWindow: 131_072,
           });
-          const workspace = await active.createWorkspace("Wire-only photos in one run");
+          const workspace = await active.createFolder("Wire-only photos in one run");
           const threadId = await active.createThread({
+            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1110,7 +1114,6 @@ qualification("local endpoint qualification", () => {
             contextWindow: 131_072,
           });
           const threadId = await active.createThread({
-            home: true,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1263,8 +1266,9 @@ qualification("local endpoint qualification", () => {
           const configured = await stack.configureModel("local-vision:1", {
             contextWindow: 131_072,
           });
-          const workspace = await stack.createWorkspace("Wire-only small transport");
+          const workspace = await stack.createFolder("Wire-only small transport");
           const threadId = await stack.createThread({
+            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1371,8 +1375,9 @@ qualification("local endpoint qualification", () => {
           contextWindow: 12_288,
         });
         const selected = byId.get("local-ctx:1")!;
-        const workspace = await stack.createWorkspace("Keyed endpoint qualification");
+        const workspace = await stack.createFolder("Keyed endpoint qualification");
         const threadId = await stack.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: selected.modelId,
             options: {},
@@ -1549,8 +1554,9 @@ qualification("local endpoint qualification", () => {
           nativeModelId: "local-chat",
         });
         evidence.initialSetupMethods = stack.initialCatalog.setupMethods;
-        const workspace = await stack.createWorkspace("Model server settings key");
+        const workspace = await stack.createFolder("Model server settings key");
         const threadId = await stack.createThread({
+          folder: workspace,
           modelSelection: ModelSelectionSchema.parse({
             modelId: model.modelId,
             options: {},
@@ -1757,8 +1763,9 @@ qualification("local endpoint qualification", () => {
           expect(configured.unavailableReason).toBeUndefined();
           expect(configured.contextWindow).toBe(target.contextWindow);
           evidence.configuredContextWindow = configured.contextWindow;
-          const workspace = await stack.createWorkspace(`${engine.driverKind} local qualification`);
+          const workspace = await stack.createFolder(`${engine.driverKind} local qualification`);
           const threadId = await stack.createThread({
+            folder: workspace,
             modelSelection: ModelSelectionSchema.parse({
               modelId: configured.modelId,
               options: {},
@@ -1769,7 +1776,7 @@ qualification("local endpoint qualification", () => {
           await stack.updateThreadAccess(threadId, "full-access");
           const marker = `LOCAL_MODEL_QUALIFIED_${evidenceId.replaceAll("-", "")}`;
           const artifactName = `qualification-${evidenceId}.txt`;
-          const artifactPath = join(stack.mountedWorkspacePath, artifactName);
+          const artifactPath = join(stack.agentHome.path, artifactName);
           const prompt = `Create one file at this exact absolute path: ${artifactPath}. Its contents must be exactly this one line: ${marker}. Use your file-writing tool, then tell me the file name.`;
           const first = await stack.sendMessage({
             text: prompt,
@@ -1804,7 +1811,7 @@ qualification("local endpoint qualification", () => {
             }),
           };
           expect(first.events.map((event) => event.type)).toContain("tool.completed");
-          evidence.workspaceEntries = await readdir(stack.mountedWorkspacePath, {
+          evidence.workspaceEntries = await readdir(stack.agentHome.path, {
             recursive: true,
           });
           const artifact = (await readFile(artifactPath, "utf8")).trim();

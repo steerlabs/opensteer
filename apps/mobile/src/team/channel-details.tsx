@@ -356,6 +356,9 @@ export function MembersBody(props: {
   readonly canManage: boolean;
   readonly onAdd: () => void;
   readonly onRemove: (memberId: string) => void;
+  /** Adding: the team's people not on the list yet, matching the query. */
+  readonly candidates?: readonly MemberRowView[];
+  readonly onAddMember?: (memberId: string) => void;
   readonly paddingBottom: number;
 }): ReactNode {
   return (
@@ -379,6 +382,16 @@ export function MembersBody(props: {
               onPress={props.onAdd}
               tone="ember"
             />,
+            ...(props.candidates ?? []).map((candidate) => (
+              <LinkRow
+                action
+                detail={candidate.detail}
+                icon="plus"
+                key={candidate.id}
+                label={candidate.name}
+                onPress={() => props.onAddMember?.(candidate.id)}
+              />
+            )),
           ]}
         </RowGroup>
       ) : null}

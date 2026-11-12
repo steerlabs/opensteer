@@ -11,7 +11,6 @@ import {
   type TranscriptEntry,
 } from "@opensteer/client/host";
 import { useHostSelector } from "@opensteer/client/react";
-import { CHAT_THREAD_TITLE } from "@opensteer/core";
 import * as Haptics from "expo-haptics";
 import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
 import { StyleSheet, View } from "react-native";
@@ -172,7 +171,7 @@ export function usePlaceStatusRow(props: {
   const selectStops = useCallback(
     (snapshot: HostSnapshot): string => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
-      if (thread === undefined || thread.role === "conversation") return stopLabel("reply");
+      if (thread === undefined || thread.purpose === "voice") return stopLabel("reply");
       return stopLabel(
         threadId !== null && taskHeading(snapshot, threadId)?.open === true ? "task" : "run",
       );
@@ -186,15 +185,13 @@ export function usePlaceStatusRow(props: {
       const here = agents.agents.find((agent) => agent.threadId === threadId);
       if (here !== undefined || threadId === null) return here ?? null;
       // Away from this place, it still wears its own mark, never acting here.
-      const home = threadId === snapshot.homeThreadId;
       const title = snapshot.threads.find(({ id }) => id === threadId)?.title.trim() ?? "";
       return {
         acting: false,
-        home,
         lastActiveAt: "",
-        mark: home ? null : threadMark(threadId, snapshot),
+        mark: threadMark(threadId, snapshot),
         threadId,
-        title: title || (home ? CHAT_THREAD_TITLE : "Task"),
+        title: title || "Task",
       };
     },
     [agents, threadId],
