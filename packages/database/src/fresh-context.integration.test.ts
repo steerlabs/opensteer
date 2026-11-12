@@ -143,6 +143,63 @@ describeStore("fresh model context", (it) => {
     );
   });
 
+  it.for(["runner-disconnect", "refused-event", "expired-binding"] as const)(
+    "locks a fresh task's sessions in ID order when %s ends its Run",
+    async (path, { storeFixture: f }) => {
+      const prior = await f.startRunFixture(`fresh-recovery-${path}`);
+      await complete(f, prior.run.id);
+      const fresh = await f.enqueueHumanTrigger({
+        content: [{ type: "text", text: "Check again" }],
+        freshContext: true,
+        idempotencyKey: "fresh-recovery",
+        requestedBy: prior.userId,
+        threadId: prior.thread.id,
+      });
+      await f.store.claimCommand(fresh.command.id, "fresh-recovery-dispatch");
+      const started = await startPersonalQueuedRunFixture(f.store, fresh.run.id);
+      const run = await f.database
+        .selectFrom("runs")
+        .selectAll()
+        .where("id", "=", fresh.run.id)
+        .executeTakeFirstOrThrow();
+      const selected = await f.database
+        .selectFrom("providerSessions")
+        .selectAll()
+        .where("id", "=", run.providerSessionId)
+        .executeTakeFirstOrThrow();
+      // The lowest ID is not the Run's own session, so locking that one first would descend.
+      await f.database
+        .insertInto("providerSessions")
+        .values({
+          ...selected,
+          active: false,
+          id: ProviderSessionIdSchema.parse("psn_00000000-0000-4000-8000-000000000000"),
+        })
+        .execute();
+      if (path === "runner-disconnect")
+        await f.store.failActiveRunsForRunnerDisconnect({
+          activeRunIds: [fresh.run.id],
+          runnerBootId: started.runnerBootId,
+          runnerId: prior.runnerId,
+        });
+      else if (path === "refused-event")
+        await f.store.failRunForRefusedRunnerEvent({
+          bindingGeneration: run.bindingGeneration!,
+          message: "Unknown event",
+          runId: fresh.run.id,
+          runnerBootId: started.runnerBootId,
+          runnerId: prior.runnerId,
+        });
+      else await f.store.recoverRunsWithExpiredExecutionBindings(new Date(Date.now() + 3_600_000));
+      const after = await f.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", fresh.run.id)
+        .executeTakeFirstOrThrow();
+      expect(after.status).not.toBe("running");
+    },
+  );
+
   it.for(["failed-startup", "completed"] as const)(
     "keeps the effective boundary after %s, audience rotation and engine switch",
     async (outcome, { storeFixture: f }) => {
