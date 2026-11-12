@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
 import { zipSync } from "fflate";
 import lockfile from "proper-lockfile";
-import { opensteerChromeExtensionId } from "@opensteer/protocol/browser-sources";
+import { opensteerChromeExtensionId } from "../../../packages/protocol/src/browser-sources.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const output = path.join(root, "dist");
@@ -138,8 +138,8 @@ Opensteer uses your sign-in for a website only after you allow that site in
 Opensteer. Chrome shows a notification each time a new site is shared, and the
 Opensteer button in Chrome's toolbar lists every shared site with Stop sharing.
 
-To update, replace the folder's contents with a newer ZIP and choose Reload on
-Opensteer in chrome://extensions.
+To update, replace the folder's contents with a newer ZIP. Opensteer reloads
+the extension automatically within a minute.
 `;
 
 const releaseBuildLock = await lockfile.lock(root, {
@@ -192,7 +192,7 @@ try {
   for (const filename of ["connect.html", "connect.css", "popup.html", "popup.css", "ui.css"]) {
     await cp(path.join(root, "src", filename), path.join(staging, filename));
   }
-  await writeFile(path.join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+
   await writeFile(path.join(staging, "INSTALL.txt"), installText);
   await mkdir(path.join(staging, "icons"));
   for (const [file, size, coverage] of icons) {
@@ -212,6 +212,36 @@ try {
       else files.push(relative);
     }
   };
+  await walk(staging, "");
+  files.sort();
+  const payloadFiles = files.filter(
+    (file) => !["connect.html", "icons/probe.png", "INSTALL.txt"].includes(file),
+  );
+  const hash = createHash("sha256");
+  for (const file of payloadFiles) {
+    hash.update(file);
+    hash.update(await readFile(path.join(staging, file)));
+  }
+  const buildId = hash.digest("hex").slice(0, 20);
+  const prefix = `b/${buildId}/`;
+  for (const file of payloadFiles) {
+    await mkdir(path.dirname(path.join(staging, prefix, file)), { recursive: true });
+    await rename(path.join(staging, file), path.join(staging, prefix, file));
+  }
+  const connectPath = path.join(staging, "connect.html");
+  await writeFile(
+    connectPath,
+    (await readFile(connectPath, "utf8")).replace(
+      /(href|src)="(?!https?:)([^"#]+)"/gu,
+      (_, attr, file) => `${attr}="${prefix}${file}"`,
+    ),
+  );
+  manifest.background.service_worker = `${prefix}worker.js`;
+  manifest.action.default_popup = `${prefix}popup.html`;
+  for (const icons of [manifest.icons, manifest.action.default_icon])
+    for (const size of Object.keys(icons)) icons[size] = prefix + icons[size];
+  await writeFile(path.join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  files.length = 0;
   await walk(staging, "");
   files.sort();
   const fixedTimestamp = new Date("2020-01-01T00:00:00.000Z");

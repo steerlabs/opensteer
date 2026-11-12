@@ -13,6 +13,7 @@ const nodeBuiltins = new Set([...builtinModules, ...builtinModules.map((name) =>
  * may also use Vitest and Node builtins.
  */
 const boundaries: readonly { readonly root: string; readonly allowed: RegExp }[] = [
+  { root: "apps/browser-extension/src", allowed: /^(?:zod|@opensteer\/browser-source-wire\/.+)$/u },
   { root: "packages/browser-source-wire/src", allowed: /^(?:zod|tldts|@noble\/curves\/.+)$/u },
 ];
 
