@@ -46,8 +46,6 @@ export function BrowserSignInPopover({
   sessionId,
   site,
   url,
-  workspaceId,
-  workspaceName,
 }: {
   readonly anchor: HTMLElement;
   readonly client: BrowserSignInClient;
@@ -57,9 +55,6 @@ export function BrowserSignInPopover({
   readonly sessionId: string;
   readonly site: string;
   readonly url: string;
-  /** The session's Workspace: the one whose agents may then use the site. */
-  readonly workspaceId: string;
-  readonly workspaceName: string;
 }) {
   return (
     <Popover
@@ -79,8 +74,6 @@ export function BrowserSignInPopover({
         sessionId={sessionId}
         site={site}
         url={url}
-        workspaceId={workspaceId}
-        workspaceName={workspaceName}
       />
     </Popover>
   );
@@ -93,8 +86,6 @@ export function BrowserSignInPanel({
   sessionId,
   site,
   url,
-  workspaceId,
-  workspaceName,
 }: {
   readonly client: BrowserSignInClient;
   readonly environment: ChromeConnectEnvironment;
@@ -102,8 +93,6 @@ export function BrowserSignInPanel({
   readonly sessionId: string;
   readonly site: string;
   readonly url: string;
-  readonly workspaceId: string;
-  readonly workspaceName: string;
 }) {
   const { error: checkError, inspection, refresh } = useChromeInspection(client, site, true);
   const [chosenId, setChosenId] = useState<string | null>(null);
@@ -118,19 +107,19 @@ export function BrowserSignInPanel({
   const groupName = useId();
   const domain = browserSiteLabel(site);
 
-  // The Chrome this Workspace last used for the site is offered first.
+  // The Chrome last used for the site is offered first.
   useEffect(() => {
     let active = true;
     void client.rpc["browser.sources.get"]({})
       .then(unwrapRpcResult)
       .then((state) => {
-        if (active) setPreferredId(browserSitePreferredSource(state, workspaceId, site));
+        if (active) setPreferredId(browserSitePreferredSource(state, site));
       })
       .catch(() => undefined);
     return () => {
       active = false;
     };
-  }, [client, site, workspaceId]);
+  }, [client, site]);
 
   useEffect(() => {
     if (!failed || !inspection) return;
@@ -285,9 +274,7 @@ export function BrowserSignInPanel({
           {busy ? "Signing in…" : choices.length > 1 ? "Sign in" : `Sign in with ${chosen.name}`}
         </button>
       ) : null}
-      <p className="chrome-pop__note">
-        Agents in {workspaceName} will be able to use {domain} as you.
-      </p>
+      <p className="chrome-pop__note">Your agent will be able to use {domain} as you.</p>
     </div>
   );
 }

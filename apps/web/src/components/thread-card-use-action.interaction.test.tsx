@@ -14,14 +14,7 @@ it("allows the offered card with Return and settles through the shared Host comm
   const root = createRoot(container);
   try {
     await act(async () =>
-      root.render(
-        <CardUseRequestBody
-          client={client}
-          disabled={false}
-          request={request}
-          workspaceName="Main"
-        />,
-      ),
+      root.render(<CardUseRequestBody client={client} disabled={false} request={request} />),
     );
     const radio = container.querySelector("input");
     if (!radio) throw new Error("The offered card never appeared");
