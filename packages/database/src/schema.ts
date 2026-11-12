@@ -769,6 +769,7 @@ export interface AttachmentTable {
 }
 
 export interface ThreadInputTable {
+  freshContext: Generated<boolean>;
   teamRequestId: TeamAgentRequestId | null;
   teamSource: JsonColumn<TeamSource | null>;
   assignmentId: Generated<AssignmentId | null>;

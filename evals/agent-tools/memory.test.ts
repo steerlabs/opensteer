@@ -89,7 +89,7 @@ it("validates the complete corpus and preserves Trigger and task wake authorship
   ).toBe("agent");
 });
 
-it("uses the production wake text for worker evals and keeps quiet task wakes silent", async () => {
+it("uses production worker wakes and requires a brief outcome for task wakes", async () => {
   let wakes = 0;
   for (const c of await memoryCases()) {
     for (const turn of c.turns) {
@@ -109,7 +109,10 @@ it("uses the production wake text for worker evals and keeps quiet task wakes si
   }
   expect(wakes).toBeGreaterThan(0);
   const chat = (await memoryCases()).find((c) => c.id === "memory-trivial-task-wake")!;
-  expect(grade(chat.expect, [], "", "Done.").every((c) => c.pass)).toBe(false);
+  expect(grade(chat.expect, [], "No new messages; nothing changed.").every((c) => c.pass)).toBe(
+    true,
+  );
+  expect(grade(chat.expect, [], "", "").every((c) => c.pass)).toBe(false);
 });
 
 it("requires quiet background work and one valid notification for important news", async () => {

@@ -218,6 +218,7 @@ export type ThreadInputSource =
       readonly principalId: string;
     };
 export interface EnqueueThreadInputRequest {
+  readonly freshContext?: boolean;
   readonly teamRequest?: {
     readonly id: import("@opensteer/core").TeamAgentRequestId;
     readonly triggerMessageId: import("@opensteer/core").TeamMessageId;

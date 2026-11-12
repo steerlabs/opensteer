@@ -1481,6 +1481,7 @@ export class ProductToolHandlers {
         content: [{ type: "text", text: input.message }],
         idempotencyKey: idempotencyKey(caller, requestId, "message"),
         policy: input.delivery,
+        ...(input.freshContext !== undefined ? { freshContext: input.freshContext } : {}),
         requestedBy: caller.userId,
         source: messageSource(caller, observationId),
         threadId: thread.id,

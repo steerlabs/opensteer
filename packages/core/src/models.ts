@@ -616,6 +616,7 @@ export const ThreadInputStateSchema = z.enum([
 export type ThreadInputState = z.infer<typeof ThreadInputStateSchema>;
 
 const threadInputShape = {
+  freshContext: z.boolean().optional(),
   assignmentId: AssignmentIdSchema.nullable(),
   cancelReason: z.string().max(500).nullable(),
   causalChainId: CausalChainIdSchema,

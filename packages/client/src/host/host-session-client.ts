@@ -304,7 +304,7 @@ function queuedInputItem(
   return {
     canCancel: true,
     canMove: true,
-    canSteer: queue.steerRunId !== null,
+    canSteer: queue.steerRunId !== null && !result.input.freshContext,
     input: result.input,
     message: result.message,
   };

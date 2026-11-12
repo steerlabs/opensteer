@@ -6141,6 +6141,47 @@ describe("HttpHostClient durable realtime", () => {
 });
 
 describe("HttpHostClient input queue", () => {
+  it("keeps a fresh-context send unsteerable while the confirming queue read waits", async () => {
+    const host = await queueHost();
+    try {
+      host.items = [];
+      host.client.activateThread(host.thread.id);
+      await vi.waitFor(
+        () =>
+          expect(
+            host.client.getSnapshot().inputQueues[host.thread.id],
+            "The initial queue never loaded",
+          ).toBeDefined(),
+        { timeout: 2_000 },
+      );
+      host.holdReads();
+      const message = { ...makeMessage(host.thread.id, "input", "Independent check"), runId: null };
+      host.answerWith(() =>
+        json(
+          {
+            input: { ...pendingInput(message), freshContext: true },
+            message,
+            run: null,
+            wasDuplicate: false,
+          },
+          202,
+        ),
+      );
+      await host.client.dispatch({
+        content: message.content,
+        freshContext: true,
+        idempotencyKey: "fresh-send",
+        threadId: host.thread.id,
+        type: "thread.sendMessage",
+      });
+      expect(host.client.getSnapshot().inputQueues[host.thread.id]?.items).toMatchObject([
+        { canSteer: false, input: { freshContext: true, messageId: message.id } },
+      ]);
+    } finally {
+      host.releaseReads();
+      host.client.dispose();
+    }
+  });
   it("reads the queue when a Thread is activated and reuses a read in flight", async () => {
     const host = await queueHost();
     host.client.activateThread(host.thread.id);

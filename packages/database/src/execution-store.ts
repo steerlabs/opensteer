@@ -1,3 +1,4 @@
+import { freshContextBoundary } from "./fresh-context.js";
 import { runAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings } from "./personal-settings-store.js";
 import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
@@ -462,6 +463,7 @@ export async function loadRunDispatchContext(
     });
   }
   const firstSequence = inputRows[0]!.sequence;
+  const boundary = await freshContextBoundary(database, runRow);
   const [settings, historyRowsDesc] = await Promise.all([
     personalSettings(database),
     database
@@ -470,6 +472,7 @@ export async function loadRunDispatchContext(
       .selectAll("messages")
       .where("messages.threadId", "=", command.threadId)
       .where("messages.sequence", "<", firstSequence)
+      .$if(boundary !== null, (query) => query.where("messages.sequence", ">=", boundary!))
       .where((expression) =>
         expression.or([
           expression("threadInputs.messageId", "is", null),

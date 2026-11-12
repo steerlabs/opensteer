@@ -13,6 +13,16 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
           },
         },
+        "0004_thread_input_fresh_context": {
+          async up(database) {
+            await sql`alter table thread_inputs add column fresh_context boolean not null default false`.execute(
+              database,
+            );
+            await sql`create or replace view thread_work_inputs as select * from thread_inputs where policy in ('queue','steer')`.execute(
+              database,
+            );
+          },
+        },
       };
     },
   };
