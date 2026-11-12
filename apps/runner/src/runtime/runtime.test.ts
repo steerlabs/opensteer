@@ -3762,7 +3762,9 @@ describe("RunnerRuntime", () => {
     [true, false],
     [false, true],
   ])("resolves skill layers with specialist=%s disabled=%s", async (specialist, disabled) => {
-    const temporaryRoot = await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-"));
+    const temporaryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "opensteer-skill-layer-test-")),
+    );
     const workspacePath = join(temporaryRoot, "workspace");
     const stateRoot = join(temporaryRoot, "private", "harness-state");
     await writeWorkspaceSkill(workspacePath, "release-notes");
@@ -3836,6 +3838,8 @@ describe("RunnerRuntime", () => {
     const sink: RunnerMessageSink = { send: async () => undefined };
     try {
       const command = executeCommand(environmentId);
+      command.location.folder.path = workspacePath;
+      command.location.agentHome.path = workspacePath;
       if (disabled)
         command.context.plugins.skillPolicy = {
           revision: 1,
@@ -3856,7 +3860,7 @@ describe("RunnerRuntime", () => {
       if (specialist) {
         const pluginData = join(workspacePath, ".specialists", "registration-1");
         expect(driver.context?.workspacePath).toBe(workspacePath);
-        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces"]);
+        expect(driver.context?.writableRoots).toEqual(["/runner/workspaces", workspacePath]);
         expect(driver.context?.instructions).toContain(
           `Workspace instructions\n\nPlugin instructions ${pluginRoot} ${pluginData}`,
         );
@@ -3864,7 +3868,11 @@ describe("RunnerRuntime", () => {
           PLUGIN_ROOT: pluginRoot,
           PLUGIN_DATA: pluginData,
         });
-        expect(driver.context?.skills?.skills.some((skill) => skill.plugin === null)).toBe(false);
+        expect(
+          driver.context?.skills?.skills
+            .filter((skill) => skill.plugin === null)
+            .map((skill) => skill.fullName),
+        ).toEqual(["release-notes", "research"]);
         expect(
           driver.context?.skills?.skills
             .filter((skill) => skill.plugin === "example")
@@ -3872,6 +3880,8 @@ describe("RunnerRuntime", () => {
         ).toEqual(["example:research", "example:helper"]);
         hold = true;
         const running = executeCommand(environmentId);
+        running.location.folder.path = workspacePath;
+        running.location.agentHome.path = workspacePath;
         running.context.specialistId = "registration-1";
         running.context.plugins.versions = command.context.plugins.versions;
         await reconcile(registry, running);
@@ -3932,11 +3942,6 @@ describe("RunnerRuntime", () => {
           },
           {
             plugin: "opensteer",
-            localName: "projects",
-            path: "/runner/agent-skills/skills/projects",
-          },
-          {
-            plugin: "opensteer",
             localName: "threads",
             fullName: "opensteer:threads",
             path: "/runner/agent-skills/skills/threads",
@@ -3974,7 +3979,7 @@ describe("RunnerRuntime", () => {
         ].filter((skill) => !disabled || skill.fullName !== "research"),
       );
       expect(logged).toEqual([
-        "Workspace skill opensteer:threads was skipped: the directory name is not a valid skill name",
+        "Folder skill opensteer:threads was skipped: the directory name is not a valid skill name",
       ]);
     } finally {
       await runtime.close();
@@ -6265,7 +6270,7 @@ function deferred<Value>(): {
 }
 import { mkdtempSync } from "node:fs";
 import { stat } from "node:fs/promises";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
