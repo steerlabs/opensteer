@@ -1,6 +1,5 @@
 import type { UserId } from "@opensteer/core";
 import type { Kysely, Nullable, Selectable, SelectQueryBuilder } from "kysely";
-import { ownedBrowserSession } from "./browser-session-store.js";
 import type { DatabaseSchema } from "./schema.js";
 type Database = Kysely<DatabaseSchema>;
 
@@ -38,5 +37,21 @@ export function visiblePersonalTabLineages(
       "lineages.createdAt as lineageCreatedAt",
       "runners.revokedAt as retiredAt",
     ])
-    .where((eb) => ownedBrowserSession(eb, ownerId));
+    .where((eb) =>
+      eb.and([
+        eb.exists(
+          eb
+            .selectFrom("personalSettings")
+            .innerJoin("users", "users.id", "personalSettings.ownerId")
+            .select("personalSettings.ownerId")
+            .where("personalSettings.ownerId", "=", ownerId)
+            .where("users.disabledAt", "is", null),
+        ),
+        // Archived profiles retain saved descriptors, never live-session authority.
+        eb.or([
+          eb("browserProfiles.ownerId", "=", ownerId),
+          eb("browserSessions.profileId", "is", null),
+        ]),
+      ]),
+    );
 }
