@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import { View } from "react-native";
+import { StyleSheet, View } from "react-native";
+import { space, touchTarget } from "../theme.js";
 import { AppText, SecondaryButton } from "../ui/primitives.js";
-import { styles } from "./settings-form-primitives.js";
 import type { DeploymentUpdateModel } from "./use-deployment-update.js";
 
 export function deploymentUpdateRows(update: DeploymentUpdateModel): readonly ReactNode[] {
@@ -48,3 +48,15 @@ export function deploymentUpdateRows(update: DeploymentUpdateModel): readonly Re
     ),
   ];
 }
+
+const styles = StyleSheet.create({
+  actionRow: { alignItems: "flex-start", padding: space[16] },
+  row: { gap: space[8], padding: space[16] },
+  rowInline: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+    minHeight: touchTarget + space[8],
+    paddingHorizontal: space[16],
+  },
+});

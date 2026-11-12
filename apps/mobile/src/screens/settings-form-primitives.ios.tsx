@@ -113,6 +113,21 @@ export function LinkRow(props: {
   );
 }
 
+/** A row that opens a page, drawn as iOS Settings draws one: its name and a chevron. */
+export function NavRow(props: { readonly onPress: () => void; readonly title: string }): ReactNode {
+  return (
+    <Button modifiers={[accessibilityLabel(props.title)]} onPress={props.onPress}>
+      <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+        <Text modifiers={[font({ textStyle: "body" }), foregroundStyle(color.text)]}>
+          {props.title}
+        </Text>
+        <Spacer />
+        <Chevron />
+      </HStack>
+    </Button>
+  );
+}
+
 export function Chevron(): ReactNode {
   return (
     <Image

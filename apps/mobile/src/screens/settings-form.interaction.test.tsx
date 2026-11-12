@@ -1,7 +1,5 @@
-import { createId } from "@opensteer/core";
 // @vitest-environment happy-dom
 
-import type { ReactNode } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,58 +11,20 @@ import type { SettingsFormProps } from "./settings-form.types.js";
  *   switches deployments;
  * - a sign-in page is missing while a Deployment is open, shows with none
  *   open, or opens the wrong page; Passwords doesn't say where they're kept;
- * - a build without an Account service shows Account or notification rows
- *   that can do nothing.
+ * - a build without an Account service shows notification rows that can do
+ *   nothing.
  */
 
-vi.mock("react-native", () => ({
-  Pressable: ({
-    accessibilityLabel,
-    children,
-    onPress,
-  }: {
-    accessibilityLabel?: string;
-    children?: ReactNode;
-    onPress?: () => void;
-  }) => (
-    <button aria-label={accessibilityLabel} onClick={onPress}>
-      {children}
-    </button>
-  ),
-  ScrollView: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
-  Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  View: ({
-    accessibilityLabel,
-    children,
-  }: {
-    accessibilityLabel?: string;
-    children?: ReactNode;
-  }) => <div aria-label={accessibilityLabel}>{children}</div>,
-}));
-vi.mock("../theme.js", () => ({
-  color: {},
-  material: { control: {} },
-  radius: {},
-  space: {},
-  touchTarget: 44,
-}));
-vi.mock("../threads/deployment-mark.js", () => ({ DeploymentMarkView: () => null }));
-vi.mock("../ui/screen.js", () => ({
-  Screen: ({ children }: { children?: ReactNode }) => <main>{children}</main>,
-  useListContentInsets: () => ({}),
-  useReadingColumn: () => ({}),
-}));
-vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/primitives.js", () => ({
-  AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,
-  SecondaryButton: ({ label, onPress }: { label: string; onPress: () => void }) => (
-    <button onClick={onPress}>{label}</button>
-  ),
-  SectionLabel: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
-  SwitchRow: () => null,
-}));
+vi.mock("react-native", () => ({ Linking: { openURL: vi.fn() } }));
+vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
+vi.mock(
+  "@expo/ui/jetpack-compose",
+  async () => (await import("../../test-support/jetpack-compose-mock.js")).compose,
+);
+vi.mock(
+  "@expo/ui/jetpack-compose/modifiers",
+  async () => (await import("../../test-support/jetpack-compose-mock.js")).composeModifiers,
+);
 
 const { SettingsForm } = await import("../../test-support/settings-form-fixture.js");
 
@@ -81,7 +41,6 @@ describe("Settings on a phone", () => {
     await render({ page: "general" });
     expect(document.body.textContent).toContain("About");
     expect(document.body.textContent).toContain("Notifications");
-    expect(document.body.textContent).not.toContain("Opensteer Account");
     expect(document.body.textContent).not.toContain("Chrome");
   });
   it("keeps Sign-ins distinct from Plugins and accounts agents use", async () => {
@@ -92,55 +51,10 @@ describe("Settings on a phone", () => {
     expect(document.body.textContent).not.toContain("About");
   });
 
-  it("offers Remove for the current session and other signed-in devices", async () => {
-    const onRemove = vi.fn();
-    const first = {
-      id: createId("authSession"),
-      current: true,
-      deviceLabel: "This iPhone",
-      form: "mobile" as const,
-      createdAt: new Date().toISOString(),
-      lastSeenAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
-      absoluteExpiresAt: new Date(Date.now() + 60000).toISOString(),
-    };
-    const other = {
-      ...first,
-      id: createId("authSession"),
-      current: false,
-      deviceLabel: "Chrome on Mac",
-      form: "computer" as const,
-    };
-    await render({
-      administration: {
-        access: null,
-        pairing: null,
-        sessions: [first, other],
-        error: null,
-        busy: false,
-        onAction: vi.fn(),
-        onRemove,
-        onRefresh: vi.fn(),
-      },
-    });
-    const remove = [...document.querySelectorAll("button")].filter(
-      (button) => button.textContent === "Remove",
-    );
-    expect(remove).toHaveLength(2);
-    await act(async () => {
-      remove[0]!.click();
-    });
-    expect(onRemove).toHaveBeenLastCalledWith(first);
-    await act(async () => {
-      remove[1]!.click();
-    });
-    expect(onRemove).toHaveBeenLastCalledWith(other);
-  });
-
   it("opens the deployment switcher from the current deployment's row", async () => {
     const onDeploymentAction = vi.fn();
     await render({ onDeploymentAction });
-    await act(async () => buttonLabelled("Mac mini, Connected. Switch")?.click());
+    await act(async () => rowTitled("Mac mini")?.click());
     expect(onDeploymentAction).toHaveBeenCalledOnce();
   });
 
@@ -154,27 +68,24 @@ describe("Settings on a phone", () => {
     const onPasswordsAction = vi.fn();
     await render({ onPasswordsAction, signIns });
     expect(document.body.textContent).toContain("For agents");
-    expect(labels().slice(2)).toEqual([
-      "Connections, Gmail, GitHub and the other accounts agents use",
-      "Plugins, Skills, tools and specialists for your agents",
-      "Chrome, Your Chrome and the sites agents can sign in to",
-      "Browser profiles, Separate browsers with their own sign-ins",
-      "Passwords, Kept on Mac mini",
+    const rows = [...document.querySelectorAll("button")].map((button) => button.textContent);
+    expect(
+      rows.slice(rows.indexOf("ConnectionsGmail, GitHub and the other accounts agents use")),
+    ).toEqual([
+      "ConnectionsGmail, GitHub and the other accounts agents use",
+      "PluginsSkills, tools and specialists for your agents",
+      "ChromeYour Chrome and the sites agents can sign in to",
+      "Browser profilesSeparate browsers with their own sign-ins",
+      "PasswordsKept on Mac mini",
     ]);
-    await act(async () => buttonLabelled("Passwords, Kept on Mac mini")?.click());
+    await act(async () => rowTitled("Passwords")?.click());
     expect(onPasswordsAction).toHaveBeenCalledOnce();
     expect(signIns.onChrome).not.toHaveBeenCalled();
-    await act(async () =>
-      buttonLabelled("Browser profiles, Separate browsers with their own sign-ins")?.click(),
-    );
+    await act(async () => rowTitled("Browser profiles")?.click());
     expect(signIns.onBrowserProfiles).toHaveBeenCalledOnce();
-    await act(async () =>
-      buttonLabelled("Chrome, Your Chrome and the sites agents can sign in to")?.click(),
-    );
+    await act(async () => rowTitled("Chrome")?.click());
     expect(signIns.onChrome).toHaveBeenCalledOnce();
-    await act(async () =>
-      buttonLabelled("Plugins, Skills, tools and specialists for your agents")?.click(),
-    );
+    await act(async () => rowTitled("Plugins")?.click());
     expect(signIns.onPlugins).toHaveBeenCalledOnce();
   });
 
@@ -184,12 +95,8 @@ describe("Settings on a phone", () => {
     expect(document.body.textContent).not.toContain("Passwords");
   });
 
-  it("shows no Account or notifications in a build without an Account service", async () => {
-    await render({
-      account: null,
-      notifications: null,
-    });
-    expect(document.body.textContent).not.toContain("Opensteer Account");
+  it("shows no notifications in a build without an Account service", async () => {
+    await render({ notifications: null });
     expect(document.body.textContent).not.toContain("Notifications");
     expect(document.body.textContent).toContain("Version");
   });
@@ -222,20 +129,17 @@ describe("Settings → AI services on a phone", () => {
   });
 });
 
-function labels(): readonly (string | null)[] {
-  return [...document.querySelectorAll("[aria-label]")].map((row) =>
-    row.getAttribute("aria-label"),
+/** The row whose first line is `title`: Android rows are a title over a detail. */
+function rowTitled(title: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll("button")].find(
+      (button) => button.querySelector("span")?.textContent === title,
+    ) ?? null
   );
-}
-
-function buttonLabelled(label: string): HTMLButtonElement | null {
-  return document.querySelector<HTMLButtonElement>(`button[aria-label="${CSS.escape(label)}"]`);
 }
 
 async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
   const props: SettingsFormProps = {
-    account: { action: null, detail: null, initial: null, subtitle: null, title: "Signed out" },
-    accountError: null,
     computers: [],
     deployment: {
       action: { disabled: false, kind: "switch-deployment", label: "Switch" },
@@ -251,7 +155,6 @@ async function render(overrides: Partial<SettingsFormProps>): Promise<void> {
       footer: "",
       preferences: null,
     },
-    onAccountAction: vi.fn(),
     onComputerAction: vi.fn(),
     onDeploymentAction: vi.fn(),
     onNotificationAction: vi.fn(),

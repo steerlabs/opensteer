@@ -98,7 +98,7 @@ function AddressStep(props: {
         <AppText role="secondary" tone="soft">
           {address.detail}
         </AppText>
-        <SecondaryButton compact label="Open Remote access" onPress={props.onRemoteAccess} />
+        <SecondaryButton compact label="Open Account" onPress={props.onRemoteAccess} />
       </View>
     );
   return (

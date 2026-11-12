@@ -73,24 +73,12 @@ export const SettingsExternalAgentsScreen = (props: Props) => (
   <Page {...props} page="external-agents" />
 );
 
-export function SettingsRemoteAccessScreen({ route }: Props) {
-  const host = useAttachedHost(route.params.deploymentId);
-  return host ? (
-    <AccountSettingsController key={route.params.deploymentId} detail="remote" />
-  ) : (
-    <DeploymentGate deploymentId={route.params.deploymentId} />
-  );
-}
 export function SettingsSessionDetailScreen({
   route,
 }: StaticScreenProps<{ readonly deploymentId: string; readonly sessionId: string }>) {
   const host = useAttachedHost(route.params.deploymentId);
   return host ? (
-    <AccountSettingsController
-      key={route.params.deploymentId}
-      detail="session"
-      sessionId={route.params.sessionId}
-    />
+    <AccountSettingsController key={route.params.deploymentId} sessionId={route.params.sessionId} />
   ) : (
     <DeploymentGate deploymentId={route.params.deploymentId} />
   );

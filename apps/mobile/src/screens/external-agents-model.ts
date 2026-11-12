@@ -1,9 +1,9 @@
 import { HostClientRequestError } from "@opensteer/client/host";
 
 export const externalAgentsFootnote =
-  "Agents reach your computer through Remote access while it’s on and awake.";
+  "Agents reach your computer through Use from anywhere, while it’s on and awake.";
 export const externalAgentsNeedsRemote =
-  "Turn on Remote access first — these agents run in the cloud and reach your computer through it.";
+  "Turn on Use from anywhere in Account first. These agents run in the cloud and reach your computer through it.";
 
 export const agentConnectionExpired =
   "This connection request expired. Start again from the agent.";

@@ -10,6 +10,7 @@ import {
   type ComputerGlyph,
 } from "@opensteer/client/computers";
 import {
+  formatRelativeTime,
   passwordsElsewhere,
   passwordsCardsFact,
   passwordsHowItWorks,
@@ -626,27 +627,20 @@ export async function signOutAccountInOrder(
   await revokeAccountCredential();
 }
 
-export const remoteAdministrationActionLabels = {
-  off: "Turn off",
-  connect: "Enable Connect",
-  private: "Private network",
-  rotate: "Rotate Connect credential",
-  unlink: "Unlink Account",
-  recover: "Recover",
-  pair: "Create pairing code",
-  link: "Link Account",
-} as const;
-export function remoteAdministrationActions(
-  status: import("@opensteer/protocol").PersonalRemoteAdministrationStatus,
-): (keyof typeof remoteAdministrationActionLabels)[] {
-  const pending = status.operation?.state === "pending" || status.operation?.state === "running";
-  if (pending) return ["off"];
-  const actions: (keyof typeof remoteAdministrationActionLabels)[] = ["off", "private", "recover"];
-  if (status.accountIssuer) {
-    if (status.access.accountLink) actions.push("connect", "unlink");
-    else actions.push("link");
-  }
-  if (status.access.mode === "connect") actions.push("rotate");
-  if (status.access.mode === "private") actions.push("pair");
-  return actions;
+/** Where a signed-in device was last seen, in words a person reads at a glance. */
+export function sessionActivityLine(
+  session: { readonly current: boolean; readonly lastSeenAt: string },
+  now: Date,
+): string {
+  if (session.current) return "This device";
+  const elapsed = Math.max(0, now.getTime() - Date.parse(session.lastSeenAt));
+  const minutes = Math.floor(elapsed / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+  if (!Number.isFinite(elapsed) || minutes < 1) return "Active now";
+  if (hours < 1) return `Active ${plural(minutes, "minute")}`;
+  if (days < 1) return `Active ${plural(hours, "hour")}`;
+  if (days < 7) return `Active ${plural(days, "day")}`;
+  return `Active ${formatRelativeTime(session.lastSeenAt, now)}`;
 }

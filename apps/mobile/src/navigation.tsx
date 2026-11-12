@@ -37,7 +37,6 @@ import { ScheduleScreen, type ScheduleDestination } from "./screens/schedule.js"
 import { SchedulesScreen } from "./screens/schedules.js";
 import {
   SettingsAccountScreen,
-  SettingsRemoteAccessScreen,
   SettingsSessionDetailScreen,
   SettingsAIScreen,
   SettingsDevicesScreen,
@@ -415,13 +414,9 @@ const RootStack = createNativeStackNavigator({
       },
     },
     SettingsAccount: { screen: SettingsAccountScreen, options: { title: "Account" } },
-    SettingsRemoteAccess: {
-      screen: SettingsRemoteAccessScreen,
-      options: { title: "Remote access" },
-    },
     SettingsSessionDetail: {
       screen: SettingsSessionDetailScreen,
-      options: { title: "Signed-in session" },
+      options: { title: "Signed-in device" },
     },
     SettingsDevices: { screen: SettingsDevicesScreen, options: { title: "Devices" } },
     SettingsMessaging: { screen: SettingsMessagingScreen, options: { title: "Messaging" } },
@@ -684,7 +679,6 @@ type OpensteerRootParamList = {
   readonly SettingsAiSharing: undefined;
   readonly SettingsGeneral: { readonly deploymentId: string };
   readonly SettingsAccount: { readonly deploymentId: string };
-  readonly SettingsRemoteAccess: { readonly deploymentId: string };
   readonly SettingsSessionDetail: { readonly deploymentId: string; readonly sessionId: string };
   readonly SettingsDevices: { readonly deploymentId: string };
   readonly SettingsMessaging: { readonly deploymentId: string };

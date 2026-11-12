@@ -9,65 +9,16 @@ const state = vi.hoisted(() => ({
   host: null as unknown,
   notices: null as unknown,
 }));
-vi.mock("react-native", () => ({
-  Switch: (p: { accessibilityLabel: string; value: boolean; onValueChange: () => void }) => (
-    <input
-      aria-label={p.accessibilityLabel}
-      type="checkbox"
-      checked={p.value}
-      onChange={p.onValueChange}
-    />
-  ),
-  TextInput: (p: {
-    accessibilityLabel: string;
-    value: string;
-    onChangeText: (s: string) => void;
-  }) => (
-    <textarea
-      aria-label={p.accessibilityLabel}
-      value={p.value}
-      onChange={(e) => p.onChangeText(e.currentTarget.value)}
-    />
-  ),
-  StyleSheet: { create: (styles: object) => styles, hairlineWidth: 1 },
-  Text: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  View: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-  Pressable: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
-}));
-vi.mock("../theme.js", () => ({ color: {}, radius: {}, space: {}, touchTarget: 44 }));
-vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/choice-menu.js", () => ({ ChoiceMenu: () => null }));
-vi.mock("../ui/primitives.js", () => ({
-  AppText: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
-  RowGroup: ({ children }: { children: readonly ReactNode[] }) => <div>{children}</div>,
-  SecondaryButton: (props: { accessibilityLabel?: string; label: string; onPress: () => void }) => (
-    <button aria-label={props.accessibilityLabel ?? props.label} onClick={props.onPress}>
-      {props.label}
-    </button>
-  ),
-  SectionLabel: ({ children }: { children?: ReactNode }) => <h2>{children}</h2>,
-}));
-vi.mock("../thread/composer-menu.js", () => ({
-  NativeMenu: (props: {
-    accessibilityLabel: string;
-    children: ReactNode;
-    options: readonly { label: string; onPress: () => void; selected?: boolean }[];
-  }) => (
-    <div aria-label={props.accessibilityLabel} role="menu">
-      {props.children}
-      {props.options.map((option) => (
-        <button
-          aria-checked={option.selected === true}
-          key={option.label}
-          onClick={option.onPress}
-          role="menuitemradio"
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  ),
-}));
+vi.mock("react-native", () => ({ Linking: { openURL: vi.fn() } }));
+vi.mock("../theme.js", () => ({ color: new Proxy({}, { get: () => "#000000" }) }));
+vi.mock(
+  "@expo/ui/jetpack-compose",
+  async () => (await import("../../test-support/jetpack-compose-mock.js")).compose,
+);
+vi.mock(
+  "@expo/ui/jetpack-compose/modifiers",
+  async () => (await import("../../test-support/jetpack-compose-mock.js")).composeModifiers,
+);
 vi.mock("../ui/mobile-client-context.js", () => {
   const mobile = {
     get usageNotices() {
@@ -94,13 +45,13 @@ describe("Automatic models on a phone", () => {
   it("edits the ordered list and account eligibility", async () => {
     const { host } = await open();
     expect(document.body.textContent).toContain("General preference");
-    await press(button("Move deep 1 down"));
+    await press(menuAction("More actions for Nightly memory 1", "Move down"));
     await vi.waitFor(async () => {
       const v = await host.rpc["automaticModels.get"]({});
       expect(v.ok && v.data.config.roles.deep?.[0]).toMatchObject({ model: "gpt-6.1-sol" });
     });
-    await press(button("Remove deep 1"));
-    await press(menuItem("Add Nightly memory", "OpenRouter")!);
+    await press(menuAction("More actions for Nightly memory 1", "Remove"));
+    await press(choice("Add Nightly memory", "OpenRouter"));
     await vi.waitFor(async () => {
       const v = await host.rpc["automaticModels.get"]({});
       expect(v.ok && v.data.config.roles.deep?.some((e) => "harnessInstanceId" in e)).toBe(true);
@@ -108,7 +59,7 @@ describe("Automatic models on a phone", () => {
     const toggle = document.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     await press(toggle);
     await vi.waitFor(() => expect(toggle.checked).toBe(false));
-    await press(button("Reset deep to default"));
+    await press(buttonWithText("Reset deep to default"));
     await vi.waitFor(async () => {
       const v = await host.rpc["automaticModels.get"]({});
       expect(v.ok && v.data.config.roles.deep).toBeUndefined();
@@ -116,7 +67,7 @@ describe("Automatic models on a phone", () => {
   });
   it("round trips Advanced JSON and explains strict errors", async () => {
     const { host } = await open();
-    await press(button("Advanced"));
+    await press(buttonWithText("Advanced"));
     const textarea = document.querySelector<HTMLTextAreaElement>("textarea")!;
     const type = async (value: string) =>
       act(async () => {
@@ -127,12 +78,12 @@ describe("Automatic models on a phone", () => {
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
       });
     await type('{"roles":{"deep":[]},"excludedAccounts":[]}');
-    await press(button("Save JSON"));
+    await press(buttonWithText("Save JSON"));
     expect(document.body.textContent).toContain("Too small");
     await type(
       '{"roles":{"deep":[{"engine":"codex","model":"gpt-6.1-sol"}]},"excludedAccounts":[]}',
     );
-    await press(button("Save JSON"));
+    await press(buttonWithText("Save JSON"));
     await vi.waitFor(async () => {
       const result = await host.rpc["automaticModels.get"]({});
       expect(result.ok && result.data.config.roles.deep).toHaveLength(1);
@@ -145,7 +96,7 @@ describe("Automatic models on a phone", () => {
     );
     await press(document.querySelector<HTMLInputElement>('input[type="checkbox"]'));
     await vi.waitFor(() => expect(JSON.parse(textarea.value).excludedAccounts).toHaveLength(1));
-    await press(button("Save JSON"));
+    await press(buttonWithText("Save JSON"));
     await vi.waitFor(async () => {
       const result = await host.rpc["automaticModels.get"]({});
       expect(result.ok && result.data.config.excludedAccounts).toHaveLength(1);
@@ -159,7 +110,7 @@ describe("Automatic models on a phone", () => {
     let saved: readonly string[] = [];
     const storage = { read: () => saved, write: (keys: readonly string[]) => void (saved = keys) };
     await open({}, createUsageNoticeDismissals(storage));
-    await press(button("Dismiss"));
+    await press(buttonWithText("Dismiss"));
     for (const root of roots.splice(0)) act(() => root.unmount());
     await open({}, createUsageNoticeDismissals(storage));
     expect(document.body.textContent).not.toContain("Automatic work —");
@@ -187,15 +138,31 @@ async function open(
   await vi.waitFor(() => expect(document.body.textContent).not.toContain("Loading…"));
   return { host };
 }
-function button(label: string): HTMLButtonElement | null {
-  return document.querySelector<HTMLButtonElement>(`button[aria-label="${CSS.escape(label)}"]`);
-}
-function menuItem(role: string, label: string): HTMLButtonElement | undefined {
-  const menu = [...document.querySelectorAll('[role="menu"]')].find(
-    (item) => item.getAttribute("aria-label") === role,
+function buttonWithText(text: string): HTMLButtonElement | null {
+  return (
+    [...document.querySelectorAll("button")].find((item) =>
+      item.textContent?.trim().startsWith(text),
+    ) ?? null
   );
-  return [...(menu?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((item) =>
-    item.textContent?.includes(label),
+}
+/** An action in the overflow menu whose button is named `menu`. */
+function menuAction(menu: string, label: string): HTMLButtonElement | null {
+  const trigger = document.querySelector(`button[aria-label="${CSS.escape(menu)}"]`);
+  return (
+    [...(trigger?.closest("[data-menu]")?.querySelectorAll("button") ?? [])].find(
+      (item) => item.textContent === label,
+    ) ?? null
+  );
+}
+/** A choice offered under the row titled `title`. */
+function choice(title: string, label: string): HTMLButtonElement | null {
+  const menu = [...document.querySelectorAll("[data-menu]")].find(
+    (item) => item.querySelector("span")?.textContent === title,
+  );
+  return (
+    [...(menu?.querySelectorAll("button") ?? [])].find((item) =>
+      item.textContent?.includes(label),
+    ) ?? null
   );
 }
 async function press(target: HTMLElement | null) {
