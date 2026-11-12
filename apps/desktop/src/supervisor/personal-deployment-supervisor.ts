@@ -32,7 +32,6 @@ import { throwIfAborted } from "@opensteer/shared/throwIfAborted";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
-import path from "node:path";
 import { logShutdownError, runShutdownStep, type ShutdownLog } from "../app/desktop-shutdown.js";
 import {
   PersonalRuntimeReleaseError,
@@ -137,7 +136,6 @@ interface PersonalDeploymentSupervisorOptions {
   readonly shutdownTimeoutMs?: number;
   readonly startupTimeoutMs?: number;
   readonly userEnvironment?: PersonalUserEnvironmentPort;
-  readonly workspaceRoot: string;
 }
 
 export interface PersonalLoopbackPortPort {
@@ -231,7 +229,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
   readonly #shutdownTimeoutMs: number;
   readonly #startupTimeoutMs: number;
   readonly #userEnvironment: PersonalUserEnvironmentPort;
-  readonly #workspaceRoot: string;
   #abort: AbortController | undefined;
   #browser: PersonalLocalBrowserHandle | null = null;
   /** The Deployment whose computer-use bridge this stack holds, while it does. */
@@ -283,7 +280,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     this.#processes = options.processes;
     this.#portalOrigin = options.portalOrigin ? new URL(String(options.portalOrigin)).origin : null;
     this.#release = options.release ?? (() => readPersonalRuntimeRelease(options.releaseDirectory));
-    this.#workspaceRoot = normalizedAbsolutePath(options.workspaceRoot, "Personal Workspace root");
     this.#now = options.now ?? (() => new Date());
     this.#log =
       options.log ?? ((event, fields) => console.info(JSON.stringify({ event, ...fields })));
@@ -1525,7 +1521,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
       schemaVersion: 3,
       setupIntentId: globalThis.crypto.randomUUID(),
       updatedAt: now,
-      workspaceRoot: this.#workspaceRoot,
     });
   }
 
@@ -1553,11 +1548,6 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
     manifest: PersonalDeploymentManifest,
     release: VerifiedPersonalRuntimeRelease,
   ): Promise<PersonalDeploymentManifest> {
-    if (manifest.workspaceRoot !== this.#workspaceRoot) {
-      throw new PersonalUpdateRequiredError(
-        "This Personal deployment belongs to a different managed Workspace root.",
-      );
-    }
     if (JSON.stringify(manifest.release) === JSON.stringify(release.identity)) return manifest;
     if (
       manifest.release.operatingSystem !== release.identity.operatingSystem ||
@@ -1753,7 +1743,6 @@ function hostSpec(
       OPENSTEER_CREDENTIAL_KEY_PATH: paths.credentialKeyPath,
       OPENSTEER_DEPLOYMENT_ID: manifest.deploymentId,
       OPENSTEER_DEPLOYMENT_NAME: manifest.name,
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_HOST_DATA_DIR: paths.hostDataDirectory,
       OPENSTEER_HOST_INSTANCE_ID: manifest.hostInstanceId,
@@ -1763,11 +1752,10 @@ function hostSpec(
       OPENSTEER_HOST_RELEASE_VERSION: release.assets.webDistribution.hostVersion,
       OPENSTEER_LOCAL_PASSWORD_ENABLED: "false",
       OPENSTEER_PASSKEYS: passkeys ? "1" : "0",
-      // The Host names the machine new Workspaces go to; the co-located Runner
-      // owns the directories and the protected registry themselves.
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: manifest.environmentId,
+      OPENSTEER_HOSTING_ENVIRONMENT_ID: manifest.environmentId,
       OPENSTEER_MODE: "production",
       OPENSTEER_NATIVE_OAUTH_ENABLED: "false",
+      OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
       OPENSTEER_PORT: String(manifest.hostPort),
       ...(accountIssuer ? { OPENSTEER_PERSONAL_ACCOUNT_ISSUER: accountIssuer } : {}),
       ...(portalOrigin ? { OPENSTEER_PORTAL_ORIGIN: portalOrigin } : {}),
@@ -1861,16 +1849,9 @@ function runnerSpec(
             release.harnesses[entry.kind],
           ]),
       ),
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
       OPENSTEER_DEPLOYMENT_KIND: "personal",
       OPENSTEER_ENVIRONMENT_ID: manifest.environmentId,
       OPENSTEER_HOST_URL: `http://127.0.0.1:${manifest.hostPort}`,
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: paths.workspaceRegistryPath,
-      OPENSTEER_LOCAL_WORKSPACE_LEGACY_REGISTRY_PATH: path.join(
-        paths.hostDataDirectory,
-        "workspace-bindings.v1.json",
-      ),
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: paths.workspaceRoot,
       OPENSTEER_MAX_CONCURRENT_RUNS: "4",
       OPENSTEER_MODE: "production",
       OPENSTEER_NATIVE_FS_HELPER: release.entrypoints.nativeFsHelper,
@@ -1879,7 +1860,6 @@ function runnerSpec(
       OPENSTEER_RUNNER_ID: manifest.runnerId,
       OPENSTEER_RUNNER_KIND: "main",
       OPENSTEER_RUNNER_NAME: manifest.name,
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
     },
     executable: release.entrypoints.runner,
     // Never in the environment: every Runner credential travels on stdin,
@@ -2174,11 +2154,6 @@ function boundedDuration(value: number, label: string): number {
     throw new TypeError(`${label} is invalid.`);
   }
   return value;
-}
-
-function normalizedAbsolutePath(value: string, label: string): string {
-  if (!path.isAbsolute(value)) throw new Error(`${label} must be an absolute path.`);
-  return path.resolve(value);
 }
 
 async function allocateLoopbackPort(): Promise<number> {

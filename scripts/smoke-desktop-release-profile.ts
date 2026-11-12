@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import path from "node:path";
 import { createId } from "../packages/core/src/ids.js";
 import {
   PersonalDeploymentManifestSchema,
@@ -8,12 +7,7 @@ import {
 import { DeploymentCatalogSchema } from "../packages/client/src/connections/deployment-catalog.js";
 
 /** Persist only the choice to start Personal; the app creates its database and credentials. */
-export function personalSetupIntent(
-  releaseBytes: string,
-  home: string,
-  hostPort: number,
-  postgresPort: number,
-) {
+export function personalSetupIntent(releaseBytes: string, hostPort: number, postgresPort: number) {
   const release = PersonalRuntimeIdentitySchema.parse({
     ...PersonalRuntimeIdentitySchema.omit({ manifestSha256: true })
       .strip()
@@ -38,11 +32,10 @@ export function personalSetupIntent(
     hostPort,
     postgresPort,
     release,
-    workspaceRoot: path.join(home, "Workspaces"),
   });
 }
 
-/** The supervisor publishes this selection only after owner, Runner and Main readiness. */
+/** The supervisor publishes this selection only after owner, Runner and agent-home readiness. */
 export function personalSelectionReady(serialized: string, deploymentId: string): boolean {
   const catalog = DeploymentCatalogSchema.parse(JSON.parse(serialized));
   return (

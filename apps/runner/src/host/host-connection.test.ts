@@ -175,7 +175,7 @@ describe("WebSocketMessageSink", () => {
     ledger.adopt(fence, new Date(Date.now() + 60_000).toISOString());
     const sink = new WebSocketMessageSink(socket, ledger);
     const reply = {
-      appId: "app_test",
+      appId: `app_${randomUUID()}`,
       ok: false,
       error: "Test app failure",
       fence: {
@@ -479,8 +479,6 @@ describe("runnerWebSocketUrl", () => {
         enrollmentToken: "f".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -490,8 +488,6 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-
-        workspaceNamespace: "single-owner",
       } as unknown as RunnerConfig,
       fullDiskAccessProbe: { deniedIntervalMs: 5, grantedIntervalMs: 5, probe },
       identity,
@@ -590,8 +586,6 @@ describe("runnerWebSocketUrl", () => {
       OPENSTEER_HOST_URL: `http://127.0.0.1:${address.port}`,
       OPENSTEER_RUNNER_MODULES: "agents,browser",
       OPENSTEER_MAX_CONCURRENT_RUNS: "1",
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: "/tmp/opensteer-browser-agents-test/workspaces",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: "/tmp/opensteer-browser-agents-test/workspaces.json",
       OPENSTEER_RUNNER_ENROLLMENT_TOKEN: "e".repeat(32),
       OPENSTEER_BROWSER_BRIDGE_URL: `http://127.0.0.1:${address.port}`,
       OPENSTEER_BROWSER_BRIDGE_TOKEN: "b".repeat(32),
@@ -840,15 +834,10 @@ describe("runnerWebSocketUrl", () => {
       maxConcurrentTriggerPrograms: 4,
       mode: "development",
       modules: ["agents", "browser", "shell"],
-
-      localWorkspaceRegistryPath: undefined,
-      localWorkspaceRoot: undefined,
       name: "Test runner",
       nodeExecutable: process.execPath,
       runnerId,
       runnerKind: "main",
-
-      workspaceNamespace: "owner-scoped",
     } as unknown as RunnerConfig;
     const pair = generateKeyPairSync("ed25519");
     const identity = {
@@ -883,15 +872,15 @@ describe("runnerWebSocketUrl", () => {
       expect(authorization).toBeUndefined();
       expect(received).toContainEqual(
         expect.objectContaining({
-          type: "runner.skills.report",
-          environmentId,
-          scanSequence: 1,
-          result: { status: "complete", skills: [], warnings: [] },
+          type: "runner.harness-catalog",
+          requestId: "cold-catalog",
+          catalogs: [],
         }),
       );
-      const reportIndex = received.findIndex(
-        (message) => (message as { type: string }).type === "runner.skills.report",
-      );
+      const reportIndex = received.findIndex((message) => {
+        const report = message as { type: string; requestId?: string };
+        return report.type === "runner.harness-catalog" && report.requestId === "cold-catalog";
+      });
       const commandIndex = received.findIndex(
         (message) => (message as { type: string }).type === "runner.command-rejected",
       );
@@ -1093,8 +1082,6 @@ describe("runnerWebSocketUrl", () => {
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1104,8 +1091,6 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-
-        workspaceNamespace: "single-owner",
       } as unknown as RunnerConfig,
       identity,
       identityStore: {
@@ -1336,8 +1321,6 @@ describe("runnerWebSocketUrl", () => {
         enrollmentToken: "i".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1347,8 +1330,6 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-
-        workspaceNamespace: "single-owner",
       } as unknown as RunnerConfig,
       identity,
       identityStore: {
@@ -1546,8 +1527,6 @@ describe("runnerWebSocketUrl", () => {
         enrollmentToken: "r".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1557,8 +1536,6 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-
-        workspaceNamespace: "single-owner",
       } as unknown as RunnerConfig,
       identity,
       identityStore: {
@@ -1703,8 +1680,6 @@ describe("runnerWebSocketUrl", () => {
         enrollmentToken: "v".repeat(32),
         environmentId,
         hostUrl: new URL(`http://127.0.0.1:${address.port}`),
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -1714,8 +1689,6 @@ describe("runnerWebSocketUrl", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "local",
-
-        workspaceNamespace: "single-owner",
       } as unknown as RunnerConfig,
       identity,
       identityStore: { acceptHostConnection: async () => identity },
@@ -1858,15 +1831,10 @@ describe("runnerWebSocketUrl", () => {
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
         modules: ["agents", "browser", "shell"],
-
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         name: "Test runner",
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-
-        workspaceNamespace: "owner-scoped",
       } as unknown as RunnerConfig,
       identity,
       identityStore: {
@@ -2204,8 +2172,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         enrollmentToken: "e".repeat(32),
         environmentId,
         hostUrl,
-        localWorkspaceRegistryPath: undefined,
-        localWorkspaceRoot: undefined,
         maxConcurrentRuns: 1,
         maxConcurrentTriggerPrograms: 4,
         mode: "development",
@@ -2214,8 +2180,6 @@ describe("ReconnectingHostConnection engine rechecks", () => {
         nodeExecutable: process.execPath,
         runnerId,
         runnerKind: "main",
-
-        workspaceNamespace: "owner-scoped",
       } as unknown as RunnerConfig,
       identity,
       identityStore: {

@@ -4,9 +4,9 @@ Choose the identity for each piece of work yourself. Ask the person which profil
 
 1. **Signed-out or throwaway work** (reading, searching, public pages): open Guest with `browser_session_open {fresh: true}`. Nothing in Guest is kept when it closes, so never have the person sign in there for work they expect to keep.
 2. **Work as the person, or work they want kept:** call `browser_profile_list` and open the profile that fits with `browser_session_open {profileId}`. Fit means a profile named for the site or account, the one this Thread already used for the site (`browser_tab_read` shows each tab's profile), or the person's general profile such as Personal or Work. A name never proves a login: check the website, and use `sign_in` if it shows you signed out.
-3. **Nothing listed fits:** call `browser_profile_request`. Only the person creates profiles and grants them; you cannot. Ask when the person wants a new profile or names one you cannot see, when the work needs an identity separate from every listed profile (a second account on the same site, or keeping work and personal apart), or when a Project needs a profile it has not been granted. Suggest `{kind: "new", suggestedName}` with one or two plain words such as “Brex”, “Work” or “Finance”, or `{kind: "existing", profileId}`.
+3. **Nothing listed fits:** call `browser_profile_request` with `reason` and `suggestion`, plus an optional `operationKey` for retries. Only the person creates or selects a profile through this Request. Ask when the person wants a new profile or the work needs a separate identity, such as a second account on the same site. Suggest `{kind: "new", suggestedName}` with one or two plain words such as “Brex”, “Work” or “Finance”, or `{kind: "existing", profileId}`.
 
-Agent home inherits the owner’s profiles: when the person supplies an existing owner profile’s ID, open that ID directly. A profile the task folder that needs it can already use never needs a Request; asking for it is refused. Omit `folder` to ask for the task folder. From Agent home, `browser_profile_list` shows every profile the person has, but a Project can use only those granted to it: to give a Project one, pass the Project's `folder`.
+Profiles belong to the personal owner. Every personal task can use the owner's available profiles; choosing another task folder does not change profile access. Open an available profile directly, including an existing owner profile whose ID the person supplied. Profile creation and site consent remain the person's decisions.
 
 The call waits for the person and returns the outcome, naming the profile they chose, which may differ from your suggestion: open that one, before anyone signs in. Pending gives no profile; do not poll, repeat or route around the Request. If they decline, carry on without it and do not ask again unless the person brings it up.
 
@@ -18,7 +18,7 @@ To continue work, reuse the session ID from earlier in the Thread or find it wit
 
 Several Runs may share a session; `activeAttachmentCount` is not a lock. Sessions outlive Runs. Close a session only when asked or when it is deliberately disposable. All tasks use the owner's sessions with their live resource grants and access ceiling.
 
-A profile's home never changes. The listing's `home` names it and its reachability; null means an unplaced legacy profile. Homed profiles ignore `environmentId` and open only at home, even without agents there. Guest and unplaced opens require an eligible agent computer or the server's managed browser service; `environmentId` chooses among those, never someone's browser-only device.
+A profile's home never changes. The listing's `home` names its owning computer and reachability. Open it only on that computer, even when the computer runs no agents. An unavailable home is a reason to reconnect that computer, never to move the profile or substitute another identity. Guest uses an eligible computer in the personal Deployment.
 
 ## Failures
 

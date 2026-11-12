@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createId } from "@opensteer/core";
+import { desktopDeploymentPaths } from "../app/application-paths.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 import {
@@ -40,7 +41,7 @@ afterEach(async () => {
 describe("NativePersonalDeploymentFilesystem", () => {
   it("discards a release-realistic v1 manifest and migrates v2 identity to v3", async () => {
     const root = await temporaryDirectory();
-    const current = { ...manifest(path.join(root, "Workspaces")), revision: 4 };
+    const current = { ...manifest(), revision: 4 };
     const { name: _name, schemaVersion: _schemaVersion, ...priorFields } = current;
     let content: Buffer | null = Buffer.from(
       `${JSON.stringify({ ...priorFields, schemaVersion: 1 })}\n`,
@@ -93,20 +94,18 @@ describe("NativePersonalDeploymentFilesystem", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const input = manifest(path.join(root, "Opensteer", "Workspaces"));
+    const input = manifest();
     const created = await files.create(input);
     expect(await files.create({ ...input, deploymentId: createId("deployment") })).toEqual(created);
     expect(await files.load()).toEqual(created);
 
     const paths = await files.prepare(created);
-    expect(paths.workspaceRoot).toBe(input.workspaceRoot);
     for (const directory of [
       paths.browserProfileRoot,
       paths.rootDirectory,
       paths.hostDataDirectory,
       paths.postgresDataDirectory,
       paths.runnerDataDirectory,
-      paths.workspaceRoot,
     ]) {
       const metadata = await lstat(directory);
       expect(metadata.isDirectory()).toBe(true);
@@ -125,7 +124,7 @@ describe("NativePersonalDeploymentFilesystem", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const advanced = PersonalDeploymentManifestSchema.parse({
       ...created,
       databaseInitialized: true,
@@ -150,7 +149,7 @@ describe("NativePersonalDeploymentFilesystem", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const nextRelease = {
       ...created.release,
       hostVersion: "1.2.4",
@@ -206,7 +205,7 @@ describe("NativePersonalDeploymentFilesystem", () => {
     await expect(files.load()).rejects.toThrow(/real regular file/u);
 
     await rm(files.manifestPath);
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const paths = await files.prepare(created);
     await rm(paths.runnerDataDirectory, { recursive: true });
     await symlink(root, paths.runnerDataDirectory);
@@ -246,24 +245,21 @@ describe("a managed directory that cannot be prepared", () => {
     ["a parent it may not write", { code: "EACCES" }],
   ] as const)("names %s as invalid", async (shape, cause) => {
     const root = await temporaryDirectory();
-    const blocker = path.join(root, "blocker");
+    const dataDirectory = path.join(root, "data");
+    const files = new NativePersonalDeploymentFilesystem({ dataDirectory, minimumFreeBytes: 0 });
+    const created = await files.create(manifest());
+    const paths = desktopDeploymentPaths(dataDirectory, created.deploymentId);
+    const inside = shape === "a file inside its path" || shape === "a parent it may not write";
+    const blocker = inside ? paths.rootDirectory : paths.temporaryDirectory;
+    await mkdir(path.dirname(blocker), { recursive: true });
     if (shape === "a parent it may not write") await mkdir(blocker, { mode: 0o500 });
     else if (shape === "a symlink where it belongs") await symlink(root, blocker);
     else await writeFile(blocker, "x");
-    const files = new NativePersonalDeploymentFilesystem({
-      dataDirectory: path.join(root, "data"),
-      minimumFreeBytes: 0,
-    });
-    const created = await files.create(
-      manifest(
-        shape === "a file inside its path" || shape === "a parent it may not write"
-          ? path.join(blocker, "Opensteer", "Workspaces")
-          : blocker,
-      ),
-    );
 
     try {
-      const error = await files.prepare(created).catch((reason: unknown) => reason);
+      const error = await files
+        .stageDatabaseInitPassword(created, "fixture-password")
+        .catch((reason: unknown) => reason);
       // Failure mode: a directory the person must repair is retried forever.
       expect(error).toBeInstanceOf(PersonalFilesystemError);
       expect(error).toMatchObject({ code: "directory-invalid", cause });
@@ -301,7 +297,7 @@ async function createdDeployment() {
     dataDirectory: path.join(root, "data"),
     minimumFreeBytes: 0,
   });
-  const created = await files.create(manifest(path.join(root, "Workspaces")));
+  const created = await files.create(manifest());
   return { created, files };
 }
 
@@ -311,7 +307,7 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function manifest(workspaceRoot: string): Omit<PersonalDeploymentManifest, "revision"> {
+function manifest(): Omit<PersonalDeploymentManifest, "revision"> {
   return {
     createdAt: "2026-08-12T12:00:00.000Z",
     databaseInitialized: false,
@@ -336,6 +332,5 @@ function manifest(workspaceRoot: string): Omit<PersonalDeploymentManifest, "revi
     schemaVersion: 3,
     setupIntentId: "019ff6c2-309a-7380-9093-e126eb2bda4b",
     updatedAt: "2026-08-12T12:00:00.000Z",
-    workspaceRoot: path.resolve(workspaceRoot),
   };
 }

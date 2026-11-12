@@ -84,7 +84,6 @@ try {
     schemaVersion: 3,
     setupIntentId: globalThis.crypto.randomUUID(),
     updatedAt: now,
-    workspaceRoot: path.join(root, "Workspaces"),
   });
   const paths = await files.prepare(manifest);
   run(binary("initdb"), [

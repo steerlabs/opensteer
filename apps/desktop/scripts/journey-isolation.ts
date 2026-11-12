@@ -23,7 +23,6 @@ export { ProcessSchema, type ProcessRow } from "./journey-processes.js";
 // determines which listeners can fail certification.
 export const LISTENER_POLICY = "test-processes-and-recorded-group-descendants";
 export const JOURNEY_NAMES = [
-  "desktop-projects",
   "saved-password",
   "chrome-background",
   "windows",

@@ -115,9 +115,11 @@ epoch before parsing identity, so an old Host gets an upgrade message, not a par
 `client.subscribe` refuse a missing or mismatched epoch before dispatch. The epoch and optional
 capabilities live outside the signed Host identity.
 
-Within an epoch, compatibility targets the previous public release.
-[The previous-release journey](../apps/host/src/agents/previous-release-compat.integration.test.ts)
-runs that frozen client; move its baseline when a release goes public.
+Personal epoch changes require both ends to update. The
+[version verification proof](../packages/deployment-authority/src/verification.test.ts) checks
+that refusal before parsing an incompatible identity. A fresh database lineage also refuses
+older personal data; the desktop sets it aside through Start fresh. Within an unchanged
+epoch, readers preserve these compatibility rules:
 
 - Readers tolerate added response fields and skip unknown union members and enum values instead of
   refusing a whole list or frame. The [tolerance guard](../tests/host-response-tolerance.test.ts)

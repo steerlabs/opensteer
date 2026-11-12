@@ -875,7 +875,7 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   // The Main Runner is the one that shares a computer with its Personal Host,
   // so only it must reach that Host over loopback. Every other computer on a
   // Personal Deployment is reachable-only and connects to the signed access
-  // route, which is an HTTPS origin (`docs/computers.md#membership`).
+  // route, which is an HTTPS origin (`docs/computers.md#enrollment`).
   if (
     deploymentPolicy(config.deploymentShape).loopbackOnly &&
     config.runnerKind === "main" &&

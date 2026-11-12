@@ -3182,13 +3182,14 @@ describe("a finished task's title", () => {
         modelLabel: null,
         objectivePreview: "Plan trip",
         origin: "run",
-        // Not in this reader's snapshot unless it is their Chat.
+        // The requesting task may be outside this snapshot.
         parentThreadId: readableRequester ? conversationId : createId("thread"),
         resultPreview: null,
         returnStatus: "delivered",
         revision: 2,
         status: "completed",
         workerThread: {
+          folder: work.folder,
           id: work.id,
           environmentId: work.environmentId,
           status: "idle",

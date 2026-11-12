@@ -11,6 +11,7 @@ import {
 import type { Kysely, Transaction } from "kysely";
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { withDatabaseTransaction } from "./connection.js";
 import { databaseOperationOptions } from "./operation-budget.js";
 import type { DatabaseSchema } from "./schema.js";
@@ -53,14 +54,19 @@ export class BrowserHistoryStore {
     this.#database = database;
   }
 
-  async #profile(tx: Transaction<DatabaseSchema>, profileId: BrowserProfileId, ownerId?: UserId) {
+  async #profile(
+    tx: Transaction<DatabaseSchema>,
+    profileId: BrowserProfileId,
+    ownerId?: UserId,
+    lock = true,
+  ) {
     let query = tx
       .selectFrom("browserProfiles")
       .select("id")
       .where("id", "=", profileId)
       .where("archivedAt", "is", null);
     if (ownerId) query = query.where("ownerId", "=", ownerId);
-    return query.forNoKeyUpdate().executeTakeFirst(databaseOperationOptions());
+    return (lock ? query.forNoKeyUpdate() : query).executeTakeFirst(databaseOperationOptions());
   }
 
   async #prune(tx: Transaction<DatabaseSchema>, profileId: BrowserProfileId, now: Date) {
@@ -256,8 +262,8 @@ export class BrowserHistoryStore {
   }
 
   async list(profileId: BrowserProfileId, ownerId: UserId): Promise<BrowserHistory> {
-    return withDatabaseTransaction(this.#database, async (tx) => {
-      if (!(await this.#profile(tx, profileId, ownerId)))
+    return withPersonalReadTransaction(this.#database, async (tx) => {
+      if (!(await this.#profile(tx, profileId, ownerId, false)))
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       const rows = await tx
         .selectFrom("browserHistoryEntries")
@@ -295,8 +301,8 @@ export class BrowserHistoryStore {
     ownerId: UserId,
     refs: readonly string[],
   ): Promise<BrowserHistoryIcons> {
-    return withDatabaseTransaction(this.#database, async (tx) => {
-      if (!(await this.#profile(tx, profileId, ownerId)))
+    return withPersonalReadTransaction(this.#database, async (tx) => {
+      if (!(await this.#profile(tx, profileId, ownerId, false)))
         throw new OpensteerError({ code: "not_found", message: "Browser profile not found" });
       if (!refs.length) return { icons: [] };
       const icons = await tx

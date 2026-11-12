@@ -28,7 +28,7 @@ describe("NativePersonalDeploymentCredentials", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const paths = await files.prepare(created);
     const credentials = new NativePersonalDeploymentCredentials(cryptography());
     const first = await credentials.ensure(created, paths);
@@ -63,7 +63,7 @@ describe("NativePersonalDeploymentCredentials", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const paths = await files.prepare(created);
     const legacy = {
       databasePassword: "d".repeat(64),
@@ -101,7 +101,7 @@ describe("NativePersonalDeploymentCredentials", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const paths = await files.prepare(created);
     await writeFile(paths.credentialKeyPath, "not-a-key\n", { mode: 0o600 });
 
@@ -117,7 +117,7 @@ describe("NativePersonalDeploymentCredentials", () => {
       dataDirectory: path.join(root, "data"),
       minimumFreeBytes: 0,
     });
-    const created = await files.create(manifest(path.join(root, "Workspaces")));
+    const created = await files.create(manifest());
     const paths = await files.prepare(created);
     const unavailable = cryptography();
     unavailable.isAsyncEncryptionAvailable = async () => false;
@@ -139,7 +139,7 @@ function cryptography(): DesktopSecretCryptography {
   };
 }
 
-function manifest(workspaceRoot: string): Omit<PersonalDeploymentManifest, "revision"> {
+function manifest(): Omit<PersonalDeploymentManifest, "revision"> {
   return {
     createdAt: "2026-08-12T12:00:00.000Z",
     databaseInitialized: false,
@@ -164,6 +164,5 @@ function manifest(workspaceRoot: string): Omit<PersonalDeploymentManifest, "revi
     schemaVersion: 3,
     setupIntentId: "019ff6c2-309a-7380-9093-e126eb2bda4b",
     updatedAt: "2026-08-12T12:00:00.000Z",
-    workspaceRoot,
   };
 }

@@ -538,7 +538,6 @@ registerHooks({load(url,context,next){const result=next(url,context);if(!url.end
   let manager: DesktopBrowserPresentationManager;
   const runtimeHandles: Awaited<ReturnType<typeof startLocalBrowserRuntime>>[] = [];
   const supervisor = new PersonalDeploymentSupervisor({
-    workspaceRoot: path.join(run, "agent-home"),
     passkeys: passkeyJourney,
     catalog,
     files,
