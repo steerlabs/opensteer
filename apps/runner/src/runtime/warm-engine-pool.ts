@@ -193,6 +193,7 @@ export function warmEngineKey(input: {
         context.agentTools.tools,
         context.agentTools.skills,
         context.taskPurpose,
+        context.personalContext,
         context.modelSelection,
         [...context.plugins.versions].sort((a, b) => a.pluginId.localeCompare(b.pluginId)),
         input.skills,

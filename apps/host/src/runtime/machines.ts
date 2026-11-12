@@ -1,4 +1,4 @@
-import { runnerRunsItsDeployment, type Workspace } from "@opensteer/core";
+import { runnerRunsItsDeployment } from "@opensteer/core";
 import {
   RunnerModuleNameSchema,
   androidPhoneDefinitionId,
@@ -16,7 +16,6 @@ import {
   type RunnerModules,
 } from "@opensteer/protocol";
 import { browserRuntimeCompatibilityReason } from "../browser/browser-runtime-compatibility.js";
-import { unlinkedLocalBindingCount } from "../workspace/runner-local-storage-reconciliation.js";
 
 /** The access section of a machine row, as a management viewer sees it. */
 export type MachineAccessView = NonNullable<MachineSummary["access"]>;
@@ -97,13 +96,6 @@ export interface MachineProjectionInput {
   readonly computerUseDisplayStreamSupported?: ReadonlyMap<string, boolean>;
   readonly computerUseSessions?: ReadonlyMap<string, readonly ComputerUseSessionSummary[]>;
   readonly deploymentOwnsMainComputer: boolean;
-  /**
-   * Every local-directory Workspace these machines' environments own. A row
-   * counts the folders its machine advertised that none of these claims — the
-   * Runner's own inventory is the other half of that comparison and already
-   * travels in its module descriptor.
-   */
-  readonly localWorkspaces: readonly Workspace[];
   readonly pendingRunners: readonly MachinePendingRunnerInput[];
   readonly runners: readonly MachineRunnerInput[];
   /**
@@ -186,18 +178,13 @@ function pendingModules(allowedModules: readonly RunnerModuleName[]): MachineSum
 function machineStakes(
   runner: MachineRunnerInput,
   input: MachineProjectionInput,
-): { readonly localWorkspaces: number; readonly pinnedThreads: number } {
+): { readonly pinnedThreads: number } {
   const environmentIds = new Set(runner.modules.agents?.environmentIds ?? []);
   let pinnedThreads = 0;
   for (const environmentId of environmentIds) {
     pinnedThreads += input.threadsByEnvironment.get(environmentId) ?? 0;
   }
   return {
-    localWorkspaces: input.localWorkspaces.filter(
-      (workspace) =>
-        workspace.backing.kind === "local-directory" &&
-        environmentIds.has(workspace.backing.ownerEnvironmentId),
-    ).length,
     pinnedThreads,
   };
 }
@@ -375,17 +362,9 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
           : (runner.modules.shell?.fullDiskAccess ?? null),
       id: runner.id,
       lastSeenAt: isoOrNull(runner.lastSeenAt),
-      localWorkspaces: stakes.localWorkspaces,
       modules: projectModules(runner),
       name: runner.name,
-      ownership:
-        runner.ownerKind === "user"
-          ? runner.ownedByViewer === false
-            ? "other"
-            : "mine"
-          : "deployment",
-      ownerName:
-        runner.ownerKind === "user" && runner.ownedByViewer === false ? runner.ownerName : null,
+      ownership: runner.ownerKind === "user" ? "mine" : "deployment",
       pinnedThreads: stakes.pinnedThreads,
       revocable: !personalMain,
       runtimeVersion: runner.runtimeVersion,
@@ -399,10 +378,6 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
               : runner.phoneUpdate === "failed" || runner.updateRequired
                 ? "needs-update"
                 : "offline",
-      unlinkedLocalFolders: unlinkedLocalBindingCount({
-        inventory: runner.modules.agents?.localStorage ?? null,
-        workspaces: input.localWorkspaces,
-      }),
     });
   }
 
@@ -421,17 +396,14 @@ export function projectMachines(input: MachineProjectionInput): readonly Machine
       fullDiskAccess: null,
       id: enrollment.id,
       lastSeenAt: null,
-      localWorkspaces: 0,
       modules: pendingModules(enrollment.allowedModules),
       name: enrollment.name,
       ownership: enrollment.ownerKind === "user" ? "mine" : "deployment",
-      ownerName: null,
       pinnedThreads: 0,
       revocable: false,
       runtimeVersion: null,
       status: "pending",
       // A computer that has not connected yet has reported nothing to compare.
-      unlinkedLocalFolders: 0,
     });
   }
 

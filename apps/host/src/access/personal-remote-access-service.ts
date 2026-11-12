@@ -198,7 +198,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     input: ConfigurePersonalRemoteAccessRequest | unknown,
     afterResponse?: (effect: () => void) => void,
   ): Promise<PersonalRemoteAccessStatus> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const request = ConfigurePersonalRemoteAccessRequestSchema.parse(input);
     let reconfigured = false;
     let ended: readonly AuthSessionId[] = [];
@@ -285,7 +285,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   async issuePairingCode(caller: {
     readonly session: AuthenticatedSession;
   }): Promise<IssuePersonalPairingCodeResponse> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const now = this.#now();
     const code = PersonalPairingCodeSchema.parse(`osp_${randomBytes(32).toString("base64url")}`);
     const expiresAt = new Date(now.getTime() + pairingCodeLifetimeMilliseconds);
@@ -381,7 +381,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       await transaction
         .selectFrom("users")
         .select("id")
-        .where("instanceRole", "=", "administrator")
         .where("disabledAt", "is", null)
         .orderBy("id", "asc")
         .forShare()
@@ -423,7 +422,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     input: IssuePersonalHostAccountLinkChallengeResponse | unknown,
   ) {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const challenge = ApprovePersonalHostAccountLinkRequestSchema.parse(input);
     if (!this.#grantVerifier || challenge.account.issuer !== this.#grantVerifier.issuer) {
       throw new OpensteerError({
@@ -500,7 +499,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     input: unknown,
   ): Promise<PersonalRemoteAccessStatus> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const request = ConsumePersonalHostAccountLinkRequestSchema.parse(input);
     const grantVerifier = this.#grantVerifier;
     if (!grantVerifier)
@@ -643,7 +642,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     input: unknown,
   ): Promise<PersonalRemoteAccessStatus> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     ResumePersonalHostAccountLinkRequestSchema.parse(input);
     const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
@@ -669,7 +668,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     afterResponse?: (effect: () => void) => void,
   ): Promise<void> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const ended = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       return await revokeRemoteSessions(transaction, caller.session, { routeKind: "connect" });
@@ -683,7 +682,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     afterResponse?: (effect: () => void) => void,
   ): Promise<void> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const linked = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
       await requireConnectDisabled(transaction);
@@ -712,7 +711,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
   async markHostedOAuthConnectionsForRepair(caller: {
     readonly session: AuthenticatedSession;
   }): Promise<void> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     await this.#database.transaction().execute(async (transaction) => {
       await transaction
         .updateTable("integrationConnections")
@@ -829,7 +828,6 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       await transaction
         .selectFrom("users")
         .select("id")
-        .where("instanceRole", "=", "administrator")
         .where("disabledAt", "is", null)
         .orderBy("id", "asc")
         .forShare()
@@ -894,7 +892,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     input: unknown,
   ): Promise<void> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const request = PublishPersonalConnectProjectionRequestSchema.parse(input);
     const admitted = await this.#database.transaction().execute(async (transaction) => {
       await lockRemoteAccess(transaction);
@@ -977,7 +975,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     caller: { readonly session: AuthenticatedSession },
     input: RevokeConnectRequest | unknown,
   ): Promise<RevokeConnectResponse> {
-    requirePersonalAdministrator(caller.session);
+    await requirePersonalAdministrator(this.#database, caller.session);
     const request = RevokeConnectRequestSchema.parse(input);
     if (request.hostInstanceId !== this.#authority.hostInstanceId) {
       throw new OpensteerError({

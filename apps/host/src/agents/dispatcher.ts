@@ -603,6 +603,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentToolsUrl,
           purpose: context.thread.purpose,
           teamBound: context.thread.teamOrigin !== null,
+          personalContext: context.personalContext,
           ...(teamContext ? { teamContext } : {}),
           accessMode: context.thread.accessMode,
         }),

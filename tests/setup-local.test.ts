@@ -8,8 +8,7 @@ import { initializeLocalDevelopment } from "../scripts/setup-local.js";
 const template = `OPENSTEER_AUTH_SECRET=replace-with-at-least-32-random-characters
 OPENSTEER_CANONICAL_ORIGIN=http://localhost:43100
 OPENSTEER_BIND_ADDRESS=127.0.0.1
-OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory
-OPENSTEER_DEPLOYMENT_KIND=server
+OPENSTEER_DEPLOYMENT_KIND=personal
 `;
 
 describe("local development initialization", () => {
@@ -33,7 +32,7 @@ describe("local development initialization", () => {
     const firstContent = await readFile(join(repositoryRoot, ".env"), "utf8");
     expect(first.environmentCreated).toBe(true);
     expect(firstContent).not.toContain("replace-with");
-    expect(first).toMatchObject({ backing: "local-directory" });
+    expect(first).toMatchObject({ kind: "personal" });
     expect(commands).toContain("docker info --format {{.ServerVersion}}");
     expect(commands).toContain("pnpm exec playwright-core install chromium");
     expect(
@@ -78,7 +77,7 @@ describe("local development initialization", () => {
     const content = await readFile(join(repositoryRoot, ".env"), "utf8");
     expect(result.environmentUpdated).toBe(true);
     expect(content).toContain(`OPENSTEER_AUTH_SECRET=${authSecret}`);
-    expect(content).toContain("OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
+    expect(content).toContain("OPENSTEER_DEPLOYMENT_KIND=personal");
   });
 
   it("converges concurrent first runs on one persisted set of secrets", async () => {

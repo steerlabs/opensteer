@@ -9872,7 +9872,6 @@ describe("HttpHostClient Run activity and live streams", () => {
       refreshIntervalMs: 0,
       webSocketFactory: () => socket,
     });
-    const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
     const state = (at: string, pendingRequests: number) =>
       agentEvent(workspace.id, thread.id, null, at, "thread.state-changed", {
         inputQueuePaused: false,
@@ -9897,9 +9896,9 @@ describe("HttpHostClient Run activity and live streams", () => {
           type: "host.events",
         }),
       );
-      await vi.waitFor(() => expect(requestReads).toBe(1));
+      await vi.waitFor(() => expect(client.getSnapshot().requests[thread.id]).toHaveLength(1));
+      expect(requestReads).toBe(1);
       for (let at = 3; at < 9; at += 1) {
-        await settle();
         socket.receive(
           eventsFrame({
             events: [
@@ -9913,7 +9912,6 @@ describe("HttpHostClient Run activity and live streams", () => {
           }),
         );
       }
-      await settle();
       expect(requestReads).toBe(1);
 
       // A new count is a new question.
@@ -13430,6 +13428,7 @@ describe("HttpHostClient overnight transcript residency", () => {
         status: "open" as const,
         updatedAt: now,
         workerThread: {
+          folder: f.thread.folder,
           environmentId,
           id: f.thread.id,
           pendingRequests: 1,

@@ -28,7 +28,5 @@ it("refuses automatic model settings from agents before consulting account autho
     code: "forbidden",
     message: "Automatic model preferences require the person",
   });
-  await expect(
-    service.authorize({ kind: "person", userId, isAdministrator: false }, command),
-  ).resolves.toBeUndefined();
+  await expect(service.authorize({ kind: "person", userId }, command)).resolves.toBeUndefined();
 });

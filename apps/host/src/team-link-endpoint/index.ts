@@ -9,6 +9,7 @@ import type { TeamMachineDataPort, TeamMachineFilesPort } from "./contracts.js";
 import type { TeamLinkLifetimes } from "./lifetimes.js";
 
 export function createTeamLinkEndpoint(options: {
+  readonly teamName: string;
   readonly database: Kysely<DatabaseSchema>;
   readonly requests: TeamRequestStorePort;
   readonly access: TeamAccessLockPort;
@@ -17,7 +18,7 @@ export function createTeamLinkEndpoint(options: {
   readonly data: TeamMachineDataPort;
   readonly files: TeamMachineFilesPort;
 }) {
-  const links = new TeamEndpointLinks(options.database, options.access);
+  const links = new TeamEndpointLinks(options.database, options.access, options.teamName);
   const endpoint = new TeamLinkEndpoint({ ...options, links });
   const binary = new TeamLinkBinary(endpoint, options.files, options.resolver);
   return { links, endpoint, binary };

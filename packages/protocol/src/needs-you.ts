@@ -2,11 +2,11 @@ import { z } from "zod";
 import { PendingRequestViewSchema, TaskPurposeSchema, ThreadIdSchema } from "@opensteer/core";
 import { DurableWindowSchema } from "./client.js";
 
-export const NeedsYouPageSchema = z.strictObject({
+export const NeedsYouPageSchema = z.object({
   count: z.number().int().nonnegative(),
   entries: z
     .array(
-      z.strictObject({
+      z.object({
         request: PendingRequestViewSchema,
         originThreadId: ThreadIdSchema,
         navigationThreadId: ThreadIdSchema,

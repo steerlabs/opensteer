@@ -1775,6 +1775,7 @@ interface ChannelIdentityTable {
 }
 
 interface ChannelConversationTable {
+  personalContext: Generated<boolean>;
   id: ChannelConversationId;
   accountId: ChannelAccountId;
   provider: ChannelProvider;
@@ -1789,15 +1790,6 @@ interface ChannelConversationTable {
   displayName: string | null;
   activeThreadId: ThreadId | null;
   providerState: JsonColumn<Readonly<Record<string, unknown>>>;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
-}
-
-interface ChannelConversationContextTable {
-  conversationId: ChannelConversationId;
-  authorityUserId: UserId;
-  bindingRevision: number;
-  activeThreadId: ThreadId | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
 }
@@ -2205,7 +2197,6 @@ export interface DatabaseSchema extends KnowledgeTables {
   channelBindings: ChannelBindingTable;
   channelIdentities: ChannelIdentityTable;
   channelConversations: ChannelConversationTable;
-  channelConversationContexts: ChannelConversationContextTable;
   channelIngressEvents: ChannelIngressEventTable;
   channelDeliveries: ChannelDeliveryTable;
   channelLinkCodes: ChannelLinkCodeTable;

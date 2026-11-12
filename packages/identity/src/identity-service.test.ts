@@ -13,7 +13,7 @@ it("joins the auth schema check before initialization can destroy its database",
   const check = Promise.withResolvers<void>();
   checkSchema.mockReturnValue(check.promise);
   const identity = new IdentityService({} as unknown as Kysely<DatabaseSchema>, {
-    deployment: { kind: "self-hosted", name: null },
+    deployment: { kind: "team", name: null },
     exposure: "networked",
     localPasswordEnabled: false,
     oidcProviders: [],

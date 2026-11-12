@@ -1,3 +1,8 @@
+import {
+  teamApiVersion,
+  teamOidcStatePrefix,
+  teamOAuthVersionParameter,
+} from "@opensteer/deployment-authority";
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { digestSecret, equalSecretDigests } from "@opensteer/shared/secretDigest";
 import {
@@ -530,6 +535,7 @@ export class IdentityService {
     }
     const url = new URL(request.url);
     const publicPath = url.pathname.slice(publicNativeAuthPath.length);
+    if (this.#options.team) url.searchParams.delete(teamOAuthVersionParameter);
     if (request.method === "GET" && publicPath === "/oauth2/authorize") {
       forceInteractiveConsent(url);
     }
@@ -1904,14 +1910,35 @@ export class IdentityService {
       throw new OpensteerError({ code: "internal", message: "OIDC provider returned no redirect" });
     }
     return {
-      data: { redirectUrl: body.url },
+      data: {
+        redirectUrl: this.#options.team ? this.#versionedTeamOidcRedirect(body.url) : body.url,
+      },
       headers: response.headers,
       status: response.status,
     };
   }
 
+  #versionedTeamOidcRedirect(value: string): string {
+    const url = new URL(value),
+      state = url.searchParams.get("state");
+    if (!state)
+      throw new OpensteerError({ code: "internal", message: "OIDC sign-in returned no state" });
+    url.searchParams.set("state", `${teamOidcStatePrefix}${teamApiVersion}.${state}`);
+    return url.toString();
+  }
   async handleOidcCallback(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (this.#options.team) {
+      const state = url.searchParams.get("state"),
+        prefix = `${teamOidcStatePrefix}${teamApiVersion}.`;
+      if (!state?.startsWith(prefix))
+        throw new OpensteerError({
+          code: "conflict",
+          reason: "api-version-mismatch",
+          message: "Team API version mismatch",
+        });
+      url.searchParams.set("state", state.slice(prefix.length));
+    }
     url.pathname = `${internalAuthPath}/sso/callback`;
     const response = await this.#auth.handler(
       new Request(url, { headers: forwardedAuthHeaders(request.headers), method: "GET" }),

@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { SequenceSchema, TeamMessageIdSchema, createId } from "@opensteer/core";
+import { describe, expect, it, vi } from "vitest";
+import {
+  SequenceSchema,
+  TeamChannelIdSchema,
+  TeamMessageIdSchema,
+  createId,
+} from "@opensteer/core";
 import { TeamConsistentCutSchema, type TeamConsistentCut } from "@opensteer/protocol";
 import { MockTeamHost, mockTeamId, mockTeamUserId, mockTeamChannelId } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
@@ -25,6 +30,61 @@ function fixture() {
   return { host, persistence, client };
 }
 describe("team synchronization", () => {
+  it("refreshes and notifies a dirty channel beyond the loaded sidebar page", async () => {
+    const host = new MockTeamHost(),
+      notify = vi.fn();
+    const template = host.channels.get(mockTeamChannelId)!;
+    for (let index = 2; index <= 52; index++) {
+      const id = TeamChannelIdSchema.parse(
+        `tch_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+      );
+      host.channels.set(id, { ...template, id, name: `Channel ${index}` });
+    }
+    const target = TeamChannelIdSchema.parse("tch_00000000-0000-4000-8000-000000000052");
+    const client = new TeamSessionClient({
+      scope,
+      persistence: createMemoryTeamPersistence(),
+      rpc: host.rpc,
+      connect: host.connect,
+      notify,
+    });
+    try {
+      await client.load();
+      const cursor = client.getSnapshot().sidebar?.nextCursor;
+      expect(client.getSnapshot().sidebar?.channels.some((row) => row.channel.id === target)).toBe(
+        false,
+      );
+      const sent = await host.rpc["commands.dispatch"]({
+        type: "team.message.send",
+        channelId: target,
+        threadRootId: null,
+        clientMessageId: crypto.randomUUID(),
+        bodyMarkdown: "Hello",
+        mentions: [{ userId: mockTeamUserId, kind: "person" }],
+        attachmentIds: [],
+      });
+      expect(sent.ok).toBe(true);
+      const before = host.calls.length;
+      client.receive({
+        type: "team.sidebar.dirty",
+        channelIds: [target],
+        accessRevision: SequenceSchema.parse("1"),
+      });
+      await vi.waitFor(() =>
+        expect(notify).toHaveBeenCalledWith(
+          expect.objectContaining({
+            channel: expect.objectContaining({ id: target }),
+            unread: true,
+          }),
+        ),
+      );
+      expect(host.calls.slice(before)).toEqual(["team.sidebar.get"]);
+      expect(client.getSnapshot().sidebar?.nextCursor).toBe(cursor);
+    } finally {
+      client.dispose();
+      host.dispose();
+    }
+  });
   it("advances by the explicit cut even when overwritten rows skipped sequence numbers", () => {
     const f = fixture();
     let state = emptyTeamTimeline("channel", 1, channelScope);

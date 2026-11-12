@@ -1130,7 +1130,7 @@ async function managerFixture(
     readonly writeFailure?: string;
   } = {},
 ) {
-  const connection = deploymentConnection("self-hosted");
+  const connection = deploymentConnection("team");
   const catalog = {
     current: catalogFor(connection),
     load: async () => catalog.current,
@@ -1278,7 +1278,7 @@ function signDiscovery(document: HostDiscoveryDocument): HostDiscoveryEnvelope {
   return signTestDiscoveryEnvelope(document, discoveryKeys);
 }
 
-function deploymentConnection(kind: "self-hosted" | "self-hosted"): DeploymentConnection {
+function deploymentConnection(kind: "team" | "team"): DeploymentConnection {
   const deploymentId = createId("deployment");
   return DeploymentConnectionSchema.parse({
     authority: signDiscovery({

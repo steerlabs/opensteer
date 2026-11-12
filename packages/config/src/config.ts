@@ -490,8 +490,7 @@ export function parseHostConfig(environment: NodeJS.ProcessEnv): HostConfig {
     canonicalOrigin,
   });
   // Navigation metadata, not trust material: any Deployment may name the apex
-  // portal it belongs to, and a Deployment that names none is self-hosted and
-  // simply renders no portal link.
+  // portal it belongs to; absent metadata renders no portal link.
   const portalOrigin = parsed.OPENSTEER_PORTAL_ORIGIN
     ? originUrl(parsed.OPENSTEER_PORTAL_ORIGIN, "OPENSTEER_PORTAL_ORIGIN")
     : undefined;
@@ -853,8 +852,7 @@ export interface RunnerConfig {
   readonly mode: RuntimeMode;
   /**
    * What this process runs, in `agents, browser, integrations, shell` order.
-   * Without `agents` the Runner is reach-only: it holds no Workspace storage
-   * and starts nothing that executes work (`docs/computers.md#runner-and-desktop`).
+   * Without `agents` the Runner is reach-only and starts no agents (`docs/computers.md#runner-and-desktop`).
    */
   readonly modules: readonly RunnerProcessModule[];
   readonly name: string;
@@ -880,10 +878,6 @@ function assertRunnerConfigInvariants(config: RunnerConfig): void {
   ) {
     throw new Error("OPENSTEER_HOST_URL must be an uncredentialed HTTP(S) origin");
   }
-  // A Runner advertises what it can reach, and the Deployment's default says
-  // only what a Workspace gets when nobody chooses. A machine that holds only
-  // its own directories is a useful machine on a Deployment.
-  //
   // The Main Runner is the one that shares a computer with its Personal Host,
   // so only it must reach that Host over loopback. Every other computer on a
   // Personal Deployment is reachable-only and connects to the signed access

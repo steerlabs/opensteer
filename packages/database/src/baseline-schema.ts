@@ -1996,6 +1996,7 @@ create table channel_identities (
 );
 
 create table channel_conversations (
+  "personal_context" boolean not null default false,
   "id" text not null,
   "account_id" text not null,
   "provider" text not null,
@@ -2014,15 +2015,7 @@ create table channel_conversations (
   primary key ("id")
 );
 
-create table channel_conversation_contexts (
-  "conversation_id" text not null,
-  "authority_user_id" text not null,
-  "binding_revision" integer not null,
-  "active_thread_id" text,
-  "created_at" timestamp with time zone not null default now(),
-  "updated_at" timestamp with time zone not null default now(),
-  primary key ("conversation_id", "authority_user_id")
-);
+
 
 create table channel_ingress_events (
   "id" text not null,
@@ -2150,9 +2143,6 @@ alter table channel_bindings add constraint channel_bindings_created_by_fkey FOR
 alter table channel_conversations add constraint channel_conversations_account_id_fkey FOREIGN KEY (account_id) REFERENCES channel_accounts(id) ON DELETE RESTRICT;
 alter table channel_conversations add constraint channel_conversations_active_thread_id_fkey FOREIGN KEY (active_thread_id) REFERENCES threads(id) ON DELETE RESTRICT;
 alter table channel_conversations add constraint channel_conversations_binding_id_fkey FOREIGN KEY (binding_id) REFERENCES channel_bindings(id) ON DELETE RESTRICT;
-alter table channel_conversation_contexts add constraint channel_conversation_contexts_active_thread_id_fkey FOREIGN KEY (active_thread_id) REFERENCES threads(id) ON DELETE RESTRICT;
-alter table channel_conversation_contexts add constraint channel_conversation_contexts_authority_user_id_fkey FOREIGN KEY (authority_user_id) REFERENCES users(id) ON DELETE RESTRICT;
-alter table channel_conversation_contexts add constraint channel_conversation_contexts_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES channel_conversations(id) ON DELETE RESTRICT;
 alter table channel_deliveries add constraint channel_deliveries_account_id_fkey FOREIGN KEY (account_id) REFERENCES channel_accounts(id) ON DELETE RESTRICT;
 alter table channel_deliveries add constraint channel_deliveries_conversation_id_fkey FOREIGN KEY (conversation_id) REFERENCES channel_conversations(id) ON DELETE RESTRICT;
 alter table channel_deliveries add constraint channel_deliveries_ingress_id_fkey FOREIGN KEY (ingress_id) REFERENCES channel_ingress_events(id) ON DELETE RESTRICT;
@@ -2298,7 +2288,6 @@ create index channel_access_grants_account_status on channel_access_grants USING
 create index channel_accounts_connection on channel_accounts USING btree (connection_id, updated_at DESC);
 create index channel_bindings_account_status on channel_bindings USING btree (account_id, status, updated_at DESC);
 create UNIQUE index channel_conversations_external_unique on channel_conversations USING btree (provider, external_account_id, external_scope_id, external_conversation_id, external_thread_id) NULLS NOT DISTINCT;
-create index channel_conversation_contexts_active_thread on channel_conversation_contexts USING btree (active_thread_id) WHERE (active_thread_id IS NOT NULL);
 create index channel_deliveries_attention on channel_deliveries USING btree (account_id, status) WHERE (status = ANY (ARRAY['unknown'::text, 'dead'::text]));
 create index channel_deliveries_retention on channel_deliveries USING btree (updated_at) WHERE (status = ANY (ARRAY['sent'::text, 'dead'::text]));
 create index channel_deliveries_claimable on channel_deliveries USING btree (COALESCE(conversation_id, ingress_id), created_at, part) WHERE (status = ANY (ARRAY['pending'::text, 'leased'::text, 'attempt-started'::text, 'retryable-failed'::text, 'unknown'::text]));

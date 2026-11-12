@@ -7,7 +7,7 @@ import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
-import { assertDevelopmentWorkspaceEnvironment } from "./dev-supervisor.js";
+import { assertDevelopmentEnvironment } from "./dev-supervisor.js";
 
 const requiredPnpmVersion = "10.29.3";
 const minimumNodeVersion = [24, 13, 0] as const;
@@ -29,7 +29,7 @@ export interface LocalSetupOptions {
 export interface LocalSetupResult {
   readonly environmentCreated: boolean;
   readonly environmentUpdated: boolean;
-  readonly backing: "local-directory";
+  readonly kind: "personal" | "team";
 }
 
 export async function initializeLocalDevelopment(
@@ -61,8 +61,8 @@ export async function initializeLocalDevelopment(
 
   const environmentResult = await materializeLocalEnvironment(repositoryRoot);
   const parsedEnvironment = parseEnvironmentFile(environmentResult.content);
-  const backing = developmentBacking(environment, parsedEnvironment);
-  assertDevelopmentWorkspaceEnvironment({ ...parsedEnvironment, ...environment });
+  const kind = developmentDeploymentKind(environment, parsedEnvironment);
+  assertDevelopmentEnvironment({ ...parsedEnvironment, ...environment });
   await run(
     "docker",
     [
@@ -78,20 +78,20 @@ export async function initializeLocalDevelopment(
   return {
     environmentCreated: environmentResult.created,
     environmentUpdated: environmentResult.updated,
-    backing,
+    kind,
   };
 }
 
-function developmentBacking(
+function developmentDeploymentKind(
   processEnvironment: NodeJS.ProcessEnv,
   fileEnvironment: Record<string, string>,
-): "local-directory" {
+): "personal" | "team" {
   const value =
-    processEnvironment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ??
-    fileEnvironment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ??
-    "local-directory";
-  if (value === "local-directory") return value;
-  throw new Error("pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
+    processEnvironment.OPENSTEER_DEPLOYMENT_KIND ??
+    fileEnvironment.OPENSTEER_DEPLOYMENT_KIND ??
+    "personal";
+  if (value === "personal" || value === "team") return value;
+  throw new Error("Development kind must be personal or team");
 }
 
 async function materializeLocalEnvironment(repositoryRoot: string): Promise<{
@@ -154,16 +154,8 @@ export function replaceLocalPlaceholders(content: string): string {
   if (!parsed.OPENSTEER_BIND_ADDRESS) {
     result = appendEnvironmentSetting(result, "OPENSTEER_BIND_ADDRESS", "127.0.0.1");
   }
-  if (!parsed.OPENSTEER_DEFAULT_WORKSPACE_BACKING) {
-    result = appendEnvironmentSetting(
-      result,
-      "OPENSTEER_DEFAULT_WORKSPACE_BACKING",
-      "local-directory",
-    );
-  }
-  if (!parsed.OPENSTEER_DEPLOYMENT_KIND) {
-    result = appendEnvironmentSetting(result, "OPENSTEER_DEPLOYMENT_KIND", "server");
-  }
+  if (!parsed.OPENSTEER_DEPLOYMENT_KIND)
+    result = appendEnvironmentSetting(result, "OPENSTEER_DEPLOYMENT_KIND", "personal");
   return result;
 }
 
@@ -185,13 +177,7 @@ function validateLocalEnvironment(content: string): void {
   if (environment.OPENSTEER_BIND_ADDRESS !== "127.0.0.1") {
     throw new Error("Local setup requires OPENSTEER_BIND_ADDRESS=127.0.0.1");
   }
-  const backing = environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING ?? "local-directory";
-  if (backing !== "local-directory") {
-    throw new Error(
-      "pnpm setup:local requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory",
-    );
-  }
-  assertDevelopmentWorkspaceEnvironment(environment);
+  assertDevelopmentEnvironment(environment);
 }
 
 function parseEnvironmentFile(content: string): Record<string, string> {
@@ -275,7 +261,7 @@ async function runCommand(
 
 async function main(): Promise<void> {
   const result = await initializeLocalDevelopment();
-  process.stdout.write(`Local Opensteer setup is ready (${result.backing}).\nNext: pnpm dev\n`);
+  process.stdout.write(`Local Opensteer setup is ready (${result.kind}).\nNext: pnpm dev\n`);
 }
 
 const entry = process.argv[1];

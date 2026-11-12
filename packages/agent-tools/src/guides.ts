@@ -59,13 +59,14 @@ You are the owner's one agent. Act only for that owner; other people's agent men
 export function platformGuideForRun(input: {
   readonly purpose: TaskPurpose;
   readonly teamBound?: boolean;
+  readonly personalContext?: boolean;
 }): string {
   return [
     platformGuide,
     routingGuide,
     helpersGuide,
     taskGuide,
-    memoryGuide,
+    ...(input.personalContext !== false ? [memoryGuide] : []),
     `Task purpose: ${input.purpose}`,
     ...(input.teamBound ? [teamGuide] : []),
   ].join("\n\n");

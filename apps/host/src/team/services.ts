@@ -95,6 +95,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     teamName: options.teamName,
   });
   const links = new TeamLinkService(access, {
+    teamName: options.teamName,
     teamId: options.teamId,
     origin: options.origin,
     hostKeyFingerprint: options.hostKeyFingerprint,
@@ -341,8 +342,10 @@ export async function startTeamServices(options: TeamServiceOptions) {
           sidebar: await chat.directory(actor, undefined, true),
         });
       }
-      case "team.sidebar.get":
-        return chat.directory(actor, teamReadSchemas[name].input.parse(raw).after, true);
+      case "team.sidebar.get": {
+        const input = teamReadSchemas[name].input.parse(raw);
+        return chat.directory(actor, input.after, true, input.channelIds);
+      }
       case "team.channels.list": {
         const rows = await chat.directory(actor, teamReadSchemas[name].input.parse(raw).after);
         return { channels: rows.channels.map((r) => r.channel), hasMore: rows.nextCursor !== null };

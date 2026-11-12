@@ -170,6 +170,7 @@ export function seedMockSubagents<Snapshot extends HostSnapshot>(
     objectivePreview: assignment.objective,
     resultPreview: assignment.resultText,
     workerThread: {
+      folder: worker.folder,
       id: workerId,
       title: worker.title,
       environmentId: worker.environmentId,

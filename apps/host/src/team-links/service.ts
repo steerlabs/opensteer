@@ -133,6 +133,7 @@ export class PersonalTeamLinks {
         for (const request of await this.options.requests.options.requests.forTeam(offer.teamId))
           await this.options.requests.cancel(offer.teamId, request.requestId);
       }
+      await links.observeName(offer.teamId, remote.teamName);
       await links.active(offer.teamId, remote);
       if (existing?.state === "needs_update") {
         this.#connections.get(offer.teamId)?.stop();

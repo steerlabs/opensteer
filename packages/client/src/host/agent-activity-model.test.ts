@@ -2212,6 +2212,7 @@ it("shows only the tasks needing the reader from work nobody waited on", () => {
       revision: 1,
       status: "open",
       workerThread: {
+        folder: { computerId: createId("runner"), path: "/tmp/agent" },
         id: createId("thread"),
         title: "Research",
         icon: null,

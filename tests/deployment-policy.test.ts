@@ -10,270 +10,373 @@ import {
 } from "./deployment-policy.test-support.js";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
-const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {
-  "packages/client/src/host/deployment-policy.ts": {
-    count: 1,
-    reason: "Compatibility adapter for Hosts whose bootstrap predates the projection.",
+const clientPolicyDerivations: Record<string, { count: number; reason: string }> = {};
+const exceptions: Record<string, { counts: Record<string, number>; reason: string }> = {
+  "scripts/verify-team-deployment.mjs": {
+    counts: {
+      "host.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
+    },
+    reason:
+      "Configuration admits only the supported deployment kind and selects the services that can start.",
   },
-  "packages/client/src/mock/mock-host-client.ts": {
-    count: 2,
-    reason: "Mock Host authors its bootstrap projection.",
+  "apps/control-plane/src/database/store.ts": {
+    counts: {
+      "team.data.document.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/desktop/src/supervisor/local-runner-authority.ts": {
-    count: 2,
-    reason: "Pre-bootstrap Runner launch authority from signed discovery.",
+  "apps/control-plane/src/portal/pages.ts": {
+    counts: {
+      "input.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
   },
   "apps/desktop/src/bridge/methods/web-links.ts": {
-    count: 1,
+    counts: {
+      "selected.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/desktop/src/connections/deployment-access-service.ts": {
+    counts: {
+      "deployment.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/desktop/src/connections/host-transport.ts": {
+    counts: {
+      "connection.authority.document.deploymentShape.kind": 1,
+    },
     reason:
-      "Native web links for the desktop's own supervised Host, whose local shape is known first-hand.",
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "apps/desktop/src/supervisor/local-runner-authority.ts": {
+    counts: {
+      "connection.authority.document.deploymentShape.kind": 1,
+    },
+    reason:
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "apps/host/src/browser/browser-source-service.ts": {
+    counts: {
+      "prior.payload.scope": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/host/src/browser/password-sign-in-service.ts": {
+    counts: {
+      "request.payload.scope": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/host/src/integrations/computer-app-approval-service.ts": {
+    counts: {
+      "request.kind": 3,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/host/src/integrations/integration-service.ts": {
+    counts: {
+      requestedAvailability: 3,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/host/src/server/host-api-registration.ts": {
+    counts: {
+      "options.kind": 2,
+    },
+    reason:
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "apps/host/src/team-links/discovery.ts": {
+    counts: {
+      behind: 1,
+      "descriptor.kind": 1,
+      "document.deploymentShape.kind": 1,
+    },
+    reason:
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "apps/host/src/team-links/service.ts": {
+    counts: {
+      "error?.details?.behind": 2,
+    },
+    reason: "The service validates its durable Personal or team authority before acting.",
+  },
+  "apps/host/src/team/services.ts": {
+    counts: {
+      "options.kind": 1,
+      "durable.deploymentShape.kind": 1,
+    },
+    reason: "The service validates its durable Personal or team authority before acting.",
+  },
+  "apps/mobile/src/client/deployment-rows.ts": {
+    counts: {
+      "connection.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/client/mobile-client.ts": {
+    counts: {
+      "connection.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/screens/add-deployment.tsx": {
+    counts: {
+      "props.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/screens/settings-model.ts": {
+    counts: {
+      "home.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/mobile/src/thread/integration-connect-sheet.tsx": {
+    counts: {
+      "nextCard.form": 1,
+      "card.primary?.kind": 1,
+      step: 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/add-deployment.tsx": {
+    counts: {
+      choice: 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/computers-page.tsx": {
+    counts: {
+      "home.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/computers/device-art.tsx": {
+    counts: {
+      glyph: 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/first-run/setup-page.tsx": {
+    counts: {
+      "desktopDeployment?.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/home/needs-you.tsx": {
+    counts: {
+      "item.where.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/onboarding.tsx": {
+    counts: {
+      kind: 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/settings/copy.ts": {
+    counts: {
+      "input.kind": 3,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/settings/primitives.tsx": {
+    counts: {
+      kind: 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/components/thread-integration-action.tsx": {
+    counts: {
+      "card.primary.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/computers-visual.tsx": {
+    counts: {
+      "scenario.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/desktop/desktop-app.tsx": {
+    counts: {
+      presentation: 1,
+      "selected.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/desktop/places.ts": {
+    counts: {
+      "deployment.kind": 3,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/desktop/preview-bootstrap.ts": {
+    counts: {
+      "selected.kind": 6,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "apps/web/src/passwords-visual.tsx": {
+    counts: {
+      settingsState: 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/auth/native-oauth.ts": {
+    counts: {
+      "connection.kind": 3,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/connections/connection-resolver.ts": {
+    counts: {
+      "connection.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/connections/deployment-catalog.ts": {
+    counts: {
+      "deployment.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/connections/host-transport.ts": {
+    counts: {
+      "this.#expectedKind": 1,
+      deploymentKind: 1,
+    },
+    reason:
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "packages/client/src/connections/private-deployment-connection.ts": {
+    counts: {
+      "parsed.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/host/host-api-client.ts": {
+    counts: {
+      "options.kind": 2,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/integrations/computer-app-approval.ts": {
+    counts: {
+      "review.request.kind": 1,
+      "request.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/integrations/connect-selection.ts": {
+    counts: {
+      "application?.availability": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/mock/mock-host-client.ts": {
+    counts: {
+      "request.kind": 1,
+      availability: 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/client/src/react/use-thread-server-approvals.ts": {
+    counts: {
+      "request.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/database/src/deployment-store.ts": {
+    counts: {
+      "input.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/database/src/machine-ownership.ts": {
+    counts: {
+      "deployment.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/database/src/personal-team-links-store.ts": {
+    counts: {
+      "String(link.authorityEnvelope.updateRequiredBy)": 1,
+    },
+    reason: "The service validates its durable Personal or team authority before acting.",
+  },
+  "packages/database/src/private-resource-owner.ts": {
+    counts: {
+      "owner.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/database/src/runner-store.ts": {
+    counts: {
+      "deployment.deploymentShape.kind": 1,
+      "deployment?.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/deployment-authority/src/authority.ts": {
+    counts: {
+      kind: 2,
+    },
+    reason:
+      "Transport pins deployment kind and negotiates the independent protocol before admitting a request.",
+  },
+  "packages/harness/src/types.ts": {
+    counts: {
+      "runner.deploymentKind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/identity/src/identity-service.ts": {
+    counts: {
+      "deployment.deploymentShape.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/integration-core/src/models.ts": {
+    counts: {
+      "request.kind": 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "packages/protocol/src/deployment-status.ts": {
+    counts: {
+      kind: 1,
+    },
+    reason: "The boundary distinguishes team data from personal resource scope.",
+  },
+  "scripts/dev.ts": {
+    counts: {
+      kind: 3,
+      deploymentShape: 2,
+      "environment.OPENSTEER_DEPLOYMENT_KIND": 2,
+    },
+    reason:
+      "Configuration admits only the supported deployment kind and selects the services that can start.",
+  },
+  "scripts/setup-local.ts": {
+    counts: {
+      value: 2,
+    },
+    reason:
+      "Configuration admits only the supported deployment kind and selects the services that can start.",
+  },
+  "scripts/smoke-desktop-release-profile.ts": {
+    counts: {
+      "entry.kind": 1,
+    },
+    reason:
+      "Configuration admits only the supported deployment kind and selects the services that can start.",
   },
 };
-const exceptionGroups = {
-  perKindNegotiation: {
-    "packages/deployment-authority/src/authority.ts": {
-      counts: { kind: 2 },
-      reason:
-        "Discovery and route headers select the personal or team protocol version before authentication or payload parsing.",
-    },
-  },
-  dormantProjectAuthority: {
-    "apps/host/src/team/team-administration-service.ts": {
-      counts: { "authority.kind": 1 },
-      reason:
-        "Dormant team administration requires persisted server/model-2 identity independently of runtime activation.",
-    },
-    "packages/database/src/access-store.ts": {
-      counts: { "authority.kind": 1, "deployment.deploymentShape.kind": 1 },
-      reason:
-        "Cold grants and Project self-use require persisted server/model-2 identity; legacy execution is unchanged.",
-    },
-    "packages/database/src/deployment-execution-authority.ts": {
-      counts: { "authority.kind": 1 },
-      reason: "Cold Project-store authority gate validates persisted shape and model.",
-    },
-    "packages/database/src/team-administration-authority.ts": {
-      counts: { "authority.kind": 1 },
-      reason: "Cold team administration authority gate validates persisted shape and model.",
-    },
-  },
-  displayAlias: {
-    "apps/desktop/src/bridge/methods/web-links.ts": {
-      counts: { "selected.kind": 1 },
-      reason:
-        "Maps the desktop's own supervised Host presentation to its known local shape for policy evaluation.",
-    },
-    "apps/host/src/runtime/runtime.ts": {
-      counts: { "config.workspace.shape.kind": 1 },
-      reason: "Projects the Deployment kind into the existing presentation alias only.",
-    },
-    "apps/control-plane/src/portal/pages.ts": {
-      counts: {
-        "input.kind": 1,
-      },
-      reason: "Deployment display alias selects an icon.",
-    },
-    "apps/mobile/src/client/deployment-rows.ts": {
-      counts: {
-        "connection.kind": 1,
-      },
-      reason: "Catalog display alias labels the computer.",
-    },
-    "apps/web/src/components/onboarding.tsx": {
-      counts: {
-        kind: 2,
-      },
-      reason: "Deployment display alias selects onboarding copy.",
-    },
-    "apps/web/src/components/settings/copy.ts": {
-      counts: {
-        "input.kind": 3,
-      },
-      reason: "Deployment display alias selects descriptive copy.",
-    },
-    "apps/web/src/components/settings/primitives.tsx": {
-      counts: {
-        kind: 1,
-      },
-      reason: "Deployment display alias selects a glyph.",
-    },
-    "apps/web/src/computers-visual.tsx": {
-      counts: {
-        "scenario.kind": 2,
-      },
-      reason: "Visual fixture constructs a display alias.",
-    },
-    "apps/web/src/desktop/places.ts": {
-      counts: {
-        "deployment.kind": 3,
-      },
-      reason: "Catalog display alias selects labels and sort order.",
-    },
-    "apps/web/src/desktop/preview-bootstrap.ts": {
-      counts: {
-        "selected.kind": 6,
-      },
-      reason: "Desktop preview fixture constructs the mock Host response from a display alias.",
-    },
-    "packages/protocol/src/deployment-status.ts": {
-      counts: {
-        kind: 1,
-      },
-      reason: "Deployment display alias selects a label.",
-    },
-    "scripts/smoke-desktop-release-profile.ts": {
-      counts: {
-        "entry.kind": 1,
-      },
-      reason: "Release smoke locates the Personal display entry.",
-    },
-  },
-  beforeBootstrapTransport: {
-    "scripts/verify-browser-deployment.mjs": {
-      counts: {
-        "runner.environment?.OPENSTEER_DEPLOYMENT_KIND": 1,
-      },
-      reason: "Validates cohosted Runner transport configuration before a Host/bootstrap exists.",
-    },
-    "apps/desktop/src/connections/deployment-access-service.ts": {
-      counts: {
-        "deployment.kind": 2,
-      },
-      reason:
-        "Catalog display alias selects route-status diagnostics before bootstrap is reachable.",
-    },
-    "apps/mobile/src/client/mobile-client.ts": {
-      counts: {
-        "connection.kind": 1,
-      },
-      reason: "Catalog display alias selects the Personal login transport before bootstrap.",
-    },
-    "apps/mobile/src/screens/add-deployment.tsx": {
-      counts: {
-        "props.kind": 1,
-      },
-      reason: "Add-place presentation choice, before a Host has been selected.",
-    },
-    "apps/web/src/components/add-deployment.tsx": {
-      counts: {
-        choice: 1,
-      },
-      reason: "Add-place presentation choice, before Host attachment.",
-    },
-    "apps/web/src/components/first-run/setup-page.tsx": {
-      counts: {
-        "desktopDeployment?.kind": 1,
-      },
-      reason: "Desktop display alias locates setup on the supervised computer before bootstrap.",
-    },
-    "apps/web/src/desktop/desktop-app.tsx": {
-      counts: {
-        presentation: 1,
-        "selected.kind": 1,
-      },
-      reason: "Desktop place presentation and local setup before bootstrap.",
-    },
-    "packages/client/src/connections/connection-resolver.ts": {
-      counts: {
-        "connection.kind": 1,
-      },
-      reason: "Catalog display alias chooses a signed route before bootstrap.",
-    },
-    "packages/client/src/connections/deployment-catalog.ts": {
-      counts: {
-        "deployment.kind": 1,
-      },
-      reason:
-        "Display alias is checked against signed identity during Personal route admission, before bootstrap.",
-    },
-  },
-  otherDiscriminator: {
-    "apps/host/src/integrations/computer-app-approval-service.ts": {
-      counts: {
-        "request.kind": 3,
-      },
-      reason: "Integration approval request discriminator, not a Deployment kind.",
-    },
-    "apps/host/src/integrations/integration-service.ts": {
-      counts: {
-        requestedAvailability: 3,
-      },
-      reason: "Integration availability, not a Deployment kind.",
-    },
-    "apps/mobile/src/screens/settings-model.ts": {
-      counts: {
-        "home.kind": 2,
-      },
-      reason: "ComputersHome presentation discriminator, already projected from Host policy.",
-    },
-    "apps/mobile/src/thread/integration-connect-sheet.tsx": {
-      counts: {
-        "nextCard.form": 1,
-        "card.primary?.kind": 1,
-        step: 2,
-      },
-      reason: "Integration connection form, not Deployment kind.",
-    },
-    "apps/web/src/components/computers-page.tsx": {
-      counts: {
-        "home.kind": 2,
-      },
-      reason: "ComputersHome presentation discriminator, already projected from Host policy.",
-    },
-    "apps/web/src/components/computers/device-art.tsx": {
-      counts: {
-        glyph: 1,
-      },
-      reason: "Device icon name, not Deployment kind.",
-    },
-    "apps/web/src/components/thread-integration-action.tsx": {
-      counts: {
-        "card.primary.kind": 1,
-      },
-      reason: "Integration action discriminator, not Deployment kind.",
-    },
-    "apps/web/src/passwords-visual.tsx": {
-      counts: {
-        settingsState: 2,
-      },
-      reason: "Visual scenario discriminator, not Deployment kind.",
-    },
-    "packages/client/src/integrations/computer-app-approval.ts": {
-      counts: {
-        "review.request.kind": 1,
-        "request.kind": 1,
-      },
-      reason: "Integration approval discriminator, not Deployment kind.",
-    },
-    "packages/client/src/integrations/connect-selection.ts": {
-      counts: {
-        "application?.availability": 1,
-      },
-      reason: "Integration availability, not Deployment kind.",
-    },
-    "packages/client/src/mock/mock-host-client.ts": {
-      counts: {
-        "request.kind": 1,
-        availability: 1,
-      },
-      reason: "Mock integration approval and availability discriminators.",
-    },
-    "packages/client/src/react/use-thread-server-approvals.ts": {
-      counts: {
-        "request.kind": 1,
-      },
-      reason: "Integration approval discriminator, not Deployment kind.",
-    },
-    "packages/integration-core/src/models.ts": {
-      counts: {
-        "request.kind": 1,
-      },
-      reason: "Integration approval discriminator, not Deployment kind.",
-    },
-  },
-};
-const exceptions: Record<string, { counts: Record<string, number>; reason: string }> =
-  Object.assign({}, ...Object.values(exceptionGroups));
 
 const sqlExceptions: Record<
   string,

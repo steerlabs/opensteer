@@ -226,7 +226,7 @@ export function registerComputerUseDisplayRoutes(
         } catch (error) {
           if (error instanceof ComputerUseError)
             throw new OpensteerError({
-              code: error.retryable ? "workspace_unavailable" : "forbidden",
+              code: error.retryable ? "folder_unavailable" : "forbidden",
               message: error.message,
             });
           throw error;

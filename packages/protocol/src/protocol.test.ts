@@ -569,6 +569,10 @@ describe("wire protocol", () => {
       desired: [
         {
           activationId,
+          location: {
+            folder: { computerId: createId("runner"), path: "/tmp/task" },
+            agentHome: { computerId: createId("runner"), path: "/tmp/home" },
+          },
           anchorThreadId: createId("thread"),
           capabilities: {
             browserCdp: null,
@@ -634,6 +638,7 @@ describe("wire protocol", () => {
     const base = {
       commandId: createId("command"),
       context: {
+        personalContext: true,
         accessMode: "full-access",
         assignment: null,
         taskPurpose: "task",

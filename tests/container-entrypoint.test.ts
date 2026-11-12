@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { chown, mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -7,7 +7,6 @@ import {
   expandSecretFiles,
   immutablePackageManifestPath,
   immutableReleaseRecordPath,
-  prepareRunnerWorkspaceRoot,
   rejectRuntimeInjectionEnvironment,
   verifyReleaseIdentity,
 } from "../deploy/container/opensteer-entrypoint.mjs";
@@ -131,37 +130,6 @@ describe("container entrypoint", () => {
     await expandSecretFiles(environment);
     expect(environment.TEST_TOKEN).toBe("a-secret-value");
     expect(environment.TEST_TOKEN_FILE).toBeUndefined();
-  });
-
-  it("accepts a pre-provisioned managed Runner Workspace root with owner-only mode", async () => {
-    const directory = join(tmpdir(), `opensteer-workspace-root-${randomUUID()}`);
-    const workspaceRoot = join(directory, "workspaces");
-    await mkdir(workspaceRoot, { mode: 0o700, recursive: true });
-    // macOS inherits the parent group, including wheel beneath /tmp.
-    await chown(workspaceRoot, process.getuid!(), process.getgid!());
-
-    await expect(
-      prepareRunnerWorkspaceRoot({
-        OPENSTEER_RUNNER_KIND: "managed",
-        OPENSTEER_RUNNER_WORKSPACE_ROOT: workspaceRoot,
-      }),
-    ).resolves.toBeUndefined();
-    expect((await stat(workspaceRoot)).mode & 0o777).toBe(0o700);
-  });
-
-  it("creates the configured non-managed Runner Workspace root", async () => {
-    const directory = join(tmpdir(), `opensteer-workspace-root-${randomUUID()}`);
-    await mkdir(directory, { mode: 0o700 });
-    await chown(directory, process.getuid!(), process.getgid!());
-    const workspaceRoot = join(directory, "workspaces");
-
-    await expect(
-      prepareRunnerWorkspaceRoot({
-        OPENSTEER_RUNNER_KIND: "main",
-        OPENSTEER_RUNNER_WORKSPACE_ROOT: workspaceRoot,
-      }),
-    ).resolves.toBeUndefined();
-    expect((await stat(workspaceRoot)).mode & 0o777).toBe(0o700);
   });
 });
 

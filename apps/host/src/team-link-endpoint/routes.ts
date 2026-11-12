@@ -32,7 +32,9 @@ export async function registerTeamLinkRoutes(
 ): Promise<void> {
   await app.register(async (scope) => {
     scope.setErrorHandler((error, _request, reply) => {
-      const version = error instanceof OpensteerError && error.reason === "unsupported-version";
+      const version =
+        error instanceof OpensteerError &&
+        (error.reason === "unsupported-version" || error.reason === "api-version-mismatch");
       const status = version
         ? 426
         : error instanceof OpensteerError && error.code === "unauthorized"

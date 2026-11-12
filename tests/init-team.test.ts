@@ -17,41 +17,50 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
-  initializeSelfHost,
-  initializeSelfHostSecrets,
-  selfHostWorkspaceBacking,
-  selfHostInitializationSummary,
-} from "../scripts/init-self-host.js";
+  initializeTeam,
+  initializeTeamSecrets,
+  teamInitializationSummary,
+  renewTeamSetup,
+} from "../scripts/init-team.js";
 
-describe("self-host secret initialization", () => {
-  it("reports the selected storage backing for local directories", () => {
-    expect(selfHostWorkspaceBacking({})).toBe("local-directory");
-    expect(
-      JSON.stringify(
-        selfHostInitializationSummary({ created: [], directory: "/tmp/setup" }, "local-directory"),
-      ),
-    ).toMatch(/Configure model credentials on the Runner/);
-    expect(() =>
-      selfHostWorkspaceBacking({ OPENSTEER_DEFAULT_WORKSPACE_BACKING: "invalid" }),
-    ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/);
+describe("team secret initialization", () => {
+  it("reports the team kind without personal service configuration", () => {
+    expect(teamInitializationSummary({ created: [], directory: "/tmp/setup" })).toEqual({
+      created: [],
+      directory: "/tmp/setup",
+      kind: "team",
+    });
   });
-
+  it("renews only the unfinished setup token through a fresh file", async () => {
+    const directory = join(tmpdir(), `opensteer-team-renew-${randomUUID()}`);
+    await initializeTeamSecrets(directory);
+    const names = await readdir(directory),
+      before = new Map(
+        await Promise.all(
+          names.map(async (name) => [name, await readFile(join(directory, name), "utf8")] as const),
+        ),
+      );
+    const inode = (await stat(join(directory, "initial_owner_enrollment_token"))).ino;
+    await renewTeamSetup(directory);
+    for (const name of names) {
+      const current = await readFile(join(directory, name), "utf8");
+      if (name === "initial_owner_enrollment_token") expect(current).not.toBe(before.get(name));
+      else expect(current).toBe(before.get(name));
+    }
+    expect((await stat(join(directory, "initial_owner_enrollment_token"))).ino).not.toBe(inode);
+  });
   it("creates internal secrets once behind an owner-only directory", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-${randomUUID()}`);
+    const directory = join(tmpdir(), `opensteer-team-${randomUUID()}`);
     await mkdir(directory, { mode: 0o755 });
 
-    const first = await initializeSelfHostSecrets(directory);
+    const first = await initializeTeamSecrets(directory);
     expect(first.created).toEqual([
-      "browser_bridge_token",
-      "browser_runner_enrollment_token",
-      "credential_key",
+      "auth_secret",
       "database_url",
       "initial_owner_enrollment_token",
-      "messaging_runner_enrollment_token",
-      "opensteer_auth_secret",
       "postgres_password",
     ]);
-    const token = await readFile(join(directory, "opensteer_auth_secret"), "utf8");
+    const token = await readFile(join(directory, "auth_secret"), "utf8");
     const postgresPassword = await readFile(join(directory, "postgres_password"), "utf8");
     expect(token.trim()).toHaveLength(64);
     if (process.platform !== "win32") {
@@ -63,26 +72,26 @@ describe("self-host secret initialization", () => {
       // Exact file-backed Compose secret mounts preserve native Linux mode and
       // ownership. Re-running initialization repairs a restrictive umask or a
       // legacy 0600 file without rotating its value.
-      await chmod(join(directory, "opensteer_auth_secret"), 0o600);
+      await chmod(join(directory, "auth_secret"), 0o600);
       await chmod(join(directory, "postgres_password"), 0o600);
       await chmod(directory, 0o755);
     }
 
-    const second = await initializeSelfHostSecrets(directory);
+    const second = await initializeTeamSecrets(directory);
     expect(second.created).toEqual([]);
-    expect(await readFile(join(directory, "opensteer_auth_secret"), "utf8")).toBe(token);
+    expect(await readFile(join(directory, "auth_secret"), "utf8")).toBe(token);
     expect(await readFile(join(directory, "postgres_password"), "utf8")).toBe(postgresPassword);
     if (process.platform !== "win32") {
       expect((await stat(directory)).mode & 0o777).toBe(0o700);
-      expect((await stat(join(directory, "opensteer_auth_secret"))).mode & 0o777).toBe(0o644);
+      expect((await stat(join(directory, "auth_secret"))).mode & 0o777).toBe(0o644);
       expect((await stat(join(directory, "postgres_password"))).mode & 0o777).toBe(0o644);
     }
   });
 
   it("keeps the PostgreSQL password and DSN consistent across concurrent first runs", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-race-${randomUUID()}`);
+    const directory = join(tmpdir(), `opensteer-team-race-${randomUUID()}`);
     const results = await Promise.all(
-      Array.from({ length: 24 }, () => initializeSelfHostSecrets(directory)),
+      Array.from({ length: 24 }, () => initializeTeamSecrets(directory)),
     );
     const password = (await readFile(join(directory, "postgres_password"), "utf8")).trim();
     const databaseUrl = (await readFile(join(directory, "database_url"), "utf8")).trim();
@@ -92,25 +101,21 @@ describe("self-host secret initialization", () => {
     );
     expect(new Set(results.flatMap((result) => result.created))).toEqual(
       new Set([
-        "browser_bridge_token",
-        "browser_runner_enrollment_token",
-        "messaging_runner_enrollment_token",
-        "credential_key",
         "database_url",
         "initial_owner_enrollment_token",
-        "opensteer_auth_secret",
+        "auth_secret",
         "postgres_password",
       ]),
     );
     expect((await readdir(directory)).filter((name) => name.startsWith("."))).toEqual([]);
   });
 
-  it("materializes exactly the file-backed secrets declared by the self-host stack", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-contract-${randomUUID()}`);
-    const result = await initializeSelfHostSecrets(directory);
+  it("materializes exactly the file-backed secrets declared by the team stack", async () => {
+    const directory = join(tmpdir(), `opensteer-team-contract-${randomUUID()}`);
+    const result = await initializeTeamSecrets(directory);
     const declared = new Set<string>();
-    for (const file of ["compose.yaml", "compose.initial-owner.yaml"]) {
-      const source = await readFile(resolve("deploy/self-host", file), "utf8");
+    for (const file of ["compose.yaml"]) {
+      const source = await readFile(resolve("deploy/team", file), "utf8");
       const document: unknown = parse(source, { logLevel: "silent" });
       if (typeof document !== "object" || document === null || !("secrets" in document)) {
         throw new Error(`${file} does not declare a Compose secrets map`);
@@ -126,7 +131,7 @@ describe("self-host secret initialization", () => {
   });
 
   it("writes canonical source-build identity into a fresh Compose config", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-config-${randomUUID()}`);
+    const directory = join(tmpdir(), `opensteer-team-config-${randomUUID()}`);
     const repository = join(directory, "repository");
     await mkdir(repository, { recursive: true });
     await writeFile(join(repository, "package.json"), '{"version":"1.2.3"}\n');
@@ -148,9 +153,9 @@ describe("self-host secret initialization", () => {
       { cwd: repository, stdio: "pipe" },
     );
     const configPath = join(directory, "config.env");
-    const result = await initializeSelfHost({
+    const result = await initializeTeam({
       configPath,
-      configTemplatePath: resolve("deploy/self-host/config.env.example"),
+      configTemplatePath: resolve("deploy/team/config.env.example"),
       repositoryRoot: repository,
       secretsDirectory: join(directory, "secrets"),
     });
@@ -169,8 +174,8 @@ describe("self-host secret initialization", () => {
     });
     expect(result.sourceRevision).toMatch(/^[a-f0-9]{40}$/u);
 
-    for (const file of ["compose.yaml", "compose.runner-linux.yaml"]) {
-      const document: unknown = parse(await readFile(resolve("deploy/self-host", file), "utf8"), {
+    for (const file of ["compose.yaml"]) {
+      const document: unknown = parse(await readFile(resolve("deploy/team", file), "utf8"), {
         logLevel: "silent",
       });
       if (typeof document !== "object" || document === null || !("services" in document)) {
@@ -195,15 +200,15 @@ describe("self-host secret initialization", () => {
           throw new Error(`${file} service ${name} has no build arguments`);
         }
         expect(build.args).toMatchObject({
-          OPENSTEER_RELEASE_VERSION: "${OPENSTEER_RELEASE_VERSION:?set OPENSTEER_RELEASE_VERSION}",
-          OPENSTEER_SOURCE_REVISION: "${OPENSTEER_SOURCE_REVISION:?set OPENSTEER_SOURCE_REVISION}",
+          OPENSTEER_RELEASE_VERSION: "${OPENSTEER_RELEASE_VERSION:?required}",
+          OPENSTEER_SOURCE_REVISION: "${OPENSTEER_SOURCE_REVISION:?required}",
         });
       }
     }
   });
 
   it("waits for an atomic publication link to settle before reading it", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-publish-${randomUUID()}`);
+    const directory = join(tmpdir(), `opensteer-team-publish-${randomUUID()}`);
     const staging = join(directory, ".postgres_password.tmp-existing-publisher");
     const passwordPath = join(directory, "postgres_password");
     await mkdir(directory, { mode: 0o700 });
@@ -211,7 +216,7 @@ describe("self-host secret initialization", () => {
     await link(staging, passwordPath);
     const release = delay(50).then(() => unlink(staging));
 
-    await initializeSelfHostSecrets(directory);
+    await initializeTeamSecrets(directory);
     await release;
     expect((await readFile(join(directory, "database_url"), "utf8")).trim()).toBe(
       "postgres://opensteer:stable-password@postgres:5432/opensteer",
@@ -219,55 +224,55 @@ describe("self-host secret initialization", () => {
   });
 
   it("rejects a persisted password whose exact value has surrounding whitespace", async () => {
-    const directory = join(tmpdir(), `opensteer-self-host-whitespace-${randomUUID()}`);
+    const directory = join(tmpdir(), `opensteer-team-whitespace-${randomUUID()}`);
     await mkdir(directory, { mode: 0o700 });
     await writeFile(join(directory, "postgres_password"), " leading-space\n", { mode: 0o644 });
-    await expect(initializeSelfHostSecrets(directory)).rejects.toThrow(/surrounding whitespace/);
+    await expect(initializeTeamSecrets(directory)).rejects.toThrow(/surrounding whitespace/);
   });
 
   it.skipIf(process.platform === "win32")(
     "rejects symlinked, hard-linked, and non-regular secret paths",
     async () => {
-      const outside = join(tmpdir(), `opensteer-self-host-outside-${randomUUID()}`);
+      const outside = join(tmpdir(), `opensteer-team-outside-${randomUUID()}`);
       await writeFile(outside, "must-not-change\n", { mode: 0o600 });
 
-      const symlinkDirectory = join(tmpdir(), `opensteer-self-host-symlink-${randomUUID()}`);
+      const symlinkDirectory = join(tmpdir(), `opensteer-team-symlink-${randomUUID()}`);
       await mkdir(symlinkDirectory, { mode: 0o700 });
       await symlink(outside, join(symlinkDirectory, "postgres_password"));
-      await expect(initializeSelfHostSecrets(symlinkDirectory)).rejects.toThrow();
+      await expect(initializeTeamSecrets(symlinkDirectory)).rejects.toThrow();
       expect(await readFile(outside, "utf8")).toBe("must-not-change\n");
       expect((await stat(outside)).mode & 0o777).toBe(0o600);
 
-      const hardLinkDirectory = join(tmpdir(), `opensteer-self-host-hardlink-${randomUUID()}`);
+      const hardLinkDirectory = join(tmpdir(), `opensteer-team-hardlink-${randomUUID()}`);
       await mkdir(hardLinkDirectory, { mode: 0o700 });
       await link(outside, join(hardLinkDirectory, "postgres_password"));
-      await expect(initializeSelfHostSecrets(hardLinkDirectory)).rejects.toThrow(
+      await expect(initializeTeamSecrets(hardLinkDirectory)).rejects.toThrow(
         /exactly one filesystem link/,
       );
 
-      const nonRegularDirectory = join(tmpdir(), `opensteer-self-host-nonregular-${randomUUID()}`);
+      const nonRegularDirectory = join(tmpdir(), `opensteer-team-nonregular-${randomUUID()}`);
       await mkdir(join(nonRegularDirectory, "postgres_password"), {
         mode: 0o700,
         recursive: true,
       });
-      await expect(initializeSelfHostSecrets(nonRegularDirectory)).rejects.toThrow(
+      await expect(initializeTeamSecrets(nonRegularDirectory)).rejects.toThrow(
         /not a regular secret file/,
       );
     },
   );
 
   it.skipIf(process.platform === "win32")("rejects a symlinked secret directory", async () => {
-    const actual = join(tmpdir(), `opensteer-self-host-actual-${randomUUID()}`);
-    const linked = join(tmpdir(), `opensteer-self-host-linked-${randomUUID()}`);
+    const actual = join(tmpdir(), `opensteer-team-actual-${randomUUID()}`);
+    const linked = join(tmpdir(), `opensteer-team-linked-${randomUUID()}`);
     await mkdir(actual, { mode: 0o700 });
     await symlink(actual, linked);
-    await expect(initializeSelfHostSecrets(linked)).rejects.toThrow();
+    await expect(initializeTeamSecrets(linked)).rejects.toThrow();
   });
 
   it.skipIf(process.platform === "win32")(
     "rejects a FIFO without blocking the initializer",
     async () => {
-      const directory = join(tmpdir(), `opensteer-self-host-fifo-${randomUUID()}`);
+      const directory = join(tmpdir(), `opensteer-team-fifo-${randomUUID()}`);
       const fifo = join(directory, "postgres_password");
       await mkdir(directory, { mode: 0o700 });
       const created = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
@@ -291,7 +296,7 @@ function runInitializerCli(
       [
         "--import",
         "tsx",
-        resolve(process.cwd(), "scripts/init-self-host.ts"),
+        resolve(process.cwd(), "scripts/init-team.ts"),
         "--secrets-dir",
         directory,
       ],

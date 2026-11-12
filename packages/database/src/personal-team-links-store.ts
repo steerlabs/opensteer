@@ -112,6 +112,11 @@ export class PersonalTeamLinksStore {
       remoteLinkId: link.remoteLinkId,
       ownerUserId: link.remoteOwnerUserId,
       state: link.state,
+      updateRequiredBy:
+        link.state === "needs_update" &&
+        ["personal", "team"].includes(String(link.authorityEnvelope.updateRequiredBy))
+          ? link.authorityEnvelope.updateRequiredBy
+          : null,
       lastContactAt:
         link.lastContactAt === null ? null : new Date(link.lastContactAt).toISOString(),
     });

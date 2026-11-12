@@ -69,9 +69,8 @@ export function deploymentStatusSelectable(status: DeploymentStatus): boolean {
  * here, so no surface has to invent a label for the one it did not expect.
  */
 export function deploymentKindLabel(kind: DeploymentDisplayKind): string {
-  if (kind === "development") return "Development";
   if (kind === "personal") return "Personal";
-  return "Server";
+  return "Team";
 }
 
 /**

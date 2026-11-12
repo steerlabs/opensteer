@@ -6142,7 +6142,7 @@ class MockHostState {
     }
     // The setup request behind the seeded Numbers Request, dated from this
     // client's clock so it is pending for as long as a real one would be.
-    if (true && !firstRun)
+    if (!firstRun)
       this.computerAppSetupRequests.set(mockComputerUseSetupRequestId, {
         access: "read-write",
         app: mockComputerUseApps.numbers,
@@ -6653,6 +6653,7 @@ class MockHostState {
       status: assignment.status,
       updatedAt: assignment.updatedAt,
       workerThread: {
+        folder: thread.folder,
         environmentId: thread.environmentId,
         id: thread.id,
         pendingRequests: (this.snapshot.requests[thread.id] ?? []).filter(

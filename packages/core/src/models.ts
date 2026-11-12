@@ -1,5 +1,5 @@
 import { TaskFolderSchema } from "./personal.js";
-import { TeamTaskOriginSchema, TeamSourceSchema } from "./team.js";
+import { TeamTaskOriginSchema, TeamSourceSchema, TeamAudienceSchema } from "./team.js";
 import { TeamAgentRequestIdSchema } from "./ids.js";
 import { z } from "zod";
 import { ComputerAppIdentityViewSchema } from "./computer-app.js";
@@ -339,6 +339,8 @@ export const ThreadSchema = z.object({
 });
 export const ThreadViewSchema = z.object({
   ...ThreadSchema.shape,
+  folder: z.object(TaskFolderSchema.shape),
+  teamOrigin: z.object(TeamTaskOriginSchema.shape).nullable(),
   // A colour a newer Host added reads as none rather than failing the view.
   color: MarkColorSchema.optional().catch(undefined),
   doneReason: ThreadDoneReasonSchema.nullable().default(null).catch(null),
@@ -347,7 +349,7 @@ export const ThreadViewSchema = z.object({
 });
 export type Thread = z.infer<typeof ThreadSchema>;
 
-export const ThreadReadStateSchema = z.strictObject({
+export const ThreadReadStateSchema = z.object({
   threadId: ThreadIdSchema,
   readSequence: SequenceSchema.nullable(),
   unreadSequence: SequenceSchema.nullable(),
@@ -635,6 +637,9 @@ const threadInputShape = {
 export const ThreadInputSchema = z.strictObject(threadInputShape);
 export const ThreadInputViewSchema = z.object({
   ...threadInputShape,
+  teamSource: z
+    .object({ ...TeamSourceSchema.shape, audience: z.object(TeamAudienceSchema.shape) })
+    .nullable(),
   replyTarget: ReplyTargetViewSchema.nullable(),
 });
 export type ThreadInput = z.infer<typeof ThreadInputSchema>;
@@ -1009,6 +1014,7 @@ export const AssignmentSummarySchema = z.object({
   status: AssignmentStatusSchema,
   updatedAt: IsoDateTimeSchema,
   workerThread: z.object({
+    folder: z.object(TaskFolderSchema.shape),
     environmentId: EnvironmentIdSchema,
     id: ThreadIdSchema,
     pendingRequests: z.number().int().nonnegative(),

@@ -13,9 +13,11 @@ import { linkError } from "./contracts.js";
 export class TeamEndpointLinks {
   readonly database: Kysely<DatabaseSchema>;
   readonly access: TeamAccessLockPort;
-  constructor(database: Kysely<DatabaseSchema>, access: TeamAccessLockPort) {
+  readonly teamName: string;
+  constructor(database: Kysely<DatabaseSchema>, access: TeamAccessLockPort, teamName: string) {
     this.database = database;
     this.access = access;
+    this.teamName = teamName;
   }
 
   async authenticate(credential: string) {
@@ -256,6 +258,7 @@ export class TeamEndpointLinks {
     readonly lastSeenAt: Date | string | null;
   }) {
     return TeamLinkViewSchema.parse({
+      teamName: this.teamName,
       id: link.id,
       ownerUserId: link.ownerUserId,
       personalDeploymentId: link.personalDeploymentId,

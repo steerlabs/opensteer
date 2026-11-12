@@ -1022,6 +1022,9 @@ importers:
       '@opensteer/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../../packages/deployment-authority
       '@opensteer/harness':
         specifier: workspace:*
         version: link:../../packages/harness
@@ -2072,6 +2075,9 @@ importers:
       '@opensteer/database':
         specifier: workspace:*
         version: link:../database
+      '@opensteer/deployment-authority':
+        specifier: workspace:*
+        version: link:../deployment-authority
       '@opensteer/shared':
         specifier: workspace:*
         version: link:../shared

@@ -2945,6 +2945,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "properties": {
+        "cursor": {
+          "description": "nextCursor from a call without sql.",
+          "pattern": "^ktp_[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "type": "string",
+        },
         "mode": {
           "default": "read",
           "enum": [
@@ -2953,7 +2958,12 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           ],
           "type": "string",
         },
+        "onlyIfUnchanged": {
+          "description": "Refuse the INSERT if a fact changed since the seen_fact_id it names.",
+          "type": "boolean",
+        },
         "operationId": {
+          "description": "Required for a write: a new UUID, reused only to retry that same write.",
           "format": "uuid",
           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$",
           "type": "string",
@@ -2963,11 +2973,11 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "items": {
             "$ref": "#/$defs/__schema0",
           },
-          "maxItems": 100,
+          "maxItems": 64,
           "type": "array",
         },
         "sql": {
-          "maxLength": 32768,
+          "maxLength": 16384,
           "minLength": 1,
           "type": "string",
         },

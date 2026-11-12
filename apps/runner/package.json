@@ -35,6 +35,7 @@
     "@opensteer/config": "workspace:*",
     "@opensteer/control-plane-protocol": "workspace:*",
     "@opensteer/core": "workspace:*",
+    "@opensteer/deployment-authority": "workspace:*",
     "@opensteer/harness": "workspace:*",
     "@opensteer/harness-antigravity": "workspace:*",
     "@opensteer/harness-claude": "workspace:*",

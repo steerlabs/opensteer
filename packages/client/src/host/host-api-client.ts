@@ -290,7 +290,10 @@ async function request<Name extends keyof typeof hostApi>(
         new TextEncoder().encode(parsed.data.data.content).byteLength > folderFilePreviewMaxBytes
       )
         throw new HostTransportError("response-too-large");
-      if (!parsed.data.ok && parsed.data.error.reason === "unsupported-version")
+      if (
+        !parsed.data.ok &&
+        ["unsupported-version", "api-version-mismatch"].includes(parsed.data.error.reason ?? "")
+      )
         options.onVersionMismatch?.();
       return parsed.data as RpcOutput<(typeof hostApi)[Name]>;
     }

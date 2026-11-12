@@ -57,10 +57,10 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => times.shift() ?? new Date("2026-08-11T11:00:00.000Z"),
     });
-    const local = deploymentInput({ kind: "self-hosted", name: "Studio Mac" });
+    const local = deploymentInput({ kind: "team", name: "Studio Mac" });
     const cloud = deploymentInput({
       canonicalOrigin: "https://cloud.opensteer.example",
-      kind: "self-hosted",
+      kind: "team",
       name: "Team server",
     });
 
@@ -156,9 +156,9 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const manual = deploymentInput({ kind: "self-hosted", name: "Manual" });
-    const shared = deploymentInput({ kind: "self-hosted", name: "Shared" });
-    const unavailable = deploymentInput({ kind: "self-hosted", name: "Offline" });
+    const manual = deploymentInput({ kind: "team", name: "Manual" });
+    const shared = deploymentInput({ kind: "team", name: "Shared" });
+    const unavailable = deploymentInput({ kind: "team", name: "Offline" });
     await store.upsert(manual);
     await reconcileAccountDeployments(store, {
       connections: [shared],
@@ -188,8 +188,8 @@ describe("DeploymentCatalogStore", () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
     const manual = deploymentInput({ name: "Manual" });
-    const first = deploymentInput({ kind: "self-hosted", name: "First Account" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second Account" });
+    const first = deploymentInput({ kind: "team", name: "First Account" });
+    const second = deploymentInput({ kind: "team", name: "Second Account" });
     const secondSource = {
       ...accountSource,
       subject: ControlPlaneAccountIdSchema.parse(`acct_${crypto.randomUUID()}`),
@@ -308,8 +308,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "self-hosted", name: "First" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second" });
+    const first = deploymentInput({ kind: "team", name: "First" });
+    const second = deploymentInput({ kind: "team", name: "Second" });
     await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -336,7 +336,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const selected = deploymentInput({ kind: "self-hosted", name: "Selected" });
+    const selected = deploymentInput({ kind: "team", name: "Selected" });
     await reconcileAccountDeployments(store, {
       connections: [selected],
       directoryDeployments: [accountDeployment(selected)],
@@ -357,8 +357,8 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const first = deploymentInput({ kind: "self-hosted", name: "First" });
-    const second = deploymentInput({ kind: "self-hosted", name: "Second" });
+    const first = deploymentInput({ kind: "team", name: "First" });
+    const second = deploymentInput({ kind: "team", name: "Second" });
     const before = await reconcileAccountDeployments(store, {
       connections: [first, second],
       directoryDeployments: [accountDeployment(first), accountDeployment(second)],
@@ -384,7 +384,7 @@ describe("DeploymentCatalogStore", () => {
       privateFiles: files,
       now: () => new Date("2026-08-11T10:00:00.000Z"),
     });
-    const accountConnection = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const accountConnection = deploymentInput({ kind: "team", name: "Home" });
     const canonicalOnly = DeploymentConnectionInputSchema.parse({
       ...accountConnection,
       endpoints: accountConnection.endpoints.filter(({ kind }) => kind === "canonical"),
@@ -427,7 +427,7 @@ describe("DeploymentCatalogStore", () => {
   it("immediately fences a stale Account route during transfer or authority change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const current = deploymentInput({ kind: "team", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -448,7 +448,7 @@ describe("DeploymentCatalogStore", () => {
       canonicalOrigin: "https://moved.connect.opensteer.example",
       hostInstanceId: createId("hostInstance"),
       id: current.authority.document.deploymentId,
-      kind: "self-hosted",
+      kind: "team",
       name: "Home",
     });
     catalog = await reconcileAccountDeployments(store, {
@@ -467,7 +467,7 @@ describe("DeploymentCatalogStore", () => {
   it("follows a verified Account directory Host key change", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const current = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const current = deploymentInput({ kind: "team", name: "Home" });
     await reconcileAccountDeployments(store, {
       connections: [current],
       directoryDeployments: [accountDeployment(current)],
@@ -537,7 +537,7 @@ describe("DeploymentCatalogStore", () => {
   it("records the Account relation the directory reports and follows it when it changes", async () => {
     const files = new MemoryPrivateFilesystem();
     const store = new DeploymentCatalogStore({ filePath: catalogPath, privateFiles: files });
-    const owned = deploymentInput({ kind: "self-hosted", name: "Home" });
+    const owned = deploymentInput({ kind: "team", name: "Home" });
     const directory = accountDeployment(owned);
 
     await reconcileAccountDeployments(store, {
@@ -830,7 +830,7 @@ describe("Host endpoint verification", () => {
       deploymentConnectionFromVerifiedEndpoints({
         accountAccess: null,
         endpoints: [canonical, direct],
-        kind: "self-hosted",
+        kind: "team",
         name: "Studio Mac",
         source: { kind: "manual" },
       }),
@@ -840,7 +840,7 @@ describe("Host endpoint verification", () => {
       bootstrapMethods: ["password"],
       capabilities: [],
       endpoints: [canonical.endpoint, direct.endpoint],
-      kind: "self-hosted",
+      kind: "team",
       name: "Studio Mac",
       reachability: "canonical",
       source: { kind: "manual" },
@@ -895,7 +895,7 @@ describe("Host endpoint verification", () => {
             },
           },
         ],
-        kind: "self-hosted",
+        kind: "team",
         name: "Mixed",
         source: { kind: "manual" },
       }),
@@ -1077,7 +1077,7 @@ function deploymentInput(input: {
         verifiedAt: "2026-08-11T09:00:00.000Z",
       },
     ],
-    kind: input.kind ?? "self-hosted",
+    kind: input.kind ?? "team",
     name: input.name,
     reachability: "canonical",
     source: { kind: "manual" },

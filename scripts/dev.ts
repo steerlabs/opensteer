@@ -8,11 +8,11 @@ import { pathToFileURL } from "node:url";
 import { loadOrCreateHostKeys } from "../apps/host/src/identity/host-keys.js";
 import {
   assertDevelopmentListenersAvailable,
-  assertDevelopmentWorkspaceEnvironment,
+  assertDevelopmentEnvironment,
   DevelopmentStackAlreadyRunningError,
   DevelopmentStackLock,
   developmentListeners,
-  developmentWorkspaceBacking,
+  developmentKind,
   signalProcessTree,
   spawnInProcessGroup,
 } from "./dev-supervisor.js";
@@ -66,9 +66,9 @@ export function parseShutdownGraceMs(value: string | undefined): number {
 
 export function developmentPreflightCommands(
   services: readonly ServiceName[],
-  backing: ReturnType<typeof developmentWorkspaceBacking> = "local-directory",
+  kind: ReturnType<typeof developmentKind> = "personal",
 ): readonly (readonly string[])[] {
-  return services.includes("runner") || (backing === "local-directory" && services.includes("host"))
+  return services.includes("runner") || (kind === "personal" && services.includes("host"))
     ? [["--filter", "@opensteer/runner", "build:native-fs"]]
     : [];
 }
@@ -79,11 +79,20 @@ export async function runDevelopmentStack(
 ): Promise<void> {
   await loadLocalEnvironment();
   if (signal?.aborted) return;
-  const deploymentShape = developmentWorkspaceBacking(environment);
-  assertDevelopmentWorkspaceEnvironment(environment);
-  configureDevelopmentWorkspaceEnvironment(deploymentShape, environment);
+  const deploymentShape = developmentKind(environment);
+  assertDevelopmentEnvironment(environment);
+  configureDevelopmentEnvironment(deploymentShape, environment);
   const requestedServices = parseServices(environment.OPENSTEER_DEV_SERVICES);
-  const services = requestedServices;
+  const services =
+    deploymentShape === "team"
+      ? requestedServices.filter((service) => service === "host" || service === "web")
+      : requestedServices;
+  if (
+    deploymentShape === "team" &&
+    environment.OPENSTEER_DEV_SERVICES &&
+    requestedServices.some((service) => service !== "host" && service !== "web")
+  )
+    throw new Error("Team development runs only host and web");
   await configureDevelopmentBrowserRuntimeEnvironment(services, environment);
   const shutdownGraceMs = parseShutdownGraceMs(environment.OPENSTEER_DEV_SHUTDOWN_GRACE_MS);
   const children = new Map<ServiceName, ChildProcess>();
@@ -325,60 +334,51 @@ async function firstExecutable(candidates: readonly string[]): Promise<string | 
   return undefined;
 }
 
-export function configureDevelopmentWorkspaceEnvironment(
-  backing: ReturnType<typeof developmentWorkspaceBacking>,
+export function configureDevelopmentEnvironment(
+  kind: ReturnType<typeof developmentKind>,
   environment: NodeJS.ProcessEnv,
 ): void {
-  environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING = backing;
-  environment.OPENSTEER_DEPLOYMENT_KIND = "server";
-  // The development Opensteer is a named place like any other; its Door shows
-  // this name. An explicit name in the environment wins.
-  if (!environment.OPENSTEER_DEPLOYMENT_NAME?.trim()) {
-    environment.OPENSTEER_DEPLOYMENT_NAME = "Development";
-  }
-  if (backing === "local-directory") {
-    const runnerEnvironmentId = environment.OPENSTEER_ENVIRONMENT_ID?.trim();
-    const storageEnvironmentId = environment.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID?.trim();
-    if (
-      runnerEnvironmentId &&
-      storageEnvironmentId &&
-      runnerEnvironmentId !== storageEnvironmentId
-    ) {
-      throw new Error(
-        "OPENSTEER_ENVIRONMENT_ID and OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID must match for local-directory development",
-      );
-    }
-    const ownerEnvironmentId =
-      runnerEnvironmentId || storageEnvironmentId || developmentEnvironmentId;
-    environment.OPENSTEER_ENVIRONMENT_ID = ownerEnvironmentId;
-    environment.OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID = ownerEnvironmentId;
-    const repositoryRoot = resolve(import.meta.dirname, "..");
-    environment.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH = resolve(
-      repositoryRoot,
-      environment.OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH?.trim() ||
-        ".opensteer/host/workspace-bindings.v1.json",
-    );
-    environment.OPENSTEER_LOCAL_WORKSPACE_ROOT = resolve(
-      repositoryRoot,
-      environment.OPENSTEER_LOCAL_WORKSPACE_ROOT?.trim() || ".opensteer/workspaces",
-    );
-    environment.OPENSTEER_RUNNER_WORKSPACE_BACKINGS = "local-directory";
-    const nativeFsHelper =
-      environment.OPENSTEER_NATIVE_FS_HELPER?.trim() ||
-      resolve(
-        import.meta.dirname,
-        "..",
-        "apps",
-        "runner",
-        "native-fs-helper",
-        `opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
-      );
-    if (!isAbsolute(nativeFsHelper)) {
-      throw new Error("The development native filesystem helper path must be absolute");
-    }
-    environment.OPENSTEER_NATIVE_FS_HELPER = nativeFsHelper;
+  environment.OPENSTEER_DEPLOYMENT_KIND = kind;
+  environment.OPENSTEER_DEPLOYMENT_NAME ||=
+    kind === "personal" ? "Development" : "Development team";
+  const repositoryRoot = resolve(import.meta.dirname, "..");
+  if (kind === "team") {
+    environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN ||= createHmac(
+      "sha256",
+      environment.OPENSTEER_AUTH_SECRET || "",
+    )
+      .update("development-team-setup")
+      .digest("base64url");
+    environment.OPENSTEER_HOST_DATA_DIR = resolve(repositoryRoot, ".opensteer/team-host");
     return;
   }
+  const runnerEnvironment = environment.OPENSTEER_ENVIRONMENT_ID?.trim();
+  const hostingEnvironment = environment.OPENSTEER_HOSTING_ENVIRONMENT_ID?.trim();
+  if (runnerEnvironment && hostingEnvironment && runnerEnvironment !== hostingEnvironment)
+    throw new Error("The development Runner and hosting environment must match");
+  const environmentId = runnerEnvironment || hostingEnvironment || developmentEnvironmentId;
+  environment.OPENSTEER_ENVIRONMENT_ID = environmentId;
+  environment.OPENSTEER_HOSTING_ENVIRONMENT_ID = environmentId;
+  environment.OPENSTEER_AGENT_HOME = resolve(
+    repositoryRoot,
+    environment.OPENSTEER_AGENT_HOME?.trim() || ".opensteer/agent-home",
+  );
+  environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN ||= createHmac(
+    "sha256",
+    environment.OPENSTEER_AUTH_SECRET || "",
+  )
+    .update("development-local-owner")
+    .digest("base64url");
+  const nativeFsHelper =
+    environment.OPENSTEER_NATIVE_FS_HELPER?.trim() ||
+    resolve(
+      repositoryRoot,
+      "apps/runner/native-fs-helper",
+      `opensteer-native-fs${process.platform === "win32" ? ".exe" : ""}`,
+    );
+  if (!isAbsolute(nativeFsHelper))
+    throw new Error("The development native filesystem helper path must be absolute");
+  environment.OPENSTEER_NATIVE_FS_HELPER = nativeFsHelper;
 }
 
 /**
@@ -416,7 +416,15 @@ async function startDevelopmentServices(
       "host",
       messagingToken ? { OPENSTEER_INITIAL_MESSAGING_RUNNER_ENROLLMENT_TOKEN: messagingToken } : {},
     );
-    bootstrap = await waitForLocalBootstrap(hostUrl(environment), signal);
+    if (environment.OPENSTEER_DEPLOYMENT_KIND === "personal")
+      bootstrap = await waitForLocalBootstrap(
+        hostUrl(environment),
+        signal,
+        undefined,
+        environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN,
+      );
+    else if (!(await waitForOrigin(new URL("/healthz", hostUrl(environment)), signal)))
+      throw new Error("The team Host did not become ready");
   }
   if (signal.aborted) return;
 
@@ -447,7 +455,13 @@ async function startDevelopmentServices(
   // The summary and its link always print. `OPENSTEER_OPEN_BROWSER=false`
   // declines the browser, not the information — suppressing both would leave a
   // headless or CI run with no way to reach setup at all.
-  const url = bootstrap?.setupUrl ?? publicUrl(environment).toString();
+  const url =
+    environment.OPENSTEER_DEPLOYMENT_KIND === "team"
+      ? new URL(
+          `/setup#${environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN}`,
+          publicUrl(environment),
+        ).toString()
+      : (bootstrap?.setupUrl ?? publicUrl(environment).toString());
   const openingBrowser =
     webReady &&
     Boolean(bootstrap?.setupUrl) &&

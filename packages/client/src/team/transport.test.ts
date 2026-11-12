@@ -75,7 +75,7 @@ it("pins HTTP and WebSocket credentials and versions to the joined team while Pe
       bootstrapMethods: ["password"],
       reachability: "canonical",
       endpoints: [{ kind: "canonical", origin, verifiedAt: now }],
-      kind: kind === "team" ? "self-hosted" : "personal",
+      kind: kind === "team" ? "team" : "personal",
       preferredEndpointOrigin: null,
       source: { kind: "manual" },
       name: kind,

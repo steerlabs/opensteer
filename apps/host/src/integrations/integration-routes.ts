@@ -90,7 +90,7 @@ async function executeIntegrationCommand(
   if (command.type === "integration.disconnect")
     return disconnectIntegration(
       { platform: options.platform, integrations: options.integrations },
-      { userId: session.user.id, isAdministrator: true },
+      { userId: session.user.id },
       command.connectionId,
       context.requestId,
     );

@@ -685,8 +685,8 @@ export function deploymentCard(
           : { kind: "none" }
         : { href: deploymentOrigin(deployment.authority.canonicalOrigin), kind: "link" },
     id: deployment.id,
-    kind: personal ? "personal" : "self-hosted",
-    kindLabel: deploymentKindLabel(personal ? "personal" : "self-hosted"),
+    kind: personal ? "personal" : "team",
+    kindLabel: deploymentKindLabel(personal ? "personal" : "team"),
     name: deployment.name,
     remove:
       deployment.access === "member" ? { action: portalRemoveDeploymentPath(deployment.id) } : null,

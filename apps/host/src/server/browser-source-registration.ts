@@ -111,7 +111,7 @@ export async function handleBrowserSourceCommand(
       await options.service.removeSite({
         ownerId,
         site: command.site,
-        workspaceId: command.workspaceId,
+        deploymentId: options.authority.document.deploymentId,
       });
       return { type: command.type };
     case "browser.session.sign-in":

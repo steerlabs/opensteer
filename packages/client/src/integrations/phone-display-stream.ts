@@ -961,8 +961,7 @@ export function computerDisplayAuthorityKey(
   );
   if (
     machine &&
-    (false ||
-      captureRefused(machine) ||
+    (captureRefused(machine) ||
       (machine.allowedModules && !machine.allowedModules.includes("integrations")) ||
       (machine.status === "online" && machine.computerUse === null))
   )

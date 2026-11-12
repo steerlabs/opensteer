@@ -1,3 +1,4 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import { runnerFileRequest } from "./host-http.js";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -202,7 +203,10 @@ export class AttachmentCache {
     token: string,
     signal: AbortSignal,
   ): Promise<{ readonly status: number; readonly body: AsyncIterable<Uint8Array> }> {
-    const headers = { authorization: `Bearer ${token}` };
+    const headers = {
+      authorization: `Bearer ${token}`,
+      "x-opensteer-api-version": String(hostApiVersion),
+    };
     if (this.#fetch) {
       const { url } = await runnerHttpTransport(this.#transport, path);
       const response = await this.#fetch(url, {

@@ -73,7 +73,7 @@ import {
   type WaitingRequest,
   type IconName,
 } from "@opensteer/core";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { hostApiVersion, apiVersionQueryParameter } from "@opensteer/deployment-authority";
 import {
   BrowserSessionIdSchema,
   DisplaySourceSchema,
@@ -2165,6 +2165,7 @@ export class HttpHostClient {
     const operation = this.#loadRequests(threadId).finally(() => {
       if (this.#requestLoads.get(threadId) === operation) {
         this.#requestLoads.delete(threadId);
+        this.#ensureRequests(threadId);
       }
     });
     this.#requestLoads.set(threadId, operation);
@@ -5198,6 +5199,7 @@ export class HttpHostClient {
   #webSocketUrl(path: string): string {
     const url = new URL(path, this.#baseUrl);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.searchParams.set(apiVersionQueryParameter, String(hostApiVersion));
     return url.toString();
   }
 

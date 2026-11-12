@@ -3,7 +3,7 @@
   "license": "MIT",
   "version": "0.1.219",
   "private": true,
-  "description": "A self-hostable workspace and runtime for durable cloud agents.",
+  "description": "Private agents on your computer, shared chat and knowledge on your team server.",
   "type": "module",
   "packageManager": "pnpm@10.29.3",
   "engines": {
@@ -23,7 +23,6 @@
     "engines": "tsx scripts/engines.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "init:self-host": "tsx scripts/init-self-host.ts",
     "lint": "node tooling/oxlint-plugin-opensteer/baseline.mjs && oxlint . --deny-warnings && pnpm lint:type-aware",
     "lint:type-aware": "oxlint . -A all --type-aware -W typescript/no-floating-promises -D typescript/no-misused-promises",
     "prebuild": "pnpm --filter @opensteer/runner build:native-fs",
@@ -40,7 +39,6 @@
     "test:gui": "vitest run --config vitest.gui.config.ts",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --if-present typecheck && pnpm typecheck:tests",
-    "verify:browser-deployment": "node scripts/verify-browser-deployment.mjs",
     "typecheck:tests": "cd -P . && tsc -p tsconfig.tests.json --noEmit",
     "integration:rerun": "tsx scripts/integration-rerun.ts",
     "test:vm": "tsx scripts/test-vm.ts",
@@ -51,7 +49,10 @@
     "bench:mobile-network": "tsx scripts/bench-mobile-network.ts",
     "bench:phone-display": "tsx scripts/bench-phone-display.ts",
     "bench:mac-display": "tsx scripts/bench-mac-display.ts",
-    "bench:browser-stream": "tsx scripts/bench-browser-stream.ts"
+    "bench:browser-stream": "tsx scripts/bench-browser-stream.ts",
+    "dev:team": "OPENSTEER_DEPLOYMENT_KIND=team OPENSTEER_DEV_SERVICES=host,web tsx scripts/dev.ts",
+    "init:team": "tsx scripts/init-team.ts",
+    "verify:team-deployment": "node scripts/verify-team-deployment.mjs"
   },
   "devDependencies": {
     "@babel/parser": "7.29.8",

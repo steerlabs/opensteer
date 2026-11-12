@@ -1,4 +1,4 @@
-import { createId } from "@opensteer/core";
+import { type TeamChannelId, createId } from "@opensteer/core";
 import { teamApiVersion } from "@opensteer/deployment-authority";
 import {
   TeamFileSchema,
@@ -191,12 +191,13 @@ export class MockTeamHost {
       ),
     };
   }
-  #sidebarPage(after?: string): TeamSidebar {
+  #sidebarPage(after?: string, channelIds?: readonly TeamChannelId[]): TeamSidebar {
     const sidebar = this.sidebar(),
       rows = sidebar.channels
         .filter((row) => !row.channel.archivedAt && !row.channel.can.join)
         .sort((a, b) => a.channel.id.localeCompare(b.channel.id))
-        .filter((row) => !after || row.channel.id > after),
+        .filter((row) => !after || row.channel.id > after)
+        .filter((row) => !channelIds || channelIds.includes(row.channel.id)),
       channels = rows.slice(0, 50);
     return {
       ...sidebar,
@@ -331,8 +332,8 @@ export class MockTeamHost {
   async read(name: string, input: unknown): Promise<unknown> {
     if (name === "team.bootstrap.get") return { ...this.bootstrap, sidebar: this.#sidebarPage() };
     if (name === "team.sidebar.get") {
-      const { after } = hostApi[name].payload.parse(input);
-      return this.#sidebarPage(after);
+      const { after, channelIds } = hostApi[name].payload.parse(input);
+      return this.#sidebarPage(after, channelIds);
     }
     if (name === "team.channels.list") {
       const { after } = hostApi[name].payload.parse(input),
@@ -823,7 +824,7 @@ export class MockTeamHost {
     }
   }
   dispose(): void {
-    for (const socket of [...this.#sockets.keys()]) socket.close();
+    for (const socket of this.#sockets.keys()) socket.close();
     this.#sockets.clear();
   }
 }

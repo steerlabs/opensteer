@@ -9,7 +9,7 @@ import {
   DevelopmentStackAlreadyRunningError,
   DevelopmentStackLock,
   developmentListeners,
-  developmentWorkspaceBacking,
+  developmentKind,
 } from "../scripts/dev-supervisor.js";
 
 describe("development supervisor", () => {
@@ -50,12 +50,12 @@ describe("development supervisor", () => {
     ]);
   });
 
-  it("defaults to local directories and accepts only explicit development backing", () => {
-    expect(developmentWorkspaceBacking({})).toBe("local-directory");
+  it("defaults to Personal and rejects unsupported deployment kinds", () => {
+    expect(developmentKind({})).toBe("personal");
 
-    expect(() =>
-      developmentWorkspaceBacking({ OPENSTEER_DEFAULT_WORKSPACE_BACKING: "invalid" }),
-    ).toThrow(/requires OPENSTEER_DEFAULT_WORKSPACE_BACKING/);
+    expect(() => developmentKind({ OPENSTEER_DEPLOYMENT_KIND: "invalid" })).toThrow(
+      /Invalid option/,
+    );
   });
 
   it("fails before startup when a selected listener is occupied", async () => {

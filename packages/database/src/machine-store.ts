@@ -287,10 +287,7 @@ export async function updateMachineAccessPolicy(
       }
     }
     const ownership = await machineOwnershipIn(transaction, input.runnerId);
-    if (
-      !ownership ||
-      !machineIsManagedBy(ownership, input.ownerId, { allowDeployment: input.allowDeployment })
-    ) {
+    if (!ownership || !machineIsManagedBy(ownership, input.ownerId)) {
       throw new OpensteerError({ code: "not_found", message: "Active Runner not found" });
     }
     // "My agents" has to name somebody. A Deployment-owned machine normally

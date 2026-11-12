@@ -9,8 +9,7 @@ import {
   type AuthenticatedSession,
   type NativeOAuthClient,
 } from "@opensteer/core";
-import { createDatabase } from "../../database/src/connection.js";
-import { migrateToLatest } from "../../database/src/migrations.js";
+import { createDatabase, migrateToLatest } from "@opensteer/database";
 import { sql } from "kysely";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { IdentityService } from "./identity-service.js";
@@ -91,7 +90,7 @@ integration("IdentityService", () => {
 
   it("creates a token-free password session with idle and absolute policy", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -178,7 +177,7 @@ integration("IdentityService", () => {
   it("lets the local operator issue one-use browser recovery and revokes every session", async () => {
     const endedSessions: string[] = [];
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       localPasswordEnabled: true,
       onSessionEnded: (sessionId) => endedSessions.push(sessionId),
       oidcProviders: [],
@@ -263,7 +262,7 @@ integration("IdentityService", () => {
 
   it("requires a browser-bound admission when signup is invite-only", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -656,7 +655,7 @@ integration("IdentityService", () => {
 
   it("publishes the apex portal origin only when the Deployment declares one", async () => {
     await expect(identityService().configuration()).resolves.toMatchObject({
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       portalOrigin: null,
     });
     await expect(
@@ -871,7 +870,7 @@ integration("IdentityService", () => {
 
   it("replaces stale browser session cookies when signing in again", async () => {
     const identity = new IdentityService(database, {
-      deployment: { kind: "self-hosted", name: null },
+      deployment: { kind: "team", name: null },
       localPasswordEnabled: true,
       oidcProviders: [],
       publicOrigin: new URL("http://127.0.0.1:4310"),
@@ -2129,7 +2128,7 @@ function identityService(
   overrides: Partial<ConstructorParameters<typeof IdentityService>[1]> = {},
 ): IdentityService {
   return new IdentityService(database, {
-    deployment: { kind: "self-hosted", name: null },
+    deployment: { kind: "team", name: null },
     hostKeyFingerprint,
     localPasswordEnabled: true,
     oidcProviders: [],

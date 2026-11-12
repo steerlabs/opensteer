@@ -40,8 +40,10 @@ export const HostBootstrapMethodSchema = z.enum([
 export type HostBootstrapMethod = z.infer<typeof HostBootstrapMethodSchema>;
 
 /** Personal and team transports negotiate their own mandatory contract version. */
-export const hostApiVersion = 52;
+export const hostApiVersion = 53;
 export const teamApiVersion = 1;
+export const teamOAuthVersionParameter = "opensteer_team_api_version";
+export const teamOidcStatePrefix = "ost-team-api-";
 export const hostApiVersionHeader = "x-opensteer-api-version";
 export const teamApiVersionHeader = "x-opensteer-team-api-version";
 export const ApiNegotiationSchema = z.strictObject({
@@ -235,3 +237,5 @@ export function hostAuthorityIdentityMatches(
     hostKeyFingerprint === identity.hostKeyFingerprint
   );
 }
+
+export const apiVersionQueryParameter = "opensteer_api_version";

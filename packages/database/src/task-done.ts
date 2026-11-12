@@ -255,11 +255,10 @@ export async function setThreadDone(
       await lockThreadChannelAuthorities(transaction, scope.threadIds);
       // Active bindings must not rotate into this set while scope is checked.
       await transaction
-        .selectFrom("channelConversationContexts")
+        .selectFrom("channelConversations")
         .selectAll()
         .where("activeThreadId", "in", scope.threadIds)
-        .orderBy("conversationId")
-        .orderBy("authorityUserId")
+        .orderBy("id")
         .forNoKeyUpdate()
         .execute();
       const threads = await transaction

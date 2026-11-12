@@ -38,7 +38,7 @@ export const HostBootstrapEnvironmentSchema = z.object({
   providerStateModes: z.array(HarnessInstanceStateKindSchema).max(2),
   runnerId: z.string().min(1).nullable(),
   status: HostEnvironmentStatusSchema,
-  can: z.strictObject({ executeTasks: z.boolean() }),
+  can: z.object({ executeTasks: z.boolean() }),
 });
 
 export const HostBootstrapHarnessSchema = z.object({
@@ -84,11 +84,14 @@ export const AppTabSchema = z.object({
 export const AppTabsSchema = z.array(AppTabSchema).max(500);
 export type AppTab = z.infer<typeof AppTabSchema>;
 
-export const HostBootstrapSchema = z.strictObject({
+export const HostBootstrapSchema = z.object({
   deploymentId: DeploymentIdSchema,
   sessionId: AuthSessionIdSchema,
-  personalSettings: PersonalSettingsSchema,
-  can: z.strictObject({
+  personalSettings: z.object({
+    ...PersonalSettingsSchema.shape,
+    agentHome: z.object(PersonalSettingsSchema.shape.agentHome.shape),
+  }),
+  can: z.object({
     createTasks: z.boolean(),
     useVoice: z.boolean(),
     manageComputers: z.boolean(),

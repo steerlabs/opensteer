@@ -24,6 +24,7 @@ import {
   NormalizedChannelEventSchema,
   assertUnambiguousBinding,
   channelProviderCatalog,
+  channelAllowsPersonalContext,
   createChannelId,
   resolveChannelBinding,
   type ChannelAccount,
@@ -1780,11 +1781,17 @@ export class ChannelStore {
               });
             }
           }
+          const personalContext = channelAllowsPersonalContext({
+            conversationType: event.conversation.type,
+            linkedSenderId: identity.status === "linked" ? identity.linkedUserId : null,
+            ownerId: binding.createdBy,
+          });
           let conversation = existingConversation;
           if (!conversation) {
             conversation = await transaction
               .insertInto("channelConversations")
               .values({
+                personalContext,
                 accountId: ingress.accountId,
                 activeThreadId: null,
                 bindingId: binding.id,
@@ -1813,6 +1820,7 @@ export class ChannelStore {
                   .executeTakeFirst()
               : undefined;
           const rotate =
+            conversation.personalContext !== personalContext ||
             !thread ||
             thread.doneAt !== null ||
             thread.status === "archived" ||
@@ -1870,6 +1878,7 @@ export class ChannelStore {
             .updateTable("channelConversations")
             .set({
               activeThreadId: thread.id,
+              personalContext,
               bindingRevision: binding.revision,
               updatedAt: now,
             })

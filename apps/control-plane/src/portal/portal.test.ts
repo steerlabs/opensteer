@@ -351,10 +351,7 @@ function authorityEnvelope(
       deploymentId,
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape:
-        kind === "self-hosted"
-          ? { kind: "team" }
-          : { kind: "personal" },
+      deploymentShape: kind === "self-hosted" ? { kind: "team" } : { kind: "personal" },
     },
     publicKey: { algorithm: "Ed25519", spki: "A".repeat(59) },
     signature: "A".repeat(86),

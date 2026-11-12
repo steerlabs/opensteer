@@ -1,5 +1,5 @@
 import type { AdministrationCommandIdentity } from "@opensteer/database";
-import { OpensteerError, type UserId } from "@opensteer/core";
+import { type UserId } from "@opensteer/core";
 import type { HostApiCommand, HostApiCommandOutput } from "@opensteer/protocol";
 import type { IntegrationPlatformService } from "./integration-platform-service.js";
 import type { IntegrationService } from "./integration-service.js";
@@ -24,11 +24,6 @@ export function isIntegrationAdministrationCommand(
 }
 export interface AdministrationActor {
   readonly userId: UserId;
-  readonly isAdministrator: boolean;
-}
-export function assertAdministrator(actor: AdministrationActor) {
-  if (!actor.isAdministrator)
-    throw new OpensteerError({ code: "forbidden", message: "Administrator access required" });
 }
 type Options = {
   readonly platform: IntegrationPlatformService;
@@ -45,6 +40,7 @@ export async function executeIntegrationAdministration(
   requestId: string,
   administration?: AdministrationCommandIdentity | undefined,
 ): Promise<HostApiCommandOutput> {
+  await options.platform.store.connections.assertOwner(actor.userId);
   switch (command.type) {
     case "integration.mcp.disconnect":
       await options.platform.store.revokeMcpOAuthConnection({
@@ -89,7 +85,6 @@ export async function executeIntegrationAdministration(
       return { type: command.type };
     }
     case "plugin.update":
-      assertAdministrator(actor);
       await options.platform.installAgentPlugin({
         administration,
         actorUserId: actor.userId,
@@ -100,7 +95,6 @@ export async function executeIntegrationAdministration(
       });
       return { type: command.type };
     case "integration.uninstall": {
-      assertAdministrator(actor);
       const outcome = await options.platform.uninstallIntegration({
         administration,
         actorUserId: actor.userId,

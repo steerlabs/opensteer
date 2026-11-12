@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   developmentPreflightCommands,
-  configureDevelopmentWorkspaceEnvironment,
+  configureDevelopmentEnvironment,
   developmentMessagingEnrollmentToken,
   parseServices,
   parseShutdownGraceMs,
@@ -39,33 +39,29 @@ describe("development service selection", () => {
     expect(() => parseShutdownGraceMs("0")).toThrow(/1000 through 60000/);
   });
 
-  it("constructs one strict local-directory contract for Host and Runner", () => {
+  it("shares one Personal hosting identity and an isolated agent home between Host and Runner", () => {
     const environment: NodeJS.ProcessEnv = {};
-    configureDevelopmentWorkspaceEnvironment("local-directory", environment);
-    expect(environment).toMatchObject({
-      OPENSTEER_DEFAULT_WORKSPACE_BACKING: "local-directory",
-      OPENSTEER_DEPLOYMENT_KIND: "server",
-      OPENSTEER_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000001",
-      OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000001",
-      OPENSTEER_LOCAL_WORKSPACE_REGISTRY_PATH: resolve(
-        import.meta.dirname,
-        "..",
-        ".opensteer/host/workspace-bindings.v1.json",
-      ),
-      OPENSTEER_LOCAL_WORKSPACE_ROOT: resolve(import.meta.dirname, "..", ".opensteer/workspaces"),
-      OPENSTEER_RUNNER_WORKSPACE_BACKINGS: "local-directory",
-    });
-    expect(environment.OPENSTEER_HOST_NATIVE_FS_HELPER).toBeUndefined();
-    expect(environment.OPENSTEER_NATIVE_FS_HELPER).toMatch(
-      process.platform === "win32" ? /opensteer-native-fs\.exe$/u : /opensteer-native-fs$/u,
+    configureDevelopmentEnvironment("personal", environment);
+    expect(environment.OPENSTEER_DEPLOYMENT_KIND).toBe("personal");
+    expect(environment.OPENSTEER_HOSTING_ENVIRONMENT_ID).toBe(environment.OPENSTEER_ENVIRONMENT_ID);
+    expect(environment.OPENSTEER_AGENT_HOME).toBe(
+      resolve(import.meta.dirname, "..", ".opensteer/agent-home"),
     );
+    expect(environment.OPENSTEER_LOCAL_OWNER_CLAIM_TOKEN).toHaveLength(43);
   });
-
+  it("starts a team without Personal hosting configuration", () => {
+    const environment: NodeJS.ProcessEnv = {};
+    configureDevelopmentEnvironment("team", environment);
+    expect(environment.OPENSTEER_DEPLOYMENT_KIND).toBe("team");
+    expect(environment.OPENSTEER_HOSTING_ENVIRONMENT_ID).toBeUndefined();
+    expect(environment.OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN).toHaveLength(43);
+    expect(developmentPreflightCommands(["host", "web"], "team")).toEqual([]);
+  });
   it("rejects mismatched local Host and Runner environment identities", () => {
     expect(() =>
-      configureDevelopmentWorkspaceEnvironment("local-directory", {
+      configureDevelopmentEnvironment("personal", {
         OPENSTEER_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000001",
-        OPENSTEER_LOCAL_WORKSPACE_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000002",
+        OPENSTEER_HOSTING_ENVIRONMENT_ID: "env_00000000-0000-5000-8000-000000000002",
       }),
     ).toThrow(/must match/);
   });
@@ -79,11 +75,11 @@ describe("development service selection", () => {
     ]);
   });
 
-  it("gives the native filesystem authority to the Runner alone", () => {
+  it("uses the hosting computer’s native file helper", () => {
     const helper =
       process.platform === "win32" ? "C:\\Opensteer\\native-fs.exe" : "/opt/opensteer/native-fs";
     const environment: NodeJS.ProcessEnv = { OPENSTEER_NATIVE_FS_HELPER: helper };
-    configureDevelopmentWorkspaceEnvironment("local-directory", environment);
+    configureDevelopmentEnvironment("personal", environment);
     expect(environment.OPENSTEER_NATIVE_FS_HELPER).toBe(helper);
     expect(environment.OPENSTEER_HOST_NATIVE_FS_HELPER).toBeUndefined();
   });
@@ -92,11 +88,11 @@ describe("development service selection", () => {
 describe("development deployment presentation", () => {
   it("names the development Opensteer unless the environment already names it", () => {
     const environment: NodeJS.ProcessEnv = {};
-    configureDevelopmentWorkspaceEnvironment("local-directory", environment);
+    configureDevelopmentEnvironment("personal", environment);
     expect(environment.OPENSTEER_DEPLOYMENT_NAME).toBe("Development");
 
     const named: NodeJS.ProcessEnv = { OPENSTEER_DEPLOYMENT_NAME: "Scratch" };
-    configureDevelopmentWorkspaceEnvironment("local-directory", named);
+    configureDevelopmentEnvironment("personal", named);
     expect(named.OPENSTEER_DEPLOYMENT_NAME).toBe("Scratch");
   });
 });

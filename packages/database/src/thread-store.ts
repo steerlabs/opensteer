@@ -375,6 +375,7 @@ export interface OwnerThreadPage {
   readonly window: DurableWindow;
 }
 interface AgentThreadListEntry {
+  readonly folder: import("@opensteer/core").TaskFolder;
   readonly assignmentId: AssignmentId | null;
   readonly taskStatus: AssignmentSummary["status"] | null;
   readonly doneAt: string | null;
@@ -865,6 +866,8 @@ export async function agentThreadPageForOwner(
           .select(["task.assignmentId", "task.taskStatus"])
           .select([
             "threads.environmentId",
+            "threads.folderComputerId",
+            "threads.folderPath",
             "threads.id",
             "threads.status",
             "threads.title",
@@ -892,6 +895,7 @@ export async function agentThreadPageForOwner(
       const window = boundedSerializedPrefix(
         rows.slice(0, maxItems).map((row) => ({
           ...row,
+          folder: { computerId: row.folderComputerId, path: row.folderPath },
           updatedAt: row.updatedAt.toISOString(),
           doneAt: row.doneAt?.toISOString() ?? null,
         })),

@@ -1,3 +1,4 @@
+import { TeamCommandResultViewSchema, teamReadViews } from "./team-views.js";
 import {
   FolderFileKeySchema,
   FolderFileCursorSchema,
@@ -9,7 +10,7 @@ import { NeedsYouPageSchema } from "./needs-you.js";
 import { TaskFolderSchema } from "@opensteer/core";
 import { ToolOutputViewSchema } from "@opensteer/core";
 import { AutomaticModelsViewSchema } from "./automatic-models.js";
-import { TeamCommandSchema, TeamCommandResultSchema, teamReadSchemas } from "./team-api.js";
+import { TeamCommandSchema, teamReadSchemas } from "./team-api.js";
 import { AutomaticModelConfigSchema, AutomaticModelConfigViewSchema } from "@opensteer/core";
 import {
   AgentConnectionSchema,
@@ -1092,7 +1093,7 @@ const commandInputSchema = z.discriminatedUnion("type", [
 ]);
 
 const commandOutputSchema = z.discriminatedUnion("type", [
-  ...TeamCommandResultSchema.options,
+  ...TeamCommandResultViewSchema.options,
   SettingsPluginEnableResultSchema,
   PersonalTabActivateResultSchema,
   PersonalTabCloseResultSchema,
@@ -1114,7 +1115,7 @@ const commandOutputSchema = z.discriminatedUnion("type", [
     asOfSequence: SequenceSchema,
     thread: ThreadViewSchema,
     type: z.literal("thread.create"),
-    folder: TaskFolderSchema.optional(),
+    folder: z.object(TaskFolderSchema.shape).optional(),
     wasDuplicate: z.boolean(),
   }),
   z.object({
@@ -1450,152 +1451,152 @@ export const hostApi = defineRpc({
   "team.bootstrap.get": declaration(
     "POST",
     teamReadSchemas["team.bootstrap.get"].input,
-    teamReadSchemas["team.bootstrap.get"].output,
+    teamReadViews["team.bootstrap.get"],
   ),
   "team.sidebar.get": declaration(
     "POST",
     teamReadSchemas["team.sidebar.get"].input,
-    teamReadSchemas["team.sidebar.get"].output,
+    teamReadViews["team.sidebar.get"],
   ),
   "team.channels.list": declaration(
     "POST",
     teamReadSchemas["team.channels.list"].input,
-    teamReadSchemas["team.channels.list"].output,
+    teamReadViews["team.channels.list"],
   ),
   "team.channel.get": declaration(
     "POST",
     teamReadSchemas["team.channel.get"].input,
-    teamReadSchemas["team.channel.get"].output,
+    teamReadViews["team.channel.get"],
   ),
   "team.channel.access.get": declaration(
     "POST",
     teamReadSchemas["team.channel.access.get"].input,
-    teamReadSchemas["team.channel.access.get"].output,
+    teamReadViews["team.channel.access.get"],
   ),
   "team.channel.instructions.get": declaration(
     "POST",
     teamReadSchemas["team.channel.instructions.get"].input,
-    teamReadSchemas["team.channel.instructions.get"].output,
+    teamReadViews["team.channel.instructions.get"],
   ),
   "team.messages.page": declaration(
     "POST",
     teamReadSchemas["team.messages.page"].input,
-    teamReadSchemas["team.messages.page"].output,
+    teamReadViews["team.messages.page"],
   ),
   "team.thread.page": declaration(
     "POST",
     teamReadSchemas["team.thread.page"].input,
-    teamReadSchemas["team.thread.page"].output,
+    teamReadViews["team.thread.page"],
   ),
   "team.message.get": declaration(
     "POST",
     teamReadSchemas["team.message.get"].input,
-    teamReadSchemas["team.message.get"].output,
+    teamReadViews["team.message.get"],
   ),
   "team.messages.check": declaration(
     "POST",
     teamReadSchemas["team.messages.check"].input,
-    teamReadSchemas["team.messages.check"].output,
+    teamReadViews["team.messages.check"],
   ),
   "team.search": declaration(
     "POST",
     teamReadSchemas["team.search"].input,
-    teamReadSchemas["team.search"].output,
+    teamReadViews["team.search"],
   ),
   "team.members.list": declaration(
     "POST",
     teamReadSchemas["team.members.list"].input,
-    teamReadSchemas["team.members.list"].output,
+    teamReadViews["team.members.list"],
   ),
   "team.groups.list": declaration(
     "POST",
     teamReadSchemas["team.groups.list"].input,
-    teamReadSchemas["team.groups.list"].output,
+    teamReadViews["team.groups.list"],
   ),
   "team.group.get": declaration(
     "POST",
     teamReadSchemas["team.group.get"].input,
-    teamReadSchemas["team.group.get"].output,
+    teamReadViews["team.group.get"],
   ),
   "team.invites.list": declaration(
     "POST",
     teamReadSchemas["team.invites.list"].input,
-    teamReadSchemas["team.invites.list"].output,
+    teamReadViews["team.invites.list"],
   ),
   "team.audit.page": declaration(
     "POST",
     teamReadSchemas["team.audit.page"].input,
-    teamReadSchemas["team.audit.page"].output,
+    teamReadViews["team.audit.page"],
   ),
   "team.notices.page": declaration(
     "POST",
     teamReadSchemas["team.notices.page"].input,
-    teamReadSchemas["team.notices.page"].output,
+    teamReadViews["team.notices.page"],
   ),
   "team.knowledge.topics.list": declaration(
     "POST",
     teamReadSchemas["team.knowledge.topics.list"].input,
-    teamReadSchemas["team.knowledge.topics.list"].output,
+    teamReadViews["team.knowledge.topics.list"],
   ),
   "team.knowledge.topic.get": declaration(
     "POST",
     teamReadSchemas["team.knowledge.topic.get"].input,
-    teamReadSchemas["team.knowledge.topic.get"].output,
+    teamReadViews["team.knowledge.topic.get"],
   ),
   "team.knowledge.topic.access.get": declaration(
     "POST",
     teamReadSchemas["team.knowledge.topic.access.get"].input,
-    teamReadSchemas["team.knowledge.topic.access.get"].output,
+    teamReadViews["team.knowledge.topic.access.get"],
   ),
   "team.agent.requests.get": declaration(
     "POST",
     teamReadSchemas["team.agent.requests.get"].input,
-    teamReadSchemas["team.agent.requests.get"].output,
+    teamReadViews["team.agent.requests.get"],
   ),
   "team.links.list": declaration(
     "POST",
     teamReadSchemas["team.links.list"].input,
-    teamReadSchemas["team.links.list"].output,
+    teamReadViews["team.links.list"],
   ),
   "teams.links.list": declaration(
     "POST",
     teamReadSchemas["teams.links.list"].input,
-    teamReadSchemas["teams.links.list"].output,
+    teamReadViews["teams.links.list"],
   ),
   "teams.channelFolder.get": declaration(
     "POST",
     teamReadSchemas["teams.channelFolder.get"].input,
-    teamReadSchemas["teams.channelFolder.get"].output,
+    teamReadViews["teams.channelFolder.get"],
   ),
   "teams.threadTask.get": declaration(
     "POST",
     teamReadSchemas["teams.threadTask.get"].input,
-    teamReadSchemas["teams.threadTask.get"].output,
+    teamReadViews["teams.threadTask.get"],
   ),
   "team.mentions.page": declaration(
     "POST",
     teamReadSchemas["team.mentions.page"].input,
-    teamReadSchemas["team.mentions.page"].output,
+    teamReadViews["team.mentions.page"],
   ),
   "team.pins.page": declaration(
     "POST",
     teamReadSchemas["team.pins.page"].input,
-    teamReadSchemas["team.pins.page"].output,
+    teamReadViews["team.pins.page"],
   ),
   "team.files.page": declaration(
     "POST",
     teamReadSchemas["team.files.page"].input,
-    teamReadSchemas["team.files.page"].output,
+    teamReadViews["team.files.page"],
   ),
   "team.knowledge.facts.page": declaration(
     "POST",
     teamReadSchemas["team.knowledge.facts.page"].input,
-    teamReadSchemas["team.knowledge.facts.page"].output,
+    teamReadViews["team.knowledge.facts.page"],
   ),
   "team.knowledge.history.page": declaration(
     "POST",
     teamReadSchemas["team.knowledge.history.page"].input,
-    teamReadSchemas["team.knowledge.history.page"].output,
+    teamReadViews["team.knowledge.history.page"],
   ),
 
   "browser.searchSuggestions.get": declaration(

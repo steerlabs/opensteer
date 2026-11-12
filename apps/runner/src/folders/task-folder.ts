@@ -13,6 +13,7 @@ export interface RunFolder {
 export interface FolderAccessManager {
   prepare(input: {
     readonly location: PersonalExecutionLocation;
+    readonly personalContext?: boolean;
     readonly signal: AbortSignal;
   }): Promise<RunFolder>;
   writableRoots(folder: RunFolder): readonly string[];
@@ -25,6 +26,7 @@ export class TaskFolderManager implements FolderAccessManager {
   }
   async prepare(input: {
     readonly location: PersonalExecutionLocation;
+    readonly personalContext?: boolean;
     readonly signal: AbortSignal;
   }): Promise<RunFolder> {
     const { folder, agentHome } = input.location;
@@ -44,10 +46,21 @@ export class TaskFolderManager implements FolderAccessManager {
       directory(agentHome.path),
     ]);
     const seen = new Set<string>();
-    const instructions: string[] = [
-      `Agent home folder: ${agentHomePath}\nPersonal memory and standing instructions stay here, including when the task works in another folder.`,
-    ];
-    for (const root of new Set([agentHomePath, path])) {
+    const personalContext = input.personalContext !== false;
+    const instructions: string[] = personalContext
+      ? [
+          `Agent home folder: ${agentHomePath}\nPersonal memory and standing instructions stay here, including when the task works in another folder.`,
+        ]
+      : [];
+    const homeInstructions = personalContext
+      ? null
+      : await realpath(join(agentHomePath, "AGENTS.md")).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+    for (const root of new Set(
+      personalContext ? [agentHomePath, path] : path === agentHomePath ? [] : [path],
+    )) {
       input.signal.throwIfAborted();
       const source = await realpath(join(root, "AGENTS.md")).catch(
         (error: NodeJS.ErrnoException) => {
@@ -55,7 +68,7 @@ export class TaskFolderManager implements FolderAccessManager {
           throw error;
         },
       );
-      if (!source || seen.has(source)) continue;
+      if (!source || seen.has(source) || source === homeInstructions) continue;
       seen.add(source);
       const bytes = await readBoundedRegularFile(source, maximumInstructionBytes, {
         changedError: () => new Error("Task instructions changed during read"),
@@ -72,7 +85,11 @@ export class TaskFolderManager implements FolderAccessManager {
       instructions.push(`Instructions from ${source}:\n${text}`);
     }
     input.signal.throwIfAborted();
-    return { path, agentHomePath, instructions: instructions.join("\n\n") };
+    return {
+      path,
+      agentHomePath,
+      instructions: instructions.length ? instructions.join("\n\n") : undefined,
+    };
   }
   writableRoots(folder: RunFolder): readonly string[] {
     return [...new Set([folder.path, folder.agentHomePath])];

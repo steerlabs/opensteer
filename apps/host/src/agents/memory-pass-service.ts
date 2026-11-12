@@ -1,6 +1,7 @@
 import {
   automaticModelWants,
   ExecutionPreferencesSchema,
+  ModelSelectionSchema,
   OpensteerError,
   TimeZoneSchema,
   type AgentEvent,
@@ -60,7 +61,7 @@ export class MemoryPassService {
   }
 
   async ensureForPersonal(): Promise<void> {
-    const { store, runners } = this.options;
+    const { store } = this.options;
     const initialized = await store.database
       .selectFrom("personalSettings")
       .select("ownerId")
@@ -93,28 +94,31 @@ export class MemoryPassService {
     const off =
       instructions !== null && /^Memory: off at the person's request/mu.test(instructions);
     const remembered = await this.remembered(settings.ownerId);
+    const prior = await store.database
+      .selectFrom("threads")
+      .select(["harnessInstanceId", "modelSelection"])
+      .where("environmentId", "=", environment.id)
+      .where("createdBy", "=", settings.ownerId)
+      .where("purpose", "=", "task")
+      .orderBy("updatedAt", "desc")
+      .executeTakeFirst();
+    const seed =
+      remembered ??
+      (prior
+        ? {
+            harnessInstanceId: prior.harnessInstanceId,
+            modelSelection: ModelSelectionSchema.parse(prior.modelSelection),
+          }
+        : undefined);
+    if (!seed) return;
+
     for (const systemRole of missing) {
-      const { candidates } = await resolveAutomaticModels(
-        { store, runners },
-        {
-          userId: settings.ownerId,
-          wants: (config) =>
-            automaticModelWants(config, systemRole === "memory-light" ? "light" : "deep"),
-          original: systemRole === "memory-nightly" ? remembered : undefined,
-          canRun: personalExecution(runners, {
-            environmentId: environment.id,
-            accessMode: "full-access",
-          }),
-        },
-      );
-      const choice = candidates[0];
-      if (!choice) continue;
       const created = await createMemoryPass(store.database, {
         ownerId: settings.ownerId,
         execution: {
-          environmentId: choice.environmentId,
-          harnessInstanceId: choice.harnessInstanceId,
-          modelSelection: choice.storedModelSelection,
+          environmentId: environment.id,
+          harnessInstanceId: seed.harnessInstanceId,
+          modelSelection: seed.modelSelection,
         },
         systemRole,
         program: memoryPassProgram(systemRole),

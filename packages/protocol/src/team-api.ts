@@ -138,7 +138,7 @@ export const TeamCommandSchema = z.discriminatedUnion("type", [
   z.strictObject({
     type: z.literal("team.invite.create"),
     id: TeamInviteIdSchema,
-    maxUses: z.number().int().positive().max(1000),
+    maxUses: z.literal(1),
     expiresAt: IsoDateTimeSchema,
   }),
   z.strictObject({ type: z.literal("team.invite.revoke"), inviteId: TeamInviteIdSchema }),
@@ -312,7 +312,12 @@ export const TeamCommandResultSchema = z.discriminatedUnion("type", [
 export const teamReadSchemas = {
   "team.bootstrap.get": { input: z.strictObject({}), output: TeamBootstrapSchema },
   "team.sidebar.get": {
-    input: z.strictObject({ after: TeamChannelIdSchema.optional() }),
+    input: z
+      .strictObject({
+        after: TeamChannelIdSchema.optional(),
+        channelIds: z.array(TeamChannelIdSchema).min(1).max(50).optional(),
+      })
+      .refine((input) => !input.after || !input.channelIds, "Choose after or channelIds"),
     output: TeamSidebarSchema,
   },
   "team.channels.list": {

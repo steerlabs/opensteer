@@ -792,7 +792,6 @@ export class BrowserSourceService {
       originatingRunId: input.runId,
       ownerId: input.ownerId,
       site,
-      deploymentId: target.deploymentId,
     });
     if (pending) return this.#completePending(pending, grant, sources, sessionId, site);
     const ask = async (): Promise<AgentBrowserSignInResult> => {

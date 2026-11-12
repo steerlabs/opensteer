@@ -15,7 +15,13 @@ import {
   ControlPlaneAccountIdSchema,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
-import { hostAuthorityIdentityMatches, hostKeyFingerprint } from "@opensteer/deployment-authority";
+import {
+  hostAuthorityIdentityMatches,
+  hostKeyFingerprint,
+  teamApiVersion,
+  teamApiVersionHeader,
+  teamOAuthVersionParameter,
+} from "@opensteer/deployment-authority";
 import {
   DesktopAccountAuthStateSchema,
   hasAsciiControl,
@@ -418,8 +424,8 @@ export class NativeOAuthManager implements HostCredentialProvider {
 
   async beginHostSignIn(connectionInput: DeploymentConnection): Promise<HostOAuthState> {
     const connection = structuredClone(connectionInput);
-    if (connection.kind !== "self-hosted") {
-      throw new Error("Only a self-hosted deployment uses deployment-native OAuth.");
+    if (connection.kind !== "team") {
+      throw new Error("Only a team server uses deployment-native OAuth.");
     }
     const deploymentId = connection.authority.document.deploymentId;
     // Claimed before the first await. Protected storage can take long enough
@@ -638,7 +644,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
     this.#assertStorageReady();
     // Personal connections ride the partition session cookie, so they must
     // never also carry a self-hosted bearer token.
-    if (connection.kind !== "self-hosted") return null;
+    if (connection.kind !== "team") return null;
     await this.#retryCredentialWrite(connection.authority.document.deploymentId);
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
     if (!credential || !credentialMatchesConnection(credential, connection)) {
@@ -656,7 +662,7 @@ export class NativeOAuthManager implements HostCredentialProvider {
   /** Refreshes Host-native OAuth only after the Host returned an actual 401. */
   async recoverHostAuthorization(connection: DeploymentConnection): Promise<boolean> {
     this.#assertStorageReady();
-    if (connection.kind !== "self-hosted") return false;
+    if (connection.kind !== "team") return false;
     await this.#retryCredentialWrite(connection.authority.document.deploymentId);
     const credential = this.#hostCredential(connection.authority.document.deploymentId);
     if (!credential || !credentialMatchesConnection(credential, connection)) return false;
@@ -1183,6 +1189,9 @@ export class NativeOAuthManager implements HostCredentialProvider {
         headers: {
           ...(acceptJson ? { accept: "application/json" } : {}),
           "content-type": "application/x-www-form-urlencoded",
+          ...(new URL(endpoint).pathname.startsWith("/v1/auth/native/")
+            ? { [teamApiVersionHeader]: String(teamApiVersion) }
+            : {}),
         },
         method: "POST",
         redirect: "error",
@@ -1490,6 +1499,7 @@ function authorizationUrl(
   clientId: string,
 ): string {
   const url = new URL(endpoints.authorization);
+  if (flow.kind === "host") url.searchParams.set(teamOAuthVersionParameter, String(teamApiVersion));
   const resource =
     flow.kind === "account"
       ? flow.issuerOrigin
@@ -1610,7 +1620,7 @@ function credentialMatchesConnection(
 }
 
 /**
- * Only a self-hosted connection reaches Host-native OAuth, and a self-hosted
+ * Only a team connection reaches Host-native OAuth, and a self-hosted
  * Host is never a Personal stack this client supervises, so its access arm
  * resolves without any live runtime.
  */
