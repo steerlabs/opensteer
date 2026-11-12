@@ -1,4 +1,4 @@
-import { compareSequence, type Sequence } from "@opensteer/core";
+import { compareSequence, type Sequence, type UserId } from "@opensteer/core";
 import {
   TeamConsistentCutSchema,
   type TeamConsistentCut,
@@ -28,6 +28,19 @@ export interface TeamTimeline {
   readonly linkPresence: TeamConsistentCut["linkPresence"];
 }
 export const teamTimelineMaxMessages = 300;
+export function reduceTeamLinkPresence(
+  state: TeamTimeline | null,
+  userId: UserId,
+  online: boolean,
+): TeamTimeline | null {
+  if (!state || !state.linkPresence.some((row) => row.ownerUserId === userId)) return state;
+  return {
+    ...state,
+    linkPresence: state.linkPresence.map((row) =>
+      row.ownerUserId === userId ? { ...row, online } : row,
+    ),
+  };
+}
 export function teamScopeKey(scope: TeamScope): string {
   return JSON.stringify(
     scope.kind === "channel"

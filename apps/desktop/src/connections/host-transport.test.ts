@@ -1,4 +1,6 @@
 import { createDesktopHostFetch } from "../../../web/src/desktop/desktop-host-transport.js";
+import { readComputerFacts } from "../../../web/src/desktop/computer-facts.js";
+import type { DeploymentAccessDeployment } from "@opensteer/protocol/desktop";
 import type { OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import type { DesktopHostWebSocketEvent } from "@opensteer/protocol/desktop";
 import { createId, type DeploymentId, type HostInstanceId } from "@opensteer/core";
@@ -1816,26 +1818,31 @@ describe("joined team routing", () => {
     const network = {
       request: vi.fn(async ({ url }: HostNetworkRequest) => {
         requested.push(String(url));
-        return new Response("{}");
+        return Response.json({
+          ok: true,
+          data: new URL(url).pathname.endsWith("attention.get")
+            ? { needsYou: 3, unread: true }
+            : { links: [] },
+        });
       }),
       openWebSocket: vi.fn(() => socket()),
     };
     const transport = desktopHostTransport({ catalog, network });
     try {
       const expectedDeploymentId = second.authority.document.deploymentId;
-      await transport.request({
-        expectedDeploymentId,
-        headers: {},
-        method: "GET",
-        path: "/v1/rpc/attention.get",
-      });
-      await transport.request({
-        expectedDeploymentId,
-        headers: {},
-        method: "POST",
-        path: "/v1/rpc/teams.links.list",
-        body: "{}",
-      });
+      const bridge = {
+        hostRequest: async (input: unknown) => ({ ok: true, data: await transport.request(input) }),
+      } as unknown as OpensteerDesktopBridge;
+      await expect(
+        readComputerFacts(bridge, {
+          id: expectedDeploymentId,
+          canonicalOrigin: second.authority.document.canonicalOrigin,
+        } as DeploymentAccessDeployment),
+      ).resolves.toEqual({ needsYou: 3, unread: true, teams: [] });
+      expect(network.request.mock.calls.map(([request]) => request.request.method)).toEqual([
+        "POST",
+        "POST",
+      ]);
       expect(requested).toEqual([
         "https://work.example.test/v1/rpc/attention.get",
         "https://work.example.test/v1/rpc/teams.links.list",
@@ -1856,7 +1863,7 @@ describe("joined team routing", () => {
         transport.request({
           expectedDeploymentId,
           headers: {},
-          method: "POST",
+          method: "GET",
           path: "/v1/rpc/attention.get",
         }),
       ).rejects.toMatchObject({ code: "deployment-changed" });

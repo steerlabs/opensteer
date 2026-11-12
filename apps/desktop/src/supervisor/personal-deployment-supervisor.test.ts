@@ -23,6 +23,7 @@ import type {
 } from "../secrets/personal-deployment-store.js";
 import {
   defaultPersonalDeploymentName,
+  NativePersonalDeploymentFilesystem,
   PersonalRuntimeTransitionError,
 } from "../secrets/personal-deployment-store.js";
 import {
@@ -47,6 +48,73 @@ import type {
 } from "./personal-process-port.js";
 
 describe("PersonalDeploymentSupervisor", () => {
+  it.each([2, 3])(
+    "offers Start fresh for a pre-reset v%s manifest without changing old files",
+    async (schemaVersion) => {
+      const root = await mkdtemp(path.join(tmpdir(), "supervisor-obsolete-manifest-"));
+      const files = new NativePersonalDeploymentFilesystem({
+        dataDirectory: root,
+        minimumFreeBytes: 0,
+      });
+      const dataReset = new PersonalDataReset({
+        dataDirectory: root,
+        cryptography: {
+          isAsyncEncryptionAvailable: async () => true,
+          getSelectedStorageBackend: () => "keychain",
+          encryptStringAsync: async (value) => Buffer.from(value),
+          decryptStringAsync: async (value) => ({
+            result: value.toString(),
+            shouldReEncrypt: false,
+          }),
+        },
+      });
+      // The manifest fields from 19aefb63b include the removed absolute workspaceRoot.
+      const prior = {
+        ...deploymentManifest({ databaseInitialized: true, ownerInitialized: true }),
+        schemaVersion,
+        ...(schemaVersion === 2 ? { authorityEpoch: 37 } : {}),
+        workspaceRoot: path.join(root, "old-workspaces"),
+      };
+      const serialized = `${JSON.stringify(prior)}\n`;
+      await writeFile(files.manifestPath, serialized, { mode: 0o600 });
+      const plan = await dataReset.plan(prior.deploymentId);
+      for (const entry of plan.entries.slice(0, 2)) {
+        await mkdir(entry.source, { recursive: true });
+        await writeFile(path.join(entry.source, "old-data"), "retained");
+      }
+      const fixture = supervisorFixture(null, undefined, undefined, undefined, {
+        dataReset,
+        files,
+      });
+      try {
+        await expect(fixture.supervisor.resumeIfConfigured()).rejects.toThrow("Start fresh");
+        expect(fixture.supervisor.status.state).toBe("repair-required");
+        await expect(fixture.supervisor.start()).rejects.toThrow("Start fresh");
+        const old = fixture.supervisor.oldData!;
+        expect(old.deploymentId).toBe(prior.deploymentId);
+        expect(old.entries).toHaveLength(5);
+        expect(fixture.processes.specs).toHaveLength(0);
+        expect(fixture.credentials.ensure).not.toHaveBeenCalled();
+        expect(await readFile(files.manifestPath, "utf8")).toBe(serialized);
+        for (const entry of old.entries.slice(0, 2)) {
+          expect(await readFile(path.join(entry.source, "old-data"), "utf8")).toBe("retained");
+          await expect(readFile(path.join(entry.destination, "old-data"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        }
+        await fixture.supervisor.startFresh({ restart: false });
+        expect(fixture.supervisor.oldData).toBeNull();
+        await expect(files.load()).resolves.toBeNull();
+        expect(await readFile(old.entries[4]!.destination, "utf8")).toBe(serialized);
+        for (const entry of old.entries.slice(0, 2))
+          expect(await readFile(path.join(entry.destination, "old-data"), "utf8")).toBe("retained");
+      } finally {
+        await fixture.supervisor.stop();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("exposes old lineage data and stops before setting aside fixture paths for a desktop relaunch", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "supervisor-reset-"));
     const dataReset = new PersonalDataReset({
@@ -1332,6 +1400,7 @@ function supervisorFixture(
     readonly restartBackoffMs?: number;
     readonly passkeys?: boolean;
     readonly dataReset?: PersonalDataReset;
+    readonly files?: PersonalDeploymentFilesystemPort;
   } = {},
 ) {
   const lifecycle: string[] = [];
@@ -1420,7 +1489,7 @@ function supervisorFixture(
     catalog,
     computerUse,
     credentials,
-    files,
+    files: restarts.files ?? files,
     host,
     localRuntimes,
     loopbackPorts,

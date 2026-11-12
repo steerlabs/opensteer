@@ -565,13 +565,7 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         return this.#status;
       }
       await this.#stopChildren().catch(() => undefined);
-      if (
-        error instanceof PersonalOldDatabaseError &&
-        this.#dataReset &&
-        this.#status.deploymentId
-      ) {
-        this.#oldData = await this.#dataReset.plan(this.#status.deploymentId);
-      }
+      await this.#planOldData(error);
       const permanent = permanentStartFailure(error);
       if (permanent) this.#desiredRunning = false;
       // Crash recovery reports a failure that can pass with its next restart.
@@ -622,18 +616,33 @@ export class PersonalDeploymentSupervisor implements PersonalHostRuntimeSource {
         }
         return manifest;
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         if (this.#configuredManifestLookup === lookup) this.#configuredManifestLookup = undefined;
         if (!this.#shutdownRequested) {
-          this.#setFailure(
-            issue("directory-invalid", "desktop", safeErrorDetail(error), "restore-permissions"),
-          );
+          if (error instanceof PersonalOldDatabaseError) {
+            this.#desiredRunning = false;
+            await this.#planOldData(error);
+            const failure = classifyFailure(error, this.#status.step);
+            this.#setFailure(failure.issue, failure.state);
+          } else {
+            this.#setFailure(
+              issue("directory-invalid", "desktop", safeErrorDetail(error), "restore-permissions"),
+            );
+          }
         }
         throw error;
       },
     );
     this.#configuredManifestLookup = lookup;
     return lookup;
+  }
+
+  async #planOldData(error: unknown): Promise<void> {
+    if (!(error instanceof PersonalOldDatabaseError) || !this.#dataReset) return;
+    const deploymentId = error.deploymentId ?? this.#status.deploymentId;
+    if (!deploymentId) return;
+    this.#oldData = await this.#dataReset.plan(deploymentId);
+    this.#setStatus({ deploymentId });
   }
 
   async #startStack(

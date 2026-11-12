@@ -8,8 +8,9 @@ import {
 } from "@opensteer/core";
 import { MockTeamHost, mockTeamId, mockTeamUserId, mockTeamChannelId } from "./mock-team-host.js";
 import { TeamSessionClient } from "./team-session-client.js";
-import { createMemoryTeamPersistence } from "./persistence.js";
+import { createMemoryTeamPersistence, type TeamCacheScope } from "./persistence.js";
 import { TeamTransportRegistry } from "./transport-registry.js";
+import { TeamAgentRequestSchema } from "@opensteer/protocol";
 
 const scope = { teamDeploymentId: mockTeamId, userId: mockTeamUserId };
 const channelScope = { kind: "channel", channelId: mockTeamChannelId } as const;
@@ -52,6 +53,150 @@ async function seed(host: MockTeamHost, count: number, rootId: string | null = n
 }
 
 describe("team session lifecycle", () => {
+  it("updates both held timelines' status-card presence without a content cut", async () => {
+    const f = fixture();
+    const ownerUserId = createId("user");
+    try {
+      await seed(f.host, 1);
+      const rootId = TeamMessageIdSchema.parse("1");
+      const request = TeamAgentRequestSchema.parse({
+        id: createId("teamAgentRequest"),
+        ownerUserId,
+        channelId: mockTeamChannelId,
+        threadRootId: rootId,
+        triggerMessageId: rootId,
+        state: "queued",
+        steps: [],
+        createdAt: new Date().toISOString(),
+        acceptedAt: null,
+        expiresAt: null,
+        finishedAt: null,
+        replyMessageId: null,
+        failureCode: null,
+        changeSeq: "1",
+      });
+      f.host.requests.push(request);
+      f.host.linkPresence.push(
+        { ownerUserId, online: true },
+        { ownerUserId: mockTeamUserId, online: false },
+      );
+      await f.client.load();
+      f.client.selectChannel(mockTeamChannelId);
+      f.client.selectThread(mockTeamChannelId, rootId);
+      await vi.waitFor(
+        () => {
+          expect(f.client.getSnapshot().channel?.requests).toEqual([request]);
+          expect(f.client.getSnapshot().thread?.requests).toEqual([request]);
+        },
+        { timeout: 1000 },
+      );
+      const initial = f.client.getSnapshot();
+      for (const online of [true, false, true]) {
+        f.client.receive({ type: "team.link.presence", userId: ownerUserId, online });
+        const snapshot = f.client.getSnapshot();
+        for (const kind of ["channel", "thread"] as const) {
+          const timeline = snapshot[kind]!;
+          // Web and mobile build the status-card online input from these exact rows.
+          const linkOnline = new Map(
+            timeline.linkPresence.map((row) => [row.ownerUserId, row.online]),
+          );
+          expect(linkOnline.get(timeline.requests[0]!.ownerUserId)).toBe(online);
+          expect(linkOnline.get(mockTeamUserId)).toBe(false);
+          expect(timeline.requests).toBe(initial[kind]!.requests);
+          expect(timeline.messages).toBe(initial[kind]!.messages);
+          expect(timeline.throughSeq).toBe(initial[kind]!.throughSeq);
+        }
+      }
+      const held = f.client.getSnapshot();
+      f.client.receive({ type: "team.link.presence", userId: createId("user"), online: false });
+      expect(f.client.getSnapshot().channel?.linkPresence).toEqual(held.channel?.linkPresence);
+      f.client.receive({ type: "team.link.presence", userId: mockTeamUserId, online: true });
+      expect(f.client.getSnapshot().sidebar?.channels[0]?.agentOnline).toBe(true);
+      expect(
+        f.client
+          .getSnapshot()
+          .thread?.linkPresence.find((row) => row.ownerUserId === mockTeamUserId)?.online,
+      ).toBe(true);
+    } finally {
+      f.stop();
+    }
+  });
+
+  it.each(["desktop", "web", "mobile"] as const)(
+    "rejoins %s as the same viewer only after the ended partition is removed",
+    async (platform) => {
+      const host = new MockTeamHost();
+      const persistence = createMemoryTeamPersistence();
+      const cleanup = Promise.withResolvers<void>();
+      const remove = persistence.remove.bind(persistence);
+      vi.spyOn(persistence, "remove").mockImplementation(async (selected) => {
+        await cleanup.promise;
+        await remove(selected);
+      });
+      const create = vi.fn((selected: TeamCacheScope) => ({
+        scope: selected,
+        persistence,
+        rpc: host.rpc,
+        connect: host.connect,
+      }));
+      const registry = new TeamTransportRegistry(platform, create);
+      let authenticated = true;
+      const read = host.read.bind(host);
+      vi.spyOn(host, "read").mockImplementation((name, input) => {
+        if (name === "team.bootstrap.get" && !authenticated)
+          throw new OpensteerError({ code: "unauthorized", message: "Sign in again" });
+        return read(name, input);
+      });
+      try {
+        await registry.select(scope);
+        const first = await registry.join(scope);
+        await first.setDraft(channelScope, "Old credentials");
+        authenticated = false;
+        host.dispose();
+        await vi.waitFor(() => expect(persistence.remove).toHaveBeenCalledOnce(), {
+          timeout: 1000,
+        });
+        expect(first.getSnapshot().ended).toBe("sign-in");
+        authenticated = true;
+        const joining = Promise.all([registry.join(scope), registry.join(scope)]);
+        await Promise.resolve();
+        expect(create).toHaveBeenCalledOnce();
+        expect(host.socketCount).toBe(0);
+        cleanup.resolve();
+        const [second, concurrent] = await joining;
+        expect(second).not.toBe(first);
+        expect(concurrent).toBe(second);
+        expect(create).toHaveBeenCalledTimes(2);
+        await vi.waitFor(() => expect(second.getSnapshot().connection).toBe("connected"), {
+          timeout: 1000,
+        });
+        expect(second.getSnapshot().bootstrap?.member.userId).toBe(mockTeamUserId);
+        expect(second.getSnapshot().drafts).toEqual({});
+        expect(host.socketCount).toBe(1);
+        await second.setDraft(channelScope, "Fresh credentials");
+        await first.load();
+        first.connect();
+        await first.remove();
+        expect(host.socketCount).toBe(1);
+        expect(first.getSnapshot().bootstrap).toBeNull();
+        expect(await persistence.load(scope)).toMatchObject({
+          drafts: { [JSON.stringify(["channel", mockTeamChannelId])]: "Fresh credentials" },
+        });
+        await seed(host, 1);
+        second.selectChannel(mockTeamChannelId);
+        await vi.waitFor(
+          () => expect(second.getSnapshot().channel?.messages[0]?.bodyMarkdown).toBe("match 0"),
+          { timeout: 1000 },
+        );
+        expect(persistence.remove).toHaveBeenCalledOnce();
+      } finally {
+        cleanup.resolve();
+        registry.dispose();
+        host.dispose();
+      }
+    },
+  );
+
   it("purges an open removed member on socket close, but keeps another viewer's partition", async () => {
     const f = fixture(),
       other = { ...scope, userId: createId("user") };

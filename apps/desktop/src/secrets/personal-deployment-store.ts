@@ -34,6 +34,7 @@ import {
   type DesktopDeploymentPaths,
 } from "../app/application-paths.js";
 import { snapshotDatabase } from "../supervisor/personal-database-snapshot.js";
+import { PersonalOldDatabaseError } from "../supervisor/personal-data-reset.js";
 import type { DesktopPrivateFilesystem } from "./desktop-private-files.js";
 
 const RuntimeVersionSchema = z
@@ -450,8 +451,20 @@ function parsePersonalDeploymentManifest(
 ): { readonly manifest: PersonalDeploymentManifest; readonly migrated: boolean } | null {
   try {
     const value: unknown = JSON.parse(serialized);
-    const current = PersonalDeploymentManifestSchema.safeParse(value);
-    if (current.success) return { manifest: current.data, migrated: false };
+    const obsolete = z
+      .looseObject({
+        workspaceRoot: z.string().min(1).max(4_096).refine(path.isAbsolute),
+      })
+      .safeParse(value);
+    // Read the retired field only to recognize identity for the rename-aside reset.
+    const identity = obsolete.success
+      ? Object.fromEntries(Object.entries(obsolete.data).filter(([key]) => key !== "workspaceRoot"))
+      : value;
+    const current = PersonalDeploymentManifestSchema.safeParse(identity);
+    if (current.success) {
+      if (obsolete.success) throw new PersonalOldDatabaseError(current.data.deploymentId);
+      return { manifest: current.data, migrated: false };
+    }
     const prior = z
       .strictObject({
         ...personalDeploymentManifestFields,
@@ -460,13 +473,15 @@ function parsePersonalDeploymentManifest(
         schemaVersion: z.literal(2),
       })
       .superRefine(refinePersonalDeploymentManifest)
-      .parse(value);
-    const { authorityEpoch: _authorityEpoch, ...identity } = prior;
+      .parse(identity);
+    if (obsolete.success) throw new PersonalOldDatabaseError(prior.deploymentId);
+    const { authorityEpoch: _authorityEpoch, ...fields } = prior;
     return {
-      manifest: PersonalDeploymentManifestSchema.parse({ ...identity, schemaVersion: 3 }),
+      manifest: PersonalDeploymentManifestSchema.parse({ ...fields, schemaVersion: 3 }),
       migrated: true,
     };
-  } catch {
+  } catch (error) {
+    if (error instanceof PersonalOldDatabaseError) throw error;
     return null;
   }
 }

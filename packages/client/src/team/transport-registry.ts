@@ -142,6 +142,7 @@ export class TeamTransportRegistry {
       if (teamDeploymentId === scope.teamDeploymentId && userId !== scope.userId)
         await this.remove({ teamDeploymentId, userId });
     }
+    if (this.#clients.get(key)?.getSnapshot().ended) await this.remove(scope);
     await this.#removing.get(key);
     if (this.#disposed) throw new Error("Team registry disposed.");
     const held = this.#clients.get(key);

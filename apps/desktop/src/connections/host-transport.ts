@@ -250,7 +250,7 @@ export class DesktopHostTransport extends HostTransport {
     }
     const path = request.path.split("?")[0];
     const summary =
-      (path === "/v1/rpc/attention.get" && request.method === "GET") ||
+      (path === "/v1/rpc/attention.get" && request.method === "POST") ||
       (path === "/v1/rpc/teams.links.list" && request.method === "POST");
     const transport = await this.#transport(request.expectedDeploymentId, summary);
     return transport.exchange(request, async (response, progress) =>

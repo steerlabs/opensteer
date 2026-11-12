@@ -27,6 +27,7 @@ import {
   teamScopeKey,
   emptyTeamTimeline,
   reduceTeamCut,
+  reduceTeamLinkPresence,
   reduceTeamPage,
   monotonicTeamSidebar,
   type TeamSidebar,
@@ -109,6 +110,7 @@ export class TeamSessionClient {
   #reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   #connected = false;
   #removed = false;
+  #removal: Promise<void> | null = null;
   #disposed = false;
   #loading: Promise<void> | null = null;
   #stateRevision = 0;
@@ -558,6 +560,10 @@ export class TeamSessionClient {
         });
         break;
       case "team.link.presence":
+        this.#update({
+          channel: reduceTeamLinkPresence(this.#snapshot.channel, frame.userId, frame.online),
+          thread: reduceTeamLinkPresence(this.#snapshot.thread, frame.userId, frame.online),
+        });
         if (this.#snapshot.sidebar)
           this.#applySidebar({
             ...this.#snapshot.sidebar,
@@ -993,7 +999,11 @@ export class TeamSessionClient {
     socket?.close();
     this.#update({ connection: "offline", typing: {}, presence: {} });
   }
-  async remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
+  remove(ended: TeamSessionSnapshot["ended"] = "removed"): Promise<void> {
+    if (this.#removal) return this.#removal;
+    this.#removal = this.#persist
+      .catch(() => undefined)
+      .then(() => this.#options.persistence.remove(this.#options.scope));
     this.#removed = true;
     this.#lifetime++;
     this.disconnect();
@@ -1013,8 +1023,7 @@ export class TeamSessionClient {
       ended,
       contentGeneration: ++this.#contentGeneration,
     });
-    await this.#persist.catch(() => undefined);
-    await this.#options.persistence.remove(this.#options.scope);
+    return this.#removal;
   }
   dispose(): void {
     this.#disposed = true;

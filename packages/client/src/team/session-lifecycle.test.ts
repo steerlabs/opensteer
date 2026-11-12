@@ -187,15 +187,23 @@ it("checks persisted pending ids after restarting the client before it resends",
     await first.load();
     await vi.waitFor(() => expect(first.getSnapshot().connection).toBe("connected"));
     host.loseNextSendAck = true;
-    await expect(
-      first.send({
-        channelId: mockTeamChannelId,
-        threadRootId: null,
-        bodyMarkdown: "Once",
-        mentions: [],
-        attachmentIds: [],
-      }),
-    ).rejects.toThrow("Acknowledgement lost");
+    const clientMessageId = await first.send({
+      channelId: mockTeamChannelId,
+      threadRootId: null,
+      bodyMarkdown: "Once",
+      mentions: [],
+      attachmentIds: [],
+    });
+    await vi.waitFor(
+      () =>
+        expect(first.getSnapshot().error, "send acknowledgement was never lost").toBe(
+          "Acknowledgement lost.",
+        ),
+      { timeout: 1000 },
+    );
+    expect((await persistence.load(scope))?.pending).toMatchObject([
+      { command: { clientMessageId }, failure: null },
+    ]);
     first.dispose();
     const offset = host.calls.length;
     second = new TeamSessionClient({ scope, persistence, rpc: host.rpc, connect: host.connect });

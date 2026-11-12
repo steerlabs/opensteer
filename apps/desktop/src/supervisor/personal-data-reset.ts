@@ -230,9 +230,11 @@ async function exists(file: string): Promise<boolean> {
 }
 
 export class PersonalOldDatabaseError extends Error {
-  constructor() {
+  readonly deploymentId: DeploymentId | undefined;
+  constructor(deploymentId?: DeploymentId) {
     super("This database belongs to an earlier Opensteer lineage. Start fresh to continue.");
     this.name = "PersonalOldDatabaseError";
+    this.deploymentId = deploymentId;
   }
 }
 
