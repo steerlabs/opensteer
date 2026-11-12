@@ -25,8 +25,8 @@ const command =
 const cases = [
   "sessionless-before-browser",
   "sessionful-sign-in",
-  "workspace-reuse",
-  "foreign-workspace-denied",
+  "personal-reuse",
+  "same-owner-task-reuse",
   "browser-close-keeps-lease",
   "revocation",
 ];
@@ -40,7 +40,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       finish = async () => {};
       await cleanup();
     });
-    it("keeps sessionful sign_in and origin-fill admission while the Workspace lease outlives a browser", async () => {
+    it("keeps sessionful sign_in and origin-fill admission while the personal lease outlives a browser", async () => {
       const evidence = new PasswordsJourneyEvidence("host/browser-reuse", command, cases, [
         passwordFixture.password,
       ]);
@@ -163,7 +163,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       const attach = async (binding: typeof run, browserSessionId = sessionId) => {
         const connection = await host.runtime.browser.attachCdpForAgent(
           {
-            agentBindingId: binding.runId,
+            agentBindingId: `run:${binding.runId}`,
             ownerId: host.ownerId,
             sessionId: browserSessionId,
           },
@@ -201,7 +201,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         );
         expect(await pending).toEqual({ status: "filled" });
       };
-      await evidence.run("workspace-reuse", async () => {
+      await evidence.run("personal-reuse", async () => {
         await fulfillFill(connection);
       });
       const cardResult = client.callTool({
@@ -295,10 +295,10 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       );
       expect(durableCard?.status).toBe("fulfilled");
       expect(JSON.stringify(durableCard)).not.toContain(cardReady.cardRef);
-      await evidence.run("foreign-workspace-denied", async () => {
+      await evidence.run("same-owner-task-reuse", async () => {
         const other = await dispatchCallerRun(host, caller, {
           key: "foreign",
-          title: "Other Workspace",
+          title: "Other task",
         });
         const foreignClient = await connect(other.toolsToken);
         const opened = await foreignClient.callTool({
@@ -309,15 +309,16 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           .object({ session: z.object({ id: BrowserSessionIdSchema }) })
           .parse(opened.structuredContent).session.id;
         const foreign = await attach(other, foreignSession);
-        const count = runtime.receivedCommands().length;
-        expect(await foreign.request(fill)).toEqual({ status: "expired" });
-        expect(runtime.receivedCommands()).toHaveLength(count);
+        await fulfillFill(foreign, foreignSession);
+        expect(
+          authority.commands.filter((c) => c.type === "login.authorize" && "loginRef" in c),
+        ).toHaveLength(1);
       });
       await evidence.run("browser-close-keeps-lease", async () => {
         const secondSession = await open();
         const second = await attach(run, secondSession);
         await host.runtime.browser.closeAgentSession({
-          agentBindingId: run.runId,
+          agentBindingId: `run:${run.runId}`,
           ownerId: host.ownerId,
           sessionId,
         });

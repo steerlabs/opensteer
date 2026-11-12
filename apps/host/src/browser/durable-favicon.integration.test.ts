@@ -498,7 +498,7 @@ integration("Durable tab icons", () => {
       const response = await testRpcRequest(host.origin, "commands.dispatch", command, {
         headers: stranger.headers,
       });
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(401);
     }
     await mutate("browser.history.remove", "history-remove", "https://www.second.example/");
     expect((await read()).icons.some((icon) => icon.origin === "https://www.second.example")).toBe(

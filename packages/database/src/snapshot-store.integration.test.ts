@@ -12,6 +12,7 @@ import {
   describeStore,
   testModelSelection,
   testContinuationIdentity,
+  testRunnerDescriptor,
 } from "./store.integration.test-support.js";
 describeStore("Deployment snapshot history", (it) => {
   it("remembers a human hand-off returned to the queue at finalization", async ({
@@ -19,6 +20,18 @@ describeStore("Deployment snapshot history", (it) => {
   }) => {
     const { database, store, startRunFixture } = storeFixture;
     const f = await startRunFixture("waited-returned-steer");
+    await database
+      .updateTable("runners")
+      .set({
+        moduleDescriptors: testRunnerDescriptor({
+          environmentId: f.environmentId,
+          runnerId: f.runnerId,
+          runnerKind: "main",
+          name: "Hosting computer",
+        }).modules,
+      })
+      .where("id", "=", f.runnerId)
+      .execute();
     await database
       .updateTable("threads")
       .set({
@@ -87,7 +100,7 @@ describeStore("Deployment snapshot history", (it) => {
       })
       .where("id", "=", f.thread.id)
       .execute();
-    await database.transaction().execute((tx) =>
+    await withPersonalTransaction(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -133,7 +146,7 @@ describeStore("Deployment snapshot history", (it) => {
       idempotencyKey: "human-stop",
       threadId: f.thread.id,
     });
-    await database.transaction().execute((tx) =>
+    await withPersonalTransaction(database, (tx) =>
       finalizeRunTransaction(tx, {
         completedAt: new Date(),
         links: {
@@ -280,6 +293,18 @@ describeStore("Deployment snapshot history", (it) => {
   }) => {
     const { database, store, startRunFixture } = storeFixture;
     const f = await startRunFixture("task-asked");
+    await database
+      .updateTable("runners")
+      .set({
+        moduleDescriptors: testRunnerDescriptor({
+          environmentId: f.environmentId,
+          runnerId: f.runnerId,
+          runnerKind: "main",
+          name: "Hosting computer",
+        }).modules,
+      })
+      .where("id", "=", f.runnerId)
+      .execute();
     const other = await store.createThread({
       createdBy: f.userId,
       environmentId: f.environmentId,

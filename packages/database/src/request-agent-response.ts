@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   EnvironmentIdSchema,
   OpensteerError,
@@ -18,11 +18,7 @@ import "./connection.js";
 import { requestFromRow, requestRevision } from "./request-persistence.js";
 import type { DatabaseSchema } from "./schema.js";
 import { threadExecutionIsAvailableToUser } from "./store-primitives.js";
-import {
-  assertThreadCaller,
-  lockThreadCaller,
-  type ThreadCallerAuthority,
-} from "./thread-caller.js";
+import { assertThreadCaller, type ThreadCallerAuthority } from "./thread-caller.js";
 export const AgentRequestResponderSchema = z.object({
   expectedRevision: z.string().min(1).max(128),
   authority: z.object({
@@ -92,8 +88,7 @@ export function readAgentRequest(
   authority: ThreadCallerAuthority,
   requestId: RequestId,
 ): Promise<Request> {
-  return withPersonalTransaction(database, async (transaction) => {
-    await lockThreadCaller(transaction, authority);
+  return withPersonalReadTransaction(database, async (transaction) => {
     const row = await transaction
       .selectFrom("requests")
       .selectAll()

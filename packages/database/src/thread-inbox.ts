@@ -202,22 +202,17 @@ export async function readThreadInputQueue(
     readonly requestedBy: UserId;
   },
 ): Promise<ThreadInputQueue> {
-  const observed = await transaction
-    .selectFrom("threads")
-    .where("id", "=", request.threadId)
-    .executeTakeFirst();
-  if (!observed)
-    throw new OpensteerError({
-      code: "not_found",
-      message: "Thread not found",
-    });
-  await lockThreadRow(transaction, request.threadId);
   await requirePersonalOwner(transaction, request.requestedBy);
   const thread = await transaction
     .selectFrom("threads")
     .selectAll()
     .where("id", "=", request.threadId)
-    .executeTakeFirstOrThrow();
+    .executeTakeFirst();
+  if (!thread)
+    throw new OpensteerError({
+      code: "not_found",
+      message: "Thread not found",
+    });
   const runs = await transaction
     .selectFrom("runs")
     .selectAll()
@@ -330,6 +325,21 @@ function isPersonsMessage(input: {
     input.policy === "queue" &&
     personAuthoritySourceKinds.some((kind) => kind === input.authoritySource.kind)
   );
+}
+
+async function conversationalReply(
+  transaction: Transaction<DatabaseSchema>,
+  thread: Pick<ThreadRow, "purpose">,
+  replyTarget: RunRow["replyTarget"],
+): Promise<boolean> {
+  if (thread.purpose === "voice") return true;
+  if (!replyTarget) return false;
+  const conversation = await transaction
+    .selectFrom("channelConversations")
+    .select("personalContext")
+    .where("id", "=", ChannelConversationIdSchema.parse(replyTarget.conversationId))
+    .executeTakeFirst();
+  return conversation?.personalContext === true;
 }
 
 function exchangeInputs(
@@ -517,7 +527,7 @@ export async function deliverConversationInputsInTransaction(
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
   if (
-    thread.purpose !== "voice" ||
+    !(await conversationalReply(transaction, thread, run.replyTarget)) ||
     run.status !== "running" ||
     thread.inputQueuePaused ||
     thread.status === "archived" ||
@@ -667,12 +677,17 @@ async function endsWithStoppedReply(
   },
 ): Promise<boolean> {
   if (!isPersonsMessage(input)) return false;
-  const thread = await transaction
-    .selectFrom("threads")
-    .select("purpose")
-    .where("id", "=", input.threadId)
+  const run = await transaction
+    .selectFrom("runs")
+    .innerJoin("threads", "threads.id", "runs.threadId")
+    .select(["threads.purpose", "runs.replyTarget"])
+    .where("runs.id", "=", input.runId)
+    .where("runs.threadId", "=", input.threadId)
     .executeTakeFirstOrThrow();
-  return thread.purpose === "voice" && (await runStoppedByPerson(transaction, input.runId));
+  return (
+    (await conversationalReply(transaction, run, run.replyTarget)) &&
+    (await runStoppedByPerson(transaction, input.runId))
+  );
 }
 
 /**
@@ -697,7 +712,8 @@ export async function settleStoppedConversationInputs(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (thread.purpose !== "voice" || run.voiceSessionId) return [];
+  if (run.voiceSessionId || !(await conversationalReply(transaction, thread, run.replyTarget)))
+    return [];
   const now = new Date();
   const replacement = await pendingReplacementAttempt(transaction, run.id);
   const restartSent = replacement?.dispatchedAt != null;
@@ -1488,7 +1504,8 @@ export async function claimConversationBatch(
     .selectAll()
     .where("id", "=", run.threadId)
     .executeTakeFirstOrThrow();
-  if (thread.purpose !== "voice" || capacity <= 0) return [];
+  if (capacity <= 0 || !(await conversationalReply(transaction, thread, run.replyTarget)))
+    return [];
   return (
     await claimFollowUps(transaction, run, thread, {
       limit: capacity,
@@ -1724,7 +1741,11 @@ export async function settleSteer(
       type: "thread-input.updated",
     }),
   ];
-  if (inputRow.state === "pending" && observed.purpose === "voice" && isPersonsMessage(observed))
+  if (
+    inputRow.state === "pending" &&
+    isPersonsMessage(observed) &&
+    (await conversationalReply(transaction, observed, run.replyTarget))
+  )
     events.push(...(await returnHandOffsBehind(transaction, commandId, run, observed)));
   return events;
 }
@@ -2542,7 +2563,7 @@ export async function enqueueThreadInputInTransaction(
   // way: the message is accepted like any other, then handed over by the one
   // operation every moment of readiness shares.
   const conversational =
-    thread.purpose === "voice" &&
+    (await conversationalReply(transaction, thread, facts.replyTarget)) &&
     policy === "queue" &&
     (request.source.kind === "human" ||
       request.source.kind === "channel" ||

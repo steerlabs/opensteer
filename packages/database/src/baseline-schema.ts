@@ -357,7 +357,7 @@ create table app_versions (
   "app_id" text not null,
   "version" integer not null,
   "sha256" text,
-  "size_bytes" bigint,
+  "size_bytes" integer,
   "server" jsonb,
   "created_by_run" text,
   "publish_key" text not null,
@@ -390,9 +390,9 @@ create table computer_use_policies (
   "runner_id" text not null,
   "owner_user_id" text not null,
   "app_approval" text not null check (app_approval in ('ask', 'automatic')),
-  "revision" bigint not null,
+  "revision" integer not null,
   "updated_at" timestamptz not null default now(),
-  primary key ("runner_id")
+  primary key ("deployment_id", "runner_id", "owner_user_id")
 );
 
 create table computer_use_stops (
@@ -415,9 +415,9 @@ create table computer_app_setup_requests (
   "definition_id" text not null,
   "definition_digest" text not null,
   "access" text not null check (access in ('read', 'read-write')),
-  "app" text,
+  "app" jsonb,
   "app_key" text,
-  "server" text,
+  "server" jsonb,
   "created_at" timestamptz not null default now(),
   "expires_at" timestamptz not null default now(),
   primary key ("id")
@@ -987,7 +987,7 @@ create table machine_access_sessions (
 );
 
 create table machine_access_events (
-  "id" bigint not null default 0,
+  "id" bigint generated always as identity,
   "session_id" text not null,
   "at" timestamp with time zone not null default now(),
   "event" jsonb not null,
@@ -1658,7 +1658,7 @@ create table personal_tabs (
 create table browser_tab_layouts (
   "owner_id" text not null,
   "revision" bigint not null default 0,
-  "tab_order" text[],
+  "tab_order" jsonb,
   primary key ("owner_id")
 );
 
@@ -1697,7 +1697,7 @@ create table browser_session_attachments (
   "session_id" text not null,
   "created_at" timestamp with time zone not null default now(),
   "updated_at" timestamp with time zone not null default now(),
-  primary key ("agent_binding_id")
+  primary key ("session_id", "agent_binding_id")
 );
 
 create table browser_session_uses (
@@ -1848,10 +1848,10 @@ create table integration_connections (
   "id" text not null,
   "owner_user_id" text not null,
   "credential_id" text,
-  "credential_generation" integer not null default 0,
+  "credential_generation" integer not null default 1 check (credential_generation > 0),
   "connection_kind" text not null check (connection_kind in ('provider-account', 'channel', 'computer', 'mcp-oauth')),
   "computer_access" text,
-  "computer_app" text,
+  "computer_app" jsonb,
   "computer_app_key" text,
   "computer_blocked_at" timestamptz,
   "computer_policy_revision" integer,
@@ -1925,7 +1925,7 @@ create table integration_server_secrets (
   "runner_id" text not null,
   "encrypted_payload" bytea not null,
   "updated_at" timestamptz not null default now(),
-  primary key ("server_id", "runner_id")
+  primary key ("server_id")
 );
 
 create table integration_tools (
@@ -2025,11 +2025,11 @@ create table integration_grants (
   primary key ("id")
 );
 
-create table mcp_o_auth_credentials (
+create table mcp_oauth_credentials (
   "connection_id" text not null,
   "encrypted_state" bytea not null,
   "encryption_key_version" integer not null,
-  "revision" bigint not null,
+  "revision" integer not null,
   "created_at" timestamptz not null default now(),
   "updated_at" timestamptz not null default now(),
   primary key ("connection_id")
@@ -2177,6 +2177,11 @@ create table channel_link_codes (
   primary key ("id")
 );
 
+alter table apps add foreign key(thread_id) references threads(id) on delete cascade;
+alter table apps add foreign key(run_id) references runs(id) on delete cascade;
+alter table app_versions add foreign key(app_id) references apps(id) on delete cascade;
+alter table app_versions add foreign key(created_by_run) references runs(id) on delete set null;
+alter table app_versions add unique(created_by_run, publish_key);
 alter table account_directory_provider add constraint account_directory_provider_provider_id_key UNIQUE (provider_id);
 alter table auth_accounts add constraint auth_accounts_provider_account_unique UNIQUE (provider_id, account_id);
 alter table auth_rate_limits add constraint auth_rate_limits_key_key UNIQUE (key);
@@ -2406,7 +2411,7 @@ create index integration_auth_attempts_expiry on integration_auth_attempts USING
 create UNIQUE index integration_auth_attempts_launch_ticket on integration_auth_attempts USING btree (launch_ticket_hash);
 create index integration_auth_attempts_owner_flow_status on integration_auth_attempts USING btree (owner_user_id, flow, status, created_at DESC);
 create UNIQUE index integration_connections_definition_identity_unique on integration_connections USING btree (integration_definition_id, external_tenant_id, external_identity_id) NULLS NOT DISTINCT WHERE ((connection_kind = 'provider-account'::text) AND (external_identity_id IS NOT NULL) AND (status <> 'revoked'::text));
-create UNIQUE index integration_connections_computer_live_unique on integration_connections USING btree (integration_definition_id, runner_id) WHERE ((connection_kind = 'computer'::text) AND (status <> 'revoked'::text));
+create UNIQUE index integration_connections_computer_live_unique on integration_connections USING btree (integration_definition_id, runner_id, coalesce(computer_app_key, '')) WHERE ((connection_kind = 'computer'::text) AND (status <> 'revoked'::text));
 create index integration_connections_kind_owner_updated on integration_connections USING btree (connection_kind, owner_user_id, updated_at DESC);
 create index integration_connections_owner_updated on integration_connections USING btree (owner_user_id, updated_at DESC);
 create index integration_connections_runtime_status on integration_connections USING btree (runner_id, status, updated_at);
@@ -2633,5 +2638,51 @@ alter table host_oauth_refresh_tokens add foreign key(session_id) references aut
 create index host_oauth_refresh_tokens_session on host_oauth_refresh_tokens(session_id);
 alter table host_oauth_access_tokens add foreign key(session_id) references auth_sessions(id) on delete cascade;
 create index host_oauth_access_tokens_session on host_oauth_access_tokens(session_id);
+
+create function opensteer_flush_integration_authority() returns trigger language plpgsql as $$
+declare authority_owner_id text;
+begin
+  for authority_owner_id in
+    select owner_user_id from integration_authority_pending
+    where transaction_id = pg_current_xact_id() order by owner_user_id loop
+    insert into integration_authority_generations(owner_user_id, generation, updated_at)
+      select authority_owner_id, 1, now() where exists(select 1 from users where id = authority_owner_id)
+      on conflict(owner_user_id) do update
+      set generation = integration_authority_generations.generation + 1, updated_at = excluded.updated_at;
+  end loop;
+  delete from integration_authority_pending where transaction_id = pg_current_xact_id();
+  return null;
+end $$;
+create constraint trigger integration_authority_pending_flush
+  after insert on integration_authority_pending deferrable initially deferred
+  for each row execute function opensteer_flush_integration_authority();
+
+create function opensteer_bump_all_integration_authority() returns trigger language plpgsql as $$
+begin
+  insert into integration_authority_pending(transaction_id, owner_user_id)
+    select pg_current_xact_id(), id from users on conflict do nothing;
+  return null;
+end $$;
+create function opensteer_bump_integration_owner_authority() returns trigger language plpgsql as $$
+begin
+  insert into integration_authority_pending(transaction_id, owner_user_id)
+    values(pg_current_xact_id(), case when tg_op='DELETE' then old.owner_user_id else new.owner_user_id end)
+    on conflict do nothing;
+  return null;
+end $$;
+create trigger integration_installations_authority_generation after insert or update or delete on integration_installations
+  for each statement execute function opensteer_bump_all_integration_authority();
+create trigger integration_servers_authority_generation after insert or update or delete on integration_servers
+  for each statement execute function opensteer_bump_all_integration_authority();
+create trigger integration_tools_authority_generation after insert or update or delete on integration_tools
+  for each statement execute function opensteer_bump_all_integration_authority();
+create trigger integration_provider_applications_authority_generation after insert or update or delete on integration_provider_applications
+  for each statement execute function opensteer_bump_all_integration_authority();
+create trigger integration_connections_authority_generation after insert or update or delete on integration_connections
+  for each row execute function opensteer_bump_integration_owner_authority();
+create trigger integration_grants_authority_generation after insert or update or delete on integration_grants
+  for each row execute function opensteer_bump_integration_owner_authority();
+create trigger plugin_owner_settings_authority_generation after insert or update or delete on plugin_owner_settings
+  for each row execute function opensteer_bump_integration_owner_authority();
 
 `;

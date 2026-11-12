@@ -592,6 +592,20 @@ export class IntegrationStore {
           });
         }
         await transaction
+          .selectFrom("integrationGrants")
+          .select("id")
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .orderBy("id", "asc")
+          .forNoKeyUpdate()
+          .execute();
+        await transaction
+          .updateTable("integrationGrants")
+          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
+          .where("connectionId", "=", connection.id)
+          .where("revokedAt", "is", null)
+          .execute();
+        await transaction
           .updateTable("credentials")
           .set({
             encryptedPayload: input.credential.envelope,
@@ -607,12 +621,6 @@ export class IntegrationStore {
           .set({ status: "revoked", statusDetail: null, statusReason: null, updatedAt: now })
           .where("id", "=", connection.id)
           .executeTakeFirstOrThrow();
-        await transaction
-          .updateTable("integrationGrants")
-          .set({ isDefault: false, revokedAt: now, status: "revoked", updatedAt: now })
-          .where("connectionId", "=", connection.id)
-          .where("revokedAt", "is", null)
-          .execute();
         await transaction
           .insertInto("securityAudit")
           .values({

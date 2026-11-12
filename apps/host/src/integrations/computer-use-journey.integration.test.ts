@@ -1,3 +1,4 @@
+import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import { readToolRecords } from "../mcp/product-tools.test-support.js";
 import { ProductToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
@@ -1689,8 +1690,8 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           parts: [{ type: "phone", machineId: world.phoneId!, name: phone, display: "other" }],
         }),
       ).rejects.toMatchObject({ code: "bad_request" });
-      const specialist = await world.createFolder("Unrelated specialist");
-      const other = await world.startRun("Other task", specialist);
+      const otherFolder = await world.createFolder("Another task folder");
+      const other = await world.startRun("Other task", otherFolder);
       await expect(
         places.assertUsable({
           ...scope,
@@ -1698,7 +1699,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
           threadId: other.threadId,
           parts: content,
         }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      ).resolves.toBeUndefined();
       const phoneLease = await world.computerUse.prepare(
         { ownerUserId: world.owner.userId, runnerId: world.phoneId!, runnerName: phone },
         run.claims,
@@ -1762,7 +1763,7 @@ integration.sequential("Computer use, end to end as a model sees it", () => {
         } as never,
         canRunHarness: () => true,
         commands,
-
+        folders: personalTestFolders(store, world.owner),
         isEnvironmentConnected: () => true,
         onEvent: () => undefined,
         store,

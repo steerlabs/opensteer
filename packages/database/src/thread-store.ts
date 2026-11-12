@@ -1,4 +1,8 @@
-import { lockDeploymentEvents, withPersonalTransaction } from "./personal-transaction.js";
+import {
+  lockDeploymentEvents,
+  withPersonalReadTransaction,
+  withPersonalTransaction,
+} from "./personal-transaction.js";
 import {
   TaskFolderSchema,
   type TaskFolder,
@@ -590,7 +594,7 @@ export async function ownerThreadPageForOwner(
   const anchor = input.before
     ? decodeWindowCursor(input.before, "owner-thread", input.ownerId)
     : null;
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
@@ -666,7 +670,7 @@ export async function getAssignmentForOwner(
     readonly ownerId: UserId;
   },
 ): Promise<AssignmentView | null> {
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
@@ -706,7 +710,7 @@ export async function listThreadAssignmentsForOwner(
   const anchor = input.before
     ? decodeWindowCursor(input.before, "assignment", input.threadId)
     : null;
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
@@ -796,7 +800,7 @@ export async function agentThreadPageForOwner(
     : null;
   const pattern = input.query === undefined ? null : `%${escapeLikePattern(input.query)}%`;
   const scope = input.scope;
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.ownerId);
@@ -960,7 +964,7 @@ export async function readThreadForOwner(
   maxMessages = 100,
 ): Promise<OwnedThreadRead | null> {
   const limit = boundedLimit(maxMessages, 200);
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, ownerId);
@@ -2090,7 +2094,7 @@ export async function findThreadCreationByIdempotency(
     ...input,
     accessMode: await resolveCreateThreadAccessMode(database, input),
   };
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) =>
       (await findExistingThreadCreation(
@@ -2165,7 +2169,7 @@ export async function getThreadInputQueue(
     readonly requestedBy: UserId;
   },
 ): Promise<ThreadInputQueue> {
-  return withPersonalTransaction(database, async (transaction) => {
+  return withPersonalReadTransaction(database, async (transaction) => {
     await assertThreadCaller(transaction, input.authority, {
       threadId: input.threadId,
       readOnly: true,

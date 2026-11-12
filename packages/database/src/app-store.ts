@@ -95,7 +95,19 @@ export class AppStore {
     ).flatMap((row) => (row.sha256 ? [row.sha256] : []));
   }
   async get(appId: string, userId: UserId) {
-    await assertPersonalOwner(this.database, userId);
+    try {
+      await assertPersonalOwner(this.database, userId);
+    } catch (error) {
+      if (error instanceof OpensteerError && error.code === "forbidden") {
+        const owner = await this.database
+          .selectFrom("personalSettings")
+          .select("ownerId")
+          .where("ownerId", "=", userId)
+          .executeTakeFirst();
+        if (!owner) throw missing();
+      }
+      throw error;
+    }
     const row = await this.database
       .selectFrom("apps")
       .selectAll()

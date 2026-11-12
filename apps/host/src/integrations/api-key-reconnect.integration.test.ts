@@ -294,6 +294,22 @@ integration("API-key reconnect incident", () => {
       });
 
       const bId = IntegrationConnectionIdSchema.parse(b.id);
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.grant.create",
+          idempotencyKey: "allow-second-personal-account",
+          input: {
+            access: "read-write",
+            alias: "Vapi API",
+            connectionId: bId,
+            installationId: installation.id,
+            isDefault: false,
+          },
+        },
+        { headers: host.ownerHeaders },
+      );
       const addedTimes = ["2026-09-17T09:12:03.000Z", "2026-09-17T09:12:49.000Z"];
       for (const [index, id] of [aId, bId].entries()) {
         await host.store.database
@@ -334,10 +350,16 @@ integration("API-key reconnect incident", () => {
       expect(
         await host.store.database
           .selectFrom("integrationGrants")
-          .selectAll()
+          .select(["connectionId", "access"])
           .where("ownerUserId", "=", host.ownerId)
+          .orderBy("connectionId")
           .execute(),
-      ).toEqual([]);
+      ).toEqual(
+        [
+          { connectionId: aId, access: "read" },
+          { connectionId: bId, access: "read-write" },
+        ].sort((left, right) => left.connectionId.localeCompare(right.connectionId)),
+      );
 
       await complete();
       await expect(reconnecting.result).rejects.toThrow();
@@ -536,8 +558,12 @@ integration("API-key reconnect incident", () => {
       const projectSearch = await projectGateway.call("integration_search", {
         query: "Vapi API",
       });
-      expect(operations(projectSearch).map(({ connectionId }) => connectionId)).toEqual([aId]);
-      record("stored grant exposes only A in a project Workspace", projectSearch);
+      expect(
+        operations(projectSearch)
+          .map(({ connectionId }) => connectionId)
+          .sort(),
+      ).toEqual([aId, bId].sort());
+      record("personal grants expose the same accounts in another task", projectSearch);
 
       // A fulfilled target can fail before outbox delivery. Seed an undelivered
       // copy of the real fulfilled Request after A fails, while B still works;
@@ -802,6 +828,27 @@ integration("API-key reconnect incident", () => {
         .where("ownerUserId", "=", host.ownerId)
         .executeTakeFirstOrThrow();
       const notionId = IntegrationConnectionIdSchema.parse(notion.id);
+      const notionInstallation = await host.store.database
+        .selectFrom("integrationInstallations")
+        .select("id")
+        .where("name", "=", "notion")
+        .executeTakeFirstOrThrow();
+      await testRpcData(
+        host.origin,
+        "commands.dispatch",
+        {
+          type: "integration.grant.create",
+          idempotencyKey: "allow-personal-notion-account",
+          input: {
+            access: "read",
+            alias: "Notion",
+            connectionId: notionId,
+            installationId: notionInstallation.id,
+            isDefault: true,
+          },
+        },
+        { headers: host.ownerHeaders },
+      );
       expect(notion).toMatchObject({
         externalIdentityId: "notion-account-1",
         status: "connected",
@@ -824,6 +871,22 @@ integration("API-key reconnect incident", () => {
 
       // Also preserve the existing guard against an identity another owner holds.
       await connect("api-key-notion-other-owner", notionInput(otherNotionKey));
+      const foreignNotion = await host.store.database
+        .selectFrom("integrationConnections")
+        .selectAll()
+        .where("integrationDefinitionId", "=", "notion")
+        .where("id", "!=", notionId)
+        .executeTakeFirstOrThrow();
+      await host.store.database
+        .updateTable("integrationConnections")
+        .set({ ownerUserId: otherOwner })
+        .where("id", "=", foreignNotion.id)
+        .execute();
+      await host.store.database
+        .updateTable("credentials")
+        .set({ ownerId: otherOwner })
+        .where("id", "=", foreignNotion.credentialId)
+        .execute();
       await refuse(
         "identity-held-by-another-connection-refused",
         notionInput(otherNotionKey),

@@ -233,7 +233,11 @@ describeStore("plugin devices", (test) => {
       const personViewer = run.userId;
       await writeFile(
         join(pluginDirectory, "plugin.json"),
-        JSON.stringify({ name: "person-camera-fixture" }),
+        JSON.stringify({
+          $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+          name: "person-camera-fixture",
+          extensions: { "com.opensteer": { device: { name: "Person camera", kind: "camera" } } },
+        }),
       );
       const person = await service.installAgentPlugin({
         actorUserId: personViewer,

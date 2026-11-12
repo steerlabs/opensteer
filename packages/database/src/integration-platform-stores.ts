@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction, withPersonalTransaction } from "./personal-transaction.js";
 import { integrationAccountLabel } from "@opensteer/integration-core";
 import {
   administrationCommand,
@@ -2000,8 +2000,8 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     readonly appApproval: "ask" | "automatic";
     readonly revision: number;
   }> {
-    return withPersonalTransaction(this.database, async (transaction) => {
-      await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
+    return withPersonalReadTransaction(this.database, async (transaction) => {
+      await this.#computerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId, false);
       const policy = await computerUsePolicyInTransaction(
         transaction,
         input.runnerId,
@@ -2013,13 +2013,19 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     });
   }
 
-  async #lockComputerUsePolicyOwner(
+  async #computerUsePolicyOwner(
     transaction: Transaction<DatabaseSchema>,
     runnerId: RunnerId,
     ownerUserId: UserId,
+    lock = true,
   ) {
-    const runner = await lockComputerApprovalScopeInTransaction(transaction, { runnerId });
-    if (runner.revokedAt !== null)
+    const runner = await transaction
+      .selectFrom("runners")
+      .select(["id", "name", "revokedAt"])
+      .where("id", "=", runnerId)
+      .$if(lock, (query) => query.forNoKeyUpdate())
+      .executeTakeFirst();
+    if (!runner || runner.revokedAt !== null)
       throw new OpensteerError({ code: "not_found", message: "Computer not found" });
     const ownership = await machineOwnershipIn(transaction, runnerId);
     if (ownership?.effectiveOwner !== ownerUserId)
@@ -2046,7 +2052,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
     ),
   ): Promise<{ readonly appApproval: "ask" | "automatic"; readonly revision: number }> {
     return withPersonalTransaction(this.database, async (transaction) => {
-      await this.#lockComputerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
+      await this.#computerUsePolicyOwner(transaction, input.runnerId, input.ownerUserId);
       const now = new Date();
       const deployment = await transaction
         .selectFrom("deployments")
@@ -2290,7 +2296,7 @@ export class IntegrationConnectionAuthStore extends IntegrationPlatformStoreBase
         .executeTakeFirst();
       if (!request) return { ...emptyComputerAppAccessSettlement, runnerId: null };
       // Same scope as enable/reduce/revoke, so cancellation cannot race an approval.
-      await this.#lockComputerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
+      await this.#computerUsePolicyOwner(transaction, request.runnerId, input.ownerUserId);
       const settlementActor = await readRequestSettlementActor(
         transaction,
         input.ownerUserId,

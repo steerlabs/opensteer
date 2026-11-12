@@ -192,6 +192,86 @@ describe("fresh personal/team lineage", () => {
       (await sql<{ name: string }>`select name from kysely_migration`.execute(database)).rows,
     ).toEqual([{ name: personalTeamBaselineName }]);
   });
+  it.each([
+    ["app_versions", "size_bytes", "integer", "NO"],
+    ["computer_app_setup_requests", "app", "jsonb", "NO"],
+    ["computer_app_setup_requests", "server", "jsonb", "NO"],
+    ["integration_connections", "computer_app", "jsonb", "NO"],
+    ["plugin_owner_settings", "revision", "integer", "NO"],
+    ["delegations", "revision", "integer", "NO"],
+    ["browser_tab_layouts", "tab_order", "jsonb", "NO"],
+    ["machine_access_events", "id", "bigint", "YES"],
+    ["mcp_oauth_credentials", "encrypted_state", "bytea", "NO"],
+  ])("preserves the private storage contract for %s.%s", async (table, column, type, identity) => {
+    await migrateToLatest(database);
+    const result = await sql<{ dataType: string; isIdentity: string }>`
+      select data_type, is_identity from information_schema.columns
+      where table_schema='public' and table_name=${table} and column_name=${column}
+    `.execute(database);
+    expect(result.rows).toEqual([{ dataType: type, isIdentity: identity }]);
+  });
+  it("starts credentials at a positive generation and keys browser attachments by session and binding", async () => {
+    await migrateToLatest(database);
+    const generation = await sql<{ columnDefault: string }>`
+      select column_default from information_schema.columns
+      where table_schema='public' and table_name='integration_connections' and column_name='credential_generation'
+    `.execute(database);
+    expect(generation.rows).toEqual([{ columnDefault: "1" }]);
+    const key = await sql<{ columns: string[] }>`
+      select array_agg(a.attname::text order by k.ordinality) as columns
+      from pg_constraint c cross join lateral unnest(c.conkey) with ordinality k(attnum, ordinality)
+      join pg_attribute a on a.attrelid=c.conrelid and a.attnum=k.attnum
+      where c.conrelid='browser_session_attachments'::regclass and c.contype='p'
+    `.execute(database);
+    expect(key.rows[0]?.columns).toEqual(["session_id", "agent_binding_id"]);
+  });
+  it("publishes one authority generation per owner at commit and rolls invalidations back", async () => {
+    await migrateToLatest(database);
+    const { owner } = await team();
+    const generation = () =>
+      database
+        .selectFrom("integrationAuthorityGenerations")
+        .select("generation")
+        .where("ownerUserId", "=", owner)
+        .executeTakeFirst();
+    await database.transaction().execute(async (tx) => {
+      await tx
+        .insertInto("pluginOwnerSettings")
+        .values({
+          ownerUserId: owner,
+          targetKey: '["service","records"]',
+          target: { kind: "service", definitionId: "records" },
+          enabled: true,
+          revision: 1,
+        })
+        .execute();
+      await tx
+        .updateTable("pluginOwnerSettings")
+        .set({ enabled: false })
+        .where("ownerUserId", "=", owner)
+        .execute();
+      expect(await generation()).toBeUndefined();
+      expect(
+        await tx.selectFrom("integrationAuthorityPending").select("ownerUserId").execute(),
+      ).toEqual([{ ownerUserId: owner }]);
+    });
+    expect(await generation()).toEqual({ generation: 1 });
+    const rejection = new Error("rejected mutation");
+    await expect(
+      database.transaction().execute(async (tx) => {
+        await tx
+          .updateTable("pluginOwnerSettings")
+          .set({ enabled: true })
+          .where("ownerUserId", "=", owner)
+          .execute();
+        throw rejection;
+      }),
+    ).rejects.toBe(rejection);
+    expect(await generation()).toEqual({ generation: 1 });
+    expect(await database.selectFrom("integrationAuthorityPending").selectAll().execute()).toEqual(
+      [],
+    );
+  });
   it("rejects a legacy ledger before changing its schema or data", async () => {
     await sql`create table kysely_migration(name varchar(255) primary key,timestamp varchar(255) not null); insert into kysely_migration values('0001_baseline','old'); create table retained(value text); insert into retained values('untouched')`.execute(
       database,

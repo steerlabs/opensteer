@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import {
   OpensteerError,
   type AssignmentId,
@@ -28,7 +28,7 @@ export function readThreadWaitSnapshot(
     readonly assignmentId?: AssignmentId;
   },
 ) {
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (tx) => {
       const thread = await tx
