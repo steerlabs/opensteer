@@ -17,7 +17,6 @@ function start(world = new MockTeamWorld()) {
     sessions: world.sessions,
     personal: world.personal,
     intents: world.intents,
-    surface: "desktop",
     accountSubject: world.accountSubject,
     open: (id) => opened.push(id),
   });
@@ -160,6 +159,31 @@ describe("TeamCoordinator", () => {
     expect(linkLeave).toHaveBeenCalledWith(personal, entered.teamDeploymentId);
     expect(coordinator.getSnapshot().intents).toEqual([]);
     expect(world.joined()).toEqual([]);
+  });
+
+  it("keeps a joined team after a restart, and forgets it once the team turns the person away", async () => {
+    const first = start();
+    const entered = await first.coordinator.joinWithInvite({
+      inviteUrl: first.world.sampleInviteUrl,
+      personalDeploymentId: personal,
+    });
+    first.coordinator.dispose();
+    const second = track(start(first.world));
+    const restore = vi.spyOn(first.world.sessions, "restore");
+    await second.coordinator.resume();
+    await vi.waitFor(() =>
+      expect(restore).toHaveBeenCalledWith({
+        origin: entered.origin,
+        teamDeploymentId: entered.teamDeploymentId,
+      }),
+    );
+    expect(second.coordinator.getSnapshot().intents).toHaveLength(1);
+    second.coordinator.dispose();
+    // Removed meanwhile: the team no longer admits this Account.
+    await first.world.sessions.forget(entered.teamDeploymentId);
+    const third = track(start(first.world));
+    await third.coordinator.resume();
+    await vi.waitFor(() => expect(third.coordinator.getSnapshot().intents).toEqual([]));
   });
 
   it("lets a person with no computer create and join, with no agent to connect", async () => {

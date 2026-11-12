@@ -19,7 +19,6 @@ import {
   fileTeamIntentStore,
   mobilePersonalTeamLinks,
   mobileTeamSessions,
-  teamSessionExchangeUnavailable,
 } from "./team-coordinator-ports.js";
 
 /** A build without an Account service creates no hosted teams; joining older teams still works. */
@@ -30,7 +29,6 @@ const noAccountTeams: AccountTeamsClient = {
   hostedTeam: async () => null,
   retryHostedTeam: () => Promise.reject(noAccount()),
   deleteHostedTeam: () => Promise.reject(noAccount()),
-  issueTeamIdentityGrant: () => Promise.reject(noAccount()),
 };
 
 function noAccount(): Error {
@@ -81,14 +79,12 @@ export function createMobileTeamEntry(options: {
       world?.sessions ??
       mobileTeamSessions({
         teams,
-        exchange: teamSessionExchangeUnavailable,
         fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
       }),
     personal: world?.personal ?? mobilePersonalTeamLinks(personal),
     intents:
       world?.intents ??
       fileTeamIntentStore(options.files, `${options.directory}/team-intents.json`),
-    surface: "mobile",
     accountSubject: () => {
       if (world !== null) return world.accountSubject();
       const subject = client.getSnapshot().account.account.identity?.subject;

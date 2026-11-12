@@ -247,31 +247,36 @@ export class HostedTeamStore {
   }
 
   /**
-   * Cancels a team still being set up (its creator may) or deletes one whose Host has an owner
-   * (only that team's owners may). Answers the team at `deleting`.
+   * Cancels a team that isn't ready yet (its creator may) or deletes a ready one, which only an
+   * owner the team's own Host confirms may do. Answers the team at `deleting`.
    */
   async remove(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<HostedTeamView> {
     const current = await this.#visible(accountId).where("id", "=", id).executeTakeFirst();
     if (!current) throw new ControlPlaneError("not_found", "Hosted team was not found");
     if (current.state === "deleted") return toView(current);
-    const cancelling = !bootstrapped(current);
+    const cancelling = current.stage !== "ready";
     if (cancelling) {
       if (current.creatorAccountId !== accountId) throw ownerRequired();
     } else {
       const authority = await this.#authority(current);
       const answer = authority ? await this.#ownerCheck({ accountId, authority }) : undefined;
-      // A Host that can't answer leaves the decision to whoever created the team.
-      if (!(answer ?? current.creatorAccountId === accountId)) throw ownerRequired();
+      // Ownership can change on the team; only its Host knows, so no answer deletes nothing.
+      if (answer === undefined)
+        throw new ControlPlaneError(
+          "unavailable",
+          "Your team’s server didn’t answer. Try again in a minute.",
+        );
+      if (!answer) throw ownerRequired();
     }
     const row = await this.#database.transaction().execute(async (transaction) => {
       await lockDeploymentOrigin(transaction, hostedTeamOrigin(current.slug));
       const locked = await transaction
         .selectFrom("hostedTeams")
-        .select(["bootstrapReceipt", "stage"])
+        .select("stage")
         .where("id", "=", id)
         .where("state", "!=", "deleted")
         .executeTakeFirst();
-      if (locked && cancelling && bootstrapped(locked)) {
+      if (locked && cancelling && locked.stage === "ready") {
         throw new ControlPlaneError(
           "conflict",
           "This team just finished setting up. Try again to delete it.",
@@ -742,13 +747,6 @@ function claimed(
     expression("setupGeneration", "=", claim.generation),
     expression("bootstrapAttempt", "=", claim.attempt),
   ]);
-}
-
-function bootstrapped(row: {
-  readonly bootstrapReceipt: unknown;
-  readonly stage: HostedTeamStoredStage;
-}) {
-  return row.bootstrapReceipt !== null || row.stage === "ready";
 }
 
 function ownerRequired() {

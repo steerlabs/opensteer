@@ -141,6 +141,7 @@ export class MockTeamHost {
       origin?: string;
       role?: "owner" | "member";
       displayName?: string;
+      hostedTeamId?: string | null;
     } = {},
   ) {
     this.teamId = options.teamId ?? mockTeamId;
@@ -183,6 +184,7 @@ export class MockTeamHost {
         connectAgent: true,
       },
       sidebar: this.#sidebarPage(),
+      hostedTeamId: options.hostedTeamId ?? null,
     });
     this.members.push(this.bootstrap.member);
     this.rpc = new Proxy(

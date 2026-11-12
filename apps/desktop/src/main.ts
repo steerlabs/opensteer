@@ -1,5 +1,6 @@
 import { DesktopTeamLinks } from "./app/team-links.js";
-import { HttpAccountTeamsClient } from "@opensteer/client/team";
+import { HttpAccountTeamsClient, NativeTeamEntry } from "@opensteer/client/team";
+import { DesktopTeamSessions } from "./app/team-sessions.js";
 import { PersonalDataReset } from "./supervisor/personal-data-reset.js";
 import { desktopPersonalDataReset } from "./app/personal-data-reset.js";
 import { resetFileWrites } from "./secrets/reset-file-writes.js";
@@ -1074,6 +1075,12 @@ async function runDesktop(
       ? new HttpAccountTeamsClient({
           accountOrigin: loaded.config.accountUrl,
           authorization: nativeAuth,
+          fetch: serviceNetwork.fetch.bind(serviceNetwork),
+        })
+      : null,
+    teamSessions: loaded.config.accountUrl
+      ? new DesktopTeamSessions({
+          entry: new NativeTeamEntry({ oauth: nativeAuth, catalog: deploymentCatalog }),
           fetch: serviceNetwork.fetch.bind(serviceNetwork),
         })
       : null,

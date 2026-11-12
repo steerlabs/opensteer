@@ -181,7 +181,7 @@ export async function createTeamHostRuntime(input: {
       },
       registerPreviewKey: (session, command) =>
         preview.register({ userId: session.user.id, authSessionId: session.id, ...command }),
-      generalChannelId: async () => (admitted ? admitted.generalChannelId() : null),
+      hostedTeam: async () => (admitted ? admitted.hostedTeam() : null),
       publishPush: createTeamPushPublisher({
         teamId: deployment.id,
         hostInstanceId: deployment.activeHostInstanceId,

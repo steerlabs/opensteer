@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HostedTeamIdSchema } from "@opensteer/control-plane-protocol/hosted-teams";
 import {
   DeploymentIdSchema,
   IsoDateTimeSchema,
@@ -187,6 +188,8 @@ export const TeamBootstrapSchema = z.strictObject({
   sidebar: TeamSidebarSchema,
   /** The channel the team was created with, where a new owner or member lands; null without one. */
   generalChannelId: TeamChannelIdSchema.nullable().optional(),
+  /** Account's id for a team Opensteer hosts, so clients never match a team by its origin. */
+  hostedTeamId: HostedTeamIdSchema.nullable().optional(),
 });
 export const TeamSearchInputSchema = z.strictObject({
   query: z.string().trim().min(1).max(256),

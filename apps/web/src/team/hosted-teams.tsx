@@ -1023,12 +1023,10 @@ function DeleteTeamDialog({
   if (!team || !coordination) return null;
   const name = team.client?.getSnapshot().bootstrap?.teamName ?? team.name;
   const matches = typed.trim() === name;
+  const hostedTeamId = team.client?.getSnapshot().bootstrap?.hostedTeamId ?? null;
   const remove = async () => {
-    const hosted = (await coordination.account.listHostedTeams()).find(
-      (candidate) => candidate.origin === team.origin,
-    );
-    if (!hosted) throw new Error("Only teams Opensteer hosts can be deleted here.");
-    await coordination.coordinator.deleteHostedTeam(hosted.id);
+    if (hostedTeamId === null) throw new Error("Only teams Opensteer hosts can be deleted here.");
+    await coordination.coordinator.deleteHostedTeam(hostedTeamId);
   };
   return (
     <Dialog

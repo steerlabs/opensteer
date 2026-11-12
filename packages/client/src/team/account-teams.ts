@@ -1,11 +1,4 @@
-import {
-  ControlPlaneErrorResponseSchema,
-  IssueTeamIdentityGrantRequestSchema,
-  IssueTeamIdentityGrantResponseSchema,
-  accountTeamIdentityGrantsPath,
-  type IssueTeamIdentityGrantRequest,
-  type IssueTeamIdentityGrantResponse,
-} from "@opensteer/control-plane-protocol";
+import { ControlPlaneErrorResponseSchema } from "@opensteer/control-plane-protocol";
 import {
   CreateHostedTeamRequestSchema,
   HostedTeamAvailabilityResponseSchema,
@@ -20,7 +13,7 @@ import {
   type HostedTeamId,
   type HostedTeamView,
 } from "@opensteer/control-plane-protocol/hosted-teams";
-import { bareServiceOrigin, type DeploymentId } from "@opensteer/core";
+import { bareServiceOrigin } from "@opensteer/core";
 import { readBoundedText } from "@opensteer/shared/boundedJson";
 import type { z } from "zod";
 import {
@@ -42,10 +35,6 @@ export interface AccountTeamsClient {
   retryHostedTeam(id: HostedTeamId): Promise<HostedTeamView>;
   /** Cancels a team still being set up, or deletes one (owners only). Null when already gone. */
   deleteHostedTeam(id: HostedTeamId): Promise<HostedTeamView | null>;
-  issueTeamIdentityGrant(
-    deploymentId: DeploymentId,
-    request: IssueTeamIdentityGrantRequest,
-  ): Promise<IssueTeamIdentityGrantResponse>;
 }
 
 const timeoutMs = 15_000;
@@ -111,15 +100,6 @@ export class HttpAccountTeamsClient implements AccountTeamsClient {
 
   deleteHostedTeam(id: HostedTeamId) {
     return this.#gone(this.#json(accountHostedTeamPath(id), "DELETE", HostedTeamResponseSchema));
-  }
-
-  issueTeamIdentityGrant(deploymentId: DeploymentId, request: IssueTeamIdentityGrantRequest) {
-    return this.#json(
-      accountTeamIdentityGrantsPath(deploymentId),
-      "POST",
-      IssueTeamIdentityGrantResponseSchema,
-      IssueTeamIdentityGrantRequestSchema.parse(request),
-    );
   }
 
   async #gone(request: Promise<HostedTeamView>): Promise<HostedTeamView | null> {

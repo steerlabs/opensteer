@@ -10,25 +10,16 @@ import {
   type HostClient,
 } from "@opensteer/client/host";
 import {
+  previewTeamInvite,
   TeamConnectionIntentSchema,
+  verifiedTeam,
   type PersonalTeamLinksPort,
   type TeamConnectionIntent,
   type TeamConnectionIntentStore,
-  type TeamSessionEstablished,
   type TeamSessionPort,
   type VerifiedTeam,
 } from "@opensteer/client/team";
 import type { TeamInviteSecret } from "@opensteer/core";
-import {
-  hostKeyFingerprint,
-  teamApiVersion,
-  teamApiVersionHeader,
-} from "@opensteer/deployment-authority";
-import {
-  TeamInvitePreviewResponseSchema,
-  teamInvitePreviewPath,
-  type TeamSessionExchangeRequest,
-} from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileTeams } from "./mobile-teams.js";
 
@@ -132,38 +123,9 @@ export function mobilePersonalTeamLinks(
   };
 }
 
-export function verifiedTeam(verified: VerifiedHostEndpoint): VerifiedTeam {
-  return {
-    authority: {
-      deploymentId: verified.discovery.deploymentId,
-      hostInstanceId: verified.discovery.hostInstanceId,
-      canonicalOrigin: verified.discovery.canonicalOrigin,
-      hostKeyFingerprint: hostKeyFingerprint(verified.discoveryEnvelope.publicKey.spki),
-    },
-    capabilities: verified.capabilities,
-  };
-}
-
-/**
- * W2 seam: `POST /v1/team/session/exchange` with an Account identity grant, keeping the issued
- * tokens in this phone's native team credential store. Until it exists the coordinator can't
- * enter a team that advertises `team-session-exchange-v1`.
- */
-export type TeamSessionExchange = (
-  team: VerifiedTeam,
-  request: TeamSessionExchangeRequest,
-  signal?: AbortSignal,
-) => Promise<TeamSessionEstablished>;
-
-export const teamSessionExchangeUnavailable: TeamSessionExchange = () =>
-  Promise.reject(
-    new Error("This version of Opensteer can't sign in to this team yet. Update the app."),
-  );
-
 /** The team side of the coordinator on a phone, over the teams it already holds. */
 export function mobileTeamSessions(options: {
   readonly teams: MobileTeams;
-  readonly exchange: TeamSessionExchange;
   readonly fetch: typeof globalThis.fetch;
 }): TeamSessionPort {
   const { teams } = options;
@@ -174,34 +136,20 @@ export function mobileTeamSessions(options: {
       verified.set(origin, endpoint);
       return verifiedTeam(endpoint);
     },
-    exchange: options.exchange,
+    async exchange(team, invite) {
+      const origin = team.authority.canonicalOrigin;
+      const endpoint = verified.get(origin) ?? (await teams.verifyTeam(origin));
+      return { ...(await teams.enter(endpoint, invite)), team };
+    },
+    restore: ({ origin, teamDeploymentId }) => teams.restore(origin, teamDeploymentId),
     async signIn(team: VerifiedTeam, invite: TeamInviteSecret | null) {
       const origin = team.authority.canonicalOrigin;
       const endpoint = verified.get(origin) ?? (await teams.verifyTeam(origin));
       const member = await teams.signIn(endpoint, invite);
       return { admitted: invite !== null, member, team };
     },
-    async previewInvite(team, invite) {
-      const response = await options.fetch(
-        new URL(teamInvitePreviewPath, team.authority.canonicalOrigin).toString(),
-        {
-          body: JSON.stringify(invite),
-          headers: {
-            "content-type": "application/json",
-            [teamApiVersionHeader]: String(teamApiVersion),
-          },
-          method: "POST",
-          redirect: "error",
-        },
-      );
-      if (!response.ok)
-        throw new HostClientRequestError({
-          code: response.status === 404 ? "not_found" : "forbidden",
-          message: "This invite no longer works. Ask for a new one.",
-          status: response.status,
-        });
-      return TeamInvitePreviewResponseSchema.parse(await response.json());
-    },
+    previewInvite: (team, invite) =>
+      previewTeamInvite(team.authority.canonicalOrigin, invite, options.fetch),
     async createLinkCode(teamDeploymentId) {
       const session = await teams.session(teamDeploymentId);
       const minted = unwrapRpcResult(

@@ -121,8 +121,11 @@ export class TeamIdentityAdmission {
   get hostedBootstrapAvailable() {
     return this.#hosted !== undefined;
   }
-  /** The #general a hosted bootstrap created, while it still exists. */
-  async generalChannelId(): Promise<TeamChannelId | null> {
+  /** Which hosted team this is, and the #general its bootstrap created while that still exists. */
+  async hostedTeam(): Promise<{
+    readonly hostedTeamId: HostedTeamBootstrap["hostedTeamId"];
+    readonly generalChannelId: TeamChannelId | null;
+  } | null> {
     const receipt = await readHostedBootstrap(this.access.database);
     if (!receipt) return null;
     const channel = await this.access.database
@@ -131,7 +134,7 @@ export class TeamIdentityAdmission {
       .where("id", "=", receipt.generalChannelId)
       .where("archivedAt", "is", null)
       .executeTakeFirst();
-    return channel?.id ?? null;
+    return { hostedTeamId: receipt.hostedTeamId, generalChannelId: channel?.id ?? null };
   }
   /**
    * Whether the Account the signed assertion names is an active owner here. The assertion is

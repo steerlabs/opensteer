@@ -16,16 +16,15 @@ import {
   parseTeamPageLink,
   TeamOriginSchema,
   type DeploymentId,
-  type OpensteerNativeApplication,
   type TeamInviteSecret,
 } from "@opensteer/core";
 import type { HostCapability } from "@opensteer/deployment-authority";
 import type {
   PersonalTeamLink,
   TeamInvitePreviewResponse,
-  TeamSessionExchangeRequest,
   TeamSessionExchangeResponse,
 } from "@opensteer/protocol";
+import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import { delay } from "@opensteer/shared/delay";
 import { z } from "zod";
 import type { AccountTeamsClient } from "./account-teams.js";
@@ -81,17 +80,30 @@ export interface TeamSessionEstablished extends Pick<
 }
 
 /**
- * The device's team credentials: desktop main or mobile secure storage. Tokens are stored behind
- * this port and never returned through it.
+ * The device's team credentials: desktop main or mobile secure storage. The Account's identity
+ * grant and the team's tokens are made and kept behind this port and never returned through it.
  */
 export interface TeamSessionPort {
   verify(origin: string, signal?: AbortSignal): Promise<VerifiedTeam>;
-  /** `POST /v1/team/session/exchange`; keeps the issued tokens as the team's native credential. */
+  /**
+   * Account signs who the person is for this exact team Host, and `POST /v1/team/session/exchange`
+   * admits them (through `invite` when given); the tokens become the team's native credential.
+   * Refusals throw `TeamEntryRefusedError`.
+   */
   exchange(
     team: VerifiedTeam,
-    request: TeamSessionExchangeRequest,
+    invite: TeamInviteSecret | null,
     signal?: AbortSignal,
   ): Promise<TeamSessionEstablished>;
+  /**
+   * Keeps a team this device entered on it after a restart, until Account's directory lists it,
+   * entering again when its credential is gone. Throws `TeamEntryRefusedError` once the team no
+   * longer admits the person.
+   */
+  restore(team: {
+    readonly origin: string;
+    readonly teamDeploymentId: DeploymentId;
+  }): Promise<void>;
   /**
    * Older team servers without `team-session-exchange-v1`: the native browser sign-in, then
    * `team.invite.accept` when an invite is given. Absent where the surface has none.
@@ -138,7 +150,6 @@ export interface TeamCoordinatorPorts {
   readonly sessions: TeamSessionPort;
   readonly personal: PersonalTeamLinksPort;
   readonly intents: TeamConnectionIntentStore;
-  readonly surface: OpensteerNativeApplication;
   /** Who is signed in to Account; intents belong to that Account. */
   readonly accountSubject: () => ControlPlaneAccountId | null;
   /** Shows the team, landing in `TeamBootstrap.generalChannelId`. */
@@ -334,15 +345,7 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (!ports.sessions.signIn) throw new TeamNeedsBrowserError(origin);
       return ports.sessions.signIn(team, invite);
     }
-    const grant = await ports.account.issueTeamIdentityGrant(team.authority.deploymentId, {
-      surface: ports.surface,
-      expectedAuthority: team.authority,
-    });
-    return ports.sessions.exchange(
-      team,
-      { assertion: grant.assertion, ...(invite ? { invite } : {}) },
-      signal,
-    );
+    return ports.sessions.exchange(team, invite, signal);
   };
 
   const scheduleRetry = (intent: TeamConnectionIntent, attempt: number) => {
@@ -399,6 +402,23 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
     })().finally(() => connecting.delete(key));
     connecting.set(key, run);
     return run;
+  };
+
+  /** A team entered before a restart stays on the device; its agent picks up where it was. */
+  const restoreThenConnect = async (
+    intent: TeamConnectionIntent,
+    teamDeploymentId: DeploymentId,
+  ) => {
+    try {
+      await ports.sessions.restore({ origin: intent.teamOrigin, teamDeploymentId });
+    } catch (error) {
+      // Removed meanwhile: nothing of this team is left to resume.
+      if (error instanceof TeamEntryRefusedError && error.reason === "not-a-member")
+        await remove(intent).catch(() => undefined);
+      if (error instanceof TeamEntryRefusedError) return;
+    }
+    if (intent.state === "pending-offline" || intent.state === "connecting")
+      await attemptConnect(intent).catch(() => undefined);
   };
 
   const settleReady = async (view: HostedTeamView, signal: AbortSignal) => {
@@ -621,11 +641,8 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
           const created = teams.find((team) => team.origin === intent.teamOrigin);
           if (created) await save({ ...intent, hostedTeamId: created.id });
           else await remove(intent);
-        } else if (
-          intent.teamDeploymentId !== null &&
-          (intent.state === "pending-offline" || intent.state === "connecting")
-        ) {
-          void attemptConnect(intent).catch(() => undefined);
+        } else if (intent.teamDeploymentId !== null) {
+          void restoreThenConnect(intent, intent.teamDeploymentId);
         }
       }
       for (const team of teams) {

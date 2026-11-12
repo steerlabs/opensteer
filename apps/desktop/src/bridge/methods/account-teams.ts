@@ -26,8 +26,6 @@ function run(client: AccountTeamsClient, call: DesktopAccountTeamsCall): Promise
       return client.retryHostedTeam(call.id);
     case "delete":
       return client.deleteHostedTeam(call.id);
-    case "identity-grant":
-      return client.issueTeamIdentityGrant(call.deploymentId, call.request);
   }
 }
 

@@ -22,6 +22,7 @@ import {
   hostApi,
   type HostApiCommand,
 } from "@opensteer/protocol";
+import type { HostedTeamId } from "@opensteer/control-plane-protocol/hosted-teams";
 import type { Kysely } from "kysely";
 import type { z } from "zod";
 import type { ChannelTopicPort, DatabaseSchema } from "@opensteer/database";
@@ -79,8 +80,11 @@ export interface TeamServiceOptions {
     command: Extract<HostApiCommand, { type: "notification.preview.register" }>,
   ) => Promise<void>;
   readonly publishPush: (delivery: TeamPushDelivery) => Promise<void>;
-  /** The #general a hosted bootstrap created, where a person lands; null without one. */
-  readonly generalChannelId?: () => Promise<TeamChannelId | null>;
+  /** A hosted team's Account id and the #general its bootstrap created; null when self-hosted. */
+  readonly hostedTeam?: () => Promise<{
+    readonly hostedTeamId: HostedTeamId;
+    readonly generalChannelId: TeamChannelId | null;
+  } | null>;
   readonly backgroundError: (area: "team-maintenance" | "team-push") => void;
 }
 export async function startTeamServices(options: TeamServiceOptions) {
@@ -349,6 +353,7 @@ export async function startTeamServices(options: TeamServiceOptions) {
     switch (name) {
       case "team.bootstrap.get": {
         const member = await members.get(actor);
+        const hosted = (await options.hostedTeam?.()) ?? null;
         return TeamBootstrapSchema.strip().parse({
           teamId: options.teamId,
           teamName: options.teamName,
@@ -363,7 +368,8 @@ export async function startTeamServices(options: TeamServiceOptions) {
             connectAgent: true,
           },
           sidebar: await chat.directory(actor, undefined, true),
-          generalChannelId: (await options.generalChannelId?.()) ?? null,
+          generalChannelId: hosted?.generalChannelId ?? null,
+          hostedTeamId: hosted?.hostedTeamId ?? null,
         });
       }
       case "team.sidebar.get": {

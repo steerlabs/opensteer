@@ -1,6 +1,5 @@
 import {
   ControlPlaneAccountIdSchema,
-  TeamIdentityAssertionSchema,
   type ControlPlaneAccountId,
 } from "@opensteer/control-plane-protocol";
 import {
@@ -20,6 +19,7 @@ import {
   type DeploymentId,
   type TeamInviteSecret,
 } from "@opensteer/core";
+import { TeamEntryRefusedError } from "../auth/native-oauth.js";
 import { unwrapRpcResult } from "../host/host-session-client.js";
 import type { AccountTeamsClient } from "./account-teams.js";
 import { MockTeamHost } from "./mock-team-host.js";
@@ -221,12 +221,6 @@ export class MockTeamWorld {
       this.#publish();
       return this.#view(team);
     },
-    issueTeamIdentityGrant: async (deploymentId) => ({
-      assertion: TeamIdentityAssertionSchema.parse(
-        `eyJhbGciOiJFZERTQSJ9.${btoa(deploymentId).replaceAll("=", "")}.${"s".repeat(64)}`,
-      ),
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }),
   };
 
   #record(teamDeploymentId: DeploymentId): MockTeamRecord {
@@ -244,25 +238,23 @@ export class MockTeamWorld {
       if (!record) throw new TypeError(`${new URL(origin).host} can’t be reached.`);
       return record.verified;
     },
-    exchange: async (team, request) => {
+    exchange: async (team, invite) => {
       const record = this.#records.get(team.authority.canonicalOrigin);
       if (!record) throw new TypeError("The team can’t be reached.");
       let admitted = false;
       if (!record.host) {
         const owner = record.hostedTeamId !== null;
         if (!owner) {
-          const invite = request.invite;
           if (
             !invite ||
             !record.invite ||
             invite.selector !== record.invite.selector ||
             invite.verifier !== record.invite.verifier
           )
-            throw new OpensteerError({
-              code: "forbidden",
-              message: "This invite no longer works. Ask for a new one.",
-              reason: "invite-invalid",
-            });
+            throw new TeamEntryRefusedError(
+              "invite-invalid",
+              "This invite no longer works. Ask for a new one.",
+            );
           admitted = true;
         }
         record.host = new MockTeamHost({
@@ -272,6 +264,7 @@ export class MockTeamWorld {
           origin: record.verified.authority.canonicalOrigin,
           role: owner ? "owner" : "member",
           displayName: "You",
+          hostedTeamId: record.hostedTeamId,
         });
         this.#publish();
       }
@@ -280,15 +273,19 @@ export class MockTeamWorld {
     previewInvite: async (team, invite) => {
       const record = this.#records.get(team.authority.canonicalOrigin);
       if (!record?.invite || record.invite.verifier !== invite.verifier)
-        throw new OpensteerError({
-          code: "forbidden",
-          message: "This invite no longer works. Ask for a new one.",
-          reason: "invite-invalid",
-        });
+        throw new TeamEntryRefusedError(
+          "invite-invalid",
+          "This invite no longer works. Ask for a new one.",
+        );
       return {
         teamName: record.name,
         expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
       };
+    },
+    restore: async ({ origin }) => {
+      const record = this.#records.get(origin);
+      if (!record?.host)
+        throw new TeamEntryRefusedError("not-a-member", "You're not a member of this team.");
     },
     createLinkCode: async (teamDeploymentId) => {
       const result = unwrapRpcResult(

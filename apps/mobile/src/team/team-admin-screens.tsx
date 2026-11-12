@@ -22,7 +22,7 @@ import {
   type PersonAdminRow,
 } from "./team-admin.js";
 import { useMobileTeams, useTeamEntry, useTeamMembers, useTeamSession } from "./team-context.js";
-import { agentWords, useAgentConnection, useHostedTeamAt } from "./team-entry-screens.js";
+import { agentWords, useAgentConnection } from "./team-entry-screens.js";
 import { personView } from "./team-views.js";
 
 type Navigation = NativeStackNavigationProp<RootParamList>;
@@ -84,7 +84,8 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
   const padding = useSafeAreaInsets().bottom + space[24];
   const agent = useAgentConnection(teamId);
   const bootstrap = snapshot.bootstrap;
-  const hosted = useHostedTeamAt(team?.origin ?? null, bootstrap?.member.role === "owner");
+  const hostedTeamId =
+    bootstrap?.member.role === "owner" ? (bootstrap.hostedTeamId ?? null) : null;
   if (session === null || bootstrap === null || team === null) return <Waiting failure={failure} />;
   const words = agentWords(agent.intent, agent.linked, bootstrap.member.handle);
   const connected = words.tone === "done";
@@ -116,7 +117,8 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
           onDisconnect: connected
             ? () => void coordinator.disconnectAgent(DeploymentIdSchema.parse(teamId)).catch(failed)
             : null,
-          onDelete: hosted === null ? null : () => navigation.navigate("DeleteTeam", { teamId }),
+          onDelete:
+            hostedTeamId === null ? null : () => navigation.navigate("DeleteTeam", { teamId }),
         }}
         address={new URL(team.origin).host}
         agent={

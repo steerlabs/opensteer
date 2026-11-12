@@ -593,24 +593,6 @@ export function useAgentConnection(teamId: string): {
   };
 }
 
-/** The hosted team at an origin, for its owners: what Delete removes. Null for self-hosted teams. */
-export function useHostedTeamAt(origin: string | null, owner: boolean): HostedTeamView | null {
-  const { account } = useTeamEntry();
-  const [found, setFound] = useState<HostedTeamView | null>(null);
-  useEffect(() => {
-    if (origin === null || !owner) return;
-    let current = true;
-    void account.listHostedTeams().then(
-      (teams) => current && setFound(teams.find((team) => team.origin === origin) ?? null),
-      () => undefined,
-    );
-    return () => {
-      current = false;
-    };
-  }, [account, origin, owner]);
-  return owner ? found : null;
-}
-
 /** Type the team's name to delete it: everything in it goes, for everyone. */
 export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: string }>): ReactNode {
   const { teamId } = props.route.params;
@@ -618,7 +600,7 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
   const { coordinator } = useTeamEntry();
   const teams = useMobileTeams();
   const team = teams.team(teamId);
-  const hosted = useHostedTeamAt(team?.origin ?? null, true);
+  const hostedTeamId = team?.session?.getSnapshot().bootstrap?.hostedTeamId ?? null;
   const insets = useSafeAreaInsets();
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -626,11 +608,11 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
   const name = team?.name ?? "this team";
   const matches = typed.trim() === name;
   const remove = (): void => {
-    if (!matches || hosted === null) return;
+    if (!matches || hostedTeamId === null) return;
     setBusy(true);
     setFailure(null);
     void coordinator
-      .deleteHostedTeam(hosted.id)
+      .deleteHostedTeam(hostedTeamId)
       .then(() => teams.forget(teamId))
       .then(
         () => navigation.popToTop(),
@@ -674,7 +656,7 @@ export function DeleteTeamScreen(props: StaticScreenProps<{ readonly teamId: str
       <View style={styles.buttons}>
         <SecondaryButton
           busy={busy}
-          disabled={!matches || hosted === null}
+          disabled={!matches || hostedTeamId === null}
           label={`Delete ${name}`}
           onPress={remove}
           tone="danger"

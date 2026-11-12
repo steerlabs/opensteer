@@ -13,6 +13,7 @@ import {
   type WebSocketClient,
 } from "@opensteer/client/host";
 import {
+  NativeTeamEntry,
   TeamSavedStateSchema,
   TeamTransportRegistry,
   type TeamCacheScope,
@@ -23,13 +24,18 @@ import {
 import {
   DeploymentIdSchema,
   parseTeamPageLink,
+  type DeploymentId,
   TeamChannelIdSchema,
   TeamMessageIdSchema,
   UserIdSchema,
   type TeamInviteSecret,
   type TeamPageLink,
 } from "@opensteer/core";
-import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
+import {
+  parseTeamLinkOffer,
+  type HostApiClient,
+  type TeamMember,
+} from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileClient, MobileTeamConnection } from "../client/mobile-client.js";
 import type { NotificationPreviews } from "../notifications/notification-preview.js";
@@ -174,6 +180,7 @@ export class MobileTeams {
   readonly #client: MobileClient;
   readonly #transport: (connection: DeploymentConnection, scope: TeamCacheScope) => TeamTransport;
   readonly #verify: (origin: string) => Promise<VerifiedHostEndpoint>;
+  readonly #entry: NativeTeamEntry;
   readonly #usersFile: string;
   readonly #seed: Readonly<Record<string, readonly LinkedTeam[]>>;
   readonly #files: PrivateFilesystem;
@@ -210,6 +217,7 @@ export class MobileTeams {
     this.#client = options.client;
     this.#transport = options.transport;
     this.#verify = options.verify;
+    this.#entry = new NativeTeamEntry({ oauth: options.client.oauth, catalog: options.client.catalog });
     this.#files = options.files;
     this.#previews = options.previews ?? null;
     this.#usersFile = `${options.directory}/teams.json`;
@@ -614,6 +622,40 @@ export class MobileTeams {
         });
       }
     }
+    return (await this.#settle(connection)).member;
+  }
+
+  /**
+   * Entering a team as the signed-in Account, without a browser: the team joins this phone's
+   * catalog as an Account entry, its tokens stay in this phone's secure storage, and an invite,
+   * when given, admits the person. Connecting their agent is the coordinator's next step.
+   */
+  async enter(
+    verified: VerifiedHostEndpoint,
+    invite: TeamInviteSecret | null,
+  ): Promise<{ readonly admitted: boolean; readonly member: TeamMember }> {
+    const entered = await this.#entry.enter(verified, invite);
+    const teamId = verified.discovery.deploymentId;
+    const connection = (await this.#client.catalog.load()).deployments.find(
+      ({ authority }) => authority.document.deploymentId === teamId,
+    );
+    // Opening the team learns the same once the phone shows it; this only saves that wait.
+    if (connection !== undefined) await this.#settle(connection).catch(() => undefined);
+    return entered;
+  }
+
+  /** A team entered before a restart stays on this phone until Account's directory lists it. */
+  async restore(origin: string, teamId: DeploymentId): Promise<void> {
+    await this.#entry.restore(teamId, () => this.verifyTeam(origin));
+  }
+
+  /** Learns the team's name and who the reader is, and shows it on the computer being shown. */
+  async #settle(connection: DeploymentConnection) {
+    const teamId = connection.authority.document.deploymentId;
+    const transport = this.#transport(connection, {
+      teamDeploymentId: teamId,
+      userId: placeholderUser,
+    });
     const bootstrap = unwrapRpcResult(await transport.rpc["team.bootstrap.get"]({}));
     this.#names.set(teamId, bootstrap.teamName);
     await this.#rememberUser(teamId, bootstrap.member.userId);
@@ -622,7 +664,7 @@ export class MobileTeams {
       origin: connection.authority.document.canonicalOrigin,
       teamName: bootstrap.teamName,
     });
-    return bootstrap.member;
+    return bootstrap;
   }
 
   /**
@@ -682,7 +724,9 @@ export class MobileTeams {
     const connection = this.#connection(teamId);
     if (connection !== null) {
       await this.#client.signOut(teamId).catch(() => undefined);
-      if (connection.source.kind === "manual") await this.#client.remove(teamId);
+      // An entry this phone added itself; one Account's directory lists comes back with it.
+      if (connection.source.kind === "manual" || connection.accountAccess === null)
+        await this.#client.remove(teamId);
     }
     this.#publish();
   }

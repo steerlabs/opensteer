@@ -104,6 +104,7 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
   if (!me) return null;
   const name = view.snapshot.bootstrap?.teamName ?? view.team.name;
   const owner = view.snapshot.bootstrap?.member.role === "owner";
+  const hosted = (view.snapshot.bootstrap?.hostedTeamId ?? null) !== null;
   const disconnect =
     coordination && line !== "none"
       ? () =>
@@ -166,7 +167,7 @@ function ProfilePage({ view }: { readonly view: TeamView }) {
           }
           title={`Leave ${name}`}
         />
-        {owner && coordination ? (
+        {owner && hosted && coordination ? (
           <SettingsRow
             action={
               <button

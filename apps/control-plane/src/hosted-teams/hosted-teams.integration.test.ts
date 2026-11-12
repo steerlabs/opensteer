@@ -351,7 +351,7 @@ integration("Hosted teams", () => {
     expect((await hostedTeams.forAccount(owner, team.id))?.stage).toBe("failed");
   });
 
-  it("lets the creator cancel before setup and only the team's owners delete after", async () => {
+  it("lets the creator cancel until ready and only a Host-confirmed owner delete after", async () => {
     const pending = await createTeam("pending");
     const member = await createAccount("member@example.test");
     await expect(hostedTeams.remove(member, pending.id)).rejects.toMatchObject({
@@ -387,10 +387,10 @@ integration("Hosted teams", () => {
     await expect(hostedTeams.remove(owner, team.id)).rejects.toMatchObject({
       reason: "hosted-team-owner-required",
     });
-    // A Host that can't answer leaves it to the team's creator, and nobody else.
+    // A Host that can't answer deletes nothing, not even for the team's creator.
     ownerAnswer = undefined;
-    await expect(hostedTeams.remove(member, team.id)).rejects.toMatchObject({
-      reason: "hosted-team-owner-required",
+    await expect(hostedTeams.remove(owner, team.id)).rejects.toMatchObject({
+      code: "unavailable",
     });
     ownerAnswer = true;
     const deleting = await server.inject({
@@ -399,7 +399,7 @@ integration("Hosted teams", () => {
       headers: { authorization: await accountBearer(member) },
     });
     expect(deleting.json()).toMatchObject({ id: team.id, stage: "deleting" });
-    expect(ownerChecks).toEqual([owner, member, member]);
+    expect(ownerChecks).toEqual([owner, owner, member]);
     expect(await database.selectFrom("deployments").select("id").execute()).toEqual([]);
   });
 
