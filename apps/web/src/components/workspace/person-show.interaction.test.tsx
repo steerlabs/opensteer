@@ -91,7 +91,6 @@ it.each(["task"])("shows a requested tab from a %s while its composer has focus"
   );
   vi.spyOn(document, "hasFocus").mockReturnValue(true);
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
-  const snapshot = client.getSnapshot();
   const threadId = history.at(-1)!.path.split("/").at(-1)!;
   const place = pageTab();
   if (place.destination.kind !== "browser") throw new Error("Expected a browser tab");

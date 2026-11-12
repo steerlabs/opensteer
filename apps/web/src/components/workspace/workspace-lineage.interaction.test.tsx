@@ -21,10 +21,12 @@ function withHelper(
   );
   const listed = base.threads.filter(({ listed, purpose }) => purpose === "task" && listed);
   // A task that needs the reader: the sidebar always lists those.
-  const asking = new Set(base.waitingRequests.map(({ request }) => request.originatingThreadId));
+  const asking = new Set<string>(
+    base.waitingRequests.map(({ request }) => request.originatingThreadId),
+  );
   const task = listed.find(({ id }) => asking.has(id)) ?? listed[0]!;
   const helper = listed.find(({ id }) => id !== task.id && !workers.has(id))!;
-  const parentThreadId = parent(base, task.id);
+  const parentThreadId = ThreadIdSchema.parse(parent(base, task.id));
   const unlisted = <Entry extends { readonly thread: { readonly id: string } }>(
     entries: readonly Entry[],
   ) => entries.filter(({ thread }) => thread.id !== helper.id);

@@ -2,7 +2,7 @@
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
-import { HostClientRequestError, mutationIdempotencyKey } from "@opensteer/client/host";
+import { HostClientRequestError, } from "@opensteer/client/host";
 
 import {
   click,
@@ -43,39 +43,6 @@ async function attach(name: string) {
   await act(async () => {
     input.dispatchEvent(new Event("change", { bubbles: true }));
   });
-}
-
-async function createProject() {
-  let id = "";
-  await act(async () => {
-    const result = await client.dispatch({
-      idempotencyKey: mutationIdempotencyKey("workspace"),
-      name: "Website",
-      type: "workspace.create",
-    });
-    if (result.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    id = result.workspace.id;
-  });
-  return id;
-}
-
-async function chooseAssignee(name: string) {
-  await click(element(".assignee__button"));
-  await settle();
-  const row = [...document.querySelectorAll<HTMLElement>(".assignee-popover .picker__row")].find(
-    (candidate) => candidate.textContent?.includes(name),
-  );
-  if (!row) throw new Error(`Missing assignee ${name}`);
-  await click(row);
-}
-
-async function remountWith(key: string, draft: unknown) {
-  await act(async () => root?.unmount());
-  setRoot(null);
-  document.body.replaceChildren();
-  localStorage.setItem(key, JSON.stringify(draft));
-  await mount("/");
-  await settle();
 }
 
 describe("what a person has written and not sent", () => {
@@ -376,63 +343,6 @@ describe("what a person has written and not sent", () => {
     await openDraft();
     await settle();
     expect(field().value).toBe("Strict words");
-  });
-
-  it("lists a project's draft in its folder, and moves it with the assignee", async () => {
-    await mount("/");
-    await settle();
-    const project = await createProject();
-    await settle();
-    await write(field(), "Whoever does this");
-
-    await chooseAssignee("Website");
-    await settle();
-    expect(place().path).toBe(`/workspaces/${project}`);
-    expect(field().value).toBe("Whoever does this");
-
-    await openTask(firstTaskId());
-    await settle();
-    expect(draftRows()).toHaveLength(1);
-    expect(draftRows()[0]!.classList.contains("side-task--nested")).toBe(true);
-
-    await openDraft();
-    await settle();
-    expect(place().path).toBe(`/workspaces/${project}`);
-    expect(field().value).toBe("Whoever does this");
-  });
-
-  it("uploads a draft's files again when its task moves to another Workspace", async () => {
-    await mount("/");
-    await settle();
-    const project = await createProject();
-    await settle();
-    await attach("notes.txt");
-    await settle(50);
-    const stage = vi.spyOn(client, "createAttachment");
-
-    await chooseAssignee("Website");
-    await settle(50);
-
-    expect(stage).toHaveBeenCalledOnce();
-    expect(stage.mock.calls[0]![0]).toMatchObject({ workspaceId: project });
-    expect(document.querySelector(".composer__send")?.hasAttribute("disabled")).toBe(false);
-  });
-
-  it("keeps a draft whose project has gone reachable from Main", async () => {
-    await mount("/");
-    await settle();
-    await write(field(), "An orphan");
-    const key = Object.keys(localStorage).find((name) => name.includes("composer-draft"))!;
-    const saved = JSON.parse(localStorage.getItem(key)!) as Record<string, unknown>;
-    await openTask(firstTaskId());
-    await settle();
-    await remountWith(key, { ...saved, workspaceId: "wrk_gone" });
-
-    expect(draftTitles()).toEqual(["An orphan"]);
-    await openDraft();
-    await settle();
-    expect(place().path).toBe("/");
-    expect(field().value).toBe("An orphan");
   });
 
   it("goes back to a draft from the browser's Back button", async () => {

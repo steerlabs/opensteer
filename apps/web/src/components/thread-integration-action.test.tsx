@@ -23,11 +23,7 @@ import {
   mockTmdbProposal,
   mockVapi,
 } from "@opensteer/client/mock";
-import {
-  RequestJsonObjectSchema,
-  WorkspaceIdSchema,
-  requestAgentProposedDetail,
-} from "@opensteer/core";
+import { RequestJsonObjectSchema, requestAgentProposedDetail } from "@opensteer/core";
 import { createIntegrationId } from "@opensteer/integration-core";
 import {
   integrationAccountCanChange,
@@ -57,13 +53,9 @@ afterEach(() => {
 });
 
 describe("ThreadIntegrationAction one-tap Connect", () => {
-  it.each([
-    ["main", false],
-    ["project", false],
-    ["main", true],
-  ] as const)(
-    "connects and fulfills %s access from one tap, with catalog setup %s",
-    async (kind, autoInstall) => {
+  it.each([false, true])(
+    "connects and fulfills access from one tap, with catalog setup %s",
+    async (autoInstall) => {
       const loaded = oauthRequest();
       loaded.dashboard.isAdministrator = true;
       let installed = !autoInstall;
@@ -82,7 +74,6 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
             status: "connected",
             computer: null,
           } as never);
-          if (kind === "main") requestPending = false;
           resolve({
             ok: true,
             data: {
@@ -106,14 +97,7 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
           launchTicket: "t".repeat(43),
         };
       });
-      const snapshot = {
-        ...shellSnapshot(),
-        workspaces: shellSnapshot().workspaces.map((workspace) => ({
-          ...workspace,
-          kind,
-          name: kind === "main" ? "Main" : "Support",
-        })),
-      };
+      const snapshot = shellSnapshot();
       shellState.current = {
         snapshot,
         hostClient: {
@@ -185,17 +169,16 @@ describe("ThreadIntegrationAction one-tap Connect", () => {
       );
       expect(buttonWithText(container, "Allow")).toBeNull();
       const grants = dispatch.mock.calls.filter(([command]) => command.type === "request.respond");
-      expect(grants).toHaveLength((kind === "main" ? 0 : 1) + (autoInstall ? 1 : 0));
+      expect(grants).toHaveLength(1 + (autoInstall ? 1 : 0));
       if (autoInstall)
         expect(grants[0]?.[0]).toMatchObject({
           response: { kind: "choice", optionId: "installed" },
         });
-      if (kind === "project")
-        expect(grants[0]?.[0]).toMatchObject({
-          response: {
-            value: { access: "read", connectionId: "connected-account", decision: "fulfilled" },
-          },
-        });
+      expect(grants.at(-1)?.[0]).toMatchObject({
+        response: {
+          value: { access: "read", connectionId: "connected-account", decision: "fulfilled" },
+        },
+      });
     },
   );
 

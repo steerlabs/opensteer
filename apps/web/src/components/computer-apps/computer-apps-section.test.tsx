@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import type { HostClient, WorkspaceSummary } from "@opensteer/client/host";
+import type { HostClient } from "@opensteer/client/host";
 import type {
   ComputerAppSetupSummary,
   IntegrationConnectionSummary,
@@ -20,8 +20,6 @@ import {
 } from "./computer-apps-section.js";
 
 const macMini = "rnr_11111111-1111-4111-8111-111111111111";
-const mainWorkspace = "wsp_00000000-0000-4000-8000-000000000001";
-const homeProjects = "wsp_00000000-0000-4000-8000-000000000002";
 const mountedRoots: Root[] = [];
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -894,25 +892,6 @@ function machine(overrides: Partial<MachineSummary> = {}): MachineSummary {
     unlinkedLocalFolders: 0,
     ...overrides,
   } as MachineSummary;
-}
-
-function workspace(id: string, kind: "main" | "project", name: string): WorkspaceSummary {
-  return {
-    description: "",
-    fileCount: 0,
-    voiceThreadId: null,
-    harnessLabel: "Codex",
-    icon: null,
-    id,
-    kind,
-    machineName: null,
-    name,
-    runnerLabel: "Mac mini",
-    status: "ready",
-    storageIssue: null,
-    color: "blue",
-    updatedAt: "2026-09-19T00:00:00.000Z",
-  };
 }
 
 function dispatcher(

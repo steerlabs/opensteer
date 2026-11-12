@@ -247,7 +247,7 @@ describe("the review's findings", () => {
       });
       const run = source
         .getSnapshot()
-        .runQueue.find((run) => run.threadId === source.getSnapshot().homeThreadId);
+        .runQueue.find((run) => run.status === "running");
       const latest = run ? source.runPlace(run.id) : null;
       const other = placeList(source.getSnapshot()).find(
         (item) =>
@@ -366,13 +366,13 @@ describe("the review's findings", () => {
   });
 
   it("10 · the count's exact request is focused once its panel can render, behind another one or late", async () => {
-    // Behind: Opensteer's own request is first; the counted one waits below it.
+    // Behind: the task's own request is first; the counted one waits below it.
     await mount((source) => {
-      const snapshot = source.getSnapshot();
-      const waiting = snapshot.waitingRequests.find(({ assignments }) =>
-        assignments.some(({ parentThreadId }) => parentThreadId === snapshot.homeThreadId),
-      )!;
-      return { pathname: "/", state: { focusRequest: waiting.request.id } };
+      const waiting = source.getSnapshot().waitingRequests[0]!;
+      return {
+        pathname: `/tasks/${waiting.request.originatingThreadId}`,
+        state: { focusRequest: waiting.request.id },
+      };
     });
     await settle(100);
     const target = (history.at(-1) && document.activeElement?.closest("[data-request-id]")) ?? null;
@@ -393,8 +393,7 @@ describe("the review's findings", () => {
     await mount((source) => {
       const snapshot = source.getSnapshot();
       const [threadId, requests] = Object.entries(snapshot.requests).find(
-        ([id, list]) =>
-          id !== snapshot.homeThreadId &&
+        ([, list]) =>
           list.some(
             (request) => request.status === "pending" && request.presentation.kind === "choice",
           ),
