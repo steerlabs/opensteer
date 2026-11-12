@@ -132,7 +132,7 @@ export function aroundSections(
   return [
     ...(places.length > 0 ? (["places"] as const) : []),
     ...(family.running.length > 0 ? (["tasks"] as const) : []),
-    ...(family.earlier.length > 0 ? (["earlier"] as const) : []),
+    ...(family.earlier.length > 0 || family.ended.length > 0 ? (["earlier"] as const) : []),
     ...(family.automations.length > 0 ? (["schedules"] as const) : []),
   ];
 }

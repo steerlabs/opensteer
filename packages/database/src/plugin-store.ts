@@ -5,7 +5,7 @@ import {
   type AdministrationCommandIdentity,
 } from "./administration-command.js";
 import { randomUUID } from "node:crypto";
-import { sql, type Kysely, type Transaction } from "kysely";
+import type { Kysely, Transaction } from "kysely";
 import {
   SpecialistManifestSchema,
   type SpecialistManifest,
@@ -16,6 +16,7 @@ import {
 } from "@opensteer/core";
 import type { DatabaseSchema } from "./schema.js";
 import { jsonValue } from "./store-primitives.js";
+import { nearestListedThread } from "./thread-lineage.js";
 
 export class PluginStore {
   private readonly database: Kysely<DatabaseSchema>;
@@ -33,21 +34,7 @@ export class PluginStore {
   }
 
   async setupThread(threadId: ThreadId): Promise<ThreadId | null> {
-    const result = await sql<{
-      threadId: ThreadId;
-    }>`
-      with recursive lineage as (
-        select t.id, t.parent_thread_id, t.listed, 0 as depth, array[t.id::text] as path
-        from threads t where t.id = ${threadId}
-        union all
-        select t.id, t.parent_thread_id, t.listed, l.depth + 1, l.path || t.id::text
-        from lineage l join threads t on t.id = l.parent_thread_id
-        where l.depth < 64 and not t.id::text = any(l.path)
-      )
-      select l.id as thread_id from lineage l
-      where l.listed or l.parent_thread_id is null order by l.depth limit 1
-    `.execute(this.database);
-    return result.rows[0]?.threadId ?? null;
+    return (await nearestListedThread(this.database, threadId))?.threadId ?? null;
   }
   async recordSetupThread(pluginId: string, setupThreadId: ThreadId | null) {
     await this.database

@@ -135,9 +135,21 @@ human-only. Answers identify the answering agent, never impersonate a person. An
 outlives its Run but still needs the person's authority and the Request's revision at delivery.
 
 Only the personal owner marks a task Done. Done stops the Assignment subtree, withdraws inputs and
-Requests, pauses anchored Triggers and revokes grants. Reopen starts nothing; the person's own
-message reopens a Done task. The Host moves finished, read, idle tasks to Done after the days the
-person chose, through the same command ([quiet tasks](../packages/database/src/quiet-tasks.ts)).
+Requests, pauses anchored Triggers and revokes grants. Reopen starts nothing. The person's own
+message reopens a Done task, and so does queued work from a task linked under it by parent link or
+a notice about one of its automations; any other agent work is refused. The Host moves finished,
+read, idle tasks to Done after the days the person chose, through the same command
+([quiet tasks](../packages/database/src/quiet-tasks.ts)).
+
+An automation can run in its own task (`trigger_write` `ownTask`): a child of the asking task by
+parent link only, with no Assignment, so nothing returns automatically and no card appears in the
+parent. Visibility follows that structure: the child is off the task list and reached through the
+parent's family, which also keeps its ended automations. Being outside the Assignment subtree, it
+keeps running when the parent is Done. Its Requests, failure notices and the parent's memory
+restriction follow parent links to the nearest listed task
+([lineage](../packages/database/src/thread-lineage.ts)), and the Inbox validates a notice's
+destination when it admits it. A task that should stand on its own, such as one per scheduled run,
+is a `delegate_task` `standalone` task: listed, with no parent and no Assignment.
 
 Giving a finished task more work is a separate `delegate_task`, never an effect of
 `thread_send`: choosing delegate or join must be one atomic decision, and a retry after the

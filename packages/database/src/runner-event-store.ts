@@ -1,6 +1,6 @@
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { recoverLostRunTransaction } from "./run-recovery.js";
-import { isPlaceContentPart } from "@opensteer/core";
+import { contentSaysSomething, isPlaceContentPart } from "@opensteer/core";
 import { isRecord } from "@opensteer/shared/isRecord";
 import { lockRunProjectionRows } from "./run-projection-locks.js";
 import { isConstraintViolation } from "./connection.js";
@@ -187,6 +187,14 @@ async function applyEventProjection(
         message: "Assistant message has no Run",
       });
     }
+  }
+  // A reply that says nothing stays in the Runner journal, where it still ends
+  // its live text, but never becomes a message.
+  if (
+    event.type === "assistant.message" &&
+    event.runId &&
+    contentSaysSomething(event.data.content)
+  ) {
     // A Run's actor is its authority principal, not the assistant's identity.
     const assistantPrincipal = await transaction
       .selectFrom("principals")

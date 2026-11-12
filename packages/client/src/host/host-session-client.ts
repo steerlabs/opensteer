@@ -3,6 +3,7 @@ import type { PersonalStreamCache, PersonalCacheScope } from "./personal-stream-
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { browserOpeningTimeoutMs } from "./browser-presentation-wait.js";
 import { BrowserTabStore } from "./browser-tab-store.js";
+import { familyAutomations } from "./task-family.js";
 import { BrowserSnapshotDerivation, personalTabLineage } from "./browser-snapshot.js";
 import { catalogModelDisplayName } from "./model-catalog.js";
 import { NodeDetailStore, type NodeDetailSubscription } from "./node-detail.js";
@@ -1821,17 +1822,7 @@ export class HttpHostClient {
       );
       if (!this.#viewerStillCurrent(generation, userId)) return;
       if (this.#automationReads.get(threadId) !== read) return;
-      const automations = response.triggers
-        .filter(({ status }) => status !== "archived")
-        .map((trigger) => ({
-          id: trigger.id,
-          name: trigger.name,
-          kind: trigger.kind,
-          paused: trigger.status === "paused",
-          nextFireAt:
-            trigger.status === "active" && trigger.kind === "schedule" ? trigger.nextFireAt : null,
-        }))
-        .sort((a, b) => a.id.localeCompare(b.id));
+      const automations = familyAutomations(response.triggers, threadId);
       const held = this.#snapshot.threadAutomations[threadId] ?? [];
       if (JSON.stringify(held) === JSON.stringify(automations)) return;
       this.#update({

@@ -320,6 +320,9 @@ export type TriggerSourceInput = z.infer<typeof TriggerSourceInputSchema>;
 /** The real task that supplies the program's folder and access ceiling. */
 export const TriggerAnchorInputSchema = ThreadIdSchema;
 
+/** Runs the automation in a new task linked under the anchor instead of in the anchor itself. */
+export const TriggerOwnTaskInputSchema = z.literal(true);
+
 export const TriggerWriteInputSchema = z.strictObject({
   action: z.enum(["create", "update", "set_status", "set_next_fire", "run", "cancel"]),
   anchorThreadId: TriggerAnchorInputSchema.optional(),
@@ -327,6 +330,7 @@ export const TriggerWriteInputSchema = z.strictObject({
   name: z.string().trim().min(1).max(160).optional(),
   nextFireAt: IsoDateTimeSchema.optional(),
   occurrenceId: TriggerOccurrenceIdSchema.optional(),
+  ownTask: TriggerOwnTaskInputSchema.optional(),
   payload: z.unknown().optional(),
   program: TriggerProgramSchema.optional(),
   source: TriggerSourceInputSchema.optional(),
@@ -341,6 +345,7 @@ export const TriggerControlInputSchema = z.discriminatedUnion("operation", [
     idempotencyKey: z.string().trim().min(1).max(255),
     name: z.string().trim().min(1).max(160),
     operation: z.literal("create"),
+    ownTask: TriggerOwnTaskInputSchema.optional(),
     program: TriggerProgramSchema,
     source: TriggerSourceSchema,
   }),

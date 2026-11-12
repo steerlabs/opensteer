@@ -387,6 +387,8 @@ integration.sequential("automation failure notices", () => {
     await expect(notices.listDue()).resolves.toEqual([
       {
         anchorThreadId: fixture.threadId,
+        anchorThreadTitle: expect.any(String),
+        destinationThreadId: fixture.threadId,
         attempts: 0,
         createdBy: fixture.userId,
         detail: "Program failed",

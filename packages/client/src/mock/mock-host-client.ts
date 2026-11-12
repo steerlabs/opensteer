@@ -1,4 +1,5 @@
 import { listedRowThreadId } from "../host/task-list.js";
+import { familyAutomations } from "../host/task-family.js";
 import {
   DeploymentSnapshotSchema,
   parseTeamLinkOffer,
@@ -7378,22 +7379,37 @@ class MockHostState {
     return this.snapshot.harnesses.find((candidate) => candidate.id === harness.id) ?? harness;
   }
 
-  /** What `triggers.list` answers: every Trigger still in use, most recently changed first. */
+  /**
+   * What `triggers.list` answers: every Trigger still in use, most recently
+   * changed first; for an anchor, its family, as the Host builds it.
+   */
   listTriggers(
     deploymentId?: string,
     anchorThreadId?: string,
     systemRole?: TriggerSummary["systemRole"],
   ): TriggerSummary[] {
+    const inFamily = ({ trigger }: MockTriggerRecord) => {
+      if (anchorThreadId === undefined) return trigger.status !== "archived";
+      if (trigger.anchorThreadId === anchorThreadId) return trigger.status !== "archived";
+      const anchor = this.snapshot.threads.find(({ id }) => id === trigger.anchorThreadId);
+      return (
+        anchor?.parentThreadId === anchorThreadId &&
+        ![...this.assignments.values()].some(
+          (assignment) => assignment.workerThreadId === anchor.id,
+        )
+      );
+    };
     return [...this.triggers.values()]
       .filter(
-        ({ trigger }) =>
-          trigger.status !== "archived" &&
-          (systemRole === undefined || trigger.systemRole === systemRole) &&
-          (deploymentId === undefined || mockMainDeploymentId === deploymentId) &&
-          (anchorThreadId === undefined || trigger.anchorThreadId === anchorThreadId),
+        (record) =>
+          inFamily(record) &&
+          (systemRole === undefined || record.trigger.systemRole === systemRole) &&
+          (deploymentId === undefined || mockMainDeploymentId === deploymentId),
       )
       .sort(
         (left, right) =>
+          Number(left.trigger.status === "archived") -
+            Number(right.trigger.status === "archived") ||
           Number(Boolean(right.trigger.systemRole)) - Number(Boolean(left.trigger.systemRole)) ||
           right.trigger.updatedAt.localeCompare(left.trigger.updatedAt),
       )
@@ -11406,16 +11422,7 @@ class MockHostState {
       threadAutomations: Object.fromEntries(
         this.snapshot.threads.map((thread) => [
           thread.id,
-          this.listTriggers(undefined, thread.id).map((trigger) => ({
-            id: trigger.id,
-            name: trigger.name,
-            kind: trigger.kind,
-            paused: trigger.status === "paused",
-            nextFireAt:
-              trigger.status === "active" && trigger.kind === "schedule"
-                ? trigger.nextFireAt
-                : null,
-          })),
+          familyAutomations(this.listTriggers(undefined, thread.id), thread.id),
         ]),
       ),
     };

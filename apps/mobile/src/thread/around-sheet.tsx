@@ -376,7 +376,7 @@ function tileState(
       };
     case "earlier":
       return {
-        count: family.earlier.length,
+        count: family.earlier.length + family.ended.length,
         glyph: <Symbol name="checklist" size={15} tint={color.muted} />,
         needsYou: 0,
         working: 0,
@@ -469,6 +469,11 @@ interface AroundGroup {
 }
 
 const taskRow = (task: FamilyTask): AroundRow => ({ key: task.threadId, kind: "task", task });
+const scheduleRow = (automation: ThreadAutomation): AroundRow => ({
+  automation,
+  key: automation.id,
+  kind: "schedule",
+});
 
 function sectionGroups(
   section: AroundSection,
@@ -488,19 +493,26 @@ function sectionGroups(
     case "tasks":
       return [{ data: runningInOrder(family).map(taskRow), key: section, title: null }];
     case "earlier":
-      return earlierDays(family.earlier, now).map((day) => ({
-        data: day.tasks.map(taskRow),
-        key: day.title,
-        title: day.title,
-      }));
+      return [
+        ...earlierDays(family.earlier, now).map((day) => ({
+          data: day.tasks.map(taskRow),
+          key: day.title,
+          title: day.title,
+        })),
+        ...(family.ended.length > 0
+          ? [
+              {
+                data: family.ended.map(scheduleRow),
+                key: "ended",
+                title: "Ended automations",
+              },
+            ]
+          : []),
+      ];
     case "schedules":
       return [
         {
-          data: family.automations.map((automation) => ({
-            automation,
-            key: automation.id,
-            kind: "schedule",
-          })),
+          data: family.automations.map(scheduleRow),
           key: section,
           title: null,
         },
@@ -606,6 +618,7 @@ const Page = memo(function Page(props: {
               blocked={rows.blocked}
               hostClient={rows.hostClient}
               onOpen={rows.openSchedule}
+              onOpenTask={rows.openThread}
             />
           )}
         </View>
@@ -729,12 +742,14 @@ const TaskRow = memo(function TaskRow(props: {
  * A schedule, with a switch that pauses or resumes it in place. The switch
  * says what the Host last confirmed, never the tap alone, and holds still
  * while the Host is asked; a later change the Host reports wins over it.
+ * One that runs in its own task opens that task; an ended one has no switch.
  */
 const ScheduleRow = memo(function ScheduleRow(props: {
   readonly automation: ThreadAutomation;
   readonly blocked: boolean;
   readonly hostClient: HostClient;
   readonly onOpen: (triggerId: string) => void;
+  readonly onOpenTask: (threadId: string) => void;
 }): ReactNode {
   const { automation, hostClient } = props;
   // A change in flight (paused null), or the Host's confirmation of it until
@@ -786,10 +801,12 @@ const ScheduleRow = memo(function ScheduleRow(props: {
   return (
     <View style={styles.scheduleRow}>
       <Pressable
-        accessibilityHint="Opens the schedule"
+        accessibilityHint={automation.taskId ? "Opens its task" : "Opens the schedule"}
         accessibilityLabel={`${automation.name}, ${detail}`}
         accessibilityRole="button"
-        onPress={() => props.onOpen(automation.id)}
+        onPress={() =>
+          automation.taskId ? props.onOpenTask(automation.taskId) : props.onOpen(automation.id)
+        }
         style={({ pressed }) => [styles.row, styles.scheduleOpen, pressed && styles.pressed]}
       >
         <View style={styles.icon}>
@@ -808,15 +825,17 @@ const ScheduleRow = memo(function ScheduleRow(props: {
           </AppText>
         </View>
       </Pressable>
-      <View style={styles.switch}>
-        <Toggle
-          accessibilityHint={paused ? "Resumes the schedule" : "Pauses the schedule"}
-          accessibilityLabel={automation.name}
-          disabled={props.blocked || (asked !== null && asked.paused === null)}
-          onChange={turn}
-          value={!paused}
-        />
-      </View>
+      {automation.ended ? null : (
+        <View style={styles.switch}>
+          <Toggle
+            accessibilityHint={paused ? "Resumes the schedule" : "Pauses the schedule"}
+            accessibilityLabel={automation.name}
+            disabled={props.blocked || (asked !== null && asked.paused === null)}
+            onChange={turn}
+            value={!paused}
+          />
+        </View>
+      )}
     </View>
   );
 });
@@ -827,6 +846,7 @@ const automationGlyph = { schedule: "clock", watch: "eye", webhook: "bolt" } as 
 
 /** The schedule's next step in the same words its own screen uses. */
 function automationDetail(automation: ThreadAutomation): string {
+  if (automation.ended) return "Ended";
   if (automation.paused) return "Paused";
   if (automation.kind === "watch") return "Watching";
   if (automation.kind === "webhook") return "When called";
