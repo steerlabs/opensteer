@@ -137,7 +137,7 @@ export interface SidebarProps {
 }
 
 /**
- * The one navigator: New task, Needs you and Voice, the tasks by folder, each
+ * The one navigator: Needs you and Voice, the tasks by folder, each
  * team, the places open now, and a menu for everything else. A task row changes only the conversation; a tab row
  * only the middle; a mark on a tab both, as one step.
  */
@@ -670,15 +670,6 @@ export function Sidebar({
         >
           <Icon name="search" />
         </button>
-        <button
-          aria-label="New task"
-          className="icon-btn"
-          onClick={newTask}
-          title="New task · ⌘N"
-          type="button"
-        >
-          <Icon name="plus" />
-        </button>
         {mobileOpen ? (
           <button
             ref={closeRef}
@@ -778,6 +769,15 @@ export function Sidebar({
                       <span aria-hidden>{needsYouCount}</span>
                     </button>
                   ) : null}
+                  <button
+                    aria-label="New task"
+                    className="icon-btn icon-btn--small side-head__action"
+                    onClick={newTask}
+                    title="New task · ⌘N"
+                    type="button"
+                  >
+                    <Icon name="plus" />
+                  </button>
                 </div>
               )}
               <SideList labelledBy="sidebar-tasks" listRef={tasksList} whole>
