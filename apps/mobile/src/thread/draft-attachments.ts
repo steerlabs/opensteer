@@ -7,11 +7,7 @@ import {
 import { HostClientRequestError, stageAttachment, type HostClient } from "@opensteer/client/host";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { operationDetail } from "../client/mobile-client.js";
-import {
-  newTaskDraftKey,
-  type DraftAttachment,
-  type ThreadDraftStore,
-} from "../client/thread-drafts.js";
+import { type DraftAttachment, type ThreadDraftStore } from "../client/thread-drafts.js";
 import {
   openChatDraftFile,
   pickChatFile,
@@ -437,31 +433,6 @@ export function forgetDraftFiles(
   localUris: readonly (string | null)[],
 ): void {
   for (const localUri of localUris) if (localUri) forgetCopy(scope, localUri);
-}
-
-/**
- * Takes a new task's draft off this phone, then the copies of its files. What
- * the Host holds of them goes as a removed file's does; a refusal leaves it
- * there. A failed save keeps both draft and files, and is the caller's to say.
- */
-export async function discardNewTaskDraft(input: {
-  readonly client: HostClient | null;
-  readonly deploymentId: string;
-  readonly draftId: string;
-  readonly drafts: ThreadDraftStore;
-  readonly userId: string;
-}): Promise<void> {
-  const { client, deploymentId, draftId, drafts, userId } = input;
-  const draftKey = newTaskDraftKey(draftId);
-  const attachments = drafts.readDraft(deploymentId, userId, draftKey)?.attachments ?? [];
-  await drafts.discardDraft(deploymentId, userId, draftKey);
-  forgetDraftFiles(
-    { deploymentId, draftId, kind: "new-task", userId },
-    attachments.map(({ localUri }) => localUri),
-  );
-  for (const { attachmentId } of attachments) {
-    if (attachmentId) void client?.discardAttachment(attachmentId).catch(() => undefined);
-  }
 }
 
 async function stage(

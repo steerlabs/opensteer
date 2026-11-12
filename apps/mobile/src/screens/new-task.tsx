@@ -18,8 +18,7 @@ import {
   type ExecutionSelection,
 } from "@opensteer/client/host";
 import { useHostSelector, useHostSnapshot } from "@opensteer/client/react";
-import { useHeaderHeight } from "@react-navigation/elements";
-import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { useNavigation } from "@react-navigation/native";
 import {
   useCallback,
   useEffect,
@@ -30,13 +29,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import {
-  ActivityIndicator,
-  Keyboard,
-  StyleSheet,
-  View,
-  type TextInputInstance,
-} from "react-native";
+import { ActivityIndicator, StyleSheet, View, type TextInputInstance } from "react-native";
 import { operationDetail } from "../client/mobile-client.js";
 import { newTaskDraftKey, type PendingCommand } from "../client/thread-drafts.js";
 import type { FirstMessageAttachmentDraftScope } from "../platform/attachment-draft-files.js";
@@ -61,16 +54,8 @@ import {
 import { beginPendingDelivery, sendPendingMessage } from "../thread/send-pending-message.js";
 import { useMobileClient } from "../ui/mobile-client-context.js";
 import { Notice } from "../ui/primitives.js";
-import { Screen } from "../ui/screen.js";
-import { DeploymentGate, useAttachedHost } from "./deployment-gate.js";
-import { useThreadHeader } from "./thread-header.js";
 import { FolderChip } from "../home/folder-chip.js";
-
-export type NewTaskScreenProps = StaticScreenProps<{
-  readonly deploymentId: string;
-  /** Which draft this is. One nothing is saved under simply opens blank. */
-  readonly draftId: string;
-}>;
+import { homeDraftId } from "../home/home-draft.js";
 
 /** Ways to begin, each a sentence the reader can send or edit. */
 const examples = [
@@ -84,72 +69,18 @@ const examples = [
   },
 ] as const;
 
-/**
- * A new task, before it exists.
- *
- * The task is made by its first message, as on the web: nothing is created by
- * opening this screen, so looking and leaving leaves nothing behind, and the
- * task is named from what it was asked to do. Once the Host has made it, the
- * task's own screen takes this one's place — Back still returns to where New
- * task was opened from.
- */
-export function NewTaskScreen(props: NewTaskScreenProps): ReactNode {
-  const navigation = useNavigation();
-  const headerHeight = useHeaderHeight();
-  const { deploymentId, draftId } = props.route.params;
-  const hostClient = useAttachedHost(deploymentId);
-  useThreadHeader({
-    deploymentId,
-    fallbackTitle: "New task",
-    header: null,
-    hostClient,
-    threadId: null,
-  });
-  const onStarted = useCallback(
-    (threadId: string): boolean => {
-      // Left while the task was being made: there is no screen to replace.
-      if (!navigation.isFocused()) return false;
-      // The keyboard goes down with the screen it was typed on; the task
-      // appears in its place with the message on its way.
-      Keyboard.dismiss();
-      navigation.dispatch(
-        StackActions.replace("Thread", { deploymentId, started: true, threadId }),
-      );
-      return true;
-    },
-    [deploymentId, navigation],
-  );
-
-  if (hostClient === null) {
-    return <DeploymentGate deploymentId={deploymentId} paddingTop={headerHeight} />;
-  }
-  return (
-    <Screen edgeToEdge>
-      <NewTaskPane
-        autoFocus
-        deploymentId={deploymentId}
-        draftId={draftId}
-        hostClient={hostClient}
-        key={`${deploymentId}:${draftId}`}
-        onStarted={onStarted}
-        underHeader
-      />
-    </Screen>
-  );
-}
-
 const selectUserId = (snapshot: { readonly user: { readonly id: string } | null }) =>
   snapshot.user?.id ?? null;
 
 /**
- * The new task itself, wherever it is drawn: its own screen on a phone, the
- * detail beside Tasks on a wider window. It mounts only once the signed-in
- * person is known, keyed by them, because its draft is theirs.
+ * A new task, before it exists: made by its first message, so looking and
+ * leaving leaves nothing behind. Drawn as Home, or beside a page on a wider
+ * window; both are views of the one Home draft. It mounts only once the
+ * signed-in person is known, keyed by them, because its draft is theirs.
  */
 export function NewTaskPane(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
-  readonly draftId: string;
   readonly hostClient: HostClient;
   /**
    * The Host has made the task. Answers whether the reader is now looking at
@@ -182,7 +113,6 @@ export function NewTaskPane(props: {
 function NewTask(props: {
   readonly autoFocus: boolean;
   readonly deploymentId: string;
-  readonly draftId: string;
   readonly hostClient: HostClient;
   readonly onStarted: (threadId: string) => boolean;
   readonly underHeader: boolean;
@@ -198,7 +128,8 @@ function NewTask(props: {
   const client = useMobileClient();
   const drafts = client.drafts;
   const { snapshot } = useHostSnapshot(props.hostClient, sameNewTaskSnapshot);
-  const { deploymentId, draftId, hostClient, onStarted, userId } = props;
+  const { deploymentId, hostClient, onStarted, userId } = props;
+  const draftId = homeDraftId;
   const draftKey = newTaskDraftKey(draftId);
   useSyncExternalStore(drafts.subscribe, drafts.getVersion);
   const draft = drafts.readDraft(deploymentId, userId, draftKey);

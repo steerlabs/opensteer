@@ -25,6 +25,7 @@ import {
   newTaskDraftKey,
   type ThreadDraftStore,
 } from "../client/thread-drafts.js";
+import { homeDraftId } from "../home/home-draft.js";
 import { WorkspaceBrowserScreen } from "./workspace-browser.js";
 
 /*
@@ -88,6 +89,7 @@ vi.mock("@react-navigation/native", () => ({
   StackActions: {
     pop: (count: number) => ({ type: "POP", count }),
     popTo: (name: string, params: object) => ({ name, params, type: "POP_TO" }),
+    popToTop: () => ({ type: "POP_TO_TOP" }),
     push: (name: string, params: object) => ({ name, params, type: "PUSH" }),
     replace: (name: string, params: object) => ({ name, params, type: "REPLACE" }),
   },
@@ -583,21 +585,15 @@ vi.mock("./thread-header.js", () => ({
   ),
 }));
 vi.mock("./new-task.js", () => ({
-  NewTaskPane: (props: { draftId: string; onStarted: (threadId: string) => boolean }) => (
-    <section data-draft={props.draftId}>
+  NewTaskPane: (props: { onStarted: (threadId: string) => boolean }) => (
+    <section>
       New task beside
       <button onClick={() => props.onStarted("thread-started")}>Start the task</button>
     </section>
   ),
 }));
 
-/** The route Ask last pushed for a new task. */
-function askedFor(): { readonly draftId: string } {
-  const action = state.dispatch.mock.calls.findLast(
-    ([call]) => (call as { name?: string }).name === "NewTask",
-  )?.[0] as { params: { draftId: string } };
-  return action.params;
-}
+const homeDraft = newTaskDraftKey(homeDraftId);
 
 function PageProbe(props: { children?: ReactNode }): ReactNode {
   useEffect(() => {
@@ -1728,7 +1724,7 @@ describe("the page's bar", () => {
     render();
     const ask = askMenu();
     press(ask, "New task");
-    expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: "NewTask" }));
+    expect(state.dispatch).toHaveBeenCalledWith({ type: "POP_TO_TOP" });
   });
 
   it("names nobody in an empty tab, and leaves Ask", () => {
@@ -1755,7 +1751,7 @@ describe("the page's bar", () => {
     ]);
   });
 
-  it("asks in a new task with the page on that draft, this reader's alone, never in the route", () => {
+  it("asks in Home's new task with the page on its one draft, this reader's alone", () => {
     openPage([]);
     const ask = askMenu();
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
@@ -1768,19 +1764,10 @@ describe("the page's bar", () => {
     };
     const drafts = state.drafts!;
     press(ask, "New task");
-    const { draftId } = askedFor();
-    expect(state.dispatch).toHaveBeenLastCalledWith({
-      name: "NewTask",
-      params: { deploymentId: "deployment-a", draftId },
-      type: "PUSH",
-    });
-    const taskDraft = newTaskDraftKey(draftId);
-    expect(drafts.readDraft("deployment-a", "user-a", taskDraft)).toMatchObject({
-      page,
-      folder: agentHome,
-    });
+    expect(state.dispatch).toHaveBeenLastCalledWith({ type: "POP_TO_TOP" });
+    expect(drafts.readDraft("deployment-a", "user-a", homeDraft)).toMatchObject({ page });
     // Whoever signs in next on this Deployment has drafts of their own.
-    expect(drafts.readDraft("deployment-a", "user-b", taskDraft)).toBeNull();
+    expect(drafts.readDraft("deployment-a", "user-b", homeDraft)).toBeNull();
   });
 
   it.each([false, true])(
@@ -1793,8 +1780,8 @@ describe("the page's bar", () => {
       });
       state.snapshot = withAgents([]);
       opened.render();
-      // A page an earlier Ask left on another draft does not stand for this one.
-      const draftKey = newTaskDraftKey("draft-earlier");
+      // A page an earlier Ask left on Home's draft does not stand for this one;
+      // the words beside it stay.
       const earlier = BrowserPageContentPartSchema.parse({
         sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
         tabId: "page-1",
@@ -1802,19 +1789,23 @@ describe("the page's bar", () => {
         type: "browser-page",
         url: "https://example.com",
       });
-      await act(() => state.drafts!.writeDraftPage("deployment-a", "user-a", draftKey, earlier));
-      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
-      press(askMenu(), "New task");
-      const { draftId } = askedFor();
-      expect(state.dispatch).toHaveBeenCalledWith({
-        name: "NewTask",
-        type: "PUSH",
-        params: { deploymentId: "deployment-a", draftId },
+      await act(async () => {
+        await state.drafts!.writeDraft("deployment-a", "user-a", homeDraft, "Earlier words");
+        await state.drafts!.writeDraftPage("deployment-a", "user-a", homeDraft, earlier);
       });
-      expect(
-        state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(draftId)),
-      ).toBeNull();
-      expect(state.drafts!.readDraft("deployment-a", "user-a", draftKey)?.page).toEqual(earlier);
+      press(askMenu(), "New task");
+      expect(state.dispatch).toHaveBeenCalledWith({ type: "POP_TO_TOP" });
+      await vi.waitFor(
+        () =>
+          expect(
+            state.drafts!.readDraft("deployment-a", "user-a", homeDraft)?.page,
+            "the earlier page never came off Home's draft",
+          ).toBeUndefined(),
+        { timeout: 2_000 },
+      );
+      expect(state.drafts!.readDraft("deployment-a", "user-a", homeDraft)?.text).toBe(
+        "Earlier words",
+      );
     },
   );
 
@@ -2515,18 +2506,8 @@ describe("a page beside its agent's thread", () => {
 
     press(askMenu(), "New task");
     expect(second(container)).toContain("New task beside");
-    const besideDraft = () =>
-      container.querySelector<HTMLElement>("[data-draft]")!.dataset["draft"]!;
-    const asked = besideDraft();
-    expect(
-      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
-    ).toBe("Page");
-    // A draft with something on it waits in the sidebar; Ask starts another.
-    press(menu(), "New task");
-    expect(besideDraft()).not.toBe(asked);
-    expect(
-      state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(asked))?.page?.title,
-    ).toBe("Page");
+    // Beside the page is Home's own draft, not another one.
+    expect(state.drafts!.readDraft("deployment-a", "user-a", homeDraft)?.page?.title).toBe("Page");
     press(container, "Start the task");
     expect(second(container)).toContain("Thread thread-started beside with Page");
     expect(state.dispatch).not.toHaveBeenCalled();
