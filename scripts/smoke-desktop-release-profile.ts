@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import path from "node:path";
 import { createId } from "../packages/core/src/ids.js";
 import {
   PersonalDeploymentManifestSchema,
