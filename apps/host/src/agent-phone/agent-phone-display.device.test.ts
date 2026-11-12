@@ -1,3 +1,4 @@
+import { createId } from "@opensteer/core";
 import { HttpHostClient, type WebSocketClient } from "@opensteer/client/host";
 import { sharedDisplayStreams } from "@opensteer/client/integrations";
 import { createDatabase } from "@opensteer/database";
@@ -35,9 +36,8 @@ import WebSocket from "ws";
 import {
   createMachineAccessDatabase,
   freePort,
-  signUpUser,
   stopRun,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData } from "../server/test-host-api-request.js";
 import {
   assertNoPhoneApprovalActivity,
@@ -304,7 +304,7 @@ it.each([
     const publicPort = await freePort();
     const host = await startAgentPhoneHost(isolated.url, {
       publicPort,
-      signupPolicy: "open",
+
       log: (line) => hostLog.push(line),
     });
     cleanup.push(() => host.close());
@@ -815,12 +815,11 @@ it.each([
     let currentCaller = caller;
     cleanup.push(() => caller.close());
     const bootstrap = await testRpcData(host.origin, "bootstrap.get", {}, owner);
-    if (!bootstrap.homeWorkspace) throw new Error("Owner has no Main Workspace.");
+    if (!bootstrap.personalSettings) throw new Error("Owner has no Main Workspace.");
     const agent = await startPhoneAgent(host, caller, {
       key: `display-run-${randomUUID()}`,
       redaction,
       title: "Live phone display acceptance",
-      workspaceId: bootstrap.homeWorkspace.id,
     });
     let initialFinished = false;
     const finishInitial = async () => {
@@ -2453,16 +2452,11 @@ it.each([
         );
       });
       await finishInitial();
-      async function freshTask(
-        title: string,
-        computer = currentCaller,
-        workspaceId = bootstrap.homeWorkspace!.id,
-      ) {
+      async function freshTask(title: string, computer = currentCaller) {
         const task = await startPhoneAgent(host, computer, {
           key: randomUUID(),
           redaction,
           title,
-          workspaceId,
         });
         let finished = false;
         const finish = async () => {
@@ -2792,7 +2786,7 @@ it.each([
       await phase("epoch-old-and-future-requests-are-refused", async () => {
         const results = [];
         for (const version of [41, 43]) {
-          const result = await fetch(`${host.origin}/v1/rpc/bootstrap.get`, {
+          const result = await fetch(`${host.origin.origin}/v1/rpc/bootstrap.get`, {
             headers: { ...host.ownerHeaders, [hostApiVersionHeader]: String(version) },
           });
           expect(result.status).toBe(400);
@@ -2803,17 +2797,6 @@ it.each([
         evidence.epochRefusals = results;
       });
       await phase("grant-revocation-ends-task-and-control-only", async () => {
-        const workspace = await testRpcData(
-          host.origin,
-          "commands.dispatch",
-          {
-            type: "workspace.create",
-            name: "Display grant revocation",
-            idempotencyKey: randomUUID(),
-          },
-          owner,
-        );
-        if (workspace.type !== "workspace.create") throw new Error("Workspace command mismatch");
         const { connections } = await testRpcData(host.origin, "integrations.get", {}, owner);
         const connection = connections.find(
           (row) =>
@@ -2845,17 +2828,12 @@ it.each([
               connectionId: connection.id,
               installationId: installation.id,
               isDefault: false,
-              workspaceId: workspace.workspace.id,
             },
           },
           owner,
         );
         if (granted.type !== "integration.grant.create") throw new Error("Grant command mismatch");
-        const current = await freshTask(
-          "Revoked workspace grant",
-          currentCaller,
-          workspace.workspace.id,
-        );
+        const current = await freshTask("Revoked personal grant", currentCaller);
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
@@ -2866,7 +2844,7 @@ it.each([
           {
             type: "integration.grant.revoke",
             grantId: granted.grant.id,
-            workspaceId: workspace.workspace.id,
+
             idempotencyKey: randomUUID(),
           },
           owner,
@@ -2881,26 +2859,16 @@ it.each([
         await current.finish();
       });
       await phase("non-owner-privacy-and-effective-owner-revocation", async () => {
-        const stranger = await signUpUser(
-          host,
-          {
-            email: `display-${randomUUID()}@example.test`,
-            password: randomUUID(),
-          },
-          host.publicOrigin,
-        );
-        redaction.add(...Object.values(stranger.headers));
+        const stranger = { userId: createId("user"), headers: { origin: host.publicOrigin } };
         const current = await freshTask("Ownership revocation");
         const taskView = viewer(current.id);
         const own = await ownerView();
         await Promise.all([firstFrame(taskView), firstFrame(own.view)]);
         await inputReady(taskView);
         const headers = { ...stranger.headers, origin: host.publicOrigin };
-        const otherMachine = (
-          await testRpcData(host.origin, "machines.list", {}, { headers })
-        ).machines.find((row) => row.id === runnerId);
-        expect(otherMachine?.computerUse ?? null).toBeNull();
-        expect(otherMachine?.apps ?? []).toEqual([]);
+        await expect(testRpcData(host.origin, "machines.list", {}, { headers })).rejects.toThrow(
+          /HTTP 401/u,
+        );
         const denied = new ComputerDisplayViewer({ ...host, ownerHeaders: headers }, own.source);
         await eventually(
           "non-owner socket refused",

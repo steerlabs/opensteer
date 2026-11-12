@@ -1,3 +1,4 @@
+import { hostApiVersion, hostApiVersionHeader } from "@opensteer/deployment-authority";
 import { Readable } from "node:stream";
 import { createId } from "@opensteer/core";
 import { generateKeyPairSync } from "node:crypto";
@@ -97,7 +98,7 @@ describe("the transfer route", () => {
           deploymentId: createId("deployment"),
           hostInstanceId: createId("hostInstance"),
           hostKey: { algorithm: "Ed25519" },
-          deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+          deploymentShape: { kind: "personal" },
         }),
         runFiles: relay,
       }),
@@ -111,10 +112,16 @@ describe("the transfer route", () => {
     const handle = relay.open();
     const origin = await serve(relay);
     const url = new URL(runFileTransferPath(handle.upload.id), origin);
-    const download = fetch(url, { headers: { authorization: `Bearer ${handle.download.token}` } });
+    const download = fetch(url, {
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        authorization: `Bearer ${handle.download.token}`,
+      },
+    });
     const upload = await fetch(url, {
       body: bytes,
       headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
         authorization: `Bearer ${handle.upload.token}`,
         "content-type": runFileTransferContentType,
         [runFileNameHeader]: encodeURIComponent("어머니 사진.heic"),
@@ -133,7 +140,10 @@ describe("the transfer route", () => {
     const handle = relay.open();
     const origin = await serve(relay);
     const response = await fetch(new URL(runFileTransferPath(handle.upload.id), origin), {
-      headers: { authorization: `Bearer ${"x".repeat(43)}` },
+      headers: {
+        [hostApiVersionHeader]: String(hostApiVersion),
+        authorization: `Bearer ${"x".repeat(43)}`,
+      },
     });
     expect(response.status).toBe(403);
     handle.close();

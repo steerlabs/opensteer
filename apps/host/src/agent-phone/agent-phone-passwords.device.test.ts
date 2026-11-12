@@ -9,7 +9,7 @@ import {
   RunnerIntegrationsStatusSchema,
   type AndroidPhoneAction,
 } from "@opensteer/protocol";
-import { RequestIdSchema, type RunnerId, type WorkspaceId } from "@opensteer/core";
+import { RequestIdSchema, type RunnerId } from "@opensteer/core";
 import { hostInternalRoutePaths } from "../server/internal-routes.js";
 import { PasswordsJourneyEvidence } from "../browser/passwords-evidence.test-support.js";
 import {
@@ -24,9 +24,9 @@ import {
   createMachineAccessDatabase,
   dispatchCallerRun,
   freePort,
-  startPersonalMachineAccessHost,
+  startPrivateMachineHost,
   stopRun,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import {
   acquireAndroidDevice,
   buildE2eAgentPhone,
@@ -61,7 +61,7 @@ const cases = [
   "declined",
   "revoked",
   "revision-changed",
-  "cross-workspace",
+  "cross-run",
   "old-capability-batch",
   "malformed",
   "tampered",
@@ -93,12 +93,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
       mapPhone?: (frame: Record<string, unknown>) => Record<string, unknown> | null;
     } = { host: [], phone: [] };
     let device: AndroidDevice;
-    let host: Awaited<ReturnType<typeof startPersonalMachineAccessHost>>;
+    let host: Awaited<ReturnType<typeof startPrivateMachineHost>>;
     let caller: Awaited<ReturnType<typeof connectCallerMachine>>;
     let authority: Awaited<ReturnType<typeof startPasswordsAuthority>>;
     let door: TlsFrontDoor;
     let phoneId: RunnerId;
-    let mainWorkspaceId: WorkspaceId;
     let deviceLog: DeviceLog | undefined;
     const phonePids = new Set<number>();
     const callerDiagnostics: unknown[] = [];
@@ -131,7 +130,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         cleanups.push(() => database.drop());
         const port = await freePort();
         const publicOrigin = new URL(`https://10.0.2.2:${port}`);
-        host = await startPersonalMachineAccessHost(database.url);
+        host = await startPrivateMachineHost(database.url);
         cleanups.push(() => host.close());
         door = await startTlsFrontDoor({
           authority: ca,
@@ -143,9 +142,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         caller = await connectCallerMachine(host, {
           name: "Personal vault Mac",
           environmentId: host.ownerEnvironmentId,
-          localDirectory: true,
-          runnerKind: "main",
-          token: host.mainRunnerEnrollmentToken,
+          token: host.hostingRunnerEnrollmentToken,
           integrations: { platform: "darwin", protocolVersion: 5, passwordSignIn: 2 },
         });
         caller.primary.socket.on("close", (code: number, reason: Buffer) =>
@@ -174,6 +171,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
         authority = await startPasswordsAuthority(host.hostPort, caller.primary);
         cleanups.push(() => authority.close());
         await configurePersonalRemoteAccess(host, {
+          schemaVersion: 1,
           mode: "private",
           routeOrigin: publicOrigin.origin,
         });
@@ -189,9 +187,6 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           throw new Error(`Phone setup stopped: ${JSON.stringify(setup)}`);
         phoneId = setup.runnerId;
         await waitForPhoneOnline(device, host, phoneId, 60_000);
-        const main = await host.store.findMainWorkspaceForOwner(host.ownerId);
-        if (!main) throw new Error("Missing Main Workspace");
-        mainWorkspaceId = main.id;
         for (const pid of await agentPhonePids(device)) phonePids.add(pid);
         await suiteEvidence.write("apk.json", build.manifest);
       });
@@ -313,11 +308,9 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
           const run = await dispatchCallerRun(host, caller, {
             key: `passwords-${name}`,
             title: name,
-            workspaceId: mainWorkspaceId,
           });
           runs.push(run);
           await evidence.write("authorization-scope.json", {
-            workspaceId: run.workspaceId,
             site,
           });
           const gateway = await connectAgentGateway(host, run.integrationTools);
@@ -375,12 +368,11 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             const continuation = await acceptCallerRun(host, caller, await continued);
             runs.push(continuation);
             expect(continuation.threadId).toBe(run.threadId);
-            expect(continuation.workspaceId).toBe(run.workspaceId);
+            expect(continuation.threadId).toBe(run.threadId);
             expect(continuation.runId).not.toBe(run.runId);
             await evidence.write("decline-continuation.json", {
               runId: continuation.runId,
               threadId: continuation.threadId,
-              workspaceId: continuation.workspaceId,
             });
             await continuation.complete();
             finishedRuns.add(continuation.runId);
@@ -460,12 +452,12 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             "tampered",
             "wrong-context",
             "no-totp",
-            "cross-workspace",
+            "cross-run",
           ].includes(name);
-          if (name === "cross-workspace") {
+          if (name === "cross-run") {
             const foreign = await dispatchCallerRun(host, caller, {
               key: `${name}-foreign`,
-              title: "Other Workspace",
+              title: "Other task",
             });
             runs.push(foreign);
             const foreignSignIn = await connectAgentGateway(host, {
@@ -475,14 +467,14 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
             gateways.push(foreignSignIn);
             const foreignReady = await foreignSignIn.call("sign_in", {
               site,
-              reason: "Authorize this saved login in the other Workspace",
+              reason: "Authorize this saved login in the other task",
             });
             results.push(foreignReady);
             const foreignLogin = z
               .object({ status: z.literal("ready"), loginRef: z.string() })
               .parse(foreignReady.structuredContent);
-            expect(foreign.workspaceId).not.toBe(run.workspaceId);
-            // Main has the real phone grant, but cannot spend another Workspace's lease.
+            expect(foreign.threadId).not.toBe(run.threadId);
+            // The current task cannot spend another task’s saved-login lease.
             const result = await act([
               {
                 ...saved("password"),
@@ -490,7 +482,7 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               },
             ]);
             expect(result.isError).toBe(true);
-            expect(resultText(result)).toMatch(/expired|denied|workspace/iu);
+            expect(resultText(result)).toMatch(/expired|denied|task|run/iu);
           } else if (name.endsWith("-delayed")) {
             wire.mapHost = (frame) => {
               if (sealedActFrame.safeParse(frame).success && frame.operation === "act") {
@@ -591,7 +583,6 @@ describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL)(
               const observerRun = await dispatchCallerRun(host, caller, {
                 key: `${name}-observer`,
                 title: "Observe after Stop",
-                workspaceId: run.workspaceId,
               });
               runs.push(observerRun);
               const observer = await connectAgentGateway(host, observerRun.integrationTools);

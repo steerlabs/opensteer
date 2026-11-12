@@ -13,26 +13,18 @@ import { BrowserService, type BrowserRuntimePlacement } from "./browser-service.
 import { BrowserLocalProfiles } from "./browser-local-profiles.js";
 import { browserAccessResponse } from "@opensteer/client/host";
 
-async function setup(fixture: StoreFixture, personal = false) {
-  const run = await fixture.createRunFixture(
-    "host-homes",
-    personal
-      ? {
-          deploymentShape: { kind: "personal", defaultWorkspaceBacking: "local-directory" },
-          workspaceBacking: "local-directory",
-        }
-      : null,
-  );
+async function setup(fixture: StoreFixture) {
+  const run = await fixture.createRunFixture("host-homes");
   await fixture.database
     .updateTable("runners")
     .set({ allowedModules: sql`'["agents","browser","messaging"]'::jsonb` })
     .where("id", "=", run.runnerId)
     .execute();
-  if (personal) await fixture.enablePersonalRemoteAccess();
+  await fixture.enablePersonalRemoteAccess();
   return run;
 }
 
-async function computer(fixture: StoreFixture, ownerId: UserId, personal = false) {
+async function computer(fixture: StoreFixture, ownerId: UserId) {
   const runnerId = createId("runner");
   await enrollTestRunner(fixture.store, {
     createdBy: ownerId,
@@ -41,7 +33,7 @@ async function computer(fixture: StoreFixture, ownerId: UserId, personal = false
     runnerKind: "local",
     name: "Mac mini",
     tokenSuffix: runnerId,
-    allowedModules: personal ? ["browser", "integrations", "messaging", "shell"] : ["browser"],
+    allowedModules: ["browser", "integrations", "messaging", "shell"],
     modules: { browser: { runtimeId: runnerId, wireVersion: 2 } },
   });
   return runnerId;
@@ -50,6 +42,7 @@ async function computer(fixture: StoreFixture, ownerId: UserId, personal = false
 function service(fixture: StoreFixture, options: { personal?: boolean; runnerId?: RunnerId } = {}) {
   const placements: BrowserRuntimePlacement[] = [];
   const browser = new BrowserService({
+    deploymentId: createId("deployment"),
     hostOrigin: new URL("https://host.test"),
     repository: fixture.store,
     signer: {} as never,
@@ -61,7 +54,7 @@ function service(fixture: StoreFixture, options: { personal?: boolean; runnerId?
     }),
     profileRequestRunner: async () => options.runnerId ?? null,
     onSessionsChanged: () => undefined,
-    onWorkspaceEvent: () => undefined,
+    onDeploymentEvent: () => undefined,
     targetResolver: { placements: () => placements, resolve: () => undefined },
   });
   return { browser, placements };
@@ -71,14 +64,14 @@ describeStore("Host browser homes", (it) => {
   it("replays an unplaced Personal profile before and after its first binding", async ({
     storeFixture: fixture,
   }) => {
-    const run = await setup(fixture, true);
+    const run = await setup(fixture);
     await fixture.database
       .updateTable("runners")
       .set({ allowedModules: sql`'["agents","integrations","messaging","shell"]'::jsonb` })
       .where("id", "=", run.runnerId)
       .execute();
-    const home = await computer(fixture, run.userId, true);
-    await computer(fixture, run.userId, true);
+    const home = await computer(fixture, run.userId);
+    await computer(fixture, run.userId);
     const { browser } = service(fixture, { personal: true });
     const input = { ownerId: run.userId, name: "Legacy", idempotencyKey: "legacy-personal" };
     try {
@@ -128,7 +121,7 @@ describeStore("Host browser homes", (it) => {
       const verify = async (result: Promise<{ homeRunnerId: RunnerId | null } | null>) => {
         if (count === 0)
           await expect(result).rejects.toMatchObject({
-            code: presence === "id" ? "forbidden" : "workspace_unavailable",
+            code: presence === "id" ? "forbidden" : "runner_offline",
           });
         else if (count === 2 && presence === "null")
           await expect(result).rejects.toMatchObject({ reason: "browser-placement-ambiguous" });
@@ -158,7 +151,7 @@ describeStore("Host browser homes", (it) => {
           continuationIdentity: testContinuationIdentity,
           harnessInstanceId: run.harnessInstance.id,
           leaseTokenHash: "presence-lease",
-          membershipGeneration: 1,
+
           runnerBootId: "presence-boot",
           runnerId: run.runnerId,
           runId: turn.run.id,
@@ -174,7 +167,6 @@ describeStore("Host browser homes", (it) => {
             runId: turn.run.id,
             threadId: run.thread.id,
             type: "run.started",
-            workspaceId: run.workspace.id,
           }),
           runnerBootId: "presence-boot",
           runnerId: run.runnerId,
@@ -184,8 +176,7 @@ describeStore("Host browser homes", (it) => {
           ownerId: run.userId,
           runId: turn.run.id,
           threadId: run.thread.id,
-          originatingWorkspaceId: run.workspace.id,
-          workspaceId: run.workspace.id,
+
           reason: "Separate work identity",
           suggestion: { kind: "new", suggestedName: "Approved" },
         });
@@ -209,16 +200,16 @@ describeStore("Host browser homes", (it) => {
     },
   );
 
-  it.for([false, true])(
+  it.for([true])(
     "defaults older profile creation and preserves the first home on replay (Personal=%s)",
     async (personal, { storeFixture: fixture }) => {
-      const run = await setup(fixture, personal);
+      const run = await setup(fixture);
       const { browser } = service(fixture, { personal });
       try {
         const input = { ownerId: run.userId, name: "Work", idempotencyKey: "older-client" };
         const profile = await browser.createProfile(input);
         expect(profile.homeRunnerId).toBe(run.runnerId);
-        const second = await computer(fixture, run.userId, personal);
+        const second = await computer(fixture, run.userId);
         expect(await browser.createProfile(input)).toEqual(profile);
         await expect(
           browser.createProfile({ ...input, homeRunnerId: second }),
@@ -247,19 +238,16 @@ describeStore("Host browser homes", (it) => {
     },
   );
 
-  it("lists offline eligible homes, hides another member's computer, and follows removal", async ({
+  it("lists offline eligible homes, excludes an unenrolled computer, and follows removal", async ({
     storeFixture: fixture,
   }) => {
     const run = await setup(fixture);
-    const other = await fixture.store.createUser("Other member");
-    await sql`insert into workspace_memberships (id,workspace_id,user_id,role,state) values (${createId("workspaceMembership")},${run.workspace.id},${other},'collaborator','active')`.execute(
-      fixture.database,
-    );
+
     const { browser, placements } = service(fixture);
     try {
       expect((await browser.bootstrap(run.userId)).profileHomes).toEqual([run.runnerId]);
       const home = await computer(fixture, run.userId);
-      const foreign = await computer(fixture, other);
+      const foreign = createId("runner");
       placements.push({
         available: true,
         agents: true,
@@ -313,10 +301,10 @@ describeStore("Host browser homes", (it) => {
         browser.openAgentSession({
           agentBindingId: `run:${createId("run")}`,
           ownerId: run.userId,
-          workspaceId: run.workspace.id,
+
           fresh: true,
         }),
-      ).rejects.toMatchObject({ code: "workspace_unavailable" });
+      ).rejects.toMatchObject({ code: "runner_offline" });
       await fixture.store.revokeRunner(home, run.userId);
       expect(
         await fixture.database
@@ -338,7 +326,7 @@ describeStore("Host browser homes", (it) => {
     "places an approved profile using %s",
     async (choice, { storeFixture: fixture }) => {
       const personal = choice === "main";
-      const run = await setup(fixture, personal);
+      const run = await setup(fixture);
       const turn = await fixture.enqueueHumanTrigger({
         content: [{ type: "text", text: "Start work" }],
         idempotencyKey: "approval-run",
@@ -351,7 +339,7 @@ describeStore("Host browser homes", (it) => {
         continuationIdentity: testContinuationIdentity,
         harnessInstanceId: run.harnessInstance.id,
         leaseTokenHash: "approval-lease",
-        membershipGeneration: 1,
+
         runnerBootId: "approval-boot",
         runnerId: run.runnerId,
         runId: turn.run.id,
@@ -367,12 +355,11 @@ describeStore("Host browser homes", (it) => {
           runId: turn.run.id,
           threadId: run.thread.id,
           type: "run.started",
-          workspaceId: run.workspace.id,
         }),
         runnerBootId: "approval-boot",
         runnerId: run.runnerId,
       });
-      const home = await computer(fixture, run.userId, personal);
+      const home = await computer(fixture, run.userId);
       if (choice === "unavailable-run" || choice === "no-home")
         await fixture.database
           .updateTable("runners")
@@ -399,8 +386,7 @@ describeStore("Host browser homes", (it) => {
           ownerId: run.userId,
           runId: turn.run.id,
           threadId: run.thread.id,
-          originatingWorkspaceId: run.workspace.id,
-          workspaceId: run.workspace.id,
+
           reason: "Separate work identity",
           suggestion: { kind: "new", suggestedName: "Work" },
         });
@@ -443,10 +429,10 @@ describeStore("Host browser homes", (it) => {
     },
   );
 
-  it("filters agent profiles by grants and reports the home independently of the Run's computer", async ({
+  it("lists the owner's agent profiles and reports the home independently of the Run's computer", async ({
     storeFixture: fixture,
   }) => {
-    const run = await fixture.createRunFixture("agent-homes", null, "project");
+    const run = await setup(fixture);
     await fixture.database
       .updateTable("runners")
       .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
@@ -467,18 +453,14 @@ describeStore("Host browser homes", (it) => {
         homeRunnerId: run.runnerId,
         idempotencyKey: "private",
       });
-      await fixture.store.createBrowserProfileGrant({
-        access: "read-write",
-        createdBy: run.userId,
-        profileId: profile.id,
-        workspaceId: run.workspace.id,
-      });
-      expect(await browser.listGrantedProfiles(run.userId, run.workspace.id)).toEqual([
-        expect.objectContaining({
-          id: profile.id,
-          home: { runnerId: home, name: "Mac mini", reachable: false },
-        }),
-      ]);
+      expect(await browser.listAgentProfiles(run.userId)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: profile.id,
+            home: { runnerId: home, name: "Mac mini", reachable: false },
+          }),
+        ]),
+      );
       placements.push({
         available: true,
         agents: false,
@@ -488,12 +470,23 @@ describeStore("Host browser homes", (it) => {
         label: "Mac mini",
         environmentIds: [],
       });
-      expect(await browser.listGrantedProfiles(run.userId, run.workspace.id)).toEqual([
-        expect.objectContaining({ home: { runnerId: home, name: "Mac mini", reachable: true } }),
+      expect(await browser.listAgentProfiles(run.userId)).toEqual([
+        expect.objectContaining({
+          name: "Work",
+          home: { runnerId: home, name: "Mac mini", reachable: true },
+        }),
+        expect.objectContaining({
+          name: "Private",
+          home: { runnerId: run.runnerId, name: "Hosting computer", reachable: false },
+        }),
       ]);
-      const grant = (await fixture.store.listActiveBrowserProfileGrants(run.userId))[0]!;
-      await fixture.store.revokeBrowserProfileGrant(grant.grantId, run.userId);
-      expect(await browser.listGrantedProfiles(run.userId, run.workspace.id)).toEqual([]);
+      await browser.deleteProfile({ ownerId: run.userId, profileId: profile.id });
+      expect(await browser.listAgentProfiles(run.userId)).toEqual([
+        expect.objectContaining({
+          name: "Private",
+          home: expect.objectContaining({ runnerId: run.runnerId }),
+        }),
+      ]);
     } finally {
       await browser.close();
     }

@@ -39,6 +39,7 @@ function scene() {
   });
   const onError = vi.fn();
   const service = new BrowserSourceService({
+    deploymentId: createId("deployment"),
     browser: {} as ServiceOptions["browser"],
     canonicalOrigin: "https://opensteer.test",
     currentRoute: async () => null,

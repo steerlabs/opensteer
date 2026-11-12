@@ -386,7 +386,7 @@ describe("IntegrationService fixed OAuth presets", () => {
       onConnectionConnected,
       attempts,
       definitions: [definition],
-      deploymentPosture: async () => "independent-self-hosted" as const,
+      deploymentPosture: async () => "account-free-personal" as const,
       fetch: vi.fn(async () =>
         Response.json({
           access_token: "access-token",
@@ -569,7 +569,7 @@ describe("IntegrationService OAuth refresh", () => {
       onConnectionConnected: vi.fn(async () => undefined),
       attempts: {} as never,
       definitions: [definition],
-      deploymentPosture: async () => "independent-self-hosted" as const,
+      deploymentPosture: async () => "account-free-personal" as const,
       fetch: providerFetch,
       now: () => new Date("2026-08-13T12:00:00.000Z"),
       publicUrl: new URL("https://host.example"),
@@ -687,7 +687,7 @@ describe("IntegrationService OAuth refresh", () => {
     harness.providerFetch.mockResolvedValue(Response.json({}, { status: 503 }));
 
     await expect(harness.service.materializeForAdapter(harness.request)).rejects.toMatchObject({
-      code: "workspace_unavailable",
+      code: "runner_offline",
       retryable: true,
     });
     expect(harness.markConnectionNeedsAttention).not.toHaveBeenCalled();
@@ -874,7 +874,7 @@ describe("IntegrationService OAuth source authority", () => {
       expectedKind: "deployment-oauth",
       hosted: false,
       name: "independent self-hosted deployments use their own OAuth app",
-      posture: "independent-self-hosted" as const,
+      posture: "account-free-personal" as const,
       providerApplications: [application],
       saved: {},
     },
@@ -892,7 +892,7 @@ describe("IntegrationService OAuth source authority", () => {
       expectedKind: "hosted-oauth",
       hosted: true,
       name: "an injected managed service is the default for an account-attached server",
-      posture: "account-adopted-self-hosted" as const,
+      posture: "account-linked-personal" as const,
       providerApplications: [application],
       saved: {},
     },
@@ -963,7 +963,7 @@ describe("IntegrationService OAuth source authority", () => {
       expectedKind: "deployment-oauth",
       hosted: false,
       name: "projects deployment OAuth as local-computer-only from a Personal remote surface",
-      posture: "independent-self-hosted" as const,
+      posture: "account-free-personal" as const,
       providerApplications: [application],
       saved: {},
     },
@@ -2136,7 +2136,7 @@ describe("IntegrationService OAuth error classification", () => {
       onConnectionConnected: vi.fn(async () => undefined),
       attempts: attempts as never,
       definitions: [definition],
-      deploymentPosture: async () => "independent-self-hosted" as const,
+      deploymentPosture: async () => "account-free-personal" as const,
       publicUrl: new URL("https://host.example.test"),
       repository: {
         getProviderApplication: vi.fn(async () => application),
@@ -2235,7 +2235,7 @@ describe("IntegrationService authorization scope coverage", () => {
       onConnectionConnected: vi.fn(async () => undefined),
       attempts: attempts as never,
       definitions: [definition],
-      deploymentPosture: async () => "independent-self-hosted" as const,
+      deploymentPosture: async () => "account-free-personal" as const,
       fetch: vi.fn(async (target: unknown) =>
         String(target).includes("userinfo")
           ? Response.json({ name: "Example person", sub: "account-1" })
@@ -2461,7 +2461,7 @@ function disconnectFixture(input: {
     onConnectionConnected: vi.fn(async () => undefined),
     attempts: {} as never,
     definitions: [definition],
-    deploymentPosture: async () => "independent-self-hosted" as const,
+    deploymentPosture: async () => "account-free-personal" as const,
     fetch: input.fetch,
     publicUrl: new URL("https://host.example.test"),
     ...(input.broker
@@ -2689,9 +2689,7 @@ function roundTripDefinition(definition: IntegrationDefinition): IntegrationDefi
   return installedIntegrationDefinition(row);
 }
 
-function deploymentRefreshHarness(
-  posture: IntegrationDeploymentPosture = "independent-self-hosted",
-) {
+function deploymentRefreshHarness(posture: IntegrationDeploymentPosture = "account-free-personal") {
   const applicationId = createIntegrationId("providerApplication");
   const definition = refreshDefinition();
   const application = {
@@ -2891,7 +2889,7 @@ function installedDefinitionService(input: {
     adapters: [testGraphqlAdapter(input.checkHealth)],
     attempts: {} as never,
     definitions: input.definitions ?? [],
-    deploymentPosture: async () => "independent-self-hosted" as const,
+    deploymentPosture: async () => "account-free-personal" as const,
     installedDefinition: input.installedDefinition,
     publicUrl: new URL("https://opensteer.example.test"),
     repository: {
@@ -2968,7 +2966,7 @@ function apiKeyService(input: {
     definitions: [definition],
     installedDefinition: async () => definition,
     onConnectionConnected: input.onConnectionConnected ?? vi.fn(async () => undefined),
-    deploymentPosture: async () => "independent-self-hosted" as const,
+    deploymentPosture: async () => "account-free-personal" as const,
     publicUrl: new URL("https://opensteer.example.test"),
     repository: input.repository,
     vault: { open: vi.fn(), seal: input.seal },
@@ -2995,7 +2993,7 @@ it.each(["failed", "denied", "cancelled", "expired"] as const)(
     };
     const service = new IntegrationService({
       attempts: attempts as never,
-      deploymentPosture: async () => "independent-self-hosted",
+      deploymentPosture: async () => "account-free-personal",
       repository: {} as never,
       publicUrl: new URL("http://127.0.0.1:4310"),
       onConnectionConnected: async () => undefined,

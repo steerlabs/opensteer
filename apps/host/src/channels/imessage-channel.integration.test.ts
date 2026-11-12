@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+import { clearPersonalMachineFixture } from "../integrations/personal-machine.test-support.js";
 /**
  * iMessage through a Mac, end to end on real parts: one real Host over its
  * real sockets, a Mac Runner's real `integrations` and `messaging` modules as
@@ -36,7 +38,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createId, type MessageId } from "@opensteer/core";
 import type { ComputerUseBridgeRequest, IMessagePosition, IMessageRow } from "@opensteer/protocol";
 
@@ -49,18 +51,15 @@ import {
   setComputerApp,
   startFakeDesktop,
   type FakeDesktopAnswer,
-} from "../runtime/computer-apps.test-support.js";
+} from "../integrations/computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
-  enrollmentToken,
-  resetMachineAccessDatabase,
-  signUpUser,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   waitForCondition,
   waitForExecute,
   type CallerMachine,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = baseDatabaseUrl ? describe : describe.skip;
@@ -72,6 +71,7 @@ const ownerEmail = "owner@example.com";
 const strangerPhone = "+15559876543";
 
 integration("iMessage channel", () => {
+  beforeEach(() => clearPersonalMachineFixture(databaseUrl!));
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;
@@ -81,8 +81,6 @@ integration("iMessage channel", () => {
     await database?.drop();
     database = undefined;
   }, 120_000);
-
-  beforeEach(async () => resetMachineAccessDatabase(databaseUrl));
 
   let closeCurrent: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -100,7 +98,7 @@ integration("iMessage channel", () => {
     let failure: unknown = null;
     let channelState: (() => Promise<unknown>) | undefined;
     try {
-      const host = await startMachineAccessHost(databaseUrl, { signupPolicy: "open" });
+      const host = await startPrivateMachineHost(databaseUrl, { remoteAccess: true });
       // What the Host held for the channel, written beside a failure.
       channelState = async () => ({
         connections: await host.store.database
@@ -124,11 +122,7 @@ integration("iMessage channel", () => {
       };
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "imessage-caller",
-          name: "Caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const desktop = await startFakeDesktop((request) => messages.answer(request));
@@ -173,32 +167,26 @@ integration("iMessage channel", () => {
           { headers: host.ownerHeaders },
         );
         const mac = machines.find(({ id }) => id === computer.runnerId);
-        return (
-          mac?.modules.messaging !== undefined &&
-          (mac.apps ?? []).some(({ definitionId }) => definitionId === "apple-messages")
-        );
+        if (
+          !mac?.modules.messaging ||
+          !(mac.apps ?? []).some(({ definitionId }) => definitionId === "apple-messages")
+        )
+          throw new Error("Messaging computer never reported Messages: " + JSON.stringify(mac));
+        return true;
       });
       record("machine offers messaging and Messages", { runnerId: computer.runnerId });
 
-      const workspace = await testRpcData(
-        host.origin,
-        "commands.dispatch",
-        { idempotencyKey: "imessage-workspace", name: "Texts", type: "workspace.create" },
-        { headers: host.ownerHeaders },
-      );
-      if (workspace.type !== "workspace.create") throw new Error("Workspace command mismatch");
-      const workspaceId = workspace.workspace.id;
       const create = (headers: Record<string, string>, key: string) =>
         testRpcData(
           host.origin,
           "commands.dispatch",
           {
             idempotencyKey: key,
+            folder: host.agentHome,
             ownerHandles: ["+1 (555) 123-4567", "Owner@Example.com"],
             provider: "imessage",
             runnerId: computer.runnerId,
             type: "channel.connection.computer.create",
-            workspaceId,
           },
           { headers },
         );
@@ -222,11 +210,9 @@ integration("iMessage channel", () => {
         "imessage-write",
       );
       const source = await setComputerApp(host, computer, writeSetup, writeSetup.id);
-      const other = await signUpUser(host, {
-        email: "someone-else@example.com",
-        password: "correct horse battery staple",
-      });
-      await expect(create(other.headers, "imessage-other-owner")).rejects.toThrow(/HTTP 403/u);
+      await expect(create({ origin: host.origin.origin }, "imessage-non-owner")).rejects.toThrow(
+        /HTTP 401/u,
+      );
       record("refused without read-write and for another person", { source: source.connection });
 
       // 3. Created pinned to the Mac, with no secret, from where Messages is now.
@@ -672,7 +658,6 @@ async function startRun(
         runId: context.runId,
         threadId: context.threadId,
         type,
-        workspaceId: context.workspaceId,
       },
       type: "runner.event",
     });

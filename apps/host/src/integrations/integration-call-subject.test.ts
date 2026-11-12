@@ -32,7 +32,6 @@ function started(
     runId: createId("run"),
     threadId: createId("thread"),
     type: "tool.started",
-    workspaceId: createId("workspace"),
   };
 }
 

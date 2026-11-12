@@ -71,7 +71,7 @@ describe("browser.searchSuggestions.get over the Host's HTTP API", () => {
       deploymentId: createId("deployment"),
       hostInstanceId: createId("hostInstance"),
       hostKey: { algorithm: "Ed25519" },
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
+      deploymentShape: { kind: "personal" },
     });
     app = await createHostServer(
       hostServerTestDependencies({ discovery, authenticator, fetch: providerFetch }),

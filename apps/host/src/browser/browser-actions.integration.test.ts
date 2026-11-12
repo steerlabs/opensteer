@@ -19,14 +19,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
   createMachineAccessDatabase,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   connectCallerMachine,
   enrollmentToken,
   dispatchCallerRun,
   stopRun,
   waitForMessage,
   closed,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
 const integration = describe.skipIf(!process.env.OPENSTEER_TEST_DATABASE_URL);
@@ -74,18 +74,15 @@ async function setup(surfaceState = true) {
   cleanups.push(() => database.drop());
   const startedAt = Date.now();
   let now = startedAt;
-  const host = await startMachineAccessHost(database.url, {
+  const host = await startPrivateMachineHost(database.url, {
+    remoteAccess: true,
     runCapabilityNow: () => now,
     runCapabilityLifetimeSeconds: 60,
   });
   cleanups.push(() => host.close());
   const caller = await connectCallerMachine(host, {
     name: "Agent computer",
-    token: await enrollmentToken(host, {
-      allowedModules: ["agents"],
-      idempotencyKey: "agent",
-      name: "Agent computer",
-    }),
+    token: await host.hostingRunnerEnrollmentToken,
   });
   cleanups.push(() => caller.close());
   const run = await dispatchCallerRun(host, caller, { key: "phone-run", title: "Phone browser" });
@@ -112,16 +109,16 @@ async function setup(surfaceState = true) {
   await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 2_000 });
   const opened = await host.runtime.browser.start({
     ownerId: host.ownerId,
-    workspaceId: run.workspaceId,
+
     fresh: true,
-    origin: "workspace",
+    origin: "person",
     reuseExisting: false,
     placement: { kind: "runner", runnerId: phone.runnerId },
   });
   const sessionId = opened.session.id;
   const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
   const backend = (token = run.toolsToken, id = sessionId) =>
-    fetch(`${host.origin}/internal/v1/browser-backend/${id}`, { headers: bearer(token) });
+    fetch(`${host.origin.origin}/internal/v1/browser-backend/${id}`, { headers: bearer(token) });
   const actions = (token = run.toolsToken, id = sessionId) =>
     connect(`ws://127.0.0.1:${host.hostPort}/internal/v1/browser-actions/${id}`, bearer(token));
   let sequence = 0;
@@ -212,11 +209,14 @@ integration("session-scoped browser agent backends", () => {
     );
     realtime.send(
       JSON.stringify({
-        afterSequence: zeroSequence,
+        cursor: {
+          deploymentId: (await f.host.store.getDeployment())!.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
         apiVersion: hostApiVersion,
         threadId: null,
         type: "client.subscribe",
-        workspaceId: f.run.workspaceId,
       }),
     );
     await synchronized;
@@ -372,7 +372,7 @@ integration("session-scoped browser agent backends", () => {
           {
             kind: "agent",
             ownerId: f.host.ownerId,
-            workspaceId: f.run.workspaceId,
+
             threadId: f.run.threadId,
             agentBindingId: `run:${f.run.runId}`,
           },
@@ -543,16 +543,15 @@ integration("session-scoped browser agent backends", () => {
     expect(f.phone.protocolErrors()).toEqual([]);
   });
 
-  it("negotiates the exact authorized session, pins CDP first, and refuses wrong Runs, sessions, expiry and revoked grants", async () => {
+  it("negotiates the exact authorized session, pins CDP first, and refuses missing sessions, expiry and revoked Runs", async () => {
     const f = await setup();
     const response = await f.backend();
-    expect(response.status).toBe(200);
+    expect(response.status, await response.clone().text()).toBe(200);
     expect(await response.json()).toEqual({
       sessionId: f.sessionId,
       backend: "actions",
       version: 1,
     });
-    expect((await f.backend(f.other.toolsToken)).status).toBe(403);
     expect((await f.backend(f.run.toolsToken, createBrowserSessionId())).status).toBe(403);
     const chromium = await startBrowserRuntime(
       f.host.hostPort,
@@ -580,9 +579,9 @@ integration("session-scoped browser agent backends", () => {
     );
     const opened = await f.host.runtime.browser.start({
       ownerId: f.host.ownerId,
-      workspaceId: f.run.workspaceId,
+
       fresh: true,
-      origin: "workspace",
+      origin: "person",
       reuseExisting: false,
       placement: { kind: "runner", runnerId: chromium.runnerId },
     });
@@ -742,10 +741,6 @@ integration("session-scoped browser agent backends", () => {
     });
     expect(await f.act(socket, { type: "text.insert", text: "Do not type" })).toMatchObject({
       error: { code: "target-suspended" },
-    });
-    const wrongRun = await f.actions(f.other.toolsToken);
-    expect(await f.act(wrongRun, { type: "session.tabs" })).toMatchObject({
-      error: { code: "forbidden" },
     });
     const missingSession = await f.actions(f.run.toolsToken, createBrowserSessionId());
     expect(await f.act(missingSession, { type: "session.tabs" })).toMatchObject({

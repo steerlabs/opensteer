@@ -1,4 +1,9 @@
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
+import { emptyAutomaticModelConfig } from "@opensteer/core";
+import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
+import { startPersonalQueuedRunFixture } from "@opensteer/database/test-support/personal-run";
+import { mkdtemp, realpath, mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 /**
  * The messaging pipeline, end to end, through the Host's real ChannelService,
  * real MessagingRelayHub and a real PostgreSQL-backed ChannelStore and
@@ -18,13 +23,12 @@ import {
   HarnessIdSchema,
   MessageContentSchema,
   RunnerIdSchema,
-  ThreadAccessModeSchema,
   createId,
   type RunId,
   type RunnerId,
   type ThreadId,
   type UserId,
-  type WorkspaceId,
+  type TaskFolder,
 } from "@opensteer/core";
 import { ChannelStore, OpensteerStore, createDatabase, migrateToLatest } from "@opensteer/database";
 import type { RunnerAuxiliaryStream, RunnerIdentity } from "@opensteer/orchestration";
@@ -38,7 +42,7 @@ import {
   type RunnerDescriptor,
 } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { createHash, generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { CredentialService } from "../identity/credential-service.js";
 import { ChannelService } from "./channel-service.js";
@@ -53,7 +57,7 @@ const canonicalOrigin = "https://pipeline-host.invalid";
 const nativeRunnerIdentity = {
   modules: { agents: { harnessDrivers: [{ driverKind: "native" }] } },
 } as unknown as RunnerIdentity;
-const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/threads/${threadId}`;
+const threadUrl = (threadId: ThreadId) => `${canonicalOrigin}/tasks/${threadId}`;
 
 integration("messaging pipeline", () => {
   const database = createDatabase({
@@ -67,48 +71,31 @@ integration("messaging pipeline", () => {
   let environmentId: ReturnType<typeof createId<"environment">>;
   let agentsRunnerId: RunnerId;
   let ownerUserId: UserId;
+  let personal: Awaited<ReturnType<typeof seedPersonalFixture>>;
+  let directory: string;
 
   beforeAll(async () => {
     await migrateToLatest(database);
-    await sql`
-      truncate table
-        credential_vault_canaries,
-        credential_access_audit,
-        request_continuations,
-        integration_request_details,
-        requests,
-        credentials,
-        workspace_events,
-        commands,
-        provider_sessions,
-        messages,
-        runs,
-        threads,
-        harness_catalogs,
-        harness_instances,
-        workspaces,
-        execution_environments,
-        runners,
-        deployments,
-        users
-      restart identity cascade
-    `.execute(database);
-    await sql`
-      insert into principals(id, kind, user_id, display_name)
-      values ('pri_00000000-0000-4000-8000-000000000001', 'system', null, 'Opensteer')
-      on conflict (id) do nothing
-    `.execute(database);
+    await sql`truncate table credential_vault_canaries, deployments,users,runners restart identity cascade`.execute(
+      database,
+    );
+    directory = await realpath(await mkdtemp(join(tmpdir(), "personal-messaging-")));
+    personal = await seedPersonalFixture(database, directory);
+    await sql`insert into principals(id,kind,user_id,display_name) values ('pri_00000000-0000-4000-8000-000000000001','system',null,'Opensteer'),(${"pri_" + randomUUID()},'user',${personal.userId},'Alex') on conflict do nothing`.execute(
+      database,
+    );
+    await store.setAutomaticModelConfig(personal.userId, emptyAutomaticModelConfig);
     credentials = new CredentialService({ key: randomBytes(32), store });
     await credentials.initialize();
-    ownerUserId = await store.createUser("Pipeline owner");
-    environmentId = createId("environment");
-    agentsRunnerId = createId("runner");
-    await enrollAgentsRunner({ createdBy: ownerUserId, environmentId, runnerId: agentsRunnerId });
+    ownerUserId = personal.userId;
+    environmentId = personal.environmentId;
+    agentsRunnerId = personal.runnerId;
     await enrollMessagingRunner();
   });
 
   afterAll(async () => {
     await database.destroy();
+    await rm(directory, { recursive: true, force: true });
   });
 
   it("carries a channel message from ingress.commit to a sent delivery", async () => {
@@ -143,7 +130,7 @@ integration("messaging pipeline", () => {
     expect(first).not.toHaveProperty("accepted");
 
     // 2. The service's own drain adopts the ingress into a Thread and a Run.
-    const run = await waitForRun(fixture.workspaceId);
+    const run = await waitForRun(fixture.folder);
     expect(run).toMatchObject({ status: "queued" });
     expect(run.replyTarget).not.toBeNull();
     await vi.waitFor(() => expect(fixture.queued).toEqual([environmentId]), 10_000);
@@ -195,7 +182,7 @@ integration("messaging pipeline", () => {
     // The Host names the reply where every client reads how the Run ended.
     await expect(
       database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .select("data")
         .where("runId", "=", run.id)
         .where("type", "=", "run.completed")
@@ -368,7 +355,7 @@ integration("messaging pipeline", () => {
       messagingRunnerId,
       runtimeRequest("ingress.commit", { connectionId: fixture.created.connection.id, event }),
     );
-    const run = await waitForRun(fixture.workspaceId);
+    const run = await waitForRun(fixture.folder);
     const binding = await beginRun(run);
     const narrationId = createId("message");
     await emit(binding, run, 1, "assistant.message", {
@@ -409,7 +396,7 @@ integration("messaging pipeline", () => {
   }, 60_000);
 
   it("hands an unlinked sender a code, and runs their next message once it is redeemed", async () => {
-    const fixture = await pipelineFixture({ accessMode: "linked-members", suffix: "LINK" });
+    const fixture = await pipelineFixture({ accessMode: "owner", suffix: "LINK" });
     const { hub, service } = fixture;
     const direct = {
       ...channelEvent({ scope: "LINK", text: "Please look at this" }),
@@ -432,12 +419,15 @@ integration("messaging pipeline", () => {
 
     // 1. Nobody is linked, so the message becomes a private invitation rather
     //    than silence — and the code reaches only the person who wrote.
-    const claimed = await vi.waitFor(async () => {
-      const result = await claimDelivery(service);
-      const value = (result as { claimed: unknown }).claimed;
-      if (!value) throw new Error("No status delivery was enqueued for the unlinked sender");
-      return value as ClaimedShape;
-    }, 10_000);
+    const claimed = await vi.waitFor(
+      async () => {
+        const result = await claimDelivery(service);
+        const value = (result as { claimed: unknown }).claimed;
+        if (!value) throw new Error("No status delivery was enqueued for the unlinked sender");
+        return value as ClaimedShape;
+      },
+      { timeout: 10_000 },
+    );
     expect(claimed.delivery).toMatchObject({
       audience: "actor",
       conversationId: null,
@@ -477,14 +467,17 @@ integration("messaging pipeline", () => {
         event: { ...direct, eventId: "Ev-LINK-2", providerMessageId: "1786320000.000101" },
       }),
     );
-    await vi.waitFor(async () => {
-      const ignored = await database
-        .selectFrom("channelIngressEvents")
-        .select("status")
-        .where("providerEventId", "=", "Ev-LINK-2")
-        .executeTakeFirstOrThrow();
-      expect(ignored).toEqual({ status: "ignored" });
-    }, 10_000);
+    await vi.waitFor(
+      async () => {
+        const ignored = await database
+          .selectFrom("channelIngressEvents")
+          .select("status")
+          .where("providerEventId", "=", "Ev-LINK-2")
+          .executeTakeFirstOrThrow();
+        expect(ignored).toEqual({ status: "ignored" });
+      },
+      { timeout: 10_000 },
+    );
     await expect(
       database
         .selectFrom("channelDeliveries")
@@ -539,7 +532,7 @@ integration("messaging pipeline", () => {
         event: { ...direct, eventId: "Ev-LINK-3", providerMessageId: "1786320000.000102" },
       }),
     );
-    const run = await waitForRun(fixture.workspaceId);
+    const run = await waitForRun(fixture.folder);
     expect(run).toMatchObject({ status: "queued" });
 
     await service.close();
@@ -548,7 +541,7 @@ integration("messaging pipeline", () => {
 
   it("waits for a computer without spending attempts, links meanwhile, and gives up aloud", async () => {
     const fixture = await pipelineFixture({
-      accessMode: "linked-members",
+      accessMode: "owner",
       computerOnline: false,
       suffix: "DEFER",
     });
@@ -584,11 +577,14 @@ integration("messaging pipeline", () => {
 
     // 1. No computer is online, but linking needs none: the code still goes out.
     await commit("Ev-DEFER-1", "1786320000.000201");
-    const claimed = await vi.waitFor(async () => {
-      const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
-      if (!value) throw new Error("No link code was enqueued while the computer was offline");
-      return value;
-    }, 10_000);
+    const claimed = await vi.waitFor(
+      async () => {
+        const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
+        if (!value) throw new Error("No link code was enqueued while the computer was offline");
+        return value;
+      },
+      { timeout: 10_000 },
+    );
     const code = /\*\*([A-HJ-NP-Z2-9]{8})\*\*/u.exec(statusText(claimed))?.[1];
     expect(code).toBeDefined();
     await acknowledgeDelivery(service, claimed);
@@ -599,11 +595,14 @@ integration("messaging pipeline", () => {
 
     // 2. A linked person's message waits: pending, retried soon, no attempt spent.
     await commit("Ev-DEFER-2", "1786320000.000202");
-    const waiting = await vi.waitFor(async () => {
-      const row = await ingress("Ev-DEFER-2");
-      if (row.lastError === null) throw new Error("Not yet deferred");
-      return row;
-    }, 10_000);
+    const waiting = await vi.waitFor(
+      async () => {
+        const row = await ingress("Ev-DEFER-2");
+        if (row.lastError === null) throw new Error("Not yet deferred");
+        return row;
+      },
+      { timeout: 10_000 },
+    );
     expect(waiting).toMatchObject({ attempts: 0, status: "pending" });
     expect(waiting.lastError).toContain("No work location is available");
     expect(waiting.nextAttemptAt.getTime() - Date.now()).toBeLessThanOrEqual(5_500);
@@ -621,25 +620,34 @@ integration("messaging pipeline", () => {
       .where("id", "=", waiting.id)
       .execute();
     service.wake();
-    await vi.waitFor(async () => {
-      expect((await ingress("Ev-DEFER-2")).status).toBe("ignored");
-    }, 10_000);
-    const dropped = await vi.waitFor(async () => {
-      const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
-      if (!value) throw new Error("No notice was enqueued for the dropped message");
-      return value;
-    }, 10_000);
+    await vi.waitFor(
+      async () => {
+        expect((await ingress("Ev-DEFER-2")).status).toBe("ignored");
+      },
+      { timeout: 10_000 },
+    );
+    const dropped = await vi.waitFor(
+      async () => {
+        const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
+        if (!value) throw new Error("No notice was enqueued for the dropped message");
+        return value;
+      },
+      { timeout: 10_000 },
+    );
     expect(dropped.delivery).toMatchObject({ audience: "actor", kind: "status" });
     expect(statusText(dropped)).toContain("No computer was available");
     await acknowledgeDelivery(service, dropped);
 
     // 4. A computer coming online picks up a message that is still waiting.
     await commit("Ev-DEFER-3", "1786320000.000203");
-    const parked = await vi.waitFor(async () => {
-      const row = await ingress("Ev-DEFER-3");
-      if (row.lastError === null) throw new Error("Not yet deferred");
-      return row;
-    }, 10_000);
+    const parked = await vi.waitFor(
+      async () => {
+        const row = await ingress("Ev-DEFER-3");
+        if (row.lastError === null) throw new Error("Not yet deferred");
+        return row;
+      },
+      { timeout: 10_000 },
+    );
     fixture.computer.online = true;
     await database
       .updateTable("channelIngressEvents")
@@ -647,7 +655,7 @@ integration("messaging pipeline", () => {
       .where("id", "=", parked.id)
       .execute();
     service.wake();
-    const run = await waitForRun(fixture.workspaceId);
+    const run = await waitForRun(fixture.folder);
     expect(run).toMatchObject({ status: "queued" });
 
     await service.close();
@@ -667,14 +675,17 @@ integration("messaging pipeline", () => {
       messagingRunnerId,
       runtimeRequest("ingress.commit", { connectionId: fixture.created.connection.id, event }),
     );
-    await vi.waitFor(async () => {
-      const row = await database
-        .selectFrom("channelIngressEvents")
-        .select("status")
-        .where("providerEventId", "=", event.eventId)
-        .executeTakeFirstOrThrow();
-      expect(row.status).toBe("ignored");
-    }, 10_000);
+    await vi.waitFor(
+      async () => {
+        const row = await database
+          .selectFrom("channelIngressEvents")
+          .select("status")
+          .where("providerEventId", "=", event.eventId)
+          .executeTakeFirstOrThrow();
+        expect(row.status).toBe("ignored");
+      },
+      { timeout: 10_000 },
+    );
     const notice = claimResult(await claimDelivery(service)) as ClaimedShape | null;
     expect(notice?.delivery).toMatchObject({ audience: "actor", kind: "status" });
     expect(notice ? statusText(notice) : "").toBe(
@@ -685,7 +696,7 @@ integration("messaging pipeline", () => {
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
         .select("runs.id")
-        .where("threads.workspaceId", "=", fixture.workspaceId)
+        .where("threads.folderPath", "=", fixture.folder.path)
         .execute(),
     ).resolves.toEqual([]);
 
@@ -710,21 +721,10 @@ integration("messaging pipeline", () => {
       threadId: null,
     });
 
-    const roomWorkspace = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: ownerUserId,
-      idempotencyKey: "workspace-pipeline-ROUTE-room",
-      name: "Pipeline ROUTE room",
-      status: "ready",
-    });
+    const roomFolder = { ...personal.agentHome, path: join(directory, "ROUTE-room") };
+    await mkdir(roomFolder.path, { recursive: true });
     const roomBinding = await service.createBinding({
+      folder: roomFolder,
       accessPolicy: {
         channels: {
           scope: "all",
@@ -742,7 +742,6 @@ integration("messaging pipeline", () => {
         scopeId: null,
         threadId: null,
       },
-      workspaceId: roomWorkspace.id,
     });
 
     // 1. The named conversation takes the route made for it.
@@ -753,7 +752,7 @@ integration("messaging pipeline", () => {
         event: channelEvent({ scope: "ROUTE", text: "Investigate the room" }),
       }),
     );
-    const roomRun = await waitForRun(roomWorkspace.id);
+    const roomRun = await waitForRun(roomFolder);
     expect(roomRun).toMatchObject({ status: "queued" });
 
     // 2. A direct message nothing names still falls through to the catch-all.
@@ -776,7 +775,7 @@ integration("messaging pipeline", () => {
         },
       }),
     );
-    await waitForRun(fixture.workspaceId);
+    await waitForRun(fixture.folder);
 
     // 3. Retiring the route leaves its conversation unrouted, and the next
     //    message there says so rather than disappearing.
@@ -792,22 +791,28 @@ integration("messaging pipeline", () => {
         },
       }),
     );
-    await vi.waitFor(async () => {
-      const row = await database
-        .selectFrom("channelIngressEvents")
-        .select(["lastError", "status"])
-        .where("providerEventId", "=", "Ev-ROUTE-AFTER-REVOKE")
-        .executeTakeFirstOrThrow();
-      expect(row.status).toBe("ignored");
-      expect(row.lastError).toContain("No channel route matched");
-    }, 10_000);
-    const told = await vi.waitFor(async () => {
-      const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
-      if (!value) throw new Error("Nothing was said about the unrouted conversation");
-      return value;
-    }, 10_000);
+    await vi.waitFor(
+      async () => {
+        const row = await database
+          .selectFrom("channelIngressEvents")
+          .select(["lastError", "status"])
+          .where("providerEventId", "=", "Ev-ROUTE-AFTER-REVOKE")
+          .executeTakeFirstOrThrow();
+        expect(row.status).toBe("ignored");
+        expect(row.lastError).toContain("No channel route matched");
+      },
+      { timeout: 10_000 },
+    );
+    const told = await vi.waitFor(
+      async () => {
+        const value = claimResult(await claimDelivery(service)) as ClaimedShape | null;
+        if (!value) throw new Error("Nothing was said about the unrouted conversation");
+        return value;
+      },
+      { timeout: 10_000 },
+    );
     expect(told.delivery).toMatchObject({ audience: "actor", kind: "status" });
-    expect(statusText(told)).toContain("not routed to an Opensteer Workspace");
+    expect(statusText(told)).toContain("no Messaging binding");
     await acknowledgeDelivery(service, told);
 
     await service.close();
@@ -848,18 +853,21 @@ integration("messaging pipeline", () => {
           created.connection.id,
           event,
         );
-        await vi.waitFor(async () => {
-          const ingress = await database
-            .selectFrom("channelIngressEvents")
-            .select("status")
-            .where("id", "=", committed.ingressId)
-            .executeTakeFirstOrThrow();
-          expect(["adopted", "ignored"]).toContain(ingress.status);
-        }, 10_000);
+        await vi.waitFor(
+          async () => {
+            const ingress = await database
+              .selectFrom("channelIngressEvents")
+              .select("status")
+              .where("id", "=", committed.ingressId)
+              .executeTakeFirstOrThrow();
+            expect(["adopted", "ignored"]).toContain(ingress.status);
+          },
+          { timeout: 10_000 },
+        );
       }
       const mention = channelEvent({ scope: "ACCESS", text: "Hello from the team" });
       await deliver(mention);
-      const sharedRun = await waitForRun(fixture.workspaceId);
+      const sharedRun = await waitForRun(fixture.folder);
       const thread = await database
         .selectFrom("threads")
         .selectAll()
@@ -867,7 +875,6 @@ integration("messaging pipeline", () => {
         .executeTakeFirstOrThrow();
       expect(thread).toMatchObject({
         createdBy: ownerUserId,
-        inheritsMain: false,
         parentThreadId: null,
       });
       const direct = {
@@ -895,7 +902,7 @@ integration("messaging pipeline", () => {
         await database
           .selectFrom("threads")
           .select("id")
-          .where("workspaceId", "=", fixture.workspaceId)
+          .where("folderPath", "=", fixture.folder.path)
           .execute(),
       ).toHaveLength(1);
       const intruder = await store.createUser("Unrelated operator");
@@ -921,7 +928,7 @@ integration("messaging pipeline", () => {
         await database
           .selectFrom("threads")
           .select("id")
-          .where("workspaceId", "=", fixture.workspaceId)
+          .where("folderPath", "=", fixture.folder.path)
           .execute(),
       ).toHaveLength(1);
       await expect(
@@ -938,7 +945,7 @@ integration("messaging pipeline", () => {
         await database
           .selectFrom("threads")
           .select("id")
-          .where("workspaceId", "=", fixture.workspaceId)
+          .where("folderPath", "=", fixture.folder.path)
           .execute(),
       ).toHaveLength(2);
       await service.reviewAccess({
@@ -953,7 +960,7 @@ integration("messaging pipeline", () => {
         .innerJoin("runs", "runs.id", "commands.runId")
         .innerJoin("threads", "threads.id", "runs.threadId")
         .select(["commands.id", "runs.id as runId"])
-        .where("threads.workspaceId", "=", fixture.workspaceId)
+        .where("threads.folderPath", "=", fixture.folder.path)
         .where("threads.id", "!=", sharedRun.threadId)
         .where("commands.type", "=", "run.execute")
         .executeTakeFirstOrThrow();
@@ -1043,7 +1050,7 @@ integration("messaging pipeline", () => {
           },
           harnessInstanceId: thread.harnessInstanceId,
           leaseTokenHash: "policy-handoff-lease",
-          membershipGeneration: 1,
+
           runnerBootId: "policy-handoff-boot",
           runnerId: agentsRunnerId,
           runId: sharedRun.id,
@@ -1059,12 +1066,10 @@ integration("messaging pipeline", () => {
     }
   }, 60_000);
 
-  it("runs the owner's own direct messages as their Home agent and everyone else below Main", async () => {
-    const mainWorkspaceId = await ownersMainWorkspace();
+  it("admits personal context only for the owner's linked direct messages", async () => {
     const fixture = await pipelineFixture({
       accessMode: "anyone",
       suffix: "HOME",
-      workspaceId: mainWorkspaceId,
     });
     const { hub, service } = fixture;
     const direct = (eventId: string, providerMessageId: string) => ({
@@ -1085,36 +1090,35 @@ integration("messaging pipeline", () => {
         messagingRunnerId,
         runtimeRequest("ingress.commit", { connectionId: fixture.created.connection.id, event }),
       );
-      return vi.waitFor(async () => {
-        const row = await database
-          .selectFrom("channelIngressEvents")
-          .select("status")
-          .where("providerEventId", "=", event.eventId)
-          .executeTakeFirstOrThrow();
-        if (row.status !== "adopted") throw new Error(`Ingress is ${row.status}`);
-        const context = await database
-          .selectFrom("channelConversationContexts")
-          .innerJoin(
-            "channelConversations",
-            "channelConversations.id",
-            "channelConversationContexts.conversationId",
-          )
-          .innerJoin("threads", "threads.id", "channelConversationContexts.activeThreadId")
-          .select(["threads.id", "threads.inheritsMain"])
-          .where(
-            "channelConversations.externalConversationId",
-            "=",
-            event.conversation.externalConversationId,
-          )
-          .executeTakeFirstOrThrow();
-        return context;
-      }, 10_000);
+      return vi.waitFor(
+        async () => {
+          const row = await database
+            .selectFrom("channelIngressEvents")
+            .select("status")
+            .where("providerEventId", "=", event.eventId)
+            .executeTakeFirstOrThrow();
+          if (row.status !== "adopted") throw new Error(`Ingress is ${row.status}`);
+          const context = await database
+            .selectFrom("channelIngressEvents")
+            .innerJoin("threadInputs", "threadInputs.messageId", "channelIngressEvents.messageId")
+            .innerJoin(
+              "channelConversations",
+              "channelConversations.id",
+              "channelIngressEvents.conversationId",
+            )
+            .select(["threadInputs.threadId as id", "channelConversations.personalContext"])
+            .where("channelIngressEvents.providerEventId", "=", event.eventId)
+            .executeTakeFirstOrThrow();
+          return context;
+        },
+        { timeout: 10_000 },
+      );
     };
 
     // 1. Anyone may write under this route, and runs as its creator without
     //    being them: below Main even though it lands in their Main.
     const stranger = await deliver(direct("Ev-HOME-1", "1786320000.000201"));
-    expect(stranger.inheritsMain).toBe(false);
+    expect(stranger.personalContext).toBe(false);
 
     // 2. The same direct message from the owner's own linked identity is the
     //    owner speaking for themself, so it is their Home agent — in a fresh
@@ -1126,8 +1130,8 @@ integration("messaging pipeline", () => {
       .where("externalUserId", "=", "U-EXTERNAL")
       .execute();
     const owner = await deliver(direct("Ev-HOME-2", "1786320000.000202"));
-    expect(owner.inheritsMain).toBe(true);
-    expect(owner.id).not.toBe(stranger.id);
+    expect(owner.personalContext).toBe(true);
+    expect(owner.id).toBe(stranger.id);
 
     // 3. A channel is shared with whoever else is in it, so even the owner's
     //    own message there stays below Main.
@@ -1136,81 +1140,21 @@ integration("messaging pipeline", () => {
       eventId: "Ev-HOME-3",
       providerMessageId: "1786320000.000203",
     });
-    expect(shared.inheritsMain).toBe(false);
+    expect(shared.personalContext).toBe(false);
 
     await service.close();
     hub.close();
   }, 60_000);
-
-  it("runs a channel message on the owner's own desktop-added Mac when it is the only computer online", async () => {
-    const localEnvironmentId = createId("environment");
-    await enrollAgentsRunner({
-      createdBy: ownerUserId,
-      environmentId: localEnvironmentId,
-      runnerId: createId("runner"),
-      runnerKind: "local",
-    });
-    const fixture = await pipelineFixture({
-      accessMode: "anyone",
-      environmentId: localEnvironmentId,
-      suffix: "LOCAL",
-    });
-    const { hub, service } = fixture;
-    await service.handleRuntimeRequest(
-      messagingRunnerId,
-      runtimeRequest("ingress.commit", {
-        connectionId: fixture.created.connection.id,
-        event: channelEvent({ scope: "LOCAL", text: "Run this on my Mac" }),
-      }),
-    );
-    const run = await waitForRun(fixture.workspaceId);
-    const thread = await database
-      .selectFrom("threads")
-      .select("environmentId")
-      .where("id", "=", run.threadId)
-      .executeTakeFirstOrThrow();
-    expect(thread.environmentId).toBe(localEnvironmentId);
-    await vi.waitFor(() => expect(fixture.queued).toEqual([localEnvironmentId]), 10_000);
-
-    await service.close();
-    hub.close();
-  }, 60_000);
-
-  async function ownersMainWorkspace(): Promise<WorkspaceId> {
-    const existing = await database
-      .selectFrom("workspaces")
-      .select("id")
-      .where("createdBy", "=", ownerUserId)
-      .where("kind", "=", "main")
-      .executeTakeFirst();
-    if (existing) return existing.id;
-    const created = await createTestWorkspace(store, {
-      backing: {
-        kind: "local-directory",
-        generation: 1,
-        bindingId: createId("workspaceBinding"),
-        ownerEnvironmentId: createId("environment"),
-        storageAuthorityId: createId("storageAuthority"),
-      },
-
-      createdBy: ownerUserId,
-      idempotencyKey: "workspace-pipeline-home",
-      kind: "main",
-      name: "Home",
-      status: "ready",
-    });
-    return created.id;
-  }
 
   async function pipelineFixture(input: {
-    readonly accessMode: "anyone" | "linked-members";
+    readonly accessMode: "anyone" | "owner";
     readonly computerOnline?: boolean;
     readonly routingMode?: "dedicated" | "shared";
     readonly suffix: string;
     /** The one work location online, instead of the shared Main Runner's. */
     readonly environmentId?: ReturnType<typeof createId<"environment">>;
     /** Routes to this Workspace instead of a new one of its own. */
-    readonly workspaceId?: WorkspaceId;
+    readonly folder?: TaskFolder;
   }) {
     const onlineEnvironmentId = input.environmentId ?? environmentId;
     const queued: string[] = [];
@@ -1247,22 +1191,12 @@ integration("messaging pipeline", () => {
       },
     };
     hub.attach(peer, stream());
-    const workspace = input.workspaceId
-      ? { id: input.workspaceId }
-      : await createTestWorkspace(store, {
-          backing: {
-            kind: "local-directory",
-            generation: 1,
-            bindingId: createId("workspaceBinding"),
-            ownerEnvironmentId: createId("environment"),
-            storageAuthorityId: createId("storageAuthority"),
-          },
+    const folder: TaskFolder = input.folder ?? {
+      ...personal.agentHome,
+      path: join(directory, input.suffix),
+    };
+    await mkdir(folder.path, { recursive: true });
 
-          createdBy: ownerUserId,
-          idempotencyKey: `workspace-pipeline-${input.suffix}`,
-          name: `Pipeline ${input.suffix}`,
-          status: "ready",
-        });
     const harness = await store.createHarnessInstance({
       config: { model: "test" },
       driverKind: HarnessIdSchema.parse("native"),
@@ -1301,7 +1235,7 @@ integration("messaging pipeline", () => {
       channels,
       credentials,
       onExecutionQueued: (id) => queued.push(id),
-      onWorkspaceEvent: () => undefined,
+      onDeploymentEvent: () => undefined,
       relay: hub,
       runners: {
         canRunHarness: (candidate) => candidate === onlineEnvironmentId,
@@ -1327,7 +1261,7 @@ integration("messaging pipeline", () => {
       },
       provider: "slack",
       routingMode: input.routingMode ?? "dedicated",
-      workspaceId: workspace.id,
+      folder,
     });
     await service.handleRuntimeRequest(
       messagingRunnerId,
@@ -1345,61 +1279,49 @@ integration("messaging pipeline", () => {
       queued,
       relayRequests,
       service,
-      workspaceId: workspace.id,
+      folder,
     };
   }
 
-  async function waitForRun(workspaceId: WorkspaceId) {
-    return vi.waitFor(async () => {
-      const row = await database
-        .selectFrom("runs")
-        .innerJoin("threads", "threads.id", "runs.threadId")
-        .select([
-          "runs.id",
-          "runs.replyTarget",
-          "runs.seedInputId",
-          "runs.status",
-          "runs.threadId",
-          "threads.workspaceId",
-        ])
-        .where("threads.workspaceId", "=", workspaceId)
-        .executeTakeFirst();
-      if (!row) throw new Error("No Run was created from the channel ingress");
-      return row;
-    }, 10_000);
+  async function waitForRun(folder: TaskFolder) {
+    return vi.waitFor(
+      async () => {
+        const row = await database
+          .selectFrom("runs")
+          .innerJoin("threads", "threads.id", "runs.threadId")
+          .select([
+            "runs.id",
+            "runs.replyTarget",
+            "runs.seedInputId",
+            "runs.status",
+            "runs.threadId",
+            "threads.folderPath",
+          ])
+          .where("threads.folderPath", "=", folder.path)
+          .executeTakeFirst();
+        if (!row)
+          throw new Error(
+            "No Run was created: " +
+              JSON.stringify(
+                await database
+                  .selectFrom("channelIngressEvents")
+                  .select(["status", "lastError"])
+                  .execute(),
+              ),
+          );
+        return row;
+      },
+      { timeout: 10_000 },
+    );
   }
 
-  async function beginRun(run: {
-    readonly id: RunId;
-    readonly threadId: ThreadId;
-    readonly workspaceId: WorkspaceId;
-  }) {
-    const command = await store.claimNextCommand(environmentId, "pipeline-command-worker");
-    expect(command?.command.runId).toBe(run.id);
-    const harnesses = await store.listHarnessInstances();
-    const harness = harnesses.find((candidate) => candidate.enabled);
-    if (!harness) throw new Error("No AI engine is available for the pipeline Run");
-    const binding = await store.acquireExecutionBinding({
-      bindingLeaseExpiresAt: new Date(Date.now() + 60_000),
-      continuationIdentity: {
-        continuationKey: "runner:v1:gloDaTsWIkNBQ7kNDmrhYJ4LgXV9NgDqGfcuVjZ08-Y",
-        driverKind: HarnessIdSchema.parse("native"),
-      },
-      harnessInstanceId: harness.id,
-      leaseTokenHash: `pipeline-run-lease-${run.id}`,
-      membershipGeneration: 1,
-      runnerBootId: "pipeline-run-boot",
-      runnerId: agentsRunnerId,
-      runId: run.id,
-      threadId: run.threadId,
-    });
-    await emit(binding, run, 0, "run.started", { status: "running" });
-    return binding;
+  async function beginRun(run: { readonly id: RunId; readonly threadId: ThreadId }) {
+    return startPersonalQueuedRunFixture(store, run.id);
   }
 
   async function emit(
-    binding: { readonly bindingGeneration: number },
-    run: { readonly id: RunId; readonly threadId: ThreadId; readonly workspaceId: WorkspaceId },
+    binding: { readonly bindingGeneration: number; readonly runnerBootId: string },
+    run: { readonly id: RunId; readonly threadId: ThreadId },
     ordinal: number,
     type: string,
     data: unknown,
@@ -1414,9 +1336,8 @@ integration("messaging pipeline", () => {
         runId: run.id,
         threadId: run.threadId,
         type,
-        workspaceId: run.workspaceId,
       }),
-      runnerBootId: "pipeline-run-boot",
+      runnerBootId: binding.runnerBootId,
       runnerId: agentsRunnerId,
     });
   }
@@ -1432,7 +1353,7 @@ integration("messaging pipeline", () => {
   async function enrollMessagingRunner(): Promise<void> {
     const tokenHash = `sha256:pipeline-messaging-${messagingRunnerId}`;
     await store.createRunnerEnrollment({
-      allowedModules: ["messaging"],
+      allowedModules: ["integrations", "messaging"],
       createdBy: null,
       expiresAt: new Date(Date.now() + 60_000),
       id: `ren_${randomUUID()}`,
@@ -1455,80 +1376,6 @@ integration("messaging pipeline", () => {
       enrollmentTokenHash: tokenHash,
       publicKeyFingerprint: `sha256:pipeline-messaging-key`,
       publicKeyPem: `-----BEGIN PUBLIC KEY-----\npipeline\n-----END PUBLIC KEY-----\n`,
-    });
-  }
-
-  async function enrollAgentsRunner(input: {
-    readonly createdBy: UserId;
-    readonly environmentId: ReturnType<typeof createId<"environment">>;
-    readonly runnerId: RunnerId;
-    /** A desktop-added Mac is `local` and belongs to the person who added it. */
-    readonly runnerKind?: "local" | "main";
-  }): Promise<void> {
-    const runnerKind = input.runnerKind ?? "main";
-    if (!(await store.getDeployment())) {
-      await store.ensureDeployment({
-        canonicalOrigin,
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-      });
-    }
-    const pair = generateKeyPairSync("ed25519");
-    const publicKeyPem = pair.publicKey.export({ format: "pem", type: "spki" }).toString();
-    const publicKeyDer = pair.publicKey.export({ format: "der", type: "spki" });
-    const enrollmentTokenHash = `sha256:${createHash("sha256")
-      .update(`pipeline-agents-runner-${runnerKind}`, "utf8")
-      .digest("base64url")}`;
-    await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
-      createdBy: input.createdBy,
-      expiresAt: new Date(Date.now() + 60_000),
-      id: `ren_${randomUUID()}`,
-      idempotencyKey: `pipeline-agents-runner-${runnerKind}`,
-      ...(runnerKind === "main" ? { mainEnrollmentPurpose: "initial" as const } : {}),
-      name: `Pipeline ${runnerKind} runner`,
-      requestFingerprint: `sha256:pipeline-agents-runner-${runnerKind}`,
-      runnerKind,
-      tokenHash: enrollmentTokenHash,
-    });
-    await store.enrollRunnerConnection({
-      descriptor: {
-        bootId: `rbt_${randomUUID()}` as RunnerDescriptor["bootId"],
-        capabilities: ["filesystem"],
-        modules: {
-          agents: {
-            environmentIds: [input.environmentId],
-            harnessDrivers: [
-              {
-                accessModes: [...ThreadAccessModeSchema.options],
-                driverKind: HarnessIdSchema.parse("native"),
-                readiness: "configured",
-                sources: [
-                  {
-                    fields: [],
-                    kind: "first-party",
-                    label: "Native",
-                    quota: "none",
-                    sourceId: "native",
-                    stateKinds: ["isolated"],
-                  },
-                ],
-              },
-            ],
-            localStorage: null,
-            maxConcurrentRuns: 4,
-            providerStateModes: ["isolated"],
-            workspaceBackings: ["local-directory"],
-          },
-        },
-        name: `Pipeline ${runnerKind} runner`,
-        runnerId: input.runnerId,
-        runnerKind,
-        runtimeVersion: "test",
-      },
-      enrollmentTokenHash,
-      publicKeyFingerprint: `sha256:${createHash("sha256").update(publicKeyDer).digest("base64url")}`,
-      publicKeyPem,
     });
   }
 });
@@ -1676,7 +1523,7 @@ function stream(): RunnerAuxiliaryStream {
     auxiliaryStreamId: fence.auxiliaryStreamId,
     fence,
     identity: {
-      allowedModules: ["messaging"],
+      allowedModules: ["integrations", "messaging"],
       bootId,
       capabilities: [],
       connectionGeneration: 1,

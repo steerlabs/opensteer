@@ -127,10 +127,8 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       const model = stack.catalog.models.find((candidate) => candidate.isDefault);
       if (!model)
         throw new Error(`Engine supplied no default model. ${engine.signInGuidance ?? ""}`);
-      const workspaceId = stack.mainWorkspaceId;
+
       const threadId = await stack.createThread({
-        home: true,
-        workspaceId,
         title: "Held sign-in transport qualification",
         modelSelection: ModelSelectionSchema.parse({
           modelId: model.modelId,
@@ -140,7 +138,7 @@ describe.each(holdEngines)("$label held MCP", (engine) => {
       });
       const turn = await stack.sendMessage({
         threadId,
-        workspaceId,
+
         text: `This is a fake-data transport test. Call sign_in exactly once with sessionId bsn_00000000-0000-4000-8000-000000000001, site https://example.test, reason Test held sign-in. This fake session does not need opening or inspecting. Wait for this same tool call to return after ${holdMs / 1_000} seconds. Do not retry it or run other tools while it is pending. The ready result's account field contains an unpredictable marker. Reply with exactly that marker after receiving it. Never browse, open files, or retrieve credentials.`,
       });
       lastAnswer = turn.assistantText;

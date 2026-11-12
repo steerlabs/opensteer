@@ -33,16 +33,15 @@ import { integrationDefinitions } from "@opensteer/integration-catalog";
 import { IntegrationInstallStore, createDatabase } from "@opensteer/database";
 import { sql } from "kysely";
 import { createHostRuntime } from "../runtime/runtime.js";
-import { operation, operations, toolText } from "../runtime/computer-apps.test-support.js";
+import { operation, operations, toolText } from "./computer-apps.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway } from "../runtime/computer-apps.test-support.js";
+import { integrationGateway } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  startMachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+  startPrivateMachineHost,
+} from "../integrations/personal-machine.test-support.js";
 
 // Count real resolutions inside the adapter; a spy on its barrel misses internal imports.
 const resolutions = vi.hoisted(() => ({ count: 0 }));
@@ -104,15 +103,11 @@ integration("proposal credential guidance", () => {
     const closers: (() => Promise<unknown>)[] = [];
     let passed = false;
     try {
-      const host = await startMachineAccessHost(isolated.url);
+      const host = await startPrivateMachineHost(isolated.url);
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Gmail caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "gmail-caller",
-          name: "Gmail caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const run = await dispatchCallerRun(host, caller, {
@@ -259,18 +254,13 @@ integration("proposal credential guidance", () => {
     try {
       const provider = await upstream();
       closers.push(provider.close);
-      const host = await startMachineAccessHost(database.url, {
+      const host = await startPrivateMachineHost(database.url, {
         integrationFetch: provider.fetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Proposal caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "proposal-caller",
-          name: "Proposal caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const run = await dispatchCallerRun(host, caller, {
@@ -770,7 +760,6 @@ integration("proposal credential guidance", () => {
             connectionId: mutableConnection.id,
             installationId: catalogInstallation.id,
             isDefault: true,
-            workspaceId: run.workspaceId,
           },
         },
         { headers: host.ownerHeaders },
@@ -1001,6 +990,10 @@ integration("proposal credential guidance", () => {
             integrationFetch: offlineFetch,
             logger: false,
           });
+          if (restarted.kind !== "personal") {
+            await restarted.close();
+            throw new Error("Expected Personal Host");
+          }
           try {
             await restarted.listen();
             const resolutionCountBeforeRead = resolutions.count;
@@ -1117,18 +1110,13 @@ integration("proposal credential guidance", () => {
     try {
       const provider = await upstream();
       closers.unshift(provider.close);
-      const host = await startMachineAccessHost(named.url, {
+      const host = await startPrivateMachineHost(named.url, {
         integrationFetch: provider.fetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Naming caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "naming-caller",
-          name: "Naming caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const run = await dispatchCallerRun(host, caller, {
@@ -1327,18 +1315,13 @@ integration("proposal credential guidance", () => {
     };
     let passed = false;
     try {
-      const host = await startMachineAccessHost(bound.url, {
+      const host = await startPrivateMachineHost(bound.url, {
         integrationFetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Bound caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "bound-caller",
-          name: "Bound caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       const run = await dispatchCallerRun(host, caller, { key: "bound", title: "Read accounts" });
       const gateway = await integrationGateway(run.integrationTools);
@@ -1434,7 +1417,6 @@ integration("proposal credential guidance", () => {
               connectionId: null,
               installationId,
               isDefault: true,
-              workspaceId: run.workspaceId,
             },
           },
           { headers: host.ownerHeaders },
@@ -1536,6 +1518,10 @@ integration("proposal credential guidance", () => {
           integrationFetch,
           logger: false,
         });
+        if (restarted.kind !== "personal") {
+          await restarted.close();
+          throw new Error("Expected Personal Host");
+        }
         closers.unshift(() => restarted.close());
         const rows = await toolRows(restarted.store.database);
         expect(await grantRows(restarted.store.database)).toEqual(grantsBefore);
@@ -1560,7 +1546,6 @@ integration("proposal credential guidance", () => {
         const nextRun = await dispatchCallerRun(started, nextCaller, {
           key: "bound-again",
           title: "Read accounts again",
-          workspaceId: run.workspaceId,
         });
         closers.unshift(() => nextRun.complete());
         const nextGateway = await integrationGateway(nextRun.integrationTools);
@@ -1778,18 +1763,13 @@ integration("proposal credential guidance", () => {
     closers.unshift(async () => warnings.mockRestore());
     let passed = false;
     try {
-      const host = await startMachineAccessHost(recovering.url, {
+      const host = await startPrivateMachineHost(recovering.url, {
         integrationFetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Recovering caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "recovering-caller",
-          name: "Recovering caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       const run = await dispatchCallerRun(host, caller, { key: "recovering", title: "Read" });
       const gateway = await integrationGateway(run.integrationTools);
@@ -1955,7 +1935,6 @@ integration("proposal credential guidance", () => {
             connectionId: connection.id,
             installationId: transient.installationId,
             isDefault: true,
-            workspaceId: run.workspaceId,
           },
         },
         { headers: host.ownerHeaders },
@@ -2030,6 +2009,10 @@ integration("proposal credential guidance", () => {
       closers.splice(0, firstBoot.length);
       await host.runtime.close();
       const failing = await createHostRuntime(host.config, { integrationFetch, logger: false });
+      if (failing.kind !== "personal") {
+        await failing.close();
+        throw new Error("Expected Personal Host");
+      }
       const failed = await state(failing.store.database);
       await sql
         .raw(
@@ -2072,6 +2055,10 @@ integration("proposal credential guidance", () => {
       });
 
       const restarted = await createHostRuntime(host.config, { integrationFetch, logger: false });
+      if (restarted.kind !== "personal") {
+        await restarted.close();
+        throw new Error("Expected Personal Host");
+      }
       closers.unshift(() => restarted.close());
       const recovered = await state(restarted.store.database);
       expect(recovered.connection).toEqual(stored.connection);
@@ -2108,7 +2095,6 @@ integration("proposal credential guidance", () => {
       const nextRun = await dispatchCallerRun(started, nextCaller, {
         key: "recovering-again",
         title: "Read again",
-        workspaceId: run.workspaceId,
       });
       closers.unshift(() => nextRun.complete());
       const nextGateway = await integrationGateway(nextRun.integrationTools);

@@ -119,13 +119,12 @@ const scope = {
   iat: 1_900_000_000,
   iss: "opensteer-host",
   jti: "test-jti",
-  membershipGeneration: 1,
+
   requestedBy: createId("user"),
   runId: createId("run"),
   runnerBootId: "boot-test",
   runnerId: createId("runner"),
   threadId: createId("thread"),
-  workspaceId: createId("workspace"),
 } satisfies IntegrationToolsRunScope;
 const triggerScope = {
   aud: "opensteer-trigger-integration-tools" as const,
@@ -140,8 +139,7 @@ const triggerScope = {
   runnerBootId: scope.runnerBootId,
   runnerId: scope.runnerId,
   threadId: scope.threadId,
-  toolContractVersion: 2,
-  workspaceId: scope.workspaceId,
+  toolContractVersion: 3,
 } satisfies IntegrationToolsTriggerScope;
 
 describe("Opensteer MCP integration access classes", () => {
@@ -208,7 +206,12 @@ describe("Opensteer MCP integration access classes", () => {
     };
     expect(listed.tools.map(({ name }) => name)).toEqual(
       agentTools
-        .filter((tool) => tool.callers.some((kind) => kind === "run") && !("knowledge" in tool))
+        .filter(
+          (tool) =>
+            tool.callers.some((kind) => kind === "run") &&
+            !("knowledge" in tool) &&
+            !("team" in tool),
+        )
         .map((tool) => tool.name),
     );
     // The MCP SDK rejects a tools/list result whose inputSchema has no object
@@ -244,7 +247,6 @@ describe("Opensteer MCP integration access classes", () => {
         reason: { maxLength: requestReasonMaxLength, minLength: 1, type: "string" },
         runnerId: expect.any(Object),
         server: expect.any(Object),
-        workspaceId: expect.any(Object),
       },
       required: ["reason"],
       type: "object",
@@ -842,7 +844,7 @@ describe("Opensteer MCP integration access classes", () => {
     expect(response).toMatchObject({
       content: [
         {
-          text: 'Linear operation Create issue makes changes, and this Workspace has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
+          text: 'Linear operation Create issue makes changes, and the owner has read access as Work. Call integration_request with integration "linear" and access "read-write"; do not retry this call until it is fulfilled.',
           type: "text",
         },
       ],
@@ -1080,7 +1082,6 @@ describe("Opensteer MCP integration access classes", () => {
         access: "read",
         installationId: entry.installation.id,
         requestedServerId: entry.servers[0]!.id,
-        targetWorkspaceId: scope.workspaceId,
       }),
     );
   });
@@ -1136,7 +1137,6 @@ describe("Opensteer MCP integration access classes", () => {
         }),
         requestedConnectionId: null,
         requestedServerId: null,
-        targetWorkspaceId: scope.workspaceId,
       }),
     );
     expect(access.requests.createIntegrationInstallRequest).not.toHaveBeenCalled();
@@ -1348,115 +1348,6 @@ describe("Opensteer MCP integration access classes", () => {
     );
   });
 
-  it("keeps Trigger and non-main cross-Workspace targeting rules", async () => {
-    const entry = inventoryEntry();
-    const otherWorkspace = createId("workspace");
-    const trigger = await createHarness({ inventory: [entry], triggerScope });
-    const triggerResponse = await trigger.handler(
-      {
-        params: {
-          arguments: {
-            access: "read",
-            integration: "linear",
-            reason: "Use elsewhere",
-            workspaceId: otherWorkspace,
-          },
-          name: "integration_request",
-        },
-      },
-      callExtra("trigger-cross-workspace"),
-    );
-    expect(errorText(triggerResponse)).toBe(
-      "A Trigger execution may only request integration access for its own Workspace. Omit workspaceId and request access where the Trigger runs.",
-    );
-
-    const project = await createHarness({
-      inventory: [entry],
-      runScope: scope,
-      reach: { kind: "workspace", workspaceId: scope.workspaceId },
-    });
-    const projectResponse = await project.handler(
-      {
-        params: {
-          arguments: {
-            access: "read",
-            integration: "linear",
-            reason: "Use elsewhere",
-            workspaceId: otherWorkspace,
-          },
-          name: "integration_request",
-        },
-      },
-      callExtra("project-cross-workspace"),
-    );
-    expect(errorText(projectResponse)).toBe("This caller may request access only in its Workspace");
-  });
-
-  it("refuses to widen the owner's Main for a lineage that runs below it", async () => {
-    const entry = inventoryEntry();
-    const channel = await createHarness({
-      computerUseMacs: [{ name: "Alex's Mac", ready: true, runnerId: createId("runner") }],
-      inventory: [entry],
-      mainAccess: "withheld",
-      propose: vi.fn(),
-      runScope: scope,
-      reach: { kind: "workspace", workspaceId: scope.workspaceId },
-    });
-    const refusal =
-      "This conversation runs for people other than the owner, so it cannot use or request the owner's personal integrations. Ask the owner to route it to a Workspace and grant the integration there.";
-    const attempts = [
-      { access: "read", integration: "linear", reason: "Read the issues" },
-      { access: "read", catalog: "linear", reason: "Read the issues" },
-      {
-        access: "read",
-        app: "Notes",
-        kind: "computer-app",
-        reason: "Read the notes",
-        runnerId: createId("runner"),
-      },
-    ] as const;
-    for (const [index, attempt] of attempts.entries()) {
-      const response = await channel.handler(
-        { params: { arguments: attempt, name: "integration_request" } },
-        callExtra(`withheld-${index}`),
-      );
-      expect(errorText(response)).toBe(refusal);
-    }
-    const proposed = await channel.handler(
-      {
-        params: {
-          arguments: {
-            access: "read",
-            description: "Issues and projects for software teams.",
-            kind: "mcp",
-            reason: "Read the issues",
-            source: "https://mcp.example.test/mcp",
-          },
-          name: "integration_propose",
-        },
-      },
-      callExtra("withheld-propose"),
-    );
-    expect(errorText(proposed)).toBe(refusal);
-    expect(channel.requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
-    expect(channel.requests.createIntegrationInstallRequest).not.toHaveBeenCalled();
-    expect(channel.requestComputerAppAccess).not.toHaveBeenCalled();
-
-    // The same request from the owner's own Home lineage proceeds.
-    const home = await createHarness({ inventory: [entry], mainAccess: "inherited" });
-    const allowed = await home.handler(
-      {
-        params: {
-          arguments: { access: "read", integration: "linear", reason: "Read the issues" },
-          name: "integration_request",
-        },
-      },
-      callExtra("inherited-request"),
-    );
-    expect(errorText(allowed)).not.toBe(refusal);
-    expect(home.requests.createIntegrationAccessRequest).toHaveBeenCalledTimes(1);
-  });
-
   it("reports already-covered access without creating another request", async () => {
     const entry = inventoryEntry();
     const grant = effectiveGrant({
@@ -1480,7 +1371,7 @@ describe("Opensteer MCP integration access classes", () => {
       callExtra("already-granted"),
     );
     expect(errorText(response)).toContain(
-      "This Workspace already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
+      "The owner already has read-write access to Linear as Work. Use integration_search for current access and available operations; do not request it again.",
     );
     expect(requests.createIntegrationAccessRequest).not.toHaveBeenCalled();
   });
@@ -1584,7 +1475,6 @@ async function createHarness(input: {
     readonly displayName: string;
     readonly accountIdentifier: string | null;
   };
-  readonly reach?: import("@opensteer/core").ThreadReachScope;
   readonly installedComputerApps?: ReturnType<typeof vi.fn>;
   readonly computerAppHolders?: ReadonlyMap<
     string,
@@ -1598,7 +1488,7 @@ async function createHarness(input: {
     readonly app: { bundleId: string; displayName: string; teamId: null };
   }[];
   readonly pendingAccessRequests?: readonly {
-    readonly request: { readonly targetWorkspaceId: ReturnType<typeof createId<"workspace">> };
+    readonly request: { readonly id?: string };
     readonly requestedConnectionId: ReturnType<typeof createIntegrationId<"connection">>;
   }[];
   readonly callTool?: ReturnType<typeof vi.fn>;
@@ -1735,10 +1625,8 @@ async function createHarness(input: {
     },
   );
   const handlerOptions = {
-    ...(input.reach ? { reach: input.reach } : {}),
     definitions: input.definitions ?? [definition],
-    getWorkspaceForOwner: vi.fn(async (workspaceId) => ({ id: workspaceId })),
-    onWorkspaceEvent: vi.fn(),
+    onEvent: vi.fn(),
     platform: {
       computerToolEnabled: async () => true,
       computerUseVersion: () => 2,
@@ -2028,7 +1916,6 @@ function effectiveGrant(input: {
     revokedAt: null,
     source: "explicit" as const,
     status: "active" as const,
-    workspaceId: scope.workspaceId,
   };
 }
 

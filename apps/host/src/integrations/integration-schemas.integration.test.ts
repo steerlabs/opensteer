@@ -1,3 +1,5 @@
+import { beforeEach } from "vitest";
+import { clearPersonalMachineFixture } from "./personal-machine.test-support.js";
 import { startHeldRequest } from "./held-request.test-support.js";
 import { startUpstream } from "./integration-schemas.test-support.js";
 /**
@@ -31,7 +33,7 @@ import { startUpstream } from "./integration-schemas.test-support.js";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { IntegrationPlatformStore, replaceServerToolsInTransaction } from "@opensteer/database";
 import {
   IntegrationToolIdSchema,
@@ -40,16 +42,14 @@ import {
 } from "@opensteer/integration-core";
 import { standaloneToolSchema } from "@opensteer/integration-core/tool-schemas";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
-import { integrationGateway, toolText } from "../runtime/computer-apps.test-support.js";
+import { integrationGateway, toolText } from "./computer-apps.test-support.js";
 import {
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  resetMachineAccessDatabase,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { maximumDescribeBytes } from "./integration-describe.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -66,6 +66,7 @@ type Json = Readonly<Record<string, unknown>>;
 type Gateway = Awaited<ReturnType<typeof integrationGateway>>;
 
 integration("integration schemas", () => {
+  beforeEach(() => clearPersonalMachineFixture(databaseUrl!));
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
     databaseUrl = database.url;
@@ -75,8 +76,6 @@ integration("integration schemas", () => {
     await database?.drop();
     database = undefined;
   }, 120_000);
-
-  beforeEach(async () => resetMachineAccessDatabase(databaseUrl));
 
   let closeCurrent: (() => Promise<void>) | undefined;
   afterEach(async () => {
@@ -99,18 +98,13 @@ integration("integration schemas", () => {
       closeCurrent = async () => {
         for (const close of closers) await close().catch(() => undefined);
       };
-      const host = await startMachineAccessHost(databaseUrl, {
+      const host = await startPrivateMachineHost(databaseUrl, {
         integrationFetch: upstream.fetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "Caller",
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "integration-schemas-caller",
-          name: "Caller",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
       const run = await dispatchCallerRun(host, caller, {
@@ -142,7 +136,6 @@ integration("integration schemas", () => {
             connectionId: null,
             installationId,
             isDefault: true,
-            workspaceId: run.workspaceId,
           },
           type: "integration.grant.create",
         },

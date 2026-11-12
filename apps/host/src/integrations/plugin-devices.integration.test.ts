@@ -15,12 +15,21 @@ import { IntegrationPlatformService } from "./integration-platform-service.js";
 import { executeIntegrationAdministration } from "./integration-administration.js";
 
 describeStore("plugin devices", (test) => {
-  test("agent installs retain their nearest task, project devices and refresh approval context", async ({
+  test("agent installs retain their nearest task, personal devices and refresh approval context", async ({
     storeFixture: f,
   }) => {
-    const run = await f.createRunFixture("plugin-device", {
-      deploymentShape: { defaultWorkspaceBacking: "local-directory", kind: "personal" },
-      workspaceBacking: "local-directory",
+    const run = await f.createRunFixture("plugin-device");
+    const pluginComputerId = createId("runner");
+    await f.enablePersonalRemoteAccess();
+    await enrollTestRunner(f.store, {
+      allowedModules: personalReachableGrant,
+      modules: reachOnlyModules,
+      createdBy: run.userId,
+      runnerKind: "local",
+      runnerId: pluginComputerId,
+      environmentId: createId("environment"),
+      name: "Plugin computer",
+      tokenSuffix: "initial-plugin-device",
     });
     const platform = new IntegrationPlatformStore(f.database);
     const directory = await mkdtemp(join(tmpdir(), "opensteer-plugin-device-"));
@@ -43,7 +52,7 @@ describeStore("plugin devices", (test) => {
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
-      onWorkspaceEvent: () => undefined,
+      onDeploymentEvent: () => undefined,
       onConnectionsChanged: changed,
       onRequestsChanged: () => undefined,
     });
@@ -83,8 +92,8 @@ describeStore("plugin devices", (test) => {
       const input = {
         actorUserId: run.userId,
         directory: pluginDirectory,
-        workspaceId: run.workspace.id,
-        runnerId: run.runnerId,
+
+        runnerId: pluginComputerId,
         threadId: child.id,
         requestId: randomUUID(),
       };
@@ -101,7 +110,7 @@ describeStore("plugin devices", (test) => {
         },
       });
       const devices = await platform.settings.otherDevices(run.userId, [
-        { id: run.runnerId, name: "Computer", status: "offline" },
+        { id: pluginComputerId, name: "Computer", status: "offline" },
       ]);
       const serverStatus = await f.database
         .selectFrom("integrationServers")
@@ -111,7 +120,7 @@ describeStore("plugin devices", (test) => {
       expect(devices).toMatchObject([
         {
           pluginId,
-          computer: { id: run.runnerId, status: "offline" },
+          computer: { id: pluginComputerId, status: "offline" },
           issue: serverStatus.statusDetail,
           setupThreadId: run.thread.id,
         },
@@ -124,38 +133,9 @@ describeStore("plugin devices", (test) => {
           .executeTakeFirstOrThrow();
       expect(await request()).toMatchObject({
         threadId: run.thread.id,
-        workspaceId: run.workspace.id,
+
         threadTitle: run.thread.title,
       });
-      const otherOwner = await f.store.createUser("Other Workspace owner");
-      const membership = await f.database
-        .selectFrom("workspaceMemberships")
-        .selectAll()
-        .where("workspaceId", "=", run.workspace.id)
-        .where("userId", "=", run.userId)
-        .executeTakeFirstOrThrow();
-      await f.database
-        .insertInto("workspaceMemberships")
-        .values({ ...membership, id: createId("workspaceMembership"), userId: otherOwner })
-        .execute();
-      await f.database
-        .updateTable("workspaceMemberships")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: otherOwner })
-        .where("id", "=", membership.id)
-        .execute();
-      await platform.localMcp.requestApprovals();
-      expect(await request()).toMatchObject({
-        threadId: null,
-        workspaceId: null,
-        threadTitle: null,
-      });
-      await f.database
-        .updateTable("workspaceMemberships")
-        .set({ state: "active", revokedAt: null, revokedBy: null })
-        .where("id", "=", membership.id)
-        .execute();
-      await platform.localMcp.requestApprovals();
-      expect(changed).toHaveBeenCalled();
       const secondTask = { ...parent, id: createId("thread"), title: "Second task" };
       secondTask.lineageRootThreadId = secondTask.id;
       await f.database.insertInto("threads").values(secondTask).execute();
@@ -190,7 +170,7 @@ describeStore("plugin devices", (test) => {
       await f.database
         .updateTable("runners")
         .set({ revokedAt: new Date() })
-        .where("id", "=", run.runnerId)
+        .where("id", "=", pluginComputerId)
         .execute();
       await service.installAgentPlugin({
         ...input,
@@ -201,11 +181,11 @@ describeStore("plugin devices", (test) => {
         await f.database
           .selectFrom("runnerPluginDataRemovals")
           .selectAll()
-          .where("runnerId", "=", run.runnerId)
+          .where("runnerId", "=", pluginComputerId)
           .where("pluginId", "=", pluginId)
           .execute(),
       ).toHaveLength(1);
-      expect(await platform.plugins.pendingDataRemovals(run.runnerId)).toEqual([]);
+      expect(await platform.plugins.pendingDataRemovals(pluginComputerId)).toEqual([]);
       await writeFile(
         join(pluginDirectory, "mcp.json"),
         JSON.stringify({
@@ -228,7 +208,7 @@ describeStore("plugin devices", (test) => {
         .updateTable("integrationServers")
         .set({
           statusDetail: "Old failure",
-          transport: { ...retired.transport, runnerId: run.runnerId },
+          transport: { ...retired.transport, runnerId: pluginComputerId },
         })
         .where("name", "=", "camera")
         .execute();
@@ -243,14 +223,18 @@ describeStore("plugin devices", (test) => {
       });
       const currentDevice = (
         await platform.settings.otherDevices(run.userId, [
-          { id: run.runnerId, name: "Old", status: "offline" },
+          { id: pluginComputerId, name: "Old", status: "offline" },
           { id: moved.runnerId, name: "New", status: "online" },
         ])
       )[0];
       expect(currentDevice?.computer?.id).toBe(moved.runnerId);
       expect(currentDevice?.issue).toContain("declined");
       expect(currentDevice?.issue).not.toContain("Old failure");
-      const personViewer = await f.store.createUser("Person installer");
+      const personViewer = run.userId;
+      await writeFile(
+        join(pluginDirectory, "plugin.json"),
+        JSON.stringify({ name: "person-camera-fixture" }),
+      );
       const person = await service.installAgentPlugin({
         actorUserId: personViewer,
         directory: pluginDirectory,
@@ -276,12 +260,12 @@ describeStore("plugin devices", (test) => {
       expect(
         (await platform.settings.detail(personViewer, { kind: "plugin", pluginId: personId }))
           .setupThreadId,
-      ).toBeNull();
+      ).toBe(run.thread.id);
       expect(
         (await platform.settings.otherDevices(personViewer, [])).find(
           (p) => p.pluginId === personId,
         )?.setupThreadId,
-      ).toBeNull();
+      ).toBe(run.thread.id);
       const installationRow = await f.database
         .selectFrom("integrationInstallations")
         .selectAll()
@@ -305,39 +289,17 @@ describeStore("plugin devices", (test) => {
       expect(await readFile(join(legacy, "pairing"), "utf8")).toBe("retained");
       await expect(readFile(join(orphan, "pairing"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
+      await service.close();
       await rm(directory, { recursive: true, force: true });
     }
   });
 
-  test("removal and canRemove use the same administrator or active workspace-installer rule", async ({
+  test("removal and canRemove require the personal owner and preserve data on refusal", async ({
     storeFixture: f,
   }) => {
     const run = await f.createRunFixture("device-remove");
     const platform = new IntegrationPlatformStore(f.database);
-    const member = await f.store.createUser("Member");
-    const admin = await f.store.createUser("Administrator");
-    await f.database
-      .updateTable("users")
-      .set({ instanceRole: "administrator" })
-      .where("id", "=", admin)
-      .execute();
-    for (const userId of [member, admin])
-      await f.database
-        .insertInto("workspaceMemberships")
-        .values({
-          id: createId("workspaceMembership"),
-          workspaceId: run.workspace.id,
-          userId,
-          state: "active",
-          role: userId === member ? "owner" : "collaborator",
-          generation: 1,
-          invitedBy: run.userId,
-          joinedAt: new Date(),
-          revokedAt: null,
-          revokedBy: null,
-          updatedAt: new Date(),
-        })
-        .execute();
+    const foreign = createId("user");
     const directory = await mkdtemp(join(tmpdir(), "plugin-removal-authority-"));
     const removeRunnerData = vi.fn(async () => undefined);
     const service = new IntegrationPlatformService({
@@ -358,7 +320,7 @@ describeStore("plugin devices", (test) => {
       secretVault: new AesGcmSecretVault(
         new StaticEncryptionKeyProvider(new Map([[1, randomBytes(32)]]), 1),
       ),
-      onWorkspaceEvent: () => undefined,
+      onDeploymentEvent: () => undefined,
       onConnectionsChanged: () => undefined,
       onRequestsChanged: () => undefined,
     });
@@ -382,119 +344,53 @@ describeStore("plugin devices", (test) => {
       const install = () =>
         service.installAgentPlugin({
           actorUserId: run.userId,
-          workspaceId: run.workspace.id,
+
           runnerId: run.runnerId,
           directory: source,
           requestId: randomUUID(),
         });
-      let installed = await install();
-      let pluginId = installed.installation.pluginId!;
-      expect(await platform.settings.otherDevices(member, [])).toEqual([]);
-      const target = { kind: "plugin", pluginId } as const;
-      for (const [userId, allowed] of [
-        [run.userId, true],
-        [member, false],
-        [admin, true],
-      ] as const) {
-        expect((await platform.settings.detail(userId, target)).row.permissions.canRemove).toBe(
-          allowed,
-        );
-      }
-      const options = { platform: service };
+      const installed = await install(),
+        pluginId = installed.installation.pluginId!,
+        target = { kind: "plugin", pluginId } as const;
+      const data = join(directory, "plugins", "data", pluginId, "pairing");
+      await writeFile(data, "retained");
+      expect((await platform.settings.detail(run.userId, target)).row.permissions.canRemove).toBe(
+        true,
+      );
+      await expect(platform.settings.detail(foreign, target)).rejects.toMatchObject({
+        code: "forbidden",
+      });
+      await expect(
+        platform.plugins.assertCanRemove(pluginId, { userId: foreign }),
+      ).rejects.toMatchObject({ code: "forbidden" });
       await expect(
         executeIntegrationAdministration(
-          options,
-          { userId: member, isAdministrator: false },
+          { platform: service },
+          { userId: foreign },
           { type: "plugin.remove", pluginId, idempotencyKey: "denied" },
           "denied",
         ),
       ).rejects.toMatchObject({ code: "forbidden" });
-      await f.database
-        .updateTable("workspaceMemberships")
-        .set({ state: "revoked", revokedAt: new Date(), revokedBy: admin })
-        .where("workspaceId", "=", run.workspace.id)
-        .where("userId", "=", run.userId)
-        .execute();
-      const data = join(directory, "plugins", "data", pluginId, "pairing");
-      await writeFile(data, "retained");
-      await expect(
-        executeIntegrationAdministration(
-          options,
-          { userId: run.userId, isAdministrator: false },
-          { type: "plugin.remove", pluginId, idempotencyKey: randomUUID() },
-          randomUUID(),
-        ),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      expect((await platform.plugins.list()).some((p) => p.id === pluginId)).toBe(true);
+      expect(
+        (await platform.listInstallations()).some((i) => i.id === installed.installation.id),
+      ).toBe(true);
+      expect(await readFile(data, "utf8")).toBe("retained");
       expect(await f.database.selectFrom("runnerPluginDataRemovals").selectAll().execute()).toEqual(
         [],
       );
-      expect((await platform.plugins.list()).find((p) => p.id === pluginId)).toBeDefined();
-      expect(
-        (await platform.listInstallations()).find((i) => i.id === installed.installation.id),
-      ).toBeDefined();
-      expect(await readFile(data, "utf8")).toBe("retained");
       expect(removeRunnerData).not.toHaveBeenCalled();
-      await expect(platform.settings.detail(run.userId, target)).rejects.toMatchObject({
-        code: "forbidden",
-      });
-      expect(
-        (await platform.settings.overview(run.userId)).rows.some(
-          (row) =>
-            row.target.kind === "plugin" &&
-            row.target.pluginId === pluginId &&
-            row.permissions.canRemove,
-        ),
-      ).toBe(false);
-      await f.database
-        .updateTable("workspaceMemberships")
-        .set({ state: "active", revokedAt: null, revokedBy: null })
-        .where("workspaceId", "=", run.workspace.id)
-        .where("userId", "=", run.userId)
-        .execute();
-      for (const [userId, isAdministrator] of [
-        [run.userId, false],
-        [admin, true],
-      ] as const) {
-        const pairing = join(directory, "plugins", "data", pluginId, "pairing");
-        await writeFile(pairing, "remove-on-success");
-        await executeIntegrationAdministration(
-          options,
-          { userId, isAdministrator },
-          { type: "plugin.remove", pluginId, idempotencyKey: randomUUID() },
-          randomUUID(),
-        );
-        expect((await platform.plugins.list()).find((p) => p.id === pluginId)).toBeUndefined();
-        expect((await platform.listInstallations()).some((i) => i.pluginId === pluginId)).toBe(
-          false,
-        );
-        await expect(readFile(pairing)).rejects.toMatchObject({ code: "ENOENT" });
-        if (!isAdministrator) {
-          installed = await install();
-          pluginId = installed.installation.pluginId!;
-          await f.database
-            .updateTable("workspaceMemberships")
-            .set({ state: "revoked", revokedAt: new Date(), revokedBy: admin })
-            .where("workspaceId", "=", run.workspace.id)
-            .where("userId", "=", admin)
-            .execute();
-        }
-      }
-      await platform.plugins.install({
-        id: pluginId,
-        name: "deployment",
-        actorUserId: run.userId,
-        source: {},
-        digest: "one",
-        manifest: { name: "deployment" },
-      });
-      expect(
-        (await platform.settings.detail(run.userId, { kind: "plugin", pluginId })).row.permissions
-          .canRemove,
-      ).toBe(false);
-      await expect(
-        platform.plugins.assertCanRemove(pluginId, { userId: run.userId, isAdministrator: false }),
-      ).rejects.toMatchObject({ code: "forbidden" });
+      await executeIntegrationAdministration(
+        { platform: service },
+        { userId: run.userId },
+        { type: "plugin.remove", pluginId, idempotencyKey: "remove" },
+        "remove",
+      );
+      expect((await platform.plugins.list()).some((p) => p.id === pluginId)).toBe(false);
+      expect((await platform.listInstallations()).some((i) => i.pluginId === pluginId)).toBe(false);
+      await expect(readFile(data)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
+      await service.close();
       await rm(directory, { recursive: true, force: true });
     }
   });

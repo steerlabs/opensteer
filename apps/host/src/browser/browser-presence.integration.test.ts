@@ -19,20 +19,12 @@ import { resolvedInputParts } from "@opensteer/harness";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { liveWork, type HostSnapshot } from "@opensteer/client/host";
-import {
-  createId,
-  zeroSequence,
-  WorkspaceIdSchema,
-  HarnessInstanceIdSchema,
-  ModelSelectionSchema,
-  type WorkspaceId,
-} from "@opensteer/core";
+import { zeroSequence, HarnessInstanceIdSchema, ModelSelectionSchema } from "@opensteer/core";
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import { decodeBrowserFrameEnvelope } from "@opensteer/protocol/browser";
 import { rawDataBuffer } from "@opensteer/shared/webSocketFrame";
 import { sql } from "kysely";
 import { PersonalTabStore } from "@opensteer/database";
-import { createTestWorkspace } from "@opensteer/database/test-support/workspace";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -43,12 +35,11 @@ import {
   createMachineAccessDatabase,
   dispatchCallerRun,
   enrollmentToken,
-  signUpUser,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   waitForMessage,
   type MachineAccessDatabase,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 
@@ -70,7 +61,7 @@ interface Listener {
 async function listen(
   host: MachineAccessHost,
   headers: Record<string, string>,
-  workspaceId?: WorkspaceId,
+  subscribe = true,
   placeEvents = false,
   browserStreams = true,
 ): Promise<Listener> {
@@ -86,21 +77,24 @@ async function listen(
     };
     messages.push(message);
     const latest = message.events?.at(-1);
-    if (message.type === "host.events" && latest?.sequence && workspaceId) {
-      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack", workspaceId }));
+    if (message.type === "host.events" && latest?.sequence && subscribe) {
+      socket.send(JSON.stringify({ sequence: latest.sequence, type: "client.ack" }));
     }
   });
-  if (workspaceId) {
+  if (subscribe) {
     const synchronized = waitForMessage(socket, (message) => message.type === "host.synchronized");
     socket.send(
       JSON.stringify({
-        afterSequence: zeroSequence,
+        cursor: {
+          deploymentId: (await host.store.getDeployment())!.id,
+          apiVersion: hostApiVersion,
+          afterSequence: zeroSequence,
+        },
         apiVersion: hostApiVersion,
         threadId: null,
         personShow: "accept",
         ...(placeEvents ? { placeEvents: "include" } : {}),
         type: "client.subscribe",
-        workspaceId,
       }),
     );
     await synchronized;
@@ -131,13 +125,14 @@ async function until<Value>(
   produce: () => Value | undefined | Promise<Value | undefined>,
   timeoutMs = 10_000,
 ): Promise<Value> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const value = await produce();
-    if (value !== undefined) return value;
-    if (Date.now() >= deadline) throw new Error("timed out waiting for a realtime message");
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-  }
+  return vi.waitFor(
+    async () => {
+      const value = await produce();
+      if (value === undefined) throw new Error("Realtime condition never arrived");
+      return value;
+    },
+    { timeout: timeoutMs },
+  );
 }
 
 interface Reader {
@@ -145,7 +140,6 @@ interface Reader {
   retainBrowserWatch(sessionId: string, surfaceId: string): () => void;
   browserWatchState(sessionId: string, surfaceId: string): { status: string; error: string | null };
   readonly requests: string[];
-  activateWorkspace(workspaceId: string): void;
   dispose(): void;
   getSnapshot(): HostSnapshot;
   refresh(): Promise<void>;
@@ -197,14 +191,15 @@ async function reader(
     reconnectMaxDelayMs: 100,
     refreshIntervalMs: 0,
     webSocketFactory: (url) => {
-      const socket = new WebSocket(url, { headers: { ...host.ownerHeaders, origin: host.origin } });
+      const socket = new WebSocket(url, {
+        headers: { ...host.ownerHeaders, origin: host.origin.origin },
+      });
       sockets.push(socket);
       return socket;
     },
   });
   await client.load();
   return {
-    activateWorkspace: (workspaceId) => client.activateWorkspace(workspaceId),
     dispose: () => client.dispose(),
     getSnapshot: () => client.getSnapshot(),
     refresh: () => client.refresh(),
@@ -276,16 +271,12 @@ integration("Browser presence and conversation usage", () => {
   it("attaches browser streams only on the requesting socket and measures the additive prefixes and deltas", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Keyed acting",
       maxConcurrentRuns: 1,
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "keyed-caller",
-        name: "Keyed acting",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const run = await dispatchCallerRun(host, caller, {
@@ -303,37 +294,20 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true), { timeout: 5000 });
-    const workspaceId = run.workspaceId;
-    const neighbors = await Promise.all(
-      ["Second", "Third"].map((name) =>
-        createTestWorkspace(host.store, {
-          createdBy: host.ownerId,
-          idempotencyKey: `keyed-${name}`,
-          name,
-          status: "ready",
-          backing: {
-            kind: "local-directory",
-            bindingId: createId("workspaceBinding"),
-            generation: 1,
-            ownerEnvironmentId: createId("environment"),
-            storageAuthorityId: null,
-          },
-        }),
-      ),
-    );
-    const a = await listen(host, host.ownerHeaders, workspaceId, false, false);
-    const b = await listen(host, host.ownerHeaders, neighbors[0]!.id, false, false);
+    const a = await listen(host, host.ownerHeaders, true, false, false);
+    const b = await listen(host, host.ownerHeaders, true, false, false);
     cleanups.push(
       () => a.close(),
       () => b.close(),
     );
-    const c = await listen(host, host.ownerHeaders, neighbors[1]!.id, false, false);
+    const c = await listen(host, host.ownerHeaders, true, false, false);
     cleanups.push(() => c.close());
     const opened = await host.runtime.browser.start({
+      placement: { kind: "runner", runnerId: runtime.runnerId },
       fresh: true,
       ownerId: host.ownerId,
-      workspaceId,
-      origin: "workspace",
+
+      origin: "person",
     });
     await host.runtime.browser.flushPendingTabDescriptors();
     const fixtures: Array<{
@@ -455,8 +429,8 @@ integration("Browser presence and conversation usage", () => {
         fresh: true,
         reuseExisting: false,
         ownerId: host.ownerId,
-        workspaceId,
-        origin: "workspace",
+
+        origin: "person",
         placement: { kind: "runner", runnerId: runtime.runnerId },
       });
       await publish(next.session.id, index, index === 7 ? 64 : 62);
@@ -468,7 +442,6 @@ integration("Browser presence and conversation usage", () => {
         agentBindingId: `run:${run.runId}`,
         ownerId: host.ownerId,
         sessionId: opened.session.id,
-        workspaceId: run.workspaceId,
       },
       () => undefined,
     );
@@ -529,13 +502,13 @@ integration("Browser presence and conversation usage", () => {
             id,
             tabGroupId: id,
             tabRevision: 1,
-            origin: "workspace" as const,
+            origin: "person" as const,
             opener: null,
             placementKey: `runner:${runtime.runnerId}:browser`,
             profileId: null,
             runnerId: runtime.runnerId,
             runtimeId: "browser-runtime-integration",
-            workspaceId,
+
             state: "closed" as const,
             createdAt: seededAt,
             updatedAt: seededAt,
@@ -597,19 +570,14 @@ integration("Browser presence and conversation usage", () => {
   it("shows a voice Run's browser as its own Thread and clears its cursor on Stop", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Voice caller",
       voice: true,
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "voice-caller",
-        name: "Voice caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
-    const main = (await host.store.findMainWorkspaceForOwner(host.ownerId))!;
     const chat = await host.store.createThread({
       accessMode: "approval-required",
       createdBy: host.ownerId,
@@ -621,9 +589,9 @@ integration("Browser presence and conversation usage", () => {
         modelId: "gpt-5.6-sol",
         options: { effort: "low" },
       }),
-      title: "Chat",
-      workspaceId: main.id,
-      home: true,
+      title: "Voice initialization",
+
+      folder: host.agentHome,
     });
     expect(chat.thread.id).toBeDefined();
     const call = await host.store.startVoiceCall({
@@ -660,13 +628,13 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     await vi.waitFor(() => expect(host.runtime.browser.available).toBe(true));
-    const owner = await listen(host, host.ownerHeaders, main.id, true);
+    const owner = await listen(host, host.ownerHeaders, true, true);
     cleanups.push(() => owner.close());
     const opened = await host.runtime.browser.start({
       ownerId: host.ownerId,
-      workspaceId: main.id,
+
       fresh: true,
-      origin: "workspace",
+      origin: "person",
       reuseExisting: false,
       placement: { kind: "runner", runnerId: runtime.runnerId },
     });
@@ -676,7 +644,6 @@ integration("Browser presence and conversation usage", () => {
         agentBindingId: `run:${run.runId}`,
         ownerId: host.ownerId,
         sessionId,
-        workspaceId: main.id,
       },
       () => undefined,
     );
@@ -747,7 +714,7 @@ integration("Browser presence and conversation usage", () => {
     await vi.waitFor(() => expect(ofType(owner, "host.place-activity").length).toBeGreaterThan(0));
     const catalog = await browserRows(host.runtime.browser, host.ownerId, sessionId);
     expect(catalog.tabs.find((tab) => tab.id === "voice-page")?.occupants).toEqual([
-      expect.objectContaining({ threadId: run.threadId, home: false }),
+      expect.objectContaining({ threadId: run.threadId }),
     ]);
     await host.runtime.browser.flushPendingTabDescriptors();
     const trafficFrom = owner.messages.length;
@@ -882,16 +849,12 @@ integration("Browser presence and conversation usage", () => {
   it("cold-loads all 150 × 64 tab identities and 64 × 16 occupants through the carrier", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Maximum catalog",
       maxConcurrentRuns: 16,
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "maximum-caller",
-        name: "Maximum catalog",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const firstRun = await dispatchCallerRun(host, caller, {
@@ -946,9 +909,9 @@ integration("Browser presence and conversation usage", () => {
       const producer = producers[Math.floor(index / 32)]!;
       const opened = await host.runtime.browser.start({
         ownerId: host.ownerId,
-        workspaceId: firstRun.workspaceId,
+
         fresh: true,
-        origin: "workspace",
+        origin: "person",
         reuseExisting: false,
         placement: { kind: "runner", runnerId: producer.runnerId },
       });
@@ -956,7 +919,7 @@ integration("Browser presence and conversation usage", () => {
       producer.publishTabs({ surfaces }, opened.session.id);
     }
     const sessionId = sessionIds[0]!;
-    const source = (await host.store.getThreadForOwner(firstRun.threadId, host.ownerId))!;
+
     const threadIds = [firstRun.threadId];
     const runIds = [firstRun.runId];
     // Manual claims race the live dispatcher and can fail a competing binding.
@@ -965,7 +928,6 @@ integration("Browser presence and conversation usage", () => {
       const run = await dispatchCallerRun(host, caller, {
         key: `maximum-${index}`,
         title: `Occupant ${index}`,
-        workspaceId: source.workspaceId,
       });
       threadIds.push(run.threadId);
       runIds.push(run.runId);
@@ -977,7 +939,6 @@ integration("Browser presence and conversation usage", () => {
         agentBindingId: `run:${runId}`,
         ownerId: host.ownerId,
         sessionId,
-        workspaceId: source.workspaceId,
       });
       await host.store.database
         .insertInto("browserSessionUses")
@@ -1036,17 +997,13 @@ integration("Browser presence and conversation usage", () => {
           (tab) => tab.title === "Revised" && tab.occupants.length === 16,
         ) === true,
     );
-    const outsider = await signUpUser(host, {
-      email: "maximum-stranger@example.com",
-      password: "maximum-stranger-password",
-    });
-    const refused = await testRpcData(
+    const refused = await testRpcRequest(
       host.origin,
       "bootstrap.get",
       {},
-      { headers: outsider.headers },
+      { headers: { origin: host.origin.origin } },
     );
-    expect(refused.browser.groups.rows).toEqual([]);
+    expect(refused.status).toBe(401);
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
     if (directory) {
       await mkdir(directory, { recursive: true });
@@ -1063,7 +1020,7 @@ integration("Browser presence and conversation usage", () => {
             requests: client.requests,
             delayBootstrapMs: 350,
             refreshIntervalMs: 0,
-            outsiderGroups: refused.browser.groups.rows.length,
+            unauthenticatedStatus: refused.status,
           },
           null,
           2,
@@ -1076,18 +1033,14 @@ integration("Browser presence and conversation usage", () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
     const clock = new ManualClock();
-    const host = await startMachineAccessHost(database.url, {
-      signupPolicy: "open",
+    const host = await startPrivateMachineHost(database.url, {
+      remoteAccess: true,
       browserActivityClock: clock,
     });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Catalog caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "catalog-caller",
-        name: "Catalog caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const run = await dispatchCallerRun(host, caller, { key: "catalog", title: "Catalog task" });
@@ -1102,24 +1055,20 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => runtime.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
-    const owner = await listen(host, host.ownerHeaders, run.workspaceId);
-    const opted = await listen(host, host.ownerHeaders, run.workspaceId, true);
+    const owner = await listen(host, host.ownerHeaders, true);
+    const opted = await listen(host, host.ownerHeaders, true, true);
     cleanups.push(() => opted.close());
     cleanups.push(() => owner.close());
-    const stranger = await signUpUser(host, {
-      email: "catalog-stranger@example.com",
-      password: "catalog-stranger-password",
-    });
-    const outsider = await listen(host, stranger.headers);
-    cleanups.push(() => outsider.close());
+    const stranger = { headers: { origin: host.origin.origin } };
+
     const opened = await testRpcData(
       host.origin,
       "commands.dispatch",
       {
         type: "browser.session.start",
-        workspaceId: run.workspaceId,
+
         idempotencyKey: "catalog-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );
@@ -1180,7 +1129,7 @@ integration("Browser presence and conversation usage", () => {
       { sessionId, iconRef: iconRef! },
       { headers: stranger.headers },
     );
-    expect(deniedIcon.status).toBe(404);
+    expect(deniedIcon.status).toBe(401);
     const consumers: {
       surfaceId: string;
       mode: "control" | "watch";
@@ -1194,7 +1143,7 @@ integration("Browser presence and conversation usage", () => {
     ] as const) {
       const socket = new WebSocket(
         `ws://127.0.0.1:${host.hostPort}/v1/browser-sessions/${sessionId}/connect?mode=${mode}`,
-        { headers: { ...host.ownerHeaders, origin: host.origin } },
+        { headers: { ...host.ownerHeaders, origin: host.origin.origin } },
       );
       cleanups.push(async () => socket.terminate());
       const frames: ReturnType<typeof decodeBrowserFrameEnvelope>["header"][] = [];
@@ -1273,7 +1222,6 @@ integration("Browser presence and conversation usage", () => {
     ).toBe(false);
     const liveClient = await reader(host);
     cleanups.push(async () => liveClient.dispose());
-    liveClient.activateWorkspace(run.workspaceId);
     await until(() => (liveClient.getSnapshot().connection === "connected" ? true : undefined));
     runtime.publishTabs({
       surfaces: surfaces.map((surface) => ({ ...surface, title: `${surface.title} deferred` })),
@@ -1313,7 +1261,7 @@ integration("Browser presence and conversation usage", () => {
     );
     const binding = `run:${run.runId}`;
     const cdp = await host.runtime.browser.attachCdpForAgent(
-      { agentBindingId: binding, ownerId: host.ownerId, sessionId, workspaceId: run.workspaceId },
+      { agentBindingId: binding, ownerId: host.ownerId, sessionId },
       () => undefined,
     );
     cleanups.push(async () => cdp.close());
@@ -1378,7 +1326,7 @@ integration("Browser presence and conversation usage", () => {
     });
     const places = () =>
       host.store.database
-        .selectFrom("workspaceEvents")
+        .selectFrom("deploymentEvents")
         .selectAll()
         .where("runId", "=", run.runId)
         .where("type", "=", "place.entered")
@@ -1477,7 +1425,7 @@ integration("Browser presence and conversation usage", () => {
       actingWindowMs + 5_000,
     );
     expect(await host.runtime.browser.latestPlaces(host.ownerId)).toEqual(latestBeforeExpiry);
-    host.runtime.browser.invalidatePlaceAuthority(run.workspaceId, [run.threadId]);
+    host.runtime.browser.invalidatePlaceAuthority([run.threadId], host.ownerId);
     const stillHolding = {
       tabs: (await browserRows(host.runtime.browser, host.ownerId)).browserTabs!.sessionTabs(
         sessionId,
@@ -1505,8 +1453,6 @@ integration("Browser presence and conversation usage", () => {
         ? true
         : undefined,
     );
-    expect(ofType(outsider, "host.browser-tabs")).toHaveLength(0);
-    expect(ofType(outsider, "host.place-activity")).toHaveLength(0);
     const page = {
       type: "browser-page" as const,
       sessionId,
@@ -1568,19 +1514,19 @@ integration("Browser presence and conversation usage", () => {
       mode: "durable",
       originatingRunId: run.runId,
       originatingThreadId: run.threadId,
-      originatingWorkspaceId: run.workspaceId,
+
       requestedBy: host.ownerId,
       requiredActor: "requester",
-      targetWorkspaceId: run.workspaceId,
+
       payload: {
         kind: "browser.password-sign-in",
-        tabId: page.tabId,
         computerName: "Catalog browser",
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
         operationId: randomUUID(),
         reason: "Sign in to this page",
         runnerId: runtime.runnerId,
-        sessionId,
+        scope: "personal",
+        permissionVersion: 6,
         site: "https://y.example",
       },
       presentation: {
@@ -1648,7 +1594,7 @@ integration("Browser presence and conversation usage", () => {
       environmentId: original.environmentId,
       harnessInstanceId: original.harnessInstanceId,
       modelSelection: original.modelSelection,
-      workspaceId: original.workspaceId,
+
       title: "Unrelated send",
       idempotencyKey: "admission-unrelated-thread",
     });
@@ -1759,7 +1705,7 @@ integration("Browser presence and conversation usage", () => {
       });
       expect(
         await host.store.database
-          .selectFrom("workspaceEvents")
+          .selectFrom("deploymentEvents")
           .select("eventId")
           .where("runId", "=", run.runId)
           .where("type", "=", "run.completed")
@@ -1776,7 +1722,7 @@ integration("Browser presence and conversation usage", () => {
       { place: { surfaceId: "page-x" }, title: "X", site: "https://x.example" },
     ]);
     const terminal = await host.store.database
-      .selectFrom("workspaceEvents")
+      .selectFrom("deploymentEvents")
       .select("sequence")
       .where("runId", "=", run.runId)
       .where("type", "=", "run.completed")
@@ -1854,70 +1800,6 @@ integration("Browser presence and conversation usage", () => {
       expect(runtime.receivedCommands().slice(commandsFrom)).toEqual([]);
       historical.push({ state, messageId: sent.message.id });
     }
-    const main = await host.store.findMainWorkspaceForOwner(host.ownerId);
-    if (!main) throw new Error("Main Workspace missing");
-    const mainThread = await host.store.createThread({
-      accessMode: original.accessMode,
-      createdBy: host.ownerId,
-      environmentId: original.environmentId,
-      harnessInstanceId: original.harnessInstanceId,
-      modelSelection: original.modelSelection,
-      workspaceId: main.id,
-      title: "Revoked browser reference",
-      idempotencyKey: "revoked-reference-thread",
-    });
-    await host.store.database
-      .insertInto("workspaceMemberships")
-      .values({
-        id: createId("workspaceMembership"),
-        workspaceId: run.workspaceId,
-        userId: stranger.userId,
-        role: "owner",
-        state: "active",
-        generation: 1,
-        invitedBy: host.ownerId,
-        joinedAt: new Date(),
-        revokedAt: null,
-        revokedBy: null,
-        updatedAt: new Date(),
-      })
-      .execute();
-    await host.store.database
-      .updateTable("workspaceMemberships")
-      .set({
-        state: "revoked",
-        revokedAt: new Date(),
-        revokedBy: stranger.userId,
-        updatedAt: new Date(),
-        generation: sql`${sql.ref("generation")} + 1`,
-      })
-      .where("workspaceId", "=", run.workspaceId)
-      .where("userId", "=", host.ownerId)
-      .execute();
-    expect(await host.store.getBrowserSessionForOwner(sessionId, host.ownerId)).toBeNull();
-    const commandsBeforeRefusal = runtime.receivedCommands().length;
-    const visibilityRefusal = await testRpcRequest(
-      host.origin,
-      "commands.dispatch",
-      {
-        ...send,
-        threadId: mainThread.thread.id,
-        idempotencyKey: "revoked-browser-page",
-      },
-      { headers: host.ownerHeaders },
-    );
-    expect(visibilityRefusal.status).toBe(403);
-    expect(runtime.receivedCommands().slice(commandsBeforeRefusal)).toEqual([]);
-    expect(await visibilityRefusal.json()).toMatchObject({
-      error: { code: "forbidden", message: expect.stringContaining("can no longer see") },
-    });
-    expect(
-      await host.store.database
-        .selectFrom("messages")
-        .select("id")
-        .where("threadId", "=", mainThread.thread.id)
-        .execute(),
-    ).toEqual([]);
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
     if (directory) {
       await mkdir(directory, { recursive: true });
@@ -1946,7 +1828,6 @@ integration("Browser presence and conversation usage", () => {
               pendingSignInRequestId: pendingSignIn.request.id,
               normalizedCandidates,
               historical,
-              visibilityRefusalStatus: visibilityRefusal.status,
               retryWaitedBeforeCommit: true,
               contextReadsDuringAdmission: 0,
               oneCommittedMessage: true,
@@ -1969,11 +1850,6 @@ integration("Browser presence and conversation usage", () => {
                 "host.thread-place-changed",
               ].includes(String(message.type)),
             ),
-            outsider: outsider.messages.filter(
-              (message) =>
-                String(message.type).includes("place") ||
-                String(message.type).includes("browser-tabs"),
-            ),
           },
           null,
           2,
@@ -1985,15 +1861,11 @@ integration("Browser presence and conversation usage", () => {
   it("announces a later Run acting in the same page as its Thread's newest place", async () => {
     const database = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Same page caller",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "same-page-caller",
-        name: "Same page caller",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const first = await dispatchCallerRun(host, caller, { key: "same-page", title: "Same page" });
@@ -2015,9 +1887,9 @@ integration("Browser presence and conversation usage", () => {
       "commands.dispatch",
       {
         type: "browser.session.start",
-        workspaceId: first.workspaceId,
+
         idempotencyKey: "same-page-session",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: runtime.runnerId }, fresh: true },
       },
       { headers: host.ownerHeaders },
     );
@@ -2061,7 +1933,6 @@ integration("Browser presence and conversation usage", () => {
           agentBindingId: `run:${run.runId}`,
           ownerId: host.ownerId,
           sessionId,
-          workspaceId: run.workspaceId,
         },
         () => undefined,
       );
@@ -2136,7 +2007,6 @@ integration("Browser presence and conversation usage", () => {
       key: "same-page-again",
       title: "Same page",
       threadId: first.threadId,
-      workspaceId: first.workspaceId,
     });
     expect(second.runId).not.toBe(first.runId);
     await actIn(second, "cdp-second");
@@ -2153,15 +2023,11 @@ integration("Browser presence and conversation usage", () => {
   it("patches viewers with page and acting changes, never rereads, and names credited conversations", async () => {
     const database: MachineAccessDatabase = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Caller computer",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "caller",
-        name: "Caller computer",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const run = await dispatchCallerRun(host, caller, { key: "browse", title: "Shop for shoes" });
@@ -2177,17 +2043,12 @@ integration("Browser presence and conversation usage", () => {
     cleanups.push(() => browserComputer.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
 
-    const owner = await listen(host, host.ownerHeaders, run.workspaceId);
+    const owner = await listen(host, host.ownerHeaders, true);
     cleanups.push(() => owner.close());
     // The same person on a socket that follows no Workspace: the catalog is theirs.
     const ownerElsewhere = await listen(host, host.ownerHeaders);
     cleanups.push(() => ownerElsewhere.close());
-    const stranger = await signUpUser(host, {
-      email: "stranger@example.com",
-      password: "stranger-browser-password",
-    });
-    const strangerSocket = await listen(host, stranger.headers);
-    cleanups.push(() => strangerSocket.close());
+    const stranger = { headers: { origin: host.origin.origin } };
 
     // The person opens a browser from the conversation; it belongs to it at once.
     const opened = await testRpcData(
@@ -2195,9 +2056,12 @@ integration("Browser presence and conversation usage", () => {
       "commands.dispatch",
       {
         idempotencyKey: "browser-open",
-        input: { fresh: true, threadId: run.threadId },
+        input: {
+          placement: { kind: "runner", runnerId: browserComputer.runnerId },
+          fresh: true,
+          threadId: run.threadId,
+        },
         type: "browser.session.start",
-        workspaceId: run.workspaceId,
       },
       { headers: host.ownerHeaders },
     );
@@ -2209,7 +2073,6 @@ integration("Browser presence and conversation usage", () => {
     expect(openedUsage).toEqual({
       threadIds: [run.threadId],
       type: "host.browser-usage-changed",
-      workspaceId: run.workspaceId,
     });
 
     await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed")[0]);
@@ -2269,7 +2132,7 @@ integration("Browser presence and conversation usage", () => {
     const binding = `run:${run.runId}`;
     const beforeAgent = owner.messages.length;
     const cdp = await host.runtime.browser.attachCdpForAgent(
-      { agentBindingId: binding, ownerId: host.ownerId, sessionId, workspaceId: run.workspaceId },
+      { agentBindingId: binding, ownerId: host.ownerId, sessionId },
       () => undefined,
     );
     const answer = async (
@@ -2427,32 +2290,22 @@ integration("Browser presence and conversation usage", () => {
 
     // E. Closing a browser while an agent acts clears every viewer, including a
     // client following only Main with bootstrap polling disabled.
-    const mainWorkspace = device
-      .getSnapshot()
-      .workspaces.find((workspace) => workspace.kind === "main");
-    if (!mainWorkspace) throw new Error("No Main Workspace");
     const beforeMainUse = ownerElsewhere.messages.length;
     const closingRun = await dispatchCallerRun(host, caller, {
       key: "closing",
       title: "Close this browser",
-      workspaceId: WorkspaceIdSchema.parse(mainWorkspace.id),
     });
     const closingCdp = await host.runtime.browser.attachCdpForAgent(
       {
         agentBindingId: `run:${closingRun.runId}`,
         ownerId: host.ownerId,
         sessionId,
-        workspaceId: WorkspaceIdSchema.parse(mainWorkspace.id),
       },
       () => undefined,
     );
     // Catalog invalidation names the conversation's Main Workspace, but its
     // audience comes from the specialist browser's session.
-    await until(() =>
-      ofType(ownerElsewhere, "host.browser-sessions-changed", beforeMainUse).find(
-        (message) => message.workspaceId === mainWorkspace.id,
-      ),
-    );
+    await until(() => ofType(ownerElsewhere, "host.browser-sessions-changed", beforeMainUse)[0]);
     const sent = closingCdp.request({ method: "Target.getTargets", parameters: {} });
     const relayed = await browserComputer.nextCommand();
     browserComputer.sendServer({
@@ -2480,19 +2333,13 @@ integration("Browser presence and conversation usage", () => {
     closingCdp.close();
 
     // Nobody who may not see the browser heard anything about it.
-    const strangerBrowserMessages = strangerSocket.messages.filter((message) =>
-      String(message.type).startsWith("host.browser"),
+    const privateBootstrap = await testRpcRequest(
+      host.origin,
+      "bootstrap.get",
+      {},
+      { headers: stranger.headers },
     );
-    expect(strangerBrowserMessages).toEqual([
-      {
-        type: "host.browser-groups",
-        stream: { op: "begin", generation: expect.any(String) },
-      },
-      {
-        type: "host.browser-groups",
-        stream: { op: "end", count: 0, revision: 0, meta: {} },
-      },
-    ]);
+    expect(privateBootstrap.status).toBe(401);
     cdp.close();
 
     const directory = process.env.OPENSTEER_SHARED_SURFACES_ARTIFACT_DIR;
@@ -2533,7 +2380,6 @@ integration("Browser presence and conversation usage", () => {
               .getSnapshot()
               .browserSessions.find((session) => session.id === sessionId),
             bootstrapWhileActing: listed,
-            strangerBrowserMessages,
             ownerMessageTypes: owner.messages.map(({ type }) => type),
             ownerElsewhereMessageTypes: ownerElsewhere.messages.map(({ type }) => type),
           },
@@ -2547,15 +2393,11 @@ integration("Browser presence and conversation usage", () => {
   it("lists a conversation's browser for a reader who never opened it, and keeps a page with its message", async () => {
     const database: MachineAccessDatabase = await createMachineAccessDatabase(databaseUrl!);
     cleanups.push(() => database.drop());
-    const host = await startMachineAccessHost(database.url, { signupPolicy: "open" });
+    const host = await startPrivateMachineHost(database.url, { remoteAccess: true });
     cleanups.push(() => host.close());
     const caller = await connectCallerMachine(host, {
       name: "Caller computer",
-      token: await enrollmentToken(host, {
-        allowedModules: ["agents"],
-        idempotencyKey: "caller",
-        name: "Caller computer",
-      }),
+      token: await host.hostingRunnerEnrollmentToken,
     });
     cleanups.push(() => caller.close());
     const run = await dispatchCallerRun(host, caller, { key: "live", title: "Compare prices" });
@@ -2570,7 +2412,7 @@ integration("Browser presence and conversation usage", () => {
     );
     cleanups.push(() => browserComputer.close());
     await until(() => (host.runtime.browser.available ? true : undefined));
-    const owner = await listen(host, host.ownerHeaders, run.workspaceId);
+    const owner = await listen(host, host.ownerHeaders, true);
     cleanups.push(() => owner.close());
 
     // A browser the person opens in the Workspace, from no conversation.
@@ -2579,9 +2421,8 @@ integration("Browser presence and conversation usage", () => {
       "commands.dispatch",
       {
         idempotencyKey: "live-open",
-        input: { fresh: true },
+        input: { placement: { kind: "runner", runnerId: browserComputer.runnerId }, fresh: true },
         type: "browser.session.start",
-        workspaceId: run.workspaceId,
       },
       { headers: host.ownerHeaders },
     );
@@ -2592,7 +2433,6 @@ integration("Browser presence and conversation usage", () => {
     // 1. Another device shows the overview and never opens the conversation.
     const device = await reader(host);
     cleanups.push(async () => device.dispose());
-    device.activateWorkspace(run.workspaceId);
     const groupOf = () =>
       liveWork(device.getSnapshot()).find((group) => group.threadId === run.threadId);
     const browserIn = (group: ReturnType<typeof groupOf>) =>
@@ -2696,7 +2536,7 @@ integration("Browser presence and conversation usage", () => {
       operationKey: randomUUID(),
       task: "Compare the included page",
       title: "Page comparison",
-      workspaceId: run.workspaceId,
+
       places: [page],
     });
     expect(delegatedResponse.isError, JSON.stringify(delegatedResponse)).not.toBe(true);
@@ -2746,72 +2586,17 @@ integration("Browser presence and conversation usage", () => {
     const unrelated = await callMcpTool(host.origin, run.toolsToken, "delegate_task", {
       operationKey: randomUUID(),
       task: "Read unrelated browser",
-      workspaceId: run.workspaceId,
+
       places: [{ ...page, sessionId: "bsn_00000000-0000-4000-8000-000000000001" }],
     });
     expect(unrelated.isError).toBe(true);
-
-    // 3. A conversation in another Workspace, whose agent could not use this
-    // browser, cannot take the page, and no message is kept.
-    const elsewhere = await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      { idempotencyKey: "live-elsewhere", name: "Elsewhere", type: "workspace.create" },
-      { headers: host.ownerHeaders },
-    );
-    if (elsewhere.type !== "workspace.create") throw new Error("Workspace command mismatch.");
-    const otherThread = await testRpcData(
-      host.origin,
-      "commands.dispatch",
-      {
-        environmentId: caller.environmentId,
-        harnessInstanceId: caller.harnessInstanceId,
-        idempotencyKey: "live-elsewhere-thread",
-        modelSelection: {
-          modelId: "gpt-5.6-sol",
-          options: { effort: "low" },
-          providerId: "openai",
-        },
-        title: "Elsewhere",
-        type: "thread.create",
-        workspaceId: elsewhere.workspace.id,
-      },
-      { headers: host.ownerHeaders },
-    );
-    if (otherThread.type !== "thread.create") throw new Error("Thread command mismatch.");
-    const refusedResponse = await testRpcRequest(
-      host.origin,
-      "commands.dispatch",
-      {
-        content: [
-          { text: "Look at this.", type: "text" },
-          { ...page, auto: true, documentId: "frozen-prices" },
-        ],
-        idempotencyKey: "live-elsewhere-page",
-        threadId: otherThread.thread.id,
-        type: "thread.sendMessage",
-      },
-      { headers: host.ownerHeaders },
-    );
-    const refused = (await refusedResponse.json()) as {
-      readonly error?: { readonly code: string; readonly message: string };
-    };
-    expect(refusedResponse.status).toBe(403);
-    expect(refused.error?.message).toContain("can't use");
-    const otherMessages = await testRpcData(
-      host.origin,
-      "thread.messages.list",
-      { threadId: otherThread.thread.id },
-      { headers: host.ownerHeaders },
-    );
-    expect(otherMessages.messages).toEqual([]);
 
     // 4. The agent reaches a page while its use cannot be recorded: it still
     // has its answer, and nothing is announced for that use.
     const binding = `run:${run.runId}`;
     const beforeConnect = owner.messages.length;
     const cdp = await host.runtime.browser.attachCdpForAgent(
-      { agentBindingId: binding, ownerId: host.ownerId, sessionId, workspaceId: run.workspaceId },
+      { agentBindingId: binding, ownerId: host.ownerId, sessionId },
       () => undefined,
     );
     // The Run's own use of the session is news; wait for it before the outage.
@@ -2868,11 +2653,6 @@ integration("Browser presence and conversation usage", () => {
               usageNotice: pageUsage,
               catalogThreadIds: listed?.threadIds,
               conversationUses: usage.uses,
-            },
-            otherWorkspacePage: {
-              status: refusedResponse.status,
-              error: refused.error,
-              messagesKept: otherMessages.messages.length,
             },
             attachWhileUsageUnrecordable: {
               answer: attachAnswer,

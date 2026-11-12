@@ -39,19 +39,16 @@ import {
   operation,
   operations,
   toolText,
-} from "../runtime/computer-apps.test-support.js";
+} from "./computer-apps.test-support.js";
 import {
   acceptCallerRun,
   connectCallerMachine,
   createMachineAccessDatabase,
   dispatchCallerRun,
-  enrollmentToken,
-  resetMachineAccessDatabase,
-  signUpUser,
-  startMachineAccessHost,
+  startPrivateMachineHost,
   waitForExecute,
   type MachineAccessHost,
-} from "../runtime/machine-access.test-support.js";
+} from "../integrations/personal-machine.test-support.js";
 import { testRpcData, testRpcRequest } from "../server/test-host-api-request.js";
 
 const baseDatabaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
@@ -68,7 +65,6 @@ integration("API-key reconnect incident", () => {
 
   beforeAll(async () => {
     database = await createMachineAccessDatabase(baseDatabaseUrl ?? "");
-    await resetMachineAccessDatabase(database.url);
   }, 120_000);
   afterEach(async () => {
     for (const close of closers) await close();
@@ -87,33 +83,20 @@ integration("API-key reconnect incident", () => {
     const upstream = await startApiKeyUpstream();
     closers.push(() => upstream.close());
     try {
-      const host = await startMachineAccessHost(database.url, {
+      const host = await startPrivateMachineHost(database.url, {
         integrationFetch: upstream.fetch,
-        signupPolicy: "open",
       });
       closers.unshift(() => host.close());
       const caller = await connectCallerMachine(host, {
         name: "API-key incident agent",
-        localDirectory: true,
-        token: await enrollmentToken(host, {
-          allowedModules: ["agents"],
-          idempotencyKey: "api-key-reconnect-caller",
-          name: "API-key incident agent",
-        }),
+        token: await host.hostingRunnerEnrollmentToken,
       });
       closers.unshift(() => caller.close());
-      const bootstrap = await testRpcData(
-        host.origin,
-        "bootstrap.get",
-        {},
-        { headers: host.ownerHeaders },
-      );
-      const main = bootstrap.homeWorkspace;
-      if (!main) throw new Error("The owner has no Main Workspace");
+      await testRpcData(host.origin, "bootstrap.get", {}, { headers: host.ownerHeaders });
+
       const run = await dispatchCallerRun(host, caller, {
         key: "api-key-reconnect-run",
         title: "Connect Vapi API and list assistants",
-        workspaceId: main.id,
       });
       let completed: Promise<void> | undefined;
       const complete = () => (completed ??= run.complete());
@@ -352,7 +335,7 @@ integration("API-key reconnect incident", () => {
         await host.store.database
           .selectFrom("integrationGrants")
           .selectAll()
-          .where("workspaceId", "=", main.id)
+          .where("ownerUserId", "=", host.ownerId)
           .execute(),
       ).toEqual([]);
 
@@ -361,7 +344,6 @@ integration("API-key reconnect incident", () => {
       const verification = await dispatchCallerRun(host, caller, {
         key: "api-key-reconnect-verification",
         title: "Verify repaired accounts",
-        workspaceId: main.id,
       });
       closers.unshift(() => verification.complete());
       gateway = await integrationGateway(verification.integrationTools);
@@ -545,7 +527,6 @@ integration("API-key reconnect incident", () => {
             connectionId: aId,
             installationId: installation.id,
             isDefault: true,
-            workspaceId: project.workspaceId,
           },
         },
         { headers: host.ownerHeaders },
@@ -752,18 +733,23 @@ integration("API-key reconnect incident", () => {
         });
       };
       const unavailable = "This connection is no longer available to reconnect";
-      const otherOwner = await signUpUser(host, {
-        email: "other-api-key-owner@example.test",
-        password: "other-owner-password-123",
-      });
-      await connect("api-key-other-owner-connect", keyInput(goodKey), otherOwner.headers);
-      const otherConnection = await host.store.database
-        .selectFrom("integrationConnections")
-        .select("id")
-        .where("ownerUserId", "=", otherOwner.userId)
-        .where("integrationDefinitionId", "=", definition.id)
-        .executeTakeFirstOrThrow();
+      const otherOwner = await host.store.createUser("Foreign credential owner");
+      const beforeOther = new Set(
+        (await host.store.database.selectFrom("integrationConnections").select("id").execute()).map(
+          (row) => row.id,
+        ),
+      );
+      await connect("api-key-foreign-record", keyInput(goodKey));
+      const otherConnection = (
+        await host.store.database.selectFrom("integrationConnections").select("id").execute()
+      ).find((row) => !beforeOther.has(row.id));
+      if (!otherConnection) throw new Error("Foreign credential fixture connection missing");
       const otherId = IntegrationConnectionIdSchema.parse(otherConnection.id);
+      await host.store.database
+        .updateTable("integrationConnections")
+        .set({ ownerUserId: otherOwner })
+        .where("id", "=", otherId)
+        .execute();
       await refuse(
         "other-owner-connection-refused",
         keyInput(goodKey, otherId),
@@ -837,7 +823,7 @@ integration("API-key reconnect incident", () => {
       );
 
       // Also preserve the existing guard against an identity another owner holds.
-      await connect("api-key-notion-other-owner", notionInput(otherNotionKey), otherOwner.headers);
+      await connect("api-key-notion-other-owner", notionInput(otherNotionKey));
       await refuse(
         "identity-held-by-another-connection-refused",
         notionInput(otherNotionKey),
