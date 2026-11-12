@@ -1,7 +1,7 @@
 # Run a team
 
 Use a dedicated clone on a Linux server or family Mac with Docker Compose v2,
-Git, Bash and OpenSSL. On Mac, Docker Desktop or Colima must be running; the
+Git, Bash, Node 24 and pnpm 10. Run `pnpm install --frozen-lockfile` in the clone first. On Mac, Docker Desktop or Colima must be running; the
 scheduled updater needs access to that same Docker context. This stack runs
 PostgreSQL, the team Host and Caddy. Agents run on each person's own Opensteer.
 
@@ -12,17 +12,30 @@ hourly updates, then prints the private, one-time first-owner setup link.
 Open it, adopt the server through Opensteer Account, sign in and become owner.
 Later members join through invites. Do not send the setup link to other people.
 
-The first-owner route is an integration contract pending lane T: `/setup#<token>`
-uses `OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE` and must exchange the token
-for an `auth_admissions` purpose `setup` admission before Account adoption.
-Do not deploy this recipe until that route is connected.
+First-owner setup must be reachable at a **public HTTPS address**, using a public
+hostname or Tailscale Funnel. Account verifies adoption by fetching that origin;
+it cannot reach a private tailnet address. After setup, members can use
+private-only tailnet access at that same canonical origin. Keep the origin and
+Host identity fixed; changing the canonical origin is not a route switch.
 
-For Tailscale, bind the gateway only to loopback by setting
-`OPENSTEER_HTTP_BIND=127.0.0.1` and `OPENSTEER_HTTPS_BIND=127.0.0.1` in config.env.
-Use the machine's HTTPS tailnet name as `OPENSTEER_CANONICAL_ORIGIN`, set
-`OPENSTEER_GATEWAY_SITE_ADDRESS=:80` in config.env, and run
-`tailscale serve --bg http://127.0.0.1:80`. Tailscale terminates HTTPS. There are
-no Connect routes for team servers in v1.
+The setup link expires 24 hours after the Host first reads its token. To renew
+an unfinished setup, run:
+
+```sh
+bash deploy/team/setup.sh --renew-setup
+```
+
+This atomically replaces only the setup token, recreates the Host container so
+it reads the new token, and prints a new private setup link. Restarting with the
+same token does not extend its deadline. An existing owner is never replaced.
+The database password, auth secret and signing identity stay in place.
+
+For Tailscale, bind the gateway to loopback with `OPENSTEER_HTTP_BIND=127.0.0.1`
+and `OPENSTEER_HTTPS_BIND=127.0.0.1` in config.env. Set
+`OPENSTEER_GATEWAY_SITE_ADDRESS=:80` and use an HTTPS origin publicly reachable
+through Funnel during setup. After adoption, disable Funnel and use
+`tailscale serve --bg http://127.0.0.1:80` with the same canonical origin for
+private member access. There are no Connect routes for team servers in v1.
 
 Updates fetch tags from the cloned remote (`OPENSTEER_UPDATE_REMOTE`, default
 `origin`). `OPENSTEER_UPDATE_CHANNEL=stable` selects `desktop-vMAJOR.MINOR.PATCH`;

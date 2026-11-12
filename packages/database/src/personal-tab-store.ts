@@ -249,7 +249,11 @@ export class PersonalTabStore {
   list(ownerId: UserId): Promise<PersonalTabLineage[]> {
     return this.#read(ownerId);
   }
-  read(ownerId: UserId, groupIds: readonly BrowserSessionId[]): Promise<BrowserGroupFacts[]>;
+  read(
+    ownerId: UserId,
+    groupIds: readonly BrowserSessionId[],
+    database?: Database,
+  ): Promise<BrowserGroupFacts[]>;
   read(
     ownerId: UserId,
     groupId: BrowserSessionId,
@@ -263,53 +267,53 @@ export class PersonalTabStore {
     if (typeof groupIds === "string")
       return (await this.#read(ownerId, groupIds, database))[0] ?? null;
     if (!groupIds.length) return [];
-    return this.database
-      .transaction()
-      .setIsolationLevel("repeatable read")
-      .execute(async (tx) => {
-        const groups = await visiblePersonalTabLineages(tx, ownerId)
-          .where("lineages.id", "in", groupIds)
-          .select((eb) =>
-            eb
-              .selectFrom("personalTabs")
-              .select((eb) => eb.fn.countAll<string>().as("count"))
-              .whereRef("personalTabs.groupId", "=", "lineages.id")
-              .where("closedAt", "is", null)
-              .as("tabCount"),
-          )
-          .execute(databaseOperationOptions());
-        const sessionIds = groups.map((group) => group.id);
-        const [threads, runs, visible] = await Promise.all([
-          listBrowserSessionThreads(tx, { ownerId, sessionIds }),
-          listAttachedRunIdsForBrowserSessions(tx, sessionIds),
-          authorizedPlaceThreadIds(
-            tx,
-            ownerId,
-            groups.flatMap((group) =>
-              group.opener && "threadId" in group.opener ? [group.opener.threadId] : [],
-            ),
+    const read = async (tx: Database) => {
+      const groups = await visiblePersonalTabLineages(tx, ownerId)
+        .where("lineages.id", "in", groupIds)
+        .select((eb) =>
+          eb
+            .selectFrom("personalTabs")
+            .select((eb) => eb.fn.countAll<string>().as("count"))
+            .whereRef("personalTabs.groupId", "=", "lineages.id")
+            .where("closedAt", "is", null)
+            .as("tabCount"),
+        )
+        .execute(databaseOperationOptions());
+      const sessionIds = groups.map((group) => group.id);
+      const [threads, runs, visible] = await Promise.all([
+        listBrowserSessionThreads(tx, { ownerId, sessionIds }),
+        listAttachedRunIdsForBrowserSessions(tx, sessionIds),
+        authorizedPlaceThreadIds(
+          tx,
+          ownerId,
+          groups.flatMap((group) =>
+            group.opener && "threadId" in group.opener ? [group.opener.threadId] : [],
           ),
-        ]);
-        const visibleThreadIds = new Set(visible);
-        return groups.map((group) => ({
-          id: group.tabGroupId,
-          createdAt: group.lineageCreatedAt.toISOString(),
-          unavailableReason: group.retiredAt ? "This browser computer was retired." : null,
-          tabCount: Number(group.tabCount),
-          sessionId: group.id,
-          state: group.state,
-          origin: group.origin,
-          access: "read-write" as const,
-          placement: { kind: "runner" as const, runnerId: group.runnerId },
-          profileId: group.profileId,
-          runtimeId: group.runtimeId,
-          opener: projectBrowserSessionOpener(group.opener, { userId: ownerId, visibleThreadIds }),
-          sessionCreatedAt: group.createdAt.toISOString(),
-          updatedAt: group.updatedAt.toISOString(),
-          attachedRunIds: [...(runs.get(group.id) ?? [])],
-          threadIds: [...(threads.get(group.id) ?? [])],
-        }));
-      });
+        ),
+      ]);
+      const visibleThreadIds = new Set(visible);
+      return groups.map((group) => ({
+        id: group.tabGroupId,
+        createdAt: group.lineageCreatedAt.toISOString(),
+        unavailableReason: group.retiredAt ? "This browser computer was retired." : null,
+        tabCount: Number(group.tabCount),
+        sessionId: group.id,
+        state: group.state,
+        origin: group.origin,
+        access: "read-write" as const,
+        placement: { kind: "runner" as const, runnerId: group.runnerId },
+        profileId: group.profileId,
+        runtimeId: group.runtimeId,
+        opener: projectBrowserSessionOpener(group.opener, { userId: ownerId, visibleThreadIds }),
+        sessionCreatedAt: group.createdAt.toISOString(),
+        updatedAt: group.updatedAt.toISOString(),
+        attachedRunIds: [...(runs.get(group.id) ?? [])],
+        threadIds: [...(threads.get(group.id) ?? [])],
+      }));
+    };
+    return database
+      ? read(database)
+      : this.database.transaction().setIsolationLevel("repeatable read").execute(read);
   }
   async groupIds(ownerId: UserId): Promise<BrowserSessionId[]> {
     const rows = await visiblePersonalTabLineages(this.database, ownerId)

@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-import { DeploymentKindSchema, deploymentPolicy } from "../packages/core/src/index.js";
 import { isNodeError } from "@opensteer/shared/nodeError";
 import { noFollowFlag, setPrivateHandleMode } from "@opensteer/shared/privateFiles";
 import { execFile } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { constants as fsConstants, type Stats } from "node:fs";
-import { link, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, open, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -32,52 +31,24 @@ const safeReadFlags = fsConstants.O_RDONLY | noFollowFlag() | fsConstants.O_NONB
 const safeCreateFlags =
   fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | noFollowFlag();
 
-export interface InitializedSelfHostSecrets {
+export interface InitializedTeamSecrets {
   readonly created: readonly string[];
   readonly directory: string;
 }
 
-export interface InitializedSelfHost extends InitializedSelfHostSecrets {
+export interface InitializedTeam extends InitializedTeamSecrets {
   readonly configPath: string;
   readonly sourceRevision: string;
   readonly version: string;
 }
 
-export type SelfHostWorkspaceBacking = "local-directory";
-
-export function selfHostWorkspaceBacking(environment: NodeJS.ProcessEnv): SelfHostWorkspaceBacking {
-  const value = environment.OPENSTEER_DEFAULT_WORKSPACE_BACKING?.trim() || "local-directory";
-  if (value !== "local-directory") {
-    throw new Error("init:self-host requires OPENSTEER_DEFAULT_WORKSPACE_BACKING=local-directory");
-  }
-  const kind = DeploymentKindSchema.safeParse(
-    environment.OPENSTEER_DEPLOYMENT_KIND?.trim() || "server",
-  );
-  if (
-    !kind.success ||
-    !deploymentPolicy({ kind: kind.data, defaultWorkspaceBacking: "local-directory" }).configuration
-      .serverTooling
-  ) {
-    throw new Error("init:self-host requires OPENSTEER_DEPLOYMENT_KIND=server");
-  }
-  return value;
+export function teamInitializationSummary(result: InitializedTeamSecrets): Record<string, unknown> {
+  return { created: result.created, directory: result.directory, kind: "team" };
 }
 
-export function selfHostInitializationSummary(
-  result: InitializedSelfHostSecrets,
-  backing: SelfHostWorkspaceBacking,
-): Record<string, unknown> {
-  return {
-    created: result.created,
-    directory: result.directory,
-    backing,
-    note: "Configure model credentials on the Runner.",
-  };
-}
-
-export async function initializeSelfHostSecrets(
-  directory = resolve(import.meta.dirname, "..", "deploy", "self-host", "secrets"),
-): Promise<InitializedSelfHostSecrets> {
+export async function initializeTeamSecrets(
+  directory = resolve(import.meta.dirname, "..", "deploy", "team", "secrets"),
+): Promise<InitializedTeamSecrets> {
   const target = resolve(directory);
   await mkdir(target, { mode: secretDirectoryMode, recursive: true });
   await validateSecretDirectory(target);
@@ -85,12 +56,8 @@ export async function initializeSelfHostSecrets(
   const created: string[] = [];
   const postgresPassword = await createOrReadSecret(target, "postgres_password", 32, created);
   await Promise.all([
-    createSecret(target, "browser_bridge_token", randomSecret(48), created),
-    createSecret(target, "browser_runner_enrollment_token", randomSecret(48), created),
-    createSecret(target, "opensteer_auth_secret", randomSecret(48), created),
+    createSecret(target, "auth_secret", randomSecret(48), created),
     createSecret(target, "initial_owner_enrollment_token", randomSecret(48), created),
-    createSecret(target, "credential_key", randomBytes(32).toString("base64url"), created),
-    createSecret(target, "messaging_runner_enrollment_token", randomSecret(48), created),
     createSecret(
       target,
       "database_url",
@@ -103,13 +70,13 @@ export async function initializeSelfHostSecrets(
   return { created: created.toSorted(), directory: target };
 }
 
-export async function initializeSelfHost(options: {
+export async function initializeTeam(options: {
   readonly configPath: string;
   readonly configTemplatePath: string;
   readonly repositoryRoot: string;
   readonly secretsDirectory: string;
-}): Promise<InitializedSelfHost> {
-  const secrets = await initializeSelfHostSecrets(options.secretsDirectory);
+}): Promise<InitializedTeam> {
+  const secrets = await initializeTeamSecrets(options.secretsDirectory);
   const repositoryRoot = resolve(options.repositoryRoot);
   const { stdout } = await execFileAsync(
     "git",
@@ -129,13 +96,13 @@ export async function initializeSelfHost(options: {
     configSource = await readFile(resolve(options.configTemplatePath), "utf8");
   }
   await mkdir(dirname(configPath), { recursive: true });
-  await writeFile(configPath, selfHostConfigWithBuildIdentity(configSource, identity), {
+  await writeFile(configPath, teamConfigWithBuildIdentity(configSource, identity), {
     mode: 0o600,
   });
   return { ...secrets, configPath, ...identity };
 }
 
-export function selfHostConfigWithBuildIdentity(
+export function teamConfigWithBuildIdentity(
   source: string,
   identity: { readonly sourceRevision: string; readonly version: string },
 ): string {
@@ -323,28 +290,61 @@ function randomSecret(bytes: number): string {
   return randomBytes(bytes).toString("base64url");
 }
 
+export async function renewTeamSetup(directory: string): Promise<void> {
+  const target = resolve(directory);
+  await validateSecretDirectory(target);
+  const destination = resolve(target, "initial_owner_enrollment_token");
+  await readValidatedSecret(destination);
+  const temporary = resolve(target, `.setup-token-${randomUUID()}`);
+  try {
+    const handle = await open(temporary, safeCreateFlags, secretFileMode);
+    try {
+      await setPrivateHandleMode(handle, secretFileMode);
+      await handle.writeFile(randomSecret(48) + "\n");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, destination);
+    const parent = await open(target, fsConstants.O_RDONLY);
+    try {
+      await parent.sync();
+    } finally {
+      await parent.close();
+    }
+  } finally {
+    await unlink(temporary).catch((error) => {
+      if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+    });
+  }
+}
+
 function parseDirectory(arguments_: readonly string[]): string | undefined {
   if (arguments_.length === 0) return undefined;
   if (arguments_.length === 2 && arguments_[0] === "--secrets-dir" && arguments_[1]) {
     return resolve(arguments_[1]);
   }
-  throw new Error("Usage: pnpm init:self-host [--secrets-dir /absolute/path]");
+  throw new Error("Usage: pnpm init:team [--secrets-dir /absolute/path]");
 }
 
 async function main(): Promise<void> {
-  const backing = selfHostWorkspaceBacking(process.env);
+  if (process.argv[2] === "--renew-setup") {
+    const directory = parseDirectory(process.argv.slice(3));
+    if (!directory) throw new Error("Renewal requires --secrets-dir");
+    await renewTeamSetup(directory);
+    return;
+  }
   const repositoryRoot = resolve(import.meta.dirname, "..");
   const secretsDirectory =
-    parseDirectory(process.argv.slice(2)) ??
-    resolve(repositoryRoot, "deploy", "self-host", "secrets");
+    parseDirectory(process.argv.slice(2)) ?? resolve(repositoryRoot, "deploy", "team", "secrets");
   const configDirectory = dirname(secretsDirectory);
-  const result = await initializeSelfHost({
+  const result = await initializeTeam({
     configPath: resolve(configDirectory, "config.env"),
-    configTemplatePath: resolve(repositoryRoot, "deploy", "self-host", "config.env.example"),
+    configTemplatePath: resolve(repositoryRoot, "deploy", "team", "config.env.example"),
     repositoryRoot,
     secretsDirectory,
   });
-  process.stdout.write(`${JSON.stringify(selfHostInitializationSummary(result, backing))}\n`);
+  process.stdout.write(`${JSON.stringify(teamInitializationSummary(result))}\n`);
 }
 
 const entry = process.argv[1];

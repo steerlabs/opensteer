@@ -78,7 +78,7 @@ const clientSurfaces = {
 /**
  * Which arm of the one session-exchange contract this attachment can present.
  * `null` means the attachment does not exchange a credential at all: a
- * self-hosted Host signs the person in itself, and a Personal Host running on
+ * team Host signs the person in itself, and a Personal Host running on
  * this machine already owns its owner session. Pure and total — the access
  * arm was decided by the resolver, never again here.
  */

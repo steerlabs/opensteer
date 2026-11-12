@@ -45,7 +45,7 @@ run("Browser Sessions through a whole deployment", () => {
     // A legacy browser has unknown creation provenance and cannot become the person's reuse candidate.
     const legacy = await stack.host.browser.start({
       ownerId: owner,
-      workspaceId: stack.mainWorkspaceId,
+
       profileId,
       origin: "agent",
     });
@@ -189,21 +189,21 @@ run("Browser Sessions through a whole deployment", () => {
     const initial = first.data;
     const entered = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
-    const getWorkspace = stack.host.store.getWorkspaceForOwner.bind(stack.host.store);
+    const createSession = stack.host.store.createBrowserSession.bind(stack.host.store);
     let held = false;
     const gate = vi
-      .spyOn(stack.host.store, "getWorkspaceForOwner")
+      .spyOn(stack.host.store, "createBrowserSession")
       .mockImplementation(async (...args) => {
         if (!held) {
           held = true;
           entered.resolve();
           await release.promise;
         }
-        return getWorkspace(...args);
+        return createSession(...args);
       });
     const unrelated = stack.host.browser.start({
       ownerId: owner.id,
-      workspaceId: initial.session.workspaceId,
+
       fresh: true,
     });
     await entered.promise;
@@ -280,8 +280,9 @@ run("Browser Sessions through a whole deployment", () => {
     const detached = await stack.host.store.createBrowserSession({
       id: createBrowserSessionId(),
       runnerId: initial.session.placement.runnerId,
-      workspaceId: initial.session.workspaceId,
-      origin: "workspace",
+
+      ownerId: owner.id,
+      origin: "agent",
       profileId: null,
       placementKey: "detached-test",
       runtimeId: "browser-e2e",

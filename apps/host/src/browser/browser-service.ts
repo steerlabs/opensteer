@@ -7117,7 +7117,7 @@ function watchFrameEnvelope(
   return envelope;
 }
 
-function publicProfile(record: BrowserProfileRecord): BrowserProfile {
+export function publicProfile(record: BrowserProfileRecord): BrowserProfile {
   return { homeRunnerId: record.homeRunnerId ?? null, id: record.id, name: record.name };
 }
 
@@ -7139,7 +7139,7 @@ function placementOf(record: BrowserSessionRecord): BrowserPlacementSelector {
   return { kind: "runner", runnerId: record.runnerId };
 }
 
-function publicPlacement(placement: BrowserRuntimePlacement): BrowserPlacement {
+export function publicPlacement(placement: BrowserRuntimePlacement): BrowserPlacement {
   return {
     available: placement.available,
     environmentIds: placement.environmentIds,

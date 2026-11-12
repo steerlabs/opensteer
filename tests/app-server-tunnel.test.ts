@@ -45,7 +45,12 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
     connectionLeaseId: `rls_${crypto.randomUUID()}`,
   });
   const environmentId = createId("environment");
-  let identity = { ...fence, fence, environmentId } as unknown as RunnerIdentity;
+  let identity = {
+    ...fence,
+    fence,
+    environmentId,
+    environmentIds: [environmentId],
+  } as unknown as RunnerIdentity;
   let connection = new AbortController();
   let replaceBeforeDial = false;
   const lifetime = new AbortController();
@@ -54,6 +59,7 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
   let usedTicket = "";
   const hub = new AppTunnelHub({
     identityForEnvironment: () => identity,
+    identityForRunner: () => identity,
     appConnectionSignal: () => connection.signal,
     requestApp: async (_environment, request, signal) => {
       if (request.type !== "host.app.connect") throw new Error("Unexpected control request");
@@ -76,7 +82,7 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
         fence: {
           ...fence,
           environmentId,
-          storageAuthorityId: request.spec.binding.storageAuthorityId,
+          bindingGeneration: 1,
         },
         port: address.port,
       };
@@ -94,15 +100,8 @@ it("pipes HTTP POST and incremental SSE over one-use WebSocket tickets, fences r
   const spec: AppRuntimeSpec = {
     appId: `app_${crypto.randomUUID()}`,
     version: 1,
-    folder: ".",
+    folder: { computerId: fence.runnerId, path: "/tmp/app-tunnel-test" },
     command: "node server.js",
-    binding: {
-      workspaceId: createId("workspace"),
-      bindingId: createId("workspaceBinding"),
-      generation: 1,
-      ownerEnvironmentId: environmentId,
-      storageAuthorityId: createId("storageAuthority"),
-    },
   };
   try {
     const abort = new AbortController();

@@ -254,14 +254,30 @@ export async function setThreadDone(
         });
       await lockThreadChannelAuthorities(transaction, scope.threadIds);
       // Active bindings must not rotate into this set while scope is checked.
-      await transaction
-        .selectFrom("channelConversationContexts")
+      const conversations = await transaction
+        .selectFrom("channelConversations")
         .selectAll()
         .where("activeThreadId", "in", scope.threadIds)
-        .orderBy("conversationId")
-        .orderBy("authorityUserId")
+        .orderBy("id")
         .forNoKeyUpdate()
         .execute();
+      if (input.done && conversations.length) {
+        const active = await transaction
+          .selectFrom("channelBindings")
+          .select("id")
+          .where(
+            "id",
+            "in",
+            conversations.map((row) => row.bindingId),
+          )
+          .where("status", "=", "active")
+          .executeTakeFirst();
+        if (active)
+          throw new OpensteerError({
+            code: "bad_request",
+            message: "An active Messaging conversation's task must stay open",
+          });
+      }
       const threads = await transaction
         .selectFrom("threads")
         .selectAll()

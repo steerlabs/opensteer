@@ -214,8 +214,7 @@ export class McpOAuthService {
     readonly launchTicket: string;
   }> {
     const posture = await this.#deploymentPosture();
-    const relayed =
-      posture === "account-linked-personal" || posture === "account-adopted-self-hosted";
+    const relayed = posture === "account-linked-personal";
     const hosted = relayed ? this.#hostedOAuth : undefined;
     const binding = hosted
       ? validateIntegrationAccountBinding(await hosted.accountSubject(input.ownerUserId))
@@ -398,7 +397,7 @@ export class McpOAuthService {
       }
   > {
     const posture = await this.#deploymentPosture();
-    if (posture === "account-linked-personal" || posture === "account-adopted-self-hosted") {
+    if (posture === "account-linked-personal") {
       throw new OpensteerError({
         code: "conflict",
         message: "This consent must restart through Opensteer Account.",

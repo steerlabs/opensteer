@@ -59,15 +59,13 @@ export class TeamNoticesStore {
     if (before) query = query.where("id", "<", before as ReturnType<typeof createId<"teamNotice">>);
     const rows = await query.orderBy("id", "desc").limit(51).execute();
     return {
-      notices: rows
-        .slice(0, 50)
-        .map((row) =>
-          TeamNoticeSchema.strip().parse({
-            ...row,
-            createdAt: row.createdAt.toISOString(),
-            readAt: row.readAt?.toISOString() ?? null,
-          }),
-        ),
+      notices: rows.slice(0, 50).map((row) =>
+        TeamNoticeSchema.strip().parse({
+          ...row,
+          createdAt: row.createdAt.toISOString(),
+          readAt: row.readAt?.toISOString() ?? null,
+        }),
+      ),
       hasMore: rows.length > 50,
     };
   }

@@ -21,7 +21,6 @@ import { settings } from "../mcp/tool-access.js";
 import { notifyMachinesChanged } from "../shell/machine-access-events.js";
 import { harnessView, requireMachineAccessManagement } from "./authority.js";
 import {
-  assertAdministrator,
   executeIntegrationAdministration,
   isIntegrationAdministrationCommand,
   type AdministrationActor,
@@ -103,7 +102,7 @@ export class AdministrationService {
   }
   async actor(caller: AdministrationCaller): Promise<AdministrationActor> {
     await requirePersonalOwner(this.dependencies.store.database, caller.userId);
-    return { userId: caller.userId, isAdministrator: true };
+    return { userId: caller.userId };
   }
   async authorize(caller: AdministrationCaller, command: AdministrationCommand) {
     await requirePersonalOwner(this.dependencies.store.database, caller.userId);
@@ -147,8 +146,6 @@ export class AdministrationService {
     if (administration) {
       if (command.type.startsWith("harness.") && "environmentId" in command)
         await this.admitHarnessManagement(actor, command.environmentId);
-      if (["plugin.update", "integration.uninstall"].includes(command.type))
-        assertAdministrator(actor);
       const replay = await this.dependencies.store.replayAdministrationCommand(administration);
       if (replay?.output) return hostApi["commands.dispatch"].success.parse(replay.output);
       if (replay && command.type === "machine.access.session.stop")
@@ -269,7 +266,7 @@ export class AdministrationService {
     command: AdministrationCommand,
     administration?: AdministrationCommandIdentity | undefined,
   ): Promise<HostApiCommandOutput> {
-    const { userId, isAdministrator } = actor;
+    const { userId } = actor;
     const dependencies = this.dependencies;
     const publishDeploymentEvent =
       dependencies.publishDeploymentEvent ?? ((event) => dependencies.realtime.publish(event));
@@ -515,7 +512,7 @@ export class AdministrationService {
         };
       }
       case "machine.revoke": {
-        const allowDeployment = isAdministrator;
+        const allowDeployment = true;
         const runnerId = RunnerIdSchema.parse(command.machineId);
         // Order matters and is the whole point of the operation. The durable
         // write lands first — tombstone plus generation bump, plus every module
@@ -527,7 +524,6 @@ export class AdministrationService {
             dependencies.store.revokeRunner(runnerId, userId, {
               administration,
               allowDeployment,
-              allowOtherOwners: allowDeployment,
             }),
           ),
         );
@@ -558,7 +554,7 @@ export class AdministrationService {
         };
       }
       case "machine.rename": {
-        const allowDeployment = isAdministrator;
+        const allowDeployment = true;
         await dependencies.store.renameRunner(
           RunnerIdSchema.parse(command.machineId),
           userId,
@@ -587,7 +583,6 @@ export class AdministrationService {
             dependencies.store,
             {
               userId,
-              isAdministrator,
             },
             shellSession.runnerId,
           );

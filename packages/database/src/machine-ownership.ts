@@ -1,14 +1,8 @@
-import { deploymentPolicy } from "@opensteer/core";
+import { personalDeploymentOwner } from "./machine-store.js";
 import { runnerRunsItsDeployment, type RunnerId, type UserId } from "@opensteer/core";
 import type { Kysely, Transaction } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
-/**
- * Who manages one computer's owner-scoped resources.
- *
- * The effective owner is null for a Deployment-owned machine outside a
- * Personal Deployment: nobody in particular owns it, so its administrators do.
- */
 export interface MachineOwnershipRecord {
   readonly effectiveOwner: UserId | null;
   readonly ownerKind: "deployment" | "user";
@@ -39,31 +33,17 @@ export async function machineOwnershipIn(
     .executeTakeFirst();
   if (
     !runnerRunsItsDeployment({
-      deploymentIsPersonal: deployment
-        ? deploymentPolicy(deployment.deploymentShape).deploymentOwnsMainComputer
-        : false,
+      deploymentIsPersonal: deployment ? deployment.deploymentShape.kind === "personal" : false,
       ownerKind: runner.ownerKind,
       runnerKind: runner.kind,
     })
   ) {
     return { effectiveOwner: null, ownerKind: "deployment" };
   }
-  const owner = await database
-    .selectFrom("users")
-    .select("id")
-    .where("instanceRole", "=", "administrator")
-    .where("disabledAt", "is", null)
-    .orderBy("createdAt", "asc")
-    .executeTakeFirst();
-  return { effectiveOwner: owner?.id ?? null, ownerKind: "deployment" };
+  return { effectiveOwner: await personalDeploymentOwner(database), ownerKind: "deployment" };
 }
 
 /** The one management rule shared by reads and writes. */
-export function machineIsManagedBy(
-  ownership: MachineOwnershipRecord,
-  userId: UserId,
-  options: { readonly allowDeployment: boolean },
-): boolean {
-  if (ownership.effectiveOwner === userId) return true;
-  return ownership.ownerKind === "deployment" && options.allowDeployment;
+export function machineIsManagedBy(ownership: MachineOwnershipRecord, userId: UserId): boolean {
+  return ownership.effectiveOwner === userId;
 }

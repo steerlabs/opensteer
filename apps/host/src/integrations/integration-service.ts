@@ -173,7 +173,7 @@ const authorizationChangedDetail =
 const invalidTokenExpiryDetail = "The provider token expiry is invalid; reconnect this account.";
 
 export interface HostedOAuthOptions {
-  readonly kind: "personal" | "server";
+  readonly kind: "personal";
   readonly accountSubject: (ownerUserId: UserId) => Promise<IntegrationAccountBinding | null>;
   readonly broker: HostedOAuthBrokerClient;
   readonly deploymentAuthorityDigest: string;
@@ -2884,5 +2884,5 @@ function humanizeField(field: string): string {
 }
 
 function accountLinkedPosture(posture: IntegrationDeploymentPosture): boolean {
-  return posture === "account-linked-personal" || posture === "account-adopted-self-hosted";
+  return posture === "account-linked-personal";
 }

@@ -163,13 +163,13 @@ describe("connectCard", () => {
     });
     expect(card.details).toContain(mainAccessDetail("Opensteer", "Gmail"));
   });
-  it("connects personal access with optional changes", () => {
+  it("shows the full Personal grant without offering an ineffective access toggle", () => {
     expect(connectCard({ deploymentName: "Opensteer", loaded: loaded() })).toMatchObject({
       title: "Connect Gmail",
       primary: { label: "Connect" },
       scope: "All your tasks",
-      canAllowChanges: true,
-      effectiveAccess: "read",
+      canAllowChanges: false,
+      effectiveAccess: "read-write",
     });
     expect(connectCard({ deploymentName: "Opensteer", loaded: loaded() }).details).toContain(
       mainAccessDetail("Opensteer", "Gmail"),

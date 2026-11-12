@@ -14,11 +14,7 @@ import { type VerticalStack } from "../apps/host/src/agents/vertical-stack.test-
 import { WebSocket } from "../apps/host/src/browser/browser-watch-e2e.test-support.js";
 import { browserSiteFromUrl } from "../packages/browser-profile/src/source-state.js";
 import { readImageDimensions } from "../packages/browser-runtime-core/src/index.js";
-import {
-  BrowserProfileIdSchema,
-  ModelSelectionSchema,
-  type WorkspaceId,
-} from "../packages/core/src/index.js";
+import { BrowserProfileIdSchema, ModelSelectionSchema } from "../packages/core/src/index.js";
 import {
   BrowserServerMessageSchema,
   BrowserSessionIdSchema,
@@ -28,7 +24,8 @@ import {
 import {
   addCleanup,
   executablePath,
-  grantedProfile,
+  enrollBrowserComputer,
+  createProfile,
   waitFor,
 } from "./browser-deployment.test-support.js";
 
@@ -60,7 +57,7 @@ export async function agentJourney(
     return bootstrap.ok && bootstrap.data.browser.available;
   }, 30_000);
 
-  const workspace = await stack.createWorkspace("Marketplace");
+  const folder = await stack.createFolder("Marketplace");
   const threadId = await stack.createThread({
     modelSelection: ModelSelectionSchema.parse({
       modelId: "gpt-5.6-sol",
@@ -68,11 +65,11 @@ export async function agentJourney(
       providerId: "openai",
     }),
     title: "List the mattress",
-    workspaceId: workspace.id,
+    folder: folder,
   });
-  const profileId = await grantedProfile(stack, workspace.id);
+  const profileId = await createProfile(stack);
   const photo = noisePng(900, 900);
-  const attachment = await upload(stack, workspace.id, "mattress.png", "image/png", photo);
+  const attachment = await upload(stack, "mattress.png", "image/png", photo);
 
   const first = await stack.sendMessage({
     attachments: [
@@ -86,7 +83,6 @@ export async function agentJourney(
     ],
     text: `List this mattress. UPLOAD_PAGE=${pageOrigin}/upload PROFILE_ID=${profileId}`,
     threadId,
-    workspaceId: workspace.id,
   });
   const report = JSON.parse(first.assistantText) as AgentReport;
   if ("error" in report) throw new Error(report.error);
@@ -149,7 +145,7 @@ export async function agentJourney(
   expect(report.endedSession.stderr).toContain(`Browser Session ${sessionB} has ended`);
   expect(report.unknownSession.stderr).toContain("was not found");
   expect(report.accessAlreadyAvailable.error).toContain(
-    `This Workspace can already use browser profile ${profileId}`,
+    "This browser profile is already available. Open it with browser_session_open.",
   );
   expect(report.signedIn).toMatchObject({
     stdout: expect.stringContaining("marketplace_session=signed-in"),
@@ -202,7 +198,6 @@ export async function agentJourney(
   const later = await stack.sendMessage({
     text: `Check the account. UPLOAD_PAGE=${pageOrigin}/upload CHECK_PROFILE=${profileId}`,
     threadId,
-    workspaceId: workspace.id,
   });
   const check = JSON.parse(later.assistantText) as { cookie: string };
   expect(check.cookie).toContain("marketplace_session=signed-in");
@@ -423,7 +418,6 @@ export async function startPersonBrowser(
     idempotencyKey: randomUUID(),
     input: { fresh: true, reuseExisting: false, ...input },
     type: "browser.session.start",
-    workspaceId: stack.mainWorkspaceId,
   });
   if (!started.ok) throw new Error(started.error.message);
   if (started.data.type !== "browser.session.start") throw new Error("Session command mismatch.");
@@ -815,14 +809,10 @@ type AgentReport =
     };
 
 /**
- * The shipped browser service, as a process of its own that enrolls with the
- * Deployment's configured token and relays to the Host itself — the Compose
- * and managed-cloud arrangement.
+ * A reachable Personal computer lends its Browser without executing agents.
  */
-export async function startBrowserService(
-  stack: VerticalStack,
-  enrollmentToken: string,
-): Promise<{ readonly pid: number }> {
+export async function startBrowserService(stack: VerticalStack): Promise<{ readonly pid: number }> {
+  const enrollmentToken = await enrollBrowserComputer(stack, "Browser journey computer");
   const root = await mkdtemp(path.join(tmpdir(), "opensteer-browser-service-e2e-"));
   addCleanup("browser service files", () => rm(root, { force: true, recursive: true }));
   const child = spawn(process.execPath, ["--import", "tsx", browserServiceMain], {
@@ -867,20 +857,13 @@ export async function startBrowserService(
   return { pid: child.pid };
 }
 
-async function upload(
-  stack: VerticalStack,
-  workspaceId: WorkspaceId,
-  name: string,
-  mediaType: string,
-  bytes: Buffer,
-) {
+async function upload(stack: VerticalStack, name: string, mediaType: string, bytes: Buffer) {
   const reservation = await stack.api["commands.dispatch"]({
     idempotencyKey: randomUUID(),
     mediaType,
     name,
     sizeBytes: bytes.length,
     type: "attachment.upload.create",
-    workspaceId,
   });
   if (!reservation.ok || reservation.data.type !== "attachment.upload.create") {
     throw new Error("Could not reserve the attachment");

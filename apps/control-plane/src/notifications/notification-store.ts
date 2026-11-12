@@ -261,7 +261,13 @@ export class ControlPlaneNotificationStore {
         .select(["canonicalOrigin", "authorityEnvelope"])
         .where("id", "=", publication.deploymentId)
         .executeTakeFirstOrThrow();
-      const teamHost = (await sql<{ team: boolean }>`select coalesce(authority_envelope->'document'->'deploymentShape'->>'kind','personal')='team' as team from deployments where id=${publication.deploymentId}`.execute(transaction)).rows[0]!.team;
+      const teamHost = (
+        await sql<{
+          team: boolean;
+        }>`select coalesce(authority_envelope->'document'->'deploymentShape'->>'kind','personal')='team' as team from deployments where id=${publication.deploymentId}`.execute(
+          transaction,
+        )
+      ).rows[0]!.team;
       if (
         teamHost !== publication.kind.startsWith("team-") ||
         (publication.teamTarget && publication.teamTarget.origin !== deployment.canonicalOrigin)

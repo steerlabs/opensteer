@@ -805,7 +805,7 @@ export class ControlPlaneStore {
           .select(deploymentSelection)
           .where("deployments.ownerAccountId", "=", accountId)
           .where(
-            sql<boolean>`coalesce(deployments.authority_envelope->'document'->'deploymentShape'->>'kind','personal')<>'team' or exists(select 1 from deployment_directory_entries e where e.deployment_id=deployments.id and e.account_id=${accountId} and e.present)`,
+            sql<boolean>`(coalesce(deployments.authority_envelope->'document'->'deploymentShape'->>'kind','personal')<>'team' or exists(select 1 from deployment_directory_entries e where e.deployment_id=deployments.id and e.account_id=${accountId} and e.present))`,
           )
           .where(({ not, exists, selectFrom }) =>
             not(
@@ -1230,7 +1230,7 @@ export class ControlPlaneStore {
       if (deployment.reachability === "canonical") {
         throw new ControlPlaneError(
           "forbidden",
-          "Opensteer Connect is unavailable for independently self-hosted deployments",
+          "Opensteer Connect is available only for Personal Deployments",
         );
       }
       if (deployment.reachability === "routed") {

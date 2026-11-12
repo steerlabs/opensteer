@@ -230,11 +230,9 @@ export class TeamLinkEndpoint {
         ? [result.result.source]
         : result.kind === "search"
           ? result.result.results.map((r) => r.source)
-          : result.kind === "knowledge.sql"
-            ? result.result.sources
-            : result.kind === "context"
-              ? [result.context.source]
-              : [];
+          : result.kind === "context"
+            ? [result.context.source]
+            : [];
     const authorize = async () => {
       await links.assertActive(linkId);
       if ("requestId" in frame) {

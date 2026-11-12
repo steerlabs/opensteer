@@ -355,7 +355,7 @@ export function computerRole(
   if (machine.modules.agents) return "works";
   // A device that lends its browser has shared something even with no app on.
   if (uses.length > 0 || machine.modules.browser !== undefined) return "uses";
-  if (false || !appsLoaded) return null;
+  if (!appsLoaded) return null;
   return "idle";
 }
 

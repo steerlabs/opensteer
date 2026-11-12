@@ -46,6 +46,7 @@ export const TeamLinkRedeemSchema = z.strictObject({
   installationLabel: z.string().trim().min(1).max(120),
 });
 export const TeamLinkViewSchema = z.strictObject({
+  teamName: z.string().min(1).max(160),
   id: TeamLinkIdSchema,
   ownerUserId: UserIdSchema,
   personalDeploymentId: DeploymentIdSchema.nullable(),
@@ -61,6 +62,7 @@ export const PersonalTeamLinkSchema = z.strictObject({
   remoteLinkId: TeamLinkIdSchema.nullable(),
   ownerUserId: UserIdSchema.nullable(),
   state: z.enum(["joining", "active", "unreachable", "leaving", "revoked", "needs_update"]),
+  updateRequiredBy: z.enum(["personal", "team"]).nullable(),
   lastContactAt: IsoDateTimeSchema.nullable(),
 });
 export type PersonalTeamLink = z.infer<typeof PersonalTeamLinkSchema>;

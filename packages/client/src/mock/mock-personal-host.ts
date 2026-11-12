@@ -126,7 +126,7 @@ export class MockPersonalHost {
   }
   dispose(): void {
     this.#release();
-    for (const socket of [...this.sockets]) socket.close();
+    for (const socket of this.sockets) socket.close();
     this.client.dispose();
   }
 }

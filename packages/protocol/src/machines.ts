@@ -155,7 +155,6 @@ export const MachineSummarySchema = z.object({
   }),
   name: z.string(),
   ownership: z.enum(["mine", "deployment"]),
-  /** Who owns a computer that is somebody else's; null for every other row. */
   /** Threads placed here, which lose the computer they run on with it. */
   pinnedThreads: z.number().int().nonnegative().max(1_000_000),
   revocable: z.boolean(),

@@ -1,4 +1,3 @@
-import { deploymentPolicy } from "@opensteer/core";
 import { z } from "zod";
 import { JsonObjectSchema, McpIdentifierSchema } from "./schema-primitives.js";
 import {
@@ -88,8 +87,6 @@ export type IntegrationApplicationSource = z.infer<typeof IntegrationApplication
 const IntegrationDeploymentPostureSchema = z.enum([
   "account-linked-personal",
   "account-free-personal",
-  "independent-self-hosted",
-  "account-adopted-self-hosted",
 ]);
 export type IntegrationDeploymentPosture = z.infer<typeof IntegrationDeploymentPostureSchema>;
 
@@ -102,15 +99,9 @@ export const IntegrationAuthorizationSurfaceSchema = z.enum(["canonical", "perso
 export type IntegrationAuthorizationSurface = z.infer<typeof IntegrationAuthorizationSurfaceSchema>;
 
 export function resolveIntegrationDeploymentPosture(input: {
-  readonly accountReachability: "canonical" | "routed" | null;
-  readonly kind: "personal" | "team";
   readonly personalAccountLinked: boolean;
 }): IntegrationDeploymentPosture {
-  if (input.accountReachability !== null) return "account-adopted-self-hosted";
-  if (deploymentPolicy({ kind: input.kind }).services.personal) {
-    return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
-  }
-  return "independent-self-hosted";
+  return input.personalAccountLinked ? "account-linked-personal" : "account-free-personal";
 }
 
 export const IntegrationProviderAuthorizationCodeSchema = z.enum([
@@ -312,7 +303,6 @@ export function defaultOAuthApplicationSource(input: {
   if (input.posture === "account-linked-personal") {
     return hosted as Extract<IntegrationApplicationSource, { kind: "hosted-oauth" }> | null;
   }
-  if (input.posture === "account-free-personal") return input.deploymentSource ?? null;
   return input.deploymentSource ?? null;
 }
 

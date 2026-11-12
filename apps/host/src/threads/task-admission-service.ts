@@ -25,7 +25,7 @@ import type { FolderAdmissionService } from "./folder-admission-service.js";
 export class TaskAdmissionService implements TaskAdmissionPort {
   readonly options: {
     readonly database: Kysely<DatabaseSchema>;
-    readonly folders: FolderAdmissionService;
+    readonly folders: Pick<FolderAdmissionService, "admit">;
     readonly execution: () => Promise<ExecutionSelection>;
     readonly publish: (events: readonly AgentEvent[]) => void;
     readonly revokeGrants: (grants: readonly RevokedRunGrant[]) => void;

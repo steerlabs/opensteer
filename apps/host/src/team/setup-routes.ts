@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { opensteerDesktopApplicationId } from "@opensteer/core";
 import {
   HostAccountIdentitySchema,
   HostAccountAdoptionBundleSchema,
@@ -117,9 +118,10 @@ function teamSetupPage(
   inviteSelector: string | null = null,
 ) {
   const portal = new URL(accountPortalOrigin).origin;
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up your team · Opensteer</title><style>body{font:16px system-ui;margin:12vh auto;padding:24px;max-width:440px;color:#25231f;background:#faf9f6}h1{font-weight:600}button{font:inherit;padding:12px 18px;border-radius:10px;border:1px solid #d6d2ca;background:#fff;cursor:pointer}p{line-height:1.5}</style><h1>Set up your team</h1><p id="status">Checking setup…</p><button id="continue" hidden>Continue with Opensteer Account</button><script nonce="${nonce}">
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Set up your team · Opensteer</title><style>body{font:16px system-ui;margin:12vh auto;padding:24px;max-width:440px;color:#25231f;background:#faf9f6}h1{font-weight:600}button{font:inherit;padding:12px 18px;border-radius:10px;border:1px solid #d6d2ca;background:#fff;cursor:pointer}p{line-height:1.5}</style><h1>Set up your team</h1><p id="status">Checking setup…</p><button id="continue" hidden>Continue with Opensteer Account</button><p><a id="open-app" hidden>Open in Opensteer</a></p><script nonce="${nonce}">
   const verifier=location.hash.slice(1);history.replaceState(null,'',location.pathname);
   const invitation=${JSON.stringify(inviteSelector)};
+  if(invitation&&/^[A-Za-z0-9_-]{24,128}$/.test(verifier)){const open=document.getElementById('open-app');open.href=${JSON.stringify(`${opensteerDesktopApplicationId}:/team?`)}+new URLSearchParams({url:location.origin+location.pathname+'#'+verifier});open.hidden=false;}
   const status=document.getElementById('status'),button=document.getElementById('continue');
   const portal=${JSON.stringify(portal)},versionHeaders={${JSON.stringify(teamApiVersionHeader)}:${JSON.stringify(String(teamApiVersion))}};
   const post=async(path,input)=>{const r=await fetch(path,{method:'POST',headers:{...versionHeaders,'content-type':'application/json'},body:JSON.stringify(input),redirect:'error'});if(!r.ok)throw new Error('Setup could not continue. Re-run the team setup script for a new link.');return r.json();};

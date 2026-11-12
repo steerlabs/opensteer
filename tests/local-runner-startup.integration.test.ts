@@ -19,8 +19,8 @@ import {
   createMachineAccessDatabase,
   enrollmentToken,
   nativeFsHelperBinary,
-  startMachineAccessHost,
-} from "../apps/host/src/runtime/machine-access.test-support.js";
+  startPersonalMachineHost,
+} from "../apps/host/src/runtime/personal-machine.test-support.js";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import { integrationBundleEntrySync } from "@opensteer/shared/test-support/integrationRunnerBuild";
 import { withTimeout } from "@opensteer/shared/withTimeout";
@@ -66,9 +66,9 @@ integration("local Runner startup with a real credentialed worker", () => {
       const resumeIdentityRead = Promise.withResolvers<void>();
       let unsubscribe: (() => void) | undefined;
       let service: LocalRunnerService | undefined;
-      let host: Awaited<ReturnType<typeof startMachineAccessHost>> | undefined;
+      let host: Awaited<ReturnType<typeof startPersonalMachineHost>> | undefined;
       try {
-        host = await startMachineAccessHost(database.url);
+        host = await startPersonalMachineHost({ databaseUrl: database.url, remoteAccess: true });
         const descriptor = HostDescriptorSchema.parse(
           await (await fetch(`${host.origin}/.well-known/opensteer`)).json(),
         );
@@ -79,8 +79,8 @@ integration("local Runner startup with a real credentialed worker", () => {
               authority: descriptor.authority,
               bootstrapMethods: descriptor.bootstrapMethods,
               createdAt: now,
-              endpoints: [{ kind: "canonical", origin: host.origin, verifiedAt: now }],
-              kind: "self-hosted",
+              endpoints: [{ kind: "canonical", origin: host.origin.origin, verifiedAt: now }],
+              kind: "personal",
               lastUsedAt: null,
               name: "Startup E2E",
               reachability: "canonical",
@@ -218,14 +218,14 @@ integration("local Runner startup with a real credentialed worker", () => {
           userEnvironment: { resolve: async () => ({ HOME: root, PATH: "/usr/bin:/bin" }) },
         });
         const token = await enrollmentToken(host, {
-          allowedModules: ["agents", "browser", "integrations", "messaging", "shell"],
+          allowedModules: ["browser", "integrations", "messaging", "shell"],
           idempotencyKey: "startup-e2e",
           name: "Startup E2E Mac",
         });
         const input = {
           deploymentId: host.runtime.deployment.id,
           enrollmentToken: token,
-          runAgents: true,
+          runAgents: false,
           runnerName: "Startup E2E Mac",
         };
         const error = await service.start(input).then(

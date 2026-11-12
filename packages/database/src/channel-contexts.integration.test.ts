@@ -296,6 +296,14 @@ describeStore("personal Messaging conversation contexts", (it) => {
     const guest = await p.adopt("unlinked-guest", "guest", "dm");
     if (!guest.run) throw new Error("Guest message did not reserve a Run");
     expect(guest.input.threadId).toBe(first.input.threadId);
+    expect(guest.run.providerSessionId).not.toBe(first.run.providerSessionId);
+    expect(
+      await f.database
+        .selectFrom("providerSessions")
+        .select(["personalContext", "providerSessionReference"])
+        .where("id", "=", guest.run.providerSessionId)
+        .executeTakeFirstOrThrow(),
+    ).toEqual({ personalContext: false, providerSessionReference: null });
     expect(await runAllowsPersonalContext(f.database, guest.run.id)).toBe(false);
     const group = await p.adopt("owner-in-group", "owner", "group");
     if (!group.run) throw new Error("Group message did not reserve a Run");

@@ -36,7 +36,7 @@ export class IntegrationPlatformStore {
   readonly getConnectionKind: IntegrationConnectionAuthStore["getConnectionKind"];
   readonly listComputerAppSetupRequests: IntegrationConnectionAuthStore["listComputerAppSetupRequests"];
   readonly getComputerAppSetupRequest: IntegrationConnectionAuthStore["getComputerAppSetupRequest"];
-  readonly isAdministrator: IntegrationConnectionAuthStore["isAdministrator"];
+  readonly isPersonalOwner: IntegrationConnectionAuthStore["isPersonalOwner"];
   readonly requestComputerAppSetup: IntegrationConnectionAuthStore["requestComputerAppSetup"];
   readonly cancelComputerAppSetup: IntegrationConnectionAuthStore["cancelComputerAppSetup"];
   readonly expireComputerAppSetupRequests: IntegrationConnectionAuthStore["expireComputerAppSetupRequests"];
@@ -61,7 +61,6 @@ export class IntegrationPlatformStore {
   readonly createGrant: IntegrationGrantStore["createGrant"];
   readonly listGrants: IntegrationGrantStore["listGrants"];
   readonly connectionDiscoveryScope: IntegrationGrantStore["connectionDiscoveryScope"];
-  readonly mainAccess: IntegrationGrantStore["mainAccess"];
   readonly isConnectionUsableForAccessRequest: IntegrationGrantStore["isConnectionUsableForAccessRequest"];
   readonly revokeGrant: IntegrationGrantStore["revokeGrant"];
   readonly getToolInvocation: IntegrationGrantStore["getToolInvocation"];
@@ -101,7 +100,7 @@ export class IntegrationPlatformStore {
     this.getComputerAppSetupRequest = this.connections.getComputerAppSetupRequest.bind(
       this.connections,
     );
-    this.isAdministrator = this.connections.isAdministrator.bind(this.connections);
+    this.isPersonalOwner = this.connections.isPersonalOwner.bind(this.connections);
     this.requestComputerAppSetup = this.connections.requestComputerAppSetup.bind(this.connections);
     this.cancelComputerAppSetup = this.connections.cancelComputerAppSetup.bind(this.connections);
     this.expireComputerAppSetupRequests = this.connections.expireComputerAppSetupRequests.bind(
@@ -140,7 +139,6 @@ export class IntegrationPlatformStore {
     this.createGrant = this.grants.createGrant.bind(this.grants);
     this.listGrants = this.grants.listGrants.bind(this.grants);
     this.connectionDiscoveryScope = this.grants.connectionDiscoveryScope.bind(this.grants);
-    this.mainAccess = this.grants.mainAccess.bind(this.grants);
     this.isConnectionUsableForAccessRequest = this.grants.isConnectionUsableForAccessRequest.bind(
       this.grants,
     );

@@ -107,6 +107,11 @@ export async function runPasswordsGrantPolicyJourney(
     const account = first.accounts[0];
     assert(account);
     assert.equal(
+      (await current.release({ transactionId: id, field: "password", kind: "app" })).released,
+      false,
+      "Current consent is required before app release",
+    );
+    assert.equal(
       (
         await current.approve({
           transactionId: id,
@@ -118,12 +123,6 @@ export async function runPasswordsGrantPolicyJourney(
       ).decision,
       "authorized",
     );
-    assert.equal(
-      (await current.release({ transactionId: id, field: "password", kind: "app" })).released,
-      false,
-      "commit is required before app release",
-    );
-    assert.equal((await current.commit({ transactionId: id })).committed, true);
     const released = await current.release({ transactionId: id, field: "password", kind: "app" });
     assert.equal(released.released && released.value === fields.password, true);
     await current.cancel(id);
@@ -149,7 +148,6 @@ export async function runPasswordsGrantPolicyJourney(
       ).decision,
       "authorized",
     );
-    await current.commit({ transactionId: onceId });
     await current.cancel(onceId);
     const after = await snapshot();
     observations.afterOneTimeApproval = after;

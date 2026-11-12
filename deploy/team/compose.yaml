@@ -30,18 +30,18 @@ services:
     restart: unless-stopped
     environment:
       OPENSTEER_DEPLOYMENT_KIND: team
+      OPENSTEER_DEPLOYMENT_NAME: ${OPENSTEER_DEPLOYMENT_NAME:-My team}
       OPENSTEER_BIND_ADDRESS: 0.0.0.0
       OPENSTEER_PORT: "4310"
       OPENSTEER_MODE: production
       OPENSTEER_CANONICAL_ORIGIN: ${OPENSTEER_CANONICAL_ORIGIN:?required}
       OPENSTEER_DATABASE_URL_FILE: /run/secrets/database_url
       OPENSTEER_AUTH_SECRET_FILE: /run/secrets/auth_secret
-      OPENSTEER_CREDENTIAL_KEY_PATH: /run/secrets/credential_key
       OPENSTEER_INITIAL_OWNER_ENROLLMENT_TOKEN_FILE: /run/secrets/initial_owner_enrollment_token
       OPENSTEER_HOST_DATA_DIR: /var/lib/opensteer
       OPENSTEER_HOST_PRIVATE_KEY_PATH: /var/lib/opensteer/keys/host-private.pem
       OPENSTEER_HOST_PUBLIC_KEY_PATH: /var/lib/opensteer/keys/host-public.pem
-    secrets: [database_url, auth_secret, credential_key, initial_owner_enrollment_token]
+    secrets: [database_url, auth_secret, initial_owner_enrollment_token]
     volumes: [host-data:/var/lib/opensteer]
     networks: [database, edge]
     depends_on:
@@ -91,7 +91,5 @@ secrets:
     file: ./secrets/database_url
   auth_secret:
     file: ./secrets/auth_secret
-  credential_key:
-    file: ./secrets/credential_key
   initial_owner_enrollment_token:
     file: ./secrets/initial_owner_enrollment_token

@@ -42,7 +42,7 @@ export async function ensureConfiguredDeployment(options: {
     deploymentConnectionFromVerifiedEndpoints({
       accountAccess: null,
       endpoints: [verified],
-      kind: personal ? "personal" : "self-hosted",
+      kind: personal ? "personal" : "team",
       name: local ? options.personalDeploymentName : options.hostUrl.host,
       source: { kind: "manual" },
     }),

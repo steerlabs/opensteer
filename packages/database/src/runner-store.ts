@@ -506,7 +506,12 @@ export function runnerAdvertisesItsEnvironmentBinding(
   if (advertised.length === 0 || bound.length === 0) return true;
   return sameStringSet(bound, advertised);
 }
-export const personalReachableGrant: readonly RunnerModuleName[] = ["shell"];
+export const personalReachableGrant: readonly RunnerModuleName[] = [
+  "browser",
+  "integrations",
+  "messaging",
+  "shell",
+];
 const supervisedServiceModules: readonly RunnerModuleName[] = ["integrations", "messaging"];
 
 /** Said when a Personal Deployment is asked for a computer that would execute. */

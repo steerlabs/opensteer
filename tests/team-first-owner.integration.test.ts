@@ -1,32 +1,35 @@
 import Fastify from "fastify";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import { registerTeamSetupRoutes } from "./setup-routes.js";
-import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
+import { registerTeamSetupRoutes } from "../apps/host/src/team/setup-routes.js";
+import {
+  teamApiVersion,
+  teamApiVersionHeader,
+} from "../packages/deployment-authority/src/index.js";
 import { randomBytes } from "node:crypto";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { createId, HostKeyFingerprintSchema } from "@opensteer/core";
+import { createId, HostKeyFingerprintSchema } from "../packages/core/src/index.js";
 import {
   ConsumeHostAccountAdoptionProofResponseSchema,
   ControlPlaneAccountIdSchema,
   HostAccountAdoptionCompletionGrantSchema,
   AdoptExistingDeploymentRequestSchema,
-} from "@opensteer/control-plane-protocol";
-import { createTeamFixture } from "@opensteer/database/test-support/team";
+} from "../packages/control-plane-protocol/src/index.js";
+import { createTeamFixture } from "../packages/database/src/team-fixture.test-support.js";
 import {
   cloneTestDatabase,
   ownTestDatabaseProducer,
-} from "@opensteer/database/test-support/database";
-import { TeamAccessStore } from "@opensteer/database/team-access";
-import { TeamInvitesStore } from "@opensteer/database/team-invites";
-import { TeamMembersStore } from "@opensteer/database/team-members";
+} from "../packages/database/src/test-database.test-support.js";
+import { TeamAccessStore } from "../packages/database/src/team-access-store.js";
+import { TeamInvitesStore } from "../packages/database/src/team-invites-store.js";
+import { TeamMembersStore } from "../packages/database/src/team-members-store.js";
 import {
   IdentityService,
   TeamIdentityAdmission,
   type VerifiedAccountAdoptionGrant,
-} from "@opensteer/identity";
-import { createControlPlaneDatabase } from "../../../control-plane/src/database/database.js";
-import { ControlPlaneStore } from "../../../control-plane/src/database/store.js";
-import { AdoptionOperationCipher } from "../../../control-plane/src/adoption/adoption-operation-crypto.js";
+} from "../packages/identity/src/index.js";
+import { createControlPlaneDatabase } from "../apps/control-plane/src/database/database.js";
+import { ControlPlaneStore } from "../apps/control-plane/src/database/store.js";
+import { AdoptionOperationCipher } from "../apps/control-plane/src/adoption/adoption-operation-crypto.js";
 import { sql } from "kysely";
 
 let fixture: Awaited<ReturnType<typeof createTeamFixture>>;
@@ -90,7 +93,7 @@ it("uses a setup admission to adopt an empty team, provisions Account OIDC, admi
   });
   const token = randomBytes(32).toString("base64url");
   const options = {
-    deployment: { kind: "self-hosted" as const, name: "Acme" },
+    deployment: { kind: "team" as const, name: "Acme" },
     exposure: "networked" as const,
     localPasswordEnabled: false,
     oidcProviders: [],
@@ -299,7 +302,7 @@ it("expires a setup capability across restart and rotates unfinished setup witho
   const token = randomBytes(32).toString("base64url");
   const common = {
     team,
-    deployment: { kind: "self-hosted" as const, name: "Acme" },
+    deployment: { kind: "team" as const, name: "Acme" },
     exposure: "networked" as const,
     localPasswordEnabled: false,
     oidcProviders: [],

@@ -933,3 +933,55 @@ it("offers transient Passwords choices and settles the pinned shared command in 
     client.dispose();
   }
 });
+
+it("loads managed memory passes through the current strict trigger contract", async () => {
+  const client = new MockHostClient({ latencyMs: 0, memoryPasses: "active" });
+  try {
+    await client.load();
+    const snapshot = client.getSnapshot();
+    const workers = snapshot.threads.filter(
+      (thread) => thread.purpose === "background-job" && thread.title.startsWith("Memory "),
+    );
+    expect(workers).toHaveLength(2);
+    for (const worker of workers) expect(snapshot.threadAutomations[worker.id]).toHaveLength(1);
+  } finally {
+    client.dispose();
+  }
+});
+
+it("seeds an actionable delegated task alongside its parent's places and automations", async () => {
+  const client = new MockHostClient({ latencyMs: 0 });
+  try {
+    await client.load();
+    const snapshot = client.getSnapshot();
+    const parent = snapshot.threads[0]!;
+    const assignment = Object.values(snapshot.assignments).find(
+      (row) => row.status === "open" && row.parentThreadId === parent.id,
+    )!;
+    expect(assignment).toBeDefined();
+    expect(assignment.workerThread.title).toBe("Book a table for Friday");
+    expect(snapshot.requests[assignment.workerThread.id]).toEqual([
+      expect.objectContaining({ status: "pending", kind: "harness.approval" }),
+    ]);
+    expect(snapshot.threadAutomations[parent.id]!.length).toBeGreaterThan(0);
+    const catalog = await client.rpc["thread.assignments.list"]({
+      threadId: parent.id,
+      open: true,
+    });
+    expect(catalog.ok && catalog.data.assignments.some((row) => row.id === assignment.id)).toBe(
+      true,
+    );
+    expect(snapshot.browserSessions.some((row) => row.page?.title === "Flight award alerts")).toBe(
+      true,
+    );
+    expect((await client.cancelAssignment(assignment.id)).status).toBe("cancelled");
+    const stopped = client.getSnapshot();
+    expect(stopped.requests[assignment.workerThread.id]).toEqual([]);
+    expect(stopped.runQueue.some((row) => row.threadId === assignment.workerThread.id)).toBe(false);
+    expect(stopped.transcripts[assignment.workerThread.id]).toContainEqual(
+      expect.objectContaining({ kind: "run", status: "interrupted" }),
+    );
+  } finally {
+    client.dispose();
+  }
+});

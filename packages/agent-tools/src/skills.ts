@@ -23,9 +23,12 @@ export const opensteerAgentSkillNames: readonly OpensteerAgentSkillName[] = Obje
 export function opensteerAgentSkillsFor(
   options: {
     readonly teamBound?: boolean;
+    readonly personalContext?: boolean;
   } = {},
 ): readonly OpensteerAgentSkillName[] {
   return opensteerAgentSkillNames.filter(
-    (name) => name !== "opensteer:knowledge" || options.teamBound === true,
+    (name) =>
+      (name !== "opensteer:knowledge" || options.teamBound === true) &&
+      (name !== "opensteer:memory" || options.personalContext !== false),
   );
 }

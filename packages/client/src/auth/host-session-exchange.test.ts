@@ -387,7 +387,7 @@ function serverConnection(): DeploymentConnection {
         verifiedAt: "2026-08-17T09:00:00.000Z",
       },
     ],
-    kind: "self-hosted",
+    kind: "team",
     lastUsedAt: null,
     name: "My Opensteer",
     reachability: "canonical",

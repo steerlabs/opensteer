@@ -146,8 +146,6 @@ COPY packages/runner-auth/package.json ./packages/runner-auth/package.json
 COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
-COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
-COPY packages/workspace/package.json ./packages/workspace/package.json
 RUN pnpm install --offline --frozen-lockfile
 
 FROM dependencies AS sources
@@ -275,8 +273,6 @@ COPY packages/runner-auth/package.json ./packages/runner-auth/package.json
 COPY packages/runner-client/package.json ./packages/runner-client/package.json
 COPY packages/shared/package.json ./packages/shared/package.json
 COPY packages/triggers/package.json ./packages/triggers/package.json
-COPY packages/workspace-local/package.json ./packages/workspace-local/package.json
-COPY packages/workspace/package.json ./packages/workspace/package.json
 RUN pnpm install --offline --frozen-lockfile
 COPY tsconfig.base.json tsconfig.json tsconfig.package.json ./
 COPY packages ./packages

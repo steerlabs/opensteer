@@ -56,10 +56,6 @@ export async function recoverLostRunTransaction(
       revokedGrants: [],
     };
   }
-  const {} = await transaction
-    .selectFrom("threads")
-    .where("id", "=", run.threadId)
-    .executeTakeFirstOrThrow();
   await lockThreadRow(transaction, run.threadId);
   // Read under the Thread lock: the recovery message takes its next sequence.
   const thread = await transaction

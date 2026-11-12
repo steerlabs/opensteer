@@ -517,7 +517,8 @@ export class ProductToolHandlers {
   async thread_read({ caller, input }: ToolCall<"thread_read">) {
     if (input.subagentId) return this.#readSubagent(caller, input);
     const claims = { requestedBy: caller.userId };
-    const threadId = input.threadId === "self" ? this.#targetThreadId(caller) : input.threadId;
+    const threadId =
+      !input.threadId || input.threadId === "self" ? this.#targetThreadId(caller) : input.threadId;
     const thread = await this.#store.getThreadForOwner(threadId, claims.requestedBy);
     if (!thread) throw forbidden("Thread is unavailable to this user");
 
@@ -1272,7 +1273,6 @@ export class ProductToolHandlers {
             parent: currentThread,
             parts: input.places,
             ...(existingThread ? { targetThread: existingThread } : {}),
-            folder,
           });
         }
         if (!this.#isEnvironmentConnected(environment.id))

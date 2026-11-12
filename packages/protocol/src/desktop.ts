@@ -866,7 +866,7 @@ export const DesktopConnectPrivateDeploymentInputSchema = z.discriminatedUnion("
     pairingCode: PersonalPairingCodeSchema,
   }),
   z.strictObject({
-    kind: z.literal("self-hosted"),
+    kind: z.literal("team"),
     origin: DesktopAccessOriginSchema,
   }),
 ]);

@@ -32,7 +32,9 @@ export async function registerTeamLinkRoutes(
 ): Promise<void> {
   await app.register(async (scope) => {
     scope.setErrorHandler((error, _request, reply) => {
-      const version = error instanceof OpensteerError && error.reason === "unsupported-version";
+      const version =
+        error instanceof OpensteerError &&
+        (error.reason === "unsupported-version" || error.reason === "api-version-mismatch");
       const status = version
         ? 426
         : error instanceof OpensteerError && error.code === "unauthorized"
@@ -44,7 +46,11 @@ export async function registerTeamLinkRoutes(
         .send({ error: version ? "Team API version mismatch" : "Team request is unavailable" });
     });
     scope.addHook("onRequest", async (request) => {
-      checkTeamVersion(headers(request)[teamApiVersionHeader]);
+      const values: string[] = [];
+      for (let index = 0; index < request.raw.rawHeaders.length; index += 2)
+        if (request.raw.rawHeaders[index]!.toLowerCase() === teamApiVersionHeader)
+          values.push(request.raw.rawHeaders[index + 1]!);
+      checkTeamVersion(values.length === 1 ? values[0] : undefined);
     });
     scope.post(teamLinkRoutes.redeem, { bodyLimit: 8192 }, async (request) =>
       endpoint.options.links.redeem(request.body),

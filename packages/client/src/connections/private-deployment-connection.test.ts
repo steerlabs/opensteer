@@ -160,7 +160,7 @@ describe("PrivateDeploymentConnectionService", () => {
     const service = new PrivateDeploymentConnectionService({ catalog, fetch, sessions });
 
     await service.connect({
-      kind: "self-hosted",
+      kind: "team",
       origin: discovery.document.canonicalOrigin,
     });
 
@@ -176,7 +176,7 @@ describe("PrivateDeploymentConnectionService", () => {
         {
           authority: discovery,
           endpoints: [{ kind: "canonical", origin: discovery.document.canonicalOrigin }],
-          kind: "self-hosted",
+          kind: "team",
           source: { kind: "manual" },
         },
       ],
@@ -198,7 +198,7 @@ describe("PrivateDeploymentConnectionService", () => {
 
     await expect(
       service.connect({
-        kind: "self-hosted",
+        kind: "team",
         origin: personalDiscovery.document.canonicalOrigin,
       }),
     ).rejects.toThrow(/is a computer, not a server/u);
@@ -223,7 +223,7 @@ describe("PrivateDeploymentConnectionService", () => {
     ).rejects.toThrow();
     await expect(
       service.connect({
-        kind: "self-hosted",
+        kind: "team",
         origin: "https://self-hosted.example.test",
         pairingCode,
       }),
@@ -319,7 +319,7 @@ function routeResponse(route: PersonalHostAccessRouteEnvelope): Response {
 
 function selfHostedDiscovery(
   canonicalOrigin = "https://self-hosted.example.test",
-  kind: "personal" | "self-hosted" = "self-hosted",
+  kind: "personal" | "team" = "team",
 ): HostDiscoveryEnvelope {
   const keys = testHostAuthorityKeys();
   const deploymentShape = {

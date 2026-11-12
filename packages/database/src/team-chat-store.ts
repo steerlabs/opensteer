@@ -1465,7 +1465,12 @@ export class TeamChatStore {
     });
     this.changed(channelId);
   }
-  async directory(actor: TeamActor, after?: TeamChannelId, sidebar = false) {
+  async directory(
+    actor: TeamActor,
+    after?: TeamChannelId,
+    sidebar = false,
+    channelIds?: readonly TeamChannelId[],
+  ) {
     for (;;) {
       const revision = this.access.revision;
       const result = await this.access.database.transaction().execute(async (t) => {
@@ -1483,6 +1488,7 @@ export class TeamChatStore {
                 ]),
           );
         if (after) query = query.where("id", ">", after);
+        if (channelIds) query = query.where("id", "in", [...channelIds]);
         const rows = await query.orderBy("id").limit(51).execute();
         const channels = [];
         for (const row of rows.slice(0, 50)) {

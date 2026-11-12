@@ -10,15 +10,21 @@ import { appendTeamAudit } from "@opensteer/database/team-audit";
 import type { DatabaseSchema } from "@opensteer/database";
 import type { Selectable } from "kysely";
 
-function linkView(row: Selectable<DatabaseSchema["teamLinks"]>) {
+function linkView(row: Selectable<DatabaseSchema["teamLinks"]>, teamName: string) {
   return TeamLinkViewSchema.strip().parse({
     ...row,
+    teamName,
     lastSeenAt: row.lastSeenAt?.toISOString() ?? null,
   });
 }
 export class TeamLinkService {
   readonly access: TeamAccessStore;
-  readonly identity: { teamId: DeploymentId; origin: string; hostKeyFingerprint: string };
+  readonly identity: {
+    teamName: string;
+    teamId: DeploymentId;
+    origin: string;
+    hostKeyFingerprint: string;
+  };
   constructor(access: TeamAccessStore, identity: TeamLinkService["identity"]) {
     this.access = access;
     this.identity = identity;
@@ -69,8 +75,13 @@ export class TeamLinkService {
       const replacing = previous.find((row) => row.state === "active");
       return {
         value: {
-          offer: serializeTeamLinkOffer({ ...this.identity, code }),
-          replacing: replacing ? linkView(replacing) : null,
+          offer: serializeTeamLinkOffer({
+            teamId: this.identity.teamId,
+            origin: this.identity.origin,
+            hostKeyFingerprint: this.identity.hostKeyFingerprint,
+            code,
+          }),
+          replacing: replacing ? linkView(replacing, this.identity.teamName) : null,
         },
         effects: emptyTeamAccessEffects,
       };
@@ -88,7 +99,7 @@ export class TeamLinkService {
         .orderBy("id")
         .limit(50)
         .execute();
-      return { links: links.map(linkView) };
+      return { links: links.map((row) => linkView(row, this.identity.teamName)) };
     });
   }
   async revoke(actor: TeamActor, id: TeamLinkId) {

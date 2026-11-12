@@ -1,4 +1,7 @@
-import { EnvironmentIdSchema } from "@opensteer/core";
+import { createId } from "@opensteer/core";
+import { cloneTestDatabase } from "@opensteer/database/test-support/database";
+import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.test-support.js";
+import { configurePersonalRemoteAccess } from "../../host/src/runtime/personal-machine.test-support.js";
 /**
  * Chrome sign-ins v2, end to end, on real parts only: the built extension in a
  * disposable Chromium profile ("the user's everyday Chrome"), the in-process
@@ -16,7 +19,7 @@ import { EnvironmentIdSchema } from "@opensteer/core";
  *  3. Stale site cookies survive the import (the anonymous pre-import cookie,
  *     or a cookie Chrome does not have), or in-scope cookies are dropped
  *     (parent-domain and sibling-subdomain host-only cookies).
- *  4. Owner sign-in does not remember the site for the session's Workspace.
+ *  4. Owner sign-in does not remember the site for the Personal owner.
  *  5. An agent without a grant signs in with no Request; allowing does not
  *     fulfil it, sign the session in, or queue the agent's continuation.
  *  6. A standing grant still asks; a delegated Thread can ask for new authority.
@@ -40,7 +43,7 @@ import {
   personalWebBuildId,
   type BrowserViewerSurface,
   type HostToRunnerMessage,
-  type RunnerConnectionFence,
+  HostToRunnerMessageSchema,
 } from "@opensteer/protocol";
 import {
   AgentBrowserSignInResultSchema,
@@ -62,17 +65,8 @@ import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
-import type { HostConfig } from "../../../packages/config/src/index.js";
-import { createDatabase, migrateToLatest } from "../../../packages/database/src/index.js";
+import { createDatabase } from "../../../packages/database/src/index.js";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
-import {
-  connectCallerMachine,
-  enrollmentToken,
-  freePort,
-  type CallerMachine,
-  type MachineAccessHost,
-} from "../../host/src/runtime/machine-access.test-support.js";
-import { createHostRuntime, type HostRuntime } from "../../host/src/runtime/runtime.js";
 import { testRpcData } from "../../host/src/server/test-host-api-request.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
@@ -81,10 +75,7 @@ const journey = databaseUrl ? describe : describe.skip;
 const artifactDirectory =
   process.env.OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR ??
   join(tmpdir(), "opensteer-browser-source-e2e");
-const setupToken = `chrome-sign-ins-e2e-${randomUUID()}`.padEnd(48, "x");
-const ownerPassword = `synthetic-${randomUUID()}`;
 const hostReleaseVersion = "0.0.0-chrome-sign-ins-e2e";
-const deploymentName = "Chrome sign-ins E2E";
 const hostedChromeArgs = [
   "--ignore-certificate-errors",
   "--host-resolver-rules=MAP *.test 127.0.0.1",
@@ -125,7 +116,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
   const agentResults: unknown[] = [];
   const cleanups: (() => Promise<void>)[] = [];
   let scratch = "";
-  let disposableDatabase: string | null = null;
   let completed = false;
 
   const restoreConsole = captureConsole(hostLogs);
@@ -163,17 +153,13 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
 
   afterAll(async () => {
     restoreConsole();
-    for (const cleanup of cleanups.reverse()) await cleanup().catch(() => undefined);
-    if (disposableDatabase && databaseUrl) {
+    const cleanupErrors: unknown[] = [];
+    for (const cleanup of cleanups.reverse())
       try {
-        administerDatabase(
-          databaseUrl,
-          `DROP DATABASE IF EXISTS "${disposableDatabase}" WITH (FORCE)`,
-        );
-      } catch {
-        // A leaked disposable database is harmless; its name is unique.
+        await cleanup();
+      } catch (error) {
+        cleanupErrors.push(error);
       }
-    }
     if (scratch) await rm(scratch, { force: true, recursive: true });
     await mkdir(artifactDirectory, { recursive: true });
     if (!completed) {
@@ -203,6 +189,8 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         2,
       )}\n`,
     );
+    if (cleanupErrors.length)
+      throw new AggregateError(cleanupErrors, "Browser source journey cleanup failed");
   }, 120_000);
 
   async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
@@ -243,52 +231,58 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     if (!databaseUrl) return;
 
     // ---- Infrastructure: database, synthetic sites, Host, hosted runtime ----
-    disposableDatabase = `opensteer_chrome_signins_${randomBytes(6).toString("hex")}`;
-    administerDatabase(databaseUrl, `CREATE DATABASE "${disposableDatabase}"`);
-    const hostDatabaseUrl = withDatabase(databaseUrl, disposableDatabase);
-    const migrator = createDatabase({ connectionString: hostDatabaseUrl });
-    try {
-      await migrateToLatest(migrator);
-    } finally {
-      await migrator.destroy();
-    }
-
+    const database = await cloneTestDatabase("host", { serverUrl: databaseUrl });
+    const hostDatabaseUrl = database.url;
+    cleanups.push(() => database.drop());
     const site = await startSyntheticSites(scratch);
     cleanups.push(() => closeServer(site.server));
     const url = (host: string, path: string) => `https://${host}:${site.port}${path}`;
 
-    const hostPort = await freePort();
-    const hostOrigin = `http://127.0.0.1:${hostPort}`;
-    const runtime: HostRuntime = await createHostRuntime(
-      hostConfig({
-        dataDirectory: join(scratch, "host"),
-        databaseUrl: hostDatabaseUrl,
-        port: hostPort,
-        webDirectory: join(scratch, "web"),
+    const runCommands: RunExecute[] = [];
+    const personal = await startPersonalRuntime({
+      databaseUrl: hostDatabaseUrl,
+      agentHome: { computerId: createId("runner"), path: join(scratch, "home") },
+      engineArguments: ["--scenario=interrupt"],
+      maxConcurrentRuns: 4,
+      hostLog: (line) => hostLogs.push(line),
+      webDistribution: {
+        directory: join(scratch, "web"),
+        expectedHostVersion: hostReleaseVersion,
+        manifestPath: join(scratch, "web", "opensteer-web.json"),
+      },
+      runnerWire: {
+        filter(direction, frame) {
+          const parsed = HostToRunnerMessageSchema.safeParse(frame);
+          if (
+            direction === "host" &&
+            parsed.success &&
+            parsed.data.type === "host.command" &&
+            parsed.data.command.type === "run.execute"
+          )
+            runCommands.push({ ...parsed.data, command: parsed.data.command });
+          return true;
+        },
+      },
+    });
+    cleanups.push(() => personal.close());
+    const runtime = personal.host;
+    const hostOrigin = personal.hostOrigin.origin;
+    const owner = {
+      cookie: personal.sessionCookie,
+      cookies: personal.sessionCookie.split(";").map((pair) => {
+        const separator = pair.indexOf("=");
+        return { name: pair.slice(0, separator).trim(), value: pair.slice(separator + 1) };
       }),
-      { logger: { level: "trace", stream: { write: (line: string) => hostLogs.push(line) } } },
-    );
-    cleanups.push(() => runtime.close());
-    await runtime.listen();
-    const owner = await setupInitialOwner(hostOrigin);
-    const headers = { cookie: owner.cookie, origin: hostOrigin };
-    const ownerUser = await runtime.store.firstUser();
-    if (!ownerUser) throw new Error("The Host did not record its owner.");
-    const machineHost: MachineAccessHost = {
-      close: async () => undefined,
-      config: hostConfig({
-        dataDirectory: join(scratch, "host"),
-        databaseUrl: hostDatabaseUrl,
-        port: hostPort,
-        webDirectory: join(scratch, "web"),
-      }),
-      hostPort,
-      origin: hostOrigin,
-      ownerHeaders: headers,
-      ownerId: ownerUser.id,
-      runtime,
-      store: runtime.store,
     };
+    const headers = {
+      cookie: owner.cookie,
+      origin: hostOrigin,
+      [hostApiVersionHeader]: String(hostApiVersion),
+    };
+    await configurePersonalRemoteAccess(
+      { runtime, ownerHeaders: headers },
+      { schemaVersion: 1, mode: "private", routeOrigin: "https://personal.browser-source.test" },
+    );
     const rpc = {
       command: async <Input extends { readonly type: string }>(input: Input) =>
         testRpcData(
@@ -300,24 +294,11 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       sources: () => testRpcData(hostOrigin, "browser.sources.get", {}, { headers }),
     };
 
-    const agentComputer = await connectCallerMachine(machineHost, {
-      name: "Agent computer",
-      token: await enrollmentToken(machineHost, {
-        allowedModules: ["agents"],
-        idempotencyKey: `agent-computer-${randomUUID()}`,
-        name: "Agent computer",
-      }),
-    });
-    cleanups.push(() => agentComputer.close());
-    await testRpcData(hostOrigin, "bootstrap.get", {}, { headers });
-    const workspace = await rpc.command({ name: "Research", type: "workspace.create" });
-    const workspaceId = (workspace as unknown as { workspace: { id: string } }).workspace.id;
-
     await step("hosted Browser Runtime enrolls as a browser-only Runner", async () => {
       const enrollment = await rpc.command({
         allowedModules: ["browser"],
         name: "Hosted browsers",
-        type: "runner.enrollment.createManaged",
+        type: "runner.enrollment.createLocal",
       });
       const hostedRuntime = await startHostedBrowserRuntime({
         directory: join(scratch, "browser-runtime"),
@@ -424,7 +405,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       const started = await rpc.command({
         input: { fresh: true, reuseExisting: false },
         type: "browser.session.start",
-        workspaceId,
       });
       return (started as unknown as { session: { id: string } }).session.id;
     };
@@ -491,13 +471,12 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       },
     );
 
-    await step("owner: the site is remembered for the session's Workspace", async () => {
+    await step("owner: the site is remembered for the Personal owner", async () => {
       const state = await rpc.sources();
       expect(state.sites).toContainEqual(
         expect.objectContaining({
           preferredSourceId: sourceId,
           site: "https://alpha.test",
-          workspaceId,
         }),
       );
     });
@@ -518,22 +497,29 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
 
     // ---- 4. Agents: Request, standing grant, delegated capability ----
     const thread = await rpc.command({
-      environmentId: agentComputer.environmentId,
-      harnessInstanceId: agentComputer.harnessInstanceId,
+      environmentId: personal.environmentId,
+      harnessInstanceId: personal.harnessInstanceId,
       modelSelection: { modelId: "gpt-5.6-sol", options: { effort: "low" }, providerId: "openai" },
       title: "Research with sign-ins",
       type: "thread.create",
-      workspaceId,
     });
     const threadId = (thread as unknown as { thread: { id: string } }).thread.id;
-    const parentExecution = nextRunExecute(agentComputer);
     await rpc.command({
       content: [{ text: "Read the account pages.", type: "text" }],
       threadId,
       type: "thread.sendMessage",
     });
-    const parentMessage = await parentExecution;
-    const parentRun = await acceptRun(agentComputer, runtime, parentMessage);
+    const parentMessage = await waitForValue("the Personal Runner to accept its Run", async () => {
+      const message = runCommands.find((row) => row.command.context.threadId === threadId);
+      if (!message) return;
+      const run = await runtime.store.database
+        .selectFrom("runs")
+        .select("status")
+        .where("id", "=", message.command.context.runId)
+        .executeTakeFirst();
+      return run?.status === "running" ? message : undefined;
+    });
+    const parentRun = { token: parentMessage.command.context.agentTools.token };
     const agent = await AgentTools.connect(hostOrigin, parentRun.token);
     const signIn = async (tools: AgentTools, sessionId: string, target: string) => {
       const result = AgentBrowserSignInResultSchema.parse(
@@ -570,7 +556,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           kind: "browser.sign-in",
           payload: { kind: "browser.sign-in", sessionId: sessionOne, site: "https://beta.test" },
           status: "pending",
-          targetWorkspaceId: workspaceId,
+          threadId,
         });
         return request!.id;
       },
@@ -601,7 +587,6 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         expect.objectContaining({
           preferredSourceId: sourceId,
           site: "https://beta.test",
-          workspaceId,
         }),
       );
     });
@@ -999,103 +984,6 @@ async function extensionConnections(worker: Worker): Promise<ExtensionConnection
   return (stored.connections ?? []) as ExtensionConnection[];
 }
 
-// ---- Host ----
-
-function hostConfig(input: {
-  readonly dataDirectory: string;
-  readonly databaseUrl: string;
-  readonly port: number;
-  readonly webDirectory: string;
-}): HostConfig {
-  const origin = new URL(`http://127.0.0.1:${input.port}`);
-  return {
-    acceptsExternalRunners: true,
-    authSecret: "chrome-sign-ins-e2e-auth-secret".padEnd(48, "x"),
-    bindAddress: "127.0.0.1",
-    browserRuntime: { attachKeyId: "chrome-sign-ins-e2e" },
-    canonicalOrigin: origin,
-    credentialKeyPath: undefined,
-    dataDirectory: input.dataDirectory,
-    databaseUrl: input.databaseUrl,
-    deploymentName,
-    exposure: "networked",
-    identity: {
-      initialOwnerEnrollment: { lifetimeSeconds: 3_600, token: setupToken },
-      localPasswordEnabled: true,
-      oidcConfigPath: undefined,
-      signupPolicy: "invite-only",
-    },
-    executionLeaseMs: 90_000,
-    maxConcurrentDispatches: 4,
-    maxConcurrentTriggerDispatches: 2,
-    // A Host serves its web distribution only in production.
-    mode: "production",
-    port: input.port,
-    privateKeyPath: undefined,
-    publicKeyPath: undefined,
-    runtimeOrigin: origin,
-    webDistribution: {
-      directory: input.webDirectory,
-      expectedHostVersion: hostReleaseVersion,
-      manifestPath: join(input.webDirectory, "opensteer-web.json"),
-    },
-    workspace: {
-      deletionRetentionDays: 14,
-      shape: { defaultWorkspaceBacking: "local-directory", kind: "server" },
-      storage: {
-        kind: "local-directory",
-        ownerEnvironmentId: EnvironmentIdSchema.parse("env_00000000-0000-4000-8000-000000000001"),
-      },
-    },
-  };
-}
-
-async function setupInitialOwner(origin: string): Promise<{
-  readonly cookie: string;
-  readonly cookies: readonly { readonly name: string; readonly value: string }[];
-}> {
-  const exchanged = await fetch(`${origin}/v1/rpc/auth.setup.exchange`, {
-    body: JSON.stringify({ token: setupToken }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      origin,
-    },
-    method: "POST",
-  });
-  if (!exchanged.ok) throw new Error(`Setup exchange failed: HTTP ${exchanged.status}`);
-  const claimed = await fetch(`${origin}/v1/rpc/auth.setup.claim`, {
-    body: JSON.stringify({
-      email: `chrome-sign-ins-e2e-${randomUUID()}@example.test`,
-      kind: "password",
-      password: ownerPassword,
-    }),
-    headers: {
-      [hostApiVersionHeader]: String(hostApiVersion),
-      "content-type": "application/json",
-      cookie: responseCookies(exchanged)
-        .map((cookie) => `${cookie.name}=${cookie.value}`)
-        .join("; "),
-      origin,
-    },
-    method: "POST",
-  });
-  if (!claimed.ok) throw new Error(`Owner claim failed: HTTP ${claimed.status}`);
-  const cookies = responseCookies(claimed);
-  if (cookies.length === 0) throw new Error("Owner session cookie was not issued.");
-  return { cookie: cookies.map((cookie) => `${cookie.name}=${cookie.value}`).join("; "), cookies };
-}
-
-function responseCookies(response: Response): { name: string; value: string }[] {
-  return response.headers.getSetCookie().flatMap((header) => {
-    const pair = header.split(";", 1)[0] ?? "";
-    const separator = pair.indexOf("=");
-    return separator > 0
-      ? [{ name: pair.slice(0, separator), value: pair.slice(separator + 1) }]
-      : [];
-  });
-}
-
 // ---- Hosted Browser Runtime ----
 
 /**
@@ -1260,9 +1148,8 @@ class Viewer {
     return this.#closed;
   }
 
-  /** The last frame streamed after `since`, once the page has had a moment to paint. */
+  /** A picture streamed after the observed navigation committed. */
   async screenshot(since: number, basePath: string, screenshots: string[]): Promise<void> {
-    await new Promise((done) => setTimeout(done, 1_000));
     const frame = await waitForValue(
       `a streamed frame of the page (${this.#frames.length} frames kept)`,
       async () => this.#frames.findLast((candidate) => candidate.at >= since),
@@ -1285,85 +1172,6 @@ type RunExecute = Extract<HostToRunnerMessage, { type: "host.command" }> & {
     { type: "run.execute" }
   >;
 };
-
-function nextRunExecute(computer: CallerMachine): Promise<RunExecute> {
-  const socket = computer.primary.socket;
-  return new Promise((done, fail) => {
-    const timer = setTimeout(() => fail(new Error("No run.execute arrived.")), 30_000);
-    const receive = (frame: WebSocket.RawData) => {
-      const message = JSON.parse(frame.toString()) as HostToRunnerMessage;
-      if (message.type !== "host.command" || message.command.type !== "run.execute") return;
-      clearTimeout(timer);
-      socket.off("message", receive);
-      done(message as RunExecute);
-    };
-    socket.on("message", receive);
-  });
-}
-
-/** Accepts a dispatched Run and reports it running, so its capability token stays live. */
-async function acceptRun(
-  computer: CallerMachine,
-  runtime: HostRuntime,
-  message: RunExecute,
-): Promise<{ readonly token: string }> {
-  const context = message.command.context;
-  const fence: RunnerConnectionFence = {
-    bootId: message.bootId,
-    connectionGeneration: message.connectionGeneration,
-    connectionId: message.connectionId,
-    connectionLeaseId: message.connectionLeaseId,
-    runnerId: message.runnerId,
-  };
-  const socket = computer.primary.socket;
-  socket.send(
-    JSON.stringify({
-      ...fence,
-      commandId: message.command.commandId,
-      correlationId: message.command.correlationId,
-      type: "runner.command-accepted",
-    }),
-  );
-  socket.send(
-    JSON.stringify({
-      ...fence,
-      bindingGeneration: context.bindingGeneration,
-      harnessInstanceId: context.harnessInstanceId,
-      providerSessionId: context.providerSessionId,
-      providerSessionReference: `codex:${randomUUID()}`,
-      runId: context.runId,
-      threadId: context.threadId,
-      type: "runner.session-bound",
-    }),
-  );
-  socket.send(
-    JSON.stringify({
-      ...fence,
-      event: {
-        bindingGeneration: context.bindingGeneration,
-        data: { status: "running" },
-        emittedAt: new Date().toISOString(),
-        environmentId: computer.environmentId,
-        ordinal: 0,
-        runId: context.runId,
-        threadId: context.threadId,
-        type: "run.started",
-        workspaceId: context.workspaceId,
-      },
-      type: "runner.event",
-    }),
-  );
-  computer.primary.activeRunIds = [...computer.primary.activeRunIds, context.runId];
-  await waitFor("the Run to be running", async () => {
-    const run = await runtime.store.database
-      .selectFrom("runs")
-      .select("status")
-      .where("id", "=", context.runId)
-      .executeTakeFirst();
-    return run?.status === "running";
-  });
-  return { token: context.agentTools.token };
-}
 
 /** A minimal MCP Streamable HTTP client, as an agent's engine speaks to the Host. */
 class AgentTools {
@@ -1502,12 +1310,12 @@ async function waitFor(
   predicate: () => Promise<boolean>,
   timeoutMs = 20_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((done) => setTimeout(done, 100));
-  }
-  throw new Error(`Timed out waiting for ${label}.`);
+  await vi.waitFor(
+    async () => {
+      expect(await predicate(), `Timed out waiting for ${label}.`).toBe(true);
+    },
+    { timeout: timeoutMs },
+  );
 }
 
 async function waitForValue<Value>(
@@ -1530,31 +1338,4 @@ async function waitForValue<Value>(
 function closeServer(server: HttpsServer): Promise<void> {
   server.closeAllConnections();
   return new Promise((done) => server.close(() => done()));
-}
-
-function withDatabase(connectionString: string, name: string): string {
-  const url = new URL(connectionString);
-  url.pathname = `/${name}`;
-  return url.href;
-}
-
-function administerDatabase(connectionString: string, statement: string): void {
-  const url = new URL(connectionString);
-  execFileSync(
-    "psql",
-    [
-      "--no-password",
-      "-h",
-      url.hostname,
-      "-p",
-      url.port || "5432",
-      "-U",
-      decodeURIComponent(url.username),
-      "-d",
-      "postgres",
-      "-c",
-      statement,
-    ],
-    { env: { ...process.env, PGPASSWORD: decodeURIComponent(url.password) }, stdio: "pipe" },
-  );
 }

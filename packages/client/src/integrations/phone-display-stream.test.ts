@@ -1,3 +1,4 @@
+import { hostApiVersion } from "@opensteer/deployment-authority";
 import type { NativeViewerSource } from "../host/surfaces.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -250,7 +251,7 @@ describe("phone display socket", () => {
     });
     client.connectComputerDisplay(source);
     expect(urls).toEqual([
-      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?sharedInput=1&phoneOwnerControl=1&displayWindow=1`,
+      `wss://host.example/v1/computer-use/sessions/${sessionId}/display?opensteer_api_version=${hostApiVersion}&sharedInput=1&phoneOwnerControl=1&displayWindow=1`,
     ]);
     client.dispose();
   });

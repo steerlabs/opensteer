@@ -445,10 +445,11 @@ export class BrowserRowSource {
   }
   async bootstrap(
     userId: UserId,
+    maxBytes = 128 * 1024,
   ): Promise<Pick<HostedBrowserBootstrap, "groups" | "tabs" | "continuation">> {
     if (this.#closed) return { groups: { rows: [], complete: true }, tabs: [] };
     const authority = this.ports.authorityGeneration();
-    const budget = 64 * 1024;
+    const budget = Math.max(512, Math.floor(maxBytes / 2) - 1024);
     const cached = this.#projections.get(userId);
     const groups = new Map<BrowserSessionId, BrowserGroupRow>();
     const facts = new Map<BrowserSessionId, BrowserGroupFacts>();
@@ -509,7 +510,7 @@ export class BrowserRowSource {
       used += keyedStreamBytes(entry) + (tabs.length > 1 ? 1 : 0);
       if (!packed.complete) break;
     }
-    if (authority !== this.ports.authorityGeneration()) return this.bootstrap(userId);
+    if (authority !== this.ports.authorityGeneration()) return this.bootstrap(userId, maxBytes);
     const finalGroups = prefix(groups, budget, { complete: false });
     finalGroups.complete &&= exhausted;
     const included = new Set(finalGroups.rows.map((row) => row.id));

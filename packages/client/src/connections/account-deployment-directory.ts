@@ -633,7 +633,7 @@ export class AccountDeploymentDirectoryService {
         connection: deploymentConnectionFromVerifiedEndpoints({
           accountAccess: deployment.access,
           endpoints: [verified],
-          kind: "self-hosted",
+          kind: "team",
           name: deployment.name,
           source,
         }),

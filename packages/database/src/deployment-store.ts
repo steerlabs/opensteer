@@ -13,7 +13,6 @@ import { type Kysely, sql } from "kysely";
 import { type DatabaseSchema } from "./schema.js";
 import { isDeepStrictEqual } from "node:util";
 import { jsonValue } from "./store-primitives.js";
-import { assertSupportedRuntimeAuthority } from "./deployment-execution-authority.js";
 
 function deploymentFromRow(row: {
   readonly activeHostInstanceId: HostInstanceId;
@@ -60,7 +59,6 @@ export async function ensureDeployment(
       .forNoKeyUpdate()
       .executeTakeFirst();
     if (existing) {
-      assertSupportedRuntimeAuthority(existing.authorityModelVersion);
       if (input.deploymentId !== undefined && existing.id !== input.deploymentId) {
         throw new OpensteerError({
           code: "conflict",
@@ -99,12 +97,11 @@ export async function ensureDeployment(
         throw new OpensteerError({
           code: "conflict",
           details: {
-            configuredWorkspaceProfile: input.deploymentShape,
+            configuredDeploymentShape: input.deploymentShape,
             deploymentId: existing.id,
-            storedWorkspaceProfile: existing.deploymentShape,
+            storedDeploymentShape: existing.deploymentShape,
           },
-          message:
-            "The configured Workspace backing does not match this Deployment; migrate storage explicitly before changing it",
+          message: "The configured Deployment kind does not match durable Host state",
         });
       }
       if (existing.lifecycle !== "active") {
@@ -131,6 +128,12 @@ export async function ensureDeployment(
       })
       .returningAll()
       .executeTakeFirstOrThrow();
+    if (input.deploymentShape.kind === "personal") {
+      await transaction
+        .insertInto("deploymentEventState")
+        .values({ deploymentId: created.id })
+        .execute();
+    }
     return deploymentFromRow(created);
   });
 }
@@ -151,7 +154,6 @@ export async function createUser(
       emailVerified: true,
       id,
       image: null,
-      instanceRole: "user",
       updatedAt: now,
     })
     .executeTakeFirstOrThrow();
@@ -179,11 +181,10 @@ export async function userById(
   readonly emailVerified: boolean;
   readonly id: UserId;
   readonly image: string | null;
-  readonly instanceRole: "administrator" | "user";
 } | null> {
   const row = await database
     .selectFrom("users")
-    .select(["disabledAt", "displayName", "email", "emailVerified", "id", "image", "instanceRole"])
+    .select(["disabledAt", "displayName", "email", "emailVerified", "id", "image"])
     .where("id", "=", userId)
     .executeTakeFirst();
   return row ?? null;

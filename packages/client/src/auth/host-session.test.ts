@@ -186,7 +186,7 @@ describe("HostSession", () => {
   });
 
   it("starts Host-native OAuth only for self-hosted attachments and publishes its exact key", async () => {
-    const connection = connectionOfKind("self-hosted");
+    const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
     const observations: unknown[] = [];
     fixture.sessions.subscribe((observation) => observations.push(observation));
@@ -210,7 +210,7 @@ describe("HostSession", () => {
   });
 
   it("abandons an in-flight Host sign-in and lets a fresh attempt replace it", async () => {
-    const connection = connectionOfKind("self-hosted");
+    const connection = connectionOfKind("team");
     const fixture = hostSessionFixture(connection);
     const first = deferred<HostOAuthState>();
     fixture.oauth.beginHostSignIn.mockImplementationOnce(() => first.promise);
@@ -285,7 +285,7 @@ describe("HostSession", () => {
       ...remotePersonalConnection("private", 1),
       source,
     } as DeploymentConnection;
-    const selfHosted = connectionOfKind("self-hosted");
+    const selfHosted = connectionOfKind("team");
     const deployments = [connect, privateConnection, selfHosted];
     const clearDeploymentSession = vi.fn(async (_deploymentId: string) => undefined);
     const removeAccountDeployments = vi.fn(async () => catalogFor(selfHosted, [selfHosted]));
@@ -445,7 +445,7 @@ function localHostRuntime(connection: DeploymentConnection): LocalHostRuntime {
   };
 }
 
-function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
+function connectionOfKind(kind: "team"): DeploymentConnection {
   const origin = `https://${kind}.opensteer.test`;
   return DeploymentConnectionSchema.parse({
     authority: testDiscoveryEnvelope({
@@ -470,7 +470,7 @@ function connectionOfKind(kind: "self-hosted"): DeploymentConnection {
 }
 
 function localPersonalConnection(): DeploymentConnection {
-  const base = connectionOfKind("self-hosted");
+  const base = connectionOfKind("team");
   const origin = "http://127.0.0.1:4310";
   return DeploymentConnectionSchema.parse({
     ...base,

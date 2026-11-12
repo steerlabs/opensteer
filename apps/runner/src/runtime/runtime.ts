@@ -9,7 +9,7 @@ import { safeMessage } from "@opensteer/shared/safeMessage";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, readFile, lstat } from "node:fs/promises";
-import { platform } from "node:os";
+import { platform, tmpdir } from "node:os";
 import { setTimeout as sleep } from "node:timers/promises";
 import { join, resolve } from "node:path";
 import { defaultRunnerMaxConcurrentTriggerPrograms, type RunnerConfig } from "@opensteer/config";
@@ -347,6 +347,7 @@ export class RunnerRuntime {
   readonly #agentSkills: AgentSkillBundle;
   readonly #browserHarnessExecutable: string;
   readonly #dataDirectory: string;
+  #messagingWorkRoot: Promise<string> | undefined;
   readonly #deploymentShape: RunnerConfig["deploymentShape"];
   readonly #environmentId: RunnerCommand["environmentId"];
   readonly #harnesses: HarnessRegistry;
@@ -2123,6 +2124,8 @@ export class RunnerRuntime {
     await settlesWithin([this.#warm.close()], runtimeTaskStopWaitMs);
     await this.#sessions.stopAll();
     await this.#harnesses.close();
+    if (this.#messagingWorkRoot)
+      await rm(await this.#messagingWorkRoot, { recursive: true, force: true });
   }
 
   activeWatchActivationIds(): readonly TriggerWatchActivationId[] {
@@ -2420,6 +2423,7 @@ export class RunnerRuntime {
       signal.throwIfAborted();
       workspace = await this.#folderManager.prepare({
         location: command.location,
+        personalContext: context.personalContext,
         signal: active.abort.signal,
       });
       active.primaryFolder = workspace;
@@ -2476,7 +2480,17 @@ export class RunnerRuntime {
         attachmentRoot && attachmentDirectory ? { attachmentDirectory, attachmentRoot } : {};
       this.#requireInputAttachments(command.inputs, attachments);
       this.#requireInputAttachments(command.reports.messages, attachments);
-      const writableRoots = this.#folderManager.writableRoots(workspace);
+      // Shared Messaging must not trigger native discovery of the owner's home instructions.
+      const workingDirectory = context.personalContext
+        ? workspace.path
+        : join(
+            await (this.#messagingWorkRoot ??= mkdtemp(join(tmpdir(), "opensteer-messaging-"))),
+            context.providerSessionId,
+          );
+      if (!context.personalContext) await mkdir(workingDirectory, { recursive: true, mode: 0o700 });
+      const writableRoots = [
+        ...new Set([...this.#folderManager.writableRoots(workspace), workingDirectory]),
+      ];
       // Once taken, the idle engine remains this Run’s to reuse or retire.
       warmEngine = await this.#warm.take(context.threadId);
       if (
@@ -2523,10 +2537,9 @@ export class RunnerRuntime {
             .join("\n\n"),
         };
       }
-      const homeSkills = await this.#scanFolderSkills(
-        command.location.agentHome,
-        context.bindingGeneration,
-      );
+      const homeSkills = context.personalContext
+        ? await this.#scanFolderSkills(command.location.agentHome, context.bindingGeneration)
+        : { skills: [], warnings: [], digest: "personal-context-disabled" };
       const folderSkills =
         workspace.path === workspace.agentHomePath
           ? homeSkills
@@ -2537,7 +2550,12 @@ export class RunnerRuntime {
         });
       }
       const skills = await resolveSkillPlan({
-        bundled: planAgentSkills(this.#agentSkills, context.agentTools.skills),
+        bundled: planAgentSkills(
+          this.#agentSkills,
+          context.agentTools.skills.filter(
+            (skill) => context.personalContext || skill !== "opensteer:memory",
+          ),
+        ),
         integration: runSkills.skills,
         home: homeSkills.skills.filter(
           (skill) => !context.plugins.skillPolicy?.disabledFullNames.includes(skill.fullName),
@@ -2671,7 +2689,7 @@ export class RunnerRuntime {
         providerState,
         threadStateDirectory,
         ...(context.voiceCall ? { threadStateWritable: true as const } : {}),
-        workspacePath: workspace.path,
+        workspacePath: workingDirectory,
         writableRoots,
       } satisfies Omit<HarnessSandboxRunPlan, "launchDirectory">;
       let machineAccessUnavailable: MachineAccessUnavailableReason | undefined =
@@ -2689,7 +2707,7 @@ export class RunnerRuntime {
             environment: baseEnvironment,
             providerState,
             runtimeBoundary: this.#harnessRuntimeBoundary,
-            workspacePath: workspace.path,
+            workspacePath: workingDirectory,
             writableRoots,
           },
         );
@@ -2707,7 +2725,7 @@ export class RunnerRuntime {
           },
           // The setup probe runs where the harness will run, so what it
           // proves is what the harness finds.
-          workspacePath: workspace.path,
+          workspacePath: workingDirectory,
           wrapModelCommand,
           wrapProcessLaunch: async (launchDirectory) =>
             this.#containment.wrap(
@@ -2792,7 +2810,7 @@ export class RunnerRuntime {
         skills,
         threadId: context.threadId,
         threadStateDirectory,
-        workspacePath: workspace.path,
+        workspacePath: workingDirectory,
         wrapProcessLaunch,
         writableRoots,
       };

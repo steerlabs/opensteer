@@ -1,5 +1,5 @@
 import { channelAllowsPersonalContext } from "@opensteer/channel-core";
-import type { RunId } from "@opensteer/core";
+import type { RunId, ThreadId, UserId } from "@opensteer/core";
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./schema.js";
 
@@ -13,6 +13,13 @@ export async function runAllowsPersonalContext(
     .select(["threadId", "requestedBy"])
     .where("id", "=", runId)
     .executeTakeFirstOrThrow();
+  return threadAllowsPersonalContext(database, run.threadId, run.requestedBy);
+}
+export async function threadAllowsPersonalContext(
+  database: Kysely<DatabaseSchema>,
+  threadId: ThreadId,
+  ownerId: UserId,
+): Promise<boolean> {
   const sources = await database
     .selectFrom("threadInputs")
     .innerJoin("channelConversations", (join) =>
@@ -26,7 +33,7 @@ export async function runAllowsPersonalContext(
       "channelIdentities.linkedUserId",
       "channelIdentities.status",
     ])
-    .where("threadInputs.threadId", "=", run.threadId)
+    .where("threadInputs.threadId", "=", threadId)
     .where("threadInputs.state", "<>", "cancelled")
     .where(sql<string>`thread_inputs.authority_source->>'kind'`, "=", "channel-ingress")
     .execute();
@@ -34,13 +41,13 @@ export async function runAllowsPersonalContext(
     return !(await database
       .selectFrom("channelConversations")
       .select("id")
-      .where("activeThreadId", "=", run.threadId)
+      .where("activeThreadId", "=", threadId)
       .executeTakeFirst());
   return sources.every((source) =>
     channelAllowsPersonalContext({
       conversationType: source.conversationType,
       linkedSenderId: source.status === "linked" ? source.linkedUserId : null,
-      ownerId: run.requestedBy,
+      ownerId: ownerId,
     }),
   );
 }

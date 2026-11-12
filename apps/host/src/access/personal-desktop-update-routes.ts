@@ -7,16 +7,18 @@ import {
 } from "@opensteer/protocol/maintenance";
 import type { HostAuthenticator } from "../identity/auth.js";
 import type { PersonalDesktopUpdate } from "./personal-desktop-update.js";
-import { requirePersonalAdministrator } from "./personal-remote-administration.js";
+import { requirePersonalOwner, type DatabaseSchema } from "@opensteer/database";
+import type { Kysely } from "kysely";
 
 export function registerDesktopUpdateMaintenance(
   app: FastifyInstance,
   auth: Pick<HostAuthenticator, "authenticateSession">,
   updates: PersonalDesktopUpdate | null,
+  database: Kysely<DatabaseSchema>,
 ): void {
   app.get("/maintenance/v1/desktop-update", async (request, reply) => {
     const session = await auth.authenticateSession(request.headers);
-    requirePersonalAdministrator(session);
+    await requirePersonalOwner(database, session.user.id);
     const { after } = DesktopUpdateStatusQuerySchema.parse(request.query);
     void reply.header("cache-control", "no-store");
     if (!updates)
@@ -39,7 +41,7 @@ export function registerDesktopUpdateMaintenance(
     { bodyLimit: desktopUpdateMaximumBytes },
     async (request, reply) => {
       const session = await auth.authenticateSession(request.headers, { mutation: true });
-      requirePersonalAdministrator(session);
+      await requirePersonalOwner(database, session.user.id);
       if (!updates)
         throw new OpensteerError({
           code: "conflict",

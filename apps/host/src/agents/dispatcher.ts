@@ -473,6 +473,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
     }
     const binding = await this.#store
       .acquireExecutionBinding({
+        personalContext: context.personalContext,
         bindingLeaseExpiresAt: new Date(this.#executionNow() + this.#executionLeaseMs),
         continuationIdentity: catalog.continuationIdentity,
         harnessInstanceId: context.run.harnessInstanceId,
@@ -603,6 +604,7 @@ export class HostCommandDispatcher implements DurableCommandDispatcher {
           url: this.#agentToolsUrl,
           purpose: context.thread.purpose,
           teamBound: context.thread.teamOrigin !== null,
+          personalContext: context.personalContext,
           ...(teamContext ? { teamContext } : {}),
           accessMode: context.thread.accessMode,
         }),

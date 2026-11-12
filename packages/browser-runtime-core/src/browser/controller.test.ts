@@ -31,7 +31,7 @@ import {
   withoutTitleSamples,
 } from "../test-support/fakes.js";
 import { BrowserController } from "./controller.js";
-import { HostSignIns, type HostLoginAuthorizeInput } from "./host-sign-ins.js";
+import { HostSignIns } from "./host-sign-ins.js";
 import { SessionFiles } from "./session-files.js";
 import { SurfaceLedger, type SurfaceLedgerEvent } from "./surface-ledger.js";
 
@@ -1580,13 +1580,10 @@ describe("BrowserController", () => {
         type: "login.authorize",
         operationId: "00000000-0000-4000-8000-000000000001",
         site: "https://example.com",
-        workspaceId:
-          "wsp_00000000-0000-4000-8000-000000000001" as HostLoginAuthorizeInput["workspaceId"],
         expiresAt: new Date(Date.now() + 60_000).toISOString(),
         requester: {
-          deploymentId: "dep_test",
+          deploymentId: "dep_00000000-0000-4000-8000-000000000001",
           deploymentName: "Test",
-          workspaceName: "Test",
           threadTitle: "Test",
           reason: "Test",
         },

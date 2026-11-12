@@ -1,9 +1,28 @@
+import { PersonalTabStore } from "@opensteer/database";
+import { resolveAutomaticModels, personalExecution } from "../agents/automatic-models.js";
+import { automaticModelWants, DEFAULT_THREAD_ACCESS_MODE } from "@opensteer/core";
+import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
+import { initializePersonalState } from "./personal-state.js";
+import { createTeamHostRuntime } from "./team-runtime.js";
+import { FolderFilesService } from "../threads/folder-files-service.js";
+import { createPersonalTeamLinkServices } from "../team-links/index.js";
+import {
+  personalTeamRunPort,
+  PersonalTeamAttachments,
+} from "../attachments/personal-team-ports.js";
+import { TaskAdmissionService } from "../threads/task-admission-service.js";
+import {
+  personalSettings,
+  reportFolderSkills,
+  ensureDeployment,
+  personalDeploymentOwner,
+} from "@opensteer/database";
+import { readPersonalResources } from "../browser/personal-snapshot.js";
 import { deploymentPolicy } from "@opensteer/core";
 import { RequestHold } from "../mcp/request-hold.js";
 import { ThreadNaming } from "../agents/thread-naming.js";
 import { QuietTasks } from "../threads/quiet-tasks.js";
 import { AdministrationService } from "../administration/administration-service.js";
-import { TeamAdministrationService } from "../team/team-administration-service.js";
 import { AdministrationToolHandlers } from "../mcp/handlers/administration.js";
 import {
   HarnessCatalogReconciliationOwner,
@@ -13,17 +32,18 @@ import { ThreadService } from "../threads/thread-service.js";
 import { ConnectionOAuth } from "../mcp/connections/index.js";
 import { AgentConnectionStore, recoverAssignmentResultWaits } from "@opensteer/database";
 import { createHmac, randomUUID } from "node:crypto";
-import { withWorkspacePluginPackage } from "../integrations/workspace-plugin-package.js";
+import { withFolderPluginPackage } from "../integrations/folder-plugin-package.js";
 import { AppTunnelHub } from "../apps/app-tunnel-hub.js";
 import {
   AesGcmSecretVault,
+  AesGcmCredentialVault,
   createPublicHttpsFetch,
   StaticEncryptionKeyProvider,
 } from "@opensteer/access/host";
 import { assertHostConfigInvariants, type HostConfig } from "@opensteer/config";
 import { createPluginChangeNotices, type PluginChangeNotices } from "./plugin-change-notices.js";
 import { TaskQuestionNotices } from "../threads/task-question-notices.js";
-import { officialOpensteerAccountProviderId } from "@opensteer/control-plane-protocol";
+
 import {
   harnessDriverLabel,
   HarnessIdSchema,
@@ -36,7 +56,6 @@ import {
   type RunId,
   type RunnerId,
   type UserId,
-  type Workspace,
 } from "@opensteer/core";
 import {
   AccountDirectoryStore,
@@ -61,17 +80,10 @@ import {
   personalRemoteAccessRequiredRefusal,
   runnerAdvertisesItsEnvironmentBinding,
   TriggerStore,
-  WorkspaceTabStore,
   type DeploymentAuthorityLease,
 } from "@opensteer/database";
 import { hostKeyFingerprint as fingerprintForSpki } from "@opensteer/deployment-authority";
-import {
-  deriveLocalSetupToken,
-  IdentityService,
-  loadOidcProvidersFromFile,
-  oidcIdentityProviderId,
-  type OidcProviderConfiguration,
-} from "@opensteer/identity";
+import { IdentityService } from "@opensteer/identity";
 import {
   createGraphqlAdapter,
   createMcpAdapter,
@@ -106,7 +118,7 @@ import type { FastifyInstance } from "fastify";
 import { sign } from "node:crypto";
 import { resolve } from "node:path";
 import { AccountAdoptionControlClient } from "../access/account-adoption-control-client.js";
-import { RemoteAccountAdoptionGrantVerifier } from "../access/account-adoption-grant-verifier.js";
+
 import { AccountDirectoryClient } from "../access/account-directory-client.js";
 import { AccountDirectoryPublisher } from "../access/account-directory-publisher.js";
 import { HostAuthorityPublisher } from "../access/host-authority-publisher.js";
@@ -120,9 +132,6 @@ import { AgentCallerResolver } from "../mcp/agent-caller.js";
 import { ProductToolHandlers } from "../mcp/handlers/product.js";
 import { TriggerToolHandlers } from "../mcp/handlers/triggers.js";
 import { agentToolHandlers } from "../mcp/handlers/index.js";
-import type { KnowledgeManager } from "../knowledge/knowledge-manager.js";
-import { knowledgeForCaller } from "../knowledge/knowledge-eligibility.js";
-import { RunnerAgentWorkspaceMountService } from "../agents/agent-workspace-mount-service.js";
 import { ContinuationService } from "../agents/continuation-service.js";
 import { HostCommandDispatcher } from "../agents/dispatcher.js";
 import {
@@ -134,7 +143,6 @@ import {
 } from "../agents/harness-catalogs.js";
 import { RunCapabilityTokenService } from "../agents/run-capability.js";
 import { RunnerAuthenticator } from "../agents/runner-authenticator.js";
-import { SecurityEffectService } from "../agents/security-effect-service.js";
 import {
   AttachmentService,
   RunAttachmentsTokenService,
@@ -207,22 +215,6 @@ import {
 } from "../triggers/watch-capability.js";
 import { WatchProgramService } from "../triggers/watch-program-service.js";
 import { WatchService } from "../triggers/watch-service.js";
-import {
-  RunnerLocalWorkspaceFilesDriver,
-  WorkspaceFilesService,
-} from "../workspace/files/workspace-files-service.js";
-import { reconcileRunnerLocalStorage } from "../workspace/runner-local-storage-reconciliation.js";
-import {
-  RunnerLocalWorkspaceDriver,
-  type RunnerStorageRegistry,
-} from "../workspace/runner-local-workspace-driver.js";
-import { WorkspaceDeletionService } from "../workspace/workspace-deletion-service.js";
-import { WorkspaceExecutionAccessService } from "../workspace/workspace-execution-access-service.js";
-import {
-  WorkspaceReconcileLoop,
-  reconcileWorkspaceServices,
-} from "../workspace/workspace-reconcile-loop.js";
-import { WorkspaceService } from "../workspace/workspace-service.js";
 import { withDevelopmentDatabaseReset } from "./development-database.js";
 import { LocalBootstrapService } from "./local-bootstrap.js";
 
@@ -375,7 +367,8 @@ export function runnerRegistrationHook<T>(
   };
 }
 
-export interface HostRuntime {
+export interface PersonalHostRuntime {
+  readonly kind: "personal";
   readonly app: FastifyInstance;
   readonly browser: BrowserService;
   readonly notifications: Pick<NotificationDispatcher, "drain">;
@@ -389,42 +382,54 @@ export interface HostRuntime {
   listen(): Promise<string>;
 }
 
+export type HostRuntime = PersonalHostRuntime | TeamHostRuntime;
+export interface TeamHostRuntime {
+  readonly kind: "team";
+  readonly app: FastifyInstance;
+  readonly deployment: Deployment;
+  readonly team: Awaited<ReturnType<typeof import("../team/services.js").startTeamServices>>;
+  close(): Promise<void>;
+  closingStep(): string | undefined;
+  listen(): Promise<string>;
+}
+export interface HostRuntimeOptions {
+  readonly onDeploymentEvent?: (event: AgentEvent) => void;
+  readonly executionClock?: import("@opensteer/shared/clock").Clock;
+  /** Controls notification grace/backoff independently of Account transport. */
+  readonly notificationTiming?: Pick<
+    import("../notifications/notification-dispatcher.js").NotificationDispatcherOptions,
+    "now" | "wait"
+  >;
+  /** Domain activity expiry and native coalescing; transport and browser deadlines stay on real time. */
+  readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
+  /** When periodic Personal reconciliation passes run; each pass's own work stays real. */
+  readonly personalReconcileClock?: import("@opensteer/shared/clock").Clock;
+  /** Observes a committed catalog capture; observer failures never affect Host work. */
+  readonly onRunnerCatalogsCommitted?: (
+    identity: RunnerIdentity,
+    environmentId: EnvironmentId,
+    catalogs: readonly HarnessInstanceCatalog[],
+  ) => void;
+  readonly phoneUpdateRelease?: () => AgentPhoneUpdateRelease | null;
+  readonly accountControlFetch?: typeof globalThis.fetch;
+  readonly accountDirectoryFetch?: typeof globalThis.fetch;
+  readonly accountDirectoryIntervalMs?: number;
+  /**
+   * Where integrations reach providers and proposal sources; public HTTPS
+   * only by default. A journey points it at an upstream of its own.
+   */
+  readonly integrationFetch?: typeof globalThis.fetch;
+  readonly logger?: boolean | Record<string, unknown>;
+  readonly personalAccountGrantFetch?: typeof globalThis.fetch;
+  /** Explicit mount-facing endpoint, primarily for split-ingress deployments and tests. */
+  /** How long Run capability tokens live; journeys shorten it to exercise refresh. */
+  readonly runCapabilityLifetimeSeconds?: number;
+  /** Issue and verify Run capabilities in domain time; transport/session tokens stay real. */
+  readonly runCapabilityNow?: () => number;
+}
 export async function createHostRuntime(
   config: HostConfig,
-  options: {
-    readonly executionClock?: import("@opensteer/shared/clock").Clock;
-    /** Controls notification grace/backoff independently of Account transport. */
-    readonly notificationTiming?: Pick<
-      import("../notifications/notification-dispatcher.js").NotificationDispatcherOptions,
-      "now" | "wait"
-    >;
-    /** Domain activity expiry and native coalescing; transport and browser deadlines stay on real time. */
-    readonly browserActivityClock?: import("@opensteer/shared/clock").Clock;
-    /** When periodic workspace reconciliation passes run; each pass's own work stays real. */
-    readonly workspaceReconcileClock?: import("@opensteer/shared/clock").Clock;
-    /** Observes a committed catalog capture; observer failures never affect Host work. */
-    readonly onRunnerCatalogsCommitted?: (
-      identity: RunnerIdentity,
-      environmentId: EnvironmentId,
-      catalogs: readonly HarnessInstanceCatalog[],
-    ) => void;
-    readonly phoneUpdateRelease?: () => AgentPhoneUpdateRelease | null;
-    readonly accountControlFetch?: typeof globalThis.fetch;
-    readonly accountDirectoryFetch?: typeof globalThis.fetch;
-    readonly accountDirectoryIntervalMs?: number;
-    /**
-     * Where integrations reach providers and proposal sources; public HTTPS
-     * only by default. A journey points it at an upstream of its own.
-     */
-    readonly integrationFetch?: typeof globalThis.fetch;
-    readonly logger?: boolean | Record<string, unknown>;
-    readonly personalAccountGrantFetch?: typeof globalThis.fetch;
-    /** Explicit mount-facing endpoint, primarily for split-ingress deployments and tests. */
-    /** How long Run capability tokens live; journeys shorten it to exercise refresh. */
-    readonly runCapabilityLifetimeSeconds?: number;
-    /** Issue and verify Run capabilities in domain time; transport/session tokens stay real. */
-    readonly runCapabilityNow?: () => number;
-  } = {},
+  options: HostRuntimeOptions = {},
 ): Promise<HostRuntime> {
   const executionNow = options.executionClock?.now ?? (() => Date.now());
   assertHostConfigInvariants(config);
@@ -457,36 +462,77 @@ export async function createHostRuntime(
   let administrationCatalogs: HarnessCatalogReconciliationOwner | undefined;
   let authorityLease: DeploymentAuthorityLease | undefined;
   let notificationDispatcher: NotificationDispatcher | undefined;
-  let threadStateLoop: WorkspaceReconcileLoop | undefined;
+  let threadStateLoop: ReconcileLoop | undefined;
   let threadStateDrain: Promise<void> | undefined;
   let threadStateStopped = false;
-  let unsubscribePlaceMembership: (() => void) | undefined;
   let taskQuestions: TaskQuestionNotices | undefined;
   let pluginChangeNotices: PluginChangeNotices | undefined;
-  let knowledge: KnowledgeManager | undefined;
   try {
     authorityLease = await acquireDeploymentAuthorityLease(database);
     await migrateToLatest(database).catch((error: unknown) => {
       throw config.mode === "development" ? withDevelopmentDatabaseReset(error) : error;
     });
+    const deployment = await ensureDeployment(database, {
+      ...(config.deploymentIdentity
+        ? { deploymentId: config.deploymentIdentity.deploymentId }
+        : {}),
+      canonicalOrigin: config.canonicalOrigin.origin,
+      hostInstanceId: hostInstance.hostInstanceId,
+      deploymentShape: config.deploymentShape,
+    });
+    if (deploymentPolicy(config.deploymentShape).services.team) {
+      return await createTeamHostRuntime({
+        config,
+        options,
+        database,
+        deployment,
+        keys,
+        hostKeyFingerprint,
+        authorityLease,
+      });
+    }
+    const personalConfig = config.personal!;
+    let linkServices: ReturnType<typeof createPersonalTeamLinkServices> | undefined;
+    let linkStarting: Promise<ReturnType<typeof createPersonalTeamLinkServices>> | undefined;
+    const folders = {
+      canExecute: (environmentId: EnvironmentId) => environmentId === personalConfig.environmentId,
+      admit: async (folder: import("@opensteer/core").TaskFolder) =>
+        (await folderService()).admit(folder),
+      resolve: async (ownerId: UserId, folder?: import("@opensteer/core").TaskFolder) =>
+        (await folderService()).resolve(ownerId, folder),
+      assertAvailable: async (folder: import("@opensteer/core").TaskFolder) =>
+        (await folderService()).assertAvailable(folder),
+    };
+    let initializedFolders: Awaited<ReturnType<typeof initializePersonalState>> = null;
+    let initializingFolders:
+      Promise<Awaited<ReturnType<typeof initializePersonalState>>> | undefined;
+    const initializeFolders = async () => {
+      if (initializedFolders) return initializedFolders;
+      initializingFolders ??= initializePersonalState(database, personalConfig)
+        .then((service) => (initializedFolders = service))
+        .finally(() => {
+          initializingFolders = undefined;
+        });
+      return initializingFolders;
+    };
+    const folderService = async () => {
+      const service = await initializeFolders();
+      if (!service)
+        throw new OpensteerError({
+          code: "folder_unavailable",
+          message: "The personal owner and hosting computer are still starting",
+        });
+      return service;
+    };
     await recoverAssignmentResultWaits(database);
     // Only the Host knows the origin its own web app answers on, so it is the
     // Host that teaches the store how to name a Thread in a channel message.
     const store = new OpensteerStore(database, {
       ...(options.executionClock ? { executionClock: options.executionClock } : {}),
-      links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/threads/${threadId}` },
+      links: { threadUrl: (threadId) => `${config.canonicalOrigin.origin}/tasks/${threadId}` },
+      readPersonalResources: (input) =>
+        readPersonalResources(input, () => runnerBrowsers.placements()),
     });
-    const deployment = await store.ensureDeployment({
-      ...(config.deploymentIdentity
-        ? {
-            deploymentId: config.deploymentIdentity.deploymentId,
-          }
-        : {}),
-      canonicalOrigin: config.canonicalOrigin.origin,
-      hostInstanceId: hostInstance.hostInstanceId,
-      deploymentShape: config.workspace.shape,
-    });
-
     // What active Runs are streaming, held only in memory; it learns each Run
     // from that Run's committed durable events and forgets it at the terminal.
     const liveRuns = new LiveRunRegistry();
@@ -502,10 +548,6 @@ export async function createHostRuntime(
       (viewers) => realtime.sendToUsers(viewers, { type: "host.plugins-changed" }),
     );
     pluginChangeNotices = notices;
-    if (config.knowledge === true) {
-      const { startKnowledgeManager } = await import("../knowledge/knowledge-manager.js");
-      knowledge = await startKnowledgeManager({ database, databaseUrl: config.databaseUrl });
-    }
     const connections = new ConnectionOAuth({
       deploymentId: deployment.id,
       store: new AgentConnectionStore(database),
@@ -513,57 +555,19 @@ export async function createHostRuntime(
       verificationKey: keys.publicKey,
     });
     const triggerStore = new TriggerStore(database);
-    const operatorOidcProviders = await loadOidcProvidersFromFile(config.identity.oidcConfigPath, {
-      requireAbsolutePaths: config.mode === "production",
-      requireSecureTransport: config.mode === "production",
-    });
-    const accountOidcProvider = config.account
-      ? opensteerAccountOidcProvider(config.account)
-      : undefined;
-    if (
-      accountOidcProvider &&
-      operatorOidcProviders.some(
-        (provider) => provider.providerId === accountOidcProvider.providerId,
-      )
-    ) {
-      throw new Error("The official Opensteer Account OIDC provider cannot be overridden");
-    }
-    const oidcProviders = accountOidcProvider
-      ? [...operatorOidcProviders, accountOidcProvider]
-      : operatorOidcProviders;
     const accountDirectoryStore = new AccountDirectoryStore(database);
-    if (accountOidcProvider) {
-      await accountDirectoryStore.configureProvider({
-        issuer: accountOidcProvider.issuer,
-        providerId: oidcIdentityProviderId(accountOidcProvider),
-      });
-    }
-    const localSetupToken = deploymentPolicy(config.workspace.shape).configuration.localOwnerClaim
-      ? config.identity.localOwnerClaimToken
-      : config.exposure === "loopback"
-        ? deriveLocalSetupToken(config.authSecret)
-        : undefined;
-    const initialOwnerEnrollment = config.identity.initialOwnerEnrollment
-      ? {
-          expiresAt: new Date(
-            Date.now() + config.identity.initialOwnerEnrollment.lifetimeSeconds * 1_000,
-          ),
-          token: config.identity.initialOwnerEnrollment.token,
-        }
-      : localSetupToken
-        ? {
-            expiresAt: new Date(Date.now() + localSetupEnrollmentLifetimeMilliseconds),
-            renewable: true,
-            token: localSetupToken,
-          }
-        : undefined;
+    const localSetupToken = config.identity.localOwnerClaimToken!;
+    const initialOwnerEnrollment = {
+      expiresAt: new Date(Date.now() + localSetupEnrollmentLifetimeMilliseconds),
+      renewable: true,
+      token: localSetupToken,
+    };
     const hostAuthority = {
       canonicalOrigin: deployment.canonicalOrigin,
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
       hostKey: { algorithm: "Ed25519" as const },
       deploymentShape: {
-        defaultWorkspaceBacking: deployment.deploymentShape.defaultWorkspaceBacking,
         kind: deployment.deploymentShape.kind,
       },
     };
@@ -571,12 +575,7 @@ export async function createHostRuntime(
       undefined;
     const identity = new IdentityService(database, {
       deployment: {
-        kind:
-          config.workspace.shape.kind === "personal"
-            ? "personal"
-            : config.mode === "development" && config.exposure === "loopback"
-              ? "development"
-              : "self-hosted",
+        kind: "personal",
         name: config.deploymentName ?? null,
       },
       ...(initialOwnerEnrollment ? { initialOwnerEnrollment } : {}),
@@ -585,7 +584,7 @@ export async function createHostRuntime(
         realtime.closeSession(sessionId);
         closeBrowserSession(sessionId);
       },
-      ...(localSetupToken && deploymentPolicy(config.workspace.shape).configuration.localOwnerClaim
+      ...(localSetupToken
         ? {
             localMachineOwner: {
               displayName: "You",
@@ -594,21 +593,10 @@ export async function createHostRuntime(
           }
         : {}),
       hostKeyFingerprint,
-      ...(config.account?.provisioningMode === "adoption"
-        ? {
-            accountAdoption: {
-              grantVerifier: new RemoteAccountAdoptionGrantVerifier({
-                audience: config.canonicalOrigin.origin,
-                issuer: config.account.issuer,
-              }),
-              logicalProviderId: officialOpensteerAccountProviderId,
-            },
-          }
-        : {}),
       ...(config.identity.nativeOAuth
         ? { nativeOAuth: { clients: config.identity.nativeOAuth.clients } }
         : {}),
-      oidcProviders,
+      oidcProviders: [],
       exposure: config.exposure,
       ...(config.portalOrigin ? { portalOrigin: config.portalOrigin } : {}),
       publicOrigin: config.canonicalOrigin,
@@ -624,7 +612,7 @@ export async function createHostRuntime(
     const runFileRelay = new RunFileRelay();
     let disconnectBrowserSources = () => {};
     const personalAccessAuthority =
-      deploymentPolicy(config.workspace.shape).services.personalRemoteAccess &&
+      deploymentPolicy(config.deploymentShape).personalRemoteAccess &&
       config.exposure === "loopback"
         ? hostAuthority
         : undefined;
@@ -702,6 +690,7 @@ export async function createHostRuntime(
       onRunnerAttached: (runnerId) => integrationPlatform.computerRunnerAttached(runnerId),
     });
     computerUse = new ComputerUseService({
+      deploymentId: deployment.id,
       onSessionEnded: (sessionId) => displayStreams?.endSession(sessionId),
       onPhoneHeld: (runnerId) => phoneTabs?.opened(runnerId),
       onAuthorityRevoked: ({ runId, bindingGeneration }) =>
@@ -766,12 +755,8 @@ export async function createHostRuntime(
       deploymentId: deployment.id,
       repository: store,
       baseUrl: config.canonicalOrigin,
-      ...(deploymentPolicy(deployment.deploymentShape).services.localBrowserProfileInventory
-        ? {
-            beforeProfileOpen: (runnerId: RunnerId) =>
-              runnerBrowsers.requirePersonalProfileInventory(runnerId),
-          }
-        : {}),
+      beforeProfileOpen: (runnerId: RunnerId) =>
+        runnerBrowsers.requirePersonalProfileInventory(runnerId),
       onReconciled: async (profileId) => {
         await browser.fenceLocalProfile(profileId);
         const profile = await database
@@ -779,13 +764,7 @@ export async function createHostRuntime(
           .select("ownerId")
           .where("id", "=", profileId)
           .executeTakeFirstOrThrow();
-        const main = await store.findMainWorkspaceForOwner(profile.ownerId);
-        if (main)
-          realtime.publishBrowserSessionsChanged(
-            main.id,
-            [profile.ownerId],
-            "browser.profile-reconciled",
-          );
+        realtime.publishBrowserSessionsChanged([profile.ownerId], "browser.profile-reconciled");
       },
     });
     const runnerBrowsers = new RunnerBrowserRuntimeRouter({
@@ -799,11 +778,10 @@ export async function createHostRuntime(
           .distinct()
           .where("deletion.runnerId", "=", runnerId)
           .execute();
-        for (const { ownerId } of owners) {
-          const main = await store.findMainWorkspaceForOwner(ownerId);
-          if (main)
-            realtime.publishBrowserSessionsChanged(main.id, [ownerId], "browser.profile-deletions");
-        }
+        realtime.publishBrowserSessionsChanged(
+          owners.map(({ ownerId }) => ownerId),
+          "browser.profile-deletions",
+        );
       },
     });
     let reportBrowserPresenceError: (error: unknown) => void = (error) => {
@@ -815,9 +793,10 @@ export async function createHostRuntime(
     const browserTabGroups = new BrowserTabGroupStore(database);
     let logMissingBrowserActor: (sessionId: string, bindingId: string) => void = () => undefined;
     const browser = new BrowserService({
+      deploymentId: deployment.id,
       onMissingActor: (sessionId, bindingId) => logMissingBrowserActor(sessionId, bindingId),
       hostOrigin: config.canonicalOrigin,
-      personal: deploymentPolicy(deployment.deploymentShape).nativePasswords,
+      personal: true,
       profileRequestRunner: async (runId) =>
         (
           await database
@@ -837,17 +816,16 @@ export async function createHostRuntime(
       ...(options.browserActivityClock ? { activityClock: options.browserActivityClock } : {}),
       onHistoryChanged: (ownerId, profileId) =>
         realtime.sendToUsers([ownerId], { type: "host.browser-history-changed", profileId }),
-      onProfilesChanged: (ownerId, workspaceId) =>
-        realtime.publishBrowserSessionsChanged(workspaceId, [ownerId], "browser.profiles"),
+      onProfilesChanged: (ownerId) =>
+        realtime.publishBrowserSessionsChanged([ownerId], "browser.profiles"),
       tabGroups: browserTabGroups,
-      workspaceTabs: new WorkspaceTabStore(database),
+      personalTabs: new PersonalTabStore(database),
       onPlaceNotice: (ownerId, notice) => realtime.sendToUsers([ownerId], notice),
-      onSessionsChanged: (workspaceId, sessionIds, source) => {
+      onSessionsChanged: (sessionIds, source) => {
         // Catalog visibility is viewer-wide, independent of socket subscriptions.
         void Promise.all(sessionIds.map((sessionId) => store.listBrowserSessionViewers(sessionId)))
           .then((sessions) =>
             realtime.publishBrowserSessionsChanged(
-              workspaceId,
               [...new Set(sessions.flatMap((session) => session?.userIds ?? []))],
               source,
             ),
@@ -856,7 +834,7 @@ export async function createHostRuntime(
       },
       onUsageChanged: (credits) => announceBrowserUsage(realtime, credits),
       onError: (error) => reportBrowserUsageError(error),
-      onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
+      onDeploymentEvent: (event) => publishDeploymentEvent(event),
       repository: store,
       signer: new BrowserAttachTicketSigner({
         keyId: browserAttachKeyId,
@@ -864,23 +842,11 @@ export async function createHostRuntime(
       }),
       targetResolver: runnerBrowsers,
     });
-    unsubscribePlaceMembership = store.onWorkspaceMembershipChanged((membership) => {
-      realtime.sendToUsers([membership.userId], { type: "host.plugins-changed" });
-      if (membership.state !== "active")
-        browser.revokePlaceReader(membership.userId, membership.workspaceId);
-      browser.invalidatePlaceAuthority(membership.workspaceId, undefined, membership.userId);
-      realtime.publishBrowserSessionsChanged(
-        membership.workspaceId,
-        [membership.userId],
-        "browser.membership",
-      );
-    });
     closeBrowserSession = (sessionId) => browser.closeAuthSession(sessionId);
     let reportBrowserSignInError: (error: unknown) => void = () => undefined;
     const passwordSignIns = new PasswordSignInService({
       authority: computerApps,
       resolveAuthority: async (ownerId) => {
-        if (!deploymentPolicy(config.workspace.shape).nativePasswords) return null;
         let after: RunnerId | undefined;
         do {
           const page = await store.listRunners({
@@ -901,26 +867,22 @@ export async function createHostRuntime(
         } while (after);
         return null;
       },
-      describe: async ({ ownerId, threadId, workspaceId }) => {
-        const [thread, workspace] = await Promise.all([
-          store.getThreadForOwner(threadId, ownerId),
-          store.getWorkspaceForOwner(workspaceId, ownerId),
-        ]);
-        return {
-          deploymentId: deployment.id,
-          deploymentName: config.deploymentName ?? "Opensteer",
-          threadTitle: thread?.title?.trim() || "An agent",
-          workspaceName: workspace?.name?.trim() || "Workspace",
-        };
-      },
+      describe: async ({ ownerId, threadId }) => ({
+        deploymentId: deployment.id,
+        deploymentName: config.deploymentName ?? "Opensteer",
+        threadTitle: (await store.getThreadForOwner(threadId, ownerId))?.title ?? "An agent",
+      }),
       onError: (error) => reportBrowserSignInError(error),
       onPendingBrowserPins: (key, pins) => browser.setRequestPins(key, pins),
       onRequestResolved: () => notifyIntegrationContinuations(),
-      onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
+      onDeploymentEvent: (event) => publishDeploymentEvent(event),
       requests: store.requests,
     });
-    browser.setLoginLeaseValidator((input) => passwordSignIns.validateLease(input));
+    browser.setLoginLeaseValidator((input) =>
+      passwordSignIns.validateLease({ ...input, deploymentId: deployment.id }),
+    );
     const browserSources = new BrowserSourceService({
+      deploymentId: deployment.id,
       browser,
       canonicalOrigin: config.canonicalOrigin.origin,
       currentRoute: async () => (await personalRemoteAccess?.status())?.route ?? null,
@@ -939,7 +901,7 @@ export async function createHostRuntime(
         });
       },
       onRequestResolved: () => notifyIntegrationContinuations(),
-      onWorkspaceEvent: (event) => publishWorkspaceEvent(event),
+      onDeploymentEvent: (event) => publishDeploymentEvent(event),
       passwords: passwordSignIns,
       stoppedByPerson: (threadId) => store.latestRunStoppedByPerson(threadId),
     });
@@ -948,6 +910,8 @@ export async function createHostRuntime(
       dataDirectory,
       ...(config.credentialKeyPath ? { keyPath: config.credentialKeyPath } : {}),
     });
+    const integrationKeys = new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1);
+    const teamLinkVault = new AesGcmCredentialVault(integrationKeys);
     const integrationVault = new AesGcmSecretVault(
       new StaticEncryptionKeyProvider(new Map([[1, credentialKey]]), 1),
     );
@@ -970,27 +934,20 @@ export async function createHostRuntime(
       resolveIntegrationAccountBinding({
         database,
         ownerUserId,
-        kind: config.workspace.shape.kind,
-        accountAttached: Boolean(config.account),
       });
-    const integrationDeploymentPosture = async () => {
-      return resolveIntegrationDeploymentPosture({
-        accountReachability: config.account?.reachability ?? null,
+    const integrationDeploymentPosture = async () =>
+      resolveIntegrationDeploymentPosture({
         personalAccountLinked:
-          deploymentPolicy(config.workspace.shape).integrationAccountBinding === "personal-link" &&
           (await database
             .selectFrom("personalRemoteAccountLink")
             .select("singletonKey")
-            .where("singletonKey", "=", "opensteer-account")
             .where("state", "=", "active")
             .executeTakeFirst()) !== undefined,
-        kind: config.workspace.shape.kind,
       });
-    };
     const hostedOAuthBrokerIssuer = config.personalAccountIssuer ?? config.account?.issuer;
     const hostedOAuthBroker = hostedOAuthBrokerIssuer
       ? {
-          kind: config.workspace.shape.kind,
+          kind: "personal" as const,
           accountSubject: integrationAccountSubject,
           broker: new HostedOAuthBrokerClient({
             ...(options.accountControlFetch ? { fetch: options.accountControlFetch } : {}),
@@ -1093,46 +1050,10 @@ export async function createHostRuntime(
       store: integrationPlatformStore,
       vault: integrationVault,
     });
-    const storage = config.workspace.storage;
-    const runnerStorage: RunnerStorageRegistry = {
-      identityForEnvironment: (environmentId) =>
-        requiredService(runnerRegistry, "Runner registry").identityForEnvironment(environmentId),
-      requestWorkspaceLocal: (environmentId, request, signal) =>
-        requiredService(runnerRegistry, "Runner registry").requestWorkspaceLocal(
-          environmentId,
-          request,
-          signal,
-        ),
-    };
-    // Every Deployment can hold the directories of machines lent to it, whatever
-    // its own default backing is.
-    const localWorkspaceDriver = new RunnerLocalWorkspaceDriver({ runners: runnerStorage });
-    const localWorkspaceFiles = new RunnerLocalWorkspaceFilesDriver({ runners: runnerStorage });
-    const workspaces = new WorkspaceService({
-      providerAuthorizations: (owner) => integrations.providerAuthorizations(owner),
-      drivers: { local: localWorkspaceDriver },
-      shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
-      resolveOwnerEnvironmentId: async (ownerId) => {
-        if (
-          deploymentPolicy(config.workspace.shape).workspaceNamespace === "single-owner" &&
-          storage.kind === "local-directory"
-        )
-          return storage.ownerEnvironmentId;
-        const environments = await store.listEnvironmentsForUser(ownerId);
-        const environment = environments.find(
-          (entry) => runnerStorage.identityForEnvironment(entry.id)?.modules.agents?.localStorage,
-        );
-        if (!environment)
-          throw new OpensteerError({
-            code: "workspace_unavailable",
-            message: "Connect a computer to create Main storage",
-            retryable: true,
-          });
-        return environment.id;
-      },
-      store,
+    const files = new FolderFilesService({
+      admit: folders.admit,
+      helperPath: personalConfig.nativeFsHelperPath,
     });
-    const files = new WorkspaceFilesService({ local: localWorkspaceFiles, memberships: store });
     let harnessAuthenticationCoordinator: HarnessAuthenticationCoordinator | undefined;
     // A Runner can register before the Fastify instance that owns the log
     // exists, so the boot window gets a real sink rather than a discard. It is
@@ -1319,7 +1240,7 @@ export async function createHostRuntime(
     const onAssignmentReturn = assignmentReturnReaction({
       deliver: (assignmentId) => store.drainAssignmentReturn(assignmentId),
       onError: (assignmentId, error) => reportAssignmentReturnError(assignmentId, error),
-      publish: (event) => publishWorkspaceEvent(event),
+      publish: (event) => publishDeploymentEvent(event),
     });
     let threadStateRequested = false;
     const drainThreadStates = (): Promise<void> => {
@@ -1331,7 +1252,7 @@ export async function createHostRuntime(
             while (threadStateRequested) {
               threadStateRequested = false;
               await store.drainPendingThreadStates((events) => {
-                for (const event of events) publishWorkspaceEvent(event);
+                for (const event of events) publishDeploymentEvent(event);
               });
             }
           } finally {
@@ -1342,7 +1263,12 @@ export async function createHostRuntime(
       return threadStateDrain;
     };
     let observeIntegrationInput: ((event: AgentEvent) => void) | undefined;
-    const publishWorkspaceEvent = (event: AgentEvent): void => {
+    const publishDeploymentEvent = (event: AgentEvent): void => {
+      try {
+        options.onDeploymentEvent?.(event);
+      } catch {
+        /* Observers cannot interrupt committed event publication. */
+      }
       taskQuestions?.observe(event);
       observeIntegrationInput?.(event);
       if (
@@ -1352,7 +1278,6 @@ export async function createHostRuntime(
         browser.observeRequest(event.data.request);
       if (event.type === "thread.listed" || event.type === "assignment.updated")
         browser.invalidatePlaceAuthority(
-          event.workspaceId,
           event.type === "thread.listed"
             ? [event.data.thread.id]
             : event.type === "assignment.updated"
@@ -1360,10 +1285,7 @@ export async function createHostRuntime(
               : undefined,
         );
       if (event.type === "place.entered")
-        app.log.info(
-          { runId: event.runId, threadId: event.threadId, workspaceId: event.workspaceId },
-          "place.entered",
-        );
+        app.log.info({ runId: event.runId, threadId: event.threadId }, "place.entered");
       liveRuns.observeCommitted([event]);
       realtime.publish(event);
       onTerminalRun(event);
@@ -1403,7 +1325,7 @@ export async function createHostRuntime(
     };
     const integrationPlatform = new IntegrationPlatformService({
       longRequestHold: (run) => longRequestHold(run.runId),
-      personal: deploymentPolicy(config.workspace.shape).retainLocalIntegrationApproval,
+      personal: true,
       adapters: integrationAdapters,
       secretVault: integrationVault,
       listConnections: (ownerUserId) => integrationStore.listConnections(ownerUserId),
@@ -1413,7 +1335,6 @@ export async function createHostRuntime(
       credentialMaterializer: integrations,
       dataDirectory,
       definitions: integrationDefinitions,
-      deploymentName: config.deploymentName ?? null,
       isRunnerConnected: (runnerId) =>
         requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
       // The engine a Thread runs on and the model it runs decide together
@@ -1482,7 +1403,7 @@ export async function createHostRuntime(
         else notices.notify(installationId ? { installationId } : {});
       },
       onRequestsChanged: () => notifyIntegrationContinuations(),
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onDeploymentEvent: publishDeploymentEvent,
       ...(options.integrationFetch ? { publicFetch: options.integrationFetch } : {}),
       store: integrationPlatformStore,
     });
@@ -1491,7 +1412,7 @@ export async function createHostRuntime(
     await integrationPlatform.recoverPluginData();
     await integrationPlatform.inputRequests.recover();
     for (const event of await integrationPlatformStore.computerOperations.finalize())
-      publishWorkspaceEvent(event);
+      publishDeploymentEvent(event);
     const integrationDashboard = new IntegrationDashboardService({
       definitions: integrationDefinitions,
       // A person reads the listing's name; the stored definition keeps its own.
@@ -1509,13 +1430,13 @@ export async function createHostRuntime(
       requestId: "startup:ensure-built-in-integrations",
     });
     await integrationPlatform.requestLocalServerApprovals();
-    for (const event of await store.recoverThreadWorkQueues()) publishWorkspaceEvent(event);
+    for (const event of await store.recoverThreadWorkQueues()) publishDeploymentEvent(event);
     await store.restartExecutionLeases(new Date(executionNow() + config.executionLeaseMs));
     // Runs outlive a Host restart on their leases and continue when their
     // Runners attach again; only the controls the last Host left in flight
     // need settling before this one dispatches anything.
     for (const event of await store.recoverCommandsAfterHostRestart()) {
-      publishWorkspaceEvent(event);
+      publishDeploymentEvent(event);
     }
     // No shell session survives a Host epoch, and this runs long before the
     // routes exist: a row left open by the previous Host would otherwise hold
@@ -1543,32 +1464,13 @@ export async function createHostRuntime(
     // The browser and messaging computers a Deployment supervises are
     // enrolled the same way any other machine is; the operator
     // minted their one-use tokens ahead of starting them.
-    for (const service of [
-      {
-        allowedModules: ["browser"] as const,
-        idempotencyKey: "deployment-managed-browser-runner",
-        name: "Browser service",
-        token: config.initialBrowserRunnerEnrollmentToken,
-      },
-      {
-        allowedModules: ["messaging"] as const,
+    if (config.initialMessagingRunnerEnrollmentToken) {
+      await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
+        allowedModules: ["integrations", "messaging"],
         idempotencyKey: "deployment-managed-messaging-runner",
+        lifetimeSeconds: 7 * 24 * 60 * 60,
         name: "Messaging service",
         token: config.initialMessagingRunnerEnrollmentToken,
-      },
-    ]) {
-      if (
-        !service.token ||
-        (!deploymentPolicy(deployment.deploymentShape).services.managedBrowserEnrollment &&
-          service.allowedModules[0] === "browser")
-      )
-        continue;
-      await runnerAuthenticator.ensureConfiguredDeploymentEnrollment({
-        allowedModules: [...service.allowedModules],
-        idempotencyKey: service.idempotencyKey,
-        lifetimeSeconds: 7 * 24 * 60 * 60,
-        name: service.name,
-        token: service.token,
       });
     }
     /** Who owns a module stream once the registry has stopped tracking it. */
@@ -1663,7 +1565,7 @@ export async function createHostRuntime(
             liveRuns.observeCommitted([committed.event, ...committed.compensatingEvents]);
           }
           if (!committed.wasDuplicate) {
-            publishWorkspaceEvent(committed.event);
+            publishDeploymentEvent(committed.event);
             if (
               ["run.completed", "run.failed", "run.interrupted"].includes(committed.event.type) ||
               (committed.event.type === "run.phase" && committed.event.data.phase === "background")
@@ -1673,7 +1575,7 @@ export async function createHostRuntime(
           // A restart queued the Run's next attempt.
           if (committed.event.type === "run.restarted") wakeExecutionCoordinator();
           for (const compensating of committed.compensatingEvents) {
-            publishWorkspaceEvent(compensating);
+            publishDeploymentEvent(compensating);
           }
           // Evidence about an account's capacity, not part of delivering the
           // event: the Runner is answered as soon as the event is committed and
@@ -1702,20 +1604,20 @@ export async function createHostRuntime(
           // A Run this binding no longer holds is left exactly as it is: its
           // owner's live streams included. A finalized Run's terminal event
           // clears its streams when it is published.
-          for (const terminal of events) publishWorkspaceEvent(terminal);
+          for (const terminal of events) publishDeploymentEvent(terminal);
         },
         onSkillReport: async (identity, report) => {
-          const storage = identity.modules.agents?.localStorage;
-          if (!storage || !identity.environmentIds.includes(report.environmentId)) return;
-          const changed = await store.reportWorkspaceSkills(
+          if (!identity.environmentIds.includes(report.environmentId)) return;
+          const changed = await reportFolderSkills(
+            database,
             {
               ...identity.fence,
               environmentId: report.environmentId,
-              storageAuthorityId: storage.storageAuthorityId,
+              bindingGeneration: report.bindingGeneration,
             },
             report,
           );
-          if (changed) notices.notify({ workspaceId: report.binding.workspaceId });
+          if (changed) notices.notify({ runnerId: identity.runnerId });
         },
         onLive: (_identity, live) => {
           const frame = liveRuns.apply(live.progress);
@@ -1723,7 +1625,7 @@ export async function createHostRuntime(
         },
         onCommandAccepted: async (_identity, receipt) => {
           for (const event of await store.succeedCommand(receipt.commandId)) {
-            publishWorkspaceEvent(event);
+            publishDeploymentEvent(event);
           }
         },
         onDisconnect: async (identity, scope) => {
@@ -1741,20 +1643,15 @@ export async function createHostRuntime(
               runnerBootId: identity.bootId,
               runnerId: identity.runnerId,
             });
-            for (const event of recovery.events) publishWorkspaceEvent(event);
+            for (const event of recovery.events) publishDeploymentEvent(event);
           }
-          const triggerWorkspaceIds = await triggerStore.workspaceIdsForOccurrences(
-            scope.triggerOccurrenceIds,
-          );
           const failedTriggerCount = await triggerStore.failActiveForRunnerDisconnect({
             activeOccurrenceIds: scope.triggerOccurrenceIds,
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
           if (failedTriggerCount > 0) {
-            for (const workspaceId of triggerWorkspaceIds) {
-              realtime.publishTriggersChanged(workspaceId);
-            }
+            realtime.publishTriggersChanged();
             notifyAutomationFailures();
           }
         },
@@ -1788,7 +1685,7 @@ export async function createHostRuntime(
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
-          for (const event of attached.events) publishWorkspaceEvent(event);
+          for (const event of attached.events) publishDeploymentEvent(event);
           for (const execution of attached.resumed) liveRuns.track(execution);
           return attached.results;
         },
@@ -1831,6 +1728,7 @@ export async function createHostRuntime(
             // remote-access fence. A computer sent away here was never online,
             // so there is nothing to announce and nothing to reconcile.
             if (!(await confirmRunnerRegistration(store, runners, identity))) return;
+            await initializeFolders();
             // A computer is online the moment it registers, whatever its
             // inventory reconciliation goes on to do.
             notifyMachinesChanged(realtime, "runner.registered");
@@ -1856,8 +1754,7 @@ export async function createHostRuntime(
               // acted on destructively: a directory it stopped listing marks
               // its Workspace, and a binding the Host never issued is counted
               // for the Computers page.
-              await reconcileRunnerLocalStorage(identity, store);
-              await integrationPlatformStore.specialists.resumeRemovals(identity.environmentIds);
+              await integrationPlatformStore.specialists.resumeRemovals();
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.
               if (identity.runnerKind === "managed") {
@@ -1914,7 +1811,7 @@ export async function createHostRuntime(
             runnerBootId: identity.bootId,
             runnerId: identity.runnerId,
           });
-          realtime.publishTriggersChanged(occurrence.event.trigger.workspaceId);
+          realtime.publishTriggersChanged();
           if (occurrence.status === "failed") notifyAutomationFailures();
         },
         onWatchStatus: async (identity, status) => {
@@ -1942,10 +1839,6 @@ export async function createHostRuntime(
       }
     }
     runnerRegistry = runners;
-    const workspaceAccess = new WorkspaceExecutionAccessService({
-      local: localWorkspaceDriver,
-      shape: { ...config.workspace.shape, defaultWorkspaceBacking: "local-directory" },
-    });
     const egress = new EgressService({
       authorizer: store,
       publicUrl: config.runtimeOrigin,
@@ -2016,12 +1909,12 @@ export async function createHostRuntime(
       browserCdpUrl: new URL("/internal/v1/watch-cdp", config.runtimeOrigin).toString(),
       controlTokens: watchControlTokens,
       mcpUrl: new URL("/internal/v1/mcp", config.runtimeOrigin).toString(),
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onChanged: () => realtime.publishTriggersChanged(),
       onError: (error, environmentId) => reportWatchReconciliationError(environmentId, error),
       runners,
       store: triggerStore,
       watchBrowserTokens,
-      workspaceAccess,
+      folders,
     });
     const reportThreadNamingError = (error: unknown) =>
       console.error("Thread naming failed", error);
@@ -2029,7 +1922,7 @@ export async function createHostRuntime(
       store,
       catalogs: harnessCatalogs,
       runners,
-      publish: publishWorkspaceEvent,
+      publish: publishDeploymentEvent,
       onError: reportThreadNamingError,
     });
     const dispatcher = new HostCommandDispatcher({
@@ -2037,6 +1930,19 @@ export async function createHostRuntime(
       runnerRegistrationPending: (environmentId) => {
         const identity = runners.identityForEnvironment(environmentId);
         return identity !== undefined && registeringRunners.has(identity.connectionId);
+      },
+      teamRequestContext: async ({ runId, requestId }, signal) => {
+        signal.throwIfAborted();
+        const context = await (await ensureLinks()).teamContext(runId);
+        signal.throwIfAborted();
+        if (context.request.id !== requestId)
+          throw new OpensteerError({ code: "forbidden", message: "Team request changed" });
+        return {
+          ownerDisplayName: context.ownerDisplayName,
+          instructionsMarkdown: context.instructionsMarkdown,
+          source: context.source,
+          content: [{ type: "text" as const, text: JSON.stringify(context.messages) }],
+        };
       },
       onRunAdmitted: (threadId) => {
         void naming?.request(threadId);
@@ -2047,25 +1953,22 @@ export async function createHostRuntime(
       browser,
       egress,
       executionLeaseMs: config.executionLeaseMs,
-      knowledge,
-      workspaceSkillPolicy: (workspaceId, ownerUserId) =>
-        integrationPlatformStore.settings.workspaceSkillPolicy(workspaceId, ownerUserId),
-      pluginVersions: async (workspaceId, ownerUserId) =>
-        (await integrationPlatformStore.plugins.current(workspaceId, ownerUserId)).map(
+      skillPolicy: (ownerUserId) => integrationPlatformStore.settings.skillPolicy(ownerUserId),
+      pluginVersions: async (ownerUserId) =>
+        (await integrationPlatformStore.plugins.current(ownerUserId)).map(
           ({ id, name, digest }) => ({ pluginId: id, name, digest }),
         ),
       pluginsTokens,
       attachmentRunTokens,
       attachments: attachmentStore,
-      onWorkspaceEvent: publishWorkspaceEvent,
-      onTriggerChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onDeploymentEvent: publishDeploymentEvent,
+      onTriggerChanged: () => realtime.publishTriggersChanged(),
       publicUrl: config.runtimeOrigin,
       runners,
       store,
       triggerControlTokens,
       triggers: triggerStore,
-      workspaces,
-      workspaceAccess,
+      folders,
     });
     let reportDispatchError: (error: unknown, commandId: string) => void = (error, commandId) =>
       console.error("Runner command dispatch failed", commandId, error);
@@ -2077,7 +1980,7 @@ export async function createHostRuntime(
       maxQueuedBytes: 64 * 1_024 * 1_024,
       maxQueuedCommands: 10_000,
       onDispatchError: (error, command) => reportDispatchError(error, command.id),
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onDeploymentEvent: publishDeploymentEvent,
       store,
     });
     // Registration is the earliest proof that queued execution can make
@@ -2097,13 +2000,10 @@ export async function createHostRuntime(
       onExecutionQueued: () => {
         coordinator.wake();
       },
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onDeploymentEvent: publishDeploymentEvent,
       store,
     });
     integrationPlatformStore.specialists.setRemovalHandler(async (input) => {
-      const workspace = await store.getWorkspace(input.workspaceId);
-      if (!workspace || workspace.backing.kind !== "local-directory")
-        throw new Error("Specialist storage is unavailable");
       const active = await database
         .selectFrom("runs")
         .innerJoin("threads", "threads.id", "runs.threadId")
@@ -2118,10 +2018,6 @@ export async function createHostRuntime(
             requestedBy: run.requestedBy,
             idempotencyKey: `specialist-remove:${input.specialistId}:${run.assignmentId}`,
           });
-      await localWorkspaceDriver.removeSpecialist(
-        { ...workspace, backing: workspace.backing },
-        input.specialistId,
-      );
     });
     let reportContinuationError: (error: unknown) => void = () => undefined;
     const continuations = new ContinuationService({
@@ -2163,9 +2059,7 @@ export async function createHostRuntime(
     });
     const triggers = new TriggerService({
       runnerStore: store,
-      homeThread: async (ownerId) =>
-        (await store.findMainWorkspaceForOwner(ownerId))?.homeThreadId ?? null,
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onChanged: () => realtime.publishTriggersChanged(),
       onOccurrenceQueued: () => {
         coordinator.wake();
       },
@@ -2187,18 +2081,14 @@ export async function createHostRuntime(
       onExecutionQueued: () => {
         coordinator.wake();
       },
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onDeploymentEvent: publishDeploymentEvent,
       runners,
       store,
     });
     channelService = channels;
-    const workspaceMounts = new RunnerAgentWorkspaceMountService({
-      runners,
-      workspaceAccess,
-    });
     const machineFullDiskAccess = new MachineFullDiskAccessService({
       store,
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onDeploymentEvent: publishDeploymentEvent,
       continuations,
     });
     const placeContext = new PlaceContextService({
@@ -2211,27 +2101,44 @@ export async function createHostRuntime(
     const browserTabs = new BrowserTabGroupService({
       groups: browserTabGroups,
       browser,
-      publish: (workspaceId, ownerIds) =>
-        realtime.publishBrowserSessionsChanged(workspaceId, ownerIds, "browser.groups"),
+      publish: (ownerIds) => realtime.publishBrowserSessionsChanged(ownerIds, "browser.groups"),
     });
-    const threadService = new ThreadService({ store, commands, runners, placeContext, browser });
+    const threadService = new ThreadService({
+      store,
+      commands,
+      runners,
+      placeContext,
+      browser,
+      folders,
+    });
     const memoryPasses = new MemoryPassService({
       store,
       runners,
-      files,
-      onEvent: publishWorkspaceEvent,
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
-      onError: (workspaceId, error) =>
+      readAgentInstructions: async (folder, signal) => {
+        const key = Buffer.from("AGENTS.md").toString("base64url");
+        try {
+          const read = await files.preview(folder, key, signal);
+          return new TextDecoder("utf-8", { fatal: true }).decode(read.bytes);
+        } catch (error) {
+          if (error instanceof OpensteerError && error.code === "not_found") return null;
+          throw error;
+        }
+      },
+      onEvent: publishDeploymentEvent,
+      onChanged: () => realtime.publishTriggersChanged(),
+      onError: (error) =>
         app.log.warn(
-          { workspaceId, code: error instanceof OpensteerError ? error.code : "internal" },
+          { code: error instanceof OpensteerError ? error.code : "internal" },
           "Memory pass provisioning failed",
         ),
     });
     const productHandlers = new ProductToolHandlers({
+      deploymentId: deployment.id,
+      folders,
       requestResponseVault: integrationVault,
       questionNotices: (taskQuestions = new TaskQuestionNotices({
         database,
-        publish: publishWorkspaceEvent,
+        publish: publishDeploymentEvent,
         wake: () => coordinator.wake(),
         onError: (error) => app.log.warn({ err: error }, "Task question notice failed"),
       })),
@@ -2246,7 +2153,6 @@ export async function createHostRuntime(
             userId,
             runId: message.runId,
             threadId: message.threadId,
-            workspaceId: message.workspaceId,
           },
           "host.show",
         );
@@ -2271,42 +2177,26 @@ export async function createHostRuntime(
       harnessAccessModes: (environmentId, driverKind) =>
         runners.harnessAccessModes(environmentId, driverKind),
       commands,
-      defaultWorkspaceBacking: config.workspace.shape.defaultWorkspaceBacking,
-      environmentWorkspaceBackings: (environmentId) =>
-        runners.identityForEnvironment(environmentId)?.modules.agents?.workspaceBackings ?? [],
       isEnvironmentConnected: (environmentId) => runners.isAvailable(environmentId),
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onEvent: publishDeploymentEvent,
       store,
-      workspaceMounts,
-      workspaces,
     });
     const apps = new AppService({
       tunnels: new AppTunnelHub(runners),
       dataDirectory,
       apps: new AppStore(database),
-      tabsChanged: async (workspaceId) => {
-        const members = await database
-          .selectFrom("workspaceMemberships")
-          .select("userId")
-          .where("workspaceId", "=", workspaceId)
-          .where("state", "=", "active")
-          .execute();
-        realtime.sendToUsers(
-          members.map(({ userId }) => userId),
-          { type: "host.app-tabs-changed" },
-        );
+      tabsChanged: async () => {
+        const ownerId = await personalDeploymentOwner(database);
+        if (ownerId) realtime.sendToUsers([ownerId], { type: "host.app-tabs-changed" });
       },
-      store,
       files,
       tokens: runToolTokens,
-      publishEvent: publishWorkspaceEvent,
+      publishEvent: publishDeploymentEvent,
     });
     await apps.collectGarbage();
     const integrationTools = new IntegrationToolHandlers({
       definitions: integrationDefinitions,
-      getWorkspaceForOwner: (workspaceId, requestedBy) =>
-        store.getWorkspaceForOwner(workspaceId, requestedBy),
-      onWorkspaceEvent: publishWorkspaceEvent,
+      onEvent: publishDeploymentEvent,
       platform: integrationPlatform,
     });
     const plugins = new PluginPackageService({
@@ -2315,13 +2205,18 @@ export async function createHostRuntime(
       tokens: pluginsTokens,
     });
     pluginPackages = plugins;
+    const staticDistribution = config.webDistribution
+      ? await HostStaticDistribution.load({
+          ...config.webDistribution,
+          expectedBuildId: personalWebBuildId,
+        })
+      : undefined;
     const discoveryEnvelope = signHostDiscovery(keys, {
       canonicalOrigin: deployment.canonicalOrigin,
       deploymentId: deployment.id,
       hostInstanceId: deployment.activeHostInstanceId,
       hostKey: { algorithm: "Ed25519" },
       deploymentShape: {
-        defaultWorkspaceBacking: deployment.deploymentShape.defaultWorkspaceBacking,
         kind: deployment.deploymentShape.kind,
       },
     });
@@ -2341,8 +2236,7 @@ export async function createHostRuntime(
     const localBootstrap = localSetupToken
       ? new LocalBootstrapService({
           publicUrl: config.runtimeOrigin,
-          requireSetupCredential: deploymentPolicy(config.workspace.shape).configuration
-            .localOwnerClaim,
+          requireSetupCredential: deploymentPolicy(config.deploymentShape).localOwnerClaim,
           runners: runnerAuthenticator,
           setupToken: localSetupToken,
           store,
@@ -2350,6 +2244,9 @@ export async function createHostRuntime(
       : undefined;
     const authenticator = new HostAuthenticator({
       identity,
+      onAuthenticatedSession: async () => {
+        await initializeFolders();
+      },
       ...(personalRemoteAccess ? { personalRemote: personalRemoteAccess } : {}),
       publicUrl: config.canonicalOrigin,
     });
@@ -2361,47 +2258,17 @@ export async function createHostRuntime(
             hostCredential: config.account.hostCredential,
           })
         : undefined;
-    const securityEffects = new SecurityEffectService({
-      browser,
-      onWatchDesiredChanged: (workspaceId) => watchService.workspaceChanged(workspaceId),
-      publish: publishWorkspaceEvent,
-      realtime,
-      runners,
-      store,
-      triggers: triggerStore,
-    });
-    const staticDistribution = config.webDistribution
-      ? await HostStaticDistribution.load({
-          ...config.webDistribution,
-          expectedBuildId: personalWebBuildId,
-        })
-      : undefined;
-    let reportWorkspaceDeletionError = (error: unknown, workspaceId: Workspace["id"]): void => {
-      console.error("Workspace deletion teardown failed", workspaceId, error);
-    };
-    const workspaceDeletion = new WorkspaceDeletionService({
-      drivers: {
-        local: localWorkspaceDriver,
-      },
-      onError: (error, workspaceId) => reportWorkspaceDeletionError(error, workspaceId),
-      onWorkspaceEvent: publishWorkspaceEvent,
-      retentionDays: config.workspace.deletionRetentionDays,
-      store,
-      terminateRuns: (workspaceId) => securityEffects.terminateWorkspace(workspaceId),
-    });
     administrationCatalogs = new HarnessCatalogReconciliationOwner({
       catalogs: harnessCatalogs,
       runners,
       onError: (environmentId, error) =>
-        reportHarnessCatalogInvalidationError(environmentId, error),
+        app.log.warn({ environmentId, err: error }, "Harness catalog reconciliation failed"),
     });
     const administration = new AdministrationToolHandlers(
       new AdministrationService(
         {
           store,
           commands,
-          workspaces,
-          workspaceDeletion,
           apps,
           browser,
           browserSources,
@@ -2410,7 +2277,7 @@ export async function createHostRuntime(
           runners,
           channels: { service: channels, relay: messagingRelay },
           realtime,
-          publishWorkspaceEvent,
+          publishDeploymentEvent,
           integrations: { platform: integrationPlatform, service: integrations, continuations },
         },
         (id) => administrationCatalogs?.schedule(id),
@@ -2422,7 +2289,7 @@ export async function createHostRuntime(
         store,
         continuations,
         onStopped: (stopped) => {
-          for (const event of stopped.events) publishWorkspaceEvent(event);
+          for (const event of stopped.events) publishDeploymentEvent(event);
           wakeExecutionCoordinator();
         },
         onError: (error) => app.log.error({ err: error }, "A Request hold could not read"),
@@ -2431,17 +2298,6 @@ export async function createHostRuntime(
       publicUrl: config.runtimeOrigin,
       realtime,
       onToolError: (error, tool) => app.log.error({ err: error, tool }, "Agent tool failed"),
-      ...(knowledge
-        ? {
-            knowledgeFor: knowledgeForCaller({
-              owner: () => knowledge!.owner(),
-              agents: (runnerId, bootId) => {
-                const identity = runnerRegistry?.identityForRunner(runnerId);
-                return identity?.bootId === bootId ? identity.modules.agents : null;
-              },
-            }),
-          }
-        : {}),
       callers: new AgentCallerResolver({
         store,
         runs: runToolTokens,
@@ -2456,23 +2312,33 @@ export async function createHostRuntime(
         product: productHandlers,
         integrations: integrationTools,
         triggers: new TriggerToolHandlers(triggers),
-        knowledge,
+        teamRequestForRun: async (runId, threadId) =>
+          (
+            await database
+              .selectFrom("runs")
+              .select("teamRequestId")
+              .where("id", "=", runId)
+              .where("threadId", "=", threadId)
+              .executeTakeFirst()
+          )?.teamRequestId ?? null,
+        team: {
+          read: async (...args) => (await ensureLinks()).teamTools.read(...args),
+          search: async (...args) => (await ensureLinks()).teamTools.search(...args),
+          reply: async (...args) => (await ensureLinks()).teamTools.reply(...args),
+          sql: async (...args) => (await ensureLinks()).teamTools.sql(...args),
+        },
         pluginInstall: async (scope, directory) => {
-          const admission = await store.admitWorkspaceFiles(scope.workspaceId, scope.requestedBy);
-          if (!admission) throw new Error("Workspace is unavailable");
-          if (admission.workspace.backing.kind !== "local-directory")
-            throw new Error("Plugins require a local Workspace");
-          return withWorkspacePluginPackage({
+          const thread = await store.getThreadForOwner(scope.threadId, scope.requestedBy);
+          if (!thread) throw new OpensteerError({ code: "not_found", message: "Task not found" });
+          return withFolderPluginPackage({
             directory,
-            admission,
+            folder: thread.folder,
             files,
             install: async (stagedDirectory) => {
               const result = await integrationPlatform.installAgentPlugin({
                 directory: stagedDirectory,
-                workspaceDirectory: directory,
                 threadId: scope.threadId,
                 actorUserId: scope.requestedBy,
-                workspaceId: scope.workspaceId,
                 runnerId: scope.runnerId,
                 requestId: randomUUID(),
               });
@@ -2480,8 +2346,6 @@ export async function createHostRuntime(
               const registration =
                 result.specialist && pluginId
                   ? await integrationPlatform.store.specialists.add({
-                      activate: false,
-                      workspaceId: scope.workspaceId,
                       pluginId,
                       actorUserId: scope.requestedBy,
                     })
@@ -2497,21 +2361,76 @@ export async function createHostRuntime(
         },
       }),
     });
+    const taskAdmission = new TaskAdmissionService({
+      database,
+      folders,
+      execution: async () => {
+        const settings = await personalSettings(database);
+        const preferences = await store.getExecutionPreferences(settings.ownerId);
+        const prior = preferences.history[0];
+        if (prior?.environmentId === personalConfig.environmentId) return prior;
+        const selected = (
+          await resolveAutomaticModels(
+            { store, runners },
+            {
+              userId: settings.ownerId,
+              wants: (current) => automaticModelWants(current, "light"),
+              canRun: personalExecution(runners, {
+                environmentId: personalConfig.environmentId,
+                accessMode: DEFAULT_THREAD_ACCESS_MODE,
+              }),
+            },
+          )
+        ).candidates[0];
+        if (!selected)
+          throw new OpensteerError({
+            code: "conflict",
+            message: "Choose an available engine for your agent",
+          });
+        return {
+          environmentId: selected.environmentId,
+          harnessInstanceId: selected.harnessInstanceId,
+          modelSelection: selected.storedModelSelection,
+        };
+      },
+      publish: (events) => events.forEach(publishDeploymentEvent),
+      revokeGrants: (grants) => store.announceRevokedGrants(grants),
+    });
+    async function ensureLinks() {
+      if (linkServices) return linkServices;
+      if (linkStarting) return linkStarting;
+      linkStarting = (async () => {
+        const service = await folderService();
+        const links = createPersonalTeamLinkServices({
+          database,
+          ownerId: service.options.ownerId,
+          deploymentId: deployment.id,
+          installationLabel: config.deploymentName ?? "My computer",
+          credentialVault: teamLinkVault,
+          admission: taskAdmission,
+          runs: personalTeamRunPort(database),
+          attachments: new PersonalTeamAttachments({
+            store,
+            attachments,
+            attachmentStore,
+            tokens: attachmentRunTokens,
+            runners,
+            relay: runFileRelay,
+          }),
+          admitFolder: folders.admit,
+        });
+        await links.links.start();
+        linkServices = links;
+        return links;
+      })().finally(() => {
+        linkStarting = undefined;
+      });
+      return linkStarting;
+    }
     const app = await createHostServer(
       {
-        teamAdministration: new TeamAdministrationService({
-          database,
-          identity,
-          teamName: config.deploymentName ?? new URL(config.runtimeOrigin).hostname,
-          runnerIsConnected: (runnerId) =>
-            requiredService(runnerRegistry, "Runner registry").isRunnerConnected(runnerId),
-          invalidate: (userIds) => {
-            for (const userId of userIds) realtime.publishViewerTasksChanged(userId);
-          },
-        }),
         connections,
         passkeys: config.passkeys === true,
-        knowledge: knowledge !== undefined,
         ...(notificationPreviews ? { notificationPreviews } : {}),
         ...(accountAdoptionControlClient
           ? {
@@ -2526,7 +2445,7 @@ export async function createHostRuntime(
         appOriginSigningKey: createHmac("sha256", config.authSecret)
           .update("opensteer-app-cookie-v1")
           .digest(),
-        appRealOrigins: hostAppRealOrigins(config.workspace.shape),
+        appRealOrigins: hostAppRealOrigins(config.deploymentShape),
         liveRuns,
         machineFullDiskAccess,
         requestResponseVault: integrationVault,
@@ -2552,6 +2471,8 @@ export async function createHostRuntime(
         discovery: discoveryEnvelope,
         egress,
         files,
+        folders,
+        teamLinks: async () => (await ensureLinks()).links,
         harnessAuthenticationCoordinator,
         integrations: {
           authAttempts: integrationAuthAttempts,
@@ -2567,10 +2488,9 @@ export async function createHostRuntime(
           ? { personalRemoteAccess: { service: personalRemoteAccess } }
           : {}),
         realtime,
-        publishWorkspaceEvent,
+        publishDeploymentEvent,
         runnerAuthenticator,
         runners,
-        securityEffects,
         shellControl: requiredService(shellHub, "Shell session hub"),
         ...(staticDistribution ? { staticDistribution: { service: staticDistribution } } : {}),
         ...(options.phoneUpdateRelease ? { phoneUpdateRelease: options.phoneUpdateRelease } : {}),
@@ -2584,8 +2504,6 @@ export async function createHostRuntime(
             tokens: watchControlTokens,
           }),
         },
-        workspaceDeletion,
-        workspaces,
       },
       options,
     );
@@ -2618,8 +2536,6 @@ export async function createHostRuntime(
         { connectionId, err: error },
         "Integration connection could not settle its pending Requests",
       );
-    reportWorkspaceDeletionError = (error, workspaceId) =>
-      app.log.error({ err: error, workspaceId }, "Workspace deletion teardown failed");
     logMissingBrowserActor = (sessionId, bindingId) => {
       if (bindingId.startsWith("run:"))
         app.log.info({ sessionId, runId: bindingId.slice(4) }, "Browser Run has no actor");
@@ -2692,47 +2608,6 @@ export async function createHostRuntime(
         store: accountDirectoryStore,
       });
     }
-    await securityEffects
-      .reconcile()
-      .catch((error) => app.log.error({ err: error }, "Security effect reconciliation failed"));
-    let workspaceStorageAvailable: boolean | undefined;
-    const reportWorkspaceStorageHealth = (
-      result: Awaited<ReturnType<WorkspaceService["reconcile"]>>,
-    ): void => {
-      const availabilityChanged = result.available !== workspaceStorageAvailable;
-      workspaceStorageAvailable = result.available;
-      if (result.severity === "alert") {
-        app.log.error(
-          {
-            backing: config.workspace.shape.defaultWorkspaceBacking,
-            code: result.issue?.code,
-            detail: result.detail,
-            retryable: result.issue?.retryable,
-          },
-          result.available
-            ? "Workspace storage requires operator attention"
-            : "Workspace storage requires operator attention; new Workspace Runs are paused",
-        );
-        return;
-      }
-      if (!availabilityChanged) return;
-      if (result.available) {
-        app.log.info(
-          { backing: config.workspace.shape.defaultWorkspaceBacking, detail: result.detail },
-          "Workspace storage is ready",
-        );
-      } else {
-        app.log.warn(
-          {
-            backing: config.workspace.shape.defaultWorkspaceBacking,
-            code: result.issue?.code,
-            retryable: result.issue?.retryable,
-          },
-          "Workspace storage is unavailable; new Workspace Runs are paused",
-        );
-      }
-    };
-    reportWorkspaceStorageHealth(await workspaces.reconcile());
     await memoryPasses.reconcileMissing();
     void naming.reconcile().catch(reportThreadNamingError);
     await taskQuestions.reconcile();
@@ -2756,36 +2631,37 @@ export async function createHostRuntime(
       });
     }
     const triggerScheduleLoop = new TriggerScheduleLoop({
-      onChanged: (workspaceId) => realtime.publishTriggersChanged(workspaceId),
+      onChanged: () => realtime.publishTriggersChanged(),
       onError: (error) => app.log.error({ err: error }, "Trigger scheduling failed"),
-      onOccurrenceQueued: (occurrence) => {
+      onOccurrenceQueued: () => {
         coordinator.wake();
-        realtime.publishTriggersChanged(occurrence.event.trigger.workspaceId);
+        realtime.publishTriggersChanged();
       },
       store: triggerStore,
     });
     triggerScheduleLoop.start();
     watchService.start();
     channels.start();
-    const workspaceReconcileLoop = new WorkspaceReconcileLoop({
-      ...(options.workspaceReconcileClock ? { clock: options.workspaceReconcileClock } : {}),
+    const personalReconcileLoop = new ReconcileLoop({
+      ...(options.personalReconcileClock ? { clock: options.personalReconcileClock } : {}),
       intervalMs: 30_000,
-      onError: (error) => app.log.error({ err: error }, "Workspace reconciliation failed"),
+      onError: (error) => app.log.error({ err: error }, "Personal reconciliation failed"),
       reconcile: async () => {
-        await reconcileWorkspaceServices(
+        await reconcileServices(
           [
             (async () => {
               // Delegation deliveries are a durable recovery ledger. Reconcile
               // them even while a Runner remains connected: a transient
               // post-commit delivery failure must not require a Host restart.
               const returns = await store.drainPendingAssignmentReturns();
-              for (const event of returns.events) publishWorkspaceEvent(event);
+              for (const event of returns.events) publishDeploymentEvent(event);
               for (const { assignmentId, error } of returns.failures) {
                 reportAssignmentReturnError(assignmentId, error);
               }
             })(),
-            workspaces.reconcile().then(reportWorkspaceStorageHealth),
-            workspaceDeletion.purgeDue(new Date()),
+            initializePersonalState(database, personalConfig).then(async (service) => {
+              if (service) await ensureLinks();
+            }),
             ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),
             // What a work location can run is durable state like any other, so it
             // is reconciled rather than captured once and hoped for.
@@ -2818,37 +2694,36 @@ export async function createHostRuntime(
                   : {}),
               });
             }),
-            securityEffects.reconcile(),
           ],
           () => memoryPasses.reconcileMissing(),
         );
       },
       sweep: () => 0,
     });
-    workspaceReconcileLoop.start();
+    personalReconcileLoop.start();
     // An execution lease is the whole grace a Runner out of reach has, so an
     // expired one is noticed within a fraction of it, whether or not the
     // Runner is connected: silence is not a terminal event.
-    const executionLeaseLoop = new WorkspaceReconcileLoop({
+    const executionLeaseLoop = new ReconcileLoop({
       ...(options.executionClock ? { clock: options.executionClock } : {}),
       intervalMs: Math.min(10_000, Math.floor(config.executionLeaseMs / 4)),
       onError: (error) => app.log.error({ err: error }, "Execution lease sweep failed"),
       reconcile: async () => {
         const expired = await store.recoverRunsWithExpiredExecutionBindings();
-        for (const event of expired.events) publishWorkspaceEvent(event);
+        for (const event of expired.events) publishDeploymentEvent(event);
         if (expired.events.some((event) => event.type === "run.restarted"))
           wakeExecutionCoordinator();
         // Background work past its deadline is stopped like any other Run,
         // and each stop is published as it commits.
         await store.stopRunsPastBackgroundDeadline((stopped) => {
-          for (const event of stopped.events) publishWorkspaceEvent(event);
+          for (const event of stopped.events) publishDeploymentEvent(event);
           wakeExecutionCoordinator();
         });
       },
       sweep: () => undefined,
     });
     executionLeaseLoop.start();
-    threadStateLoop = new WorkspaceReconcileLoop({
+    threadStateLoop = new ReconcileLoop({
       intervalMs: 1000,
       onError: (error) => app.log.error({ err: error }, "Thread state sweep failed"),
       reconcile: drainThreadStates,
@@ -2857,6 +2732,7 @@ export async function createHostRuntime(
     threadStateLoop.start();
 
     return {
+      kind: "personal",
       app,
       browser,
       notifications: notificationDispatcher,
@@ -2867,12 +2743,19 @@ export async function createHostRuntime(
         if (closed) return;
         closed = true;
         // Each awaited step names itself, so a shutdown that hangs says where.
+        const failures: unknown[] = [];
         const step = async (label: string, stop: () => unknown) => {
           closingStep = label;
-          await stop();
+          try {
+            await stop();
+          } catch (error) {
+            failures.push(error);
+          }
         };
-        const notificationsClosed = notificationDispatcher?.close();
-        await step("workspace reconcile loop", () => workspaceReconcileLoop.close());
+        const notificationsClosed = notificationDispatcher?.close().catch((error) => {
+          failures.push(error);
+        });
+        await step("personal reconcile loop", () => personalReconcileLoop.close());
         await step("execution lease loop", () => executionLeaseLoop.close());
         await step("trigger schedule loop", () => triggerScheduleLoop.close());
         await step("watch service", () => watchService?.close());
@@ -2890,10 +2773,9 @@ export async function createHostRuntime(
         await step("computer use", () => computerUse.shutdown());
         computerApps.close();
         await step("agent tools", () => agentTools.close());
-        await step("knowledge", () => knowledge?.close());
+        await step("team links", () => linkServices?.links.stop());
         await step("administration catalogs", () => administrationCatalogs?.close());
         await step("integration platform", () => integrationPlatform.close());
-        unsubscribePlaceMembership?.();
         await step("browser", () => browser.close());
         passwordSignIns.close();
         browserSources.close();
@@ -2905,7 +2787,6 @@ export async function createHostRuntime(
         await step("quiet tasks", () => quietTasks.stop());
         await step("coordinator", () => coordinator.stop());
         await step("task questions", () => taskQuestions?.close());
-        await step("security effects", () => securityEffects.close());
         files.close();
         await step("HTTP server", () => app.close());
         await step("admission", () => admission.close());
@@ -2916,6 +2797,7 @@ export async function createHostRuntime(
         await step("authority lease", () => authorityLease?.close());
         await step("database", () => database.destroy());
         closingStep = undefined;
+        if (failures.length) throw new AggregateError(failures, "Personal Host shutdown failed");
       },
       closingStep: () => {
         if (closingStep !== "database") return closingStep;
@@ -2928,12 +2810,10 @@ export async function createHostRuntime(
     await taskQuestions?.close();
     await administrationCatalogs?.close();
     await notificationDispatcher?.close();
-    unsubscribePlaceMembership?.();
     threadStateStopped = true;
     await threadStateLoop?.close();
     await threadStateDrain?.catch(() => undefined);
     await pluginChangeNotices?.close();
-    await knowledge?.close();
     await authorityLease?.close();
     await database.destroy();
     throw error;
@@ -2989,20 +2869,6 @@ function isTerminalRunEvent(event: AgentEvent): boolean {
 function requiredService<Value>(value: Value | undefined, label: string): Value {
   if (value === undefined) throw new Error(`${label} is not configured`);
   return value;
-}
-
-function opensteerAccountOidcProvider(
-  account: NonNullable<HostConfig["account"]>,
-): OidcProviderConfiguration {
-  return {
-    allowPrivateNetwork: false,
-    clientId: account.oidcClientId,
-    clientSecret: account.oidcClientSecret,
-    issuer: account.issuer.origin,
-    label: "Opensteer",
-    providerId: officialOpensteerAccountProviderId,
-    trustedOrigins: [],
-  };
 }
 
 /**
@@ -3076,5 +2942,5 @@ export async function ensureDefaultHarnesses(
 }
 
 export function hostAppRealOrigins(shape: import("@opensteer/core").DeploymentShape): boolean {
-  return deploymentPolicy(shape).appOrigins === "real";
+  return deploymentPolicy(shape).services.personal;
 }

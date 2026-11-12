@@ -320,7 +320,7 @@ export class TeamSessionClient {
         this.#applySidebar(frame.sidebar);
         break;
       case "team.sidebar.dirty":
-        void this.refreshSidebar().catch(() => undefined);
+        void this.#refreshSidebarRows(frame.channelIds).catch(() => undefined);
         break;
       case "team.access.changed": {
         this.#contentGeneration++;
@@ -370,7 +370,7 @@ export class TeamSessionClient {
         break;
     }
   }
-  #applySidebar(sidebar: TeamSidebar, replace = false): void {
+  #applySidebar(sidebar: TeamSidebar, replace = false, notify = true): void {
     const previous = this.#snapshot.sidebar;
     const last = sidebar.channels.at(-1)?.channel.id;
     const extra =
@@ -386,24 +386,59 @@ export class TeamSessionClient {
       : sidebar;
     const next = monotonicTeamSidebar(previous, merged);
     this.#update({ sidebar: next });
-    if (previous)
-      for (const entry of next.channels) {
-        const held = previous.channels.find((row) => row.channel.id === entry.channel.id);
-        const notify =
-          entry.notificationLevel === "all" ||
-          (entry.notificationLevel === "mentions" &&
-            entry.mentionCount > (held?.mentionCount ?? 0));
-        if (
-          notify &&
-          entry.unread &&
-          (!held?.unread ||
-            (BigInt(entry.channel.latestMessageId ?? "0") >
-            BigInt(held.channel.latestMessageId ?? "0")
-              ? 1
-              : -1) > 0)
-        )
-          this.#options.notify?.(entry);
-      }
+    if (notify && previous) this.#notifySidebar(previous, next);
+  }
+  #notifySidebar(previous: TeamSidebar, next: TeamSidebar): void {
+    for (const entry of next.channels) {
+      const held = previous.channels.find((row) => row.channel.id === entry.channel.id);
+      const notify =
+        entry.notificationLevel === "all" ||
+        (entry.notificationLevel === "mentions" && entry.mentionCount > (held?.mentionCount ?? 0));
+      if (
+        notify &&
+        entry.unread &&
+        (!held?.unread ||
+          (BigInt(entry.channel.latestMessageId ?? "0") >
+          BigInt(held.channel.latestMessageId ?? "0")
+            ? 1
+            : -1) > 0)
+      )
+        this.#options.notify?.(entry);
+    }
+  }
+  async #refreshSidebarRows(channelIds: readonly TeamChannelId[]): Promise<void> {
+    if (this.#removed || this.#disposed) return;
+    const lifetime = this.#lifetime,
+      generation = this.#contentGeneration;
+    const pages: TeamSidebar[] = [];
+    for (let offset = 0; offset < channelIds.length; offset += 50) {
+      pages.push(
+        await this.rpc["team.sidebar.get"]({
+          channelIds: channelIds.slice(offset, offset + 50),
+        }).then(unwrapRpcResult),
+      );
+      if (lifetime !== this.#lifetime || generation !== this.#contentGeneration) return;
+    }
+    if (!pages.length) return;
+    const page = { ...pages[0]!, channels: pages.flatMap((result) => result.channels) };
+    if (pages.some((result) => result.accessRevision !== page.accessRevision))
+      return this.refreshSidebar();
+    if (lifetime !== this.#lifetime || generation !== this.#contentGeneration) return;
+    const current = this.#snapshot.sidebar;
+    if (!current || current.accessRevision !== page.accessRevision) {
+      await this.refreshSidebar();
+      return;
+    }
+    const requested = new Set(channelIds);
+    const rows = [
+      ...current.channels.filter((row) => !requested.has(row.channel.id)),
+      ...page.channels,
+    ].sort((a, b) => a.channel.id.localeCompare(b.channel.id));
+    this.#notifySidebar(
+      current,
+      monotonicTeamSidebar(current, { ...current, channels: page.channels }),
+    );
+    this.#applySidebar({ ...current, channels: rows.slice(0, 1000) }, true, false);
   }
   async refreshSidebar(): Promise<void> {
     if (this.#removed || this.#disposed) return;

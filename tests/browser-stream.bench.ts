@@ -8,10 +8,8 @@ import { expect, it } from "vitest";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import {
   createMachineAccessDatabase,
-  enrollmentToken,
-  startMachineAccessHost,
-} from "../apps/host/src/runtime/machine-access.test-support.js";
-import { startBrowserRuntime } from "../apps/host/src/browser/browser-runtime.test-support.js";
+  startPersonalMachineHost,
+} from "../apps/host/src/runtime/personal-machine.test-support.js";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import { linkProfiles, startShapingProxy } from "./mobile-network/proxy.test-support.js";
 import { installFixture } from "./browser-stream/fixture.test-support.js";
@@ -142,22 +140,13 @@ it(
               process.env.OPENSTEER_TEST_DATABASE_URL,
             );
             cleanup.push(() => database.drop());
-            const host = await startMachineAccessHost(database.url, {
-              logger: { level: "silent" },
-            });
-            cleanup.push(() => host.close());
             const producer = await startJpegProducer();
             cleanup.push(() => producer.close());
-            const relay = await startBrowserRuntime(
-              host.hostPort,
-              await enrollmentToken(host, {
-                allowedModules: ["browser"],
-                idempotencyKey: "browser-bench",
-                name: "Headless browser benchmark",
-              }),
-              { agentReady: true, editing: true, runtimeUrl: producer.runtimeUrl, keepAlive: true },
-            );
-            cleanup.push(() => relay.close());
+            const host = await startPersonalMachineHost({
+              databaseUrl: database.url,
+              browser: producer.browserBridge,
+            });
+            cleanup.push(() => host.close());
             const opened = await testRpcData(
               host.origin,
               "commands.dispatch",
@@ -192,7 +181,9 @@ it(
             });
             // The synthetic document is fulfilled locally; Chromium otherwise treats its
             // network address space as unknown when dialing the loopback shaping proxy.
-            await context.grantPermissions(["local-network-access"], { origin: host.origin });
+            await context.grantPermissions(["local-network-access"], {
+              origin: host.origin.origin,
+            });
             const cookie = host.ownerHeaders.cookie;
             if (!cookie) throw new Error("Fixture owner has no cookie");
             await context.addCookies(
@@ -201,7 +192,7 @@ it(
                 return {
                   name: part.slice(0, separator).trim(),
                   value: part.slice(separator + 1),
-                  url: host.origin,
+                  url: host.origin.origin,
                 };
               }),
             );
@@ -309,7 +300,7 @@ it(
                 bytesUp: byteEnd.up - byteStart.up,
                 bytesDown: byteEnd.down - byteStart.down,
                 invalidMarkers: result.invalidMarkers,
-                errors: [...result.errors, ...viewerErrors, ...relay.protocolErrors()],
+                errors: [...result.errors, ...viewerErrors],
                 clocks: { sourceClock, viewerClock, sourceAfter, viewerAfter },
                 trace: result,
               };

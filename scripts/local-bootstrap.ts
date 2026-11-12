@@ -31,12 +31,19 @@ export async function waitForLocalBootstrap(
   hostUrl: URL,
   signal: AbortSignal,
   timeoutMs = defaultTimeoutMs,
+  ownerClaimToken?: string,
 ): Promise<LocalBootstrap | null> {
   const endpoint = new URL("/v1/local-bootstrap", hostUrl);
   const deadline = Date.now() + timeoutMs;
   while (!signal.aborted) {
     try {
-      const response = await fetch(endpoint, { headers: { accept: "application/json" }, signal });
+      const response = await fetch(endpoint, {
+        headers: {
+          accept: "application/json",
+          ...(ownerClaimToken ? { authorization: `Bearer ${ownerClaimToken}` } : {}),
+        },
+        signal,
+      });
       if (response.status === 404) return null;
       if (response.ok) return (await response.json()) as LocalBootstrap;
     } catch {

@@ -5,8 +5,8 @@
 .opensteer
 .pnpm-store
 coverage
-deploy/self-host/secrets
-deploy/self-host/state
+deploy/team/secrets
+deploy/team/state
 dist
 apps/runner/dist-integration/
 apps/*/release

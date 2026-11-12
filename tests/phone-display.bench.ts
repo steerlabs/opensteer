@@ -18,10 +18,8 @@ import {
 } from "../packages/client/src/integrations/phone-display-stream.js";
 import { delay } from "@opensteer/shared/delay";
 import { withTimeout } from "@opensteer/shared/withTimeout";
-import {
-  createMachineAccessDatabase,
-  freePort,
-} from "../apps/host/src/runtime/machine-access.test-support.js";
+import { createMachineAccessDatabase } from "../apps/host/src/runtime/personal-machine.test-support.js";
+import { freePort } from "@opensteer/shared/test-support/loopbackPort";
 import { testRpcData } from "../apps/host/src/server/test-host-api-request.js";
 import {
   acquireAndroidDevice,
@@ -177,14 +175,19 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
     const setup = await runAgentPhoneSetup({
       artifact: build.artifact,
       device: phone,
-      host,
+      host: { origin: host.origin.origin, ownerHeaders: host.ownerHeaders },
       redaction: new Redaction(),
       runnerName: "Display benchmark",
       onStep: (step) => process.stdout.write(`Phone setup: ${step.step}\n`),
       timeoutMs: 600_000,
     });
     if (setup.outcome !== "done") throw new Error(`Phone setup stopped: ${JSON.stringify(setup)}`);
-    await waitForPhoneOnline(phone, host, setup.runnerId, 60_000);
+    await waitForPhoneOnline(
+      phone,
+      { origin: host.origin.origin, ownerHeaders: host.ownerHeaders },
+      setup.runnerId,
+      60_000,
+    );
     await phone.shell("svc power stayon true");
     cleanup.push(() => phone.shell("svc power stayon false"));
     await phone.shell("input keyevent KEYCODE_WAKEUP");
@@ -283,7 +286,7 @@ it("measures the real phone, relay, shared client and headless WebCodecs viewer"
         const viewer = async () => {
           const page = await browser.newPage();
           pages.push(page);
-          await page.goto(host.origin);
+          await page.goto(host.origin.toString());
           const received: { at: number; frame: DisplayFrame }[] = [];
           const paints: { at: number; sequence: number; relayAgeMs: number | null }[] = [];
           const errors: string[] = [];

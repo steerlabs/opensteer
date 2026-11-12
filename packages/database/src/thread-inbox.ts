@@ -1,3 +1,4 @@
+import { threadAllowsPersonalContext } from "./run-personal-context.js";
 import { personalSettings, requirePersonalOwner } from "./personal-settings-store.js";
 import { withPersonalTransaction } from "./personal-transaction.js";
 import { MANAGED_MEMORY_WAKE_SKIPPED } from "@opensteer/triggers";
@@ -3320,10 +3321,11 @@ export async function ensureSelectedProviderSession(
     readonly id: ThreadId;
     readonly harnessInstanceId: HarnessInstanceId;
   },
+  options: { readonly personalContext?: boolean } = {},
 ): Promise<ProviderSessionId> {
   const selected = await transaction
     .selectFrom("providerSessions")
-    .select(["id", "harnessInstanceId"])
+    .select(["id", "harnessInstanceId", "personalContext"])
     .where("threadId", "=", thread.id)
     .where("active", "=", true)
     .forNoKeyUpdate()
@@ -3335,7 +3337,28 @@ export async function ensureSelectedProviderSession(
         message: "Selected provider session does not match the Thread's AI engine",
       });
     }
-    return selected.id;
+    if (
+      options.personalContext === undefined ||
+      selected.personalContext === options.personalContext
+    )
+      return selected.id;
+    const active = await transaction
+      .selectFrom("runs")
+      .select("id")
+      .where("providerSessionId", "=", selected.id)
+      .where("status", "in", nonTerminalRunStatuses)
+      .executeTakeFirst();
+    if (active)
+      throw new OpensteerError({
+        code: "conflict",
+        message: "Waiting for the previous Messaging audience's Run to end",
+        retryable: true,
+      });
+    await transaction
+      .updateTable("providerSessions")
+      .set({ active: false, updatedAt: new Date() })
+      .where("id", "=", selected.id)
+      .execute();
   }
   const prior = await transaction
     .selectFrom("providerSessions")
@@ -3343,7 +3366,7 @@ export async function ensureSelectedProviderSession(
     .where("threadId", "=", thread.id)
     .limit(1)
     .executeTakeFirst();
-  if (prior) {
+  if (prior && !selected) {
     throw new OpensteerError({
       code: "conflict",
       message: "A prior native provider session cannot be replaced without an explicit switch",
@@ -3354,6 +3377,7 @@ export async function ensureSelectedProviderSession(
     .insertInto("providerSessions")
     .values({
       active: true,
+      personalContext: options.personalContext ?? true,
       bindingGeneration: 0,
       continuationIdentity: null,
       harnessInstanceId: thread.harnessInstanceId,
@@ -3666,7 +3690,9 @@ export async function ensureQueuedRun(
       events,
       run: null,
     };
-  const selectedSession = await ensureSelectedProviderSession(transaction, thread);
+  const selectedSession = await ensureSelectedProviderSession(transaction, thread, {
+    personalContext: await threadAllowsPersonalContext(transaction, thread.id, thread.createdBy),
+  });
   const runId = createId("run");
   const runRow = await transaction
     .insertInto("runs")

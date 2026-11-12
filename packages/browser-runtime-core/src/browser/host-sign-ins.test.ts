@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { DeploymentIdSchema } from "@opensteer/core";
 import type { LoginAuthorizationOutcome } from "@opensteer/protocol";
 import { HostSignIns, type HostLoginAuthorizeInput } from "./host-sign-ins.js";
 import type { BrowserLoginAuthority } from "./sign-in.js";
@@ -12,17 +13,15 @@ function input(overrides: Partial<HostLoginAuthorizeInput> = {}): HostLoginAutho
   return {
     expiresAt: new Date(Date.now() + 60_000),
     operationId: crypto.randomUUID(),
+    deploymentId: DeploymentIdSchema.parse("dep_00000000-0000-4000-8000-000000000001"),
     requester: {
       deploymentId: "deployment",
       deploymentName: "Personal",
       reason: "Read dashboard",
       threadTitle: "Dashboard",
-      workspaceName: "Main",
     },
     sessionId: "bsn_session",
     site,
-    workspaceId:
-      "wsp_00000000-0000-4000-8000-000000000001" as HostLoginAuthorizeInput["workspaceId"],
     ...overrides,
   };
 }

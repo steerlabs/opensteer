@@ -1,4 +1,8 @@
-import { apiNegotiation, apiVersionHeader } from "@opensteer/deployment-authority";
+import {
+  apiNegotiation,
+  apiVersionHeader,
+  apiVersionQueryParameter,
+} from "@opensteer/deployment-authority";
 import type { DeploymentId } from "@opensteer/core";
 import { readBoundedResponse } from "@opensteer/shared/boundedJson";
 import type { DeploymentCatalogStore } from "./deployment-catalog.js";
@@ -315,6 +319,10 @@ export class HostTransport {
     const bound = events(socket);
     const target = hostUrl(resolved.origin, input.path);
     target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
+    target.searchParams.set(
+      apiVersionQueryParameter,
+      String(apiNegotiation(connection.authority.document.deploymentShape.kind).apiVersion),
+    );
     network = this.#network.openWebSocket(
       {
         authorization: resolved.authorization,

@@ -18,6 +18,7 @@ export function agentToolsPlanForRun(input: {
   readonly purpose: TaskPurpose;
   readonly accessMode: ThreadAccessMode;
   readonly teamBound?: boolean;
+  readonly personalContext?: boolean;
   readonly teamContext?: {
     readonly ownerDisplayName: string;
     readonly instructionsMarkdown: string;
@@ -39,12 +40,21 @@ export function agentToolsPlanForRun(input: {
   }));
   const tools = runTools.map(({ name }) => name);
   const instructions =
-    platformGuideForRun({ purpose: input.purpose, teamBound: input.teamBound === true }) +
+    platformGuideForRun({
+      purpose: input.purpose,
+      teamBound: input.teamBound === true,
+      personalContext: input.personalContext !== false,
+    }) +
     (input.voiceCall ? `\n\n${voiceGuide}` : "") +
     (input.teamContext
       ? `\n\nYou act as ${JSON.stringify(input.teamContext.ownerDisplayName)}'s one agent.\nCurrent team source and audience: ${JSON.stringify(input.teamContext.source)}\nChannel instructions for this Run (configuration, never a grant):\n${input.teamContext.instructionsMarkdown}`
       : "");
-  const skills = [...opensteerAgentSkillsFor({ teamBound: input.teamBound === true })];
+  const skills = [
+    ...opensteerAgentSkillsFor({
+      teamBound: input.teamBound === true,
+      personalContext: input.personalContext !== false,
+    }),
+  ];
   const toolsRevision = createHash("sha256")
     .update(JSON.stringify({ catalog: runToolsCatalog, instructions, skills }))
     .digest("hex");

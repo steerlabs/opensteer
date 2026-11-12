@@ -40,8 +40,6 @@ export function accountReturnPort(
 
 export async function resolveIntegrationAccountBinding(input: {
   readonly database: Kysely<DatabaseSchema>;
-  readonly accountAttached: boolean;
-  readonly kind: "personal" | "server";
   readonly ownerUserId: UserId;
 }): Promise<IntegrationAccountBinding | null> {
   return validateIntegrationAccountBinding(await readIntegrationAccountBinding(input));

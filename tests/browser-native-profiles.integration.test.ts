@@ -20,7 +20,11 @@ import { LocalBrowserRuntimeBridge } from "../packages/runner-client/src/browser
 import { closeHttpServerNow } from "../packages/shared/src/httpServer.js";
 import { gate } from "../packages/shared/src/observation.test-support.js";
 import { withTimeout } from "../packages/shared/src/withTimeout.js";
-import { addCleanup, deployment } from "./browser-deployment.test-support.js";
+import {
+  addCleanup,
+  deployment,
+  enrollBrowserComputer,
+} from "./browser-deployment.test-support.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -244,7 +248,7 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
     2,
   );
   // The Runner uses precisely the desktop Personal/enrolled loopback composition.
-  const stack = await deployment(browser, undefined, { personal: true });
+  const stack = await deployment(browser);
   const site = await stateSite();
   await vi.waitFor(
     async () => {
@@ -450,9 +454,9 @@ it("creates native profiles lazily, retains sign-ins through restart, and erases
   vi.restoreAllMocks();
 }, 90_000);
 
-it("advertises exact prepared storage through the standalone browser-only Runner", async () => {
-  const enrollmentToken = randomBytes(32).toString("base64url");
-  const stack = await deployment(undefined, enrollmentToken);
+it("advertises exact prepared storage through the reachable Personal browser computer", async () => {
+  const stack = await deployment(undefined);
+  const enrollmentToken = await enrollBrowserComputer(stack, "Native profile computer");
   const browser = await browserProcess({ hostOrigin: stack.hostOrigin, enrollmentToken });
   const bridge = new LocalBrowserRuntimeBridge(browser);
   const capabilities = await bridge.capabilities();

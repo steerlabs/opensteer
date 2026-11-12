@@ -488,7 +488,8 @@ export class IntegrationToolHandlers {
           approval: approved ?? null,
           callable: !!toolRefs.observe,
           pendingOnMac: pending.onMac(runnerId, key),
-          pendingGrant: !!approved && pending.grants.has(approved.connectionId),
+          pendingPersonalGrant: !!approved && pending.grants.has(approved.connectionId),
+
           heldByAnotherRun:
             holder && !("runId" in scope && holder.runId === scope.runId) ? holder : null,
         });
@@ -701,7 +702,8 @@ export class IntegrationToolHandlers {
                             approval: app,
                             callable: !!toolRefs.observe,
                             pendingOnMac: pending.onMac(runnerId, key),
-                            pendingGrant: pending.grants.has(connectionId),
+                            pendingPersonalGrant: pending.grants.has(connectionId),
+
                             heldByAnotherRun:
                               holder && !("runId" in scope && holder.runId === scope.runId)
                                 ? holder
@@ -771,7 +773,7 @@ export class IntegrationToolHandlers {
                             ? holder
                             : null,
                         pendingPhoneAccess: pending.phoneAccess(runnerId),
-                        pendingGrant:
+                        pendingPersonalGrant:
                           connection !== null && pending.grants.has(connection.connectionId),
                         phone: { name, state },
                       });

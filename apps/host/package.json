@@ -38,8 +38,6 @@
     "@opensteer/runner-auth": "workspace:*",
     "@opensteer/shared": "workspace:*",
     "@opensteer/triggers": "workspace:*",
-    "@opensteer/workspace": "workspace:*",
-    "@opensteer/workspace-local": "workspace:*",
     "fastify": "catalog:",
     "jose": "catalog:",
     "kysely": "catalog:",

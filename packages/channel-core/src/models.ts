@@ -358,6 +358,7 @@ export const ChannelBindingSchema = z.strictObject({
 });
 export const ChannelBindingViewSchema = z.object({
   ...ChannelBindingSchema.shape,
+  folder: z.object(TaskFolderSchema.shape),
   accessPolicy: ChannelAccessPolicyViewSchema,
   executionPolicy: ChannelExecutionPolicyViewSchema,
   selector: ChannelRouteSelectorViewSchema,

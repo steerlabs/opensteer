@@ -53,6 +53,22 @@ describe("task folder execution", () => {
     });
     expect(same.instructions?.match(/REMEMBERED_SENTINEL/g)).toHaveLength(1);
   });
+  it("keeps personal standing instructions out of shared Messaging, including a linked file and agent-home cwd", async () => {
+    const f = await fixture();
+    await writeFile(join(f.home, "AGENTS.md"), "PERSONAL_MEMORY_SENTINEL");
+    await writeFile(join(f.cwd, "AGENTS.md"), "Folder conventions");
+    const prepare = (location = f.location) =>
+      f.manager.prepare({ location, personalContext: false, signal: new AbortController().signal });
+    expect((await prepare()).instructions).toBe(
+      "Instructions from " + join(f.cwd, "AGENTS.md") + ":\nFolder conventions",
+    );
+    expect(
+      (await prepare({ ...f.location, folder: f.location.agentHome })).instructions,
+    ).toBeUndefined();
+    await rm(join(f.cwd, "AGENTS.md"));
+    await symlink(join(f.home, "AGENTS.md"), join(f.cwd, "AGENTS.md"));
+    expect((await prepare()).instructions).toBeUndefined();
+  });
   it("refuses other computers, missing folders, oversized and invalid UTF-8 instructions", async () => {
     const f = await fixture();
     const signal = new AbortController().signal;

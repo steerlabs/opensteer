@@ -53,6 +53,8 @@ export function hostServerTestDependencies(
     discovery: inert(),
     egress: inert(),
     files: inert(),
+    folders: inert(),
+    teamLinks: inert(),
     harnessAuthenticationCoordinator: inert(),
     liveRuns: { threadFrames: () => [] },
     integrations: {
@@ -78,7 +80,6 @@ export function hostServerTestDependencies(
     requestResponseVault: inert(),
     runnerAuthenticator: inert(),
     runners: inert(),
-    securityEffects: inert(),
     shellControl: unroutedShellControlStream,
     store: inert(),
     triggers: {
@@ -87,8 +88,6 @@ export function hostServerTestDependencies(
       watchBrowserTokens: inert(),
       watchPrograms: inert(),
     },
-    workspaceDeletion: inert(),
-    workspaces: inert(),
     ...overrides,
     commands:
       overrides.commands && typeof overrides.commands.withInputAdmission === "function"

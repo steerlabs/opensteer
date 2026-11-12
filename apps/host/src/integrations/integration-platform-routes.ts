@@ -199,7 +199,7 @@ async function executeIntegrationPlatformCommand(
   if (isIntegrationAdministrationCommand(command))
     return executeIntegrationAdministration(
       { platform: options.platform },
-      { userId: session.user.id, isAdministrator: true },
+      { userId: session.user.id },
       command,
       context.requestId,
     );

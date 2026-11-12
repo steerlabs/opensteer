@@ -27,7 +27,8 @@
     "kysely": "catalog:",
     "nanostores": "catalog:",
     "zod": "catalog:",
-    "@opensteer/control-plane-protocol": "workspace:*"
+    "@opensteer/control-plane-protocol": "workspace:*",
+    "@opensteer/deployment-authority": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "catalog:",

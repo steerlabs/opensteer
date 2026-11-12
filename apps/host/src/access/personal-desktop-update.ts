@@ -8,7 +8,6 @@ import {
   type DesktopUpdateRequest,
 } from "@opensteer/protocol/maintenance";
 import type { DesktopUpdateProgress } from "@opensteer/protocol/desktop-supervisor";
-import { requirePersonalAdministrator } from "./personal-remote-administration.js";
 
 export class PersonalDesktopUpdate {
   readonly #store: PersonalDesktopUpdateStore;
@@ -39,13 +38,16 @@ export class PersonalDesktopUpdate {
     this.changed();
     this.#listeners.clear();
   }
+  async authorize(session: AuthenticatedSession): Promise<void> {
+    await this.#store.authorize(session.user.id);
+  }
   async status(session: AuthenticatedSession): Promise<DesktopUpdateStatus> {
-    requirePersonalAdministrator(session);
+    await this.authorize(session);
     const revision = this.revision;
     return { supported: true, revision, state: this.#state, operation: await this.#store.latest() };
   }
   async request(session: AuthenticatedSession, request: DesktopUpdateRequest) {
-    requirePersonalAdministrator(session);
+    await this.authorize(session);
     const operation = await this.#store.request(session, request);
     this.changed();
     return operation;

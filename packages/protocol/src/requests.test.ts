@@ -72,7 +72,20 @@ describe("Request protocol", () => {
       nextBefore: null,
       totalItems: 0,
     } as const;
+    const emptyPage = { readStates: [], tasks: [], window: emptyWindow };
     const snapshot = {
+      tasks: { recent: emptyPage, active: emptyPage, done: emptyPage },
+      needsYou: { count: 1, entries: [], window: emptyWindow },
+      resources: {
+        appTabs: [],
+        browser: {
+          available: false,
+          profiles: [],
+          placements: [],
+          groups: { rows: [], complete: true },
+          tabs: [],
+        },
+      },
       readStates: [],
       messageWindows: [],
       messages: [],
