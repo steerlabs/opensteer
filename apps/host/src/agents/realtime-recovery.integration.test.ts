@@ -124,7 +124,7 @@ interface Scenario {
   /** Runs once the second reply is committed, before the app must draw it. */
   readonly repair?: (app: DesktopApp) => Promise<void>;
 }
-integration("Realtime Workspace channel through the Desktop bridge", () => {
+integration("Personal realtime stream through the Desktop bridge", () => {
   let stack: VerticalStack | undefined;
   const apps: DesktopApp[] = [];
   beforeAll(async () => {

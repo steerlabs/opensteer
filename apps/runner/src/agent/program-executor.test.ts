@@ -98,14 +98,13 @@ describe("TriggerProgramExecutor", () => {
           event: PriceEvent;
           opensteer: {
             callTool(name: string, input: unknown): Promise<unknown>;
-            integrations: { callTool(name: string, input: unknown): Promise<unknown> };
           };
         }) {
           console.log("price", event.payload.price);
           const response = await fetch(${JSON.stringify(`http://127.0.0.1:${address.port}/data`)});
           if (!response.ok) throw new Error("fetch failed");
           const delivered = await opensteer.callTool("thread_send", { message: "done" });
-          const integrationDelivered = await opensteer.integrations.callTool(
+          const integrationDelivered = await opensteer.callTool(
             "integration_tool",
             { value: 42 },
           );

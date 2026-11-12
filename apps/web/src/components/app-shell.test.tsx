@@ -27,7 +27,7 @@ function deployment(overrides: Partial<DesktopDeploymentSummary> = {}): DesktopD
     activeOrigin: origin,
     canonicalOrigin: origin,
     id: createId("deployment"),
-    kind: "self-hosted",
+    kind: "personal",
     lastUsedAt: null,
     name: "Acme",
     onThisComputer: false,
@@ -43,7 +43,7 @@ describe("localRunnerSlotDeploymentId", () => {
       localRunnerSlotDeploymentId({ desktopBridge: bridge, desktopDeployment: personal }),
     ).toBeNull();
   });
-  it("supervises a slot for every Deployment this desktop attaches to", () => {
+  it("supervises a slot for another personal computer this desktop attaches to", () => {
     const server = deployment();
     expect(
       localRunnerSlotDeploymentId({
@@ -68,7 +68,7 @@ describe("localRunnerSlotDeploymentId", () => {
   });
 
   it("has no slot for the Personal Deployment this computer hosts", () => {
-    // Its local Runner is the Main, which the Deployment owns; there is nothing
+    // Its local Runner hosts this Deployment; there is nothing
     // here to add, remove, or switch.
     expect(
       localRunnerSlotDeploymentId({

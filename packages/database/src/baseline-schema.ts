@@ -1180,6 +1180,22 @@ create table runs (
   "cache_write_tokens" bigint,
   "reasoning_tokens" bigint,
   "cost_usd" numeric(18,8),
+  constraint runs_usage_tokens_check check (
+    ((input_tokens is null) = (output_tokens is null))
+    and (input_tokens is not null or (
+      cached_input_tokens is null and cache_write_tokens is null
+      and reasoning_tokens is null and cost_usd is null
+    ))
+    and (input_tokens is null or (input_tokens >= 0 and input_tokens <= 9007199254740991))
+    and (output_tokens is null or (output_tokens >= 0 and output_tokens <= 9007199254740991))
+    and (cached_input_tokens is null
+      or (cached_input_tokens >= 0 and cached_input_tokens <= 9007199254740991))
+    and (cache_write_tokens is null
+      or (cache_write_tokens >= 0 and cache_write_tokens <= 9007199254740991))
+    and (reasoning_tokens is null
+      or (reasoning_tokens >= 0 and reasoning_tokens <= 9007199254740991))
+  ),
+  constraint runs_cost_usd_check check (cost_usd is null or cost_usd >= 0),
   primary key ("id")
 );
 

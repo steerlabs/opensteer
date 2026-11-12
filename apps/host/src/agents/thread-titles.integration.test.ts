@@ -3,9 +3,9 @@ import { TriggerToolsTestClient } from "../mcp/product-tools.test-support.js";
 import { seedPersonalFixture } from "@opensteer/database/test-support/personal";
 import {
   testReadyHarnessCatalog,
-  readEmptyPersonalResources,
   testRunnerDescriptor,
 } from "@opensteer/database/test-support/store";
+import { readPersonalResources } from "../browser/personal-snapshot.js";
 import { personalTestFolders } from "../mcp/personal-folder.test-support.js";
 import {
   AgentEventSchema,
@@ -66,7 +66,9 @@ integration.sequential("Thread title lifecycle", () => {
     connectionString: databaseUrl ?? "postgres://unconfigured",
     maxConnections: 6,
   });
-  const store = new OpensteerStore(database, { readPersonalResources: readEmptyPersonalResources });
+  const store = new OpensteerStore(database, {
+    readPersonalResources: (input) => readPersonalResources(input, () => []),
+  });
   const published: AgentEvent[] = [];
   const commands = new CommandService({
     admission: new KeyedAdmissionQueue({

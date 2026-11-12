@@ -867,15 +867,26 @@ describe("the place in the middle goes: the tab beside it takes its entry", () =
           await confirmIfAsked();
         },
       ],
-      // The last web tab: the Mac apps past the hairline are not its neighbours; the tab before it is.
       [
         "Running shoes – Allbirds",
-        "storage documentation",
+        "Flight award alerts",
         () =>
           dispatch(
             window,
             new KeyboardEvent("keydown", { bubbles: true, key: "w", metaKey: true }),
           ),
+      ],
+      // The last web tab: the Mac apps past the hairline are not its neighbours; the tab before it is.
+      [
+        "Flight award alerts",
+        "storage documentation",
+        async () => {
+          await dispatch(
+            window,
+            new KeyboardEvent("keydown", { bubbles: true, key: "w", metaKey: true }),
+          );
+          await confirmIfAsked();
+        },
       ],
     ];
     for (const [closing, next, close] of closes) {

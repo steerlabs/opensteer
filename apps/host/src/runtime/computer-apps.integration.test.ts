@@ -478,7 +478,7 @@ integration("computer apps", () => {
     });
   });
 
-  it("serves an app from a non-Main computer on a Personal Deployment", async () => {
+  it("serves an app from another computer on a Personal Deployment", async () => {
     const host = await startMachineAccessWireHost(databaseUrl, { manualRunner: true });
     const closers: (() => Promise<void>)[] = [() => host.close()];
     closeCurrent = async () => {
@@ -487,7 +487,7 @@ integration("computer apps", () => {
     const caller = await connectCallerMachine(host, {
       environmentId: host.ownerEnvironmentId,
       localDirectory: true,
-      name: "Main computer",
+      name: "Home Mac",
       runnerKind: "main",
       token: host.hostingRunnerEnrollmentToken,
     });

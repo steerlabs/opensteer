@@ -4,7 +4,6 @@ import { readEmptyPersonalResources } from "./store.integration.test-support.js"
 import { createHash } from "node:crypto";
 import { slackChannelProviderManifest } from "@opensteer/channel-core";
 import {
-  HarnessIdSchema,
   MessageContentSchema,
   createId,
   createToolOutput,
@@ -13,7 +12,7 @@ import {
 } from "@opensteer/core";
 import { type PendingAgentEvent } from "@opensteer/protocol";
 import { sql } from "kysely";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import { runFromRow } from "./thread-row-mappers.js";
 import { ChannelStore, OpensteerStore } from "./index.js";
 import { ChannelIngressDeferredError } from "./channel-store.js";
@@ -450,8 +449,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerId: fixture.runnerId,
     });
 
-    // Completion is written only into the worker Workspace; the parent hears
-    // through return delivery.
+    // The personal stream records completion on the worker; return delivery wakes the parent.
     const completion = completed.compensatingEvents.filter(
       ({ type }) => type === "assignment.updated",
     );
@@ -481,7 +479,7 @@ describeStore("PostgreSQL store", (it) => {
     expect(resultEvents.map(({ type }) => type)).toContain("message.created");
     expect(resultEvents.map(({ type }) => type)).toContain("run.queued");
     const settlementEvent = resultEvents.find(
-      (event) => event.type === "assignment.updated" && event.threadId === fixture.thread.id,
+      (event) => event.type === "assignment.updated" && event.threadId === delegated.thread.id,
     );
     expect(settlementEvent).toMatchObject({
       data: {
@@ -492,7 +490,7 @@ describeStore("PostgreSQL store", (it) => {
           resultPreview: expect.stringMatching(/^The evidence is ready/u),
         },
       },
-      threadId: fixture.thread.id,
+      threadId: delegated.thread.id,
       type: "assignment.updated",
     });
     if (
@@ -858,7 +856,7 @@ describeStore("PostgreSQL store", (it) => {
               status: "completed",
             }),
           }),
-          threadId: fixture.thread.id,
+          threadId: delegated.thread.id,
           type: "assignment.updated",
         }),
       );
@@ -1127,21 +1125,12 @@ describeStore("PostgreSQL store", (it) => {
   it("adopts channel ingress with explicit authority and durably delivers the reply", async ({
     storeFixture,
   }) => {
-    const { enrollMessagingRunner, store, recordReadyHarnessCatalog, database } = storeFixture;
-    await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
+    const { enrollMessagingRunner, store, database } = storeFixture;
     const personal = await storeFixture.createRunFixture("channel-owner");
+    await enrollMessagingRunner(testMessagingRunnerId, "Test messaging service");
     const { userId, runnerId, environmentId, folder } = personal;
 
-    const harness = await store.createHarnessInstance({
-      config: {
-        model: "test",
-      },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId,
-      name: "Channel native harness",
-      stateKind: "isolated",
-    });
-    await recordReadyHarnessCatalog(environmentId, harness);
+    const harness = personal.harnessInstance;
     const credential = {
       encryptedPayload: Buffer.from("encrypted-channel-credential"),
       encryptionKeyVersion: 1,
@@ -2785,7 +2774,7 @@ describeStore("PostgreSQL store", (it) => {
         ownerId: outsider,
         threadId: thread.id,
       }),
-    ).resolves.toBeNull();
+    ).rejects.toMatchObject({ code: "not_found" });
   });
   it("pages human and silent automatic Thread turns with split-turn budgets", async ({
     storeFixture,
@@ -2957,7 +2946,7 @@ describeStore("PostgreSQL store", (it) => {
       type === "message.placed" ? [index] : [],
     );
     expect(starts).toHaveLength(3);
-    const [second, third] = starts as [number, number, number];
+    const [, second, third] = starts as [number, number, number];
     const newest = (await page({
       maxTurns: 2,
     }))!;
@@ -3834,23 +3823,26 @@ describeStore("PostgreSQL store", (it) => {
     await sendStarted;
     const cancellation = store.requests.cancelForRun(fixture.run.id, "run-ended");
     void cancellation.catch(() => undefined);
-    let waiting = 0;
-    for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-      const result = await sql<{
-        readonly waiting: number;
-      }>`
-        select count(*)::integer as waiting
-        from pg_locks locks
-        join pg_stat_activity activity on activity.pid = locks.pid
-        where locks.granted = false
+    await vi.waitFor(
+      async () => {
+        const result = await sql<{
+          readonly waiting: number;
+        }>`
+          select count(*)::integer as waiting
+          from pg_locks locks
+          join pg_stat_activity activity on activity.pid = locks.pid
+          where locks.granted = false
           and locks.locktype = 'transactionid'
           and activity.datname = current_database()
           and activity.application_name = 'opensteer-integration-test'
-      `.execute(database);
-      waiting = Number(result.rows[0]?.waiting ?? 0);
-      if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    expect(waiting).toBeGreaterThan(0);
+        `.execute(database);
+        expect(
+          Number(result.rows[0]?.waiting ?? 0),
+          "The operation never waited on its database lock",
+        ).toBeGreaterThan(0);
+      },
+      { timeout: 1_000, interval: 5 },
+    );
     releaseReceipt();
     await expect(delivery).resolves.toEqual([
       expect.objectContaining({

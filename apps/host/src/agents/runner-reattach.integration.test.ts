@@ -1230,7 +1230,7 @@ integration("Runs that outlive their connection", () => {
     active.network.unblock();
     await waitFor(async () => (await run(active, runId)).status === "completed", 30_000, "answer");
   }, 120_000);
-  it("delivers an answer while a sibling Run in the same Workspace streams, without dropping the Runner", async () => {
+  it("delivers an answer while a sibling Run in the same personal Host streams, without dropping the Runner", async () => {
     const {
       advanceSibling,
       release,
@@ -1358,7 +1358,7 @@ integration("Runs that outlive their connection", () => {
     void answer.catch(() => undefined);
     try {
       // Queue the answer ahead of one sibling event on the same held row.
-      // Acceptance must bypass that event while the answer holds the Workspace.
+      // Acceptance must bypass that event while the answer holds the personal event fence.
       await waitFor(async () => (await waiting()) === 1, 30_000, "blocked answer");
       await advanceSibling();
       await waitFor(async () => (await waiting()) >= 2, 30_000, "blocked sibling event");

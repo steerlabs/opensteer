@@ -250,7 +250,7 @@ describe("a task's row on a phone", () => {
       const open = card(node);
       expect(open.getAttribute("aria-label")).toMatch(
         new RegExp(
-          `^Task ${tasks[0]!.workerThread.title}, Opensteer, ${word}, .+\\. Open the task$`,
+          `^Task ${tasks[0]!.workerThread.title}, Your agent, ${word}, .+\\. Open the task$`,
           "u",
         ),
       );

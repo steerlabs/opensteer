@@ -241,8 +241,8 @@ const harnessCatalogCaptureTimeoutMs = 30_000;
  * connect and buys a defined order.
  */
 /**
- * A connection that gained authority settles the Main-target Requests waiting
- * on it, and a settled Request wakes the continuation outbox so its agent
+ * A connection that gained authority settles Requests targeting the hosting
+ * computer, and a settled Request wakes the continuation outbox so its agent
  * resumes now rather than on the next timer tick. The connection is durable
  * before this runs, so a failed settlement is reported, never surfaced as a
  * failed connection to the surface that finished the flow.
@@ -280,8 +280,8 @@ export function integrationConnectionReaction(hooks: {
  * registry, so the sweep cannot see it. Comparing the generation it was
  * admitted under against the generation now closes exactly that window: the
  * same number means the sweep has not happened, a different one means this
- * connection missed it and must not survive it. The Main Runner and every
- * server Deployment carry null and are not fenced, matching the admission rule.
+ * connection missed it and must not survive it. The hosting Runner carries null
+ * and is not fenced, matching the admission rule.
  */
 export async function authorizeRunnerRegistration(
   store: Pick<OpensteerStore, "personalRemoteAccessGeneration" | "runnerForAuthentication">,
@@ -623,8 +623,8 @@ export async function createHostRuntime(
           database,
           // Every computer somebody lent this Deployment reached it over the
           // route that just changed, so none of their connections survives it.
-          // What this Deployment runs on its own machine — Main, and the
-          // messaging service beside it — never travelled that route.
+          // Its hosting Runner and the messaging service beside it never
+          // travelled that route.
           disconnectRunners: async () => {
             await runnerRegistry?.disconnectRouteAdmittedRunners("Remote access was reconfigured");
             disconnectBrowserSources();
@@ -1017,8 +1017,8 @@ export async function createHostRuntime(
       changed: () => notifyMachinesChanged(realtime, "phone-tab"),
       onError: (error) => reportComputerUseSweepError(error),
     });
-    // A connection gaining authority settles the Main-target Requests waiting
-    // on it and resumes their agents. The reaction is bound once the platform
+    // A connection gaining authority settles Requests targeting the hosting
+    // computer and resumes their agents. The reaction is bound once the platform
     // and the continuation outbox exist; both services signal into it from
     // every flow that completes a connection.
     let integrationConnectionConnected: IntegrationConnectionConnected = async () => {
@@ -1752,10 +1752,6 @@ export async function createHostRuntime(
                   await store.discardHarnessCatalog(environmentId, harness.id);
                 }
               }
-              // What the machine says it holds is only ever compared, never
-              // acted on destructively: a directory it stopped listing marks
-              // its Workspace, and a binding the Host never issued is counted
-              // for the Computers page.
               await integrationPlatformStore.specialists.resumeRemovals();
               // Managed AI-engine sign-in attempts survive reconnects, so a
               // managed Runner replays them when it registers again.

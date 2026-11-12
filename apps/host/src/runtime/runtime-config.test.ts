@@ -18,12 +18,10 @@ describe("Host runtime configuration", () => {
   it("uses the personal service policy for app origins", () => {
     const shape = { kind: "personal" } as const;
     const policy = core.deploymentPolicy(shape);
-    const mocked = vi
-      .spyOn(core, "deploymentPolicy")
-      .mockReturnValue({
-        ...policy,
-        services: { personal: true, team: false },
-      } as core.DeploymentPolicy);
+    const mocked = vi.spyOn(core, "deploymentPolicy").mockReturnValue({
+      ...policy,
+      services: { personal: true, team: false },
+    } as core.DeploymentPolicy);
     try {
       expect(hostAppRealOrigins(shape)).toBe(true);
     } finally {

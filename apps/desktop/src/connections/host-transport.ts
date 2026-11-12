@@ -972,8 +972,6 @@ const socketDiagnosticReasons = new Set([
   "Realtime transport interrupted",
   "Subscription unsendable",
   "Fresh snapshot required",
-  "Workspace access revoked",
-  "Workspace subscription forbidden",
   "Unsupported Opensteer protocol version",
   "slow consumer",
 ]);

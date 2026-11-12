@@ -1257,11 +1257,16 @@ function personalDatabase(deploymentId: DeploymentId, ownerId: UserId) {
       const query = {
         innerJoin: () => query,
         select: () => query,
+        orderBy: () => query,
         where(column: string, _operator: string, value: UserId) {
           if (column === "personalSettings.ownerId") requested = value;
           return query;
         },
-        executeTakeFirst: async () => (requested === ownerId ? { ownerId } : undefined),
+        executeTakeFirst: async () => {
+          if (table === "deployments") return { deploymentShape: { kind: "personal" } };
+          if (table === "users") return { id: ownerId, disabledAt: null };
+          return requested === ownerId ? { ownerId } : undefined;
+        },
         executeTakeFirstOrThrow: async () => {
           if (table !== "deploymentEventState")
             throw new Error("Unexpected personal identity query");

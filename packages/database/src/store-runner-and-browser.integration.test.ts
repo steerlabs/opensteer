@@ -1,8 +1,7 @@
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import { lockDeploymentEvents } from "./personal-transaction.js";
 
-import * as core from "@opensteer/core";
-
-import { createId, HarnessIdSchema, type ThreadId, type UserId } from "@opensteer/core";
+import { createId, type ThreadId, type UserId } from "@opensteer/core";
 import {
   browserSessionMaxThreads,
   browserUsageRunBatchSize,
@@ -30,6 +29,13 @@ import {
   testRunnerDescriptor,
   writeBrowserUsageArtifact,
 } from "./store.integration.test-support.js";
+async function personalDeployment({ store }: StoreFixture): Promise<void> {
+  await store.ensureDeployment({
+    canonicalOrigin: "http://127.0.0.1:4310",
+    hostInstanceId: createId("hostInstance"),
+    deploymentShape: { kind: "personal" },
+  });
+}
 describeStore("PostgreSQL store", (it) => {
   it("delivers secret input through ciphertext while redacting durable projections", async ({
     storeFixture,
@@ -288,23 +294,26 @@ describeStore("PostgreSQL store", (it) => {
     const claim = store.claimCommand(turn.command.id, "host-worker-claim-lock-order");
     void claim.catch(() => undefined);
     try {
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks locks
-          join pg_stat_activity activity on activity.pid = locks.pid
-          where locks.granted = false
+      await vi.waitFor(
+        async () => {
+          const result = await sql<{
+            readonly waiting: number;
+          }>`
+            select count(*)::integer as waiting
+            from pg_locks locks
+            join pg_stat_activity activity on activity.pid = locks.pid
+            where locks.granted = false
             and locks.locktype = 'transactionid'
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
-        `.execute(database);
-        waiting = Number(result.rows[0]?.waiting ?? 0);
-        if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(waiting).toBeGreaterThan(0);
+          `.execute(database);
+          expect(
+            Number(result.rows[0]?.waiting ?? 0),
+            "The operation never waited on its database lock",
+          ).toBeGreaterThan(0);
+        },
+        { timeout: 1_000, interval: 5 },
+      );
 
       // A terminal event takes the same Run lock and then the Command lock. If
       // claim held the Command while waiting above, this NOWAIT read would
@@ -383,23 +392,26 @@ describeStore("PostgreSQL store", (it) => {
     const retry = store.retryCommand(turn.command.id, new Error("Runner was offline"));
     void retry.catch(() => undefined);
     try {
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks locks
-          join pg_stat_activity activity on activity.pid = locks.pid
-          where locks.granted = false
+      await vi.waitFor(
+        async () => {
+          const result = await sql<{
+            readonly waiting: number;
+          }>`
+            select count(*)::integer as waiting
+            from pg_locks locks
+            join pg_stat_activity activity on activity.pid = locks.pid
+            where locks.granted = false
             and locks.locktype = 'transactionid'
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
-        `.execute(database);
-        waiting = Number(result.rows[0]?.waiting ?? 0);
-        if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(waiting).toBeGreaterThan(0);
+          `.execute(database);
+          expect(
+            Number(result.rows[0]?.waiting ?? 0),
+            "The operation never waited on its database lock",
+          ).toBeGreaterThan(0);
+        },
+        { timeout: 1_000, interval: 5 },
+      );
       await expect(
         database
           .transaction()
@@ -504,7 +516,9 @@ describeStore("PostgreSQL store", (it) => {
       announceDeploymentLock();
       await releaseSignal;
     });
-    await deploymentLockAcquired;
+    await withTimeout(deploymentLockAcquired, 1_000, {
+      timeoutError: () => new Error("The Deployment lock was never acquired"),
+    });
     const enqueue = enqueueHumanTrigger({
       content: [
         {
@@ -518,23 +532,26 @@ describeStore("PostgreSQL store", (it) => {
     });
     void enqueue.catch(() => undefined);
     try {
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks locks
-          join pg_stat_activity activity on activity.pid = locks.pid
-          where locks.granted = false
+      await vi.waitFor(
+        async () => {
+          const result = await sql<{
+            readonly waiting: number;
+          }>`
+            select count(*)::integer as waiting
+            from pg_locks locks
+            join pg_stat_activity activity on activity.pid = locks.pid
+            where locks.granted = false
             and locks.locktype = 'transactionid'
             and activity.datname = current_database()
             and activity.application_name = 'opensteer-integration-test'
-        `.execute(database);
-        waiting = Number(result.rows[0]?.waiting ?? 0);
-        if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(waiting).toBeGreaterThan(0);
+          `.execute(database);
+          expect(
+            Number(result.rows[0]?.waiting ?? 0),
+            "The operation never waited on its database lock",
+          ).toBeGreaterThan(0);
+        },
+        { timeout: 1_000, interval: 5 },
+      );
       await expect(
         database
           .transaction()
@@ -1411,7 +1428,9 @@ describeStore("PostgreSQL store", (it) => {
   });
 
   it("enrolls Main and local Runners with separate one-shot records", async ({ storeFixture }) => {
-    const { store, database } = storeFixture;
+    await personalDeployment(storeFixture);
+    const { store, database, enablePersonalRemoteAccess } = storeFixture;
+    await enablePersonalRemoteAccess();
     const ownerId = await store.createUser("Alex");
     const mainRunnerId = createId("runner");
     const localRunnerId = createId("runner");
@@ -1435,7 +1454,7 @@ describeStore("PostgreSQL store", (it) => {
         tokenHash: mainTokenHash,
       }),
       store.createRunnerEnrollment({
-        allowedModules: ["agents"],
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
         createdBy: ownerId,
         expiresAt: new Date(Date.now() + 60_000),
         id: localEnrollmentId,
@@ -1468,6 +1487,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerKind: "main",
     });
     const localDescriptor = testRunnerDescriptor({
+      modules: reachOnlyModules,
       environmentId: localEnvironmentId,
       name: "Alex's Mac",
       runnerId: localRunnerId,
@@ -1524,20 +1544,14 @@ describeStore("PostgreSQL store", (it) => {
         ownerId,
       }),
     ).toEqual([]);
-    expect(await store.listEnvironments()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: mainEnvironmentId,
-          name: "Main computer",
-          runnerId: mainRunnerId,
-        }),
-        expect.objectContaining({
-          id: localEnvironmentId,
-          name: "Alex's Mac",
-          runnerId: localRunnerId,
-        }),
-      ]),
-    );
+    expect(await store.listEnvironments()).toEqual([
+      expect.objectContaining({
+        id: mainEnvironmentId,
+        name: "Main computer",
+        runnerId: mainRunnerId,
+      }),
+    ]);
+    await expect(store.environmentRunnerOwner(mainEnvironmentId)).resolves.toBe(ownerId);
     const tabOpenedAt = async () =>
       (
         await store.listRunners({
@@ -1568,16 +1582,14 @@ describeStore("PostgreSQL store", (it) => {
         })
       ).runners.find((runner) => runner.id === localRunnerId)?.name,
     ).toBe("Studio Mac");
-    expect(await store.listEnvironments()).toContainEqual(
-      expect.objectContaining({
-        id: localEnvironmentId,
-        name: "Studio Mac",
-      }),
+    expect(await store.listEnvironments()).not.toContainEqual(
+      expect.objectContaining({ id: localEnvironmentId }),
     );
     const attackerKeys = generateKeyPairSync("ed25519");
     await expect(
       store.enrollRunnerConnection({
         descriptor: testRunnerDescriptor({
+          modules: reachOnlyModules,
           environmentId: createId("environment"),
           name: "Other local Runner",
           runnerId: createId("runner"),
@@ -1728,18 +1740,6 @@ describeStore("PostgreSQL store", (it) => {
     await store.revokeRunner(lentRunnerId, ownerId);
   });
   describe("Personal membership", () => {
-    const personalShape = {
-      kind: "personal" as const,
-    } as const;
-    async function personalDeployment(storeFixture: StoreFixture): Promise<void> {
-      const { store } = storeFixture;
-      await store.ensureDeployment({
-        canonicalOrigin: "http://127.0.0.1:4310",
-        hostInstanceId: createId("hostInstance"),
-        deploymentShape: personalShape,
-      });
-    }
-
     /** Mints one enrollment directly, so the grant under test is the only variable. */
     function enrollment(
       storeFixture: StoreFixture,
@@ -1834,28 +1834,6 @@ describeStore("PostgreSQL store", (it) => {
       ).resolves.toMatchObject({
         allowedModules: ["agents", "browser"],
       });
-    });
-    it("does not infer Main ownership from reach-only enrollment", async ({ storeFixture }) => {
-      await personalDeployment(storeFixture);
-      const actualPolicy = core.deploymentPolicy;
-      const policy = vi.spyOn(core, "deploymentPolicy").mockImplementation((shape) => ({
-        ...actualPolicy(shape),
-        deploymentOwnsMainComputer: false,
-      }));
-      try {
-        await expect(
-          enrollment(storeFixture, {
-            allowedModules: ["agents", "browser"],
-            createdBy: null,
-            runnerKind: "main",
-            suffix: "no-main-ownership",
-          }),
-        ).rejects.toMatchObject({
-          code: "forbidden",
-        });
-      } finally {
-        policy.mockRestore();
-      }
     });
 
     it("refuses a stored credential whose grant no longer fits the Deployment", async ({
@@ -2027,206 +2005,44 @@ describeStore("PostgreSQL store", (it) => {
     });
   });
 
-  it("fails an Assignment and tells its parent when its queued Run's computer is removed", async ({
+  it("counts live tasks on the hosting computer and excludes archived tasks", async ({
     storeFixture,
   }) => {
-    const { startRunFixture, store, database } = storeFixture;
-    const fixture = await startRunFixture("revoke-queued-delegation");
-    const lentEnvironmentId = createId("environment");
-    const lentRunnerId = createId("runner");
-    await enrollTestRunner(store, {
-      createdBy: fixture.userId,
-      environmentId: lentEnvironmentId,
-      name: "Lent laptop",
-      runnerId: lentRunnerId,
-      runnerKind: "local",
-      tokenSuffix: "revoke-queued-delegation-lent",
-    });
-    const lentHarness = await store.createHarnessInstance({
-      config: {
-        model: "test",
-      },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: lentEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const delegated = await store.delegateThread({
-      accessMode: "auto",
-      createdBy: fixture.userId,
-      environmentId: lentEnvironmentId,
-      harnessInstanceId: lentHarness.id,
-      idempotencyKey: "revoke-queued-delegation-child",
-      modelSelection: testModelSelection,
-      origin: {
-        kind: "run",
-        parentRunId: fixture.run.id,
-        parentThreadId: fixture.thread.id,
-      },
-      task: [
-        {
-          text: "Work on the machine that is about to go away",
-          type: "text",
-        },
-      ],
-      title: "Stranded worker",
-    });
-    // Never claimed: this is exactly the Run nothing else would ever fail.
-    expect(delegated.run.status).toBe("queued");
-    await store.revokeRunner(lentRunnerId, fixture.userId);
-    expect(
-      await database
-        .selectFrom("runs")
-        .select(["failure", "status"])
-        .where("id", "=", delegated.run.id)
-        .executeTakeFirstOrThrow(),
-    ).toMatchObject({
-      failure: {
-        code: "runner_revoked",
-        retryable: false,
-      },
-      status: "failed",
-    });
-    const drained = await store.drainPendingAssignmentReturns();
-    expect(drained.failures).toEqual([]);
-    const assignment = await database
-      .selectFrom("delegations")
-      .select(["status", "resultRunId", "resultStatus", "resultText"])
-      .where("id", "=", delegated.assignment.id)
-      .executeTakeFirstOrThrow();
-    expect(assignment).toMatchObject({
-      resultRunId: delegated.run.id,
-      resultStatus: "delivered",
-      status: "failed",
-    });
-    expect(assignment.resultText).toMatch(/^The task stopped because of an error: \S/u);
-    const returned = await database
-      .selectFrom("messages")
-      .select("content")
-      .where("threadId", "=", fixture.thread.id)
-      .where("kind", "=", "continuation")
-      .execute();
-    expect(returned).toHaveLength(1);
-    expect(JSON.stringify(returned[0]?.content)).toContain("Task failed: Stranded worker");
-    await expect(store.drainPendingAssignmentReturns()).resolves.toEqual({
-      events: [],
-      failures: [],
-    });
-  });
-  it("fails the sibling task without inventing a success when the parent's own computer is removed", async ({
-    storeFixture,
-  }) => {
-    const { startRunFixture, store, database } = storeFixture;
-    const fixture = await startRunFixture("revoke-parents-own-computer");
-    const delegated = await store.delegateThread({
-      accessMode: "auto",
-      createdBy: fixture.userId,
-      environmentId: fixture.environmentId,
-      harnessInstanceId: fixture.harnessInstance.id,
-      idempotencyKey: "revoke-parents-own-computer-child",
-      modelSelection: testModelSelection,
-      origin: {
-        kind: "run",
-        parentRunId: fixture.run.id,
-        parentThreadId: fixture.thread.id,
-      },
-      task: [
-        {
-          text: "Work beside the parent",
-          type: "text",
-        },
-      ],
-      title: "Sibling worker",
-    });
-    await store.revokeRunner(fixture.runnerId, fixture.userId, {
-      allowDeployment: true,
-    });
-    const drained = await store.drainPendingAssignmentReturns();
-    expect(drained.failures).toEqual([]);
-
-    // The removal ended the work: the task says so plainly rather than
-    // staying open forever or reporting a success nobody produced.
-    // The parent cannot run anywhere now either, so the return is recorded as
-    // undeliverable instead of queueing work no computer can take.
-    const assignment = await database
-      .selectFrom("delegations")
-      .select(["status", "resultReason", "resultStatus", "resultText"])
-      .where("id", "=", delegated.assignment.id)
-      .executeTakeFirstOrThrow();
-    expect(assignment.status).toBe("failed");
-    expect(assignment.resultText).toMatch(/^The task stopped because of an error: \S/u);
-    expect(assignment).toMatchObject({
-      resultReason: "execution-authority-unavailable",
-      resultStatus: "undeliverable",
-    });
-  });
-  it("counts the live Threads placed on each computer", async ({ storeFixture }) => {
     const { createRunFixture, store, database } = storeFixture;
-    // One Deployment has exactly one initial Main, so the second computer is a
-    // lent one — which is the shape this projection actually serves anyway.
     const first = await createRunFixture("thread-count-first");
-    const secondEnvironmentId = createId("environment");
-    await enrollTestRunner(store, {
-      createdBy: first.userId,
-      environmentId: secondEnvironmentId,
-      name: "Lent laptop",
-      runnerId: createId("runner"),
-      runnerKind: "local",
-      tokenSuffix: "thread-count-second",
-    });
-    const secondHarness = await store.createHarnessInstance({
-      config: {
-        model: "test",
-      },
-      driverKind: HarnessIdSchema.parse("native"),
-      environmentId: secondEnvironmentId,
-      name: "Native",
-      stateKind: "isolated",
-    });
-    const threadOn = async (
-      environmentId: ReturnType<typeof createId<"environment">>,
-      harnessInstanceId: typeof first.harnessInstance.id,
-      suffix: string,
-    ) =>
+    const extraThread = async (suffix: string) =>
       (
         await store.createThread({
           createdBy: first.userId,
-          environmentId,
-          harnessInstanceId,
+          environmentId: first.environmentId,
+          harnessInstanceId: first.harnessInstance.id,
           idempotencyKey: `thread-count-${suffix}`,
           modelSelection: testModelSelection,
-          title: `Thread ${suffix}`,
+          title: `Task ${suffix}`,
         })
       ).thread;
-    const extraThread = async (suffix: string) =>
-      threadOn(first.environmentId, first.harnessInstance.id, suffix);
-    await threadOn(secondEnvironmentId, secondHarness.id, "second-live");
     await extraThread("live");
     const archived = await extraThread("archived");
     await database
       .updateTable("threads")
-      .set({
-        status: "archived",
-      })
+      .set({ status: "archived" })
       .where("id", "=", archived.id)
       .executeTakeFirstOrThrow();
-
-    // Archived work is not what a person would lose with the computer.
     await expect(
-      store.countLiveThreadsByEnvironment([first.environmentId, secondEnvironmentId]),
-    ).resolves.toEqual(
-      new Map([
-        [first.environmentId, 2],
-        [secondEnvironmentId, 1],
-      ]),
-    );
+      store.countLiveThreadsByEnvironment([first.environmentId, createId("environment")]),
+    ).resolves.toEqual(new Map([[first.environmentId, 2]]));
     await expect(store.countLiveThreadsByEnvironment([])).resolves.toEqual(new Map());
   });
-  it("resolves an environment's Runner enrollment creator", async ({ storeFixture }) => {
-    const { store } = storeFixture;
+  it("keeps reachable computers out of execution environments and resolves the hosting enrollment creator", async ({
+    storeFixture,
+  }) => {
+    const { store, enablePersonalRemoteAccess } = storeFixture;
+    await enablePersonalRemoteAccess();
     const ownerId = await store.createUser("Local Runner owner");
     const localEnvironmentId = createId("environment");
     await enrollTestRunner(store, {
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
+      modules: reachOnlyModules,
       createdBy: ownerId,
       environmentId: localEnvironmentId,
       name: "Local Runner",
@@ -2234,7 +2050,7 @@ describeStore("PostgreSQL store", (it) => {
       runnerKind: "local",
       tokenSuffix: "environment-runner-owner-local",
     });
-    await expect(store.environmentRunnerOwner(localEnvironmentId)).resolves.toBe(ownerId);
+    await expect(store.environmentRunnerOwner(localEnvironmentId)).resolves.toBeNull();
     await expect(store.environmentRunnerOwner(createId("environment"))).resolves.toBeNull();
     const deploymentEnvironmentId = createId("environment");
     const deploymentRunnerId = createId("runner");
@@ -2272,6 +2088,7 @@ describeStore("PostgreSQL store", (it) => {
   });
 
   it("rejects an expired unconsumed Runner enrollment", async ({ storeFixture }) => {
+    await personalDeployment(storeFixture);
     const { store } = storeFixture;
     const ownerId = await store.createUser("Alex");
     const runnerId = createId("runner");
@@ -2279,7 +2096,7 @@ describeStore("PostgreSQL store", (it) => {
     const tokenHash = `sha256:${createHash("sha256").update("expired-token").digest("base64url")}`;
     const keys = generateKeyPairSync("ed25519");
     await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       createdBy: ownerId,
       expiresAt: new Date(Date.now() - 1_000),
       id: `ren_${randomUUID()}`,
@@ -2292,6 +2109,7 @@ describeStore("PostgreSQL store", (it) => {
     await expect(
       store.enrollRunnerConnection({
         descriptor: testRunnerDescriptor({
+          modules: reachOnlyModules,
           environmentId,
           name: "Expired Runner",
           runnerId,
@@ -2314,6 +2132,7 @@ describeStore("PostgreSQL store", (it) => {
   it("bounds configured bootstrap enrollments once without extending them on restart", async ({
     storeFixture,
   }) => {
+    await personalDeployment(storeFixture);
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Bootstrap owner");
     const runnerTokenHash = `sha256:${createHash("sha256").update("configured-bootstrap-runner").digest("base64url")}`;
@@ -2373,6 +2192,7 @@ describeStore("PostgreSQL store", (it) => {
   it("recovers an expired first-Main bootstrap with one owner-issued initial enrollment", async ({
     storeFixture,
   }) => {
+    await personalDeployment(storeFixture);
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Initial Main recovery owner");
     const bootstrapTokenHash = `sha256:${createHash("sha256").update("expired-initial-main-bootstrap").digest("base64url")}`;
@@ -2489,6 +2309,7 @@ describeStore("PostgreSQL store", (it) => {
   it("serializes Main enrollment consumption behind the owner issuance fence", async ({
     storeFixture,
   }) => {
+    await personalDeployment(storeFixture);
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Main issuance race owner");
     const tokenHash = `sha256:${"r".repeat(43)}`;
@@ -2540,21 +2361,24 @@ describeStore("PostgreSQL store", (it) => {
         .toString(),
     });
     try {
-      let waiting = 0;
-      for (let attempt = 0; attempt < 200 && waiting === 0; attempt += 1) {
-        const result = await sql<{
-          readonly waiting: number;
-        }>`
-          select count(*)::integer as waiting
-          from pg_locks
-          where locktype = 'advisory'
+      await vi.waitFor(
+        async () => {
+          const result = await sql<{
+            readonly waiting: number;
+          }>`
+            select count(*)::integer as waiting
+            from pg_locks
+            where locktype = 'advisory'
             and granted = false
             and database = (select oid from pg_database where datname = current_database())
-        `.execute(database);
-        waiting = Number(result.rows[0]?.waiting ?? 0);
-        if (waiting === 0) await new Promise((resolve) => setTimeout(resolve, 5));
-      }
-      expect(waiting).toBeGreaterThan(0);
+          `.execute(database);
+          expect(
+            Number(result.rows[0]?.waiting ?? 0),
+            "The operation never waited on its database lock",
+          ).toBeGreaterThan(0);
+        },
+        { timeout: 1_000, interval: 5 },
+      );
       expect(await store.runnerForAuthentication(runnerId)).toBeNull();
     } finally {
       releaseMainLock();
@@ -2581,9 +2405,10 @@ describeStore("PostgreSQL store", (it) => {
       message: expect.stringMatching(/after a Main has enrolled/),
     });
   });
-  it("permits an explicit replacement Main only after durable revocation", async ({
+  it("refuses to remove the hosting computer or replace it while it still hosts the Deployment", async ({
     storeFixture,
   }) => {
+    await personalDeployment(storeFixture);
     const { store } = storeFixture;
     const ownerId = await store.createUser("Alex");
     const oldRunnerId = createId("runner");
@@ -2634,82 +2459,30 @@ describeStore("PostgreSQL store", (it) => {
       code: "conflict",
       message: expect.stringMatching(/must be revoked/),
     });
-    await store.revokeRunner(oldRunnerId, ownerId, {
-      allowDeployment: true,
-    });
-    const issued = await store.createRunnerEnrollment(replacementInput);
-    const replay = await store.createRunnerEnrollment({
-      ...replacementInput,
-      expiresAt: new Date(replacementInput.expiresAt.getTime() + 30_000),
-      id: `ren_${randomUUID()}`,
-    });
-    expect(replay).toEqual(issued);
     await expect(
-      store.createRunnerEnrollment({
-        ...replacementInput,
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: "replacement-main-2",
-        requestFingerprint: "sha256:replacement-main-2",
-        tokenHash: `sha256:${"p".repeat(43)}`,
-      }),
+      store.revokeRunner(oldRunnerId, ownerId, { allowDeployment: true }),
     ).rejects.toMatchObject({
-      code: "conflict",
-      message: expect.stringMatching(/already pending/),
+      code: "forbidden",
+      message: expect.stringContaining("cannot be removed"),
     });
-    const newRunnerId = createId("runner");
-    const newEnvironmentId = createId("environment");
-    const newKeys = generateKeyPairSync("ed25519");
-    await store.enrollRunnerConnection({
-      descriptor: testRunnerDescriptor({
-        environmentId: newEnvironmentId,
-        name: "Replacement Main",
-        runnerId: newRunnerId,
-        runnerKind: "main",
-      }),
-      enrollmentTokenHash: replacementInput.tokenHash,
-      publicKeyFingerprint: fingerprint(newKeys.publicKey),
-      publicKeyPem: newKeys.publicKey
-        .export({
-          format: "pem",
-          type: "spki",
-        })
-        .toString(),
-    });
-    expect(await store.listEnvironments()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: oldEnvironmentId,
-          runnerId: oldRunnerId,
-        }),
-        expect.objectContaining({
-          id: newEnvironmentId,
-          runnerId: newRunnerId,
-        }),
-      ]),
-    );
-    await expect(
-      store.createRunnerEnrollment({
-        ...replacementInput,
-        id: `ren_${randomUUID()}`,
-        idempotencyKey: "replacement-main-3",
-        requestFingerprint: "sha256:replacement-main-3",
-        tokenHash: `sha256:${"q".repeat(43)}`,
-      }),
-    ).rejects.toMatchObject({
+    expect(await store.runnerForAuthentication(oldRunnerId)).not.toBeNull();
+    await expect(store.createRunnerEnrollment(replacementInput)).rejects.toMatchObject({
       code: "conflict",
       message: expect.stringMatching(/must be revoked/),
     });
   });
+
   it("replays Runner enrollment issuance exactly without persisting the raw token", async ({
     storeFixture,
   }) => {
+    await personalDeployment(storeFixture);
     const { store, database } = storeFixture;
     const ownerId = await store.createUser("Alex");
     const rawToken = "runner-enrollment-plaintext-must-not-be-stored";
     const tokenHash = `sha256:${createHash("sha256").update(rawToken).digest("base64url")}`;
     const firstExpiry = new Date(Date.now() + 60_000);
     const first = await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       createdBy: ownerId,
       expiresAt: firstExpiry,
       id: `ren_${randomUUID()}`,
@@ -2720,7 +2493,7 @@ describeStore("PostgreSQL store", (it) => {
       tokenHash,
     });
     const replay = await store.createRunnerEnrollment({
-      allowedModules: ["agents"],
+      allowedModules: ["browser", "integrations", "messaging", "shell"],
       createdBy: ownerId,
       expiresAt: new Date(firstExpiry.getTime() + 30_000),
       id: `ren_${randomUUID()}`,
@@ -2733,14 +2506,14 @@ describeStore("PostgreSQL store", (it) => {
     expect(replay).toEqual(first);
     await expect(
       store.createRunnerEnrollment({
-        allowedModules: ["agents"],
+        allowedModules: ["browser", "integrations", "messaging", "shell"],
         createdBy: ownerId,
         expiresAt: firstExpiry,
         id: `ren_${randomUUID()}`,
         idempotencyKey: "local-runner-request-1",
         name: "Changed computer",
         requestFingerprint: "sha256:changed-request",
-        runnerKind: "managed",
+        runnerKind: "local",
         tokenHash: `sha256:${"z".repeat(43)}`,
       }),
     ).rejects.toMatchObject({
@@ -2899,40 +2672,6 @@ describeStore("PostgreSQL store", (it) => {
         runIds: [fixture.run.id],
       }),
     ).toEqual([]);
-    const otherProfile = await store.createBrowserProfile({
-      idempotencyKey: "store.integration.test-browser-profile-4",
-      name: "Private other account",
-      ownerId: stranger,
-    });
-    const otherSessionId = createBrowserSessionId();
-    await nativeSession(store, {
-      ownerId: fixture.userId,
-      id: otherSessionId,
-      origin: "agent",
-      placementKey: `runner:${browserRunnerId}:browser`,
-      profileId: otherProfile.id,
-      runnerId: browserRunnerId,
-      runtimeId: "browser",
-    });
-    await database
-      .insertInto("browserSessionUses")
-      .values({
-        id: "private-profile-shared-workspace",
-        sessionId: otherSessionId,
-        threadId: fixture.thread.id,
-        runId: fixture.run.id,
-        tabId: "private-surface",
-        firstUsedAt: new Date(base),
-        lastUsedAt: new Date(base),
-      })
-      .execute();
-    expect(
-      await store.getThreadBrowserUsage({
-        ownerId: fixture.userId,
-        threadId: fixture.thread.id,
-        runIds: [fixture.run.id],
-      }),
-    ).toEqual(old);
     await writeBrowserUsageArtifact("browser-usage-projection.json", {
       lifetimeUseRows: 651,
       requestedRunBatchLimit: browserUsageRunBatchSize,
@@ -2942,7 +2681,6 @@ describeStore("PostgreSQL store", (it) => {
       exactOldTab: "surface-0",
       latestRecentTab: "surface-649",
       unauthorizedReaderRows: 0,
-      foreignProfileRowsInSharedDeployment: 0,
     });
   });
   it("keeps browser conversation provenance after detach and credits the asking assignment", async ({
@@ -3305,29 +3043,10 @@ describeStore("PostgreSQL store", (it) => {
     ).rejects.toMatchObject({
       code: "not_found",
     });
-    // Viewers follow the catalog rule: a fresh session's active Deployment members.
+    // Every session belongs to the personal owner.
     expect(await store.listBrowserSessionViewers(sessionId)).toEqual({
       userIds: [fixture.userId],
     });
-    const privateProfile = await store.createBrowserProfile({
-      idempotencyKey: "store.integration.test-browser-profile-5",
-      name: "Outsider's profile",
-      ownerId: outsider,
-    });
-    const privateSessionId = createBrowserSessionId();
-    await nativeSession(store, {
-      ownerId: fixture.userId,
-      id: privateSessionId,
-      origin: "agent",
-      placementKey: `runner:${browserRunnerId}:browser`,
-      profileId: privateProfile.id,
-      runnerId: browserRunnerId,
-      runtimeId: "browser",
-    });
-    expect(await store.listBrowserSessionViewers(privateSessionId)).toEqual({
-      userIds: [outsider],
-    });
-
     // A live attachment exists only while its Run is active. Finalization holds
     // the Run's row while it ends it; an attach that arrives meanwhile waits
     // for it and then writes nothing.
@@ -3400,7 +3119,6 @@ describeStore("PostgreSQL store", (it) => {
       outsiderInclusion: "not_found",
       viewers: {
         fresh: await store.listBrowserSessionViewers(sessionId),
-        profile: await store.listBrowserSessionViewers(privateSessionId),
       },
       lateAttachAfterRunEnd: false,
       attachedAfterRunEnd: [],
@@ -3531,10 +3249,21 @@ describeStore("PostgreSQL store", (it) => {
   });
 });
 async function nativeProfileFixture(fixture: StoreFixture, name: string) {
-  const { store, enrollBrowserRunner } = fixture;
+  const { store } = fixture;
   const base = await fixture.createRunFixture("native-" + name);
   const ownerId = base.userId;
-  const runnerId = await enrollBrowserRunner(ownerId, "Native " + name);
+  await fixture.enablePersonalRemoteAccess();
+  const runnerId = createId("runner");
+  await enrollTestRunner(store, {
+    allowedModules: ["browser", "integrations", "messaging", "shell"],
+    modules: reachOnlyModules,
+    createdBy: ownerId,
+    environmentId: createId("environment"),
+    name: "Native " + name,
+    runnerId,
+    runnerKind: "local",
+    tokenSuffix: "native-profile-" + name,
+  });
   const deployment = await store.database
     .selectFrom("deployments")
     .select("id")

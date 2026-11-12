@@ -2864,6 +2864,9 @@ exports[`snapshots the personal/team guide and model-facing inventory 2`] = `
           "pattern": "^[1-9][0-9]*$",
           "type": "string",
         },
+        "threadsOnly": {
+          "type": "boolean",
+        },
       },
       "required": [
         "query",

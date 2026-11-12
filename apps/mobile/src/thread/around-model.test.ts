@@ -39,7 +39,7 @@ describe("around a conversation", () => {
   // Failure: a tab another conversation acts in reads as working here, the
   // working ones sink under idle ones, or a row opens a sibling of its place.
   it("lists the places an agent of the conversation works in first, each opening exactly its own", () => {
-    const threadId = titled("Switch Slack to Opensteer");
+    const threadId = home;
     const items = conversationSurfaces(source, threadId);
     const threads = conversationThreadIds(source, threadId);
     const places = aroundPlaces(source, threadId);
@@ -63,7 +63,7 @@ describe("around a conversation", () => {
     ]);
   });
 
-  // Failure: Chat counts a parent, counts are wrong, a mixed set of places
+  // Failure: a root task counts a parent, counts are wrong, a mixed set of places
   // claims one kind, or schedules a Host never sent appear.
   it("sums places, tasks and schedules, and names the conversation a task works for", () => {
     const chat = glance(source, home)!;
@@ -75,14 +75,15 @@ describe("around a conversation", () => {
       family: { running: 1, needsYou: true, automations: source.threadAutomations[home]!.length },
     });
     const worker = titled("Book a table for Friday");
-    expect(glance(source, worker)).toEqual({
+    const parentOnly = { ...source, browserSessions: [], machines: [], appTabs: [] };
+    expect(glance(parentOnly, worker)).toEqual({
       family: null,
-      from: { threadId: home, title: "Chat" },
+      from: { threadId: home, title: "Build the new architecture" },
       placeGlyph: null,
       places: 0,
       placesWorking: 0,
     });
-    expect(aroundLabel(glance(source, worker)!)).toBe("From Chat");
+    expect(aroundLabel(glance(parentOnly, worker)!)).toBe("From Build the new architecture");
     const phone = glance(source, titled("Check the delivery ETA"))!;
     expect(phone).toMatchObject({ placeGlyph: "smartphone", places: 1, placesWorking: 1 });
     expect(aroundLabel(phone)).toBe("1 place open, 1 working");
@@ -93,7 +94,13 @@ describe("around a conversation", () => {
   it("has nothing to show for a conversation with nothing around it", () => {
     const threadId = titled("Review storage integration");
     expect(glance(source, threadId)?.family?.automations).toBe(1);
-    const old = { ...source, browserSessions: [], threadAutomations: {} };
+    const old = {
+      ...source,
+      browserSessions: [],
+      machines: [],
+      appTabs: [],
+      threadAutomations: {},
+    };
     expect(glance(old, threadId)).toBeNull();
     const chat = glance({ ...source, threadAutomations: {} }, home)!;
     expect(chat.family?.automations).toBe(0);

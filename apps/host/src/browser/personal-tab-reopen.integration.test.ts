@@ -19,6 +19,7 @@ import { startBrowserRuntime } from "./browser-runtime.test-support.js";
 // Failures: access refusal consumes the close, a new identity is substituted,
 // the Host opens a page eagerly, or concurrent commands return the same tab.
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
+// The integration launcher supplies an isolated PostgreSQL database.
 const integration = databaseUrl ? describe : describe.skip;
 integration("Reopen closed personal tab through the Host", () => {
   const cleanups: (() => Promise<void>)[] = [];

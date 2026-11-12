@@ -2544,7 +2544,7 @@ export class RunnerRuntime {
         workspace.path === workspace.agentHomePath
           ? homeSkills
           : await this.#scanFolderSkills(command.location.folder, context.bindingGeneration);
-      for (const warning of [...homeSkills.warnings, ...folderSkills.warnings]) {
+      for (const warning of new Set([...homeSkills.warnings, ...folderSkills.warnings])) {
         this.#logger?.info(warning, {
           runId: context.runId,
         });

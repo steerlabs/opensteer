@@ -387,7 +387,7 @@ describe("the conversation's bar", () => {
   it("draws nothing for a conversation with nothing around it", async () => {
     const w = await world({ automations: "absent" });
     const threadId = w.titled("Review storage integration");
-    w.move({ ...w.snapshot(), browserSessions: [] });
+    w.move({ ...w.snapshot(), browserSessions: [], machines: [], appTabs: [] });
     const { android, ios } = bar(w.client, threadId);
     expect(control(android())).toBeNull();
     expect(ios()).toEqual([]);
@@ -462,7 +462,14 @@ describe("the conversation's bar", () => {
     const w = await world();
     const threadId = w.titled("Review storage integration");
     const original = w.snapshot();
-    const empty = { ...original, browserSessions: [], assignments: {}, threadAutomations: {} };
+    const empty = {
+      ...original,
+      browserSessions: [],
+      machines: [],
+      appTabs: [],
+      assignments: {},
+      threadAutomations: {},
+    };
     w.move(empty);
     const { ios, android } = bar(w.client, threadId);
     expect(ios()).toEqual([]);
@@ -474,7 +481,7 @@ describe("the conversation's bar", () => {
       threadAutomations: { [threadId]: [schedule, { ...schedule, id: "second" }] },
     });
     expect(control(android())?.getAttribute("aria-label")).toBe("2 schedules");
-    const seed = Object.values(original.assignments)[0]!;
+    const seed = Object.values(original.assignments).find(({ status }) => status === "open")!;
     const assignment = { ...seed, parentThreadId: threadId as typeof seed.parentThreadId };
     w.move({ ...empty, assignments: { [assignment.id]: assignment } });
     expect(control(android())?.getAttribute("aria-label")).toMatch(/^1 task running/);
@@ -518,7 +525,7 @@ describe("Around this thread", () => {
     const container = sheet(home);
     expect(container.querySelector('[role="tablist"]')).not.toBeNull();
     expect(tabs(container)).toEqual([
-      { label: `Places, ${places.length}, ${places.length} working`, selected: false },
+      { label: `Places, ${places.length}, 3 working`, selected: false },
       { label: "Tasks, 1, 1 needs you", selected: true },
       { label: `Schedules, ${automations}`, selected: false },
     ]);
@@ -740,17 +747,20 @@ describe("Around this thread", () => {
   it("gives a task the way back to the conversation it works for, and nothing else when that is all", async () => {
     const w = await world();
     const worker = w.titled("Book a table for Friday");
+    w.move({ ...w.snapshot(), browserSessions: [], machines: [], appTabs: [] });
     const container = sheet(worker);
     expect(tabs(container)).toEqual([]);
     expect(container.querySelector("section")).toBeNull();
-    press(container, "From Chat");
+    press(container, "From Build the new architecture");
     expect(harness.dispatch).toHaveBeenLastCalledWith({
-      type: "POP_TO",
-      name: "Home",
-      params: { deploymentId },
+      type: "PUSH",
+      name: "Thread",
+      params: { deploymentId, threadId: anchorId },
     });
     // Its control is the way back too, rather than nothing.
-    expect(control(bar(w.client, worker).android())?.getAttribute("aria-label")).toBe("From Chat");
+    expect(control(bar(w.client, worker).android())?.getAttribute("aria-label")).toBe(
+      "From Build the new architecture",
+    );
   });
 
   it("goes back to a parent directly under the task rather than opening it again, and opens it otherwise", async () => {
