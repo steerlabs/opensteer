@@ -75,8 +75,9 @@ describe("renderTeam", () => {
       },
     ]);
     const metadataAddress = policy.egress.filter((rule) =>
-      rule.to.some((peer) => peer.ipBlock?.cidr === "169.254.169.254/32"),
+      rule.to.some((peer) => peer.ipBlock?.cidr.startsWith("169.254.")),
     );
+    expect(metadataAddress).toHaveLength(1);
     expect(metadataAddress.every((rule) => JSON.stringify(rule.ports).includes('"port":53'))).toBe(
       true,
     );

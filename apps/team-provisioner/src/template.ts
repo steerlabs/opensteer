@@ -17,6 +17,8 @@ export const teamObjectName = "team";
 
 /** One volume holds the team's database and Host files; the Host refuses uploads past its cap. */
 const volumeSize = "10Gi";
+// Requests are sized from a measured idle team (Host ~150 MiB, Postgres ~80 MiB, gateway ~12 MiB,
+// ~25m CPU in all); Autopilot bills requests, and the LimitRange lets CPU burst to 2 cores.
 const storageLimitBytes = 5 * 1024 ** 3;
 const postgresUid = 70;
 const opensteerUid = 10_001;
@@ -133,7 +135,9 @@ export function renderTeam(input: TeamTemplateInput): readonly KubernetesObject[
                 },
                 podSelector: { matchLabels: { "k8s-app": "kube-dns" } },
               },
-              // GKE's Cloud DNS answers on the metadata address; only its DNS port is reachable.
+              // Pods resolve through GKE's NodeLocal DNSCache (or Cloud DNS on the metadata
+              // address); only port 53 is reachable on either.
+              { ipBlock: { cidr: "169.254.20.10/32" } },
               { ipBlock: { cidr: "169.254.169.254/32" } },
             ],
             ports: [
@@ -250,8 +254,8 @@ function teamStatefulSet(
                 failureThreshold: 150,
               },
               resources: {
-                requests: { cpu: "250m", memory: "512Mi" },
-                limits: { memory: "512Mi" },
+                requests: { cpu: "50m", memory: "192Mi" },
+                limits: { memory: "384Mi" },
               },
               securityContext: restricted(postgresUid),
               volumeMounts: [
@@ -297,7 +301,7 @@ function teamStatefulSet(
                 initialDelaySeconds: 60,
                 periodSeconds: 30,
               },
-              resources: { requests: { cpu: "500m", memory: "1Gi" }, limits: { memory: "1Gi" } },
+              resources: { requests: { cpu: "100m", memory: "320Mi" }, limits: { memory: "768Mi" } },
               securityContext: restricted(opensteerUid),
               volumeMounts: [
                 { name: "data", mountPath: "/data" },
@@ -314,7 +318,7 @@ function teamStatefulSet(
               ],
               ports: [{ name: "http", containerPort: gatewayPort }],
               readinessProbe: { httpGet: { path: "/healthz", port: "http" }, periodSeconds: 5 },
-              resources: { requests: { cpu: "50m", memory: "64Mi" }, limits: { memory: "64Mi" } },
+              resources: { requests: { cpu: "10m", memory: "32Mi" }, limits: { memory: "96Mi" } },
               securityContext: restricted(opensteerUid),
               volumeMounts: [
                 { name: "caddy-data", mountPath: "/data" },
