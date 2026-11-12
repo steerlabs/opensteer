@@ -363,61 +363,6 @@ export function AppShell({
     message: string;
     actions: WebLinkFailureActions;
   } | null>(null);
-  const webLinkReady = desktopWebLinksReady(true, snapshot);
-  useEffect(() => {
-    if (
-      !webLinkReady ||
-      !snapshot.deploymentId ||
-      !snapshot.user ||
-      !suppliedDesktopBridge?.webLinkDelivery
-    )
-      return;
-    const deploymentId = DesktopWebLinkDeliverySchema.shape.deploymentId.parse(
-      snapshot.deploymentId,
-    );
-    const userId = snapshot.user.id;
-    const bridge = suppliedDesktopBridge;
-    setWebLinkFailure(null);
-    const selection = webLinkSelection(() => webLinkView.current);
-    return receiveDesktopWebLinks(
-      bridge,
-      {
-        deploymentId,
-        userId,
-        target: () =>
-          newTabTarget(
-            hostClient.getSnapshot(),
-            lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
-            webLinkHere.current,
-          ),
-      },
-      () => {
-        let pendingKey: string | null = null;
-        const select = selection(
-          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
-            if (destination.kind === "pending-browser") {
-              pendingKey = destination.idempotencyKey;
-              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
-            } else if (pendingKey)
-              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
-          },
-        );
-        return (link, acknowledge) =>
-          openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
-      },
-      (error, actions) => {
-        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
-        else toast.error(actionErrorMessage(error));
-      },
-    );
-  }, [
-    webLinkReady,
-    suppliedDesktopBridge,
-    snapshot.deploymentId,
-    snapshot.user?.id,
-    hostClient,
-    toast,
-  ]);
   // Team pages the desktop opened (an invite, a channel, a message) land on Join, which resolves them.
   const navigateTo = useNavigate();
   useEffect(() => {
@@ -518,6 +463,72 @@ export function AppShell({
       openWorkspaceWebLink(hostClient, nav, address, location.state, thisMachineId),
     [hostClient, nav, location.state, thisMachineId],
   );
+  // A link binds its computer for good, so it waits while this Mac is still saying whether it is one.
+  const localWorker = viewedLocalExecutionStatus?.runner;
+  const webLinkHereKnown =
+    localExecutionDeploymentId === null ||
+    localExecutionError !== null ||
+    (localWorker !== undefined &&
+      localWorker.state !== "starting" &&
+      (localWorker.state !== "running" ||
+        snapshot.machines.some(
+          (machine) => machine.id === localWorker.runnerId && machine.status === "online",
+        )));
+  const webLinkReady = desktopWebLinksReady(true, snapshot) && webLinkHereKnown;
+  useEffect(() => {
+    if (
+      !webLinkReady ||
+      !snapshot.deploymentId ||
+      !snapshot.user ||
+      !suppliedDesktopBridge?.webLinkDelivery
+    )
+      return;
+    const deploymentId = DesktopWebLinkDeliverySchema.shape.deploymentId.parse(
+      snapshot.deploymentId,
+    );
+    const userId = snapshot.user.id;
+    const bridge = suppliedDesktopBridge;
+    setWebLinkFailure(null);
+    const selection = webLinkSelection(() => webLinkView.current);
+    return receiveDesktopWebLinks(
+      bridge,
+      {
+        deploymentId,
+        userId,
+        target: () =>
+          newTabTarget(
+            hostClient.getSnapshot(),
+            lastBrowsingChoice({ deploymentId, userId }) ?? { kind: "guest" },
+            webLinkHere.current,
+          ),
+      },
+      () => {
+        let pendingKey: string | null = null;
+        const select = selection(
+          (destination: PendingBrowserTabDestination | PersonalSurfaceDestination) => {
+            if (destination.kind === "pending-browser") {
+              pendingKey = destination.idempotencyKey;
+              webLinkNavigation.current.showPendingBrowserTab(pendingKey);
+            } else if (pendingKey)
+              webLinkNavigation.current.replacePendingBrowserTab(pendingKey, destination);
+          },
+        );
+        return (link, acknowledge) =>
+          openDesktopWebLink(link, hostClient, link.request!, select(link.receivedAt), acknowledge);
+      },
+      (error, actions) => {
+        if (actions) setWebLinkFailure({ message: actionErrorMessage(error), actions });
+        else toast.error(actionErrorMessage(error));
+      },
+    );
+  }, [
+    webLinkReady,
+    suppliedDesktopBridge,
+    snapshot.deploymentId,
+    snapshot.user?.id,
+    hostClient,
+    toast,
+  ]);
   const localActivationReady =
     hostingRunnerId !== null
       ? personalSetup?.state === "ready" && desktopDeployment?.access === "owner"

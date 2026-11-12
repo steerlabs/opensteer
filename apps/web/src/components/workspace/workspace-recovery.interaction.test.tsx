@@ -708,11 +708,15 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
       },
       schemaVersion: 4,
     };
+    const statusAnswered = deferred<void>();
     let deliver: ((command: DesktopPersonalTabCommand) => void) | null = null;
     const deliveries: DesktopWebLinkDelivery[] = [];
     const desktopBridge = {
       setBadgeCount: vi.fn(async () => undefined),
-      getLocalExecutionStatus: vi.fn(async () => status),
+      getLocalExecutionStatus: vi.fn(async () => {
+        await statusAnswered.promise;
+        return status;
+      }),
       onLocalExecutionStatusChanged: () => () => undefined,
       onPersonalTabCommand: (listener: typeof deliver) => {
         deliver = listener;
@@ -761,6 +765,10 @@ describe("a desktop that is its own computer in another Mac's Opensteer", () => 
       { shell: { desktopBridge, desktopDeployment } },
     );
     await settle(100);
+    // Until this Mac says whether it is a computer here, no link from another app is taken to bind.
+    expect(deliver).toBeNull();
+    await act(async () => statusAnswered.resolve());
+    await settle(50);
     const here = { identity: { kind: "guest" }, placement: { kind: "runner", runnerId: studio } };
     const link = [...document.querySelectorAll<HTMLAnchorElement>(".md-prose a")].find(
       (anchor) => anchor.textContent === "storage mount guide",
