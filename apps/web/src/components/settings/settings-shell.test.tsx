@@ -71,56 +71,33 @@ describe("Device settings placement", () => {
     }
   });
 
-  it("opens remote access and session children without the Account landing page", () => {
+  it("keeps Use from anywhere and signed-in devices on the Account page", () => {
     const context = placementFixtures()["personal-remote"];
-    const remote = renderSettings(context, "/settings/account/remote-access");
-    expect(remote).toContain("Connection options");
-    expect(remote).not.toContain("Where you’re signed in");
-    expect(remote).not.toContain("Your account");
-    expect(remote).not.toContain("connected agents");
-    const session = renderSettings(context, "/settings/account/sessions/session-id");
-    expect(session).toContain("Where you’re signed in");
-    expect(session).not.toContain("Your account");
-    expect(session).not.toContain("Connection options");
-    expect(session).not.toContain("connected agents");
     const landing = renderSettings(context, "/settings/account");
-    expect(landing).not.toContain("Connection options");
+    expect(landing).toContain("Use from anywhere");
+    expect(landing).toContain("Signed-in devices");
+    expect(landing).toContain("Loading devices");
+    expect(landing).not.toContain('href="/settings/account/');
     // External agents have their own page and load only when it opens.
     expect(landing).not.toContain("external agents");
     expect(renderSettings(context, "/settings/external-agents")).toContain(
       "Loading external agents…",
     );
   });
-  it("shows remote access administration on a remote Personal device", () => {
-    const html = renderSettings(placementFixtures()["personal-remote"], "/settings/account");
 
-    expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("Loading devices");
-    expect(
-      renderSettings(placementFixtures()["personal-remote"], "/settings/account/remote-access"),
-    ).toContain("Connection options");
-    expect(html).toContain("Where you’re signed in");
-  });
-
-  it("gives a signed-in machine-owner browser the same remote access controls", () => {
-    const context = { ...placementFixtures().browser, snapshot: machineOwnerSnapshot() };
-    const html = renderSettings(context, "/settings/account/remote-access");
-
-    expect(html).toContain('aria-label="Open Opensteer from anywhere"');
-    expect(html).toContain("Connection options");
-    expect(html).toContain("Connection options");
-  });
-
-  it("shows administration to a Personal remote browser", () => {
-    const context = {
-      ...placementFixtures().browser,
-      snapshot: { ...machineOwnerSnapshot(), sessionSurface: "personal-remote" as const },
-    };
-    const html = renderSettings(context, "/settings/account");
-
-    expect(html).toContain('href="/settings/account/remote-access"');
-    expect(html).toContain("Where you’re signed in");
-    expect(html).not.toContain("turn on remote access in the Opensteer app");
+  it("gives a signed-in machine-owner browser the same Account page", () => {
+    for (const sessionSurface of [undefined, "personal-remote" as const]) {
+      const snapshot = sessionSurface
+        ? { ...machineOwnerSnapshot(), sessionSurface }
+        : machineOwnerSnapshot();
+      const html = renderSettings(
+        { ...placementFixtures().browser, snapshot },
+        "/settings/account",
+      );
+      expect(html).toContain("Use from anywhere");
+      expect(html).toContain("Signed-in devices");
+      expect(html).not.toContain("turn on remote access in the Opensteer app");
+    }
   });
 });
 
@@ -137,13 +114,8 @@ describe("Settings identity honesty", () => {
     expect(renderSettings({ ...context, deploymentAccess }, "/settings/general")).not.toContain(
       "Add to your Account",
     );
-    const html = renderSettings(
-      { ...context, deploymentAccess },
-      "/settings/account/remote-access",
-    );
-    expect(html).toContain("Loading remote access");
-    expect(html).not.toContain('value="connect"');
-    expect(html).toContain("Connection options");
+    expect(account).toContain("Checking…");
+    expect(account).not.toContain('value="connect"');
   });
 
   it("never renders the seeded machine-owner address in any placement", () => {

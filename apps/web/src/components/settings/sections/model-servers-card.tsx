@@ -186,7 +186,6 @@ export function ModelServersCard({
                 </span>
               </span>
             }
-            icon="server"
             key={key}
             title={
               <>

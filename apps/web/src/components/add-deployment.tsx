@@ -92,7 +92,8 @@ export function AddDeployment({
           choice === "computer" && !pairing && (accountEmail !== null || onSignIn !== null) ? (
             <div className="add-deployment__form">
               <p className="field__hint">
-                On that computer, open Opensteer, go to Settings › Remote access and turn it on
+                On that computer, open Opensteer, go to Settings › Account and turn on Use from
+                anywhere
                 {accountEmail ? ` with ${accountEmail}` : " with your account"}. It then appears in
                 your list here by itself.
               </p>
@@ -154,7 +155,7 @@ export function AddDeployment({
                   value={pairingCode}
                 />
                 <span className="field__hint">
-                  Create a pairing code in Settings › Remote access on that computer after enabling
+                  Create a pairing code in Settings › Account on that computer after enabling
                   Private network. One use, and it expires shortly.
                 </span>
               </label>

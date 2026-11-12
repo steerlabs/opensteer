@@ -35,9 +35,6 @@ describe("device disconnection", () => {
         ),
       );
       await act(async () => node.querySelector<HTMLButtonElement>("button")!.click());
-      await act(async () =>
-        document.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click(),
-      );
       expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
         "Your work stays here",
       );

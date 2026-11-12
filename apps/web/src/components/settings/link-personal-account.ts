@@ -15,7 +15,7 @@ export async function linkAccountFromWeb(
   if (bridge?.issuePersonalAccountLinkChallenge && bridge.completePersonalAccountLink) {
     if (shell.deploymentAccess?.account.status !== "signed-in") {
       await bridge.signIn();
-      throw new Error("Finish Account sign-in on this device, then tap Link Account again.");
+      throw new Error("Finish signing in in your browser, then press Turn on again.");
     }
     await linkPersonalHostAccount(
       shell.hostClient,

@@ -12,7 +12,7 @@ import { usePageVisible } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { Dialog } from "../../dialog.js";
 import { Icon } from "../../icon.js";
-import { SettingsRow, type SettingsView } from "../primitives.js";
+import { SettingsGroup, SettingsRow, type SettingsView } from "../primitives.js";
 import { useHomeComputer } from "./devices.js";
 
 type RequestAction = Extract<DesktopUpdateAction, { readonly kind: "request" }>;
@@ -70,23 +70,20 @@ export function RemoteDesktopUpdateSection({ view }: { readonly view: SettingsVi
   );
   return (
     <>
-      <h2>{model.title}</h2>
-      <div className="card">
+      <SettingsGroup heading={model.title} headingId="settings-remote-update">
         <SettingsRow
           action={model.action ? button(model.action) : null}
           detail={model.statusLine ? <span role="status">{model.statusLine}</span> : null}
-          icon="download"
           title={model.headline}
         />
         {model.versionLine ? (
           <SettingsRow
             action={model.channelAction ? button(model.channelAction) : null}
             detail={model.channel}
-            icon="puzzle"
             title={model.versionLine}
           />
         ) : null}
-      </div>
+      </SettingsGroup>
       <ResultNotice result={model.result} />
       {confirming ? (
         <Dialog

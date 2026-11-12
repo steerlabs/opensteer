@@ -230,8 +230,8 @@ export function ComputersPage() {
         {/* The question people most often bring here belongs next door:
             computers are what agents use, devices are where you open Opensteer. */}
         <p className="settings-footnote">
-          To open {homeName} on your phone or another device, use{" "}
-          <Link to="/settings/devices">Remote access</Link>.
+          To open {homeName} on your phone or another device, turn on{" "}
+          <Link to="/settings/account">Use from anywhere</Link>.
         </p>
       </div>
       {adding ? (

@@ -1,4 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Link, NavLink, Outlet, useLocation, useOutletContext } from "react-router";
 import {
   deploymentStatusLabel,
@@ -15,18 +24,14 @@ import { PageTopbar } from "../page-header.js";
 import {
   settingsDeploymentName,
   settingsItem,
-  settingsPlace,
+  settingsPlaceDetail,
   settingsRail,
   type SettingsRailItem,
   type SettingsSectionId,
 } from "./copy.js";
-import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
-import { computerIcon } from "../computers/device-art.js";
 import { SectionHeader, type SettingsView } from "./primitives.js";
 import { MessagingPage } from "../messaging-page.js";
 import { AgentDevicesSection } from "./sections/agent-devices.js";
-import { SignedInDevicesSection } from "./sections/devices.js";
-import { RemoteAccessSection } from "./sections/remote-access.js";
 import { AccountSection } from "./sections/account.js";
 import { AiEnginesSection } from "./sections/ai-engines.js";
 import { AutomaticModelsSection } from "./sections/automatic-models.js";
@@ -36,6 +41,7 @@ import { GeneralSection } from "./sections/general.js";
 import { PasswordsSection } from "./sections/passwords.js";
 import { PluginsSection } from "./sections/plugins.js";
 import { TeamSettingsNavigation } from "../../team/team-settings-navigation.js";
+import { TeamSettingsRoute } from "../../team/team-settings-route.js";
 
 // Loaded with its page so connections cost nothing on attach.
 const ExternalAgentsSection = lazy(() =>
@@ -116,7 +122,6 @@ export function SettingsShell() {
     };
   }, [mobile, navigationOpen]);
 
-  const home = shell.snapshot.machines.find(hostsDeployment);
   if (!view || !context)
     return (
       <p className="settings-footnote" role="status">
@@ -124,9 +129,8 @@ export function SettingsShell() {
       </p>
     );
   const rail = settingsRail(view.kind);
-  const place = settingsPlace({
+  const placeDetail = settingsPlaceDetail({
     facts: view.facts,
-    homeIcon: home ? computerIcon(computerGlyph(home)) : null,
     kind: view.kind,
     publicOrigin: identity?.publicOrigin,
   });
@@ -173,7 +177,7 @@ export function SettingsShell() {
         <div className="settings-navigation__header">
           <button className="settings-navigation__back" onClick={shell.leaveSettings} type="button">
             <Icon name="arrow-left" />
-            Back to conversations
+            Back
           </button>
           <button
             className="settings-navigation__close icon-btn"
@@ -185,7 +189,6 @@ export function SettingsShell() {
             <Icon name="close" />
           </button>
         </div>
-        <h2 className="settings-navigation__title">Settings</h2>
         <nav className="settings-navigation__links" aria-label="Settings sections">
           {(["general", "account", "devices", "messaging", "external-agents"] as const).map(
             (id) => (
@@ -207,23 +210,15 @@ export function SettingsShell() {
           <TeamSettingsNavigation />
         </nav>
         <div className="settings-navigation__account">
-          <NavLink
+          <Link
             to="/settings/general"
-            className={({ isActive }) =>
-              `settings-navigation__link settings-navigation__connection${isActive ? " is-active" : ""}`
-            }
+            className="settings-navigation__connection"
             aria-label={`About ${view.name}`}
             title={view.name}
           >
-            <span className="settings-navigation__place">
-              <Icon name={place.icon} />
-            </span>
-            <span className="settings-navigation__connection-text">
-              <span className="settings-navigation__connection-name">{view.name}</span>
-              <span className="settings-navigation__connection-detail">{place.detail}</span>
-            </span>
-            <Icon name="chevron-right" />
-          </NavLink>
+            <span className="settings-navigation__connection-name">{view.name}</span>
+            <span className="settings-navigation__connection-detail">{placeDetail}</span>
+          </Link>
           {view.statusInfo.status !== "ready" ? (
             <p className="settings-navigation__status" role="status">
               {view.statusInfo.reason ?? deploymentStatusLabel(view.statusInfo.status)}
@@ -250,10 +245,7 @@ function SettingsNavigationLink({ item }: { readonly item: SettingsRailItem }) {
       to={`/settings/${item.id}`}
       className={({ isActive }) => `settings-navigation__link${isActive ? " is-active" : ""}`}
     >
-      <Icon name={item.icon} />
-      <span>
-        <span className="settings-navigation__label">{item.label}</span>
-      </span>
+      {item.label}
     </NavLink>
   );
 }
@@ -263,12 +255,7 @@ export function SettingsSectionRoute({
 }: {
   readonly section: Exclude<SettingsSectionId, "apps" | "computers">;
 }) {
-  const location = useLocation();
-  const {
-    settingsView: view,
-    openMobileNavigation,
-    hostClient,
-  } = useOutletContext<SettingsContext>();
+  const { settingsView: view, hostClient } = useOutletContext<SettingsContext>();
   let content;
   switch (section) {
     case "ai":
@@ -281,26 +268,7 @@ export function SettingsSectionRoute({
       );
       break;
     case "account":
-      content = location.pathname.includes("/remote-access") ? (
-        <>
-          <Link to="/settings/account">Account</Link>
-          <RemoteAccessSection view={view} />
-        </>
-      ) : location.pathname.includes("/sessions/") ? (
-        <>
-          <Link to="/settings/account">Account</Link>
-          <SignedInDevicesSection
-            view={view}
-            sessionId={decodeURIComponent(location.pathname.split("/sessions/")[1] ?? "")}
-          />
-        </>
-      ) : (
-        <>
-          <AccountSection />
-          <RemoteAccessSection view={view} compact />
-          <SignedInDevicesSection view={view} />
-        </>
-      );
+      content = <AccountSection view={view} />;
       break;
     case "external-agents":
       content = (
@@ -310,13 +278,28 @@ export function SettingsSectionRoute({
       );
       break;
     case "chrome":
-      content = <ChromeSection />;
+      content = (
+        <>
+          <SectionHeader title={settingsItem(section, view.kind).label} />
+          <ChromeSection />
+        </>
+      );
       break;
     case "browser-profiles":
-      content = <BrowserProfilesSection />;
+      content = (
+        <>
+          <SectionHeader title={settingsItem(section, view.kind).label} />
+          <BrowserProfilesSection />
+        </>
+      );
       break;
     case "passwords":
-      content = <PasswordsSection view={view} />;
+      content = (
+        <>
+          <SectionHeader title={settingsItem(section, view.kind).label} />
+          <PasswordsSection view={view} />
+        </>
+      );
       break;
     case "plugins":
       content = <PluginsSection view={view} />;
@@ -327,6 +310,7 @@ export function SettingsSectionRoute({
     case "sign-ins":
       content = (
         <>
+          <SectionHeader title="Sign-ins" />
           <ChromeSection />
           <BrowserProfilesSection />
           <PasswordsSection view={view} />
@@ -340,36 +324,45 @@ export function SettingsSectionRoute({
       content = <AgentDevicesSection />;
       break;
   }
+  return <SettingsPage title={settingsItem(section, view.kind).label}>{content}</SettingsPage>;
+}
+
+/** A routed Settings page: the narrow-window topbar, then one scrolling column. */
+export function SettingsPage({
+  children,
+  title,
+}: {
+  readonly children: ReactNode;
+  readonly title: string;
+}) {
+  const { openMobileNavigation } = useShell();
   return (
     <div className="page settings">
-      <PageTopbar
-        title={settingsItem(section, view.kind).label}
-        onOpenNavigation={openMobileNavigation}
-      />
+      <PageTopbar title={title} onOpenNavigation={openMobileNavigation} />
       <div className="settings-content">
-        <div className="settings-content__inner">{content}</div>
+        <div className="settings-content__inner">{children}</div>
       </div>
     </div>
   );
 }
 
-export function SettingsNotFound() {
-  const { openMobileNavigation } = useShell();
+/** A team's pages inside personal Settings. */
+export function SettingsTeamRoute() {
   return (
-    <div className="page settings">
-      <PageTopbar title="Settings" onOpenNavigation={openMobileNavigation} />
-      <div className="settings-content">
-        <div className="settings-content__inner">
-          <SectionHeader
-            title="Setting not found"
-            lead="Choose a section from Settings to continue."
-          />
-          <Link className="btn" to="/settings/ai">
-            AI
-          </Link>
-        </div>
-      </div>
-    </div>
+    <SettingsPage title="Team">
+      <TeamSettingsRoute />
+    </SettingsPage>
+  );
+}
+
+export function SettingsNotFound() {
+  return (
+    <SettingsPage title="Settings">
+      <SectionHeader title="Setting not found" lead="Choose a section from Settings to continue." />
+      <Link className="btn" to="/settings/ai">
+        AI
+      </Link>
+    </SettingsPage>
   );
 }
 

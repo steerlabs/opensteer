@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from "react";
 import { settingsSessionRows } from "@opensteer/client/settings";
-import { Link } from "react-router";
 import type { AuthSessionSummary } from "@opensteer/core";
 import { computerGlyph, hostsDeployment } from "@opensteer/client/computers";
 import {
@@ -26,43 +25,29 @@ import {
 import { useSettingsRead } from "../use-settings-read.js";
 
 /** Every device you are signed in from, this one first, in one list. */
-export function SignedInDevicesSection({
-  view,
-  sessionId,
-}: {
-  readonly view: SettingsView;
-  readonly sessionId?: string;
-}) {
+export function SignedInDevicesSection({ view }: { readonly view: SettingsView }) {
   const sessions = useSessions();
-  const list = sessionId
-    ? (sessions.list?.filter((session) => session.id === sessionId) ?? null)
-    : sessions.list;
-  const current = list?.find((session) => session.current) ?? null;
-  const others = list?.filter((session) => !session.current) ?? [];
+  const current = sessions.list?.find((session) => session.current) ?? null;
+  const others = sessions.list?.filter((session) => !session.current) ?? [];
   return (
-    <SettingsGroup heading="Where you’re signed in" headingId="settings-sessions-heading">
+    <SettingsGroup heading="Signed-in devices" headingId="settings-sessions-heading">
       {current ? <CurrentSessionRow current={current} name={view.name} /> : null}
       {others.map((session) => (
         <SettingsRow
           action={
             <SettingsSignOut
-              label={`Actions for ${session.deviceLabel}`}
-              warning={`Sign out ${session.deviceLabel}? Its access ends. Your agents, files and conversations stay on this Opensteer.`}
+              label={`Sign out ${session.deviceLabel}`}
+              warning={`${session.deviceLabel} loses access. Your agents, files and conversations stay on this Opensteer.`}
               pending={sessions.pending !== null}
               onConfirm={() => sessions.remove(session)}
             />
           }
           detail={sessionActivity(session.lastSeenAt)}
-          icon={sessionIcon(session)}
           key={session.id}
-          title={
-            <Link to={`/settings/account/sessions/${encodeURIComponent(session.id)}`}>
-              {session.deviceLabel}
-            </Link>
-          }
+          title={session.deviceLabel}
         />
       ))}
-      {list === null ? <LoadingRows label="Loading devices" rows={2} /> : null}
+      {sessions.list === null ? <LoadingRows label="Loading devices" rows={2} /> : null}
       <SettingsError message={sessions.error} />
     </SettingsGroup>
   );
@@ -136,12 +121,6 @@ export function useHomeComputer(): { readonly icon: IconName; readonly name: str
   };
 }
 
-export function sessionIcon(session: AuthSessionSummary): IconName {
-  if (session.form === "mobile") return "phone";
-  if (session.form === "computer") return "laptop";
-  return "devices";
-}
-
 /** "Active 3h ago", or the date once it is more than a week old. */
 export function sessionActivity(lastSeenAt: string, now = new Date()): string {
   const relative = formatRelativeTime(lastSeenAt, now);
@@ -178,20 +157,17 @@ function CurrentSessionRow({
       <SettingsRow
         action={
           <SettingsSignOut
-            label="Session actions"
-            warning={`Sign out of ${name} on this device? Nothing on ${name} changes, and you can sign in again anytime.`}
+            label="Sign out this device"
+            warning={`Nothing on ${name} changes, and you can sign in again anytime.`}
             pending={pending}
             onConfirm={disconnect}
           />
         }
         detail={`Signed in ${formatWhen(current.createdAt)}`}
-        icon={sessionIcon(current)}
         title={
           <>
-            <Link to={`/settings/account/sessions/${encodeURIComponent(current.id)}`}>
-              {current.deviceLabel}
-            </Link>
-            <span className="chip">This device</span>
+            {current.deviceLabel}
+            <span className="settings-tag">This device</span>
           </>
         }
       />
