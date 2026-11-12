@@ -2035,56 +2035,53 @@ describe("J8: one sidebar switches between tasks and tabs", () => {
   });
 });
 
-it.each([
-  "mac",
-  "phone",
-  "personal",
-  "other",
-  "no-computer-use",
-])("offers Tabs Open and its empty action only for an owned computer: %s", async (kind) => {
-  const personal = kind === "personal";
-  let host!: ReturnType<typeof steerable>;
-  const w = await world({
-    prepare: (mock) => {
-      host = steerable(mock);
-    },
-  });
-  await openSidebarTabs(w);
-  await host.change((snapshot) => {
-    const machine = snapshot.machines.find((m) =>
-      kind === "phone" ? m.device?.platform === "android" : m.name === "Mac mini",
-    )!;
-    return seedBrowserSnapshot(
-      {
-        ...snapshot,
-        browserAvailable: false,
-        browserSessions: [],
-        machines: [
-          {
-            ...machine,
-            ownership: personal ? "deployment" : kind === "other" ? "other" : "mine",
-            tabOpenedAt: null,
-            computerUse:
-              kind === "no-computer-use"
-                ? null
-                : { ...machine.computerUse!, ownerViews: [], sessions: [] },
-          },
-        ],
-      } as HostSnapshot,
-      [],
-    ) as HostSnapshot;
-  });
-  const offered = !["other", "no-computer-use"].includes(kind);
-  expect(find(front(w), "Open") !== undefined).toBe(offered);
-  expect(find(front(w), "Open an app") !== undefined).toBe(offered);
-  if (offered) {
-    // Both controls use the same route; this stand-in only records arrival at the sheet.
-    screens["OpenApp"] = () => <p>Open sheet</p>;
-    await press(control(front(w), "Open an app"));
-    expect(w.stack.routes.at(-1)).toMatchObject({
-      name: "OpenApp",
-      params: { deploymentId: expect.any(String) },
+it.each(["mac", "phone", "personal", "other", "no-computer-use"])(
+  "offers Tabs Open and its empty action only for an owned computer: %s",
+  async (kind) => {
+    const personal = kind === "personal";
+    let host!: ReturnType<typeof steerable>;
+    const w = await world({
+      prepare: (mock) => {
+        host = steerable(mock);
+      },
     });
-    delete screens["OpenApp"];
-  }
-});
+    await openSidebarTabs(w);
+    await host.change((snapshot) => {
+      const machine = snapshot.machines.find((m) =>
+        kind === "phone" ? m.device?.platform === "android" : m.name === "Mac mini",
+      )!;
+      return seedBrowserSnapshot(
+        {
+          ...snapshot,
+          browserAvailable: false,
+          browserSessions: [],
+          machines: [
+            {
+              ...machine,
+              ownership: personal ? "deployment" : kind === "other" ? "other" : "mine",
+              tabOpenedAt: null,
+              computerUse:
+                kind === "no-computer-use"
+                  ? null
+                  : { ...machine.computerUse!, ownerViews: [], sessions: [] },
+            },
+          ],
+        } as HostSnapshot,
+        [],
+      ) as HostSnapshot;
+    });
+    const offered = !["other", "no-computer-use"].includes(kind);
+    expect(find(front(w), "Open") !== undefined).toBe(offered);
+    expect(find(front(w), "Open an app") !== undefined).toBe(offered);
+    if (offered) {
+      // Both controls use the same route; this stand-in only records arrival at the sheet.
+      screens["OpenApp"] = () => <p>Open sheet</p>;
+      await press(control(front(w), "Open an app"));
+      expect(w.stack.routes.at(-1)).toMatchObject({
+        name: "OpenApp",
+        params: { deploymentId: expect.any(String) },
+      });
+      delete screens["OpenApp"];
+    }
+  },
+);

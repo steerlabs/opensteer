@@ -71,11 +71,7 @@ function Menu(
     const handle = findNodeHandle(trigger.current);
     if (typeof handle === "number") AccessibilityInfo.setAccessibilityFocus(handle);
   };
-  const ownName = useHostSelector(
-    hostClient,
-    (snapshot) =>
-      snapshot.voiceThreadId !== threadId,
-  );
+  const ownName = useHostSelector(hostClient, (snapshot) => snapshot.voiceThreadId !== threadId);
   const canRename =
     useHostSelector(hostClient, (snapshot) => snapshot.threadRenameAvailable) && ownName;
   const canChangeIcon =
@@ -191,11 +187,7 @@ function Menu(
 /** Where the bar shortens things: the whole name or who asked, the place, and any blocker. */
 function menuHeading(props: ThreadMenuProps): string {
   const { placeName, task, title } = props;
-  return [
-    task === null ? title : `From ${task.requester} · ${task.word}`,
-    placeName,
-    task?.detail,
-  ]
+  return [task === null ? title : `From ${task.requester} · ${task.word}`, placeName, task?.detail]
     .filter(Boolean)
     .join("\n");
 }

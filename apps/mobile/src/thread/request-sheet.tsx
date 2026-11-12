@@ -843,7 +843,8 @@ function BrowserAccessBody(props: {
         </View>
       ) : null}
       <AppText role="caption" tone="muted">
-        Your agent gets full control of the profile you choose, including every signed-in account, cookie and tab in it.
+        Your agent gets full control of the profile you choose, including every signed-in account,
+        cookie and tab in it.
       </AppText>
       <ResponseStatus failure={props.failure} reason={props.reason} />
       <AnswerRow>

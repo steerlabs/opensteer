@@ -20,10 +20,10 @@ export function ThreadName(props: {
 }) {
   const mark =
     props.isVoice === true ? (
-    <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
-  ) : (
-    <TaskMark mark={taskMark(props)} size={22} />
-  );
+      <Symbol name="waveform" size={20} tint={color.ember} weight="semibold" />
+    ) : (
+      <TaskMark mark={taskMark(props)} size={22} />
+    );
   const name = (style: StyleProp<TextStyle>) => (
     <AppText
       {...(props.maxFontSizeMultiplier === undefined

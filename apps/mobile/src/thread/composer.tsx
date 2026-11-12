@@ -691,10 +691,7 @@ export function Composer(props: {
   const hold = useCallback(() => setPresenting(true), []);
   const settle = useCallback(() => setPresenting(false), []);
 
-  const cannotAttach =
-    disabled ||
-    textHidden ||
-    staged.items.length >= attachmentMessageMaxCount;
+  const cannotAttach = disabled || textHidden || staged.items.length >= attachmentMessageMaxCount;
   const menuOptions: readonly NativeMenuOption[] = [
     {
       disabled: cannotAttach,

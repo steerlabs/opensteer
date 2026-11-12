@@ -1,6 +1,10 @@
 import type { HostClient } from "@opensteer/client/host";
 import { MemoryPrivateFilesystem } from "@opensteer/client/test-support";
-import { BrowserPageContentPartSchema, ModelSelectionSchema, RunnerIdSchema } from "@opensteer/core";
+import {
+  BrowserPageContentPartSchema,
+  ModelSelectionSchema,
+  RunnerIdSchema,
+} from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { sendPendingMessage } from "../thread/send-pending-message.js";
 import {

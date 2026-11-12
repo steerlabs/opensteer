@@ -17,8 +17,7 @@ export function showPendingBrowserTab(
    */
   over?: { readonly fallback?: () => void },
 ): void {
-  const scope =
-    route.scope === "tabs" ? { scope: "tabs" as const } : { threadId: route.threadId };
+  const scope = route.scope === "tabs" ? { scope: "tabs" as const } : { threadId: route.threadId };
   const show = over ? StackActions.push : StackActions.replace;
   const fallback = over?.fallback;
   navigation.dispatch(

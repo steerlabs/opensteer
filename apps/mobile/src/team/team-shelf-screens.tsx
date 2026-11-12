@@ -8,12 +8,7 @@ import {
   TeamNoticeIdSchema,
   UserIdSchema,
 } from "@opensteer/core";
-import type {
-  HostApiCommandInput,
-  TeamFact,
-  TeamMessage,
-  TeamTopic,
-} from "@opensteer/protocol";
+import type { HostApiCommandInput, TeamFact, TeamMessage, TeamTopic } from "@opensteer/protocol";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -22,7 +17,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { RootParamList } from "../navigation.js";
 import { color, space } from "../theme.js";
 import { useSelectedHostClient } from "../ui/mobile-client-context.js";
-import { AppText, Field, Notice, PrimaryButton, RowGroup, SecondaryButton } from "../ui/primitives.js";
+import {
+  AppText,
+  Field,
+  Notice,
+  PrimaryButton,
+  RowGroup,
+  SecondaryButton,
+} from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import {
   ChannelDetailsBody,
@@ -137,9 +139,10 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
   useEffect(() => {
     if (personal === null || channel.value?.peopleOnly !== false) return;
     let current = true;
-    void new PersonalTeamLinks(personal.rpc)
-      .folder(teamId, channelId)
-      .then((value) => current && setFolder(value.path), () => undefined);
+    void new PersonalTeamLinks(personal.rpc).folder(teamId, channelId).then(
+      (value) => current && setFolder(value.path),
+      () => undefined,
+    );
     return () => {
       current = false;
     };
@@ -153,9 +156,9 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
         : "mentions";
   const working =
     snapshot.channel?.scope.channelId === channelId
-      ? snapshot.channel.messages.flatMap((message) => message.requests).filter((request) =>
-          ["queued", "working", "needs_you"].includes(request.state),
-        ).length
+      ? snapshot.channel.messages
+          .flatMap((message) => message.requests)
+          .filter((request) => ["queued", "working", "needs_you"].includes(request.state)).length
       : 0;
   if (session === null || channel.value === null)
     return (
@@ -175,8 +178,9 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
     );
   };
   const setNotify = (level: "all" | "mentions" | "muted"): void =>
-    run({ type: "team.channel.preferences.set", channelId: channelKey, notificationLevel: level }, () =>
-      void session.refreshSidebar().catch(() => undefined),
+    run(
+      { type: "team.channel.preferences.set", channelId: channelKey, notificationLevel: level },
+      () => void session.refreshSidebar().catch(() => undefined),
     );
   return (
     <Screen edgeToEdge>
@@ -214,7 +218,12 @@ export function TeamDetailsScreen(props: ChannelParams): ReactNode {
               value.name,
             ),
           onSetPeopleOnly: (on) =>
-            run({ type: "team.channel.update", channelId: channelKey, name: value.name, peopleOnly: on }),
+            run({
+              type: "team.channel.update",
+              channelId: channelKey,
+              name: value.name,
+              peopleOnly: on,
+            }),
           onAddPeople: () => navigation.navigate("TeamMembers", { teamId, channelId }),
           onLeave: () =>
             Alert.alert(`Leave #${value.name}?`, "You can join again if it's public.", [
@@ -304,9 +313,11 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
       };
     })
     .filter((row) => lower === "" || row.name.toLowerCase().includes(lower));
-  const listed = new Set(list.entries.map((entry) =>
-    entry.subject.kind === "person" ? entry.subject.userId : entry.subject.groupId,
-  ));
+  const listed = new Set(
+    list.entries.map((entry) =>
+      entry.subject.kind === "person" ? entry.subject.userId : entry.subject.groupId,
+    ),
+  );
   const candidates: MemberRowView[] = adding
     ? members
         .filter((member) => member.state === "active" && !listed.has(member.userId))
@@ -345,14 +356,20 @@ export function TeamMembersScreen(props: ChannelParams): ReactNode {
         onAddMember={(userId) =>
           replace([
             ...list.entries,
-            { subject: { kind: "person", userId: UserIdSchema.parse(userId) }, level: "post", manage: false },
+            {
+              subject: { kind: "person", userId: UserIdSchema.parse(userId) },
+              level: "post",
+              manage: false,
+            },
           ])
         }
         onQuery={setQuery}
         onRemove={(id) =>
           replace(
             list.entries.filter((entry) =>
-              entry.subject.kind === "person" ? entry.subject.userId !== id : entry.subject.groupId !== id,
+              entry.subject.kind === "person"
+                ? entry.subject.userId !== id
+                : entry.subject.groupId !== id,
             ),
           )
         }
@@ -619,7 +636,8 @@ function topicSummary(topic: TeamTopic, channelId: string | null): TopicSummaryV
   return {
     id: topic.id,
     name: topic.name,
-    kind: topic.originChannelId !== null && topic.originChannelId === channelId ? "channel" : "shared",
+    kind:
+      topic.originChannelId !== null && topic.originChannelId === channelId ? "channel" : "shared",
     access: topic.originChannelId === null ? "Its own list" : "Same as its channel",
     factCount: 0,
     peopleOnly: topic.peopleOnly,
@@ -645,7 +663,9 @@ function TopicFacts(props: {
     props.session,
     async (team) =>
       unwrapRpcResult(
-        await team.rpc[history === null ? "team.knowledge.facts.page" : "team.knowledge.history.page"]({
+        await team.rpc[
+          history === null ? "team.knowledge.facts.page" : "team.knowledge.history.page"
+        ]({
           topicId: topicKey,
         }),
       ).facts,
@@ -702,7 +722,12 @@ function TopicFacts(props: {
 function groupThings(facts: readonly TeamFact[], writer: (fact: TeamFact) => string): ThingView[] {
   const things = new Map<string, ThingView>();
   for (const fact of facts) {
-    const held = things.get(fact.thing) ?? { id: fact.thing, name: fact.thing, key: fact.thing, facts: [] };
+    const held = things.get(fact.thing) ?? {
+      id: fact.thing,
+      name: fact.thing,
+      key: fact.thing,
+      facts: [],
+    };
     things.set(fact.thing, {
       ...held,
       facts: [
@@ -732,7 +757,10 @@ function AddFact(props: {
   const [failure, setFailure] = useState<string | null>(null);
   return (
     <ScrollView contentContainerStyle={styles.form} keyboardShouldPersistTaps="handled">
-      <Field input={{ onChangeText: setThing, value: thing, placeholder: "Acme Corp" }} label="Thing" />
+      <Field
+        input={{ onChangeText: setThing, value: thing, placeholder: "Acme Corp" }}
+        label="Thing"
+      />
       <Field
         input={{ onChangeText: setProperty, value: property, placeholder: "renewal date" }}
         label="Property"
@@ -857,7 +885,11 @@ export function TeamSearchScreen(
           const raw = results.find((row) => row.message.id === result.message.id)?.raw;
           if (raw === undefined) return;
           if (raw.threadRootId === null)
-            navigation.navigate("TeamChannel", { teamId, channelId: raw.channelId, messageId: raw.id });
+            navigation.navigate("TeamChannel", {
+              teamId,
+              channelId: raw.channelId,
+              messageId: raw.id,
+            });
           else
             navigation.navigate("TeamThread", {
               teamId,
@@ -937,4 +969,3 @@ const styles = StyleSheet.create({
   center: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
   form: { gap: space[16], padding: space[16] },
 });
-

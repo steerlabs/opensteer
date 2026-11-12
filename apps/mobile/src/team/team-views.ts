@@ -110,9 +110,7 @@ export function drawerSection(input: {
     .sort((left, right) => left.name.localeCompare(right.name));
   const dmRows = rows
     .filter((row) => row.channel.kind === "dm" || row.channel.kind === "group_dm")
-    .sort((left, right) =>
-      compareIds(right.channel.latestMessageId, left.channel.latestMessageId),
-    );
+    .sort((left, right) => compareIds(right.channel.latestMessageId, left.channel.latestMessageId));
   const dms: DmRowView[] = dmRows.slice(0, 8).map((row) => ({
     id: row.channel.id,
     people: [],
@@ -376,10 +374,7 @@ export function messageView(
     continued,
     send: { kind: "sent" },
     thread: input.inThread ? null : threadSummary(message, viewerId, members),
-    agentRun:
-      answered === undefined
-        ? null
-        : { summary: workedSummary(answered) },
+    agentRun: answered === undefined ? null : { summary: workedSummary(answered) },
   };
 }
 
@@ -565,7 +560,10 @@ export function mentionOptions(input: {
     if (member.userId === input.viewerId || member.state !== "active") continue;
     const name = member.displayName.toLowerCase();
     if (query === "" || name.includes(query) || member.handle.startsWith(query))
-      options.push({ kind: "person", person: personView(member.userId, memberDirectory([member])) });
+      options.push({
+        kind: "person",
+        person: personView(member.userId, memberDirectory([member])),
+      });
     const agentHandle = teamAgentHandle(member.handle);
     if (query.length >= 2 && (agentHandle.startsWith(query) || `${name}'s agent`.startsWith(query)))
       options.push({

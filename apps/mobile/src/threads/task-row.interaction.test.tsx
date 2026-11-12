@@ -344,9 +344,7 @@ it("repaints a memoized row on icon/color-only arrival and leaves unnamed or col
 it("offers all 130 searchable icons with accessible selected states and a distinct default", async () => {
   const choose = vi.fn();
   render(<IconChoices task color="blue" value="plane" onChange={choose} />);
-  expect(container.querySelectorAll('button[role="radio"]').length).toBe(
-    iconNames.length + 1,
-  );
+  expect(container.querySelectorAll('button[role="radio"]').length).toBe(iconNames.length + 1);
   expect(button("Plane").getAttribute("aria-checked")).toBe("true");
   await act(async () => button("Use default").click());
   expect(choose).toHaveBeenCalledWith(null);

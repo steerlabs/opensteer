@@ -28,11 +28,7 @@ import {
   UserIdSchema,
   type TeamPageLink,
 } from "@opensteer/core";
-import {
-  parseTeamLinkOffer,
-  type HostApiClient,
-  type TeamMember,
-} from "@opensteer/protocol";
+import { parseTeamLinkOffer, type HostApiClient, type TeamMember } from "@opensteer/protocol";
 import { z } from "zod";
 import type { MobileClient, MobileTeamConnection } from "../client/mobile-client.js";
 
@@ -51,13 +47,7 @@ export interface TeamTransport {
 
 /** How a team stands on this phone, as the drawer and a team screen say it. */
 export type TeamState =
-  | "signed-out"
-  | "loading"
-  | "live"
-  | "offline"
-  | "update-app"
-  | "update-server"
-  | "removed";
+  "signed-out" | "loading" | "live" | "offline" | "update-app" | "update-server" | "removed";
 
 export interface MobileTeam {
   readonly teamId: string;
@@ -120,7 +110,12 @@ export function intentOf(page: TeamPageLink): TeamLinkIntent {
         verifier: page.target.verifier,
       };
     case "channel":
-      return { kind: "open", origin: page.origin, channelId: page.target.channelId, messageId: null };
+      return {
+        kind: "open",
+        origin: page.origin,
+        channelId: page.target.channelId,
+        messageId: null,
+      };
     case "message":
       return {
         kind: "open",
@@ -261,7 +256,10 @@ export class MobileTeams {
         const linked = links
           .filter((link) => link.state !== "revoked" && link.state !== "leaving")
           .map((link) => ({ teamId: link.teamId, origin: link.origin, teamName: link.teamName }));
-        this.#memo = { ...this.#memo!, computers: { ...this.#memo!.computers, [computerId]: linked } };
+        this.#memo = {
+          ...this.#memo!,
+          computers: { ...this.#memo!.computers, [computerId]: linked },
+        };
         await this.#saveMemo();
         this.#publish();
         void this.select(this.#selected);
@@ -302,16 +300,18 @@ export class MobileTeams {
 
   team(teamId: string): MobileTeam | null {
     return (
-      [...this.#snapshot.teams, ...this.#snapshot.unlinked].find((team) => team.teamId === teamId) ??
-      null
+      [...this.#snapshot.teams, ...this.#snapshot.unlinked].find(
+        (team) => team.teamId === teamId,
+      ) ?? null
     );
   }
 
   /** The team whose origin a link names, if this phone holds it. */
   teamAt(origin: string): MobileTeam | null {
     return (
-      [...this.#snapshot.teams, ...this.#snapshot.unlinked].find((team) => team.origin === origin) ??
-      null
+      [...this.#snapshot.teams, ...this.#snapshot.unlinked].find(
+        (team) => team.origin === origin,
+      ) ?? null
     );
   }
 
@@ -500,7 +500,9 @@ export class MobileTeams {
    * A team Host at a link's origin: the one already held, or a verified new
    * entry the person has not joined yet. Verifying sends no credential.
    */
-  async locate(origin: string): Promise<
+  async locate(
+    origin: string,
+  ): Promise<
     | { readonly kind: "held"; readonly team: MobileTeam }
     | { readonly kind: "new"; readonly verified: VerifiedHostEndpoint }
   > {
@@ -508,7 +510,9 @@ export class MobileTeams {
     if (held !== null) return { kind: "held", team: held };
     const verified = await this.#verify(origin);
     if (verified.discovery.deploymentShape.kind !== "team")
-      throw new Error("That link isn't for a team. Ask whoever sent it for the team's invite link.");
+      throw new Error(
+        "That link isn't for a team. Ask whoever sent it for the team's invite link.",
+      );
     return { kind: "new", verified };
   }
 
@@ -532,8 +536,7 @@ export class MobileTeams {
       });
       await this.#client.catalog.upsert(input);
       connection = (await this.#client.catalog.load()).deployments.find(
-        ({ authority }) =>
-          authority.document.deploymentId === verified.discovery.deploymentId,
+        ({ authority }) => authority.document.deploymentId === verified.discovery.deploymentId,
       )!;
     } else {
       const held = this.teamAt(intent.origin);

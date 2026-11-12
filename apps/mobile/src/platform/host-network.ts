@@ -150,10 +150,12 @@ export function createTransportNetwork(options: {
     request: async ({ authorization, request, requestOrigin, signal, url }) => {
       const headers: Record<string, string> = {
         ...request.headers.additional,
-        accept: request.headers.accept ?? request.headers.additional?.["accept"] ?? "application/json",
+        accept:
+          request.headers.accept ?? request.headers.additional?.["accept"] ?? "application/json",
       };
       if (request.headers.contentType) headers["content-type"] = request.headers.contentType;
-      if (request.headers.idempotencyKey) headers["idempotency-key"] = request.headers.idempotencyKey;
+      if (request.headers.idempotencyKey)
+        headers["idempotency-key"] = request.headers.idempotencyKey;
       return createHostNetwork({
         authorization: { cached: () => authorization, current: async () => authorization },
         fetch: options.fetch,

@@ -1541,9 +1541,7 @@ describe("mobile pages", () => {
 
     press(menu(), "Sign in with Chrome");
     // The site is remembered for the Workspace, which the action says before any tap.
-    expect(container.textContent).toContain(
-      "Your agent will be able to use example.com as you.",
-    );
+    expect(container.textContent).toContain("Your agent will be able to use example.com as you.");
     await pressAsync(container, "Sign in with Chrome");
     expect(inspect).toHaveBeenCalledWith({ url: "https://mail.example.com/inbox" });
     expect(container.textContent).toContain("Choose the Chrome to use for example.com");

@@ -48,10 +48,7 @@ import {
   type Size,
 } from "../layout.js";
 import { color } from "../theme.js";
-import {
-  useHostUserId,
-  useSelectedHostClient,
-} from "../ui/mobile-client-context.js";
+import { useHostUserId, useSelectedHostClient } from "../ui/mobile-client-context.js";
 import { appear, exit } from "../ui/motion.js";
 import { Pane } from "../ui/pane.js";
 import type { ScrollMemory } from "../ui/retained-scroll.js";
@@ -191,8 +188,7 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     focused?.name === "NewTask" && typeof focusedParams?.["draftId"] === "string"
       ? focusedParams["draftId"]
       : null;
-  const openTeamId =
-    typeof focusedParams?.["teamId"] === "string" ? focusedParams["teamId"] : null;
+  const openTeamId = typeof focusedParams?.["teamId"] === "string" ? focusedParams["teamId"] : null;
   // The exact tab, app or phone in front, as its route names it; held while
   // the route's params are, so the panel is not redrawn for the same one.
   const pageParams = focused?.name === "WorkspaceBrowser" ? focused.params : undefined;
@@ -351,7 +347,9 @@ function SidebarFrame(props: ShellProps & { readonly bounds: Size }): ReactNode 
     };
     const homeDeployment = (): string | null => {
       const home = latest.current.routes[0];
-      return home !== undefined && isRecord(home.params) && typeof home.params["deploymentId"] === "string"
+      return home !== undefined &&
+        isRecord(home.params) &&
+        typeof home.params["deploymentId"] === "string"
         ? home.params["deploymentId"]
         : null;
     };

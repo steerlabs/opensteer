@@ -605,25 +605,25 @@ export function FirstMessageComposer(props: {
             accessory={
               <View style={styles.accessory}>
                 {props.folder ?? null}
-              <ComposerPills
-                accessMode={props.execution.accessMode}
-                accessModes={placement?.accessModes ?? null}
-                disabledReason={held || sending ? "Wait for the current change to finish." : null}
-                blockedReason={
-                  props.execution.accessReason ??
-                  (props.execution.blocked === null ? null : props.blocker?.reason)
-                }
-                driverKind={placement?.driverKind}
-                engineName={
-                  placement?.engineName ??
-                  (selection === null ? "Choose engine" : "Unavailable engine")
-                }
-                model={model}
-                modelLabel={props.selectionLabel}
-                modelOptions={selection?.modelSelection.options ?? {}}
-                onOpenModel={chooseManually}
-                onPresent={noop}
-              />
+                <ComposerPills
+                  accessMode={props.execution.accessMode}
+                  accessModes={placement?.accessModes ?? null}
+                  disabledReason={held || sending ? "Wait for the current change to finish." : null}
+                  blockedReason={
+                    props.execution.accessReason ??
+                    (props.execution.blocked === null ? null : props.blocker?.reason)
+                  }
+                  driverKind={placement?.driverKind}
+                  engineName={
+                    placement?.engineName ??
+                    (selection === null ? "Choose engine" : "Unavailable engine")
+                  }
+                  model={model}
+                  modelLabel={props.selectionLabel}
+                  modelOptions={selection?.modelSelection.options ?? {}}
+                  onOpenModel={chooseManually}
+                  onPresent={noop}
+                />
               </View>
             }
             action={

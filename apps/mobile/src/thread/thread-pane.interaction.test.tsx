@@ -2071,9 +2071,15 @@ describe("a link to an approval", () => {
     const first = joinedExchange("Plan the trip", "Also book the hotel", "Booked both.");
     const second = exchange("Send Maya the agenda", "Sent it.");
     const host = fakeHost(
-      snapshotFor({ entries: [...first.entries, ...second.entries], run: null, threadId: conversationId }),
+      snapshotFor({
+        entries: [...first.entries, ...second.entries],
+        run: null,
+        threadId: conversationId,
+      }),
     );
-    const { container } = await mount(host, conversationId, { requestId: second.receipt.requestId });
+    const { container } = await mount(host, conversationId, {
+      requestId: second.receipt.requestId,
+    });
 
     // The first exchange's quiet stretch before the added message draws no row.
     expect(rows(container).map(({ key }) => key)).toEqual([
@@ -2096,7 +2102,9 @@ describe("a link to an approval", () => {
 
   it("goes to the reply after a message that joined once the approval was answered", async () => {
     const joined = joinedExchange("Plan the trip", "Also book the hotel", "Booked both.");
-    const host = fakeHost(snapshotFor({ entries: joined.entries, run: null, threadId: conversationId }));
+    const host = fakeHost(
+      snapshotFor({ entries: joined.entries, run: null, threadId: conversationId }),
+    );
     await mount(host, conversationId, { requestId: joined.receipt.requestId });
 
     // Named by the stretch that holds the answer, which the reply going on never renames.
@@ -2508,7 +2516,10 @@ describe("a reply at work on a Mac", () => {
         threadId: conversationId,
       });
 
-    const shown = await mount(fakeHost(background(macs(sessions([notesSession(runId)])))), conversationId);
+    const shown = await mount(
+      fakeHost(background(macs(sessions([notesSession(runId)])))),
+      conversationId,
+    );
     expect(rows(shown.container).map(({ key }) => key)).toEqual([
       ask.id,
       `turn:after:${ask.id}`,
@@ -2565,7 +2576,10 @@ describe("a conversation's own title in its bar", () => {
     expect(named("Copy thread link")).toHaveLength(1);
 
     await press(chat.container, "Find in conversation…");
-    expect(harness.navigate).toHaveBeenCalledWith("ThreadFind", { deploymentId, threadId: conversationId });
+    expect(harness.navigate).toHaveBeenCalledWith("ThreadFind", {
+      deploymentId,
+      threadId: conversationId,
+    });
     await press(chat.container, "Copy thread link");
     const { setStringAsync } = await import("expo-clipboard");
     expect(setStringAsync).toHaveBeenCalledWith(expect.stringContaining(conversationId));
@@ -3390,7 +3404,9 @@ describe("task marks on a phone", () => {
 describe("a conversation in a pane that changes shape", () => {
   it("keeps its transcript and composer clear of the pane's own side and bottom insets", async () => {
     harness.insets = { bottom: 20, left: 44, right: 30, top: 0 };
-    const host = fakeHost(snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }));
+    const host = fakeHost(
+      snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }),
+    );
     const { container } = await mount(host, conversationId);
     const dock = container.querySelector<HTMLElement>('[data-testid="composer-dock"]');
     expect(JSON.parse(dock?.dataset["style"] ?? "{}")).toMatchObject({
@@ -3413,7 +3429,9 @@ describe("a conversation in a pane that changes shape", () => {
   });
 
   it("follows the newest entry through a reflow, and leaves a reader who scrolled back where they are", async () => {
-    const host = fakeHost(snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }));
+    const host = fakeHost(
+      snapshotFor({ entries: [], machines: [], run: null, threadId: conversationId }),
+    );
     await mount(host, conversationId);
     const list = () => {
       if (harness.list === null) throw new Error("No transcript list.");
@@ -4557,7 +4575,10 @@ describe("the Run's page above the conversation", () => {
       });
       const renders = harness.nativeRenders;
       const reply = wrote("Still streaming", runId, conversationId);
-      host.move({ ...host.client.getSnapshot(), transcripts: { [conversationId]: [ran(runId), reply] } });
+      host.move({
+        ...host.client.getSnapshot(),
+        transcripts: { [conversationId]: [ran(runId), reply] },
+      });
       expect(harness.nativeRenders).toBe(renders);
       await press(container, "Native place");
       expect(harness.dispatch).toHaveBeenLastCalledWith(

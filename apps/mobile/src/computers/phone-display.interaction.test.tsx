@@ -1331,9 +1331,7 @@ it("keeps passive native decoded pixels while the session binding is missing or 
   expect(state.decoded).toHaveLength(2);
   expect(state.decoded.at(-1)?.epoch).not.toBe(oldEpoch);
   expect(state.pixels).toBe(true);
-  await act(async () =>
-    view.move!({ machines: [{ ...machine, computerUse: null }] }),
-  );
+  await act(async () => view.move!({ machines: [{ ...machine, computerUse: null }] }));
   expect(state.epoch).not.toBe(before);
 });
 

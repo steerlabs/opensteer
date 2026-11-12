@@ -1,11 +1,7 @@
 import { PersonalTeamLinks, unwrapRpcResult } from "@opensteer/client/host";
 import type { TeamSessionClient } from "@opensteer/client/team";
 import { createId, TeamGroupIdSchema, TeamInviteIdSchema, UserIdSchema } from "@opensteer/core";
-import type {
-  HostApiCommandInput,
-  TeamGroupSchema,
-  TeamInviteSchema,
-} from "@opensteer/protocol";
+import type { HostApiCommandInput, TeamGroupSchema, TeamInviteSchema } from "@opensteer/protocol";
 import type { z } from "zod";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
@@ -69,7 +65,10 @@ function useGroups(session: TeamSessionClient | null): {
     let current = true;
     void session.rpc["team.groups.list"]({})
       .then(unwrapRpcResult)
-      .then((page) => current && setGroups(page.groups), () => undefined);
+      .then(
+        (page) => current && setGroups(page.groups),
+        () => undefined,
+      );
     return () => {
       current = false;
     };
@@ -94,7 +93,10 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
     void new PersonalTeamLinks(personal.rpc).list().then(
       (links) => {
         const link = links.find((row) => row.teamId === teamId && row.state === "active");
-        if (current) setAgentLink(link === undefined ? null : (personal.getSnapshot().ownerName ?? "your computer"));
+        if (current)
+          setAgentLink(
+            link === undefined ? null : (personal.getSnapshot().ownerName ?? "your computer"),
+          );
       },
       () => undefined,
     );
@@ -134,8 +136,7 @@ export function TeamSettingsScreen(props: TeamParams): ReactNode {
                 {
                   style: "destructive",
                   text: "Leave",
-                  onPress: () =>
-                    void teams.leave(teamId).then(() => navigation.popToTop(), failed),
+                  onPress: () => void teams.leave(teamId).then(() => navigation.popToTop(), failed),
                 },
               ],
             ),
@@ -305,7 +306,11 @@ export function TeamGroupScreen(
                   groupId: id,
                   childGroupId: TeamGroupIdSchema.parse(memberId),
                 }
-              : { type: "team.group.person.remove", groupId: id, userId: UserIdSchema.parse(memberId) },
+              : {
+                  type: "team.group.person.remove",
+                  groupId: id,
+                  userId: UserIdSchema.parse(memberId),
+                },
           ).then(reload, failed);
         }}
         paddingBottom={padding}
@@ -332,7 +337,10 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
     let current = true;
     void session.rpc["team.invites.list"]({})
       .then(unwrapRpcResult)
-      .then((page) => current && setInvites(page.invites), () => undefined);
+      .then(
+        (page) => current && setInvites(page.invites),
+        () => undefined,
+      );
     return () => {
       current = false;
     };
@@ -343,7 +351,10 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
   );
   const revokeLive = async (): Promise<void> => {
     if (live !== undefined)
-      await command(session, { type: "team.invite.revoke", inviteId: TeamInviteIdSchema.parse(live.id) });
+      await command(session, {
+        type: "team.invite.revoke",
+        inviteId: TeamInviteIdSchema.parse(live.id),
+      });
   };
   const makeLink = async (): Promise<void> => {
     await revokeLive();
@@ -367,7 +378,11 @@ export function TeamInvitesScreen(props: TeamParams): ReactNode {
           if (link === null) return;
           void Clipboard.setStringAsync(link).then(() => setCopied(true));
         }}
-        onEnabled={(on) => void (on ? makeLink() : revokeLive().then(() => setGeneration((n) => n + 1))).catch(failed)}
+        onEnabled={(on) =>
+          void (on ? makeLink() : revokeLive().then(() => setGeneration((n) => n + 1))).catch(
+            failed,
+          )
+        }
         onLanding={() => undefined}
         onNewLink={() => void makeLink().catch(failed)}
         onShare={() => {
@@ -395,7 +410,10 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
     let current = true;
     void session.rpc["team.channels.list"]({})
       .then(unwrapRpcResult)
-      .then((page) => current && setChannels(page.channels), () => undefined);
+      .then(
+        (page) => current && setChannels(page.channels),
+        () => undefined,
+      );
     return () => {
       current = false;
     };
@@ -409,7 +427,13 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
             .filter((channel) => channel.kind === "public" || channel.kind === "private")
             .map((channel) => (
               <LinkRow
-                detail={channel.archivedAt === null ? (channel.peopleOnly ? "People only" : null) : "Archived"}
+                detail={
+                  channel.archivedAt === null
+                    ? channel.peopleOnly
+                      ? "People only"
+                      : null
+                    : "Archived"
+                }
                 icon={channel.kind === "private" ? "lock" : "number"}
                 key={channel.id}
                 label={channel.name}
@@ -418,7 +442,10 @@ export function TeamChannelsScreen(props: TeamParams): ReactNode {
                     navigation.navigate("TeamChannel", { teamId, channelId: channel.id });
                   if (channel.can.read) open();
                   else if (channel.can.join)
-                    void command(session, { type: "team.channel.join", channelId: channel.id }).then(open, failed);
+                    void command(session, {
+                      type: "team.channel.join",
+                      channelId: channel.id,
+                    }).then(open, failed);
                 }}
               />
             ))}
@@ -439,7 +466,10 @@ export function TeamAuditScreen(props: TeamParams): ReactNode {
     let current = true;
     void session.rpc["team.audit.page"]({})
       .then(unwrapRpcResult)
-      .then((page) => current && setRows(page.audit), () => undefined);
+      .then(
+        (page) => current && setRows(page.audit),
+        () => undefined,
+      );
     return () => {
       current = false;
     };

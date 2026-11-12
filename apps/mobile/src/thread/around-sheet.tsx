@@ -119,8 +119,7 @@ function Around(props: {
   const fromMark = useHostSelector(
     hostClient,
     useCallback(
-      (snapshot: HostSnapshot) =>
-        from === null ? null : threadMark(from.threadId, snapshot),
+      (snapshot: HostSnapshot) => (from === null ? null : threadMark(from.threadId, snapshot)),
       [from],
     ),
     sameTaskMark,

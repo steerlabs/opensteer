@@ -1,8 +1,4 @@
-import {
-  mutationIdempotencyKey,
-  threadMark,
-  type HostClient,
-} from "@opensteer/client/host";
+import { mutationIdempotencyKey, threadMark, type HostClient } from "@opensteer/client/host";
 import { useHostSnapshot } from "@opensteer/client/react";
 import type { IconName } from "@opensteer/core";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
@@ -114,7 +110,6 @@ export function TaskIconPicker(props: {
     </PickerSheet>
   );
 }
-
 
 const styles = StyleSheet.create({
   keyboard: { flex: 1 },

@@ -10,11 +10,7 @@ import {
   type TeamMessageId,
 } from "@opensteer/core";
 import type { HostApiCommandInput, TeamMember, TeamMessage } from "@opensteer/protocol";
-import {
-  useFocusEffect,
-  useNavigation,
-  type StaticScreenProps,
-} from "@react-navigation/native";
+import { useFocusEffect, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import * as Clipboard from "expo-clipboard";
 import { File, Paths } from "expo-file-system";
@@ -35,7 +31,12 @@ import { useMobileClient, useSelectedHostClient } from "../ui/mobile-client-cont
 import { AppText, Notice } from "../ui/primitives.js";
 import { Screen } from "../ui/screen.js";
 import { Symbol } from "../ui/symbol.js";
-import { ChannelScreenBody, ChannelTitle, ThreadScreenBody, ThreadTitle } from "./channel-screen.js";
+import {
+  ChannelScreenBody,
+  ChannelTitle,
+  ThreadScreenBody,
+  ThreadTitle,
+} from "./channel-screen.js";
 import { messageActions, type MessageActionId } from "./message-row.js";
 import type { MobileTeam } from "./mobile-teams.js";
 import { dataUri, useTeamMembers, useTeamPreviews, useTeamSession } from "./team-context.js";
@@ -48,7 +49,12 @@ import type {
   StagedAttachmentView,
 } from "./team-models.js";
 import type { TeamComposerProps } from "./team-composer.js";
-import { pickTeamPhoto, uploadRefusal, uploadToTeam, type TeamUploadSource } from "./team-upload.js";
+import {
+  pickTeamPhoto,
+  uploadRefusal,
+  uploadToTeam,
+  type TeamUploadSource,
+} from "./team-upload.js";
 import {
   agentReach,
   channelHeader,
@@ -98,9 +104,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
   const memberCount = useChannelMemberCount(session, channelId);
   const header = useMemo(
     () =>
-      view?.channel
-        ? channelHeader({ channel: view.channel, memberCount, people: [] })
-        : null,
+      view?.channel ? channelHeader({ channel: view.channel, memberCount, people: [] }) : null,
     [memberCount, view?.channel],
   );
   useLayoutEffect(() => {
@@ -140,13 +144,7 @@ export function TeamChannelScreen(props: StaticScreenProps<TeamChannelRoute>): R
         teamId={teamId}
         view={view}
       >
-        {(place) => (
-          <ChannelScreenBody
-            {...place}
-            atStart={!view.hasMore}
-            channel={header}
-          />
-        )}
+        {(place) => <ChannelScreenBody {...place} atStart={!view.hasMore} channel={header} />}
       </Place>
     </Screen>
   );
@@ -167,7 +165,10 @@ export function TeamThreadScreen(props: StaticScreenProps<TeamThreadRoute>): Rea
       if (session === null) return;
       const held = session.getSnapshot().thread;
       if (held?.scope.kind !== "thread" || held.scope.rootId !== rootId)
-        session.selectThread(TeamChannelIdSchema.parse(channelId), TeamMessageIdSchema.parse(rootId));
+        session.selectThread(
+          TeamChannelIdSchema.parse(channelId),
+          TeamMessageIdSchema.parse(rootId),
+        );
     }, [channelId, rootId, session]),
   );
   const people = useTeamMembers(teamId);
@@ -429,7 +430,10 @@ function Place(props: {
     const body = asking ? `@${teamAgentHandle(me.handle)} ${words}` : words;
     const found = writtenMentions(body, props.members);
     const mentioned = asking
-      ? [{ userId: me.userId, kind: "agent" as const }, ...found.filter((row) => row.userId !== me.userId || row.kind !== "agent")]
+      ? [
+          { userId: me.userId, kind: "agent" as const },
+          ...found.filter((row) => row.userId !== me.userId || row.kind !== "agent"),
+        ]
       : found;
     setFailure(null);
     try {
@@ -551,7 +555,10 @@ function Place(props: {
     const blob = await session.file(file, true);
     if (blob === null) return;
     const uri = await dataUri(blob);
-    const target = new File(Paths.cache, `team-${file.id}-${file.filename.replace(/[^\w.-]+/g, "_")}`);
+    const target = new File(
+      Paths.cache,
+      `team-${file.id}-${file.filename.replace(/[^\w.-]+/g, "_")}`,
+    );
     if (target.exists) target.delete();
     target.create();
     target.write(base64Bytes(uri.slice(uri.indexOf(",") + 1)));
@@ -579,7 +586,8 @@ function Place(props: {
     onMention: () => changeText(`${text.slice(0, selection.start)}@${text.slice(selection.end)}`),
     attachments: staged.map(stagedView),
     onAttach: () => void attach(),
-    onRemoveAttachment: (id) => setStaged((held) => held.filter((row) => row.source.localId !== id)),
+    onRemoveAttachment: (id) =>
+      setStaged((held) => held.filter((row) => row.source.localId !== id)),
     onSend: () => void send(),
     ...(failure === null
       ? {}
@@ -597,8 +605,10 @@ function Place(props: {
       {props.children({
         actions: {
           onHold: (id) => setHeld(byId(id)),
-          onOpenAttachment: (messageId, fileId) => void openFile(messageId, fileId).catch(() => undefined),
-          onOpenThread: (id) => navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
+          onOpenAttachment: (messageId, fileId) =>
+            void openFile(messageId, fileId).catch(() => undefined),
+          onOpenThread: (id) =>
+            navigation.navigate("TeamThread", { teamId, channelId, rootId: id }),
           onOpenTask: (messageId) => void openTask(null, messageId).catch(() => undefined),
           onUnsent: (messageId, choice) => {
             const clientMessageId = messageId.replace(/^pending:/, "");
@@ -618,7 +628,9 @@ function Place(props: {
           onOpenCardTask: (requestId) => void openTask(requestId, null).catch(() => undefined),
           onJump: () => setFollowing(true),
           onLoadOlder: () =>
-            void session.loadPage(rootId === null ? "channel" : "thread", "before").catch(() => undefined),
+            void session
+              .loadPage(rootId === null ? "channel" : "thread", "before")
+              .catch(() => undefined),
           onFollowingChange: setFollowing,
         },
         banner,
@@ -728,7 +740,11 @@ function useConnectionBanner(
   if (!late || connection === "connected") return null;
   return connection === "connecting"
     ? { text: `Reconnecting to ${name}…`, tone: "muted", action: null }
-    : { text: `Can't reach ${name}`, tone: "danger", action: { label: "Try again", onPress: retry } };
+    : {
+        text: `Can't reach ${name}`,
+        tone: "danger",
+        action: { label: "Try again", onPress: retry },
+      };
 }
 
 const styles = StyleSheet.create({
@@ -737,4 +753,3 @@ const styles = StyleSheet.create({
   fill: { flex: 1 },
   waiting: { alignItems: "center", flex: 1, justifyContent: "center", padding: space[16] },
 });
-

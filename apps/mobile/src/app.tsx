@@ -582,7 +582,8 @@ export function App(): ReactNode {
         const open = (): void => {
           if (outcome.kind === "team-notice" && team !== null)
             navigationRef.navigate("TeamNotices", { teamId: team.teamId });
-          else if (outcome.kind === "team") navigationRef.navigate("JoinTeam", { link: outcome.page });
+          else if (outcome.kind === "team")
+            navigationRef.navigate("JoinTeam", { link: outcome.page });
         };
         if (navigationRef.isReady()) open();
         else waitingTeamLink.current = open;
@@ -839,13 +840,13 @@ export function App(): ReactNode {
                     )}
                     <AppLinksProvider value={appLinks}>
                       <MobileTeamsProvider teams={teams}>
-                      <Navigation
-                        initialState={initialNavigationState}
-                        onReady={handleNavigatorReady}
-                        onStateChange={syncDeferredRootSelection}
-                        ref={navigationRef}
-                        theme={navigationTheme}
-                      />
+                        <Navigation
+                          initialState={initialNavigationState}
+                          onReady={handleNavigatorReady}
+                          onStateChange={syncDeferredRootSelection}
+                          ref={navigationRef}
+                          theme={navigationTheme}
+                        />
                       </MobileTeamsProvider>
                     </AppLinksProvider>
                     <ConnectionPill />

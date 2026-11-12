@@ -1,10 +1,6 @@
 import type { DeploymentConnection } from "@opensteer/client/connections";
 import type { HostClient } from "@opensteer/client/host";
-import {
-  MockDesktopUpdates,
-  MockHostClient,
-  type MockSubagentScene,
-} from "@opensteer/client/mock";
+import { MockDesktopUpdates, MockHostClient, type MockSubagentScene } from "@opensteer/client/mock";
 import type { HostApiCommandInput } from "@opensteer/protocol";
 import type { MobileHostPortFactory } from "./host-port.js";
 import { mockSignedOutDeploymentId } from "./mock-mode.js";
@@ -34,15 +30,11 @@ export function createMockHostPort(
   const attach = (connection: DeploymentConnection): HostClient => {
     const hosts = options.hosts;
     if (hosts === undefined)
-      return new MockHostClient({
-        ...(options.subagents ? { subagents: options.subagents } : {}),
-      });
+      return new MockHostClient(options.subagents ? { subagents: options.subagents } : {});
     const deploymentId = connection.authority.document.deploymentId;
     let host = hosts.get(deploymentId);
     if (host === undefined) {
-      const created = new MockHostClient({
-        ...(options.subagents ? { subagents: options.subagents } : {}),
-      });
+      const created = new MockHostClient(options.subagents ? { subagents: options.subagents } : {});
       const dispatch = created.dispatch.bind(created);
       created.dispatch = async (command) => {
         const result = await dispatch(command);

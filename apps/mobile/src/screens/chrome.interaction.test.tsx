@@ -244,10 +244,7 @@ describe("mobile Chrome", () => {
           name: "Chrome on Mac",
         },
       ],
-      [
-        grant("https://github.com", "2026-09-22T10:00:00.000Z"),
-        grant("https://example.com"),
-      ],
+      [grant("https://github.com", "2026-09-22T10:00:00.000Z"), grant("https://example.com")],
     );
     await render();
 

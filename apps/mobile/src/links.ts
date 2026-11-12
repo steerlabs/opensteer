@@ -139,7 +139,8 @@ export function routeSetupCode(
 export function parseTeamNoticeLink(
   value: string,
 ): { readonly origin: string; readonly teamId: string; readonly noticeId: string } | null {
-  if (!value.startsWith(`${mobileDeepLinkScheme}:/team-notice?`) || value.includes("#")) return null;
+  if (!value.startsWith(`${mobileDeepLinkScheme}:/team-notice?`) || value.includes("#"))
+    return null;
   let url: URL;
   try {
     url = new URL(value);

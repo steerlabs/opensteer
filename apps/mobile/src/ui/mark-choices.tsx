@@ -1,10 +1,5 @@
 import { markColorPaint, iconArt, folderMonogram } from "@opensteer/client/host";
-import {
-  markColors,
-  iconNames,
-  type MarkColor,
-  type IconName,
-} from "@opensteer/core";
+import { markColors, iconNames, type MarkColor, type IconName } from "@opensteer/core";
 import { useMemo, useState, type ReactNode } from "react";
 import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { color, material, radius, space, touchTarget } from "../theme.js";

@@ -333,20 +333,20 @@ export function PhoneUseBlock(props: {
         </View>
       )}
       <View style={styles.section}>
-          <SectionLabel>Access</SectionLabel>
-          <RowGroup>
-            {([null, "read", "read-write"] as const).map((access) => (
-              <ChoiceRow
-                description={view.access === access ? "Current access" : "Set access"}
-                disabled={disabled || view.access === access}
-                key={access ?? "off"}
-                onPress={() => setAccess(access)}
-                title={access === null ? "Off" : computerUseAccessLabel[access]}
-              />
-            ))}
-          </RowGroup>
-          <FailureText detail={failureFor("access")} />
-        </View>
+        <SectionLabel>Access</SectionLabel>
+        <RowGroup>
+          {([null, "read", "read-write"] as const).map((access) => (
+            <ChoiceRow
+              description={view.access === access ? "Current access" : "Set access"}
+              disabled={disabled || view.access === access}
+              key={access ?? "off"}
+              onPress={() => setAccess(access)}
+              title={access === null ? "Off" : computerUseAccessLabel[access]}
+            />
+          ))}
+        </RowGroup>
+        <FailureText detail={failureFor("access")} />
+      </View>
     </View>
   );
 }
