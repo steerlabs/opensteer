@@ -174,28 +174,30 @@ export class MockTeamHost {
     ) as HostApiClient;
   }
   sidebar(): TeamSidebar {
+    const channels = [...this.channels.values()].map(
+      ({ instructionsMarkdown: _instructions, instructionsRevision: _revision, ...channel }) => ({
+        channel,
+        unread:
+          channel.latestMessageId !== null &&
+          BigInt(channel.latestMessageId) > BigInt(this.#reads.get(channel.id) ?? "0"),
+        mentionCount: [...this.messages.values()].filter(
+          (message) =>
+            message.channelId === channel.id &&
+            BigInt(message.id) > BigInt(this.#reads.get(channel.id) ?? "0") &&
+            message.mentions.some((mention) => mention.userId === this.userId),
+        ).length,
+        lastReadMessageId: this.#reads.has(channel.id)
+          ? TeamMessageIdSchema.parse(this.#reads.get(channel.id))
+          : null,
+        notificationLevel: this.#preferences.get(channel.id) ?? "mentions",
+        agentOnline: true,
+      }),
+    );
     return {
       accessRevision: SequenceSchema.parse("1"),
       nextCursor: null,
-      channels: [...this.channels.values()].map(
-        ({ instructionsMarkdown: _instructions, instructionsRevision: _revision, ...channel }) => ({
-          channel,
-          unread:
-            channel.latestMessageId !== null &&
-            BigInt(channel.latestMessageId) > BigInt(this.#reads.get(channel.id) ?? "0"),
-          mentionCount: [...this.messages.values()].filter(
-            (message) =>
-              message.channelId === channel.id &&
-              BigInt(message.id) > BigInt(this.#reads.get(channel.id) ?? "0") &&
-              message.mentions.some((mention) => mention.userId === this.userId),
-          ).length,
-          lastReadMessageId: this.#reads.has(channel.id)
-            ? TeamMessageIdSchema.parse(this.#reads.get(channel.id))
-            : null,
-          notificationLevel: this.#preferences.get(channel.id) ?? "mentions",
-          agentOnline: true,
-        }),
-      ),
+      channels,
+      totalMentionCount: channels.reduce((total, row) => total + row.mentionCount, 0),
     };
   }
   #sidebarPage(after?: string, channelIds?: readonly TeamChannelId[]): TeamSidebar {

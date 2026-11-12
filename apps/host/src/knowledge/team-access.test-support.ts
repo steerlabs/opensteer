@@ -17,7 +17,7 @@ export interface TeamAccessPauses {
 export function testTeamAccess(database: Kysely<DatabaseSchema>) {
   const pauses: TeamAccessPauses = {};
   const changes: { readonly actor: TeamActor; readonly action: string }[] = [];
-  const access = new (class extends TeamAccessStore {
+  const access: TeamAccessStore = new (class extends TeamAccessStore {
     override async mutateAs<Value>(
       actor: TeamActor,
       action: string,
