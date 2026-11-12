@@ -6,7 +6,7 @@
   height: 100%;
   background: #f6f8fc;
   color: #1f1f1f;
-  font: 13px/1.4 var(--mac-font);
+  font: 14px/1.4 var(--mac-font);
 }
 .gm svg {
   width: 18px;
@@ -92,7 +92,7 @@
 .gm-side {
   display: flex;
   flex-direction: column;
-  width: 172px;
+  width: 248px;
   padding-right: 10px;
   flex: none;
 }
@@ -189,7 +189,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 38px;
+  height: 40px;
   padding: 0 14px;
   border-bottom: 1px solid #f0f0f0;
   background: #f2f6fc;
@@ -245,8 +245,8 @@
   z-index: 3;
   display: flex;
   flex-direction: column;
-  width: 440px;
-  height: 394px;
+  width: 510px;
+  height: 480px;
   border-radius: 10px 10px 0 0;
   background: #fff;
   box-shadow:
@@ -498,10 +498,6 @@
   height: 100%;
   background: rgb(255 255 255 / 40%);
 }
-.grp[data-gm-saved] .gm-send {
-  background: #0842a0;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 30%);
-}
 .gm .gm-send svg {
   width: 10px;
   height: 6px;
@@ -527,4 +523,35 @@
 }
 .gm-search .gm-tune {
   margin-left: auto;
+}
+
+/* The snackbar Gmail shows after a send */
+.gm-toast {
+  position: absolute;
+  left: 24px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  height: 48px;
+  padding: 0 24px;
+  border-radius: 4px;
+  background: #202124;
+  color: #fff;
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 200ms,
+    transform 200ms var(--ease-out);
+}
+.gm-toast b {
+  color: #8ab4f8;
+  font-weight: 500;
+}
+.grp[data-gm-sent] .gm-toast {
+  opacity: 1;
+  transform: none;
+}
+.grp[data-gm-over-send] .gm-send {
+  background: #0842a0;
 }

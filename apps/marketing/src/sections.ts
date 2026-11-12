@@ -1,5 +1,12 @@
-import { ENGINES } from "./demo/agents.js";
-import { byId, find, icon, reducedMotion } from "./dom.js";
+import { browser } from "./demo/apps/browser.js";
+import { calendar } from "./demo/apps/calendar.js";
+import { gmail } from "./demo/apps/gmail.js";
+import { hubspot } from "./demo/apps/hubspot.js";
+import { stripe } from "./demo/apps/stripe.js";
+import { zendesk } from "./demo/apps/zendesk.js";
+import { group } from "./demo/desktop.js";
+import { createPhone, PHONE, type TaskView } from "./demo/phone.js";
+import { byId, find, reducedMotion, restart } from "./dom.js";
 
 function nav(): void {
   const bar = byId("nav");
@@ -22,169 +29,161 @@ function reveal(): void {
   document.querySelectorAll(".reveal").forEach((el) => seen.observe(el));
 }
 
-function engines(): void {
-  const list = byId("engines");
-  const note = byId("engineNote");
-  let picked = 0;
-  let cycling = true;
-  const buttons = ENGINES.map((engine, index) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "engine";
-    button.innerHTML = `<span class="engine__logo">${icon(engine.mark)}</span><span class="engine__text"><span class="engine__name">${engine.name}</span><span class="engine__sub"><span class="dot dot--done"></span>${engine.plan}</span></span>`;
-    button.addEventListener("click", () => {
-      cycling = false;
-      pick(index);
-    });
-    list.appendChild(button);
-    return button;
-  });
-  function pick(index: number): void {
-    picked = index;
-    buttons.forEach((button, at) => button.setAttribute("aria-pressed", String(at === index)));
-    note.innerHTML = `Next task runs on <b>${ENGINES[index]?.name ?? ""}</b>. Same thread, same history.`;
-  }
-  pick(0);
-  if (!reducedMotion)
-    setInterval(() => {
-      if (cycling) pick((picked + 1) % ENGINES.length);
-    }, 2400);
-}
-
-const SITES = [
-  ["Mail", "#e77e76"],
-  ["Bank", "#71c6a5"],
-  ["CRM", "#84b5e0"],
-  ["Docs", "#dfb36b"],
-  ["Calendar", "#c58af9"],
-  ["Shop", "#e6beb0"],
-] as const;
-
-function setup(): void {
-  const grid = byId("sites");
-  const button = byId<HTMLButtonElement>("connect");
-  const count = byId("loginCount");
-  const tiles = SITES.map(([name, color]) => {
-    const tile = document.createElement("div");
-    tile.className = "site";
-    tile.innerHTML = `<span class="mark" style="--c:${color}">${name[0]}</span>${name}<span class="site__state">Not connected</span>`;
-    grid.appendChild(tile);
-    return tile;
-  });
-  let connected = false;
-  function connect(): void {
-    if (connected) return;
-    connected = true;
-    button.textContent = "Connecting…";
-    tiles.forEach((tile, index) =>
-      setTimeout(
-        () => {
-          tile.classList.add("is-on");
-          find(tile, ".site__state").textContent = "Signed in";
-          count.textContent = `${Math.round(((index + 1) / tiles.length) * 128)} saved logins`;
-          if (index === tiles.length - 1) {
-            button.textContent = "Chrome connected";
-            button.disabled = true;
-          }
-        },
-        reducedMotion ? 0 : 260 + index * 220,
-      ),
-    );
-  }
-  button.addEventListener("click", connect);
+/** Runs `play` each time `root` scrolls into view, and `stop` when it leaves, so nothing animates offscreen. */
+function whileVisible(root: Element, play: () => void, stop: () => void): void {
   new IntersectionObserver(
-    ([entry], observer) => {
-      if (!entry?.isIntersecting) return;
-      setTimeout(connect, 900);
-      observer.disconnect();
+    ([entry]) => {
+      stop();
+      if (entry?.isIntersecting) play();
     },
-    { threshold: 0.6 },
-  ).observe(grid);
+    { threshold: 0.3 },
+  ).observe(root);
 }
 
-const RUNS = [
-  "Inbox summary sent to your phone · 14 emails, 2 need replies",
-  "Invoice from Halcyon filed · payment drafted",
-  "PR #317 reviewed · 1 suggestion, tests passing",
-];
+const TABS = [stripe, gmail, hubspot, zendesk, calendar];
+const NARROW = "(max-width: 720px)";
 
-function automations(): void {
-  const log = byId("runlog");
-  const next = byId("trigNext");
-  function line(text: string): void {
-    const row = document.createElement("div");
-    row.innerHTML = `${icon("i-check")}<span>${text}</span>`;
-    log.prepend(row);
-    while (log.children.length > 2) log.lastElementChild?.remove();
-  }
-  line("PR #316 reviewed · approved, tests passing");
-  let seconds = 12;
-  let fired = 0;
-  setInterval(() => {
-    seconds -= 1;
-    if (seconds <= 0) {
-      const which = fired % RUNS.length;
-      const trigger = byId(`trig${which}`);
-      trigger.classList.add("trigger--firing");
-      setTimeout(() => trigger.classList.remove("trigger--firing"), 1400);
-      line(RUNS[which] ?? "");
-      fired += 1;
-      seconds = 12;
-    }
-    next.textContent = `in 0:${String(seconds).padStart(2, "0")}`;
-  }, 1000);
-}
+/** Chrome's top, cropped: the agent's cursor goes from tab to tab, and every site is already signed in. */
+function signedIn(): void {
+  const root = byId("signedShot");
+  root.innerHTML = `<div class="shot__in">${group("support", "Dana's double charge", browser("left:0;top:0;width:1200px;height:708px", TABS))}</div>`;
+  const inner = find(root, ".shot__in");
+  const agent = find(inner, ".grp");
+  const cursor = find(agent, ".acur");
+  ["data-on", "data-busy", "data-pointing"].forEach((name) => agent.toggleAttribute(name, true));
+  const narrow = matchMedia(NARROW);
+  let scale = 1;
+  let at = 0;
+  let timers: number[] = [];
 
-const DEVICES = ["iPhone", "Laptop", "Web", "Slack", "iMessage", "Agent Phone"];
-
-function constellation(): void {
-  const root = byId("constellation");
-  const lines = byId("lines");
-  DEVICES.forEach((device, index) => {
-    const angle = (index / DEVICES.length) * Math.PI * 2 - Math.PI / 2;
-    const x = 50 + Math.cos(angle) * 40;
-    const y = 50 + Math.sin(angle) * 40;
-    const chip = document.createElement("span");
-    chip.className = "dev";
-    chip.style.left = `${x}%`;
-    chip.style.top = `${y}%`;
-    chip.textContent = device;
-    root.appendChild(chip);
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", "50");
-    line.setAttribute("y1", "50");
-    line.setAttribute("x2", String(x));
-    line.setAttribute("y2", String(y));
-    line.style.animationDelay = `${-index * 0.27}s`;
-    lines.appendChild(line);
-  });
-}
-
-function copyButtons(): void {
-  document.querySelectorAll<HTMLButtonElement>(".copy").forEach((button) =>
-    button.addEventListener("click", () => {
-      navigator.clipboard.writeText(button.dataset.copy ?? "").catch(() => {
-        const range = document.createRange();
-        if (button.previousElementSibling) range.selectNodeContents(button.previousElementSibling);
-        const selection = getSelection();
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      });
-      button.innerHTML = icon("i-check");
-      setTimeout(() => {
-        button.innerHTML = icon("i-copy");
-      }, 1400);
-    }),
+  const point = (): void => {
+    const tab = find(inner, `.br-tab[data-for="${TABS[at]?.id}"]`);
+    const box = tab.getBoundingClientRect();
+    const frame = inner.getBoundingClientRect();
+    const x = (box.left - frame.left + box.width * 0.5) / scale;
+    const y = (box.top - frame.top + box.height * 0.6) / scale;
+    cursor.style.transform = `translate(${x}px, ${y}px)`;
+  };
+  const open = (): void => {
+    const id = TABS[at]?.id;
+    inner.querySelectorAll<HTMLElement>("[data-win], [data-for]").forEach((part) => {
+      if (part.classList.contains("win")) return;
+      part.classList.toggle("is-on", (part.dataset.win ?? part.dataset.for) === id);
+    });
+  };
+  const fit = (): void => {
+    scale = root.clientWidth / (narrow.matches ? 660 : 1200);
+    inner.style.transform = `scale(${scale})`;
+    point();
+  };
+  new ResizeObserver(fit).observe(root);
+  fit();
+  if (reducedMotion) return;
+  const stop = (): void => {
+    timers.forEach((id) => window.clearTimeout(id));
+    timers = [];
+  };
+  const step = (): void => {
+    at = (at + 1) % TABS.length;
+    point();
+    timers = [
+      window.setTimeout(() => {
+        restart(cursor, "is-click");
+        open();
+      }, 750),
+      window.setTimeout(step, 2600),
+    ];
+  };
+  whileVisible(
+    root,
+    () => {
+      timers = [window.setTimeout(step, 1200)];
+    },
+    stop,
   );
+}
+
+const SLACK = `<div class="slack">
+  <div class="slack__bar"><i class="slack__app"><span class="orb"></span></i>Opensteer<em>APP</em></div>
+  <div class="slack__feed">
+    <div class="slack__msg"><i>AR</i><div><b>Alex Rivera</b><time>9:41 AM</time><p>Refund Dana's duplicate charge.</p></div></div>
+    <div class="slack__msg" data-part="reply" hidden><i class="slack__app"><span class="orb"></span></i><div><b>Opensteer</b><em>APP</em><time>9:42 AM</time><p>Refunded $480 to Northwind and replied to Dana. Ticket #4821 is solved.</p></div></div>
+  </div>
+  <div class="slack__box">Message Opensteer</div>
+</div>`;
+
+const ASKED: TaskView = {
+  id: "support",
+  title: "Dana's double charge",
+  status: "needs",
+  opener: { text: "Refund Dana's duplicate charge." },
+  steps: [
+    { icon: "globe", text: "Opened ticket #4821 in Zendesk" },
+    { icon: "globe", text: "Looked up Northwind in Stripe" },
+  ],
+  message: null,
+  worked: "Worked for 21s",
+};
+const ANSWERED: TaskView = {
+  ...ASKED,
+  status: "done",
+  message: "I refunded the extra $480 and replied to Dana. Ticket #4821 is solved.",
+};
+const DENIED: TaskView = {
+  ...ASKED,
+  status: "stopped",
+  message: "I didn't refund anything. Dana's ticket is still open.",
+};
+const REQUEST = {
+  title: "Refund $480 to Northwind?",
+  body: "Duplicate charge for invoice 2291 on Nov 3, Visa •••• 4242.",
+};
+
+/** Asked in Slack, approved on the phone, answered in Slack. */
+function steer(): void {
+  const root = byId("steerShot");
+  root.innerHTML = `<div class="steer__phone">${PHONE}</div>${SLACK}`;
+  const reply = find(root, '[data-part="reply"]');
+  let timers: number[] = [];
+  const stop = (): void => {
+    timers.forEach((id) => window.clearTimeout(id));
+    timers = [];
+  };
+  const allowed = (): void => {
+    phone.showThread(ANSWERED, null);
+    reply.hidden = false;
+    restart(reply, "is-new");
+  };
+  const phone = createPhone(find(root, ".iphone"), {
+    pick() {},
+    back() {},
+    push() {},
+    answer(answer) {
+      stop();
+      if (answer === "allow") return allowed();
+      reply.hidden = true;
+      phone.showThread(DENIED, null);
+    },
+  });
+  phone.setView("thread");
+  if (reducedMotion) return allowed();
+  const play = (): void => {
+    reply.hidden = true;
+    phone.showThread({ ...ASKED, status: "working" }, null);
+    timers = [
+      window.setTimeout(() => phone.showThread(ASKED, REQUEST), 1200),
+      window.setTimeout(() => phone.tap(phone.allow), 4200),
+      window.setTimeout(allowed, 4520),
+      window.setTimeout(play, 10000),
+    ];
+  };
+  whileVisible(root, play, stop);
 }
 
 export function startSections(): void {
   document.documentElement.classList.add("js");
   nav();
   reveal();
-  engines();
-  setup();
-  automations();
-  constellation();
-  copyButtons();
+  signedIn();
+  steer();
 }

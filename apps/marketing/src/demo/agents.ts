@@ -4,16 +4,17 @@ export interface Engine {
   readonly name: string;
   /** Id of the mark in the page's icon sprite. */
   readonly mark: string;
-  readonly plan: string;
+  /** The model the app's composer names for it. */
+  readonly model: string;
 }
 
 export const ENGINES: readonly Engine[] = [
-  { name: "Claude Code", mark: "e-anthropic", plan: "Claude subscription" },
-  { name: "Codex", mark: "e-openai", plan: "ChatGPT subscription" },
-  { name: "Cursor", mark: "e-cursor", plan: "Cursor subscription" },
-  { name: "Grok", mark: "e-xai", plan: "SuperGrok subscription" },
-  { name: "OpenCode", mark: "e-opencode", plan: "Any provider" },
-  { name: "Pi", mark: "e-pi", plan: "Local model on this Mac" },
+  { name: "Claude Code", mark: "e-anthropic", model: "Claude Opus 5" },
+  { name: "Codex", mark: "e-openai", model: "GPT-5.6-Sol" },
+  { name: "Cursor", mark: "e-cursor", model: "Composer 2.5" },
+  { name: "Grok", mark: "e-xai", model: "Grok 5" },
+  { name: "OpenCode", mark: "e-opencode", model: "Claude Sonnet 5" },
+  { name: "Pi", mark: "e-pi", model: "Qwen3 8B" },
 ];
 
 export interface Agent {

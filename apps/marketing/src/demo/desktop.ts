@@ -26,13 +26,16 @@ const MENU_BAR = `<div class="menubar" aria-hidden="true"><svg class="menubar__s
 const DOCK_APPS = ["d-files", "d-web", "d-mail", "d-cols", "d-cal", "d-msgs", "d-term", "d-os"];
 const DOCK = `<div class="dock" aria-hidden="true">${DOCK_APPS.map((id) => `<span class="dock__app is-running">${use(id)}</span>`).join("")}<span class="dock__sep"></span><span class="dock__app">${use("d-trash")}</span></div>`;
 
-/** One agent's windows, its name tag for when it is parked, and its cursor. */
-export function group(id: AgentId, windows: string): string {
-  const agent = AGENTS[id];
-  return `<div class="grp" data-agent="${id}" data-slot="main" style="--ac:${agent.color}">${windows}<span class="grp__tag">${agent.name}</span><div class="acur">${use("m-cur2")}<b>${agent.name}</b></div></div>`;
+/** The product's agent cursor: an arrow in the task's color with a white keyline, tagged with the task. */
+const cursor = (task: string): string =>
+  `<div class="acur"><svg viewBox="0 0 16 18"><path d="M2 2 2 15.2 5.6 11.9 8.1 17.3 10.4 16.3 8 11 13 10.7Z" fill="currentColor" stroke="#fff" stroke-linejoin="round" stroke-width="1.5"/></svg><b>${task}</b></div>`;
+
+/** One agent's windows and its cursor, in desktop points. */
+export function group(id: AgentId, task: string, windows: string): string {
+  return `<div class="grp" data-agent="${id}" style="--ac:${AGENTS[id].color}">${windows}${cursor(task)}</div>`;
 }
 
-/** The desktop's contents. The same markup is drawn on the Mac and, smaller, in the phone's live view. */
+/** The desktop's contents. The same markup is drawn on the Mac and, smaller, in the phone's live page. */
 export function desktop(groups: string): string {
   return `${MENU_BAR}${groups}${DOCK}`;
 }
@@ -45,9 +48,8 @@ export function macbook(contents: string): string {
     <div class="mb-lid">
       <div class="mb-notch"><i></i></div>
       <div class="mb-hinge"></div>
-      <div class="mb-display"><div class="desk">${WALLPAPER}${contents}<div class="vp"><b>On your phone</b></div></div><div class="mb-glare"></div></div>
+      <div class="mb-display"><div class="desk">${WALLPAPER}${contents}</div><div class="mb-glare"></div></div>
     </div>
   </div>
-  <div class="mb-glow"></div>
 </div>`;
 }

@@ -2,10 +2,9 @@ import "./demo.css";
 import { clamp, find, icon, reducedMotion } from "../dom.js";
 import { AGENTS, type AgentId, ENGINES, engineOf, ORDER } from "./agents.js";
 import { createClock } from "./clock.js";
-import { glideRail } from "./rail.js";
-import { DESKTOP, LIVE, MAIN_SLOT } from "./geometry.js";
+import { DESKTOP, PAGE, PHONE_ONLY } from "./geometry.js";
 import { desktop, group, macbook } from "./desktop.js";
-import { createPhone, PHONE } from "./phone.js";
+import { createPhone, PHONE, type View } from "./phone.js";
 import { createRunner, type Env, type Runner, type Scene } from "./scene.js";
 import { engineer } from "./scenes/engineer.js";
 import { sales } from "./scenes/sales.js";
@@ -13,65 +12,69 @@ import { support } from "./scenes/support.js";
 import { createStage, STAGE } from "./stage.js";
 
 const SCENES: Record<AgentId, Scene> = { support, engineer, sales };
-/** The agent whose story the phone follows by itself until the visitor takes over. */
-const FOLLOWED: AgentId = "support";
 
+/** Where a view of `size` starts so it centers on `at` without leaving a page that starts at `start`. */
+const within = (at: number, size: number, start: number, length: number): number =>
+  length <= size ? start - (size - length) / 2 : clamp(at - size / 2, start, start + length - size);
+
+/** How long the demo keeps its own fingers off the phone after the visitor touches it. */
+const VISITOR_QUIET = 6000;
+
+/** One agent's story plays at a time; a push from the next agent hands the stage over. */
 export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
-  const groups = ORDER.map((id) => group(id, SCENES[id].windows)).join("");
-  root.innerHTML = `${STAGE.replace("<!--mac-->", macbook(desktop(groups))).replace("<!--phone-->", PHONE)}<div class="tabs" role="group" aria-label="Pick an agent to watch"></div>`;
+  const groups = ORDER.map((id) => group(id, SCENES[id].task, SCENES[id].windows)).join("");
+  root.innerHTML = STAGE.replace("<!--mac-->", macbook(desktop(groups))).replace(
+    "<!--phone-->",
+    PHONE,
+  );
   const wrap = find(root, ".scene-wrap");
   const clock = createClock();
+  const stage = createStage(root);
   const macDesk = find(root, ".mb-display .desk");
-  const region = find(macDesk, ".vp");
-  const stage = createStage(wrap, {
-    live: find(root, ".ip-live"),
-    region,
-    later: (ms, run) => clock.at(ms, run, "stage"),
-  });
+  const narrow = matchMedia(PHONE_ONLY);
 
-  let watched: AgentId = FOLLOWED;
-  let view: "list" | "task" = "list";
-  let following = true;
-  let visible = false;
+  /** Whose story is running. */
+  let active: AgentId = ORDER[0] ?? "support";
+  /** Whose windows are on the Mac: the running story's, once a trigger or the person has started it. */
+  let onMac: AgentId = active;
+  /** Whose thread the phone opens. */
+  let shown: AgentId = active;
+  let view: View = reducedMotion ? "list" : "home";
+  let touchedAt = -Infinity;
+  let folding = 0;
+  /** The first play opens close on the phone; its first thread pulls back to show the Mac. */
+  let intro = !reducedMotion;
+  stage.intro(intro);
+  const endIntro = (): void => {
+    if (!intro) return;
+    intro = false;
+    stage.intro(false);
+  };
+  let push: { readonly id: AgentId; readonly text: string } | null = null;
   let pausedByVisitor = false;
   let frozen: Animation[] = [];
-  /** Agents whose waiting-request banner has stepped aside; their tab still says "Needs you". */
-  const hushed = new Set<AgentId>();
-  const hushing = new Set<AgentId>();
-
-  const bannerOwner = (): AgentId | undefined =>
-    ORDER.find((id) => runners[id].banner !== null) ??
-    ORDER.find(
-      (id) =>
-        runners[id].request?.state === "open" &&
-        !(watched === id && view === "task") &&
-        !hushed.has(id),
-    );
 
   const phone = createPhone(find(root, ".iphone"), {
-    pick: (id) => select(id, true),
-    back() {
-      following = false;
-      runners[watched].leave();
-      view = "list";
-      stage.clearLabels();
-      ORDER.forEach((id) => {
-        if (runners[id].request) hushed.add(id);
-      });
-      render();
+    pick(id) {
+      openThread(id);
+      runners[active].nudge();
     },
-    banner() {
-      const id = bannerOwner();
-      if (!id) return;
-      runners[id].dismissBanner();
-      select(id, true);
+    back() {
+      view = "list";
+      render();
+      runners[active].nudge();
+    },
+    push() {
+      if (!push) return;
+      openThread(push.id);
+      runners[active].nudge();
     },
     answer(answer) {
       if (!reducedMotion) {
         pausedByVisitor = false;
         setPaused(false);
       }
-      runners[watched].answer(answer);
+      runners[shown].answer(answer);
     },
   });
   phone.mirror.innerHTML = `<div class="desk">${desktop(groups)}</div>`;
@@ -87,14 +90,15 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     setPaused(!clock.paused);
   });
   tabs.appendChild(pause);
+  tabs.insertAdjacentHTML("beforeend", '<i class="tabs__rule" aria-hidden="true"></i>');
   const tabOf = {} as Record<AgentId, HTMLButtonElement>;
   for (const id of ORDER) {
     const tab = document.createElement("button");
     tab.type = "button";
     tab.className = "atab";
     tab.style.setProperty("--ac", AGENTS[id].color);
-    tab.innerHTML = `<span class="atab__mark"></span><span class="atab__text"><b>${AGENTS[id].name}</b><span class="atab__task"></span></span><i class="pip"></i><i class="atab__bar"></i>`;
-    tab.addEventListener("click", () => select(id, true));
+    tab.innerHTML = `<svg viewBox="0 0 36 36" aria-hidden="true"><circle class="atab__track" cx="18" cy="18" r="14" pathLength="100"/><circle class="atab__bar" cx="18" cy="18" r="14" pathLength="100"/></svg>${AGENTS[id].name}<span class="atab__needs">Needs you</span>`;
+    tab.addEventListener("click", () => play(id, true));
     tabs.appendChild(tab);
     tabOf[id] = tab;
   }
@@ -106,29 +110,41 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     button.setAttribute("aria-label", engine.name);
     button.innerHTML = `${icon(engine.mark)}<span class="eng__label"><span>${engine.name}</span></span>`;
     button.addEventListener("click", () => {
-      const owner = ORDER.find((id) => AGENTS[id].engine === index);
-      if (!owner) AGENTS[watched].engine = index;
-      select(owner ?? watched, true);
+      AGENTS[active].engine = index;
+      render();
+      /* The app names a thread's engine in its composer once that is opened up, so open it for a moment. */
+      phone.expand(true);
+      window.clearTimeout(folding);
+      folding = window.setTimeout(() => phone.expand(false), 3200);
     });
     rail.appendChild(button);
     return button;
   });
-  glideRail(rail, engineButtons);
 
   const env: Env = {
     clock,
-    stage,
     phone,
     copies: (id) => [macDesk, mirrorDesk].map((desk) => find(desk, `.grp[data-agent="${id}"]`)),
-    progressBar: (id) => find(tabOf[id], ".atab__bar"),
-    watching: (id) => watched === id && view === "task",
-    following: (id) => following && id === FOLLOWED,
+    progressRing: (id) => find<SVGCircleElement>(tabOf[id], ".atab__bar"),
+    watching: (id) => shown === id && view === "thread",
     update: render,
-    openTask: (id) => select(id, false),
-    showList() {
-      runners[watched].leave();
-      view = "list";
+    view: () => view,
+    intro: () => intro,
+    show(next) {
+      view = next;
       render();
+    },
+    quietFor: () => Math.max(0, VISITOR_QUIET - (performance.now() - touchedAt)),
+    beat(id, step, ms) {
+      if (id === active) stage.beat(step, ms);
+    },
+    push(id, text) {
+      push = text === null ? null : { id, text };
+      render();
+    },
+    openThread,
+    ended(id) {
+      if (id === active) play(ORDER[(ORDER.indexOf(id) + 1) % ORDER.length] ?? id, false);
     },
   };
   const runners = Object.fromEntries(
@@ -137,86 +153,71 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
 
   function render(): void {
     phone.setView(view);
-    stage.scene.dataset.view = view;
-    stage.scene.style.setProperty("--ac", AGENTS[watched].color);
     const tasks = ORDER.map((id) => runners[id].task);
     phone.showRows(tasks);
-    phone.showTask(runners[watched].task);
-    phone.showRequest(view === "task" ? runners[watched].request : null);
-    ORDER.forEach((id) => {
-      if (runners[id].request) return;
-      hushed.delete(id);
-      hushing.delete(id);
-    });
-    const owner = bannerOwner();
-    const waiting = owner ? runners[owner].request : null;
-    phone.showBanner(
-      owner ? AGENTS[owner].name : "",
-      owner ? (runners[owner].banner ?? `Needs you: ${waiting?.title ?? ""}`) : null,
-    );
-    if (owner && runners[owner].banner === null && !hushing.has(owner) && !reducedMotion) {
-      hushing.add(owner);
-      clock.at(
-        3500,
-        () => {
-          hushed.add(owner);
-          render();
-        },
-        "banner",
-      );
-    }
+    phone.showThread(runners[shown].task, runners[shown].request);
+    phone.showEngine(engineOf(view === "new" ? active : shown));
+    phone.showPush(push && { title: runners[push.id].task.title, text: push.text });
     for (const task of tasks) {
       const tab = tabOf[task.id];
       tab.dataset.state = task.status;
-      tab.setAttribute("aria-pressed", String(task.id === watched));
-      find(tab, ".atab__mark").innerHTML = icon(engineOf(task.id).mark);
-      find(tab, ".atab__task").textContent =
-        task.status === "needs" ? "Needs you" : task.status === "idle" ? "Watching" : task.title;
+      tab.setAttribute("aria-pressed", String(task.id === active));
     }
     engineButtons.forEach((button, index) =>
-      button.setAttribute("aria-pressed", String(index === AGENTS[watched].engine)),
+      button.setAttribute("aria-pressed", String(index === AGENTS[active].engine)),
     );
-    const menu = runners[watched].menu;
+    const menu = runners[onMac].menu;
     root.querySelectorAll(".menus").forEach((bar) => {
       bar.innerHTML = menu
         .map((item, at) => (at ? `<span>${item}</span>` : `<b>${item}</b>`))
         .join("");
     });
-    const [x, y] = runners[watched].point;
-    const cx = clamp(MAIN_SLOT[0] + x, LIVE.width / 2, DESKTOP.width - LIVE.width / 2);
-    const cy = clamp(MAIN_SLOT[1] + y, LIVE.height / 2, DESKTOP.height - LIVE.height / 2);
-    const left = (LIVE.width / 2 - cx) * LIVE.scale;
-    const top = (LIVE.height / 2 - cy) * LIVE.scale;
-    mirrorDesk.style.transform = `translate(${left}px, ${top}px) scale(${LIVE.scale})`;
-    region.style.transform = `translate(${cx - LIVE.width / 2}px, ${cy - LIVE.height / 2}px)`;
-    stage.runBeam(visible && !clock.paused && view === "task");
+    macDesk.querySelectorAll<HTMLElement>(".grp").forEach((el) => {
+      el.toggleAttribute("data-on", el.dataset.agent === onMac);
+    });
+    mirrorDesk.querySelectorAll<HTMLElement>(".grp").forEach((el) => {
+      el.toggleAttribute("data-on", el.dataset.agent === shown);
+    });
+    if (narrow.matches) {
+      const { width, height, scale } = PAGE.open;
+      const [x, y] = runners[shown].point;
+      const [pageLeft, pageTop, pageWidth, pageHeight] = runners[shown].page;
+      const left = within(x, width / scale, pageLeft, pageWidth);
+      const top = within(y, height / scale, pageTop, pageHeight);
+      mirrorDesk.style.transform = `scale(${scale}) translate(${-left}px, ${-top}px)`;
+    } else {
+      mirrorDesk.style.transform = `scale(${PAGE.folded.width / DESKTOP.width})`;
+    }
   }
 
-  function select(id: AgentId, byVisitor: boolean): void {
-    if (byVisitor) {
-      following = id === FOLLOWED;
-      stage.clearLabels();
-    }
-    if (id !== watched) runners[watched].leave();
-    watched = id;
-    view = "task";
-    const parked = ORDER.filter((other) => other !== id);
-    root.querySelectorAll<HTMLElement>(".grp").forEach((el) => {
-      const agent = el.dataset.agent as AgentId;
-      el.dataset.slot = agent === id ? "main" : parked.indexOf(agent) === 0 ? "a" : "b";
-      if (!macDesk.contains(el)) return;
-      /* A parked group is a button that brings its agent forward. */
-      if (agent === id) {
-        ["role", "tabindex", "aria-label"].forEach((name) => el.removeAttribute(name));
-      } else {
-        el.setAttribute("role", "button");
-        el.tabIndex = 0;
-        el.setAttribute("aria-label", `Watch ${AGENTS[agent].name}`);
-      }
-    });
-    phone.compose("");
+  function openThread(id: AgentId): void {
+    endIntro();
+    push = null;
+    shown = id;
+    view = "thread";
+    if (id === active) onMac = id;
     render();
-    if (byVisitor) runners[id].arrive();
+  }
+
+  /** Starts an agent's story from the top. A visitor's pick opens its thread at once; otherwise its push does. */
+  function play(id: AgentId, byVisitor: boolean): void {
+    for (const other of ORDER) {
+      const { status } = runners[other].task;
+      // A story still dictating is idle with taps queued, so only finished ones are left as they are.
+      if (other !== id && status !== "done" && status !== "stopped") runners[other].stop();
+    }
+    active = id;
+    if (SCENES[id].opener.from) onMac = id;
+    push = null;
+    stage.story(SCENES[id].beats);
+    if (byVisitor) {
+      endIntro();
+      touchedAt = -Infinity;
+      if (SCENES[id].opener.from) shown = id;
+      view = SCENES[id].opener.from ? "thread" : "new";
+    }
+    runners[id].start();
+    render();
   }
 
   /** Pause holds the clock and every animation and transition on the stage, mid-flight. */
@@ -236,44 +237,29 @@ export function mountDemo(root: HTMLElement, rail: HTMLElement): void {
     }
     pause.innerHTML = icon(clock.paused ? "i-play" : "i-pause");
     pause.setAttribute("aria-label", clock.paused ? "Play the demo" : "Pause the demo");
-    stage.runBeam(visible && !clock.paused && view === "task");
   }
 
-  const parkedAt = (target: EventTarget | null): AgentId | undefined => {
-    const parked = (target as Element).closest<HTMLElement>('.grp:not([data-slot="main"])');
-    return parked?.dataset.agent as AgentId | undefined;
-  };
-  macDesk.addEventListener("click", (event) => {
-    const id = parkedAt(event.target);
-    if (id) select(id, true);
+  find(root, ".iphone").addEventListener("pointerdown", (event) => {
+    if (event.isTrusted) touchedAt = performance.now();
   });
-  macDesk.addEventListener("keydown", (event) => {
-    const id = event.key === "Enter" || event.key === " " ? parkedAt(event.target) : undefined;
-    if (!id) return;
-    event.preventDefault();
-    select(id, true);
-  });
-
-  select(FOLLOWED, false);
-  view = "list";
+  narrow.addEventListener("change", render);
   render();
-  const start = (): void => ORDER.forEach((id) => runners[id].start());
   if (reducedMotion) {
-    start();
+    play(active, false);
     return;
   }
   setPaused(true);
   let started = false;
+  // Several thresholds: with 0.2 alone, Chrome missed the stage scrolling into view at some phone widths.
   new IntersectionObserver(
     ([entry]) => {
-      visible = entry?.isIntersecting ?? false;
-      if (!visible) return setPaused(true);
+      if (!entry || entry.intersectionRatio < 0.2) return setPaused(true);
       if (pausedByVisitor) return;
       setPaused(false);
       if (started) return;
       started = true;
-      start();
+      play(active, false);
     },
-    { threshold: 0.2 },
+    { threshold: [0, 0.2, 0.6] },
   ).observe(wrap);
 }

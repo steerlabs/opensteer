@@ -1,152 +1,143 @@
 import { browser } from "../apps/browser.js";
-import { slack } from "../apps/slack.js";
 import { stripe } from "../apps/stripe.js";
 import { zendesk } from "../apps/zendesk.js";
 import type { Scene, SceneApi } from "../scene.js";
 
 const REPLY =
-  "Hi Dana, you're right, and I'm sorry. Invoice 2291 was charged twice on Nov 3. I've refunded the extra $480.00. It should reach your card in 5 to 10 days.";
-const UPDATE =
-  "Northwind was charged twice for invoice 2291. Refunded the extra $480 and replied to Dana. Ticket #4821 is solved.";
-const CHROME = ["Chrome", "File", "Edit", "View", "History", "Bookmarks", "Tab"];
+  "Hi Dana, you're right, and I'm sorry. Invoice 2291 was charged twice on Nov 3. I've refunded the extra $480.00, and it should reach your card in 5 to 10 days.";
+const CHROME = ["Chrome", "File", "Edit", "View", "History", "Bookmarks", "Profiles", "Tab"];
+/* The cursor's move takes 600ms; a click waits for it to land, then a beat. */
+const ARRIVE = 800;
 
 function refunded(api: SceneApi): void {
-  api.flag("modal", false);
-  api.flag("held", false);
-  api.flag("refunded");
-  api.status("working");
-  api.step("Refunded $480 to Northwind");
-  api.at(1100, () => {
-    api.front("zendesk");
-    api.go("zd-submit");
+  api.click();
+  api.at(250, () => {
+    api.flag("modal", false);
+    api.flag("over-go", false);
+    api.flag("refunded");
+    api.flag("toast");
+    api.step("Refunded $480.00 to Visa •••• 4242");
   });
-  api.at(1900, () => {
+  api.at(2000, () => {
+    api.front("zendesk");
+    api.go("zd-reply", 0.2, 0.3);
+  });
+  api.at(2000 + ARRIVE, () => {
     api.click();
+    api.flag("typing");
+    api.type("zd-reply", REPLY);
+  });
+  api.at(5400, () => api.go("zd-submit"));
+  api.at(5400 + ARRIVE - 150, () => api.flag("over-submit"));
+  api.at(5400 + ARRIVE + 150, () => {
+    api.click();
+    api.flag("typing", false);
     api.flag("sent");
     api.text("zd-sent", REPLY);
     api.text("zd-reply", "");
     api.text("zd-status", "Solved");
-    api.step("Sent the reply and solved the ticket");
+    api.step("Replied to Dana and solved ticket #4821");
   });
-  api.at(3100, () => {
-    api.front("slack");
-    api.go("sl-compose", 0.1, 0.4);
-  });
-  api.at(3700, () => {
-    api.click();
-    api.type("sl-compose", UPDATE, () => {
-      api.flag("posted");
-      api.text("sl-posted", UPDATE);
-      api.text("sl-compose", "");
-      api.step("Posted an update in #support");
-      api.status("done");
-    });
-  });
-  api.at(7400, () =>
-    api.say("Add a $50 credit for the trouble.", () => {
-      api.status("working");
-      api.front("stripe");
-      api.go("st-credit");
-      api.label("Steer it anytime", "phone:composer", 1, 0.5, "R", 46, 2000);
-      api.at(900, () => {
-        api.click();
-        api.flag("credit");
-        api.step("Added a $50 credit");
-        api.status("done");
-        api.restart(3800);
-      });
-    }),
+  api.at(7600, () =>
+    api.finish(
+      "Northwind was charged twice for invoice 2291. I refunded the extra $480 and replied to Dana. Ticket #4821 is solved.",
+    ),
   );
 }
 
 function denied(api: SceneApi): void {
-  api.flag("modal", false);
-  api.flag("held", false);
-  api.step("Refund cancelled. Nothing moved.", "stop");
-  api.status("stopped");
-  api.at(2200, () =>
-    api.say("Leave it. I'll call Dana myself.", () => {
-      api.step("Kept your reply as a draft");
-      api.restart(3800);
-    }),
+  api.flag("over-go", false);
+  api.go("st-cancel");
+  api.at(ARRIVE - 150, () => api.flag("over-cancel"));
+  api.at(ARRIVE + 100, () => {
+    api.click();
+    api.flag("modal", false);
+    api.flag("over-cancel", false);
+  });
+  api.at(2000, () =>
+    api.finish(
+      "I didn't refund anything. Ticket #4821 is still open and assigned to you.",
+      "stopped",
+    ),
   );
 }
 
 export const support: Scene = {
   agent: "support",
   task: "Dana's double charge",
-  length: 38000,
-  windows: browser("left:0;top:0;width:690px;height:530px", [zendesk, stripe]) + slack,
-  menus: {
-    zendesk: CHROME,
-    stripe: CHROME,
-    slack: ["Slack", "File", "Edit", "View", "Go", "Window"],
+  opener: {
+    from: "New Zendesk tickets",
+    text: "Charged twice for November\nDana Whitfield · Northwind",
   },
+  beats: [
+    "Your support agent spots a double charge.",
+    "Your agent checks Zendesk and Stripe on your Mac.",
+    "Your agent asks you before refunding $480.",
+  ],
+  length: 22300,
+  windows: browser("left:40px;top:44px;width:1200px;height:708px", [zendesk, stripe]),
+  menus: { zendesk: CHROME, stripe: CHROME },
   run(api) {
-    api.at(900, () => {
+    /* On the first play the Mac is out of frame until the push is tapped, about 2.8s in. Later loops still hold the
+       first step long enough to read. */
+    const lead = api.intro ? 2200 : 1300;
+    const after = (ms: number, step: () => void): void => api.at(ms + lead, step);
+    api.at(800, () => {
       api.flag("arrived");
       api.text("zd-count", "6");
-      api.status("working");
-      api.go("zd-row", 0.4, 0.5);
+      api.text("zd-total", "6");
+      api.notify("New ticket from Dana at Northwind: charged twice. I'm looking into it.");
     });
-    api.at(1700, () => api.notify("Dana at Northwind says she was charged twice. I'm on it."));
-    api.at(2300, () =>
-      api.label("It noticed before you did", "phone:banner", 1, 0.5, "R", 44, 1700),
-    );
-    api.at(4400, () => api.label("Live from your Mac", "phone:live", 1, 0.5, "R", 44, 2200));
-    api.at(4900, () => {
+    api.stage(1, 1500 + lead);
+    after(1500, () => {
+      api.stage(2, 9300);
+      api.go("zd-row", 0.34, 0.5);
+    });
+    after(1500 + ARRIVE - 150, () => api.flag("over-row"));
+    after(1500 + ARRIVE + 100, () => {
       api.click();
       api.flag("ticket");
-      api.step("Read Dana's ticket");
+      api.step("Opened ticket #4821 in Zendesk");
     });
-    api.at(6100, () => api.front("stripe"));
-    api.at(6700, () => {
-      api.go("st-first", 0.3, 0.5);
-      api.label("Already signed in. Nothing to set up.", "st-account", 0.5, 1, "B", 30, 2400);
-    });
-    api.at(7900, () => api.go("st-second", 0.5, 0.5));
-    api.at(8600, () => {
-      api.flag("dup");
-      api.step("Found the same $480 charge twice");
-    });
-    api.at(10000, () => {
-      api.front("zendesk");
-      api.go("zd-reply", 0.12, 0.3);
-    });
-    api.at(10700, () => {
-      api.click();
-      api.label("Working in your real apps", "zd-reply", 0.5, 0, "T", 34, 2600);
-      api.type("zd-reply", REPLY, () => api.step("Drafted a reply to Dana"));
-    });
-    api.at(14400, () => {
+    after(3000, () => api.go("zd-msg", 0.42, 0.7));
+    after(5200, () => {
       api.front("stripe");
-      api.go("st-more");
+      api.step("Looked up Northwind in Stripe");
     });
-    api.at(15200, () => {
+    after(5800, () => {
+      api.go("st-first", 0.5, 0.5);
+      api.flag("over-first");
+    });
+    after(7000, () => {
+      api.go("st-more");
+      api.flag("over-first", false);
+      api.flag("over-second");
+    });
+    after(7000 + ARRIVE + 300, () => {
       api.click();
       api.flag("menu");
     });
-    api.at(15500, () => api.go("st-refund", 0.3, 0.5));
-    api.at(16300, () => {
+    after(8500, () => {
+      api.go("st-refund", 0.4, 0.5);
+      api.flag("over-refund");
+    });
+    after(8500 + ARRIVE, () => {
       api.click();
       api.flag("menu", false);
+      api.flag("over-refund", false);
+      api.flag("over-second", false);
       api.flag("modal");
     });
-    api.at(16800, () => api.go("st-go", 0.5, 0.55, "st-modal"));
-    api.at(17500, () => {
-      api.flag("held");
+    after(10000, () => api.go("st-go", 0.5, 0.55, "st-modal"));
+    after(10000 + ARRIVE, () => {
+      api.flag("over-go");
+      api.stage(3, 11500);
       api.ask({
         title: "Refund $480 to Northwind?",
-        body: "Duplicate charge on Nov 3, Visa ••4242. Then send your reply to Dana.",
-        allowed: "Allowed",
-        denied: "Not allowed. Nothing was refunded.",
-        spark: "st-go",
+        body: "Duplicate charge for invoice 2291 on Nov 3, Visa •••• 4242.",
         onAllow: () => refunded(api),
         onDeny: () => denied(api),
       });
     });
-    api.at(18300, () =>
-      api.label("Nothing moves until you allow it", "phone:request", 1, 0.3, "R", 46, 3000),
-    );
   },
 };
