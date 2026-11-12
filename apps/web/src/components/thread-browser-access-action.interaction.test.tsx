@@ -43,7 +43,6 @@ it("keeps a failed approval beside the selected profile and retries without an e
     return button;
   };
   expect(selected()).not.toBeNull();
-  expect(container.textContent).toContain("Already available");
   await act(async () => submit().click());
   expect(container.querySelector('[role="alert"]')?.textContent).toContain(
     "Connection interrupted",

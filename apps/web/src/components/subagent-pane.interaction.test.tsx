@@ -79,7 +79,7 @@ it("holds one node watch while a subagent is open and releases it on leaving", a
           <Navigator />
           <Routes>
             <Route element={<AppShell hostClient={client} loadError={null} />}>
-              <Route path="threads/:threadId" element={<ThreadRoute />} />
+              <Route path="tasks/:threadId" element={<ThreadRoute />} />
             </Route>
           </Routes>
         </MemoryRouter>

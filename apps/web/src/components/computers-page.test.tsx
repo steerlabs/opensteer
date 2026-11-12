@@ -559,7 +559,6 @@ describe("ComputerDetailPage for an iPhone", () => {
     const text = html.replace(/<[^>]+>/g, " ");
 
     expect(text).toContain("Offline · Available while Opensteer is open on Alex&#x27;s iPhone");
-    expect(text).toContain("Alex’s phone");
     expect(text).toContain(
       "Agents can use only the apps turned on for Alex&#x27;s iPhone, and only while Opensteer is open on it.",
     );

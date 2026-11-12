@@ -86,7 +86,7 @@ describe("ComputerAppsSection", () => {
 
     await click(button(container, "Manage"));
     await click(button(container, "Turn off Messages"));
-    expect(container.textContent).toContain("removes agents' access in every Workspace");
+    expect(container.textContent).toContain("removes your agents' access");
     expect(dispatch).not.toHaveBeenCalled();
 
     await click(button(container, "Turn off"));

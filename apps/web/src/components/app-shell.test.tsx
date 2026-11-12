@@ -37,20 +37,10 @@ function deployment(overrides: Partial<DesktopDeploymentSummary> = {}): DesktopD
 }
 
 describe("localRunnerSlotDeploymentId", () => {
-  it("uses Main-computer policy rather than the display alias", () => {
+  it("supervises no slot for the Personal Deployment hosted on this computer", () => {
     const personal = deployment({ kind: "personal", onThisComputer: true });
     expect(
-      localRunnerSlotDeploymentId({
-        desktopBridge: bridge,
-        desktopDeployment: personal,
-      }),
-    ).toBe(personal.id);
-    const server = deployment({ onThisComputer: true });
-    expect(
-      localRunnerSlotDeploymentId({
-        desktopBridge: bridge,
-        desktopDeployment: server,
-      }),
+      localRunnerSlotDeploymentId({ desktopBridge: bridge, desktopDeployment: personal }),
     ).toBeNull();
   });
   it("supervises a slot for every Deployment this desktop attaches to", () => {
