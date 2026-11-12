@@ -109,15 +109,28 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "Navigation selects a verified team deep-link destination rather than a Personal task.",
   },
+  "apps/mobile/src/client/deployment-credentials.ts": {
+    counts: { "connection.kind": 3 },
+    reason: "Personal sessions and team OAuth credentials are distinct credential families.",
+  },
+  "apps/mobile/src/client/mock-mode.ts": {
+    counts: { "input.kind": 1 },
+    reason: "Mock catalog bootstrap methods follow the declared Personal or team identity.",
+  },
+  "apps/web/src/main.tsx": {
+    counts: { remembered: 3, awaitasked: 1 },
+    reason:
+      "The per-origin web entry chooses its app from signed discovery and cached deployment kind.",
+  },
   "apps/mobile/src/client/deployment-rows.ts": {
     counts: {
-      "connection.kind": 1,
+      "connection.kind": 2,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
   "apps/mobile/src/client/mobile-client.ts": {
     counts: {
-      "connection.kind": 1,
+      "connection.kind": 4,
       "connection.authority.document.deploymentShape.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
@@ -158,12 +171,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/web/src/components/add-deployment.tsx": {
     counts: {
       choice: 1,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/components/computers-page.tsx": {
-    counts: {
-      "home.kind": 2,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
@@ -209,12 +216,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },
-  "apps/web/src/computers-visual.tsx": {
-    counts: {
-      "scenario.kind": 2,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
   "apps/web/src/desktop/desktop-app.tsx": {
     counts: {
       presentation: 1,
@@ -225,18 +226,6 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   "apps/web/src/desktop/places.ts": {
     counts: {
       "deployment.kind": 3,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/desktop/preview-bootstrap.ts": {
-    counts: {
-      "selected.kind": 6,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/passwords-visual.tsx": {
-    counts: {
-      settingsState: 2,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },

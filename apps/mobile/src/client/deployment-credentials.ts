@@ -18,7 +18,7 @@ export interface DeploymentCredentials {
 }
 
 /**
- * The real answer: a self-hosted Host issues its own OAuth bearer, and a
+ * The real answer: a team Host issues its own OAuth bearer, and a
  * Personal computer reached remotely presents the session its pairing code
  * established. A Deployment never carries both — the two credential families
  * are read by different parsers on the Host, and mixing them would let one
@@ -32,11 +32,11 @@ export function createDeploymentCredentials(options: {
 }): DeploymentCredentials {
   return {
     async viewLoginId(connection) {
-      if (connection.kind === "self-hosted") return options.oauth.hostViewLoginId?.(connection);
+      if (connection.kind === "team") return options.oauth.hostViewLoginId?.(connection);
       return (await options.sessions.load(connection.authority.document.deploymentId))?.viewLoginId;
     },
     async authorization(connection): Promise<string | null> {
-      if (connection.kind === "self-hosted") return options.oauth.authorizationHeader(connection);
+      if (connection.kind === "team") return options.oauth.authorizationHeader(connection);
       return options.sessions.authorization(
         connection.authority.document.deploymentId,
         options.now(),
@@ -44,7 +44,7 @@ export function createDeploymentCredentials(options: {
     },
 
     async held(connection): Promise<boolean> {
-      if (connection.kind === "self-hosted") {
+      if (connection.kind === "team") {
         return options.oauth.hostCredentialState(connection).status === "signed-in";
       }
       return (

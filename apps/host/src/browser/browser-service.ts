@@ -2822,6 +2822,7 @@ export class BrowserService {
     const opening = {
       agentBindingId: input.agentBindingId,
       ...(chosenEnvironmentId ? { chosenEnvironmentId } : {}),
+      ...(input.environmentId ? { environmentId: input.environmentId } : {}),
       origin: input.agentBindingId.startsWith("trigger:")
         ? ("trigger" as const)
         : ("agent" as const),
