@@ -4,7 +4,7 @@ import {
   validateBrowserSourceSnapshot,
   maxBrowserSourceCookies,
   maxBrowserSourceSnapshotBytes,
-} from "./source-state.js";
+} from "./site.js";
 const cookie = {
   domain: "example.com",
   expires: -1,

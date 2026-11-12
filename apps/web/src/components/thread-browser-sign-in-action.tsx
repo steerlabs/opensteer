@@ -215,7 +215,7 @@ export function BrowserSignInRequestBody({
           <SignInProblem
             detail={
               browserSignInProblemResolvesItself(pinned.outcome.problem)
-                ? "Allowed. This finishes by itself when that Chrome is back."
+                ? "Allowed. This finishes by itself when that browser is back."
                 : retryable
                   ? "Allowed. This finishes by itself once that’s fixed."
                   : "Choose Try again once that’s fixed."
@@ -256,8 +256,8 @@ export function BrowserSignInRequestBody({
             </p>
           ) : (
             <SignInProblem
-              detail="Allow now; this finishes by itself when Chrome opens."
-              message={`${single.name} is offline. Open Chrome on that computer.`}
+              detail="Allow now; this finishes by itself when it opens."
+              message={`${single.name} is offline. Open that browser on its computer.`}
             />
           )
         ) : (

@@ -1454,6 +1454,8 @@ interface BrowserSourceTable {
   updatedAt: Timestamp;
   revokedAt: NullableTimestamp;
   lastSeenAt: NullableTimestamp;
+  pairedOrigin: string | null;
+  pairedRouteGeneration: number | null;
 }
 
 interface BrowserSourcePairingTable {

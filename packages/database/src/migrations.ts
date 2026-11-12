@@ -13,6 +13,14 @@ export function migrationProvider(): MigrationProvider {
             await sql.raw(PERSONAL_TEAM_BASELINE_SQL).execute(database);
           },
         },
+        "0003_browser_source_binding": {
+          /** The destination a source paired on; null until a source paired before this binds. */
+          async up(database) {
+            await sql`alter table browser_sources add column paired_origin text, add column paired_route_generation integer`.execute(
+              database,
+            );
+          },
+        },
       };
     },
   };

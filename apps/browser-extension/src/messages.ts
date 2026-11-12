@@ -1,20 +1,21 @@
-import { BrowserSiteSchema } from "@opensteer/core";
-import { maximumBrowserSourceInvitationLength } from "@opensteer/deployment-authority";
-import { BrowserSourceNameSchema } from "@opensteer/protocol/browser-sources";
+import { BrowserSiteSchema } from "@opensteer/browser-source-wire/site";
+import { maximumBrowserSourceInvitationLength } from "@opensteer/browser-source-wire/frozen";
+import { BrowserSourceNameSchema } from "@opensteer/browser-source-wire/frames";
 import { z } from "zod";
 
 const invitation = z.string().max(maximumBrowserSourceInvitationLength);
 const sourceId = z.string().min(1).max(128);
 
 export const UiRequestSchema = z.discriminatedUnion("type", [
-  z.strictObject({ type: z.literal("ui.status") }),
-  z.strictObject({ invitation, type: z.literal("ui.invitation.check") }),
-  z.strictObject({ invitation, name: BrowserSourceNameSchema, type: z.literal("ui.connect") }),
-  z.strictObject({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.stop") }),
-  z.strictObject({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.share") }),
-  z.strictObject({ sourceId, type: z.literal("ui.budget.reset") }),
-  z.strictObject({ sourceId, type: z.literal("ui.retry") }),
-  z.strictObject({ sourceId, type: z.literal("ui.disconnect") }),
+  z.object({ type: z.literal("ui.status") }),
+  z.object({ type: z.literal("ui.quarantine.forget"), id: z.string() }),
+  z.object({ invitation, type: z.literal("ui.invitation.check") }),
+  z.object({ invitation, name: BrowserSourceNameSchema, type: z.literal("ui.connect") }),
+  z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.stop") }),
+  z.object({ site: BrowserSiteSchema, sourceId, type: z.literal("ui.site.share") }),
+  z.object({ sourceId, type: z.literal("ui.budget.reset") }),
+  z.object({ sourceId, type: z.literal("ui.retry") }),
+  z.object({ sourceId, type: z.literal("ui.disconnect") }),
 ]);
 export type UiRequest = z.infer<typeof UiRequestSchema>;
 
@@ -22,6 +23,7 @@ export const ConnectionStateSchema = z.enum([
   "connected",
   "connecting",
   "offline",
+  "different-opensteer",
   /** This extension is older than the Opensteer it connects to. */
   "update-required",
   /** The Opensteer is older than this extension. */
@@ -31,8 +33,8 @@ export const ConnectionStateSchema = z.enum([
 ]);
 export type ConnectionState = z.infer<typeof ConnectionStateSchema>;
 
-export const ConnectionViewSchema = z.strictObject({
-  budget: z.strictObject({
+export const ConnectionViewSchema = z.object({
+  budget: z.object({
     limit: z.number().int(),
     /** When the oldest share in the window ages out; null while the budget has room. */
     nextAt: z.number().nullable(),
@@ -42,7 +44,7 @@ export const ConnectionViewSchema = z.strictObject({
   name: z.string(),
   origin: z.string(),
   sites: z.array(
-    z.strictObject({
+    z.object({
       lastSharedAt: z.number(),
       site: BrowserSiteSchema,
       stopped: z.boolean(),
@@ -53,7 +55,10 @@ export const ConnectionViewSchema = z.strictObject({
 });
 export type ConnectionView = z.infer<typeof ConnectionViewSchema>;
 
-export const StatusSchema = z.strictObject({ connections: z.array(ConnectionViewSchema) });
+export const StatusSchema = z.object({
+  connections: z.array(ConnectionViewSchema),
+  quarantined: z.array(z.string()).default([]),
+});
 export type Status = z.infer<typeof StatusSchema>;
 
 export const ConnectProblemCodeSchema = z.enum([
@@ -71,7 +76,7 @@ export const ConnectProblemCodeSchema = z.enum([
 ]);
 export type ConnectProblemCode = z.infer<typeof ConnectProblemCodeSchema>;
 
-export const InvitationCheckSchema = z.strictObject({
+export const InvitationCheckSchema = z.object({
   deploymentName: z.string(),
   /** `reconnect`: connecting replaces this Chrome profile's connection to that Deployment. */
   existing: z.enum(["none", "reconnect"]),
@@ -81,13 +86,13 @@ export const InvitationCheckSchema = z.strictObject({
 });
 export type InvitationCheck = z.infer<typeof InvitationCheckSchema>;
 
-export const ConnectResultSchema = z.strictObject({
+export const ConnectResultSchema = z.object({
   deploymentName: z.string(),
   ready: z.boolean(),
 });
 export type ConnectResult = z.infer<typeof ConnectResultSchema>;
 
-const ProblemSchema = z.strictObject({
+const ProblemSchema = z.object({
   code: ConnectProblemCodeSchema,
   deploymentName: z.string().nullable(),
   ok: z.literal(false),
@@ -109,7 +114,7 @@ export async function askWorker<T>(
   }
   const problem = ProblemSchema.safeParse(raw);
   if (problem.success) return problem.data;
-  const answer = z.strictObject({ ok: z.literal(true), value: schema }).safeParse(raw);
+  const answer = z.object({ ok: z.literal(true), value: schema }).safeParse(raw);
   return answer.success
     ? { ok: true, value: answer.data.value }
     : { code: "failed", deploymentName: null, ok: false, origin: null };

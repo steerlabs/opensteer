@@ -62,6 +62,9 @@
       "path": "./packages/browser-runtime-core"
     },
     {
+      "path": "./packages/browser-source-wire"
+    },
+    {
       "path": "./packages/runner-client"
     },
     {

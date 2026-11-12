@@ -1,0 +1,27 @@
+{
+  "name": "@opensteer/browser-source-wire",
+  "license": "MIT",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./site": "./src/site.ts",
+    "./frozen": "./src/frozen/index.ts",
+    "./frames": "./src/frames/index.ts"
+  },
+  "scripts": {
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "tldts": "6.1.86",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

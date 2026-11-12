@@ -76,6 +76,7 @@ export function ChromeSection() {
               </p>
               <ConnectChrome
                 client={hostClient}
+                sourcesState={state}
                 environment={environment}
                 onConnected={(source) => {
                   toast.success(`Connected ${source.name}.`);
@@ -93,6 +94,7 @@ export function ChromeSection() {
                   <>
                     <ConnectChrome
                       client={hostClient}
+                      sourcesState={state}
                       environment={environment}
                       onConnected={(source) => {
                         setAdding(false);

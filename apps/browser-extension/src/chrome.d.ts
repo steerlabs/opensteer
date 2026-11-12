@@ -62,6 +62,7 @@ interface ChromeApi {
     contains(permissions: { origins: string[] }): Promise<boolean>;
   };
   runtime: {
+    reload(): void;
     id: string;
     getPlatformInfo(): Promise<{ os: string }>;
     getURL(path: string): string;

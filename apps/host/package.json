@@ -49,6 +49,7 @@
   },
   "devDependencies": {
     "@opensteer/browser-runtime-core": "workspace:*",
+    "@opensteer/browser-source-wire": "workspace:*",
     "@types/pg": "catalog:",
     "pg": "catalog:",
     "@opensteer/agent-phone-setup": "workspace:*",
