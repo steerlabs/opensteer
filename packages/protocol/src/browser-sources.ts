@@ -25,6 +25,18 @@ import {
 export const browserSourceProtocolVersion = 4;
 
 export {
+  browserSourceWireCurrent,
+  browserSourceWireFloor,
+  negotiateWire,
+  parseWireQuery,
+  readClientMessage,
+  type BrowserSourceClientFrame,
+  type BrowserSourceHostFrame,
+  type UnknownMessage,
+  type WireNegotiation,
+} from "@opensteer/browser-source-wire/frames";
+
+export {
   BrowserSourceClientMessageV4Schema as BrowserSourceClientMessageSchema,
   BrowserSourceHostMessageV4Schema as BrowserSourceHostMessageSchema,
   BrowserSourceNameSchema,

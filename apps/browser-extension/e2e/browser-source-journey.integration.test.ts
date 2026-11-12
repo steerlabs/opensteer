@@ -32,8 +32,12 @@ import { startPersonalRuntime } from "../../host/src/runtime/personal-startup.te
  *     rows and events included) or an agent's tool result; a viewer's
  *     `state.import` reaches the browser.
  *
- * The artifact directory (OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR) receives
- * `result.json` with each step's outcome and timing, and screenshots.
+ * It runs twice: with the extension built from this tree, and with the pinned
+ * 0.1.565 build, the oldest one a Host must still serve (wire 4), so the
+ * current Host proves it keeps every installed extension working.
+ *
+ * The artifact directory (OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR) receives,
+ * per extension, `result.json` with each step's outcome and timing, and screenshots.
  */
 import { hostApiVersion } from "@opensteer/deployment-authority";
 import {
@@ -63,7 +67,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { chromium, type BrowserContext, type Page, type Worker } from "playwright-core";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createDatabase } from "../../../packages/database/src/index.js";
 import { writeWebDistributionManifest } from "../../../scripts/write-web-distribution-manifest.mjs";
@@ -76,6 +80,10 @@ const artifactDirectory =
   process.env.OPENSTEER_BROWSER_SOURCE_E2E_ARTIFACT_DIR ??
   join(tmpdir(), "opensteer-browser-source-e2e");
 const hostReleaseVersion = "0.0.0-chrome-sign-ins-e2e";
+const pinnedExtension = join(
+  repositoryRoot,
+  "apps/browser-extension/compat/opensteer-extension-0.1.565.zip",
+);
 const hostedChromeArgs = [
   "--ignore-certificate-errors",
   "--host-resolver-rules=MAP *.test 127.0.0.1",
@@ -116,9 +124,22 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
   const agentResults: unknown[] = [];
   const cleanups: (() => Promise<void>)[] = [];
   let scratch = "";
+  /** This run's own directory under `scratch`, and its artifacts under `artifactDirectory`. */
+  let run = "";
+  let artifacts = artifactDirectory;
   let completed = false;
+  let restoreConsole = () => {};
 
-  const restoreConsole = captureConsole(hostLogs);
+  beforeEach(async (context) => {
+    for (const list of [steps, screenshots, hostLogs, runtimeLogs, agentResults, cleanups])
+      list.length = 0;
+    completed = false;
+    const label = context.task.name.includes("0.1.565") ? "0.1.565" : "built";
+    artifacts = join(artifactDirectory, label);
+    await mkdir(artifacts, { recursive: true });
+    if (scratch) run = await mkdtemp(join(scratch, `${label}-`));
+    restoreConsole = captureConsole(hostLogs);
+  });
 
   beforeAll(async () => {
     if (!databaseUrl) return;
@@ -160,15 +181,15 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       } catch (error) {
         cleanupErrors.push(error);
       }
-    if (scratch) await rm(scratch, { force: true, recursive: true });
-    await mkdir(artifactDirectory, { recursive: true });
+    if (run) await rm(run, { force: true, recursive: true });
+    await mkdir(artifacts, { recursive: true });
     if (!completed) {
       // Redacted, so a failed run can be diagnosed from its artifact alone.
-      await writeFile(join(artifactDirectory, "host.log"), redact(hostLogs.join("\n")));
-      await writeFile(join(artifactDirectory, "browser-runtime.log"), redact(runtimeLogs.join("")));
+      await writeFile(join(artifacts, "host.log"), redact(hostLogs.join("\n")));
+      await writeFile(join(artifacts, "browser-runtime.log"), redact(runtimeLogs.join("")));
     }
     await writeFile(
-      join(artifactDirectory, "result.json"),
+      join(artifacts, "result.json"),
       `${JSON.stringify(
         {
           scenario: "chrome-sign-ins-v2-everyday-chrome-to-hosted-browser-session",
@@ -176,9 +197,9 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           passed: steps.filter((step) => step.status === "passed").length,
           failed: steps.filter((step) => step.status === "failed").length,
           steps,
-          screenshots: screenshots.map((path) => path.slice(artifactDirectory.length + 1)),
+          screenshots: screenshots.map((path) => path.slice(artifacts.length + 1)),
           parts: {
-            everydayChrome: "Playwright Chromium, persistent disposable profile, built extension",
+            everydayChrome: `Playwright Chromium, persistent disposable profile, ${artifacts.endsWith("0.1.565") ? "pinned 0.1.565" : "built"} extension`,
             host: "in-process createHostRuntime, disposable PostgreSQL, built web app served",
             browserRuntime:
               "apps/browser-runtime/src/main.ts through the hosting Runner’s local bridge",
@@ -194,6 +215,10 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     if (cleanupErrors.length)
       throw new AggregateError(cleanupErrors, "Browser source journey cleanup failed");
   }, 120_000);
+
+  afterAll(async () => {
+    if (scratch) await rm(scratch, { force: true, recursive: true });
+  });
 
   async function step<T>(name: string, run: () => Promise<T>): Promise<T> {
     const started = Date.now();
@@ -219,7 +244,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
   }
 
   async function shoot(page: Page, name: string, selector?: string): Promise<void> {
-    const path = join(artifactDirectory, `${name}.png`);
+    const path = join(artifacts, `${name}.png`);
     // The artifact must show the page as a person sees it, brand mark included.
     await page.waitForFunction(() =>
       Array.from(document.images).every((image) => image.complete && image.naturalWidth > 0),
@@ -229,27 +254,39 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     screenshots.push(path);
   }
 
-  it("connects Chrome once and signs live Browser Sessions in for the owner and agents", async () => {
+  it(
+    "connects Chrome once and signs live Browser Sessions in for the owner and agents",
+    () => signInJourney(null),
+    600_000,
+  );
+  it(
+    "serves the pinned 0.1.565 extension through the same journey",
+    () => signInJourney(pinnedExtension),
+    600_000,
+  );
+
+  /** `zip` is a shipped extension build to load instead of the one built from this tree. */
+  async function signInJourney(zip: string | null): Promise<void> {
     if (!databaseUrl) return;
 
     // ---- Infrastructure: database, synthetic sites, Host, hosted runtime ----
     const database = await cloneTestDatabase("host", { serverUrl: databaseUrl });
     const hostDatabaseUrl = database.url;
     cleanups.push(() => database.drop());
-    const site = await startSyntheticSites(scratch);
+    const site = await startSyntheticSites(run);
     cleanups.push(() => closeServer(site.server));
     const url = (host: string, path: string) => `https://${host}:${site.port}${path}`;
 
     const runCommands: RunExecute[] = [];
     const hostedRuntime = await startHostedBrowserRuntime({
-      directory: join(scratch, "browser-runtime"),
+      directory: join(run, "browser-runtime"),
       logs: runtimeLogs,
     });
     cleanups.push(() => stopProcess(hostedRuntime.child));
     const personal = await startPersonalRuntime({
       databaseUrl: hostDatabaseUrl,
       browser: hostedRuntime.bridge,
-      agentHome: { computerId: createId("runner"), path: join(scratch, "home") },
+      agentHome: { computerId: createId("runner"), path: join(run, "home") },
       engineArguments: ["--scenario=interrupt"],
       maxConcurrentRuns: 4,
       hostLog: (line) => hostLogs.push(line),
@@ -316,11 +353,16 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
 
     // ---- 1. The everyday Chrome signs in to the synthetic sites ----
-    const profileDirectory = join(scratch, "everyday-chrome");
-    const extensionDirectory = join(scratch, "extension");
-    await cp(join(repositoryRoot, "apps/browser-extension/dist"), extensionDirectory, {
-      recursive: true,
-    });
+    const profileDirectory = join(run, "everyday-chrome");
+    const extensionDirectory = join(run, "extension");
+    if (zip) {
+      await mkdir(extensionDirectory);
+      execFileSync("unzip", ["-q", zip, "-d", extensionDirectory], { stdio: "pipe" });
+    } else {
+      await cp(join(repositoryRoot, "apps/browser-extension/dist"), extensionDirectory, {
+        recursive: true,
+      });
+    }
     let everyday = await launchEverydayChrome(profileDirectory, extensionDirectory);
     cleanups.push(() => everyday.context.close());
     const extensionUrl = (file: string) =>
@@ -387,7 +429,10 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     const connected = await step(
       "Connect Chrome from /connect/chrome through the extension",
       async () => {
-        await connectThroughWeb({ page: "02-web-connect-chrome", tab: "03-extension-connect-tab" });
+        await connectThroughWeb({
+          page: "02-web-connect-chrome",
+          tab: "03-extension-connect-tab",
+        });
         const source = await waitForValue("the Host to list the connected Chrome", async () => {
           const state = await rpc.sources();
           return state.sources.find((candidate) => candidate.connected);
@@ -463,7 +508,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
         const shown = await visit(viewerOne, "www.alpha.test");
         await viewerOne.screenshot(
           shown.at,
-          join(artifactDirectory, "04-hosted-session-signed-in"),
+          join(artifacts, "04-hosted-session-signed-in"),
           screenshots,
         );
       },
@@ -497,7 +542,11 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     const thread = await rpc.command({
       environmentId: personal.environmentId,
       harnessInstanceId: personal.harnessInstanceId,
-      modelSelection: { modelId: "gpt-5.6-sol", options: { effort: "low" }, providerId: "openai" },
+      modelSelection: {
+        modelId: "gpt-5.6-sol",
+        options: { effort: "low" },
+        providerId: "openai",
+      },
       title: "Research with sign-ins",
       type: "thread.create",
     });
@@ -651,7 +700,10 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
           `${String(error)} sources=${JSON.stringify((await rpc.sources()).sources)} inspect=${JSON.stringify(inspection)} request=${request?.status} extension=${JSON.stringify((await extensionConnections(everyday.worker)).map((connection) => ({ ended: connection.ended, sourceId: connection.sourceId })))}`,
         );
       });
-      expect(await heldOfflineSignIn!).toEqual({ status: "resolved", requestId: drainedRequestId });
+      expect(await heldOfflineSignIn!).toEqual({
+        status: "resolved",
+        requestId: drainedRequestId,
+      });
       expect((await rpc.sources()).sources).toEqual([
         expect.objectContaining({ connected: true, id: sourceId }),
       ]);
@@ -791,14 +843,14 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
       let databaseText = "";
       try {
         const tables = await sql<{ name: string }>`
-          select table_name as name from information_schema.tables
-          where table_schema = 'public' and table_type = 'BASE TABLE'
-        `.execute(database);
+    select table_name as name from information_schema.tables
+    where table_schema = 'public' and table_type = 'BASE TABLE'
+  `.execute(database);
         expect(tables.rows.length).toBeGreaterThan(10);
         for (const { name } of tables.rows) {
           const rows = await sql<{ row: string }>`
-            select row_to_json(t)::text as row from ${sql.id(name)} as t
-          `.execute(database);
+      select row_to_json(t)::text as row from ${sql.id(name)} as t
+    `.execute(database);
           databaseText += rows.rows.map((row) => row.row).join("\n");
         }
       } finally {
@@ -820,7 +872,7 @@ journey.sequential("Chrome sign-ins v2: everyday Chrome to a live hosted Browser
     });
 
     completed = true;
-  }, 600_000);
+  }
 });
 
 // ---- Synthetic sites ----

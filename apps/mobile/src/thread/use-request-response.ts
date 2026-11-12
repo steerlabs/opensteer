@@ -185,7 +185,7 @@ export function useRequestResponse(input: {
         updateRequestSession(session, { allowed: outcome });
         if (mounted.current) {
           void AccessibilityInfo.announceForAccessibility(
-            `Allowed. Open Chrome on that computer and ${domain} finishes by itself.`,
+            `Allowed. ${domain} finishes by itself once ${outcome.sourceName ?? "Chrome"} is open.`,
           );
         }
         return;

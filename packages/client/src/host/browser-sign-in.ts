@@ -248,7 +248,9 @@ export function browserSignInProblemCopy(
         title: "Chrome isn’t connected yet",
       };
     case "chrome-offline":
-      return { fix: "Open Chrome on that computer.", title: `${chrome} is offline` };
+      return input.sourceName
+        ? { fix: "Open that browser on its computer.", title: `${input.sourceName} is offline` }
+        : { fix: "Open Chrome on that computer.", title: "Chrome is offline" };
     case "choose-source":
       return {
         fix: "Choose one.",

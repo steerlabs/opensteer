@@ -748,7 +748,7 @@ describe("RequestSheetContent external requests", () => {
       await act(async () => vi.advanceTimersByTime(5_000));
       await settle();
       expect(text()).toContain("Chrome on Mac is offline");
-      expect(text()).toContain("Allow now; this finishes by itself when Chrome opens.");
+      expect(text()).toContain("Allow now; this finishes by itself when it opens.");
       expect(button("Allow").disabled).toBe(false);
 
       await click("Allow");

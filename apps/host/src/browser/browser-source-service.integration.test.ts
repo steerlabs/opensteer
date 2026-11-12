@@ -38,9 +38,12 @@ import type {
   PasswordSignInAuthorityResult,
 } from "@opensteer/protocol";
 import {
+  BrowserSourceHostMessageSchema,
   browserSourceProtocolVersion,
+  browserSourceWireCurrent,
   type BrowserSourceStatus,
 } from "@opensteer/protocol/browser-sources";
+import { withTimeout } from "@opensteer/shared/withTimeout";
 import Fastify from "fastify";
 import { sql } from "kysely";
 import { testModelSelection } from "@opensteer/database/test-support/store";
@@ -85,6 +88,12 @@ const sourceDestination = { origin: sourceOrigin, routeGeneration: null };
 
 const databaseUrl = process.env.OPENSTEER_TEST_DATABASE_URL;
 const integration = databaseUrl ? describe : describe.skip;
+
+/** Frames the Host sent a wire-4 peer that a shipped wire-4 extension would refuse. */
+const v4Violations: unknown[] = [];
+function checkV4Frame(frame: unknown): void {
+  if (!BrowserSourceHostMessageSchema.safeParse(frame).success) v4Violations.push(frame);
+}
 
 /**
  * An in-process Browser Runtime that speaks the Host's session protocol:
@@ -299,19 +308,23 @@ class FakeChrome {
   readonly held: { operationId: string; site: string }[] = [];
   readonly closed: Promise<number>;
   readonly errors: unknown[] = [];
+  readonly received: { type: string; code?: string }[] = [];
 
   readonly socket: WebSocket;
 
-  constructor(socket: WebSocket) {
+  constructor(socket: WebSocket, wire4 = true) {
     this.socket = socket;
     this.closed = new Promise((resolve) => socket.once("close", resolve));
     socket.on("message", (raw) => {
       const message = JSON.parse(raw.toString()) as {
         type: string;
+        code?: string;
         nonce?: string;
         operationId?: string;
         site?: string;
       };
+      this.received.push(message);
+      if (wire4) checkV4Frame(message);
       if (message.type === "ping")
         socket.send(JSON.stringify({ type: "pong", nonce: message.nonce }));
       if (message.type === "source.error") this.errors.push(message);
@@ -560,7 +573,14 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
 
   let service: BrowserSourceService;
   const server = new WebSocketServer({ port: 0 });
-  server.on("connection", (socket) => service.acceptSocket(socket, ingressOrigin, "127.0.0.1"));
+  server.on("connection", (socket, request) =>
+    service.acceptSocket(
+      socket,
+      ingressOrigin,
+      "127.0.0.1",
+      new URL(request.url ?? "/", "ws://source-host.test").searchParams,
+    ),
+  );
 
   beforeAll(async () => {
     await migrateToLatest(database);
@@ -586,6 +606,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     savedLogins.length = 0;
     stoppedThreads.clear();
     wakeFault = null;
+    v4Violations.length = 0;
     await sql`truncate table credential_vault_canaries, deployments, users, runners restart identity cascade`.execute(
       database,
     );
@@ -605,6 +626,7 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     service?.close();
     passwords?.close();
     await browser?.close();
+    expect(v4Violations, "The Host sent a wire-4 extension a frame it refuses").toEqual([]);
   });
   afterAll(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -630,13 +652,19 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     );
   }
 
+  function socketUrl(query = ""): string {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected socket server port");
+    return `ws://127.0.0.1:${address.port}/${query ? `?${query}` : ""}`;
+  }
+
+  /** A wire-4 extension states no `wire`; a newer one states its own. */
   async function connectChrome(
     paired: { sourceId: string; token: string },
     status: BrowserSourceStatus = "available",
+    wire: number | null = null,
   ): Promise<FakeChrome> {
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Expected socket server port");
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    const socket = new WebSocket(socketUrl(wire === null ? "" : `wire=${wire}`));
     await new Promise<void>((resolve, reject) => {
       socket.once("open", resolve);
       socket.once("error", reject);
@@ -650,14 +678,14 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
               sourceId: paired.sourceId,
               token: paired.token,
               type: "source.hello",
-              version: browserSourceProtocolVersion,
+              version: wire ?? browserSourceProtocolVersion,
             }),
           );
         }
         if (message.type === "source.ready") resolve();
       });
     });
-    const chrome = new FakeChrome(socket);
+    const chrome = new FakeChrome(socket, wire === null);
     chrome.status = status;
     socket.send(
       JSON.stringify({
@@ -667,8 +695,68 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
         type: "source.challenge",
       }),
     );
-    await ready;
+    await withTimeout(ready, 5_000, {
+      timeoutError: () => new Error("Chrome never became ready"),
+    });
     return chrome;
+  }
+
+  /**
+   * One connection attempt as an extension makes it: challenge, then hello once
+   * proven. Settles at ready or close with every frame the Host sent.
+   */
+  async function handshake(
+    paired: { sourceId: string; token: string },
+    options: {
+      readonly query?: string;
+      readonly destination?: { readonly origin: string; readonly routeGeneration: number | null };
+      readonly version?: number;
+    } = {},
+  ) {
+    const socket = new WebSocket(socketUrl(options.query));
+    const frames: { type: string; code?: string; wire?: number; supportedVersion?: number }[] = [];
+    const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+      socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+    );
+    const outcome = new Promise<"ready" | "closed">((resolve) => {
+      void closed.then(() => resolve("closed"));
+      socket.on("message", (raw) => {
+        const message = JSON.parse(raw.toString()) as (typeof frames)[number];
+        frames.push(message);
+        if (!options.query) checkV4Frame(message);
+        if (message.type === "source.proof") {
+          socket.send(
+            JSON.stringify({
+              sourceId: paired.sourceId,
+              token: paired.token,
+              type: "source.hello",
+              version: options.version ?? browserSourceProtocolVersion,
+            }),
+          );
+        }
+        if (message.type === "source.ready") resolve("ready");
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+    socket.send(
+      JSON.stringify({
+        ...(options.destination ?? sourceDestination),
+        nonce: randomUUID(),
+        sourceId: paired.sourceId,
+        type: "source.challenge",
+      }),
+    );
+    return {
+      socket,
+      frames,
+      closed,
+      outcome: await withTimeout(outcome, 5_000, {
+        timeoutError: () => new Error("The Host never answered the handshake"),
+      }),
+    };
   }
 
   async function runningRun(
@@ -2575,7 +2663,8 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       service.agentSignIn({ ...agent, callId: randomUUID(), site: "ftp://example.test" }),
     ).rejects.toMatchObject({ code: "bad_request" });
 
-    // Chrome must not widen the scope: a cookie for another site fails the transfer.
+    // Chrome must not widen the scope: a cookie for another site fails that
+    // transfer alone, and the connection stays for every other site.
     chrome.status = "available";
     chrome.cookiesFor = () => [
       {
@@ -2604,7 +2693,9 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
       sourceName: "Chrome on Mac",
       status: "problem",
     });
-    expect(await chrome.closed).toBe(1008);
+    expect(await service.inspect({ ownerId, url: "https://other.test" })).toMatchObject({
+      candidates: [{ status: "available" }],
+    });
     expect(connection.imports()).toEqual([]);
 
     runtime.supportsImport = false;
@@ -3057,45 +3148,166 @@ integration.sequential("browser sign-ins over a Chrome connection", () => {
     expect(await refused).toBe(1008);
   });
 
-  it("reports an incompatible extension before attempting source authentication", async () => {
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Expected socket server port");
-    const client = new WebSocket(`ws://127.0.0.1:${address.port}`);
-    const sourceId = createId("browserSource");
-    const failure = new Promise<unknown>((resolve) =>
-      client.on("message", (raw) => {
-        const message: unknown = JSON.parse(raw.toString());
-        if (typeof message !== "object" || message === null || !("type" in message)) return;
-        if (message.type === "source.proof") {
-          client.send(
-            JSON.stringify({
-              type: "source.hello",
-              sourceId,
-              token: randomBytes(32).toString("base64url"),
-              version: browserSourceProtocolVersion + 1,
-            }),
-          );
-        } else resolve(message);
-      }),
-    );
-    await new Promise<void>((resolve, reject) => {
-      client.once("open", resolve);
-      client.once("error", reject);
+  it("pairs an extension of any wire version this Host supports", async () => {
+    const pairing = await service.createPairing({ ownerId: personal.userId, route: null });
+    const pair = (version: number) =>
+      service.pair(
+        { ...sourceDestination, code: pairing.code, name: "Chrome", replaces: null, version },
+        sourceOrigin,
+      );
+    for (const version of [3, browserSourceWireCurrent + 1]) {
+      await expect(pair(version)).rejects.toMatchObject({ reason: "unsupported-version" });
+    }
+    expect(await pair(browserSourceWireCurrent)).toMatchObject({ token: expect.any(String) });
+  });
+
+  it("negotiates the wire from the connect URL, speaking wire 4 to an extension that states none", async () => {
+    const paired = await pairChrome(personal.userId, "Chrome");
+    for (const query of ["wire=", "wire=abc", "wire=0", "wire=5&wire=5"]) {
+      const socket = new WebSocket(socketUrl(query));
+      const closed = new Promise<{ code: number; reason: string }>((resolve) =>
+        socket.once("close", (code, reason) => resolve({ code, reason: reason.toString() })),
+      );
+      expect(
+        await withTimeout(closed, 5_000, {
+          timeoutError: () => new Error(`The Host never refused ${query}`),
+        }),
+      ).toEqual({ code: 1008, reason: "Invalid wire version" });
+    }
+    const proof = {
+      type: "source.proof",
+      nonce: expect.any(String),
+      signature: expect.any(String),
+    };
+    for (const [query, version, wire] of [
+      ["", 4, undefined],
+      [`wire=${browserSourceWireCurrent}`, browserSourceWireCurrent, browserSourceWireCurrent],
+      ["wire=99", browserSourceWireCurrent, browserSourceWireCurrent],
+    ] as const) {
+      const attempt = await handshake(paired, { query, version });
+      expect(attempt.outcome).toBe("ready");
+      expect(attempt.frames[0]).toEqual(wire === undefined ? proof : { ...proof, wire });
+      attempt.socket.close();
+      await attempt.closed;
+    }
+    const older = await handshake(paired, { query: "wire=3", version: 3 });
+    expect(older.frames).toEqual([
+      proof,
+      { type: "source.error", code: "unsupported-version", supportedVersion: 4 },
+    ]);
+  });
+
+  it("reads a newer extension's frames tolerantly and a wire-4 extension's strictly", async () => {
+    const ownerId = personal.userId;
+    const paired = await pairChrome(ownerId, "Chrome");
+    const current = await connectChrome(paired, "available", browserSourceWireCurrent);
+    current.socket.send(JSON.stringify({ type: "source.future", anything: true }));
+    current.status = "later" as BrowserSourceStatus;
+    expect(await service.inspect({ ownerId, url: "https://example.test" })).toMatchObject({
+      candidates: [{ sourceId: paired.sourceId, status: "unsupported" }],
     });
-    client.send(
-      JSON.stringify({
-        ...sourceDestination,
-        type: "source.challenge",
-        sourceId,
-        nonce: randomUUID(),
-      }),
+    await current.close();
+    const legacy = await connectChrome(paired);
+    legacy.socket.send(JSON.stringify({ type: "source.future" }));
+    expect(await legacy.closed).toBe(1007);
+  });
+
+  it("authenticates a hello before its version and replaces a connection only with a ready one", async () => {
+    const ownerId = personal.userId;
+    const paired = await pairChrome(ownerId, "Chrome");
+    const live = await connectChrome(paired);
+    const forged = await handshake(
+      { sourceId: paired.sourceId, token: randomBytes(32).toString("base64url") },
+      { version: browserSourceWireCurrent },
     );
-    expect(await failure).toEqual({
-      type: "source.error",
-      code: "unsupported-version",
-      supportedVersion: browserSourceProtocolVersion,
+    // An unauthenticated hello learns nothing about versions.
+    expect(forged.frames.slice(1)).toEqual([{ type: "source.error", code: "source-unauthorized" }]);
+    const outdated = await handshake(paired, { version: browserSourceWireCurrent });
+    expect(outdated.frames.slice(1)).toEqual([
+      { type: "source.error", code: "unsupported-version", supportedVersion: 4 },
+    ]);
+    expect(await outdated.closed).toEqual({
+      code: 1008,
+      reason: "Browser extension update required",
     });
-    client.close();
+    // The right token presented to another destination this Host serves.
+    const remoteOrigin = "https://remote-source-host.test";
+    currentRoute = remoteRoute(remoteOrigin, 1);
+    ingressOrigin = remoteOrigin;
+    const elsewhere = await handshake(paired, {
+      destination: { origin: remoteOrigin, routeGeneration: 1 },
+    });
+    expect(elsewhere.frames.slice(1)).toEqual([
+      { type: "source.error", code: "route-changed", signature: expect.any(String) },
+    ]);
+    expect(live.received.filter(({ type }) => type === "source.error")).toEqual([]);
+    expect(live.socket.readyState).toBe(WebSocket.OPEN);
+    expect(await service.inspect({ ownerId, url: "https://example.test" })).toMatchObject({
+      candidates: [{ sourceId: paired.sourceId, status: "available" }],
+    });
+    await live.close();
+  });
+
+  it("binds a source paired before binding existed to the first destination it connects on", async () => {
+    const paired = await pairChrome(personal.userId, "Chrome");
+    await database
+      .updateTable("browserSources")
+      .set({ pairedOrigin: null, pairedRouteGeneration: null })
+      .where("id", "=", paired.sourceId)
+      .execute();
+    const remoteOrigin = "https://remote-source-host.test";
+    currentRoute = remoteRoute(remoteOrigin, 1);
+    ingressOrigin = remoteOrigin;
+    const first = await handshake(paired, {
+      destination: { origin: remoteOrigin, routeGeneration: 1 },
+    });
+    expect(first.outcome).toBe("ready");
+    first.socket.close();
+    await first.closed;
+    ingressOrigin = sourceOrigin;
+    const other = await handshake(paired);
+    expect(other.frames.slice(1)).toEqual([
+      { type: "source.error", code: "route-changed", signature: expect.any(String) },
+    ]);
+  });
+
+  it("sends a wire-4 extension every frame type in a shape its frozen schemas accept", async () => {
+    service.close();
+    passwords.close();
+    await browser.close();
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      startServices(personal.deploymentId);
+      const { ownerId, sessionId } = await scene();
+      const paired = await pairChrome(ownerId, "Chrome on Mac");
+      const chrome = await connectChrome(paired);
+      expect(
+        await service.sessionSignIn({
+          idempotencyKey: randomUUID(),
+          ownerId,
+          sessionId,
+          sourceId: null,
+          url: "https://example.test",
+        }),
+      ).toMatchObject({ status: "applied" });
+      await vi.advanceTimersByTimeAsync(15_000);
+      await waitFor(() => chrome.received.some(({ type }) => type === "ping"));
+      await service.revokeSource({ ownerId, sourceId: paired.sourceId });
+      await chrome.closed;
+      // Refusals before ready reach wire-4 peers in the handshake tests, which check them too.
+      expect(new Set(chrome.received.map(({ type, code }) => code ?? type))).toEqual(
+        new Set([
+          "source.proof",
+          "source.ready",
+          "source.inspect",
+          "source.export",
+          "ping",
+          "source-unauthorized",
+        ]),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("caps simultaneous unauthenticated connections", async () => {
