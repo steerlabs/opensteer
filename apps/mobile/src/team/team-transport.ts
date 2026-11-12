@@ -4,7 +4,13 @@ import type {
   HostCredentialProvider,
   HostNetwork,
 } from "@opensteer/client/connections";
-import { MockTeamHost, pinnedTeamTransport, type TeamCacheScope } from "@opensteer/client/team";
+import {
+  MockTeamHost,
+  seedBusyTeam,
+  busyTeamIds,
+  pinnedTeamTransport,
+  type TeamCacheScope,
+} from "@opensteer/client/team";
 import { DeploymentIdSchema, UserIdSchema } from "@opensteer/core";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/deployment-authority";
 import { TeamFileSchema, teamPreviewMaxBytes, teamUploadMaxBytes } from "@opensteer/protocol";
@@ -77,6 +83,10 @@ export function mockTeamTransport(
     let host = hosts.get(teamId);
     if (host === undefined) {
       host = new MockTeamHost({ teamId, userId: mockTeamReaderId });
+      seedBusyTeam(host, {
+        name: teamId === busyTeamIds[1] ? "Family" : "Acme",
+        index: teamId === busyTeamIds[1] ? 2 : 1,
+      });
       hosts.set(teamId, host);
     }
     return {

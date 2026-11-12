@@ -11,15 +11,12 @@ import {
 import {
   TeamAgentRequestSchema,
   TeamChannelSchema,
-  TeamConsistentCutSchema,
   TeamFileSchema,
   TeamMemberSchema,
-  TeamMessageSchema,
   type TeamAgentRequest,
-  type TeamMember,
   type TeamMessage,
 } from "@opensteer/protocol";
-import type { MockTeamHost } from "@opensteer/client/team";
+import type { MockTeamHost } from "../team/mock-team-host.js";
 import type { z } from "zod";
 
 /**
@@ -82,19 +79,18 @@ const launchLines = [
 ];
 
 /**
- * Fills one mock team: its people, channels and messages, sent through the
- * mock's own commands so ids and sequence numbers stay its own, then shaped
- * into other authors, times, files and asks.
+ * Fixed identities and timestamps keep web and phone captures reproducible.
  */
-export async function seedBusyTeam(
+export function seedBusyTeam(
   host: MockTeamHost,
   options: { readonly name: string; readonly index: 1 | 2 },
-): Promise<void> {
+): void {
   const me = host.userId;
   host.bootstrap.teamName = options.name;
   host.bootstrap.member.displayName = "Tim Jang";
   host.bootstrap.member.handle = TeamHandleSchema.parse("tim");
-  const members: TeamMember[] = [
+  host.bootstrap.member.joinedAt = "2026-09-01T09:00:00.000Z";
+  const members = [
     host.bootstrap.member,
     ...people.map((person) =>
       TeamMemberSchema.parse({
@@ -109,27 +105,9 @@ export async function seedBusyTeam(
       }),
     ),
   ];
-  const requests: TeamAgentRequest[] = [];
-  const read = host.read.bind(host);
-  host.read = async (name, input) => {
-    if (name === "team.members.list") return { members, hasMore: false };
-    if (name === "team.agent.requests.get") return { requests };
-    return read(name, input);
-  };
-  const cut = host.cut.bind(host);
-  host.cut = (scope, subscriptionId, generation, since) => {
-    const base = cut(scope, subscriptionId, generation, since);
-    return TeamConsistentCutSchema.parse({
-      ...base,
-      requests: requests.filter(
-        (request) =>
-          request.channelId === scope.channelId &&
-          (scope.kind === "channel" || request.threadRootId === scope.rootId),
-      ),
-      // Leo's computer is off, so his queued ask waits for it.
-      linkPresence: [{ ownerUserId: userId(2), online: false }],
-    });
-  };
+  host.members.splice(0, host.members.length, ...members);
+  const requests = host.requests;
+  host.linkPresence.push({ ownerUserId: userId(2), online: false });
 
   const general = [...host.channels.values()][0]!;
   const channel = (n: number, name: string, kind: Kind, extra: { peopleOnly?: boolean } = {}) => {
@@ -153,7 +131,7 @@ export async function seedBusyTeam(
   };
 
   let clock = Date.parse("2026-11-08T08:30:00.000Z");
-  const send = async (
+  const send = (
     where: TeamChannelId,
     author: UserId,
     body: string,
@@ -161,21 +139,13 @@ export async function seedBusyTeam(
       readonly agentRequestId?: TeamMessage["agentRequestId"];
       readonly minutes?: number;
     } = {},
-  ): Promise<TeamMessage> => {
+  ): TeamMessage => {
     clock += (shape.minutes ?? 7) * 60_000;
-    const result = await host.rpc["commands.dispatch"]({
-      type: "team.message.send",
+    return host.post({
       channelId: where,
       threadRootId: shape.threadRootId ?? null,
-      clientMessageId: crypto.randomUUID(),
+      clientMessageId: `00000000-0000-4000-8000-${String(host.messages.size + 1).padStart(12, "0")}`,
       bodyMarkdown: body,
-      mentions: [],
-      attachmentIds: [],
-    });
-    if (!result.ok || result.data.type !== "team.message.send")
-      throw new Error("The preview team refused a message.");
-    const message = TeamMessageSchema.parse({
-      ...result.data.message,
       authorUserId: author,
       authorKind: shape.agentRequestId ? "agent" : "human",
       agentRequestId: shape.agentRequestId ?? null,
@@ -184,8 +154,6 @@ export async function seedBusyTeam(
       mentions: shape.mentions ?? [],
       pinned: shape.pinned ?? false,
     });
-    host.messages.set(message.id, message);
-    return message;
   };
   const file = (where: TeamChannelId, name: string, mediaType: string, size: number): File => {
     const value = TeamFileSchema.parse({
@@ -233,8 +201,7 @@ export async function seedBusyTeam(
       changeSeq: trigger.changeSeq,
       ...extra,
     });
-    requests.push(request);
-    return request;
+    return host.setRequest(request);
   };
 
   const people2 = people.map((person) => userId(person.id));
@@ -255,10 +222,10 @@ export async function seedBusyTeam(
       [leo, "I have it. Also the stove."],
       [me, "I'll do groceries Friday."],
     ] as const)
-      await send(family, author, body);
-    await markRead(host, family);
-    const plans = await send(channelId(2, 2), dana, "Train tickets are booked for the 14th.");
-    await send(channelId(2, 2), maya, `@Tim can you check the ferry times?`, {
+      send(family, author, body);
+    markRead(host, family);
+    const plans = send(channelId(2, 2), dana, "Train tickets are booked for the 14th.");
+    send(channelId(2, 2), maya, `@Tim can you check the ferry times?`, {
       mentions: [{ userId: me, kind: "person" }],
     });
     void plans;
@@ -281,26 +248,21 @@ export async function seedBusyTeam(
     [sam, "Thanks for the heads up."],
     [priya, "Office wifi is back."],
   ] as const)
-    await send(general.id, author, body);
-  await markRead(host, general.id);
+    send(general.id, author, body);
+  markRead(host, general.id);
 
   // #announcements: read.
-  await send(
-    announcements,
-    maya,
-    "**Holiday schedule** is posted. Support has coverage every day.",
-    {
-      pinned: true,
-    },
-  );
-  await markRead(host, announcements);
+  send(announcements, maya, "**Holiday schedule** is posted. Support has coverage every day.", {
+    pinned: true,
+  });
+  markRead(host, announcements);
 
   // #support: long, with threads, files, and every status card in one thread.
   const authors = [leo, maya, dana, priya, sam, me];
   let lastRead: TeamMessage | null = null;
   for (let index = 0; index < 236; index++) {
     const author = authors[(index * 7 + Math.floor(index / 3)) % authors.length]!;
-    const message = await send(support, author, supportLines[index % supportLines.length]!, {
+    const message = send(support, author, supportLines[index % supportLines.length]!, {
       minutes: index % 37 === 0 ? 620 : 3 + (index % 11),
       ...(index % 41 === 5
         ? {
@@ -319,15 +281,15 @@ export async function seedBusyTeam(
     if (index === 228) lastRead = message;
     if (index % 29 === 3) {
       for (let reply = 0; reply < 2 + (index % 3); reply++)
-        await send(support, authors[(index + reply + 1) % authors.length]!, "On it.", {
+        send(support, authors[(index + reply + 1) % authors.length]!, "On it.", {
           threadRootId: message.id,
           minutes: 2,
         });
     }
   }
-  if (lastRead) await markRead(host, support, lastRead.id);
+  if (lastRead) markRead(host, support, lastRead.id);
 
-  const cracked = await send(
+  const cracked = send(
     support,
     dana,
     "Customer on 4411 says the lid arrived cracked. They want a refund. Photos attached.",
@@ -338,25 +300,24 @@ export async function seedBusyTeam(
       ],
     },
   );
-  const myAsk = await send(
-    support,
-    me,
-    "@My agent check 4411 and refund it if it's inside our policy",
-    { threadRootId: cracked.id, mentions: [{ userId: me, kind: "agent" }], minutes: 5 },
-  );
+  const myAsk = send(support, me, "@My agent check 4411 and refund it if it's inside our policy", {
+    threadRootId: cracked.id,
+    mentions: [{ userId: me, kind: "agent" }],
+    minutes: 5,
+  });
   ask(me, support, cracked, myAsk, "working", {
     steps: [
       { kind: "read_files", count: 2 },
       { kind: "browsed", count: 3 },
     ],
   });
-  const leoAsk = await send(support, leo, "@leo-agent pull the carrier photos for the claim", {
+  const leoAsk = send(support, leo, "@leo-agent pull the carrier photos for the claim", {
     threadRootId: cracked.id,
     mentions: [{ userId: leo, kind: "agent" }],
     minutes: 2,
   });
   ask(leo, support, cracked, leoAsk, "queued");
-  const danaAsk = await send(support, dana, "@dana-agent draft the reply to the customer", {
+  const danaAsk = send(support, dana, "@dana-agent draft the reply to the customer", {
     threadRootId: cracked.id,
     mentions: [{ userId: dana, kind: "agent" }],
     minutes: 1,
@@ -367,7 +328,7 @@ export async function seedBusyTeam(
       { kind: "asked_you", count: 1 },
     ],
   });
-  const priyaAsk = await send(support, priya, "@priya-agent is 4411 inside the 30-day window?", {
+  const priyaAsk = send(support, priya, "@priya-agent is 4411 inside the 30-day window?", {
     threadRootId: cracked.id,
     mentions: [{ userId: priya, kind: "agent" }],
     minutes: 1,
@@ -376,14 +337,14 @@ export async function seedBusyTeam(
     steps: [{ kind: "searched_team", count: 2 }],
     finishedAt: new Date(clock + 60_000).toISOString(),
   });
-  const reply = await send(
+  const reply = send(
     support,
     priya,
     "Yes: delivered Nov 2, so it's day 9 of 30. The policy covers a cracked lid with photos.",
     { threadRootId: cracked.id, agentRequestId: priyaRequest.id, minutes: 1 },
   );
-  requests[requests.length - 1] = { ...priyaRequest, replyMessageId: reply.id };
-  const samAsk = await send(support, sam, "@sam-agent open a carrier claim", {
+  host.setRequest({ ...priyaRequest, replyMessageId: reply.id });
+  const samAsk = send(support, sam, "@sam-agent open a carrier claim", {
     threadRootId: cracked.id,
     mentions: [{ userId: sam, kind: "agent" }],
     minutes: 1,
@@ -392,7 +353,7 @@ export async function seedBusyTeam(
     failureCode: "execution_failed",
     finishedAt: new Date(clock).toISOString(),
   });
-  const mayaAsk = await send(support, maya, "@maya-agent check the stock for a replacement lid", {
+  const mayaAsk = send(support, maya, "@maya-agent check the stock for a replacement lid", {
     threadRootId: cracked.id,
     mentions: [{ userId: maya, kind: "agent" }],
     minutes: 1,
@@ -401,14 +362,14 @@ export async function seedBusyTeam(
     steps: [{ kind: "browsed", count: 2 }],
     finishedAt: new Date(clock).toISOString(),
   });
-  await send(support, leo, "@Tim the coupon fix is live, can you confirm on your side?", {
+  send(support, leo, "@Tim the coupon fix is live, can you confirm on your side?", {
     mentions: [{ userId: me, kind: "person" }],
     minutes: 4,
   });
-  const waiting = await send(support, sam, "Refund for 4398 is stuck at the bank step.", {
+  const waiting = send(support, sam, "Refund for 4398 is stuck at the bank step.", {
     minutes: 3,
   });
-  const mySecond = await send(support, me, "@My agent find out why and fix it", {
+  const mySecond = send(support, me, "@My agent find out why and fix it", {
     threadRootId: waiting.id,
     mentions: [{ userId: me, kind: "agent" }],
     minutes: 1,
@@ -417,14 +378,14 @@ export async function seedBusyTeam(
 
   // #launch: unread with a mention; #leadership private; a people-only channel; a long name.
   for (const [index, body] of launchLines.entries())
-    await send(launch, [maya, sam, priya, leo][index]!, body, { pinned: index === 0 });
-  await send(launch, maya, "@Tim can you review the pricing copy today?", {
+    send(launch, [maya, sam, priya, leo][index]!, body, { pinned: index === 0 });
+  send(launch, maya, "@Tim can you review the pricing copy today?", {
     mentions: [{ userId: me, kind: "person" }],
   });
-  await send(leadership, maya, "Board deck draft is in the drive.");
-  await markRead(host, leadership);
-  await send(design, priya, "Onboarding v3 screens are up for crit at 3pm.");
-  await send(longName, jordan, "Marketplace listing review notes are attached.", {
+  send(leadership, maya, "Board deck draft is in the drive.");
+  markRead(host, leadership);
+  send(design, priya, "Onboarding v3 screens are up for crit at 3pm.");
+  send(longName, jordan, "Marketplace listing review notes are attached.", {
     attachments: [
       file(
         longName,
@@ -434,44 +395,24 @@ export async function seedBusyTeam(
       ),
     ],
   });
-  await markRead(host, longName);
+  markRead(host, longName);
 
   // DMs: Maya with an unread message, a group DM, and a very long name.
-  await send(dmMaya, maya, "Got a minute to look at the refund macro?");
-  await send(dmGroup, leo, "Lunch at 12:30?");
-  await send(dmGroup, priya, "Yes please.");
-  await markRead(host, dmGroup);
-  await send(dmJordan, jordan, "Thanks for the intro!");
-  await markRead(host, dmJordan);
-
-  // Threads and agents name their repliers, newest first, as the server keeps them.
-  for (const root of host.messages.values()) {
-    if (root.threadRootId !== null) continue;
-    const replies = [...host.messages.values()].filter((row) => row.threadRootId === root.id);
-    if (replies.length === 0) continue;
-    host.messages.set(root.id, {
-      ...root,
-      replySummary: {
-        count: replies.length,
-        latestMessageId: replies.at(-1)!.id,
-        repliers: [...new Set(replies.map((row) => row.authorUserId))].reverse().slice(0, 4),
-      },
-      requests: requests.filter((request) => request.threadRootId === root.id),
-    });
-  }
+  send(dmMaya, maya, "Got a minute to look at the refund macro?");
+  send(dmGroup, leo, "Lunch at 12:30?");
+  send(dmGroup, priya, "Yes please.");
+  markRead(host, dmGroup);
+  send(dmJordan, jordan, "Thanks for the intro!");
+  markRead(host, dmJordan);
 }
 
-async function markRead(host: MockTeamHost, where: TeamChannelId, through?: string): Promise<void> {
+function markRead(host: MockTeamHost, where: TeamChannelId, through?: string): void {
   const latest = through ?? host.channels.get(where)?.latestMessageId;
   if (!latest) return;
-  await host.rpc["commands.dispatch"]({
-    type: "team.channel.read",
-    channelId: where,
-    throughMessageId: latest,
-  });
+  host.markRead(where, latest);
 }
 
-let png: Uint8Array | null = null;
+let png: Uint8Array<ArrayBuffer> | null = null;
 /** A 2×2 picture: enough for a thumbnail to show without shipping one. */
 function previewPng(): Uint8Array<ArrayBuffer> {
   png ??= Uint8Array.from(
@@ -480,5 +421,5 @@ function previewPng(): Uint8Array<ArrayBuffer> {
     ),
     (char) => char.charCodeAt(0),
   );
-  return png as Uint8Array<ArrayBuffer>;
+  return png;
 }

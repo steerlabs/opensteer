@@ -53,6 +53,8 @@ import {
   mockDeploymentId,
   mockTeamId,
   mockTeamOrigin,
+  mockFamilyTeamId,
+  mockFamilyTeamOrigin,
 } from "./client/mock-mode.js";
 import { readMobileConfiguration } from "./config.js";
 import {
@@ -343,7 +345,7 @@ function mobileClient(): MobileRoot {
         }),
     verify: (origin) =>
       configuration.mock
-        ? Promise.reject(new Error("Mock mode holds its one team already."))
+        ? Promise.reject(new Error("Mock mode holds its teams already."))
         : verifyAccessEndpoint({
             fetch: (input, init) => globalThis.fetch(input as RequestInfo, init),
             kind: "canonical",
@@ -352,7 +354,10 @@ function mobileClient(): MobileRoot {
     ...(configuration.mock
       ? {
           seed: {
-            [mockDeploymentId]: [{ teamId: mockTeamId, origin: mockTeamOrigin, teamName: "Acme" }],
+            [mockDeploymentId]: [
+              { teamId: mockTeamId, origin: mockTeamOrigin, teamName: "Acme" },
+              { teamId: mockFamilyTeamId, origin: mockFamilyTeamOrigin, teamName: "Family" },
+            ],
           },
         }
       : {}),

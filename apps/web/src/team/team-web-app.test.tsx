@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { teamApiVersion, teamApiVersionHeader } from "@opensteer/protocol";
-import { MockTeamHost, mockTeamChannelId } from "@opensteer/client/team";
+import { MockTeamHost, mockTeamChannelId, seedBusyTeam } from "@opensteer/client/team";
 import { TeamWebApp } from "./team-web-app.js";
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
@@ -25,6 +25,7 @@ const json = (body: unknown, status = 200) =>
 /** The team server at this origin: the mock team behind its HTTP routes. */
 function serveTeam(options: { readonly signedIn: boolean }) {
   const team = new MockTeamHost();
+  seedBusyTeam(team, { name: "Acme", index: 1 });
   const requests: { readonly path: string; readonly init: RequestInit | undefined }[] = [];
   vi.stubGlobal(
     "fetch",
