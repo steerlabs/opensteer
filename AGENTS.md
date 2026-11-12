@@ -207,6 +207,8 @@ Most code changes need no documentation change: agents can read the code.
 - Each area's notes are one file in `docs/`, named for the area. Open the one
   your change crosses when you reach it; there is no reading list to finish
   before you start.
+- Layout and presentation rationale belongs in the PR or a short comment beside
+  the code. A behavior-preserving refactor should not require a docs rewrite.
 - Don't narrate control flow, list fields, methods, flags or constants, keep
   file catalogs, or append history (PR summaries, evidence logs, dates, commit
   hashes). Link to the source instead of describing or copying it.

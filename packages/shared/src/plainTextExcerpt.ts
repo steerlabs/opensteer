@@ -12,12 +12,18 @@ export function plainTextExcerpt(text: string, limit: number): string | null {
     .replace(/(\*\*|~~|`)(?=\S)([^\n]*?\S)\1/gu, "$2")
     .replace(/\s+/gu, " ")
     .trim();
-  if (!plain) return null;
-  if (plain.length <= limit) return plain;
-  // The bound is in UTF-16 units, as the clients' schemas count them; whole
-  // code points are kept so an emoji is never split in half.
+  return plain ? clipText(plain, limit) : null;
+}
+
+/**
+ * Text within `limit` UTF-16 units, as the clients' schemas count them, ending
+ * in an ellipsis when cut. Whole code points are kept so an emoji is never
+ * split in half; this runs on Hermes, which has no `Intl.Segmenter`.
+ */
+export function clipText(text: string, limit: number): string {
+  if (text.length <= limit) return text;
   let kept = "";
-  for (const character of plain) {
+  for (const character of text) {
     if (kept.length + character.length > limit - 1) break;
     kept += character;
   }

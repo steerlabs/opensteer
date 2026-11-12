@@ -862,6 +862,31 @@ class PlaywrightContextHandle implements BrowserContext {
   }
 }
 
+const documentMediaScript = `(() => {
+  const roots = [document];
+  for (const root of roots) {
+    if ([...root.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
+    for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
+  }
+  return false;
+})()`;
+
+// null: the frame detached. A navigation can replace the document mid-check; read its successor.
+async function documentMediaPlaying(frame: Frame): Promise<boolean | null> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await frame.evaluate<boolean>(documentMediaScript);
+    } catch (error) {
+      if (frame.isDetached()) return null;
+      if (
+        attempt === 3 ||
+        !(error instanceof Error && error.message.includes("Execution context was destroyed"))
+      )
+        throw error;
+    }
+  }
+}
+
 class PlaywrightPageHandle implements BrowserPage {
   private requestMethod = "GET";
   private documentMethod = "GET";
@@ -910,17 +935,9 @@ class PlaywrightPageHandle implements BrowserPage {
     if (this.uploads.size) return "upload";
     if (!["GET", "HEAD"].includes(this.documentMethod)) return "post";
     for (const frame of this.page.frames()) {
-      if (
-        await frame.evaluate<boolean>(`(() => {
-        const roots = [document];
-        for (const root of roots) {
-          if ([...root.querySelectorAll('audio,video')].some(media => !media.paused && !media.ended)) return true;
-          for (const node of root.querySelectorAll('*')) if (node.shadowRoot) roots.push(node.shadowRoot);
-        }
-        return false;
-      })()`)
-      )
-        return "media";
+      const playing = await documentMediaPlaying(frame);
+      if (playing === null) continue;
+      if (playing) return "media";
       let session: PlaywrightCdpSession;
       try {
         session = await this.context.newCDPSession(frame);

@@ -49,15 +49,11 @@ suggestion can't depend on a model remembering to call anything. Clients show it
 at the end of the conversation until the person next speaks; absent, Passwords can't help here
 (a team server or an unsupported Mac) and nothing offers it.
 
-That report is true only when made, and the person answers it in a window no agent can see. A
-Request wakes its agent when it settles; an offer has nothing to settle, so the Host
-[keeps it](../apps/host/src/browser/passwords-offers.ts), probes until the login exists and wakes
-the Thread itself. That is why nothing tells the person to go back and tell their agent. A person's
-No stands: a declined Chrome Request or a stopped Thread ends the offer, and the wake waits for the
-Run's other Requests so its outcomes still arrive together. It withdraws a Chrome Request it makes
-pointless, unless an Allow got there first. Offers are memory-only, and a finished task can't take
-input, so the result and the Run guide also say to call `sign_in` again when the person returns.
-Those two reach every Run; a long-lived session keeps the skill it read first. Cards have no wake.
+Setup happens in a window agents cannot observe. The Host tracks an outstanding offer and wakes
+its Thread when a login becomes available; the person must not have to report completion. A
+decline or stopped Thread ends the offer, and offers never override Requests or a finished task.
+Cards have no such wake. [The offer service](../apps/host/src/browser/passwords-offers.ts) owns
+this lifecycle.
 
 ## Grants and consent
 
@@ -113,23 +109,13 @@ Mac; the Host, Runners and viewers carry IDs, usernames and status. After insert
 any agent JavaScript in it can read the value, exactly as if the person had typed it. Agents have no
 tool for this; they keep `sign_in`.
 
-An offer needs a trusted activation (a pointer press or ↓) on that element and viewer input newer
-than the page's latest agent command; that routes the offer, it does not prove who focused the field,
-so the person's explicit choice is the act, and any agent command withdraws the offer. The runtime
-binds the target, its partner field and any one-digit code boxes in its private world when the
-offer is made and never reselects: a changed document, origin, or element ends the fill.
+Only the viewer that activated the field receives and accepts its offer. A changed document,
+origin or bound element ends the fill; an agent command withdraws it. Native input on the vault
+Mac requires fresh OS presence there, and a missing native view refuses rather than downgrades.
+Other viewers use their own consent path, with device-owner authentication on mobile.
 
-Presence follows where the activation came from. Native input on the vault Mac's own page makes the
-broker ask Touch ID or the Mac password itself, and such an offer is refused rather than downgraded
-if that native view is gone. Every other viewer is trusted as it is to approve agent sign-ins: the
-phone asks for device-owner authentication, and on the web the click is the consent.
-
-A confirmed choice opens a person transaction: its own kind with its own setting (on by default),
-never a grant, app release, approval or agent reference. It stays reusable for one viewer, tab,
-site, login revision and presence until the broker's deadline (at most five minutes), so a code page
-after a password page needs no second check on that device. The setting and the person activity
-log live apart from the agent records so an older broker after a channel downgrade neither loses
-them nor misreads agent sign-ins. Activity records a release, not a successful sign-in.
+A person fill creates no agent grant or reference. Its short-lived reuse is bound to that viewer,
+tab, site, login revision and presence. Activity records credential release, not successful sign-in.
 
 ## Saving for people
 
@@ -139,29 +125,15 @@ is never read, so a saved login is always one Opensteer can fill. Version 1 adds
 a changed password, a different username for a saved one, and a form with two different
 passwords are not offered.
 
-A password counts only from a trusted edit into the field while it was empty, and only while every
-edit to it followed one viewer's input with no agent command on the tab in the five seconds before
-it: agent commands do not queue behind a viewer's input, so either could be what typed. Edits are
-judged by when the page made them, because a report can arrive after later input; the
-[ledger](../packages/browser-runtime-core/src/browser/surface-ledger.ts) keeps a short timeline for
-that. A script write taints the field. An agent's earlier listener can still change the value after
-the person typed, as it can read it ([Promise and limits](#promise-and-limits)); Save adds at most
-one wrong login, which the person sees. The private world reads the values once at a submit and the
-broker holds them from then; desktop main keeps only the transaction ID.
+Saving requires attributable person input, never an agent or script write. An agent listener may
+still alter a value the person typed, so Save can add a wrong login; it must never edit an existing
+one or grant agent access. Submit binds the site's document origin before navigation, and the
+broker owns the captured values from then. Only the originating viewer can answer the offer.
 
-The offer goes only to the viewer that typed, as fill's does, and only that viewer can answer it,
-once. Whether the sign-in worked decides only when to ask, never authority: the form left the page
-or the frame moved on, and no password field came back. Any agent command before the offer shows
-ends it, and so does that viewer leaving. The site is the submitting document's own origin, read as
-it submits, so a navigation landing first cannot lend the login another site; loopback and the
-Deployment's own sites are refused like any sign-in.
-
-The broker adds the login it holds, built inside the broker, with no grant, after checking in the
-same commit that no login for that site has the username. It never edits or deletes anything, and
-it drops what it holds on expiry, a closed connection, the setting turning off, a reset, lock or
-sleep. Saving still works while the screen is locked, as remembered sign-ins do: a person away
-from the Mac signs in from their phone, and the vault keys need no presence. Before Passwords is set up, only a person typing on the Mac itself is told how to set it up,
-once each launch; nothing else asks.
+A successful-looking navigation decides when to offer, never authority. Agent activity before the
+offer appears or the viewer leaving ends it. The broker commits a new login
+only if no matching username exists, discarding its temporary values on expiry or cancellation.
+Sign-ins from a phone may save while the vault Mac is locked, as remembered sign-ins do.
 
 ## Typing in apps
 
@@ -174,26 +146,19 @@ screenshots or an app that shows a password as ordinary text.
 
 ## Sealed delivery
 
-Each authenticated receiver connection makes an ephemeral P-256 key; reconnecting discards it and
-its replay state. Desktop main serializes an operation's releases and seals app fields right after
-broker release. The envelope binds connection, Run, session, act, action index, field and expiry,
-capped at the earliest of the lease deadline, the act deadline and 60 seconds. Receivers check
-expiry and work budget on their own clock, authenticate the whole batch before input, claim replay
-identities atomically and decrypt again just before typing. A lost act answer is never retried. The
-Host, Runners, a receiving Mac's main process and tunnels carry only ciphertext. The [wire
-schemas](../packages/protocol/src/password-sign-in.ts) own the bindings and the
-[sealer](../apps/desktop/src/passwords/login-envelope.ts) owns the cryptography.
+App delivery seals fields to one authenticated receiver connection and exact operation. Reconnect
+retires its key and replay state. Authenticate the complete batch before effects and recheck
+expiry and identity at release; lost answers never authorize resending. The Host, Runners and
+tunnels carry ciphertext. [The wire](../packages/protocol/src/password-sign-in.ts) owns bindings;
+[the sealer](../apps/desktop/src/passwords/login-envelope.ts) owns cryptography.
 
 ## Requests and results
 
-The requester approves or declines through one Host command from any client. Chooser details are
-fetched separately and never enter shared Request events, agent projections or client caches; names
-and reasons are display context, never authority. Durable Request settlement is the commit point:
-the broker first prepares the pinned choice without granting or releasing anything, and the Host
-commits it and publishes a lease only after settlement succeeds. If the commit fails or authority
-ends first, the Request becomes interrupted. A lost commit response can leave only the exact pinned
-grant, never a live lease, and cancelling a preparation cannot erase a newer grant. A continuation
-gets its login reference only from the live registry, never from Request data.
+The requester decides through Host commands from any client. Chooser details stay outside shared
+Request events, agent projections and caches. Broker preparation grants and releases nothing:
+only durable Host settlement can publish a live lease. A lost commit response may leave the pinned
+grant, never a live lease; cancellation must not erase a newer grant. Continuations get references
+from the live registry, never historical Request data.
 
 ## Runtime and compatibility
 
@@ -208,14 +173,9 @@ Versions live in the [broker wire](../packages/protocol/src/passwords-broker.ts)
 
 ## The broker
 
-The [broker](../apps/desktop/native/passwords/README.md) is the only vault and key owner for a macOS
-user. It is an accessory app except while its window is open, when it is a regular one: the person
-leaves it to export, needs the Dock or Command-Tab to get back, and when the system prompt closes
-macOS gives focus only to a regular app, refusing an accessory app that asks for it back. It accepts
-only the signed Opensteer desktop under the Developer ID team taken from its own
-signature, checked by audit token before reading any byte; desktop verifies the broker's signature
-and live peer too. Development uses a separate bundle, socket and vault, and its file protection
-cannot resist same-user rollback, so it must never ship.
+The [broker](../apps/desktop/native/passwords/README.md) alone owns vault keys. Both it and desktop
+verify the signed live peer with audit tokens before exchanging data. Development has a separate
+identity and vault, whose weaker rollback protection must never ship.
 
 Setup, Start Fresh, opening saved logins, changing a login's websites, login page or username, and a
 person's own fill from the Mac's page each need fresh device-owner authentication (Touch ID or the
@@ -240,9 +200,8 @@ good.
 
 Signed commits and a protected checkpoint refuse rollback. Every open, unlock and commit verifies
 history against the checkpoint under a kernel lock; missing, forked or rolled-back history fails
-closed with no automatic repair. Writes publish objects, commit, checkpoint, then HEAD, and nothing
-releases from a head the checkpoint does not protect. A checkpoint write that reports an error may
-still have landed, so read it back; opens require regular files so a planted FIFO cannot stall them.
+closed with no automatic repair. Nothing releases from a head its protected checkpoint does not
+cover. A checkpoint write that reports an error may still have landed, so read it back; opens require regular files so a planted FIFO cannot stall them.
 
 Canonical bytes matter: reject duplicate keys, noncanonical JSON and ambiguous encodings rather than
 normalize on read. Credential bytes are never trimmed or Unicode-normalized. Unknown item versions

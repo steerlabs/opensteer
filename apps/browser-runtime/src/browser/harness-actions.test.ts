@@ -641,6 +641,10 @@ acceptance(
     expect(await page.keepAwake?.()).toBeNull();
     expect(await kit.ledger.sleep(kit.surfaceId, () => null)).toBe(true);
     await kit.ledger.wake(kit.surfaceId);
+    // Waking reloads the page; the journey's final evidence reads the fixture.
+    await waitForBrowserState(() =>
+      kit.read<boolean>("document.readyState === 'complete' && !!window.fixture?.ready"),
+    );
   },
   "01",
 );
