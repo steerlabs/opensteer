@@ -156,4 +156,14 @@ describe("sending in a channel", () => {
     expect(client.getSnapshot().needsYou?.window.hasMore).toBe(false);
     expect(document.querySelector(".all-tasks__more")).toBeNull();
   });
+  it("keeps text locally if draft storage refuses it before send admission", async () => {
+    await openChannel();
+    vi.spyOn(teamSession!, "setDraft").mockRejectedValue(new Error("Storage full"));
+    const text = "😀".repeat(5000);
+    await write(field(), text);
+    expect(field().value).toBe(text);
+    await click(element(".channel .composer__send"));
+    expect(field().value).toBe(text);
+    expect(teamSession!.getSnapshot().pending).toEqual([]);
+  });
 });

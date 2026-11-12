@@ -323,7 +323,7 @@ function TeamSearchPage({ view }: { readonly view: TeamView }) {
         ...(filters.inThreads ? { threadsOnly: true } : {}),
       })
       .catch((error: unknown) => toast.error(actionErrorMessage(error)));
-  }, [view.client, query, filters]);
+  }, [view.client, query, filters, view.snapshot.sidebar?.accessRevision]);
   const channels = (view.snapshot.sidebar?.channels ?? []).map((row) => ({
     id: row.channel.id,
     name: row.channel.name,

@@ -537,7 +537,7 @@ function ChannelScreenFor({
       .filter((userId) => userId !== words.viewerUserId)
       .map((userId) => person(words, userId));
   const composer = (rootId: string | null, startsOn: boolean) =>
-    can?.post === false ? (
+    can?.post !== true ? (
       <p className="team-composer__closed">You can read this channel but not post here.</p>
     ) : (
       <TeamComposer
