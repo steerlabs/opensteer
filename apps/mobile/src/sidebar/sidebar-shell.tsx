@@ -73,11 +73,11 @@ import {
  *
  * It is the stack's own `layout`, so it wraps the navigator in place: there is
  * still exactly one navigator, one history and one `navigationRef`, and every
- * destination the sidebar offers is an ordinary route pushed over Chat. Native
+ * destination the sidebar offers is an ordinary route pushed over Home. Native
  * sheets present above it, because UIKit presents them from the stack itself.
  *
  * Where the window has room, the sidebar docks as a column beside the stack,
- * so a task, Chat or a destination is always one press from another; there is
+ * so a task, a team or a destination is always one press from another; there is
  * no hiding it. A page in front takes the sidebar's side instead, for itself
  * and its agent's Thread: never three panes. Elsewhere it is Gesture Handler's
  * Reanimated drawer, whose drag and settle run on the UI thread and honour the

@@ -128,9 +128,7 @@ function ThreadFind(props: {
         style={({ pressed }) => [styles.result, pressed && styles.pressed]}
       >
         <View style={styles.resultHead}>
-          <AppText role="secondaryMedium">
-            {messageAuthorName(item.author)}
-          </AppText>
+          <AppText role="secondaryMedium">{messageAuthorName(item.author)}</AppText>
           <AppText role="caption" tone="muted">
             {formatRelativeTime(item.createdAt)}
           </AppText>

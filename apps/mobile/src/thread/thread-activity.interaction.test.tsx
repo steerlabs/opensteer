@@ -57,10 +57,7 @@ vi.mock("../team/team-marks.js", async (load) => ({
   ...(await load<typeof import("../team/team-marks.js")>()),
   AgentOrb: () => <i data-chat-orb />,
 }));
-vi.mock("../ui/workspace-mark.js", () => ({
-  WorkspaceMark: () => null,
-  WorkspaceIconGlyph: () => null,
-}));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("./message-hold.js", () => ({
   MessageHold: (props: { children: ReactNode }) => props.children,
   MessageMore: (props: { reportId: string }) => <i data-report={props.reportId} />,
@@ -122,9 +119,7 @@ describe("a Thread's activity on the phone", () => {
             onOpenStep={() => {}}
             onOpenThread={() => {}}
             spacingTop={0}
-            homeThreadId={null}
             viewerUserId={null}
-            workspaces={[]}
           />,
         );
         expect(container.textContent).toContain(running ? active : done);
@@ -150,13 +145,11 @@ describe("a Thread's activity on the phone", () => {
         <Message
           conversation={conversation}
           message={message}
-          homeThreadId={null}
           onReply={undefined}
           open={true}
           onToggle={() => {}}
           onOpenThread={() => {}}
           viewerUserId="owner"
-          workspaces={[]}
         />,
       );
       expect(container.textContent).toContain("Research agent");

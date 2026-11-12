@@ -478,8 +478,7 @@ const RootStack = createNativeStackNavigator({
         title: "Plugins",
       }),
     },
-    // Plugins, a modal over Settings like Connections, or over a project's
-    // settings from its Plugins section.
+    // Plugins, a modal over Settings like Connections.
     Plugins: {
       screen: SettingsPluginsScreen,
       options: ({ navigation }) => ({
@@ -522,7 +521,7 @@ const RootStack = createNativeStackNavigator({
         title: `Add this ${thisPhoneNoun}`,
       },
     },
-    // Asked once, over Chat, the first time this phone reaches a computer. It
+    // Asked once, over Home, the first time this phone reaches a computer. It
     // sizes to its content and is dismissed like any sheet.
     NotificationsIntro: {
       screen: NotificationsIntroScreen,

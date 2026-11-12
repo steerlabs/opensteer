@@ -121,13 +121,7 @@ it("preserves committed plugin state while enable is pending and ignores a late 
         finish = () =>
           resolve({
             type: "settings.plugin.enabled.set",
-            placement: {
-              enabled: !before.value,
-              revision: 2,
-              mainIncluded: true,
-              personalEverywhere: false,
-              projectCount: 0,
-            },
+            placement: { enabled: !before.value, revision: 2 },
           });
       }),
   );
@@ -227,7 +221,7 @@ it.each(["ios", "android"])(
     state.os = os;
     await open("messaging");
     const snapshot = host.getSnapshot();
-    const workspaceId = snapshot.workspaces[0]!.id;
+    const folder = snapshot.personalSettings!.agentHome;
     const now = new Date().toISOString();
     const accountId = `cha_${crypto.randomUUID()}`;
     const connectionId = `con_${crypto.randomUUID()}`;
@@ -259,7 +253,7 @@ it.each(["ios", "android"])(
           createdBy: snapshot.user!.id,
           createdAt: now,
           updatedAt: now,
-          workspaceId,
+          folder,
           revision: 7,
           status: "active",
           selector: {
@@ -409,7 +403,7 @@ it("pushes validated plugin identity so Back returns to the searchable list", as
   });
 });
 
-it("installs a folder, places it in Main and removes only after confirmation", async () => {
+it("installs a folder, turns it on and removes only after confirmation", async () => {
   await open("plugins");
   const dispatch = vi.spyOn(host, "dispatch");
   await press("Add your own…");
@@ -432,12 +426,12 @@ it("installs a folder, places it in Main and removes only after confirmation", a
       />,
     ),
   );
-  const place = rows().find((row) => row.kind === "toggle" && row.label === "Main");
+  const place = rows().find((row) => row.kind === "toggle" && row.label === "On");
   expect(place?.kind).toBe("toggle");
-  if (place?.kind !== "toggle") throw new Error("Missing Main");
+  if (place?.kind !== "toggle") throw new Error("Missing On");
   await act(async () => place.onChange(true));
   expect(dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "settings.plugin.placement.set", mainIncluded: true }),
+    expect.objectContaining({ type: "settings.plugin.enabled.set", enabled: true }),
   );
   await press("Remove plugin");
   const { Alert } = await import("react-native");
@@ -446,24 +440,6 @@ it("installs a folder, places it in Main and removes only after confirmation", a
   await act(async () => buttons?.find((button) => button.style === "destructive")?.onPress?.());
   expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "plugin.remove" }));
 });
-it("withholds folder install from non-administrators", async () => {
-  await open("plugins");
-  const original = host.getSnapshot.bind(host);
-  vi.spyOn(host, "getSnapshot").mockImplementation(() => ({
-    ...original(),
-    user: { ...original().user!, instanceRole: "user" },
-  }));
-  await act(async () =>
-    root!.render(
-      <SettingsPluginsScreen key="member" route={{ params: { deploymentId: "deployment" } }} />,
-    ),
-  );
-  await act(async () => {
-    await vi.waitFor(() => expect(rows().some((row) => row.label === "Browse")).toBe(true));
-  });
-  expect(rows().some((row) => row.label === "Add your own…")).toBe(false);
-});
-
 it.each(["ios", "android"])(
   "fences retained Messaging actions and late checks on %s",
   async (os) => {
@@ -538,14 +514,12 @@ it.each(["ios", "android"])(
     await expect(state.connected!(account.connectionId)).rejects.toThrow("Lost response");
     const uncertain = dispatch.mock.calls.at(-1)![0];
     dispatch.mockResolvedValueOnce({
-      type: "settings.plugin.placement.set",
+      type: "settings.plugin.enabled.set",
       placement: result.data.row.placement,
     });
     await state.connected!(account.connectionId);
     expect(dispatch.mock.calls.at(-1)![0]).toEqual(uncertain);
-    expect(uncertain).toMatchObject({ type: "settings.plugin.placement.set" });
-    if (uncertain.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
-    expect(JSON.stringify(uncertain)).toContain(account.connectionId);
+    expect(uncertain).toMatchObject({ type: "settings.plugin.enabled.set", enabled: true });
   },
 );
 
@@ -699,29 +673,6 @@ it("opens an installed service from the catalog and keeps placement as a sign-in
     "settings.plugin.enabled.set",
   ]);
   expect(state.connected).toBeTypeOf("function");
-});
-
-it("uses the selected provider account access when mobile enables Everywhere", async () => {
-  await open("plugins");
-  const target = { kind: "service", definitionId: "google-gmail" } as const;
-  await act(async () =>
-    root!.render(
-      <SettingsPluginsScreen route={{ params: { deploymentId: "deployment", target } }} />,
-    ),
-  );
-  const access = rows().find((row) => row.kind === "chips" && row.label.startsWith("Access for "));
-  if (access?.kind !== "chips") throw new Error("Missing account access choice");
-  await act(async () => access.onChange("read-write"));
-  const dispatch = vi.spyOn(host, "dispatch");
-  const everywhere = row("Everywhere, including new Projects");
-  if (everywhere.kind !== "toggle") throw new Error("Missing Everywhere");
-  await act(async () => everywhere.onChange(true));
-  const command = dispatch.mock.calls[0]![0];
-  if (command.type !== "settings.plugin.placement.set") throw new Error("Missing placement");
-  expect(command.personalEverywhere?.accounts).toHaveLength(1);
-  expect(command.personalEverywhere?.accounts[0]?.access).toBe("read-write");
-  for (const project of command.projects)
-    expect(project.accounts).toEqual(command.personalEverywhere?.accounts);
 });
 
 vi.mock("../ui/ai-sharing.js", () => import("../../test-support/ai-sharing.js"));

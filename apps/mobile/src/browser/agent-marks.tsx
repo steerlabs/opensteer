@@ -9,7 +9,7 @@ import { TaskMark } from "../ui/task-mark.js";
 const shownMarks = 3;
 
 /**
- * Who is in a place, as overlapping marks: each task's mark, Chat's orb, a
+ * Who is in a place, as overlapping marks: each task's mark, the agent orb, a
  * green ring on whoever is acting now. Marks are pictures of the words beside
  * them, so they are silent to a screen reader.
  */

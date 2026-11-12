@@ -21,7 +21,6 @@ import {
   type RunEntry,
   type ToolEntry,
   type TranscriptEntry,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { mockComputerUseToolRefs, mockComputerUseTurn } from "@opensteer/client/mock";
 import { MockHostClient } from "@opensteer/client/mock";
@@ -181,10 +180,7 @@ vi.mock("../team/team-marks.js", async (load) => ({
 vi.mock("./settings/engine-mark.js", () => ({
   EngineMark: ({ driverKind }: { driverKind: string }) => <i data-engine={driverKind} />,
 }));
-vi.mock("../ui/workspace-mark.js", () => ({
-  WorkspaceMark: () => null,
-  WorkspaceIconGlyph: () => null,
-}));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 // The native menu's Activity item, as `messageActions` titles it.
 vi.mock("./message-hold.js", () => ({
   MessageHold: (props: { children: ReactNode; onActivity?: () => void }) => (
@@ -294,7 +290,6 @@ function setup(conversation = false, surfaces: TranscriptSurfaces | null = null)
     onOpenStep,
     render(
       entries: TranscriptEntry[],
-      workspaces: readonly WorkspaceSummary[] = [],
       grouping: Parameters<typeof groupTranscriptEntries>[1] = {},
     ) {
       const groups = groupTranscriptEntries(entries, grouping);
@@ -312,9 +307,7 @@ function setup(conversation = false, surfaces: TranscriptSurfaces | null = null)
               onOpenStep={onOpenStep}
               onOpenThread={onOpenThread}
               spacingTop={0}
-              homeThreadId={null}
               viewerUserId={null}
-              workspaces={workspaces}
             />
           </TranscriptSurfacesContext>,
         ),
@@ -361,7 +354,6 @@ describe("native transcript prose", () => {
   });
 
   it("draws an incoming report in a task from its bounded excerpt until opened in place", () => {
-    const workspaceId = createId("workspace");
     const update: MessageEntry = {
       ...note,
       id: "worker-report",
@@ -372,13 +364,11 @@ describe("native transcript prose", () => {
         kind: "agent",
         runId: createId("run"),
         threadId: createId("thread"),
-        workspaceId,
-        workspaceName: "Travel",
       },
       body: `Three flights fit. ${"Details and evidence. ".repeat(100)}FINAL SOURCE`,
     };
     const task = setup();
-    task.render([update], [{ id: workspaceId, name: "Travel" } as unknown as WorkspaceSummary]);
+    task.render([update]);
     expect(task.container.textContent).toContain("Three flights fit.");
     expect(task.container.textContent).not.toContain("FINAL SOURCE");
     press(task.container, "Show more");
@@ -449,7 +439,7 @@ describe("native transcript prose", () => {
     const typing = (container: HTMLElement) =>
       container.querySelector('[aria-label="Opensteer is replying"]');
     const conversation = setup(true);
-    conversation.render([queued], [], { startHold });
+    conversation.render([queued], { startHold });
     expect(conversation.container.textContent).toBe(startHold);
     expect(typing(conversation.container)).toBeNull();
     conversation.render([queued]);
@@ -457,7 +447,7 @@ describe("native transcript prose", () => {
     expect(conversation.container.textContent).not.toContain(startHold);
 
     const work = setup();
-    work.render([queued], [], { startHold });
+    work.render([queued], { startHold });
     expect(work.container.textContent).toContain(startHold);
     work.render([queued]);
     expect(work.container.textContent).toContain("Starting");
@@ -726,12 +716,10 @@ describe("a turn's subagents", () => {
                 <PaneRow
                   group={group!}
                   highlightRequestId={null}
-                  homeThreadId={null}
                   onOpenStep={() => undefined}
                   onOpenThread={() => undefined}
                   spacingTop={0}
                   viewerUserId={null}
-                  workspaces={[]}
                 />
               </AgentMemoryContext>
             </TaskScopeContext>,
@@ -813,7 +801,7 @@ describe("a delegation's line", () => {
       id: "delegation:one",
       kind: "delegation",
       childRunId: "run-child",
-      childThread: { id: "thread-child", title: "Research", workspaceId: "workspace-child" },
+      childThread: { id: "thread-child", title: "Research" },
       createdAt: run.createdAt,
       delegationId: "one",
       delivery: { resultMessageId: createId("message"), status: "delivered" },
@@ -823,7 +811,7 @@ describe("a delegation's line", () => {
       runId: run.runId,
       taskPreview: "Investigate",
     };
-    render([delegation], [{ id: "workspace-child", name: "Research Lab" } as WorkspaceSummary]);
+    render([delegation]);
     const line = () => container.querySelector('[aria-label^="Research, "]')!;
     expect(line().getAttribute("aria-label")).toBe("Research, Finished");
     expect(container.textContent).toBe("ResearchFinished");
@@ -883,8 +871,6 @@ it("quiet Chat keeps only automatic replies and lets silent human work open Acti
     displayName: "Research",
     threadId: createId("thread"),
     runId: createId("run"),
-    workspaceId: createId("workspace"),
-    workspaceName: "Main",
   };
   // Whether a silent automatic turn has a row is the shared model's
   // (`conversationRows`); a failed one says so.
@@ -899,28 +885,7 @@ it("quiet Chat keeps only automatic replies and lets silent human work open Acti
   expect(container.textContent).toContain("Could not relay");
   render([{ ...run, startedBy: author, status: "completed" }]);
   expect(container.textContent).not.toContain("Worked");
-  render(
-    [{ ...run, startedBy: author, replyMessageId: note.id, status: "completed" }, note],
-    [
-      {
-        id: author.workspaceId,
-        homeThreadId: null,
-        voiceThreadId: null,
-        description: "",
-        fileCount: 0,
-        harnessLabel: "Codex",
-        kind: "project",
-        machineName: null,
-        name: "Research",
-        icon: null,
-        runnerLabel: "",
-        storageIssue: null,
-        color: null,
-        updatedAt: "2026-09-26T15:00:00.000Z",
-        status: "ready",
-      } satisfies WorkspaceSummary,
-    ],
-  );
+  render([{ ...run, startedBy: author, replyMessageId: note.id, status: "completed" }, note]);
   expect(container.textContent).toContain(note.body);
   press(container, "Research");
   expect(onOpenThread).toHaveBeenCalledWith(author.threadId);
@@ -992,9 +957,7 @@ describe("native page rail", () => {
         rows: [
           {
             ...tab,
-            occupants: [
-              { threadId, home: false, holding: true, acting: true, lastActiveAt: run.createdAt },
-            ],
+            occupants: [{ threadId, holding: true, acting: true, lastActiveAt: run.createdAt }],
           },
         ],
       },
@@ -1127,7 +1090,6 @@ it("renders published apps in isolated native WebViews, caps inline height and r
   const read = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
     app: {
       id: appId,
-      workspaceId: createId("workspace"),
       threadId: createId("thread"),
       runId: createId("run"),
       title: `Budget ${version}`,
@@ -1252,7 +1214,6 @@ describe("an app's card and its tab", () => {
       openedAt: new Date().toISOString(),
       threadId: createId("thread"),
       title: "Budget",
-      workspaceId: createId("workspace"),
     };
     let snapshot = client.getSnapshot();
     const listeners = new Set<() => void>();
@@ -1268,7 +1229,6 @@ describe("an app's card and its tab", () => {
     const view = vi.spyOn(client, "viewApp").mockImplementation(async () => ({
       app: {
         id: appId,
-        workspaceId: tabRow.workspaceId,
         threadId: tabRow.threadId,
         runId: createId("run"),
         title: "Budget",

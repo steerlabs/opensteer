@@ -160,7 +160,7 @@ export function Composer(props: {
   /** The line under the bar while this Thread's account is out of plan capacity. */
   readonly usageNotice?: UsageLimitNotice | null;
   readonly user: AuthenticatedUser;
-  /** Chat's composer, which offers the voice button beside the microphone. */
+  /** Home's composer, which offers the voice button beside the microphone. */
   readonly voice?: boolean;
   /** Where this Thread's attached files are uploaded; null until the Thread is known. */
 }): ReactNode {

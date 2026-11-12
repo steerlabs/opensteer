@@ -108,7 +108,6 @@ export function ChromeSignInAction(props: {
   /** The page's site; the component is keyed by it. */
   readonly site: string;
   readonly url: string;
-  /** The session's Workspace, whose agents may use the site once it is signed in. */
 }): ReactNode {
   const { hostClient, sessionId, tabId, url } = props;
   const [busy, setBusy] = useState(false);

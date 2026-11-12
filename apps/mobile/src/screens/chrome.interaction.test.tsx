@@ -44,7 +44,7 @@ vi.mock("../ui/screen.js", () => ({
   useReadingColumn: () => ({}),
 }));
 vi.mock("../ui/symbol.js", () => ({ Symbol: () => null }));
-vi.mock("../ui/workspace-mark.js", () => ({ WorkspaceDot: () => null }));
+vi.mock("../ui/icon-glyph.js", () => ({ IconGlyph: () => null }));
 vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ openDeployment: vi.fn() }),
   useMobileState: () => ({

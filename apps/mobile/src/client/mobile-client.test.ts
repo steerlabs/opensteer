@@ -2241,7 +2241,7 @@ describe("MobileClient cold saved launch", () => {
       expect(write).toHaveBeenCalled();
     });
     expect(client.getSnapshot().savedViewFailure).toBeNull();
-    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
     client.dispose();
   });
 
@@ -2317,7 +2317,7 @@ describe("MobileClient cold saved launch", () => {
         (await client.sessions.load(DeploymentIdSchema.parse(serverId)))!.viewLoginId,
       ).not.toBe(before.loginId);
       expect(await store.load(before, () => true)).toBeNull();
-      expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+      expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
       await client.savedViews.flush();
       const after = write.mock.calls.at(-1)![0];
       expect(after.loginId).not.toBe(before.loginId);
@@ -2365,7 +2365,7 @@ describe("MobileClient cold saved launch", () => {
     expect(before.accountSource?.subject).toBe(accountSubject);
     expect(await store.load(before, () => true)).toEqual(before);
     const signing = client.oauth.beginAccountSignIn();
-    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
     expect(client.getSnapshot().selection.hostClient).toBeNull();
     await signing;
     expect(encrypted.slots()).toEqual([]);
@@ -2434,7 +2434,7 @@ describe("MobileClient cold saved launch", () => {
           : null;
       if (reason === "authentication") port.refusals.at(-1)!();
       else port.workspaceRefusals.at(-1)!();
-      expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+      expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
       await vi.waitFor(() =>
         expect(client.getSnapshot().savedViewFailure).toMatch(/cleanup could not be completed/u),
       );
@@ -2538,7 +2538,7 @@ describe("MobileClient cold saved launch", () => {
     });
     const { client } = open(port.factory, files, { records, savedViewStore: store });
     await client.initialize();
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("saved"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("saved"));
     expect(client.getSnapshot().selection).toMatchObject({
       deploymentId: serverId,
       status: "ready",
@@ -2554,7 +2554,7 @@ describe("MobileClient cold saved launch", () => {
     expect(await capabilities()).toEqual([]);
     expect(port.verified).toHaveLength(1);
     bootstrap.resolve();
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await client.savedViews.flush();
     expect(await capabilities()).toEqual([]);
     expect(port.verified).toHaveLength(1);
@@ -2597,7 +2597,7 @@ describe("MobileClient cold saved launch", () => {
     await client.signIn(serverId);
     gate.resolve();
     await settle();
-    expect(client.savedViews.getSnapshot().home.source).toBe("blocked");
+    expect(client.savedViews.getSnapshot().tasks.source).toBe("blocked");
     await client.savedViews.flush();
     expect(writes).not.toHaveBeenCalled();
     client.dispose();
@@ -2607,7 +2607,7 @@ describe("MobileClient cold saved launch", () => {
     const memory = createMemorySavedViews(),
       write = vi.spyOn(memory, "write"),
       secure = new MemorySecureStore();
-    const { client } = open(createMockHostPort({ initialHome: "absent" }), undefined, {
+    const { client } = open(createMockHostPort(), undefined, {
       savedViewStore: memory,
       records: createSecureRecordStore({ keyPrefix: "mock-auth", secureStore: secure }),
     });
@@ -2616,12 +2616,12 @@ describe("MobileClient cold saved launch", () => {
     await client.catalog.upsertAndSelect(connection);
     await client.initialize();
     await client.select(connection.authority.document.deploymentId);
-    await vi.waitFor(() => expect(client.savedViews.getSnapshot().home.source).toBe("live"));
+    await vi.waitFor(() => expect(client.savedViews.getSnapshot().tasks.source).toBe("live"));
     await client.savedViews.flush();
     expect(write).toHaveBeenCalled();
     expect(write.mock.calls.at(-1)?.[0]).toMatchObject({
       loginId: expect.any(String),
-      home: { threadId: null, messages: [] },
+      tasks: expect.any(Array),
     });
     expect(secure.keys).toEqual([]);
     write.mockClear();
@@ -2652,7 +2652,7 @@ describe("MobileClient sign-in", () => {
     expect(base.attached).toHaveLength(1);
     expect(client.getSnapshot().selection.row?.status).toBe("connected");
     await client.savedViews.flush();
-    expect(client.savedViews.getSnapshot().home.source).not.toBe("saved");
+    expect(client.savedViews.getSnapshot().tasks.source).not.toBe("saved");
     expect(load).not.toHaveBeenCalled();
     expect(write).not.toHaveBeenCalled();
     client.dispose();

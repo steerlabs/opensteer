@@ -84,7 +84,7 @@ function conversation(input: { readonly enrolled: boolean }) {
   const host = new MockHostClient({ latencyMs: 0 });
   const snapshot = host.getSnapshot();
   const deploymentId = snapshot.deploymentId!;
-  const threadId = snapshot.homeThreadId!;
+  const threadId = snapshot.threads[0]!.id;
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

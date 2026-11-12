@@ -420,8 +420,8 @@ function ThreadPaneForUser(
   const inView = usePaneInView();
   useFocusEffect(
     useCallback(() => {
-      // The Host holds one active Thread. Chat stays mounted under every task,
-      // a tablet shows a task beside the list and a narrow window keeps a
+      // The Host holds one active Thread. A task stays mounted under the one
+      // over it, a tablet shows a task beside the list and a narrow window keeps a
       // page's companion out of view, so the pane in front of the reader claims
       // it as it comes into view, not merely as it mounts.
       if (!inView) return;
@@ -478,8 +478,9 @@ function ThreadPaneForUser(
     }
     return titles;
   }, [entries, snapshot.waitingRequests]);
-  // Every Thread here is a task, which keeps its whole trace in view.
-  const conversational = false;
+  // A voice conversation reads as messages, each reply's steps in its
+  // Activity; a task keeps its whole trace in view.
+  const conversational = thread?.purpose === "voice";
   // A manager the person talks to: no composer, and its calls open with a divider.
   const voiceThread = snapshot.voiceThreadId === threadId;
   const onCall = useVoiceOn();
@@ -835,13 +836,10 @@ function ThreadPaneForUser(
     [hostClient, openSurface, surfaceTurns, threadId],
   );
   /** Quotes a reply into this conversation's own composer, unsent. */
-  const replyWith = useCallback(
-    (message: MessageEntry): void => {
-      const quote = draftQuoteFrom(message);
-      setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
-    },
-    [],
-  );
+  const replyWith = useCallback((message: MessageEntry): void => {
+    const quote = draftQuoteFrom(message);
+    setRestoredDraft((current) => ({ key: (current?.key ?? 0) + 1, quote, text: "" }));
+  }, []);
 
   const incomingMessages = useMemo(
     () => incomingTranscriptMessages(conversation, viewerUserId, conversational),
@@ -1032,7 +1030,7 @@ function ThreadPaneForUser(
   const queueCanRespond = canRespond && thread?.status !== "archived";
   const queueFooter = useMemo(
     () =>
-      thread !== null && inputQueue !== null ? (
+      thread !== null && !conversational && inputQueue !== null ? (
         <TranscriptHostClientContext value={hostClient}>
           <QueuedMessages
             canRespond={queueCanRespond}
@@ -1043,7 +1041,15 @@ function ThreadPaneForUser(
           />
         </TranscriptHostClientContext>
       ) : null,
-    [thread, inputQueue, queueCanRespond, hostClient, restoreQueuedDraft, viewerUserId],
+    [
+      thread,
+      conversational,
+      inputQueue,
+      queueCanRespond,
+      hostClient,
+      restoreQueuedDraft,
+      viewerUserId,
+    ],
   );
   const passwordsOffer = useMemo(() => passwordsSetupOffer(groups), [groups]);
   const listFooter =
@@ -1411,10 +1417,7 @@ function ThreadPaneForUser(
           ) : (
             <View>
               {teamOrigin === null ? null : (
-                <TeamTaskSource
-                  channelName={channelName}
-                  origin={teamOrigin}
-                />
+                <TeamTaskSource channelName={channelName} origin={teamOrigin} />
               )}
               <Composer
                 variant={conversational ? "conversation" : "work"}
@@ -1778,7 +1781,9 @@ function TeamTaskSource(props: {
   readonly channelName: string | null;
 }): ReactNode {
   const navigation = useNavigation();
-  const team = useTeamsSnapshot().teams.find((candidate) => candidate.teamId === props.origin.teamId);
+  const team = useTeamsSnapshot().teams.find(
+    (candidate) => candidate.teamId === props.origin.teamId,
+  );
   const place = `#${props.channelName ?? "channel"}`;
   const available = team !== undefined && team.state !== "removed";
   return (
@@ -1798,9 +1803,7 @@ function TeamTaskSource(props: {
           available,
         }}
       />
-      {available ? (
-        <AudienceLine text={`Replies post to ${place} in ${team.name}.`} />
-      ) : null}
+      {available ? <AudienceLine text={`Replies post to ${place} in ${team.name}.`} /> : null}
     </View>
   );
 }

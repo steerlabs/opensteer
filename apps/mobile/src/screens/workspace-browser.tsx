@@ -258,7 +258,6 @@ type Companion =
   | { readonly kind: "thread"; readonly threadId: string }
   | { readonly draftId: string; readonly kind: "task" };
 
-
 /**
  * One tab, app or phone with its own bar, and — where a pair fits — a second
  * pane. The place's view makes room for its own keyboard; this screen only
@@ -569,9 +568,7 @@ function Focused(props: {
   });
   const hereId = useHereDeviceId(deploymentId);
   const ask = useMemo(
-    () => (
-      <PageAsk agents={agents} onAsk={onAsk} onOpenAgent={onOpenAgent} />
-    ),
+    () => <PageAsk agents={agents} onAsk={onAsk} onOpenAgent={onOpenAgent} />,
     [agents, onAsk, onOpenAgent],
   );
   const appPaired = paired && companionShown && appId !== null;
@@ -610,9 +607,7 @@ function Focused(props: {
   const pair: PagePairChrome | null = pairedChrome ? { menu: pairMenu } : null;
   // The Thread's own mark, as web draws it: the page's occupants can lag the agent arriving.
   const following: PageFollowing | null =
-    follow.following && besideId !== null
-      ? { mark: threadMark(besideId, snapshot) }
-      : null;
+    follow.following && besideId !== null ? { mark: threadMark(besideId, snapshot) } : null;
   const body =
     destination.kind === "opensteer-app" ? (
       <AppTab

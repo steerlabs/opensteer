@@ -171,7 +171,7 @@ export function usePlaceStatusRow(props: {
   const selectStops = useCallback(
     (snapshot: HostSnapshot): string => {
       const thread = snapshot.threads.find(({ id }) => id === threadId);
-      if (thread === undefined) return stopLabel("reply");
+      if (thread === undefined || thread.purpose === "voice") return stopLabel("reply");
       return stopLabel(
         threadId !== null && taskHeading(snapshot, threadId)?.open === true ? "task" : "run",
       );

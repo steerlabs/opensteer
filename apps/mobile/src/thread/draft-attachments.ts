@@ -111,7 +111,7 @@ function releaseUpload(
  * Host first what it already holds.
  *
  * Where the strip is saved and where its copies live are given separately: a
- * first message — Chat's, or a new task's — is filed under a reserved key on
+ * new task's first message is filed under a reserved key on
  * this phone and its files belong to no Thread at all, until the Thread it
  * starts exists to own them.
  */

@@ -253,7 +253,7 @@ function BrowserProfilesSettings({
             </AppText>
           )}
           <AppText role="caption" tone="muted">
-            Opensteer can use every profile. A project can only use the profiles you choose for it.
+            Your agent can use every profile.
           </AppText>
         </ScrollView>
       </KeyboardAvoidingView>

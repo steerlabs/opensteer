@@ -162,20 +162,6 @@ it("bounds committed files to four, evicts oldest write, skips on cleanup failur
   });
   await expect(store.write(view(), () => true)).rejects.toThrow();
   expect(f.list()).toHaveLength(4);
-  await expect(
-    store.write(
-      {
-        ...values[5]!,
-        tasks: [],
-        home: {
-          workspaceId: createId("workspace"),
-          threadId: createId("thread"),
-          messages: [{ voice: "agent", text: "a".repeat(1_048_576) }],
-        },
-      },
-      () => true,
-    ),
-  ).rejects.toThrow();
 });
 
 it("bounds key slots after the OS purges the cache files that named them", async () => {

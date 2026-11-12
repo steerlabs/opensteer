@@ -417,7 +417,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
 
     expect(text()).toContain("Sign in to github.com");
     expect(text()).toContain(
-      "Opensteer fills your password into github.com for them — it never sends it to the agent, but the website page holds it once filled.",
+      "Your agents can type your saved login on github.com and in apps they use, like on your phone. Agents never see it, but a tricked agent could reveal it.",
     );
     expect(text()).toContain("Agent’s reason");
     expect(text().split("Open the pull request").length - 1).toBe(1);
@@ -455,15 +455,13 @@ describe("RequestSheetContent saved-password sign-ins", () => {
     }));
     const passwordRead = vi.fn(async () => ({
       ok: true,
-      data: { stage: "approval", permissionVersion: 5, accounts: [account] },
+      data: { stage: "approval", permissionVersion: 6, accounts: [account] },
     }));
     vi.mocked(authenticatePasswordApproval)
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
     await render(surface(passwordSignInRequest()), dispatch, { passwordRead });
-    expect(text()).toContain(
-      "Allow lets agents in Research sign in as person@example.com from now on.",
-    );
+    expect(text()).toContain("Allow lets your agents sign in as person@example.com from now on.");
     await click("Allow");
     expect(dispatch).not.toHaveBeenCalled();
     await click("Only this time");
@@ -474,7 +472,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
           loginId: account.id,
           revision: 7,
           remember: false,
-          permissionVersion: 5,
+          permissionVersion: 6,
         },
       }),
     );
@@ -497,7 +495,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
       );
       const passwordRead = vi.fn(async () => ({
         ok: true,
-        data: { stage: "approval", permissionVersion: 5, accounts },
+        data: { stage: "approval", permissionVersion: 6, accounts },
       }));
       const dispatch = vi.fn(async () => ({
         type: "browser.password-sign-in.respond",
@@ -513,9 +511,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
         expect(button(`Sign in as same@example.com · ${host}`)).toBeDefined();
       }
       await click("Sign in as same@example.com · enterprise.github.com");
-      expect(text()).toContain(
-        "Allow lets agents in Research sign in as same@example.com from now on.",
-      );
+      expect(text()).toContain("Allow lets your agents sign in as same@example.com from now on.");
       await click("Allow");
       expect(dispatch).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -524,7 +520,7 @@ describe("RequestSheetContent saved-password sign-ins", () => {
             loginId: accounts[1]!.id,
             revision: 2,
             remember: true,
-            permissionVersion: 5,
+            permissionVersion: 6,
           },
         }),
       );
@@ -590,7 +586,7 @@ describe("RequestSheetContent install requests", () => {
 });
 
 describe("RequestSheetContent browser profile requests", () => {
-  it("in Main, names a new profile with one tap and creates it without a grant", async () => {
+  it("names a new profile with one tap and creates it", async () => {
     const request = {
       ...requestBase(),
       kind: "browser.access",
@@ -602,7 +598,7 @@ describe("RequestSheetContent browser profile requests", () => {
       presentation: {
         detail: "Sign in to Brex",
         kind: "external",
-        subject: { id: workspaceId, kind: "workspace" },
+        subject: { id: "bpr_00000000-0000-4000-8000-000000000001", kind: "browserProfile" },
         title: "Browser profile",
       },
     } as Request;
@@ -611,16 +607,13 @@ describe("RequestSheetContent browser profile requests", () => {
       snapshot: {
         browserProfileGrants: [],
         browserProfiles: [{ id: "bpr_00000000-0000-4000-8000-000000000001", name: "Personal" }],
-        workspaces: [{ id: workspaceId, kind: "main", name: "Main" }],
       },
     });
 
-    expect(text()).toContain("Agents in Main can use every browser profile you have");
-    expect(text()).not.toContain("Already available");
     // Personal is taken, so it is never offered as a new name.
     expect(() => button("Name it Personal")).toThrow();
     await click("Name it Finance");
-    await click("Create profile");
+    await click("Create and allow");
 
     expect(dispatch).toHaveBeenCalledWith({
       idempotencyKey: expect.any(String),
@@ -748,7 +741,7 @@ describe("RequestSheetContent external requests", () => {
       expect(text()).toContain("Chrome isn’t connected yet");
 
       expect(text()).toContain("Your agent wants to use your github.com sign-in from Chrome.");
-      expect(text()).toContain("Agents in Research will be able to use github.com as you.");
+      expect(text()).toContain("Your agent will be able to use github.com as you.");
       expect(text()).toContain("Connect Chrome from Opensteer on your computer.");
       expect(button("Allow").disabled).toBe(true);
 
@@ -1164,14 +1157,12 @@ function requestBase() {
     originatingOccurrenceId: null,
     originatingRunId: "run_00000000-0000-4000-8000-000000000001",
     originatingThreadId: "thr_00000000-0000-4000-8000-000000000001",
-    originatingWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
     requestedBy: "usr_00000000-0000-4000-8000-000000000001",
     requiredActor: "requester",
     resolvedAt: null,
     resolvedBy: null,
     response: null,
     status: "pending",
-    targetWorkspaceId: "wsp_00000000-0000-4000-8000-000000000001",
   } as const;
 }
 
@@ -1222,10 +1213,7 @@ it.each(["live", "durable"] as const)(
         }),
       ],
       chatId,
-      {
-        id: UserIdSchema.parse(request.requestedBy),
-        instanceRole: "administrator",
-      },
+      { id: UserIdSchema.parse(request.requestedBy) },
     );
     expect(question?.waiting?.presentation?.workerThread.title).toBe("Light memory worker");
     expect(question?.surface.request.originatingThreadId).toBe(request.originatingThreadId);

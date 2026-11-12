@@ -1,9 +1,5 @@
 import type { HostClient } from "@opensteer/client/host";
-import {
-  StackActions,
-  useNavigation,
-  type StaticScreenProps,
-} from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { ReactNode } from "react";
 import { ThreadPane, type ThreadHeaderState } from "../thread/thread-pane.js";

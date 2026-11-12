@@ -9,7 +9,7 @@ import { color } from "../theme.js";
 
 /* Interaction failures: identity disappears behind state; unread replaces state;
  * Done hides a failure; a mark-only update is memoized away; default/search/edit
- * errors are inaccessible; a project edit recolours its tasks; targets shrink. */
+ * errors are inaccessible; targets shrink. */
 const harness = vi.hoisted(() => ({
   reducedMotion: false,
   client: null as MockHostClient | null,
@@ -183,22 +183,8 @@ vi.mock("../ui/mobile-client-context.js", () => ({
   useMobileClient: () => ({ signIn: vi.fn() }),
   useMobileState: () => ({ selection: { deploymentId: "test", hostClient: harness.client } }),
 }));
-vi.mock("../screens/deployment-gate.js", () => ({
-  useAttachedHost: () => harness.client,
-  DeploymentGate: () => null,
-}));
-vi.mock("./tasks-pane.js", () => ({
-  TasksPane: ({ header }: { header: ReactNode }) => <div>{header}</div>,
-}));
-vi.mock("../ui/screen.js", () => ({
-  Screen: ({ children }: Children) => <div>{children}</div>,
-  useReadingColumn: () => ({}),
-}));
-import { ProjectScreen } from "../screens/project.js";
-import { NewProjectScreen } from "../screens/new-project.js";
 import { TaskRowState, TaskRowView } from "./task-row.js";
 import { TaskMark } from "../ui/task-mark.js";
-import { ProjectMarkPicker } from "../ui/mark-picker.js";
 import { IconChoices } from "../ui/mark-choices.js";
 
 let root: Root | null = null;
@@ -372,113 +358,4 @@ it("offers all 130 searchable icons with accessible selected states and a distin
   expect(container.querySelectorAll('button[role="radio"]').length).toBe(2);
   await act(async () => button("Plane").click());
   expect(choose).toHaveBeenLastCalledWith("plane");
-});
-
-it("changes a project colour through the client without recolouring its tasks, retaining all seven swatches", async () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  clients.push(client);
-  await client.load();
-  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
-  const original = client.getSnapshot().threads.map(({ id, color }) => ({ id, color }));
-  const dispatch = vi.spyOn(client, "dispatch");
-  render(
-    <ProjectMarkPicker
-      hostClient={client}
-      workspace={workspace}
-      editable
-      onClose={vi.fn()}
-      onDismiss={vi.fn()}
-      onRefused={vi.fn()}
-    />,
-  );
-  for (const hue of ["Lime", "Green", "Teal", "Sky", "Blue", "Purple", "Magenta"])
-    expect(button(hue)).toBeDefined();
-  await act(async () => button("Magenta").click());
-  expect(dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({
-      type: "workspace.color.set",
-      workspaceId: workspace.id,
-      color: "magenta",
-    }),
-  );
-  expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe(
-    "magenta",
-  );
-  expect(client.getSnapshot().threads.map(({ id, color }) => ({ id, color }))).toEqual(original);
-});
-
-it("opens colour editing from the project screen and hides it on an old Host", async () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  clients.push(client);
-  await client.load();
-  harness.client = client;
-  const workspace = client.getSnapshot().workspaces.find(({ kind }) => kind === "project")!;
-  const route = {
-    key: "project",
-    name: "Project",
-    params: { deploymentId: "test", workspaceId: workspace.id },
-  };
-  render(<ProjectScreen route={route} />);
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  await act(async () => button("Change project icon and colour").click());
-  await act(async () => button("Teal").click());
-  expect(client.getSnapshot().workspaces.find(({ id }) => id === workspace.id)?.color).toBe("teal");
-  await act(async () => button("Close").click());
-  act(() => root?.unmount());
-  root = null;
-  container.remove();
-  const oldClient = new MockHostClient({ latencyMs: 0 });
-  clients.push(oldClient);
-  await oldClient.load();
-  vi.spyOn(oldClient, "getSnapshot").mockReturnValue({
-    ...oldClient.getSnapshot(),
-    taskMarksAvailable: false,
-  });
-  harness.client = oldClient;
-  render(<ProjectScreen route={route} />);
-  expect(container.querySelector('[aria-label="Change project icon and colour"]')).toBeNull();
-});
-
-it("creates a project with the chosen colour, keeping colour choices off old Hosts", async () => {
-  const client = new MockHostClient({ latencyMs: 0 });
-  clients.push(client);
-  await client.load();
-  harness.client = client;
-  const dispatch = vi.spyOn(client, "dispatch");
-  const route = { key: "new-project", name: "NewProject", params: { deploymentId: "test" } };
-  render(<NewProjectScreen route={route} />);
-  await act(async () => button("Sky").click());
-  const input = container.querySelector<HTMLInputElement>('[aria-label="Name"]')!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
-      input,
-      "Travel planning",
-    );
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  const create = [...container.querySelectorAll("button")].find((item) =>
-    item.textContent?.includes("Create"),
-  )!;
-  await act(async () => create.click());
-  expect(dispatch).toHaveBeenCalledWith(
-    expect.objectContaining({ type: "workspace.create", name: "Travel planning", color: "sky" }),
-  );
-  expect(dispatch.mock.calls.at(-1)?.[0]).not.toHaveProperty("storage");
-  expect(container.textContent).not.toContain("Where its files live");
-  expect(container.textContent).not.toContain("Computer");
-  act(() => root?.unmount());
-  root = null;
-  container.remove();
-  const oldClient = new MockHostClient({ latencyMs: 0 });
-  clients.push(oldClient);
-  await oldClient.load();
-  vi.spyOn(oldClient, "getSnapshot").mockReturnValue({
-    ...oldClient.getSnapshot(),
-    taskMarksAvailable: false,
-  });
-  harness.client = oldClient;
-  render(<NewProjectScreen route={route} />);
-  expect(container.querySelector('[aria-label="Sky"]')).toBeNull();
 });

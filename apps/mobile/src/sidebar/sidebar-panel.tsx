@@ -225,9 +225,6 @@ function useDeploymentIdentity(deploymentId: string | null): DeploymentIdentity 
   return useSyncExternalStore(client.subscribe, read, read);
 }
 
-/** How many live tasks the drawer lists before All tasks takes over. */
-const liveTaskLimit = 5;
-
 /**
  * The drawer: the reader's live tasks — what needs them, new results, what is
  * running — in that order, then All tasks for everything else; Automations;
@@ -348,7 +345,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
     threadId !== selectedRowId && drafts.threadIds.has(threadId);
   // Times are read as the list draws, so a row that has not changed still ages.
   const now = Date.now();
-  const shown = live?.rows.slice(0, liveTaskLimit) ?? [];
+  const shown = live?.rows ?? [];
 
   return (
     <View
@@ -457,9 +454,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
                   maxFontSizeMultiplier={controlFontScaleLimit}
                   style={[type.caption, styles.count]}
                 >
-                  {live.rows.length > shown.length
-                    ? `+${live.rows.length - shown.length}`
-                    : String(live.total)}
+                  {String(live.total)}
                 </Text>
               }
               current={destination === "AllTasks"}
@@ -479,11 +474,7 @@ export const SidebarPanel = memo(function SidebarPanel(props: {
           />
         </View>
 
-        <TeamRows
-          onOpen={actions.onOpenTeam}
-          openTeamId={props.openTeamId}
-          visible={visible}
-        />
+        <TeamRows onOpen={actions.onOpenTeam} openTeamId={props.openTeamId} visible={visible} />
 
         <View style={styles.tabs}>
           {hostClient === null || model === null ? (
@@ -639,8 +630,9 @@ const TeamRow = memo(function TeamRow(props: {
 function useTeamMentions(session: TeamSessionClient | null): number {
   const read = useCallback(
     () =>
-      session?.getSnapshot().sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ??
-      0,
+      session
+        ?.getSnapshot()
+        .sidebar?.channels.reduce((total, row) => total + row.mentionCount, 0) ?? 0,
     [session],
   );
   const subscribe = useCallback(
@@ -654,7 +646,10 @@ function useTeamMentions(session: TeamSessionClient | null): number {
  * "Tasks", with the amber pill when something needs the reader: the pill
  * opens All tasks on its Needs you filter.
  */
-function TasksHead(props: { readonly needsYou: number; readonly onNeedsYou: () => void }): ReactNode {
+function TasksHead(props: {
+  readonly needsYou: number;
+  readonly onNeedsYou: () => void;
+}): ReactNode {
   return (
     <View accessibilityRole="header" style={styles.groupHead}>
       <AppText
@@ -677,7 +672,10 @@ function TasksHead(props: { readonly needsYou: number; readonly onNeedsYou: () =
           style={({ pressed }) => [styles.amberPill, pressed && styles.pressed]}
         >
           <Symbol name="exclamationmark.circle" size={11} tint={color.inkOnAmber} weight="bold" />
-          <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.amberCount]}>
+          <Text
+            maxFontSizeMultiplier={controlFontScaleLimit}
+            style={[type.caption, styles.amberCount]}
+          >
             {String(props.needsYou)}
           </Text>
         </Pressable>
@@ -685,7 +683,6 @@ function TasksHead(props: { readonly needsYou: number; readonly onNeedsYou: () =
     </View>
   );
 }
-
 
 /**
  * The tabs listed before All tabs: enough to switch between the ones in use
@@ -1123,4 +1120,3 @@ const styles = StyleSheet.create({
     padding: space[16],
   },
 });
-

@@ -118,7 +118,7 @@ export interface PagePairChrome {
  * the agent is otherwise is the Thread's live card.
  */
 export interface PageFollowing {
-  /** The Thread's task mark; null for Chat, which wears the orb. */
+  /** The Thread's task mark; null for one that wears the agent orb. */
   readonly mark: TaskMark | null;
 }
 /** Room left beside or under a page that is worth offering Fit for, as a share of its place. */

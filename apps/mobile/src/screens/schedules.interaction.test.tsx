@@ -515,26 +515,6 @@ describe("One schedule", () => {
     ]);
   });
 
-  it("returns to Chat for a schedule that runs in Chat, and opens a run's reply where it was written", async () => {
-    const f = host();
-    const summary = await named(f, "Morning email summary");
-    expect(summary.anchorThreadId).toBe(f.snapshot().homeThreadId);
-    const screen = detailScreen(summary.id);
-    await shown(screen, "Runs in Chat", "the schedule never loaded");
-    expect(button(screen, "Runs in Chat").querySelector('[data-mark="chat"]')).not.toBeNull();
-    press(button(screen, "Runs in Chat"));
-    const wire = unwrapRpcResult(await f.mock.rpc["triggers.get"]({ triggerId: summary.id }));
-    const replied = wire.downstreamRuns[0]!;
-    press(button(screen, /Opensteer replied in Chat/));
-    expect(pushed()).toEqual([
-      { payload: { name: "Home", params: { deploymentId } }, type: "POP_TO" },
-      {
-        payload: { name: "Home", params: { deploymentId, messageId: replied.run.seedInputId } },
-        type: "POP_TO",
-      },
-    ]);
-  });
-
   it("offers no way into a thread this reader cannot see", async () => {
     const f = host();
     const summary = await named(f, "GitHub deploys");

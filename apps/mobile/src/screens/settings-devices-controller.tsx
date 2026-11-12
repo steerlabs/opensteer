@@ -141,8 +141,7 @@ export function DevicesSettingsController(): ReactNode {
         />
       </SettingsPageLayout>
       <Sheet open={adding} title="Add device" onClose={() => setAdding(false)}>
-        {adding &&
-        selection.hostClient ? (
+        {adding && selection.hostClient ? (
           <SettingsComputerEnrollment host={selection.hostClient} />
         ) : null}
         <NativeSettingsPage

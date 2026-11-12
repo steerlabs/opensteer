@@ -213,7 +213,7 @@ function HeldTaskCards(props: {
 }
 
 /**
- * A Thread's own mark, as the task list draws it: Chat's orb, or the task's
+ * A Thread's own mark, as the task list draws it: the agent orb, or the task's
  * subject. Nothing without the Host to read it from.
  */
 export function ThreadMark(props: { readonly threadId: string }): ReactNode {

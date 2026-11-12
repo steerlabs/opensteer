@@ -38,7 +38,7 @@ const refreshEveryMs = 15_000;
 
 /**
  * Chrome for one Deployment, from the phone: which Chrome profiles are
- * connected and which sites each Workspace's agents may sign in to. Connecting
+ * connected and which sites your agents may sign in to. Connecting
  * Chrome happens in Chrome itself, so the phone manages and never connects.
  */
 export function ChromeScreen({ route }: StaticScreenProps<ChromeDestination>): ReactNode {

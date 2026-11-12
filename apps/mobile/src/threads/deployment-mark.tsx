@@ -5,7 +5,7 @@ import type { DeploymentMark } from "./deployment-identity.js";
 
 /**
  * A Deployment's identity: an initial on a tinted rounded square, with its own
- * stable palette independent of tasks and projects.
+ * stable palette independent of tasks.
  *
  * The mark is decoration in the accessibility tree: the control or row it sits
  * in already says the Deployment's name, and a screen reader that read the mark

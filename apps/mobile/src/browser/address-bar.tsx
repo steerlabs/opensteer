@@ -49,7 +49,7 @@ export const AddressCapsule = memo(function AddressCapsule(props: {
   readonly arriving?: boolean;
   /** The device the page runs on, where that is not this one; tapping it names it. */
   readonly device?: PageDevice | null;
-  /** Keeping up with this Thread's agent: its task mark, or null for Chat's orb. */
+  /** Keeping up with this Thread's agent: its task mark, or null for the agent orb. */
   readonly following?: { readonly mark: TaskMarkValue | null } | null;
   readonly favicon: string | null;
   /** Given where Forward has room beside Back; otherwise it is in the page's menu. */

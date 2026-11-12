@@ -158,9 +158,8 @@ function ScheduleView(props: {
   );
 
   /**
-   * Chat is the root under every stack, so it is returned to. A conversation
-   * directly under this screen is returned to rather than opened a second
-   * time; anything else is pushed, so Back comes here.
+   * A conversation directly under this screen is returned to rather than
+   * opened a second time; anything else is pushed, so Back comes here.
    */
   const openThread = useCallback(
     (threadId: string, messageId?: string) => {
@@ -281,8 +280,8 @@ function ScheduleBody(props: {
       {managed ? (
         <AppText role="secondary" tone="muted">
           {item.systemRole === "memory-light"
-            ? "Light memory pass — checks what’s new and tells Chat when something matters."
-            : "Nightly memory pass — tidies memory and prepares tomorrow. Findings reach you through Chat."}
+            ? "Light memory pass — checks what’s new and tells you when something matters."
+            : "Nightly memory pass — tidies memory and prepares tomorrow."}
         </AppText>
       ) : null}
       <View accessible accessibilityLabel={status} style={styles.status}>
@@ -325,7 +324,7 @@ function ScheduleBody(props: {
           <AppText role="caption" tone="muted">
             {item.anchor.visible
               ? managed
-                ? "Findings reach you through Chat"
+                ? "It tells you when something matters"
                 : "Each run posts its result there"
               : "That thread isn’t available to you"}
           </AppText>
@@ -459,8 +458,7 @@ function ScheduleBody(props: {
 }
 
 /**
- * The reply threads this reader can open: Chat, or a thread the Host lists
- * for them. A reply elsewhere is still told, just not offered as a way in.
+ * The reply threads this reader can open: those the Host lists for them. A reply elsewhere is still told, just not offered as a way in.
  */
 function useReachableThreads(hostClient: HostClient, detail: ScheduleDetail): string {
   const ids = useMemo(
@@ -475,9 +473,7 @@ function useReachableThreads(hostClient: HostClient, detail: ScheduleDetail): st
     hostClient,
     useCallback(
       (snapshot: HostSnapshot) =>
-        ids
-          .filter((id) => threadInDirectory(id, snapshot) !== null)
-          .join("\n"),
+        ids.filter((id) => threadInDirectory(id, snapshot) !== null).join("\n"),
       [ids],
     ),
   );

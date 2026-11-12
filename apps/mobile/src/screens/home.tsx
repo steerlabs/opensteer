@@ -1,11 +1,7 @@
 import type { TaskFolder } from "@opensteer/core";
 import { useHostValue } from "../ui/mobile-client-context.js";
 import { useHeaderHeight } from "@react-navigation/elements";
-import {
-  StackActions,
-  useNavigation,
-  type StaticScreenProps,
-} from "@react-navigation/native";
+import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import { useCallback, type ReactNode } from "react";
 import { Keyboard } from "react-native";
 import { useSidebarMenu } from "../navigation-header.js";
@@ -72,5 +68,6 @@ export function HomeScreen(props: HomeScreenProps): ReactNode {
   );
 }
 
-const agentHome = (snapshot: { readonly personalSettings: { readonly agentHome: TaskFolder } | null }) =>
-  snapshot.personalSettings?.agentHome ?? null;
+const agentHome = (snapshot: {
+  readonly personalSettings: { readonly agentHome: TaskFolder } | null;
+}) => snapshot.personalSettings?.agentHome ?? null;

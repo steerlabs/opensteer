@@ -1068,8 +1068,7 @@ function ModelPickerList(
 
 /**
  * Which AI a first message starts its Thread on, chosen before that Thread
- * exists. Task choices become the person's latest task default; Chat choices
- * stay in this picker visit and return directly to Chat's first message.
+ * exists. A choice becomes the person's latest task default.
  */
 export function NewThreadScreen(props: NewThreadScreenProps): ReactNode {
   const navigation = useNavigation();
@@ -1122,15 +1121,9 @@ function SubscribedNewThread(props: {
   const acceptedChoice = useRef<ExecutionSelection | null>(null);
   const pendingChoice = useRef<Promise<ExecutionSelection | null> | null>(null);
   const preferences = snapshot.executionPreferences;
-  const execution = useMemo(
-    () => firstMessageExecution(snapshot, chosen),
-    [chosen, snapshot],
-  );
+  const execution = useMemo(() => firstMessageExecution(snapshot, chosen), [chosen, snapshot]);
   const placements = execution.placements;
-  const pickerPreferences = useMemo(
-    () => preferences,
-    [preferences],
-  );
+  const pickerPreferences = useMemo(() => preferences, [preferences]);
   const displayed = execution.selection ?? execution.blocked;
   const disabledReason = settingsDisabledReason({
     canRespond: canRespondToRequests(snapshot),
@@ -1314,15 +1307,7 @@ function SubscribedNewThread(props: {
         if (mounted.current) setApplyingKey(null);
       });
     },
-    [
-      chosen,
-      client,
-      close,
-      disabledReason,
-      displayed,
-      props.deploymentId,
-      props.hostClient,
-    ],
+    [chosen, client, close, disabledReason, displayed, props.deploymentId, props.hostClient],
   );
 
   const changeAccess = useCallback(
@@ -1431,8 +1416,7 @@ function SubscribedNewThread(props: {
       onFailure={setFailure}
       footer={
         <View style={styles.startThread}>
-          {/* A task choice is recorded as the latest task default; a Chat
-              choice returns through its picker visit. Either way there is
+          {/* The choice is recorded as the latest task default, so there is
               nothing left to apply here. */}
           <PrimaryButton label="Done" onPress={close} />
         </View>

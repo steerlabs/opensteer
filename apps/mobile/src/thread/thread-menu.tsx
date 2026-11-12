@@ -188,7 +188,7 @@ function Menu(
   );
 }
 
-/** Where the bar shortens things: the whole name or who asked, the project, and any blocker. */
+/** Where the bar shortens things: the whole name or who asked, the place, and any blocker. */
 function menuHeading(props: ThreadMenuProps): string {
   const { placeName, task, title } = props;
   return [

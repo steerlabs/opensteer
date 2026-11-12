@@ -6,7 +6,7 @@ import { color } from "../theme.js";
 import { IconGlyph } from "./icon-glyph.js";
 
 /**
- * A task's subject, independent of its state, unread status or project: a
+ * A task's subject, independent of its state, unread status or folder: a
  * tile tinted with the task's colour under its symbol, and a neutral tile when
  * colour is missing. Unnamed tasks show the default symbol. The web's
  * `.task-mark` draws the same tile at the same sizes.

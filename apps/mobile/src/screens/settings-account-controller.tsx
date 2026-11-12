@@ -50,10 +50,7 @@ function AccountSettingsContent({
   const snapshot = useSettingsHost(selection.hostClient);
   const isCurrent = useSettingsLease(selection.hostClient);
   const remote = usePersonalRemoteAccess(
-    page === "account" &&
-      snapshot !== null
-      ? selection.hostClient
-      : null,
+    page === "account" && snapshot !== null ? selection.hostClient : null,
   );
   const [sessions, setSessions] = useState<readonly import("@opensteer/core").AuthSessionSummary[]>(
     [],

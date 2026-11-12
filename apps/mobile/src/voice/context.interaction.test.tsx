@@ -69,9 +69,13 @@ afterEach(async () => {
 async function mount() {
   state.host = new MockHostClient({ latencyMs: 0 });
   const snapshot = state.host.getSnapshot();
-  const source = snapshot.threads.find((thread) => thread.id === snapshot.homeThreadId)!;
+  const source = snapshot.threads[0]!;
   const target = snapshot.threads.find((thread) => thread.id !== source.id)!;
-  state.route = { key: "home", name: "Home", params: { deploymentId: snapshot.deploymentId } };
+  state.route = {
+    key: "task",
+    name: "Thread",
+    params: { deploymentId: snapshot.deploymentId, threadId: source.id },
+  };
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -85,7 +89,6 @@ async function mount() {
   const message = PersonShowMessageSchema.parse({
     type: "host.show",
     runId: createId("run"),
-    workspaceId: source.workspaceId,
     threadId: source.id,
     target: { threadId: target.id },
   });
@@ -166,7 +169,6 @@ it.each(["Home", "Thread"])(
         PersonShowMessageSchema.parse({
           ...f.message,
           threadId: source.id,
-          workspaceId: source.workspaceId,
           target: { tabId },
         }),
       ),
@@ -257,7 +259,6 @@ it("opens what the voice call's agent shows from any screen, and ignores a call 
   const call = {
     threadId: createId("thread"),
     runId: createId("run"),
-    workspaceId: f.source.workspaceId,
   };
   let current: typeof call | null = call;
   vi.spyOn(VoiceController.prototype, "call").mockImplementation(() => current);

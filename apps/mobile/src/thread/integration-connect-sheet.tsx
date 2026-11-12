@@ -633,9 +633,7 @@ export function IntegrationConnectCard(props: {
   if (!card)
     return (
       <View style={styles.body}>
-        <AppText role="secondary">
-          {error ?? "Checking account access…"}
-        </AppText>
+        <AppText role="secondary">{error ?? "Checking account access…"}</AppText>
         {error ? (
           <SecondaryButton
             label="Not now"
@@ -811,7 +809,7 @@ export function IntegrationConnectCard(props: {
       {computerUpgrade ? (
         <Notice
           title="Allow changes on this computer"
-          detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes in this Workspace; the request itself does not change.`}
+          detail={`${plan?.integrationName} on ${computerUpgrade.displayName} is ${plan?.definition?.computerApp?.accessLabels.read ?? "read only"}. Choose ${plan?.definition?.computerApp?.accessLabels.readWrite ?? "read and write"} before allowing changes; the request itself does not change.`}
           tone="neutral"
         />
       ) : null}

@@ -59,10 +59,14 @@ export function AllTasksScreen(props: AllTasksScreenProps): ReactNode {
   );
 }
 
-function useTaskList(hostClient: HostClient): { readonly list: TaskList; readonly home: TaskFolder | null } {
-  const cached = useRef<{ snapshot: HostSnapshot; value: { list: TaskList; home: TaskFolder | null } } | null>(
-    null,
-  );
+function useTaskList(hostClient: HostClient): {
+  readonly list: TaskList;
+  readonly home: TaskFolder | null;
+} {
+  const cached = useRef<{
+    snapshot: HostSnapshot;
+    value: { list: TaskList; home: TaskFolder | null };
+  } | null>(null);
   const read = useCallback(() => {
     const snapshot = hostClient.getSnapshot();
     const held = cached.current;
@@ -95,15 +99,15 @@ function AllTasksList(props: {
   const rows = useMemo(() => allTasks(list, filter), [filter, list]);
   const counts = useMemo(
     () =>
-      Object.fromEntries(allTasksFilters.map(({ id }) => [id, allTasks(list, id).length])) as Record<
-        AllTasksFilter,
-        number
-      >,
+      Object.fromEntries(
+        allTasksFilters.map(({ id }) => [id, allTasks(list, id).length]),
+      ) as Record<AllTasksFilter, number>,
     [list],
   );
   const insets = useListContentInsets(space[24]);
   const open = useCallback(
-    (threadId: string) => navigation.navigate("Thread", { deploymentId: props.deploymentId, threadId }),
+    (threadId: string) =>
+      navigation.navigate("Thread", { deploymentId: props.deploymentId, threadId }),
     [navigation, props.deploymentId],
   );
   const setDone = useCallback(
@@ -122,9 +126,7 @@ function AllTasksList(props: {
           {filter === "needs-you" ? "Nothing needs you" : "No tasks here"}
         </AppText>
       }
-      ListHeaderComponent={
-        <FilterChips counts={counts} filter={filter} onFilter={setFilter} />
-      }
+      ListHeaderComponent={<FilterChips counts={counts} filter={filter} onFilter={setFilter} />}
       onEndReached={() => {
         if (filter === "done") void hostClient.loadEarlierDoneTasks().catch(() => undefined);
         else if (list.hasMore) void hostClient.loadEarlierTasks().catch(() => undefined);
@@ -207,7 +209,10 @@ const FilterChips = memo(function FilterChips(props: {
               {label}
             </Text>
             {id === "done" || count === 0 ? null : (
-              <Text maxFontSizeMultiplier={controlFontScaleLimit} style={[type.caption, styles.chipCount]}>
+              <Text
+                maxFontSizeMultiplier={controlFontScaleLimit}
+                style={[type.caption, styles.chipCount]}
+              >
                 {String(count)}
               </Text>
             )}
@@ -238,4 +243,3 @@ const styles = StyleSheet.create({
   list: { paddingHorizontal: space[8] },
   pressed: { ...material.quiet },
 });
-

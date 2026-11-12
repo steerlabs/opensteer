@@ -13,7 +13,7 @@ export interface ThreadDestination {
  * `ThreadSettings` and `NewThread` are deliberately absent: each belongs to
  * work on one Deployment, so when the Deployment changes underneath it the
  * sheet has nothing left to change, and deferring would leave it standing over
- * another Host's Chat.
+ * another Host's Home.
  */
 const modalWorkRoutes: ReadonlySet<string> = new Set([
   "AddDeployment",
@@ -88,9 +88,9 @@ export function selectionRootTransition(input: {
  * belongs to one Host must never sit behind a route for another Host: the
  * destination replaces the old stack as the client releases that attachment.
  *
- * Entering a Deployment lands on persistent Home. It renders Chat or the
- * first-message intro once the Host answers. A link or notification builds
- * `threadRoot` instead, so its explicit destination remains on top.
+ * Entering a Deployment lands on persistent Home, the composer. A link or
+ * notification builds `threadRoot` instead, so its explicit destination
+ * remains on top.
  */
 export function deploymentRoot(deploymentId: string): InitialState {
   return {
@@ -100,7 +100,7 @@ export function deploymentRoot(deploymentId: string): InitialState {
 }
 
 /**
- * A deep link keeps Chat beneath its exact destination, so Back lands where
+ * A deep link keeps Home beneath its exact destination, so Back lands where
  * the sidebar, and with it every other task, is one tap away.
  */
 export function threadRoot(destination: ThreadDestination): InitialState {
@@ -113,7 +113,7 @@ export function threadRoot(destination: ThreadDestination): InitialState {
   };
 }
 
-/** An agent's connection request, reviewed over Chat so closing it lands somewhere useful. */
+/** An agent's connection request, reviewed over Home so closing it lands somewhere useful. */
 export function agentAuthorizationRoot(deploymentId: string, requestId: string): InitialState {
   return {
     index: 1,

@@ -75,7 +75,7 @@ export function AutomationList(props: AutomationListProps): ReactNode {
           {/* Inside the List, so an empty answer can still be pulled to refresh. */}
           {props.sections.length === 0 ? (
             <ContentUnavailableView
-              description="Ask in Chat for something to happen on its own — “every weekday at 8, sum up my email” — and it shows up here."
+              description="Ask your agent for something to happen on its own — “every weekday at 8, sum up my email” — and it shows up here."
               modifiers={[listRowBackground("#00000000"), listRowSeparator("hidden")]}
               systemImage="clock"
               title="No automations yet"

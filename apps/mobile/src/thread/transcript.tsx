@@ -372,13 +372,8 @@ function ConversationTurn(props: {
       ) : line?.kind === "kept" ? (
         <KeptComputerStopLine key={line.stop.sessionId} stop={line.stop} />
       ) : null}
-      {turn.source ? (
-        <TurnSource
-          source={turn.source}
-          onOpenThread={props.onOpenThread}
-        />
-      ) : null}
-      <ChatAgents live={props.live} turn={turn} />
+      {turn.source ? <TurnSource source={turn.source} onOpenThread={props.onOpenThread} /> : null}
+      <ConversationAgents live={props.live} turn={turn} />
       {view.reply !== null ? (
         <ReplyBubble
           arrived={typed.current}
@@ -829,20 +824,25 @@ function withAgents(
 }
 
 /**
- * Chat draws no trace, so a turn's subagents stand above its typing or its
+ * A conversation draws no trace, so a turn's subagents stand above its typing or its
  * reply, where they would otherwise never be seen. Settled, a group folds to
  * its one line; the reply is the summary.
  */
-function ChatAgents(props: { readonly live: boolean; readonly turn: Turn }): ReactNode {
+function ConversationAgents(props: { readonly live: boolean; readonly turn: Turn }): ReactNode {
   const scope = useContext(TaskScopeContext);
   const agentScope = useAgentScope();
   if (scope === null || agentScope === null) return null;
   return (
-    <HeldChatAgents agentScope={agentScope} live={props.live} scope={scope} turn={props.turn} />
+    <HeldConversationAgents
+      agentScope={agentScope}
+      live={props.live}
+      scope={scope}
+      turn={props.turn}
+    />
   );
 }
 
-function HeldChatAgents(props: {
+function HeldConversationAgents(props: {
   readonly agentScope: AgentScope;
   readonly live: boolean;
   readonly scope: TaskScope;
@@ -1307,12 +1307,7 @@ export function Message(props: {
   const author = message.author;
   if (author.kind === "platform" && author.cause === "run-recovery") {
     return (
-      <RecoveryNote
-        author={author}
-        message={message}
-        onToggle={props.onToggle}
-        open={props.open}
-      />
+      <RecoveryNote author={author} message={message} onToggle={props.onToggle} open={props.open} />
     );
   }
   const mine = author.kind === "human" && author.userId === props.viewerUserId;
@@ -1381,7 +1376,7 @@ export function Message(props: {
             fill={color.bubble}
             fit={message.body}
             side="mine"
-            // Messages' tail is Chat's; a task keeps the bubble's corner instead.
+            // Messages' tail is a conversation's; a task keeps the bubble's corner instead.
             style={props.conversation ? undefined : styles.bubbleCorner}
             tail={props.conversation && props.continued !== true}
           >

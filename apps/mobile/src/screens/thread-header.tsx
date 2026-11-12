@@ -76,7 +76,7 @@ export function useScopedThreadHeader(
 }
 
 /**
- * The bar over a conversation — Chat or a task.
+ * The bar over a task or a voice conversation.
  *
  * The transcript runs under it, which is why the header is configured by the
  * screen rather than in the route table: it needs the thread's own name and
@@ -275,7 +275,7 @@ function ThreadTitle(
  * The conversation's mark and name, where it stands, and its menu.
  *
  * Liquid Glass draws them as one capsule beside the bar's others: the state
- * shrinks to its mark, and its word and project move to the menu's heading.
+ * shrinks to its mark, and its word and place move to the menu's heading.
  * Elsewhere the two lines stay, and Android's menu has no heading to move to.
  * A pill floating over a transcript with no bar under it, as beside a page,
  * is always the capsule: where there is no glass, it wears the opaque float.

@@ -34,7 +34,7 @@ export interface AutomationRowModel {
   readonly runNote: { readonly text: string; readonly tone: "bad" | "warn" } | null;
   readonly symbol: SFSymbolName;
   readonly trailing: AutomationRowTrailing;
-  /** Where it talks to you; Opensteer's own upkeep reports through Chat and says nothing. */
+  /** Where it talks to you; Opensteer's own upkeep has no thread and says nothing. */
   readonly where: string | null;
 }
 
@@ -95,7 +95,7 @@ export function automationRow(
       cadence,
       when,
       runNote?.text ?? null,
-      `Runs in ${system ? "Findings through Chat" : item.anchor.title}`,
+      system ? "Runs in the background" : `Runs in ${item.anchor.title}`,
     ]
       .filter((part) => part !== null)
       .join(". "),
@@ -153,7 +153,7 @@ function watchTrailing(watch: ScheduleItem["watch"]): AutomationRowTrailing {
 /** A section's words under its rows, where it has any. */
 export function sectionNote(id: AutomationSection["id"]): string | null {
   if (id === "upcoming") return "Once a one-time automation has run, it leaves this list.";
-  if (id === "system") return "Opensteer’s own upkeep. What it learns reaches you in Chat.";
+  if (id === "system") return "Opensteer’s own upkeep. It tells you when something matters.";
   return null;
 }
 

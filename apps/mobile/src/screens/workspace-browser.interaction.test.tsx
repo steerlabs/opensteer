@@ -11,7 +11,6 @@ import {
   placeList,
   type BrowserSessionSummary,
   type HostSnapshot,
-  type WorkspaceSummary,
 } from "@opensteer/client/host";
 import { Alert } from "react-native";
 import * as Clipboard from "expo-clipboard";
@@ -647,13 +646,10 @@ afterEach(() => {
   state.drafts = null;
 });
 
-const source = { id: "workspace-parent", name: "Parent" } as WorkspaceSummary;
-const child = { id: "workspace-child", name: "Research" } as WorkspaceSummary;
-const unrelated = { id: "workspace-unrelated", name: "Unrelated" } as WorkspaceSummary;
+const agentHome = { computerId: "rnr_00000000-0000-4000-8000-000000000001", path: "/Users/alex" };
 
 function session(
   id: string,
-  workspaceId: string,
   state: BrowserSessionSummary["state"] = "ready",
 ): BrowserSessionSummary {
   return seedBrowserSession(
@@ -670,7 +666,6 @@ function session(
       state,
       viewerError: null,
       viewerState: "synchronized",
-      workspaceId,
     },
     undefined,
     [{ active: true, id: "page-1", title: "Page", url: "https://example.com" }] as NonNullable<
@@ -686,18 +681,15 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     browserProfiles: [],
     activeTasks: [],
     browserSessions: sessions,
-    browserUses: sessions
-      .filter((session) => session.workspaceId !== unrelated.id)
-      .map((session) => ({
-        sessionId: session.id,
-        threadId: "thread-parent",
-        runId: "run-parent",
-        firstUsedAt: "2026-10-13T00:00:00.000Z",
-        lastUsedAt: "2026-10-13T00:00:00.000Z",
-      })),
+    browserUses: sessions.map((session) => ({
+      sessionId: session.id,
+      threadId: "thread-parent",
+      runId: "run-parent",
+      firstUsedAt: "2026-10-13T00:00:00.000Z",
+      lastUsedAt: "2026-10-13T00:00:00.000Z",
+    })),
     connection: "connected",
     deploymentShape: {},
-    homeThreadId: null,
     voiceThreadId: null,
     machines: [],
     network: "online",
@@ -708,8 +700,6 @@ function snapshot(sessions: BrowserSessionSummary[]): HostSnapshot {
     transcripts: {},
     user: { id: "user-a" },
     waitingRequests: [],
-    workspaces: [source, child, unrelated],
-    workspaceTasks: {},
   } as unknown as HostSnapshot);
 }
 
@@ -819,7 +809,7 @@ function header(): HTMLElement {
 }
 
 function mailSession(id: string): BrowserSessionSummary {
-  return seedBrowserSession({ ...session(id, child.id) }, undefined, [
+  return seedBrowserSession({ ...session(id) }, undefined, [
     {
       active: true,
       id: "srf_00000000-0000-4000-8000-000000000001",
@@ -854,7 +844,7 @@ type Occupant = Partial<Omit<import("@opensteer/client/host").PlaceOccupant, "th
 /** A browser whose one tab holds these occupants, as a Host that names who is in a tab lists them. */
 function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSummary {
   return seedBrowserSession(
-    { ...session(id, child.id) },
+    { ...session(id) },
     {
       generation: 1,
       revision: 1,
@@ -881,17 +871,15 @@ function occupied(id: string, occupants: readonly Occupant[]): BrowserSessionSum
   ) as unknown as BrowserSessionSummary;
 }
 
-/** A snapshot whose directory holds the agents' Threads, Chat and Main. */
+/** A snapshot whose directory holds the agents' Threads and Agent home. */
 function withAgents(sessions: BrowserSessionSummary[]): HostSnapshot {
   return {
     ...snapshot(sessions),
-    homeThreadId: "thread-home",
     voiceThreadId: null,
-    homeWorkspaceId: source.id,
+    personalSettings: { agentHome: agentHome },
     threads: [
       { color: null, icon: null, id: "thread-agent", title: "Compare hotels" },
       { color: null, icon: null, id: "thread-trip", title: "Tokyo trip" },
-      { color: null, icon: null, id: "thread-home", title: "" },
     ],
   } as unknown as HostSnapshot;
 }
@@ -919,7 +907,7 @@ describe("mobile pages", () => {
   it("keeps a failed page on screen with its detail and no navigation", () => {
     const { container, render } = setup({ sessionId: "chosen" });
     state.snapshot = snapshot([
-      { ...session("chosen", child.id, "failed"), error: "The computer disconnected." },
+      { ...session("chosen", "failed"), error: "The computer disconnected." },
     ]);
     render();
     expect(container.textContent).toContain("This page stopped working");
@@ -1091,7 +1079,7 @@ describe("mobile pages", () => {
       browserFrames: { subscribe: () => () => undefined },
     };
     const { render, route, container } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("chosen", child.id)]);
+    state.snapshot = snapshot([session("chosen")]);
     render();
     await pressAsync(menu(), "New tab");
     expect(beginBrowserTabOpen).toHaveBeenCalledOnce();
@@ -1229,7 +1217,7 @@ describe("mobile pages", () => {
         browserFrames: { subscribe: () => () => undefined },
       };
       const { container, render, route } = setup({ sessionId: "chosen" });
-      state.snapshot = snapshot([session("chosen", child.id)]);
+      state.snapshot = snapshot([session("chosen")]);
       render();
       await pressAsync(menu(), "New tab");
       expect(beginBrowserTabOpen).toHaveBeenCalledExactlyOnceWith(
@@ -1266,7 +1254,7 @@ describe("mobile pages", () => {
         editAddress: true,
       };
       state.snapshot = snapshot([
-        seedBrowserSession({ ...session("chosen", child.id) }, undefined, [
+        seedBrowserSession({ ...session("chosen") }, undefined, [
           { id: "new-page", active: false, title: "", url: "about:blank" },
         ] as unknown as NonNullable<Parameters<typeof seedBrowserSession>[2]>),
       ]);
@@ -1280,7 +1268,7 @@ describe("mobile pages", () => {
   it.each([false, true])(
     "returns after a successful close, reviewing held work: %s",
     async (held) => {
-      const chosen = session("chosen", child.id);
+      const chosen = session("chosen");
       const closeBrowserTab = vi.fn(async () => ({}));
       state.hostClient = {
         getSnapshot: () => state.snapshot,
@@ -1354,7 +1342,7 @@ describe("mobile pages", () => {
       },
     ];
     state.snapshot = snapshot([
-      seedBrowserSession({ ...session("chosen", child.id) }, {
+      seedBrowserSession({ ...session("chosen") }, {
         generation: 1,
         revision: 1,
         rows: [
@@ -1383,14 +1371,14 @@ describe("mobile pages", () => {
     };
     const { render } = setup({ sessionId: "chosen" });
     state.snapshot = snapshot([
-      seedBrowserSession({ ...session("chosen", child.id) }, {
+      seedBrowserSession({ ...session("chosen") }, {
         generation: 1,
         revision: 1,
         rows: [
           { id: "page-1", title: "Page", site: "https://example.com", order: 0, occupants: [] },
         ],
       } as unknown as NonNullable<NonNullable<Parameters<typeof seedBrowserSession>[1]>>),
-      session("other", child.id),
+      session("other"),
     ]);
     render();
     await pressAsync(menu(), "Close tab");
@@ -1403,7 +1391,7 @@ describe("mobile pages", () => {
   });
 
   it("returns to a live page under it after close, and no further", async () => {
-    const chosen = session("chosen", child.id);
+    const chosen = session("chosen");
     const closeBrowserTab = vi.fn(async () => ({}));
     state.hostClient = {
       getSnapshot: () => state.snapshot,
@@ -1432,7 +1420,7 @@ describe("mobile pages", () => {
   });
 
   it("stays on the page and explains a failed close", async () => {
-    const chosen = session("chosen", child.id);
+    const chosen = session("chosen");
     state.hostClient = {
       getSnapshot: () => state.snapshot,
       subscribe: () => () => undefined,
@@ -1554,7 +1542,7 @@ describe("mobile pages", () => {
     press(menu(), "Sign in with Chrome");
     // The site is remembered for the Workspace, which the action says before any tap.
     expect(container.textContent).toContain(
-      "Agents in Research will be able to use example.com as you.",
+      "Your agent will be able to use example.com as you.",
     );
     await pressAsync(container, "Sign in with Chrome");
     expect(inspect).toHaveBeenCalledWith({ url: "https://mail.example.com/inbox" });
@@ -1571,14 +1559,14 @@ describe("mobile pages", () => {
 
   it("keeps an exact browser link when the session ends or disappears", () => {
     const { container, render } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("other", child.id), session("chosen", child.id)]);
+    state.snapshot = snapshot([session("other"), session("chosen")]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
-    state.snapshot = snapshot([session("other", child.id), session("chosen", child.id, "closed")]);
+    state.snapshot = snapshot([session("other"), session("chosen", "closed")]);
     render();
     expect(container.textContent).toContain("This tab was closed");
     expect(container.textContent).not.toContain("Viewing other");
-    state.snapshot = snapshot([session("other", child.id)]);
+    state.snapshot = snapshot([session("other")]);
     render();
     expect(container.textContent).toContain("This tab was closed");
     expect(container.textContent).not.toContain("Viewing other");
@@ -1588,7 +1576,7 @@ describe("mobile pages", () => {
   it("refreshes on focus and keeps the exact view while other browsers arrive", () => {
     const { container, render } = setup({ sessionId: "chosen" });
     expect(state.refresh).toHaveBeenCalledTimes(1);
-    state.snapshot = snapshot([session("chosen", child.id), session("new", child.id)]);
+    state.snapshot = snapshot([session("chosen"), session("new")]);
     render();
     expect(container.textContent).toContain("Viewing chosen");
     expect(container.textContent).not.toContain("Viewing new");
@@ -1601,7 +1589,7 @@ describe("mobile pages", () => {
 
   it("refuses another deployment and a signed-out viewer", () => {
     const { container, render } = setup({ sessionId: "chosen" });
-    state.snapshot = snapshot([session("chosen", child.id)]);
+    state.snapshot = snapshot([session("chosen")]);
     state.deploymentId = "deployment-b";
     render();
     expect(container.textContent).toContain("This deployment is no longer open");
@@ -1619,7 +1607,7 @@ describe("mobile pages", () => {
  * the route rather than the page's occupants; tapping the agent pushes a
  * second copy of the Thread already under the page; several agents are not
  * offered as a choice; an older Host's anonymous acting is dropped or made
- * tappable; Ask loses the page on its way to Chat or a new task; the route's
+ * tappable; Ask loses the page on its way to a new task; the route's
  * origin changes what the screen shows.
  */
 describe("the page's bar", () => {
@@ -1651,21 +1639,6 @@ describe("the page's bar", () => {
     expect(state.dispatch).not.toHaveBeenCalled();
   });
 
-  it("returns to Chat rather than pushing it, when Chat is the agent", () => {
-    openPage([{ home: true, threadId: "thread-home" }]);
-    state.routes = [
-      { name: "Home" },
-      { name: "Thread", params: { deploymentId: "deployment-a", threadId: "thread-trip" } },
-      { name: "WorkspaceBrowser", params: { sessionId, tabId: "page-1" } },
-    ];
-    press(askMenu(), "Chat · Idle");
-    expect(state.dispatch).toHaveBeenCalledExactlyOnceWith({
-      name: "Home",
-      params: { deploymentId: "deployment-a" },
-      type: "POP_TO",
-    });
-  });
-
   it("offers several agents as a menu, working first, then most recent", () => {
     openPage([
       { lastActiveAt: "2026-10-13T00:05:00.000Z", threadId: "thread-trip" },
@@ -1676,7 +1649,6 @@ describe("the page's bar", () => {
     expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "Compare hotels · Working here",
       "Tokyo trip · Idle",
-      "Ask in Chat",
       "New task",
     ]);
     press(ask, "Tokyo trip · Idle");
@@ -1712,7 +1684,7 @@ describe("the page's bar", () => {
     state.snapshot = withAgents([occupied(sessionId, [])]);
     render();
     expect(agentRows()).toEqual([]);
-    expect(menu().textContent).toContain("Ask in Chat");
+    expect(menu().textContent).toContain("New task");
     expect(container.querySelector('[data-testid="conversation-slot"]')?.textContent).toContain(
       "Thread thread-trip beside",
     );
@@ -1752,12 +1724,11 @@ describe("the page's bar", () => {
     expect(legacy.container.querySelector('[data-testid="page-toolbar"]')).toBeNull();
   });
 
-  it("hides Ask in Chat before Chat exists, including offline", () => {
+  it("offers New task offline", () => {
     const { render } = openPage([]);
-    state.snapshot = { ...state.snapshot!, homeThreadId: null, network: "offline" };
+    state.snapshot = { ...state.snapshot!, network: "offline" };
     render();
     const ask = askMenu();
-    expect(ask.textContent).not.toContain("Ask in Chat");
     press(ask, "New task");
     expect(state.dispatch).toHaveBeenCalledWith(expect.objectContaining({ name: "NewTask" }));
   });
@@ -1770,7 +1741,6 @@ describe("the page's bar", () => {
     const ask = askMenu();
     expect(ask.getAttribute("aria-label")).toBe("Ask");
     expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "Ask in Chat",
       "New task",
     ]);
   });
@@ -1783,12 +1753,11 @@ describe("the page's bar", () => {
     const ask = askMenu();
     expect(ask.getAttribute("aria-label")).toBe("Agent working. Ask");
     expect([...ask.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
-      "Ask in Chat",
       "New task",
     ]);
   });
 
-  it("asks in Chat or a new task with the page on that draft, this reader's alone, never in the route", () => {
+  it("asks in a new task with the page on that draft, this reader's alone, never in the route", () => {
     openPage([]);
     const ask = askMenu();
     expect(ask.dataset["menuTitle"]).toBe("Ask about this page");
@@ -1800,27 +1769,19 @@ describe("the page's bar", () => {
       url: "https://example.com",
     };
     const drafts = state.drafts!;
-    press(ask, "Ask in Chat");
-    expect(state.dispatch).toHaveBeenLastCalledWith({
-      name: "Home",
-      params: { deploymentId: "deployment-a" },
-      type: "POP_TO",
-    });
-    expect(drafts.readDraft("deployment-a", "user-a", "thread-home")?.page).toEqual(page);
     press(ask, "New task");
     const { draftId } = askedFor();
     expect(state.dispatch).toHaveBeenLastCalledWith({
       name: "NewTask",
-      params: { deploymentId: "deployment-a", draftId, workspaceId: source.id },
+      params: { deploymentId: "deployment-a", draftId },
       type: "PUSH",
     });
     const taskDraft = newTaskDraftKey(draftId);
     expect(drafts.readDraft("deployment-a", "user-a", taskDraft)).toMatchObject({
       page,
-      workspaceId: source.id,
+      folder: agentHome,
     });
     // Whoever signs in next on this Deployment has drafts of their own.
-    expect(drafts.readDraft("deployment-a", "user-b", "thread-home")).toBeNull();
     expect(drafts.readDraft("deployment-a", "user-b", taskDraft)).toBeNull();
   });
 
@@ -1835,7 +1796,7 @@ describe("the page's bar", () => {
       state.snapshot = withAgents([]);
       opened.render();
       // A page an earlier Ask left on another draft does not stand for this one.
-      const draftKey = newTaskDraftKey(source.id);
+      const draftKey = newTaskDraftKey("draft-earlier");
       const earlier = BrowserPageContentPartSchema.parse({
         sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
         tabId: "page-1",
@@ -1850,7 +1811,7 @@ describe("the page's bar", () => {
       expect(state.dispatch).toHaveBeenCalledWith({
         name: "NewTask",
         type: "PUSH",
-        params: { deploymentId: "deployment-a", draftId, workspaceId: source.id },
+        params: { deploymentId: "deployment-a", draftId },
       });
       expect(
         state.drafts!.readDraft("deployment-a", "user-a", newTaskDraftKey(draftId)),
@@ -1896,7 +1857,6 @@ describe("an app open as a tab", () => {
     openedAt: "2026-11-04T10:00:00.000Z",
     threadId: "thread-maker",
     title: "Budget",
-    workspaceId: source.id,
   };
   function openApp(params: Partial<SurfacesRoute> = { appId } as Partial<SurfacesRoute>) {
     const closeAppTab = vi.fn(async (): Promise<void> => undefined);
@@ -2348,8 +2308,8 @@ describe("a page beside its agent's thread", () => {
     const { container, render } = openPage();
     expect(headerShown()).toBe(false);
     // Ask stands in a phone's bar; the way out is its one chevron, the page's history is in More.
-    expect(askMenu().textContent).toContain("Ask in Chat");
-    expect(menu().textContent).not.toContain("Ask in Chat");
+    expect(askMenu().textContent).toContain("New task");
+    expect(menu().textContent).not.toContain("New task");
     expect(element(container, "Previous page")).toBeNull();
     press(menu(), "Back");
     expect(state.goBack).not.toHaveBeenCalled();
@@ -2361,7 +2321,7 @@ describe("a page beside its agent's thread", () => {
     expect(headerShown()).toBe(false);
     // Beside a Thread, Ask is in More, and the row keeps the page's address room.
     expect(document.querySelector('[aria-label$=". Ask"]')).toBeNull();
-    expect(menu().textContent).toContain("Ask in Chat");
+    expect(menu().textContent).toContain("New task");
     press(container, "Back");
     expect(state.goBack).toHaveBeenCalledTimes(2);
   });
@@ -2542,7 +2502,7 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toContain("Thread thread-trip beside");
   });
 
-  it("gives the page the whole surface with no agent, until Ask opens Chat or a new task beside it", () => {
+  it("gives the page the whole surface with no agent, until Ask opens a new task beside it", () => {
     state.pair = { height: 1000, width: 744 };
     const opened = setup({
       sessionId: "bsn_00000000-0000-4000-8000-0000000000aa",
@@ -2555,13 +2515,7 @@ describe("a page beside its agent's thread", () => {
     expect(second(container)).toBeNull();
     expect(slot(container, "page").style).toMatchObject({ flex: 1, minHeight: 0 });
 
-    press(askMenu(), "Ask in Chat");
-    expect(second(container)).toContain("Thread thread-home beside with Page");
-    expect(state.drafts!.readDraft("deployment-a", "user-a", "thread-home")?.page?.title).toBe(
-      "Page",
-    );
-    // With a pane beside the page, Ask is in the page's More.
-    press(menu(), "New task");
+    press(askMenu(), "New task");
     expect(second(container)).toContain("New task beside");
     const besideDraft = () =>
       container.querySelector<HTMLElement>("[data-draft]")!.dataset["draft"]!;
@@ -2847,7 +2801,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
       createdAt: "2026-10-13T00:00:00.000Z",
       id: "lineage-a",
       revision: 1,
-      session: { ...session(sessionId, child.id), placement },
+      session: { ...session(sessionId), placement },
       tabs: tabs.map((tab, order) => ({
         ...tab,
         kind: "browser" as const,
@@ -2860,7 +2814,7 @@ describe("saved tabs, global scope and native authority (hand-built snapshots)",
   }
   function catalogued(id: string): BrowserSessionSummary {
     return seedBrowserSession(
-      { ...session(id, child.id), placement, tabRestoreVersion: 1 },
+      { ...session(id), placement, tabRestoreVersion: 1 },
       {
         generation: 1,
         inventoryRevision: 1,

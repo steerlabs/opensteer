@@ -67,8 +67,8 @@ export function AutomationList(props: AutomationListProps): ReactNode {
             </View>
             <AppText role="title">No automations yet</AppText>
             <AppText role="secondary" style={styles.centred} tone="muted">
-              Ask in Chat for something to happen on its own — “every weekday at 8, sum up my email”
-              — and it shows up here.
+              Ask your agent for something to happen on its own — “every weekday at 8, sum up my
+              email” — and it shows up here.
             </AppText>
           </View>
         }

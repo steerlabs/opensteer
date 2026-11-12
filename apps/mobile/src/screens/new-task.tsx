@@ -431,10 +431,7 @@ function NewTask(props: {
         ? {}
         : {
             folder: (
-              <FolderChip
-                label={props.home.folderLabel}
-                onPress={props.home.onChooseFolder}
-              />
+              <FolderChip label={props.home.folderLabel} onPress={props.home.onChooseFolder} />
             ),
             voice: true,
           })}

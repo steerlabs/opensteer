@@ -32,12 +32,10 @@ import { Symbol } from "../ui/symbol.js";
 import { setTaskDone, TaskRowView, taskTextInset, type TaskShelf } from "./task-row.js";
 
 /**
- * The reader's tasks as a full screen: every one on the Deployment for
- * Search, or one project's own, which the Host lists for that Workspace
- * alone. The rows and groups are the sidebar's, read from the same shared
+ * The reader's tasks as a full screen: every one on the Deployment, for
+ * Search. The rows and groups are the sidebar's, read from the same shared
  * model — Working, Ready, then Done — and a search narrows each to what
- * matches. Chat is not a task and is never listed: it is the screen
- * underneath, at the top of the sidebar. With `done` it is the Done page:
+ * matches. With `done` it is the Done page:
  * Done alone, by the day each task was put there.
  */
 
@@ -64,7 +62,7 @@ export function TasksPane(props: {
   readonly deploymentId: string;
   /** Done alone, newest Done first. */
   readonly done?: boolean;
-  /** Content above the list, scrolling with it: a project's own heading. */
+  /** Content above the list, scrolling with it. */
   readonly header?: ReactNode;
   readonly hostClient: HostClient;
   readonly onOpenTask: (threadId: string) => void;
@@ -72,7 +70,6 @@ export function TasksPane(props: {
   readonly onSignIn: () => Promise<void>;
   /** What the screen's search bar holds; the pane shows matches while it is not empty. */
   readonly query: string;
-  /** The Workspace this list is about, or null for every task on the Deployment. */
 }): ReactNode {
   const { hostClient, query } = props;
   const doneOnly = props.done === true;
@@ -114,10 +111,9 @@ export function TasksPane(props: {
   const matches = searching
     ? new Set(
         filterThreads(
-          [
-            ...(read?.entries ?? []),
-            ...(snapshot.doneTasks[mainDoneTasks]?.entries ?? []),
-          ].map(({ thread }) => thread),
+          [...(read?.entries ?? []), ...(snapshot.doneTasks[mainDoneTasks]?.entries ?? [])].map(
+            ({ thread }) => thread,
+          ),
           query,
           taskAttention(snapshot),
         ).map(({ id }) => id),

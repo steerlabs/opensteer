@@ -288,7 +288,6 @@ async function setup(
       PlaceEnteredEventViewSchema.parse({
         eventId: createId("event"),
         environmentId: createId("environment"),
-        workspaceId: createId("workspace"),
         threadId,
         runId,
         type: "place.entered",
@@ -1333,7 +1332,7 @@ it("keeps passive native decoded pixels while the session binding is missing or 
   expect(state.decoded.at(-1)?.epoch).not.toBe(oldEpoch);
   expect(state.pixels).toBe(true);
   await act(async () =>
-    view.move!({ machines: [{ ...machine, ownership: "other", computerUse: null }] }),
+    view.move!({ machines: [{ ...machine, computerUse: null }] }),
   );
   expect(state.epoch).not.toBe(before);
 });

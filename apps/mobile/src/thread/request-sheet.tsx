@@ -729,9 +729,8 @@ function RequestBody(props: {
 }
 
 /**
- * Which browser profile a Workspace's agents may use, including empty creation.
- * Profiles come from the Host snapshot, never from the agent's words; a
- * profile already available to the Workspace says so and completes at once.
+ * Which browser profile the person's agents may use, including empty creation.
+ * Profiles come from the Host snapshot, never from the agent's words.
  */
 function BrowserAccessBody(props: {
   readonly canRespond: boolean;

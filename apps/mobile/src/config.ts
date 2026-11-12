@@ -7,7 +7,6 @@ const MobileEnvironmentSchema = z.object({
   EXPO_PUBLIC_OPENSTEER_ACCOUNT_ORIGIN: z.string().min(1).max(2_048).optional(),
   EXPO_PUBLIC_OPENSTEER_BUILD_PROFILE: z.enum(["development", "preview", "production"]).optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK: z.enum(["0", "1"]).optional(),
-  EXPO_PUBLIC_OPENSTEER_MOCK_HOME: z.literal("absent").optional(),
   EXPO_PUBLIC_OPENSTEER_MOCK_TEAM: z
     .enum(["admin", "admin-stale", "member", "guest", "suspended", "removed"])
     .optional(),
@@ -26,8 +25,6 @@ export interface MobileConfiguration {
   readonly accountOrigin: string | null;
   /** The development entry that replaces the Host with an in-memory one. */
   readonly mock: boolean;
-  /** Explicit first-message fixture; the ordinary mock keeps its seeded Chat. */
-  readonly mockHome: "seeded" | "absent";
   /** The team the in-memory Host plays; null is today's Hosts, with no team. */
   readonly mockTeam: NonNullable<
     z.infer<typeof MobileEnvironmentSchema>["EXPO_PUBLIC_OPENSTEER_MOCK_TEAM"]
@@ -85,7 +82,6 @@ export function readMobileConfiguration(
   const mockRequested = parsed.EXPO_PUBLIC_OPENSTEER_MOCK === "1";
   const mockAllowed = build.development || profile === "development" || profile === "preview";
   const mockEnabled = mockRequested && mockAllowed;
-  const emptyHomeRequested = parsed.EXPO_PUBLIC_OPENSTEER_MOCK_HOME === "absent";
   return {
     portalOrigin:
       parsed.EXPO_PUBLIC_OPENSTEER_PORTAL_ORIGIN === undefined
@@ -96,15 +92,12 @@ export function readMobileConfiguration(
         ? null
         : bareServiceOrigin(accountOrigin, "Opensteer Account origin"),
     mock: mockEnabled,
-    mockHome: emptyHomeRequested && mockEnabled ? "absent" : "seeded",
     mockTeam: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_TEAM ?? null) : null,
     mockPhone: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_PHONE ?? null) : null,
     mockSubagents: mockEnabled ? (parsed.EXPO_PUBLIC_OPENSTEER_MOCK_SUBAGENTS ?? null) : null,
     refusal:
       mockRequested && !mockAllowed
         ? "This build was made with Opensteer's mock mode turned on, which only development and preview builds may run. Install a build made without it."
-        : emptyHomeRequested && !mockEnabled
-          ? "The no-Home fixture requires mock mode in a development or preview build. Install a build made without it."
-          : null,
+        : null,
   };
 }

@@ -54,7 +54,7 @@ export interface AppMenu {
  * An app's name is the title and carries the app's menu; on iOS the app runs
  * under the bar, as a conversation does. Android keeps Material's opaque bar,
  * the menu behind its overflow button. Ask is the bar's one action, a native
- * menu: Ask in Chat, once Chat exists, and New task. A place a Thread made is
+ * menu: New task, and the agents working here. A place a Thread made is
  * asked about in that Thread, so there Ask is one button rather than a menu.
  *
  * The bar is set again only when what it shows changes; its handlers are
@@ -67,7 +67,6 @@ export function usePageHeader(props: {
   readonly app: AppMenu | null;
   /** Ask goes to the Thread that made this place, with no choice to offer. */
   readonly asksThread: boolean;
-  /** Chat exists to ask in; before its first message, only a task can be started. */
   /** The page's own bar has Ask in its More, beside a Thread, so the native bar offers none. */
   readonly noAsk: boolean;
   readonly onAsk: (target: AskTarget) => void;
@@ -123,7 +122,7 @@ export function usePageHeader(props: {
       </Pressable>
     ) : (
       <NativeMenu
-        accessibilityHint="Starts work about this page in Chat or a new task"
+        accessibilityHint="Starts a new task about this page"
         accessibilityLabel="Ask"
         onPresent={noop}
         onSettle={noop}
@@ -180,7 +179,7 @@ export function usePageHeader(props: {
                     type: "button",
                   }
                 : {
-                    accessibilityHint: "Starts work about this page in Chat or a new task",
+                    accessibilityHint: "Starts a new task about this page",
                     accessibilityLabel: "Ask",
                     // Marks can't stand in a native item, so a working agent is the green glint.
                     ...(agents.unnamedActing || agents.agents.some(({ acting }) => acting)
@@ -227,7 +226,7 @@ const threadHint = "Opens the conversation that made this app";
 
 /**
  * Ask's choices as a menu draws them: in the Thread that made the place, or
- * in Chat, once it exists, and a new task. The bar draws them, and so does the
+ * a new task. The bar draws them, and so does the
  * page's own More while its bar is put away beside a Thread.
  */
 export function askChoices(props: {
@@ -391,7 +390,6 @@ const askMarks = 2;
  */
 export const PageAsk = memo(function PageAsk(props: {
   readonly agents: PlaceAgents;
-  /** Chat exists to ask in; before its first message, only a task can be started. */
   readonly onAsk: (target: AskTarget) => void;
   readonly onOpenAgent: (threadId: string) => void;
 }): ReactNode {
@@ -399,7 +397,7 @@ export const PageAsk = memo(function PageAsk(props: {
   const words = placeAgentsWords(agents);
   return (
     <ToolbarMenu
-      accessibilityHint="Opens who is here, or starts work about this page in Chat or a new task"
+      accessibilityHint="Opens who is here, or starts a new task about this page"
       face={
         agents.agents.length > 0 ? (
           <AgentMarks agents={agents.agents.slice(0, askMarks)} />
