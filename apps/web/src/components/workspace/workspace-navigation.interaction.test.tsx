@@ -645,11 +645,11 @@ describe("a channel and back", () => {
 
     await act(async () => goTo!(-1));
     await settle();
+    const find = new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true });
     await act(async () => {
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "f", metaKey: true, cancelable: true }),
-      );
+      window.dispatchEvent(find);
     });
+    expect(find.defaultPrevented).toBe(true);
     await settle();
     expect(history.at(-1)).toMatchObject(scoped);
   });
