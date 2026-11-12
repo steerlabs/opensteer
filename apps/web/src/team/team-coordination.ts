@@ -74,6 +74,8 @@ export function desktopAccountTeams(
  */
 export function desktopTeamSessions(
   bridge: OpensteerDesktopBridge & Required<Pick<OpensteerDesktopBridge, "teamSessions">>,
+  /** Where a team this computer already shows lives, for one not verified since launch. */
+  originOf: (teamDeploymentId: DeploymentId) => string | null = () => null,
 ): TeamSessionPort {
   const call = async <T>(input: DesktopTeamSessionsCall, schema: z.ZodType<T>): Promise<T> => {
     const result = await bridge.teamSessions(input);
@@ -84,7 +86,7 @@ export function desktopTeamSessions(
   };
   const origins = new Map<DeploymentId, string>();
   const rpc = (teamDeploymentId: DeploymentId): HostApiClient => {
-    const origin = origins.get(teamDeploymentId);
+    const origin = origins.get(teamDeploymentId) ?? originOf(teamDeploymentId);
     if (!origin) throw new Error("Open the team on this computer first.");
     return createHttpHostApiClient({
       baseUrl: new URL(origin),
@@ -202,6 +204,7 @@ export function desktopTeamCoordination(input: {
   readonly hostClient: HostClient;
   readonly accountSubject: () => ControlPlaneAccountId | null;
   readonly open: (teamDeploymentId: DeploymentId) => void;
+  readonly originOf: (teamDeploymentId: DeploymentId) => string | null;
 }): WebTeamCoordination | null {
   const { bridge } = input;
   if (!bridge.accountTeams || !bridge.teamSessions) return null;
@@ -211,7 +214,10 @@ export function desktopTeamCoordination(input: {
     personalDeploymentId: personalOf(input.hostClient),
     coordinator: createTeamCoordinator({
       account,
-      sessions: desktopTeamSessions({ ...bridge, teamSessions: bridge.teamSessions }),
+      sessions: desktopTeamSessions(
+        { ...bridge, teamSessions: bridge.teamSessions },
+        input.originOf,
+      ),
       personal: personalTeamLinksPort(input.hostClient),
       intents: localIntentStore,
       accountSubject: input.accountSubject,

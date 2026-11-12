@@ -634,16 +634,17 @@ export function createTeamCoordinator(ports: TeamCoordinatorPorts): TeamCoordina
       if (disposed || ports.accountSubject() === null) return;
       await load();
       publish({ intents: mine() });
+      // Teams already entered come back whether or not Account can list hosted teams now.
+      for (const intent of mine())
+        if (intent.teamDeploymentId !== null)
+          void restoreThenConnect(intent, intent.teamDeploymentId);
       const teams = await ports.account.listHostedTeams();
       for (const intent of mine()) {
-        if (intent.hostedTeamId === null && intent.teamDeploymentId === null) {
-          // Saved before Account answered: the team it created, or nothing to resume.
-          const created = teams.find((team) => team.origin === intent.teamOrigin);
-          if (created) await save({ ...intent, hostedTeamId: created.id });
-          else await remove(intent);
-        } else if (intent.teamDeploymentId !== null) {
-          void restoreThenConnect(intent, intent.teamDeploymentId);
-        }
+        if (intent.hostedTeamId !== null || intent.teamDeploymentId !== null) continue;
+        // Saved before Account answered: the team it created at that address, or nothing.
+        const created = teams.find((team) => team.origin === intent.teamOrigin);
+        if (created) await save({ ...intent, hostedTeamId: created.id });
+        else await remove(intent);
       }
       for (const team of teams) {
         const intent = intentFor((held) => held.hostedTeamId === team.id);

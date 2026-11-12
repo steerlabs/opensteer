@@ -184,6 +184,7 @@ export function TeamsProvider({
                 return parsed.success ? parsed.data : null;
               },
               open,
+              originOf: (teamId) => memberRef.current.get(teamId)?.origin ?? null,
             })
           : null;
     setCoordination(made);

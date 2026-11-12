@@ -171,7 +171,9 @@ describe("TeamCoordinator", () => {
     first.coordinator.dispose();
     const second = track(start(first.world));
     const restore = vi.spyOn(first.world.sessions, "restore");
-    await second.coordinator.resume();
+    // Even while Account can't list hosted teams.
+    vi.spyOn(first.world.account, "listHostedTeams").mockRejectedValueOnce(new Error("Offline"));
+    await expect(second.coordinator.resume()).rejects.toThrow("Offline");
     await vi.waitFor(() =>
       expect(restore).toHaveBeenCalledWith({
         origin: entered.origin,
