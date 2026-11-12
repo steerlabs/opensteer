@@ -1,4 +1,4 @@
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import "./connection.js";
 import { publishedMessagePredicate } from "./message-visibility.js";
 import {
@@ -77,7 +77,7 @@ export async function readThreadHistory(
       });
     }
   })();
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const thread = await transaction

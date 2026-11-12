@@ -4,7 +4,7 @@ import { personalSettings } from "./personal-settings-store.js";
 export { deploymentHead } from "./deployment-events.js";
 import { requirePersonalOwner } from "./personal-settings-store.js";
 import type { DeploymentId } from "@opensteer/core";
-import { withPersonalTransaction } from "./personal-transaction.js";
+import { withPersonalReadTransaction } from "./personal-transaction.js";
 import { type RunId } from "@opensteer/core";
 import "./connection.js";
 import {
@@ -208,7 +208,7 @@ export async function deploymentSnapshot(
     options.maxSerializedBytes,
     deploymentSnapshotMaxSerializedBytes,
   );
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const state = await transaction
@@ -310,7 +310,7 @@ export async function deploymentSnapshot(
       const threadIds = threads.items.map(({ id }) => id);
       const [messageRows, messageCountRows, pendingRows, pendingCountRow, runQueueRows] =
         await Promise.all([
-          options.omitMessages
+          options.omitMessages || threadIds.length === 0
             ? []
             : transaction
                 .selectFrom("messages")
@@ -324,7 +324,7 @@ export async function deploymentSnapshot(
                 .orderBy("messages.id", "desc")
                 .limit(maxMessages + 1)
                 .execute(),
-          options.omitMessages
+          options.omitMessages || threadIds.length === 0
             ? []
             : transaction
                 .selectFrom("messages")
@@ -346,14 +346,16 @@ export async function deploymentSnapshot(
             .select(({ fn }) => fn.countAll<string>().as("count"))
             .where("status", "=", "pending")
             .executeTakeFirstOrThrow(),
-          transaction
-            .selectFrom("runs")
-            .select(["createdAt", "id", "status", "threadId", "runOrdinal"])
-            .where("threadId", "in", threadIds)
-            .where("status", "in", nonTerminalRunStatuses)
-            .orderBy("threadId", "asc")
-            .orderBy("runOrdinal", "asc")
-            .execute(),
+          threadIds.length === 0
+            ? []
+            : transaction
+                .selectFrom("runs")
+                .select(["createdAt", "id", "status", "threadId", "runOrdinal"])
+                .where("threadId", "in", threadIds)
+                .where("status", "in", nonTerminalRunStatuses)
+                .orderBy("threadId", "asc")
+                .orderBy("runOrdinal", "asc")
+                .execute(),
         ]);
       const messageTotals = new Map(
         messageCountRows.map((row) => [row.threadId, safeCount(row.count)]),
@@ -512,7 +514,7 @@ export async function taskPageForUser(
   // ordered at that precision: a cursor then names exactly the place the
   // reader stopped, even between Threads asked within one millisecond.
   const orderedAt = sql<Date>`date_trunc('milliseconds', ${sql.ref(input.done ? "threads.done_at" : "threads.asked_at")})`;
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       await requirePersonalOwner(transaction, input.userId);
@@ -763,7 +765,7 @@ export async function threadEventPageForOwner(
       message: "Choose an event cursor or a message anchor",
     });
   }
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const thread = await transaction
@@ -1031,7 +1033,7 @@ export async function nodeEventPageForOwner(
   const maxBytes = boundedWindowBytes(input.maxBytes, 640 * 1_024);
   const before = input.before === undefined ? null : SequenceSchema.safeParse(input.before);
   if (before && !before.success) throw invalidWindowCursor();
-  return withPersonalTransaction(
+  return withPersonalReadTransaction(
     database,
     async (transaction) => {
       const node = await transaction

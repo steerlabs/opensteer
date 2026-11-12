@@ -4,6 +4,16 @@ import type { DatabaseSchema } from "./schema.js";
 
 const held = new WeakSet<Transaction<DatabaseSchema>>();
 
+export function withPersonalReadTransaction<Result>(
+  database: Kysely<DatabaseSchema>,
+  read: (transaction: Transaction<DatabaseSchema>) => Promise<Result>,
+  isolationLevel: IsolationLevel = "repeatable read",
+): Promise<Result> {
+  return database.isTransaction
+    ? read(database as Transaction<DatabaseSchema>)
+    : withDatabaseTransaction(database, read, isolationLevel);
+}
+
 /** Personal mutations reserve commit order before taking any domain row lock. */
 export async function lockDeploymentEvents(transaction: Transaction<DatabaseSchema>) {
   if (held.has(transaction)) return;

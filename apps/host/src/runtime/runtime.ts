@@ -1,6 +1,5 @@
 import { PersonalTabStore } from "@opensteer/database";
-import { resolveAutomaticModels, personalExecution } from "../agents/automatic-models.js";
-import { automaticModelWants, DEFAULT_THREAD_ACCESS_MODE } from "@opensteer/core";
+import { resolveTeamTaskExecution } from "./team-task-execution.js";
 import { ReconcileLoop, reconcileServices } from "./reconcile-loop.js";
 import { TeamRunEvents } from "./team-run-events.js";
 import { initializePersonalState } from "./personal-state.js";
@@ -2370,31 +2369,14 @@ export async function createHostRuntime(
       execution: async () => {
         const settings = await personalSettings(database);
         const preferences = await store.getExecutionPreferences(settings.ownerId);
-        const prior = preferences.history[0];
-        if (prior?.environmentId === personalConfig.environmentId) return prior;
-        const selected = (
-          await resolveAutomaticModels(
-            { store, runners },
-            {
-              userId: settings.ownerId,
-              wants: (current) => automaticModelWants(current, "light"),
-              canRun: personalExecution(runners, {
-                environmentId: personalConfig.environmentId,
-                accessMode: DEFAULT_THREAD_ACCESS_MODE,
-              }),
-            },
-          )
-        ).candidates[0];
-        if (!selected)
-          throw new OpensteerError({
-            code: "conflict",
-            message: "Choose an available engine for your agent",
-          });
-        return {
-          environmentId: selected.environmentId,
-          harnessInstanceId: selected.harnessInstanceId,
-          modelSelection: selected.storedModelSelection,
-        };
+        return resolveTeamTaskExecution(
+          { store, runners },
+          {
+            ownerId: settings.ownerId,
+            environmentId: personalConfig.environmentId,
+            preferences,
+          },
+        );
       },
       publish: (events) => events.forEach(publishDeploymentEvent),
       revokeGrants: (grants) => store.announceRevokedGrants(grants),
