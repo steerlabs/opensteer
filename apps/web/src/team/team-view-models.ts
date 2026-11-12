@@ -82,7 +82,6 @@ export function sidebarView(input: {
     connection: input.connection,
     channels,
     dms,
-    moreDms: 0,
   };
 }
 

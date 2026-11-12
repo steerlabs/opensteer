@@ -11,7 +11,6 @@ export interface TeamSideActions {
   readonly onNewChannel?: (() => void) | undefined;
   readonly onNewMessage?: (() => void) | undefined;
   readonly onBrowseChannels?: (() => void) | undefined;
-  readonly onMoreDms?: (() => void) | undefined;
   readonly onRemoveFromSidebar?: (() => void) | undefined;
   readonly onRetry?: (() => void) | undefined;
 }
