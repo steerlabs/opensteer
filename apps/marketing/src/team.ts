@@ -1,4 +1,8 @@
 import "./styles/team.css";
+import type { BrowserTab } from "./demo/apps/browser.js";
+import { gmail } from "./demo/apps/gmail.js";
+import { HUBSPOT_NOTE, hubspot } from "./demo/apps/hubspot.js";
+import { stripe } from "./demo/apps/stripe.js";
 import { byId, find, icon, reducedMotion, restart } from "./dom.js";
 
 /*
@@ -34,6 +38,8 @@ interface Plan {
   readonly denied?: string;
   readonly source?: string;
   readonly allowed?: () => void;
+  /** The site the agent opens a tab on while it works. */
+  readonly site?: Site;
 }
 interface Run {
   readonly id: string;
@@ -91,7 +97,46 @@ type Pane =
   | { readonly k: "thread"; readonly conv: string; readonly root: string }
   | { readonly k: "task"; readonly id: string }
   | { readonly k: "home" }
-  | { readonly k: "all" };
+  | { readonly k: "all" }
+  | { readonly k: "tab"; readonly id: string };
+
+type Site = "stripe" | "gmail" | "hubspot";
+/** The hero's pages belong to its own story; in Leo's tabs they show Leo's accounts and customer. */
+const LEOS: ReadonlyArray<readonly [string, string]> = [
+  [
+    HUBSPOT_NOTE,
+    "Duplicate charge on invoice 2291. Refunded the extra $480.00 today.",
+  ],
+  ["Rivera &amp; Co.", "Acme"],
+  ["alex@riveraco.com", "leo@acme.com"],
+  ["Alex Rivera", "Leo Park"],
+  [">AR<", ">LP<"],
+  ["Priya Raman", "Dana Whitfield"],
+  ["priya@acme.example", "dana@northwind.example"],
+  [">PR<", ">DW<"],
+  ["Acme Corp", "Northwind Traders"],
+  ["Acme's", "Northwind's"],
+  ["acme.example", "northwind.example"],
+];
+const localize = (text: string): string =>
+  LEOS.reduce((out, [from, to]) => out.split(from).join(to), text);
+const leos = (tab: BrowserTab): BrowserTab => ({
+  ...tab,
+  title: localize(tab.title),
+  page: localize(tab.page),
+});
+const SITES: Record<Site, BrowserTab> = {
+  stripe: leos(stripe),
+  gmail: leos(gmail),
+  hubspot: leos(hubspot),
+};
+/** A tab open on Leo's Mac: a site, or the terminal. `run` is the agent working in it. */
+interface Tab {
+  readonly id: string;
+  readonly site?: Site;
+  run?: string;
+  noted: boolean;
+}
 
 interface Model {
   convs: Map<string, Conv>;
@@ -104,6 +149,7 @@ interface Model {
   refunded: boolean;
   minute: number;
   seq: number;
+  tabs: Tab[];
 }
 
 const esc = (text: string): string =>
@@ -208,6 +254,7 @@ function planFor(ask: string, model: Model, context: readonly Msg[], where: stri
   if (/draft|reply to|respond|email|write back|answer/.test(text))
     return {
       title: "Reply to Dana at Northwind",
+      site: "gmail",
       steps: ["Read the thread", "Wrote a reply in Gmail from support@acme.com"],
       ask: {
         card: "Send the reply to <b>Dana at Northwind</b>?",
@@ -228,6 +275,7 @@ function planFor(ask: string, model: Model, context: readonly Msg[], where: stri
   if (/hubspot|crm|note|log/.test(text))
     return {
       title: "Log it on Northwind in HubSpot",
+      site: "hubspot",
       steps: ["Opened Northwind in HubSpot"],
       answer: "Added a note to Northwind: duplicate charge on invoice 2291, refunded today.",
     };
@@ -248,6 +296,7 @@ function planFor(ask: string, model: Model, context: readonly Msg[], where: stri
       };
     return {
       title: "Refund Northwind's duplicate charge",
+      site: "stripe",
       steps: [
         "Read the thread",
         "Found two $480.00 charges for invoice 2291 in Stripe",
@@ -289,6 +338,10 @@ function seed(): Model {
     refunded: false,
     minute: 41,
     seq: 0,
+    tabs: [
+      { id: "gmail", site: "gmail", noted: false },
+      { id: "zsh", noted: false },
+    ],
   };
   const conv = (c: Omit<Conv, "top" | "unread"> & { unread?: number }): Conv => {
     const made: Conv = { top: [], unread: 0, ...c };
@@ -552,6 +605,15 @@ export function mountTeam(): void {
       asking: false,
     };
     model.runs.set(run.id, run);
+    if (owner === ME && plan.site) {
+      const site = plan.site;
+      let tab = model.tabs.find((t) => t.site === site);
+      if (!tab) {
+        tab = { id: site, site, noted: false };
+        model.tabs.unshift(tab);
+      }
+      tab.run = run.id;
+    }
     let at = 700;
     for (const step of plan.steps) {
       later(at, () => addStep(run, step));
@@ -619,6 +681,10 @@ export function mountTeam(): void {
     run.took = `${run.steps.length} step${run.steps.length === 1 ? "" : "s"} · ${seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`}`;
     const task = run.task ? model.tasks.get(run.task) : undefined;
     if (task) task.read = isOpen({ k: "task", id: task.id });
+    if (!denied && run.plan.site === "hubspot") {
+      const tab = model.tabs.find((t) => t.site === "hubspot");
+      if (tab) tab.noted = true;
+    }
     update();
     const hook = doneHooks.get(run.id);
     if (hook) {
@@ -894,8 +960,8 @@ export function mountTeam(): void {
       ? `conv:${pane.id}`
       : pane.k === "thread"
         ? `thread:${pane.root}`
-        : pane.k === "task"
-          ? `task:${pane.id}`
+        : pane.k === "task" || pane.k === "tab"
+          ? `${pane.k}:${pane.id}`
           : pane.k;
   const isOpen = (pane: Pane): boolean => paneKey(pane) === paneKey(model.pane);
 
@@ -1034,6 +1100,57 @@ export function mountTeam(): void {
       return need(b) - need(a) || b.created - a.created;
     });
 
+  const tabWorking = (tab: Tab): Run | undefined => {
+    const run = tab.run ? model.runs.get(tab.run) : undefined;
+    return run && (run.state === "working" || run.state === "needs") ? run : undefined;
+  };
+  const tabState = (tab: Tab): string =>
+    [tabWorking(tab)?.id ?? "", tab.noted, tab.site === "stripe" && model.refunded].join("|");
+
+  function tabRow(tab: Tab): string {
+    const page = tab.site ? SITES[tab.site] : undefined;
+    const glyph = page ? page.mark : `<span class="tw-termmark">${icon("d-term")}</span>`;
+    const title = page ? page.title : "opensteer — zsh";
+    const on = isOpen({ k: "tab", id: tab.id }) ? " is-on" : "";
+    const live = tabWorking(tab)
+      ? `<i class="tw-live" title="Your agent is using this tab"></i>`
+      : "";
+    return `<button type="button" class="tw-row tw-row--tab${on}" data-act="tab" data-id="${tab.id}">${glyph}<span class="tw-row__text">${title}</span>${live}</button>`;
+  }
+
+  const TERMINAL = [
+    `<b>leo@MacBook opensteer %</b> pnpm vitest run packages/sync/retry.test.ts`,
+    ``,
+    ` <i>RUN</i>  v3.2.4 /Users/leo/code/opensteer`,
+    ``,
+    ` <em>✓</em> packages/sync/retry.test.ts (40 tests) 812ms`,
+    ``,
+    ` Test Files  <em>1 passed</em> (1)`,
+    `      Tests  <em>40 passed</em> (40)`,
+    `   Duration  1.94s`,
+    ``,
+    `<b>leo@MacBook opensteer %</b> git push -u origin fix/sync-race`,
+    `To github.com:acme/opensteer.git`,
+    ` * [new branch]      fix/sync-race -> fix/sync-race`,
+    `<b>leo@MacBook opensteer %</b> <span class="tw-caret"></span>`,
+  ];
+
+  function tabView(tab: Tab): string {
+    if (!tab.site) return `<div class="tw-term"><pre>${TERMINAL.join("\n")}</pre></div>`;
+    const page = SITES[tab.site];
+    const run = tabWorking(tab);
+    const task = run?.task ? model.tasks.get(run.task) : undefined;
+    const using = run
+      ? `<div class="tw-using"><i class="tw-live"></i><span>Your agent is using this tab${task ? ` for <b>${esc(task.title)}</b>` : ""}</span>${task ? `<button type="button" data-act="task" data-id="${task.id}">Open task</button>` : ""}</div>`
+      : "";
+    const flags = [
+      tab.site === "stripe" ? "data-dup" : "",
+      tab.site === "stripe" && model.refunded ? "data-refunded" : "",
+      tab.noted ? "data-hs-noted" : "",
+    ].join(" ");
+    return `<div class="tw-tabview">${using}<div class="tw-url">${icon("i-lock")}<span>${page.url}</span></div><div class="tw-page"><div class="grp" ${flags}><div class="br-page is-on">${page.page}</div></div></div></div>`;
+  }
+
   function sideHtml(): string {
     const tasks = orderedTasks();
     const needCount = tasks.filter((t) => lastRun(t)?.state === "needs").length;
@@ -1075,6 +1192,7 @@ export function mountTeam(): void {
       <div class="tw-brand"><b>Opensteer</b><span><span class="tw-icon" aria-hidden="true">${icon("i-mic")}</span><span class="tw-icon" aria-hidden="true">${icon("m-search")}</span><button type="button" class="tw-icon" data-act="home" aria-label="New task">${icon("m-plus")}</button></span></div>
       <div class="tw-switch" role="tablist"><button type="button" role="tab" aria-selected="${model.side === "tasks"}" class="tw-seg${model.side === "tasks" ? " is-on" : ""}" data-act="side" data-id="tasks">Tasks${tasksBadge}</button><button type="button" role="tab" aria-selected="${model.side === "team"}" class="tw-seg${model.side === "team" ? " is-on" : ""}" data-act="side" data-id="team"><span class="tw-team">A</span>Acme${teamBadge}</button></div>
       <div class="tw-list">${list}</div>
+      <div class="tw-tabs"><div class="tw-label">Tabs</div>${model.tabs.map(tabRow).join("")}</div>
       <div class="tw-foot"><b>Leo's MacBook</b><span><i></i>Connected · Acme</span></div>`;
   }
 
@@ -1104,6 +1222,13 @@ export function mountTeam(): void {
       return `${back}<b>${esc(task.title)}</b>${origin}`;
     }
     if (pane.k === "all") return `${back}<b>All tasks</b>`;
+    if (pane.k === "tab") {
+      const tab = model.tabs.find((t) => t.id === pane.id);
+      const page = tab?.site ? SITES[tab.site] : undefined;
+      return page
+        ? `${back}${page.mark}<b>${page.title}</b>`
+        : `${back}<span class="tw-termmark">${icon("d-term")}</span><b>opensteer — zsh</b>`;
+    }
     return `${back}<b>New task</b>`;
   }
 
@@ -1152,6 +1277,9 @@ export function mountTeam(): void {
           if (run) items.push([`e${at}`, taskRun(run)]);
         }
       });
+    } else if (pane.k === "tab") {
+      const tab = model.tabs.find((t) => t.id === pane.id);
+      if (tab) items.push([`${tab.id}:${tabState(tab)}`, tabView(tab)]);
     } else if (pane.k === "all") {
       for (const task of orderedTasks()) items.push([task.id, taskRow(task, false)]);
     } else {
@@ -1233,12 +1361,13 @@ export function mountTeam(): void {
     lastPane = key;
     win.dataset.pane = model.mobile;
     main.classList.toggle("is-home", model.pane.k === "home");
+    main.classList.toggle("is-tab", model.pane.k === "tab");
     setHtml(side, sideHtml());
     setHtml(head, headHtml());
     const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
     if (switched) feed.innerHTML = "";
     patch(feed, feedItems(), !switched);
-    compose.hidden = model.pane.k === "all";
+    compose.hidden = model.pane.k === "all" || model.pane.k === "tab";
     field.placeholder = placeholder();
     const agentPane = model.pane.k === "task" || model.pane.k === "home";
     askButton.hidden = agentPane;
@@ -1249,7 +1378,11 @@ export function mountTeam(): void {
       el.style.animationDelay = `-${Math.round(performance.now() % 900)}ms`;
       el.dataset.phased = "";
     });
-    if (switched || nearBottom)
+    // Pages are drawn for a 700px window; a narrower pane shows the same page, smaller.
+    const page = feed.querySelector<HTMLElement>(".tw-page");
+    if (page) page.style.zoom = String(Math.min(1, feed.clientWidth / 700));
+    if (model.pane.k === "tab") feed.scrollTop = 0;
+    else if (switched || nearBottom)
       feed.scrollTo({
         top: feed.scrollHeight,
         behavior: switched || reducedMotion ? "auto" : "smooth",
@@ -1375,6 +1508,7 @@ export function mountTeam(): void {
       }
     } else if (act === "task") open({ k: "task", id: key });
     else if (act === "all") open({ k: "all" });
+    else if (act === "tab") open({ k: "tab", id: key });
     else if (act === "home") open({ k: "home" });
     else if (act === "side") {
       model.side = key === "tasks" ? "tasks" : "team";

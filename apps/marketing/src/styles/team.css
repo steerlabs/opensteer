@@ -347,6 +347,40 @@ button.tw-icon:hover {
   background: var(--green);
 }
 
+/* Tabs: the same on both sides of the switch, like the app */
+.tw-tabs {
+  flex: none;
+  margin-top: 6px;
+  padding-top: 2px;
+  border-top: 1px solid var(--line);
+}
+.tw-row--tab .br-fav {
+  width: 15px;
+  height: 15px;
+}
+.tw-termmark {
+  display: grid;
+  flex: none;
+}
+.tw-termmark svg {
+  width: 15px;
+  height: 15px;
+}
+.tw-head .tw-termmark svg,
+.tw-head .br-fav {
+  width: 16px;
+  height: 16px;
+}
+.tw-live {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--ember);
+  animation: pulse 1.6s var(--ease-out) infinite;
+}
+
 /* Main area */
 .tw-main {
   display: flex;
@@ -1400,4 +1434,131 @@ button.tw-icon:hover {
     bottom: 104px;
     width: auto;
   }
+}
+
+/* An open tab fills the main area: a slim address bar over the page itself. */
+.tw-main.is-tab .tw-feed {
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+}
+.tw-main.is-tab .tw-feed > * {
+  flex: 1;
+  min-height: 0;
+}
+.tw-tabview {
+  display: flex;
+  flex-direction: column;
+}
+.tw-using {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 10px 0;
+  padding: 6px 8px 6px 10px;
+  border-radius: 8px;
+  background: var(--ember-wash);
+  color: var(--text-soft);
+  font-size: 12.5px;
+}
+.tw-using .tw-live {
+  margin-left: 0;
+}
+.tw-using b {
+  color: var(--text);
+  font-weight: 600;
+}
+.tw-using button {
+  margin-left: auto;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--rim-plate);
+  font-size: 11.5px;
+  line-height: 22px;
+}
+.tw-using button:hover {
+  background: var(--fill-plate-hover);
+}
+.tw-url {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  height: 30px;
+  margin: 8px 10px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: var(--fill-quiet);
+  border: 1px solid var(--rim-plate);
+  color: var(--text-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.tw-url svg {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  color: var(--muted);
+}
+.tw-url em {
+  color: var(--muted);
+  font-style: normal;
+}
+.tw-page {
+  --mac-font:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Helvetica Neue", sans-serif;
+  --mac-blue: #0a84ff;
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  margin: 0 10px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  overflow: hidden;
+}
+.tw-page .grp {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  height: auto;
+  transform: none;
+  transition: none;
+  filter: none;
+}
+.tw-term {
+  padding: 14px 18px;
+  background: #0a0a0a;
+  overflow: hidden;
+}
+.tw-term pre {
+  margin: 0;
+  color: #d6d3cf;
+  font: 12.5px/1.65 var(--font-mono);
+  white-space: pre-wrap;
+}
+.tw-term b {
+  color: #9fd8bf;
+  font-weight: 600;
+}
+.tw-term em {
+  color: var(--green);
+  font-style: normal;
+}
+.tw-term i {
+  padding: 0 4px;
+  border-radius: 3px;
+  background: #84b5e0;
+  color: #0a0a0a;
+  font-style: normal;
+  font-weight: 700;
+}
+.tw-caret {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  vertical-align: -2px;
+  background: var(--text-soft);
+  animation: tdot 1s steps(1) infinite;
 }
