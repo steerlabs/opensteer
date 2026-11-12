@@ -401,3 +401,56 @@ jobs:
           TAG: ${{ needs.preflight.outputs.tag }}
           SOURCE_SHA: ${{ needs.preflight.outputs.sha }}
         run: pnpm desktop:public-release publish --repo steerlabs/opensteer --tag "$TAG" --source-sha "$SOURCE_SHA"
+  team-provisioner:
+    # Hosted teams follow Stable: once Tim publishes it, the provisioner rolls every hosted team
+    # to this release's team images, one team at a time.
+    needs: [preflight, team-images, publish-stable]
+    if: ${{ !cancelled() && needs.publish-stable.result == 'success' && needs.team-images.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: teams
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    env:
+      IMAGE: ghcr.io/steerlabs/opensteer-team-provisioner
+      SHA: ${{ needs.preflight.outputs.sha }}
+      VERSION: ${{ needs.preflight.outputs.version }}
+      TEAM_HOST_IMAGE: ${{ needs.team-images.outputs.host_image }}
+      TEAM_GATEWAY_IMAGE: ${{ needs.team-images.outputs.gateway_image }}
+      # Made outside this repo for the `teams` environment; see docs/hosted-teams.md.
+      TEAMS_WORKLOAD_IDENTITY_PROVIDER: projects/920572344872/locations/global/workloadIdentityPools/github/providers/github-teams-deployer
+      TEAMS_DEPLOYER: gha-teams-deployer@opensteer-admin.iam.gserviceaccount.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: package.json
+      - run: node -e 'require("./scripts/release-version.cjs").stampReleaseVersion(process.cwd(), process.env.SHA, process.env.VERSION)'
+      - name: Build the provisioner image
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker buildx build --file deploy/container/Containerfile --target team-provisioner \
+            --platform linux/amd64 --build-arg OPENSTEER_RELEASE_VERSION="$VERSION" \
+            --build-arg OPENSTEER_SOURCE_REVISION="$SHA" --tag "$IMAGE:$VERSION" \
+            --metadata-file "$RUNNER_TEMP/provisioner.json" --push .
+          digest=$(jq -r '."containerimage.digest"' "$RUNNER_TEMP/provisioner.json")
+          echo "PROVISIONER_IMAGE=$IMAGE@$digest" >> "$GITHUB_ENV"
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+        with:
+          workload_identity_provider: ${{ env.TEAMS_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.TEAMS_DEPLOYER }}
+      - uses: google-github-actions/get-gke-credentials@3da1e46a907576cefaa90c484278bb5b259dd395
+        with:
+          cluster_name: teams-1
+          location: us-west1
+          project_id: opensteer-prod
+          use_dns_based_endpoint: true
+      - run: bash .github/scripts/deploy-team-provisioner.sh "$PROVISIONER_IMAGE" "$TEAM_HOST_IMAGE" "$TEAM_GATEWAY_IMAGE" "$SHA"

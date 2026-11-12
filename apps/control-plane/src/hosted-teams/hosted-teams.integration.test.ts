@@ -32,6 +32,7 @@ import { HostedTeamStore } from "./hosted-team-store.js";
 import { googleServiceAccountVerifier } from "./provisioner-routes.js";
 
 const databaseUrl = process.env.OPENSTEER_CONTROL_PLANE_TEST_DATABASE_URL;
+// Runs only under pnpm test:integration, which provides the database.
 const integration = databaseUrl ? describe : describe.skip;
 const publicOrigin = new URL("https://accounts.hosted-teams.test.invalid");
 const portalOrigin = new URL("https://portal.hosted-teams.test.invalid");
@@ -127,11 +128,25 @@ integration("Hosted teams", () => {
       });
 
     expect((await desired()).statusCode).toBe(401);
-    expect((await desired(`Bearer ${await idToken({ audience: "https://elsewhere.test" })}`)).statusCode).toBe(401);
-    expect((await desired(`Bearer ${await idToken({ issuer: "https://evil.test" })}`)).statusCode).toBe(401);
-    expect((await desired(`Bearer ${await idToken({ key: otherKey.privateKey })}`)).statusCode).toBe(401);
-    expect((await desired(`Bearer ${await idToken({ email: "someone@opensteer-test.iam.gserviceaccount.com" })}`)).statusCode).toBe(403);
-    expect((await desired(`Bearer ${await idToken({ emailVerified: false })}`)).statusCode).toBe(403);
+    expect(
+      (await desired(`Bearer ${await idToken({ audience: "https://elsewhere.test" })}`)).statusCode,
+    ).toBe(401);
+    expect(
+      (await desired(`Bearer ${await idToken({ issuer: "https://evil.test" })}`)).statusCode,
+    ).toBe(401);
+    expect(
+      (await desired(`Bearer ${await idToken({ key: otherKey.privateKey })}`)).statusCode,
+    ).toBe(401);
+    expect(
+      (
+        await desired(
+          `Bearer ${await idToken({ email: "someone@opensteer-test.iam.gserviceaccount.com" })}`,
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect((await desired(`Bearer ${await idToken({ emailVerified: false })}`)).statusCode).toBe(
+      403,
+    );
 
     const allowed = await desired(`Bearer ${await idToken()}`);
     expect(allowed.statusCode).toBe(200);
@@ -155,7 +170,9 @@ integration("Hosted teams", () => {
       setupGeneration: 1,
       setupTokenDigest: digestSecret(token),
     });
-    const stored = await sql<{ readonly row: string }>`select hosted_teams::text as row from hosted_teams`.execute(database);
+    const stored = await sql<{
+      readonly row: string;
+    }>`select hosted_teams::text as row from hosted_teams`.execute(database);
     expect(stored.rows[0]!.row).not.toContain(token);
 
     const stranger = await portalCookie(await createAccount("stranger@example.test"));
@@ -205,7 +222,9 @@ integration("Hosted teams", () => {
         })
       ).json<{ readonly ready: boolean; readonly phase: string }>();
     expect(await status()).toMatchObject({ ready: false, phase: "provisioning" });
-    expect((await report(team!.id, { phase: "ready", observedSetupGeneration: 1 })).statusCode).toBe(200);
+    expect(
+      (await report(team!.id, { phase: "ready", observedSetupGeneration: 1 })).statusCode,
+    ).toBe(200);
     expect(await status()).toMatchObject({ ready: true, phase: "ready" });
 
     const renewed = await postForm(cookie, `/teams/${team!.id}/setup-link`);
@@ -215,7 +234,9 @@ integration("Hosted teams", () => {
     const [rotated] = await desiredTeams();
     expect(rotated).toMatchObject({ setupGeneration: 2, setupTokenDigest: digestSecret(second) });
     expect(await status()).toMatchObject({ ready: false });
-    expect((await report(team!.id, { phase: "ready", observedSetupGeneration: 3 })).statusCode).toBe(404);
+    expect(
+      (await report(team!.id, { phase: "ready", observedSetupGeneration: 3 })).statusCode,
+    ).toBe(404);
     await report(team!.id, { phase: "ready", observedSetupGeneration: 2 });
     expect(await status()).toMatchObject({ ready: true });
 

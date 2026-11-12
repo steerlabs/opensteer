@@ -39,10 +39,16 @@ test("read-only preflight, secret-free discovery and only stable publication app
         : "read",
       ...(name === "preflight" ? { actions: "read" } : {}),
       ...(name === "account" ? { "id-token": "write" } : {}),
+      ...(name === "team-provisioner" ? { "id-token": "write", packages: "write" } : {}),
     });
     assert.equal(
       job.environment,
-      { build: "release", "publish-stable": "publish", account: "account" }[name],
+      {
+        build: "release",
+        "publish-stable": "publish",
+        account: "account",
+        "team-provisioner": "teams",
+      }[name],
     );
     for (const step of job.steps) {
       if (step.uses) assert.match(step.uses, /^[\w-]+\/[\w-]+@[a-f0-9]{40}$/);
@@ -56,6 +62,9 @@ test("read-only preflight, secret-free discovery and only stable publication app
   // A Beta must never reach people before the Account service it may depend on.
   assert.ok(workflow.jobs["publish-insider"].needs.includes("account"));
   assert.match(workflow.jobs.account.if, /channel == 'beta'/);
+  // Hosted teams move only to a Stable that Tim published.
+  assert.ok(workflow.jobs["team-provisioner"].needs.includes("publish-stable"));
+  assert.match(workflow.jobs["team-provisioner"].if, /needs\.publish-stable\.result == 'success'/);
   assert.ok(workflow.jobs.build.needs.includes("discover"));
   assert.match(
     workflow.jobs.build.steps.find((step) => step.run?.includes("stampReleaseVersion")).run,

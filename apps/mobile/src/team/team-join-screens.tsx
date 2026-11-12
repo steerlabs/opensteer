@@ -51,6 +51,7 @@ function PasteLink(props: {
   readonly onLink: (link: string) => void;
 }): ReactNode {
   const navigation = useNavigation<Navigation>();
+  const { portalOrigin } = useMobileClient();
   const [text, setText] = useState("");
   return (
     <View style={styles.sheet}>
@@ -82,6 +83,12 @@ function PasteLink(props: {
         onPress={() => props.onLink(text.trim())}
         prominent
       />
+      {portalOrigin === null ? null : (
+        <SecondaryButton
+          label="Create a team"
+          onPress={() => void Linking.openURL(`${portalOrigin}/teams/new`)}
+        />
+      )}
       <SecondaryButton label="Not now" onPress={() => navigation.goBack()} />
     </View>
   );

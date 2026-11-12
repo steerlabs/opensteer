@@ -131,7 +131,11 @@ export function registerHostedTeamPortal(
 
   function renderCreate(
     reply: FastifyReply,
-    input: { readonly failure: string | null; readonly limitReached: boolean; readonly slug: string },
+    input: {
+      readonly failure: string | null;
+      readonly limitReached: boolean;
+      readonly slug: string;
+    },
   ): string {
     return sendBrowserPage(reply, {
       body: createHostedTeamBody({

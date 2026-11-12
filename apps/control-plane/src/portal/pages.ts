@@ -309,7 +309,11 @@ export function placeRow(input: {
   readonly kind: "personal" | "team";
   readonly kindLabel: string;
   readonly name: string;
-  readonly remove: { readonly action: string } | null;
+  readonly remove: {
+    readonly action: string;
+    /** What the confirmation says, when the row's one menu action isn't "remove from your list". */
+    readonly confirm?: { readonly detail: string; readonly label: string; readonly title: string };
+  } | null;
   readonly status: PlaceStatus | null;
 }): string {
   const name = escapeHtml(input.name);
@@ -327,12 +331,17 @@ export function placeRow(input: {
     : "";
   const spoken = `<span class="visually-hidden">${escapeHtml(input.kindLabel)}${status ? `, ${escapeHtml(status.label)}` : ""}</span>`;
   const sheetId = `remove-${input.id.replace(/[^\w-]/gu, "")}`;
+  const confirm = input.remove?.confirm ?? {
+    detail: "It leaves your list. Your access doesn’t change.",
+    label: "Remove",
+    title: `Remove ${input.name}?`,
+  };
   const remove = input.remove
-    ? `<span class="place__menu needs-popover"><button class="icon-btn" type="button" popovertarget="${sheetId}" aria-label="Remove ${name} from your list">${icon("more")}</button></span>
+    ? `<span class="place__menu needs-popover"><button class="icon-btn" type="button" popovertarget="${sheetId}" aria-label="${input.remove.confirm ? `${escapeHtml(input.remove.confirm.label)} ${name}` : `Remove ${name} from your list`}">${icon("more")}</button></span>
       <div class="sheet" id="${sheetId}" popover role="dialog" aria-labelledby="${sheetId}-title">
-        <h2 class="title" id="${sheetId}-title">Remove ${name}?</h2>
-        <p class="lead">It leaves your list. Your access doesn’t change.</p>
-        <form class="actions" method="post" action="${escapeHtml(input.remove.action)}"><button class="btn" type="button" popovertarget="${sheetId}" popovertargetaction="hide">Cancel</button><button class="btn btn--danger" type="submit">Remove</button></form>
+        <h2 class="title" id="${sheetId}-title">${escapeHtml(confirm.title)}</h2>
+        <p class="lead">${escapeHtml(confirm.detail)}</p>
+        <form class="actions" method="post" action="${escapeHtml(input.remove.action)}"><button class="btn" type="button" popovertarget="${sheetId}" popovertargetaction="hide">Cancel</button><button class="btn btn--danger" type="submit">${escapeHtml(confirm.label)}</button></form>
       </div>`
     : "";
   return `<li class="place ${open ? "place--open" : "place--still"}">
@@ -420,15 +429,13 @@ export function hostedTeamRow(input: {
   readonly setupLinkAction: string | null;
   readonly state: "active" | "suspended";
 }): string {
-  const name = escapeHtml(input.host);
   const ready = input.state === "active" && input.phase === "ready";
-  const control =
+  const control: PlaceControl =
     ready && input.claimed
-      ? `<a class="place__name" href="${escapeHtml(input.origin)}">${name}</a>`
+      ? { kind: "link", href: input.origin }
       : input.setupLinkAction && (ready || input.phase === "provisioning")
-        ? `<form method="post" action="${escapeHtml(input.setupLinkAction)}"><button class="place__name" type="submit">${name}</button></form>`
-        : `<span class="place__name">${name}</span>`;
-  const open = control.startsWith("<span") === false;
+        ? { kind: "post", action: input.setupLinkAction }
+        : { kind: "none" };
   const status: PlaceStatus =
     input.state === "suspended"
       ? { label: "Suspended", reason: "Suspended by Opensteer.", tone: "warn" }
@@ -436,24 +443,28 @@ export function hostedTeamRow(input: {
         ? { label: "Not running", reason: "Something went wrong starting it.", tone: "warn" }
         : !ready
           ? { label: "Starting", reason: "Starting…", tone: "busy" }
-          : input.claimed
-            ? { label: "Ready", reason: null, tone: "ok" }
-            : { label: "Ready", reason: "Waiting for its first owner. Open it to set up.", tone: "ok" };
-  const note = status.reason
-    ? `<span class="place__note${status.tone === "warn" ? " place__note--warn" : ""}">${escapeHtml(status.reason)}</span>`
-    : "";
-  const sheetId = `delete-${input.id.replace(/[^\w-]/gu, "")}`;
-  return `<li class="place ${open ? "place--open" : "place--still"}">
-    <span class="device">${icon("server")}<span class="dot dot--${status.tone}"></span></span>
-    <span class="place__body">${control}${note}<span class="visually-hidden">Hosted team, ${escapeHtml(status.label)}</span></span>
-    <span class="place__menu needs-popover"><button class="icon-btn" type="button" popovertarget="${sheetId}" aria-label="Delete ${name}">${icon("more")}</button></span>
-    <div class="sheet" id="${sheetId}" popover role="dialog" aria-labelledby="${sheetId}-title">
-      <h2 class="title" id="${sheetId}-title">Delete ${name}?</h2>
-      <p class="lead">This permanently deletes the team and everything in it, for everyone who uses it: channels, messages, knowledge and files. It can’t be undone.</p>
-      <form class="actions" method="post" action="${escapeHtml(input.deleteAction)}"><button class="btn" type="button" popovertarget="${sheetId}" popovertargetaction="hide">Cancel</button><button class="btn btn--danger" type="submit">Delete</button></form>
-    </div>
-    ${open ? `<span class="place__go" aria-hidden="true">${icon("chevron")}</span>` : ""}
-  </li>`;
+          : {
+              label: "Ready",
+              reason: input.claimed ? null : "Waiting for its first owner. Open it to set up.",
+              tone: "ok",
+            };
+  return placeRow({
+    control,
+    id: input.id,
+    kind: "team",
+    kindLabel: "Hosted team",
+    name: input.host,
+    remove: {
+      action: input.deleteAction,
+      confirm: {
+        detail:
+          "This permanently deletes the team and everything in it, for everyone who uses it: channels, messages, knowledge and files. It can’t be undone.",
+        label: "Delete",
+        title: `Delete ${input.host}?`,
+      },
+    },
+    status,
+  });
 }
 
 export function hostedTeamsUnavailableBody(): string {

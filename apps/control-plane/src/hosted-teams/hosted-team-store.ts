@@ -156,7 +156,9 @@ export class HostedTeamStore {
   async deleteForAccount(accountId: ControlPlaneAccountId, id: HostedTeamId): Promise<void> {
     const deleted = await this.#database
       .transaction()
-      .execute((transaction) => deleteHostedTeams(transaction, { creatorAccountId: accountId, id }));
+      .execute((transaction) =>
+        deleteHostedTeams(transaction, { creatorAccountId: accountId, id }),
+      );
     if (deleted === 0) throw new ControlPlaneError("not_found", "Hosted team was not found");
   }
 

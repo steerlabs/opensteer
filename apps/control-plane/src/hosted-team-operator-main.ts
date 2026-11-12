@@ -3,7 +3,8 @@ import { loadControlPlaneMigrationConfig } from "./config.js";
 import { createControlPlaneDatabase } from "./database/database.js";
 import { HostedTeamStore } from "./hosted-teams/hosted-team-store.js";
 
-const usage = "Usage: hosted-team-operator.js suspend <slug> <reason> | unsuspend <slug> | delete <slug>";
+const usage =
+  "Usage: hosted-team-operator-main.js suspend <slug> <reason> | unsuspend <slug> | delete <slug>";
 
 /** Opensteer's abuse controls for a hosted team, run inside an Account pod. */
 async function main([command, slug, ...reason]: readonly string[]): Promise<void> {
