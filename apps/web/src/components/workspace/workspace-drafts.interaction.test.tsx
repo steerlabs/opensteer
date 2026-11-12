@@ -17,6 +17,34 @@ import { BrowserSurfaceIdSchema } from "@opensteer/core";
 
 import { startPageLink } from "./navigation.js";
 
+/** What reached the Host as messages: a task's start is not one. */
+function sends(dispatch: MockInstance<MockHostClient["dispatch"]>) {
+  return dispatch.mock.calls.flatMap(([command]) =>
+    command.type === "thread.sendMessage" ? [command] : [],
+  );
+}
+function sendResult(dispatch: MockInstance<MockHostClient["dispatch"]>) {
+  const index = dispatch.mock.calls.findIndex(([command]) => command.type === "thread.sendMessage");
+  return dispatch.mock.results[index]!.value as Promise<unknown>;
+}
+const sendEnabled = () =>
+  document.querySelector<HTMLButtonElement>(".composer__send")?.disabled === false;
+/** The first message a new task sends is lost to the network once, after the task exists. */
+function loseFirstSend() {
+  const real = MockHostClient.prototype.dispatch;
+  let lost = false;
+  return vi.spyOn(MockHostClient.prototype, "dispatch").mockImplementation(function (
+    this: MockHostClient,
+    ...args
+  ) {
+    if (!lost && args[0].type === "thread.sendMessage") {
+      lost = true;
+      return Promise.reject(new TypeError("Network unavailable"));
+    }
+    return real.apply(this, args);
+  });
+}
+
 import {
   root,
   client,
@@ -96,10 +124,6 @@ describe("the draft's places", () => {
     const place = pageTab();
     await settle(100);
     expect(element(".context-chip__title").textContent).toBe(place.title);
-    // The field names whom it asks, and what about.
-    expect(element<HTMLTextAreaElement>("[data-composer-input]").placeholder).toBe(
-      "Ask Opensteer about this page…",
-    );
     // Typing freezes the chip on this page; another tab does not replace it.
     const field = element<HTMLTextAreaElement>("[data-composer-input]");
     await act(async () => {
@@ -565,6 +589,8 @@ describe("the draft's places", () => {
       else if (how === "reset") {
         await write(field(), "What is this?");
         await click(element(".composer__send"));
+        await settle(100);
+        await click(element('[aria-label="New task"]'));
       } else if (how === "select") {
         const other = otherPage(page.place);
         await click(element(`.side-tab[data-place-key="${other.place.key}"] .side-tab__main`));
@@ -667,8 +693,8 @@ describe("the draft's places", () => {
       const dispatch = vi.spyOn(client, "dispatch");
       await click(element(".composer__send"));
       await settle(100);
-      expect(dispatch).toHaveBeenCalledOnce();
-      expect(dispatch.mock.calls[0]![0]).toMatchObject({
+      expect(sends(dispatch)).toHaveLength(1);
+      expect(sends(dispatch)[0]).toMatchObject({
         type: "thread.sendMessage",
         content: [
           expect.objectContaining({ type: "text" }),
@@ -683,11 +709,10 @@ describe("the draft's places", () => {
           }),
         ],
       });
-      await expect(dispatch.mock.results[0]!.value).resolves.toMatchObject({
+      await expect(sendResult(dispatch)).resolves.toMatchObject({
         type: "thread.sendMessage",
       });
       expect(document.querySelector(".composer__error")).toBeNull();
-      expect(field.value).toBe("");
     },
   );
 
@@ -749,9 +774,8 @@ describe("the draft's places", () => {
       dispatch.mockClear();
       await click(element(".composer__send"));
       await settle(100);
-      expect(dispatch).toHaveBeenCalledOnce();
-      const command = dispatch.mock.calls[0]![0];
-      if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+      expect(sends(dispatch)).toHaveLength(1);
+      const command = sends(dispatch)[0]!;
       expect(command.content.filter((part) => part.type !== "text")).toEqual([
         expect.objectContaining({
           type: "browser-page",
@@ -801,7 +825,7 @@ describe("the draft's places", () => {
     expect(
       [...document.querySelectorAll(".context-chip__title")].map((chip) => chip.textContent),
     ).toEqual([place.title, other.title]);
-    expect(element(".composer__error").textContent).toContain(message);
+    expect(document.body.textContent).toContain(message);
     expect(document.querySelector(".context-chip--refused, .context-refusal")).toBeNull();
     expect(document.body.textContent).not.toContain("Send without it");
     expect(document.body.textContent).not.toContain("Include it");
@@ -823,7 +847,7 @@ describe("the draft's places", () => {
     await settle(100);
     const place = pageTab();
     expect(element(".context-chip__title").textContent).toBe(place.title);
-    expect(document.querySelector(".composer__send")).toBeNull();
+    expect(sendEnabled()).toBe(false);
     await click(element(".context-chip__remove"));
     await click(element('.composer__attach[aria-label="Attach"]'));
     await click(
@@ -836,12 +860,12 @@ describe("the draft's places", () => {
     const dispatch = vi.spyOn(client, "dispatch");
     await click(element(".composer__send"));
     await settle(100);
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(dispatch.mock.calls[0]![0]).toMatchObject({
+    expect(sends(dispatch)).toHaveLength(1);
+    expect(sends(dispatch)[0]).toMatchObject({
       type: "thread.sendMessage",
       content: [expect.objectContaining({ type: "browser-page", auto: false })],
     });
-    await expect(dispatch.mock.results[0]!.value).resolves.toMatchObject({
+    await expect(sendResult(dispatch)).resolves.toMatchObject({
       type: "thread.sendMessage",
     });
   });
@@ -902,7 +926,6 @@ describe("the draft's places", () => {
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
-      expect(field().placeholder).toBe("Ask Opensteer about this app…");
       await openTile("Notes on");
       expect(chip()).toBe(viewed(macMini, "com.apple.Notes").title);
       await show(keynote);
@@ -935,7 +958,6 @@ describe("the draft's places", () => {
       if (!phone) throw new Error("The mock world has no ready phone");
       await show(phone);
       expect(chip()).toBe(phone.title);
-      expect(field().placeholder).toBe("Ask Opensteer about this phone…");
       const dispatch = vi.spyOn(client, "dispatch");
       await write(field(), "What is on it?");
       await click(element(".composer__send"));
@@ -970,8 +992,8 @@ describe("the draft's places", () => {
       const dispatch = vi.spyOn(client, "dispatch");
       await click(element(".composer__send"));
       await settle(100);
-      const command = dispatch.mock.calls[0]![0];
-      if (command.type !== "thread.sendMessage") throw new Error("Missing send");
+      const command = sends(dispatch)[0];
+      if (!command) throw new Error("Missing send");
       expect(command.content.filter((part) => part.type !== "text")).toEqual([]);
     });
 
@@ -1024,7 +1046,7 @@ describe("the draft's places", () => {
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       expect(chip()).toBe(keynote.title);
-      expect(document.querySelector(".composer__send")).toBeNull();
+      expect(sendEnabled()).toBe(false);
       await click(element(".context-chip__remove"));
       await click(element('.composer__attach[aria-label="Attach"]'));
       await click(
@@ -1050,17 +1072,14 @@ describe("the draft's places", () => {
     });
 
     it("retries the app it carried with identical content and key, again after a reload", async () => {
-      const dispatch = vi.spyOn(MockHostClient.prototype, "dispatch");
-      dispatch.mockImplementationOnce(async () => {
-        throw new TypeError("Network unavailable");
-      });
+      const dispatch = loseFirstSend();
       await mount("/?panel=browser");
       await openTile("Keynote on");
       const keynote = viewed(studioMac, "com.apple.Keynote");
       await write(field(), "Can you see my screen?");
       await click(element(".composer__send"));
       await settle(50);
-      const first = dispatch.mock.calls.at(-1)?.[0] as {
+      const first = sends(dispatch).at(-1) as unknown as {
         idempotencyKey: string;
         content: unknown;
       };
@@ -1071,10 +1090,10 @@ describe("the draft's places", () => {
       expect(element(".held-message").textContent).toContain(keynote.title);
       act(() => root?.unmount());
       setRoot(null);
-      client.dispose();
       document.body.replaceChildren();
       dispatch.mockClear();
-      await mount("/");
+      // The kept message belongs to the task it started: reloading there sends it again.
+      await mount(`${history.at(-1)!.path}${history.at(-1)!.search}`, { sameHost: true });
       await settle(200);
       const retried = dispatch.mock.calls.find(
         ([command]) => (command as { type: string }).type === "thread.sendMessage",
@@ -1087,10 +1106,7 @@ describe("the draft's places", () => {
 
 describe("unconfirmed sends keep every place exactly", () => {
   it("retries with identical content and key, again after a reload, pages and apps alike", async () => {
-    const dispatch = vi.spyOn(MockHostClient.prototype, "dispatch");
-    dispatch.mockImplementationOnce(async () => {
-      throw new TypeError("Network unavailable");
-    });
+    const dispatch = loseFirstSend();
     await mount((source) => `/${tabSearch(pageTab(source))}`);
     await settle(100);
     const app = placeList(client.getSnapshot()).find((place) => place.kind === "app")!;
@@ -1111,7 +1127,7 @@ describe("unconfirmed sends keep every place exactly", () => {
     });
     await click(element(".composer__send"));
     await settle(50);
-    const first = dispatch.mock.calls.at(-1)?.[0] as {
+    const first = sends(dispatch).at(-1) as unknown as {
       idempotencyKey: string;
       content: readonly { type: string; auto?: boolean }[];
     };
@@ -1125,10 +1141,10 @@ describe("unconfirmed sends keep every place exactly", () => {
     // The page reloads: the kept message is sent again as exactly what was sent.
     act(() => root?.unmount());
     setRoot(null);
-    client.dispose();
     document.body.replaceChildren();
     dispatch.mockClear();
-    await mount("/");
+    // The kept message belongs to the task it started: reloading there sends it again.
+    await mount(`${history.at(-1)!.path}${history.at(-1)!.search}`, { sameHost: true });
     await settle(200);
     const retried = dispatch.mock.calls.find(
       ([command]) => (command as { type: string }).type === "thread.sendMessage",

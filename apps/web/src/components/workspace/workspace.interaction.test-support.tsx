@@ -121,6 +121,8 @@ async function mount(
     mock?: Omit<MockHostClientOptions, "latencyMs" | "now">;
     /** One live mock team beside the person's own tasks, as a joined desktop has. */
     team?: boolean;
+    /** The Host the last mount drew, as a page reload finds it. */
+    sameHost?: boolean;
     shell?: Partial<
       Pick<
         Parameters<typeof AppShell>[0],
@@ -130,12 +132,14 @@ async function mount(
   } = {},
 ) {
   stubLayout(options.width ?? 1440);
-  client = new MockHostClient({
-    ...options.mock,
-    latencyMs: options.latencyMs ?? 0,
-    ...(options.now ? { now: options.now } : {}),
-  });
-  await client.load();
+  if (!options.sameHost) {
+    client = new MockHostClient({
+      ...options.mock,
+      latencyMs: options.latencyMs ?? 0,
+      ...(options.now ? { now: options.now } : {}),
+    });
+    await client.load();
+  }
   const entry = typeof path === "function" ? path(client) : path;
   sessionClient = options.hostClient?.(client) ?? null;
   if (sessionClient) await sessionClient.load();

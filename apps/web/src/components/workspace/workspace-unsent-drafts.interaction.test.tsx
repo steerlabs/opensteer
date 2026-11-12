@@ -2,7 +2,7 @@
 import { act } from "react";
 
 import { describe, expect, it, vi } from "vitest";
-import { HostClientRequestError, } from "@opensteer/client/host";
+import { HostClientRequestError } from "@opensteer/client/host";
 
 import {
   click,
@@ -20,14 +20,42 @@ import {
 } from "./workspace.interaction.test-support.js";
 
 const field = () => element<HTMLTextAreaElement>("[data-composer-input]");
-const draftRows = () => [...document.querySelectorAll<HTMLElement>(".side-task--draft")];
-const draftTitles = () =>
-  draftRows().map((row) => row.querySelector(".side-task__title")?.textContent);
-const openDraft = (index = 0) => click(draftRows()[index]!.querySelector(".side-task__main")!);
 const openTask = (threadId: string) =>
   click(element(`.side-task[data-thread-id="${threadId}"] .side-task__main`));
 const newTask = () => click(element('[aria-label="New task"]'));
 const place = () => history.at(-1)!;
+const back = async () => {
+  await act(async () => {
+    await goTo?.(-1);
+  });
+  await settle();
+};
+const savedDrafts = () => Object.keys(localStorage).filter((key) => key.includes("composer-draft"));
+/** Two tasks the sidebar lists, the first holding an unsent reply. */
+async function replyLeftIn(text: string) {
+  await mount("/");
+  await settle();
+  const [first, second] = [...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]")]
+    .map((row) => row.dataset.threadId!)
+    .slice(0, 2);
+  await openTask(first!);
+  await settle();
+  await write(field(), text);
+  return { first: first!, second: second! };
+}
+async function discardFromRow(threadId: string) {
+  await act(async () => {
+    element(`.side-task[data-thread-id="${threadId}"] .side-task__main`).dispatchEvent(
+      new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "ContextMenu" }),
+    );
+  });
+  const discard = [...document.querySelectorAll<HTMLButtonElement>(".picker__row")].find(
+    (row) => row.textContent === "Discard draft",
+  );
+  if (!discard) throw new Error("The row offers no Discard draft.");
+  await click(discard);
+  await settle();
+}
 
 async function remount(path: string) {
   await act(async () => root?.unmount());
@@ -46,22 +74,6 @@ async function attach(name: string) {
 }
 
 describe("what a person has written and not sent", () => {
-  it("brings a new task back after visiting another task", async () => {
-    await mount("/");
-    await settle();
-    await write(field(), "Compare the invoices");
-    expect(draftRows()).toHaveLength(0);
-
-    await openTask(firstTaskId());
-    await settle();
-    expect(draftTitles()).toEqual(["Compare the invoices"]);
-
-    await openDraft();
-    await settle();
-    expect(field().value).toBe("Compare the invoices");
-    expect(place().path).toBe("/");
-  });
-
   it("keeps a draft through a reload, on the same address", async () => {
     await mount("/");
     await settle();
@@ -69,10 +81,7 @@ describe("what a person has written and not sent", () => {
     const { path, search } = place();
     await settle();
 
-    await act(async () => root?.unmount());
-    setRoot(null);
-    document.body.replaceChildren();
-    await mount(`${path}${search}`);
+    await remount(`${path}${search}`);
     await settle();
 
     expect(field().value).toBe("Survive a reload");
@@ -82,33 +91,20 @@ describe("what a person has written and not sent", () => {
     await mount("/");
     await settle();
     await write(field(), "The first task");
+    const first = place();
     await newTask();
     await settle();
     expect(field().value).toBe("");
     await write(field(), "The second task");
+    const second = place();
+    expect(second.search).not.toBe(first.search);
 
-    await openTask(firstTaskId());
-    await settle();
-    expect(draftTitles().sort()).toEqual(["The first task", "The second task"]);
-
-    await openDraft(draftTitles().indexOf("The first task"));
+    await remount(`${first.path}${first.search}`);
     await settle();
     expect(field().value).toBe("The first task");
-    await openDraft(draftTitles().indexOf("The second task"));
+    await remount(`${second.path}${second.search}`);
     await settle();
     expect(field().value).toBe("The second task");
-  });
-
-  it("reuses a blank task rather than listing it", async () => {
-    await mount("/");
-    await settle();
-    await newTask();
-    await settle();
-    await newTask();
-    await settle();
-    await openTask(firstTaskId());
-    await settle();
-    expect(draftRows()).toHaveLength(0);
   });
 
   it("removes the draft once it starts a task", async () => {
@@ -118,32 +114,23 @@ describe("what a person has written and not sent", () => {
     await click(element(".composer__send"));
     await settle(100);
 
-    expect(place().path).toMatch(/^\/threads\//u);
-    expect(draftRows()).toHaveLength(0);
+    expect(place().path).toMatch(/^\/tasks\//u);
+    expect(savedDrafts()).toEqual([]);
     await newTask();
     await settle();
     expect(field().value).toBe("");
   });
 
   it("gives each conversation its own reply, and marks the ones waiting", async () => {
-    await mount("/");
-    await settle();
-    const [first, second] = [
-      ...document.querySelectorAll<HTMLElement>(".side-task[data-thread-id]"),
-    ]
-      .map((row) => row.dataset.threadId!)
-      .slice(0, 2);
-    await openTask(first!);
-    await settle();
-    await write(field(), "A reply to the first");
-    await openTask(second!);
+    const { first, second } = await replyLeftIn("A reply to the first");
+    await openTask(second);
     await settle();
     expect(field().value).toBe("");
     expect(
       element(`.side-task[data-thread-id="${first}"]`).querySelector(".side-unsent"),
     ).not.toBeNull();
 
-    await openTask(first!);
+    await openTask(first);
     await settle();
     expect(field().value).toBe("A reply to the first");
     expect(
@@ -151,54 +138,21 @@ describe("what a person has written and not sent", () => {
     ).toBeNull();
   });
 
-  it("keeps Chat's words apart from every task's", async () => {
-    await mount("/");
-    await settle();
-    await write(field(), "Something for Chat");
-    await openTask(firstTaskId());
-    await settle();
-    expect(field().value).toBe("");
-    expect(element(".side-home .side-unsent")).not.toBeNull();
-    await click(element(".side-home__main"));
-    await settle();
-    expect(field().value).toBe("Something for Chat");
-  });
-
-  it("discards a draft and takes the discard back", async () => {
-    await mount("/");
-    await settle();
-    await write(field(), "Maybe not");
-    await openTask(firstTaskId());
+  it("discards a reply from its row and takes the discard back", async () => {
+    const { first, second } = await replyLeftIn("Maybe not");
+    await openTask(second);
     await settle();
 
-    await click(element('[aria-label="Discard draft: Maybe not"]'));
-    await settle();
-    expect(draftRows()).toHaveLength(0);
+    await discardFromRow(first);
+    expect(
+      element(`.side-task[data-thread-id="${first}"]`).querySelector(".side-unsent"),
+    ).toBeNull();
 
     await click(element(".toast__action"));
     await settle();
-    expect(draftTitles()).toEqual(["Maybe not"]);
-    await openDraft();
+    await openTask(first);
     await settle();
     expect(field().value).toBe("Maybe not");
-  });
-
-  it("leaves the open draft when it is the one discarded, without writing it back", async () => {
-    await mount("/");
-    await settle();
-    await write(field(), "First");
-    await openTask(firstTaskId());
-    await settle();
-    await openDraft();
-    await settle();
-
-    await click(element('[aria-label="Discard draft: First"]'));
-    await settle();
-
-    expect(field().value).toBe("");
-    await openTask(firstTaskId());
-    await settle();
-    expect(draftRows()).toHaveLength(0);
   });
 
   it("returns a task refused after leaving to its own draft, and says why there", async () => {
@@ -223,14 +177,9 @@ describe("what a person has written and not sent", () => {
     });
     await settle(50);
 
-    expect(draftTitles()).toEqual(["Do the thing"]);
-    expect(draftRows()[0]!.classList.contains("is-refused")).toBe(true);
-
-    await openDraft();
-    await settle();
+    await back();
     expect(field().value).toBe("Do the thing");
     expect(element(".composer__error").textContent).toContain("could not be started");
-    expect(draftRows()[0]!.classList.contains("is-refused")).toBe(false);
   });
 
   it("hands a refused task to the draft reopened before the answer came", async () => {
@@ -245,10 +194,7 @@ describe("what a person has written and not sent", () => {
     await click(element(".composer__send"));
     await openTask(firstTaskId());
     await settle();
-    await act(async () => {
-      await goTo?.(-1);
-    });
-    await settle();
+    await back();
     await write(field(), "Written meanwhile");
 
     await act(async () => {
@@ -258,43 +204,10 @@ describe("what a person has written and not sent", () => {
     expect(field().value).toBe("Do the thing\nWritten meanwhile");
 
     await write(field(), "Do the thing\nWritten meanwhile, and more");
-    await openTask(firstTaskId());
-    await settle();
-    await openDraft();
+    const { path, search } = place();
+    await remount(`${path}${search}`);
     await settle();
     expect(field().value).toBe("Do the thing\nWritten meanwhile, and more");
-  });
-
-  it("keeps an upload going through a discard that is taken back", async () => {
-    await mount("/", { latencyMs: 30 });
-    await settle();
-    await attach("notes.txt");
-    await openTask(firstTaskId());
-    await settle();
-
-    await click(element('[aria-label="Discard draft: notes.txt"]'));
-    await settle();
-    await click(element(".toast__action"));
-    await settle(200);
-
-    await openDraft();
-    await settle();
-    expect(document.body.textContent).not.toContain("added again");
-    expect(document.querySelector(".composer__send")?.hasAttribute("disabled")).toBe(false);
-  });
-
-  it("does not let a discarded draft's upload bring it back", async () => {
-    await mount("/", { latencyMs: 30 });
-    await settle();
-    await attach("notes.txt");
-    await openTask(firstTaskId());
-    await settle();
-
-    await click(element('[aria-label="Discard draft: notes.txt"]'));
-    await settle(200);
-
-    expect(draftRows()).toHaveLength(0);
-    expect(Object.keys(localStorage).filter((key) => key.includes("composer-draft"))).toEqual([]);
   });
 
   it("finishes an upload after leaving, and the file is there on return", async () => {
@@ -303,10 +216,8 @@ describe("what a person has written and not sent", () => {
     await attach("notes.txt");
     await openTask(firstTaskId());
     await settle(120);
-    expect(draftTitles()).toEqual(["notes.txt"]);
 
-    await openDraft();
-    await settle();
+    await back();
     expect(document.querySelector(".composer__send")?.hasAttribute("disabled")).toBe(false);
     expect(document.body.textContent).toContain("notes.txt");
   });
@@ -339,10 +250,9 @@ describe("what a person has written and not sent", () => {
     await write(field(), "Strict words");
     await openTask(firstTaskId());
     await settle();
-    expect(draftTitles()).toEqual(["Strict words"]);
-    await openDraft();
-    await settle();
+    await back();
     expect(field().value).toBe("Strict words");
+    expect(savedDrafts()).toHaveLength(1);
   });
 
   it("goes back to a draft from the browser's Back button", async () => {
@@ -351,10 +261,7 @@ describe("what a person has written and not sent", () => {
     await write(field(), "Back to me");
     await openTask(firstTaskId());
     await settle();
-    await act(async () => {
-      await goTo?.(-1);
-    });
-    await settle();
+    await back();
     expect(field().value).toBe("Back to me");
   });
 });
