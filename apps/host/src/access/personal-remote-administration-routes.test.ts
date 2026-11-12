@@ -2,10 +2,11 @@ import Fastify from "fastify";
 import websocket from "@fastify/websocket";
 import WebSocket from "ws";
 import { once } from "node:events";
-import { hostApiVersion } from "@opensteer/deployment-authority";
+import { apiVersionHeaders } from "@opensteer/deployment-authority";
 import { withTimeout } from "@opensteer/shared/withTimeout";
 import { expect, it, vi } from "vitest";
 import { LocalBootstrapService } from "../runtime/local-bootstrap.js";
+import { installPersonalVersionGate } from "../server/host-api-registration.js";
 import type { PersonalRemoteAdministration } from "./personal-remote-administration.js";
 import { registerPersonalRemoteExecutor } from "./personal-remote-administration-routes.js";
 
@@ -23,6 +24,7 @@ function supervisor() {
 it("orders executor delivery so a delayed older intent cannot overtake Off", async () => {
   const app = Fastify();
   await app.register(websocket);
+  installPersonalVersionGate(app);
   const oldId = crypto.randomUUID();
   const newId = crypto.randomUUID();
   const older = {
@@ -69,10 +71,9 @@ it("orders executor delivery so a delayed older intent cannot overtake Off", asy
   let socket: WebSocket | undefined;
   try {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    socket = new WebSocket(
-      `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
-      { headers: { authorization: `Bearer ${capability}` } },
-    );
+    socket = new WebSocket(`${address.replace("http:", "ws:")}/v1/desktop-supervisor`, {
+      headers: { ...apiVersionHeaders("personal"), authorization: `Bearer ${capability}` },
+    });
     await withTimeout(once(socket, "open"), 1000, {
       timeoutError: () => new Error("Executor never opened"),
     });
@@ -126,6 +127,7 @@ it.each(["PersonalRemote stolen-owner-session", `Bearer ${"owner-session".padEnd
   async (authorization) => {
     const app = Fastify();
     await app.register(websocket);
+    installPersonalVersionGate(app);
     const next = vi.fn(async () => null);
     const administration = {
       close: () => {},
@@ -137,10 +139,9 @@ it.each(["PersonalRemote stolen-owner-session", `Bearer ${"owner-session".padEnd
     let socket: WebSocket | undefined;
     try {
       const address = await app.listen({ host: "127.0.0.1", port: 0 });
-      socket = new WebSocket(
-        `${address.replace("http:", "ws:")}/v1/desktop-supervisor?apiVersion=${hostApiVersion}`,
-        { headers: { authorization } },
-      );
+      socket = new WebSocket(`${address.replace("http:", "ws:")}/v1/desktop-supervisor`, {
+        headers: { ...apiVersionHeaders("personal"), authorization },
+      });
       const closed = withTimeout(once(socket, "close"), 1000, {
         timeoutError: () =>
           new Error("An ordinary owner session was admitted as the desktop executor"),

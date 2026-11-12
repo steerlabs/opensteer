@@ -57,6 +57,22 @@ export function apiNegotiation(kind: z.infer<typeof DeploymentKindSchema>): ApiN
 export function apiVersionHeader(kind: z.infer<typeof DeploymentKindSchema>): string {
   return kind === "team" ? teamApiVersionHeader : hostApiVersionHeader;
 }
+/** What every caller that can set headers sends to a Host of `kind`. */
+export function apiVersionHeaders(
+  kind: z.infer<typeof DeploymentKindSchema>,
+): Readonly<Record<string, string>> {
+  return { [apiVersionHeader(kind)]: String(apiNegotiation(kind).apiVersion) };
+}
+/**
+ * The Host's admission test and its callers' tests share this, so a caller
+ * that forgets the epoch fails its own test instead of a person's Host.
+ */
+export function statesApiVersion(
+  headers: Readonly<Record<string, string | readonly string[] | undefined>>,
+  kind: z.infer<typeof DeploymentKindSchema>,
+): boolean {
+  return headers[apiVersionHeader(kind)] === String(apiNegotiation(kind).apiVersion);
+}
 
 /**
  * Optional features a Host may or may not serve. A capability is never a

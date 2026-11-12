@@ -17,8 +17,10 @@ import {
   apiNegotiation,
   apiVersionHeader,
   apiVersionQueryParameter,
+  statesApiVersion,
 } from "@opensteer/deployment-authority";
 import type { DeploymentKind } from "@opensteer/core";
+import { unversionedRoute } from "./unversioned-route.js";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AuthenticatedHostSession, HostAuthenticator } from "../identity/auth.js";
@@ -337,8 +339,8 @@ export function requireNegotiatedVersion(
   request: FastifyRequest,
   kind: DeploymentKind = "personal",
 ): void {
+  if (statesApiVersion(request.headers, kind)) return;
   const stated = request.headers[apiVersionHeader(kind)];
-  if (stated === String(apiNegotiation(kind).apiVersion)) return;
   throw new OpensteerError({
     code: "bad_request",
     message:
@@ -411,4 +413,18 @@ export function carryWebSocketVersion(request: FastifyRequest, kind: DeploymentK
     held = request.headers[header];
   request.headers[header] =
     versions.length === 1 && (held === undefined || held === versions[0]) ? versions[0] : "invalid";
+}
+
+/**
+ * Every personal `/v1/` route refuses a caller on another epoch before
+ * authentication, unless the route itself is declared `unversionedRoute`.
+ * Rpc members run the same check per member.
+ */
+export function installPersonalVersionGate(app: FastifyInstance): void {
+  app.addHook("onRequest", async (request) => {
+    carryWebSocketVersion(request, "personal");
+    if (!request.url.startsWith("/v1/") || request.url.startsWith("/v1/rpc/")) return;
+    if (request.routeOptions.config.apiVersion === unversionedRoute.apiVersion) return;
+    requireNegotiatedVersion(request);
+  });
 }

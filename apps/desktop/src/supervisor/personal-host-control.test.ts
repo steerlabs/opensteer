@@ -1,6 +1,6 @@
 import { createId, type EnvironmentId, type RunnerId } from "@opensteer/core";
 import { hostApi } from "@opensteer/protocol";
-import { hostKeyFingerprint } from "@opensteer/deployment-authority";
+import { hostKeyFingerprint, statesApiVersion } from "@opensteer/deployment-authority";
 import {
   AccountLinkGenerationSchema,
   PersonalHostAccountLinkChallengeIdSchema,
@@ -63,6 +63,8 @@ describe("NativePersonalHostControl bootstrap", () => {
     });
     expect(requests[0]?.credentials).toBe("omit");
     expect(requests.slice(1).every(({ credentials }) => credentials === "include")).toBe(true);
+    for (const { request } of requests)
+      expect(statesApiVersion(Object.fromEntries(request.headers), "personal")).toBe(true);
   });
 
   it("re-establishes the desktop's owner session on restart", async () => {
@@ -452,6 +454,7 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     for (const request of requests) {
       expect(request.headers.get("authorization")).toBe(capability);
       expect(request.credentials).toBe("omit");
+      expect(statesApiVersion(Object.fromEntries(request.headers), "personal")).toBe(true);
     }
   });
 
