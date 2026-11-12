@@ -141,12 +141,6 @@ function world(
       ],
       listHarnessInstances: async () => harnesses,
       listHarnessCatalogs: async () => catalogs,
-      findMainWorkspaceForOwner: async () => ({
-        backing: {
-          kind: "local-directory",
-          ownerEnvironmentId: main,
-        },
-      }),
       getThreadForOwner: async () => options.chat ?? null,
     },
     runners: {

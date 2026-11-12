@@ -1,3 +1,4 @@
+import { BrowserHistoryStore } from "./browser-history-store.js";
 import { IntegrationPlatformStore } from "./integration-platform-store.js";
 import { readAgentRequest } from "./request-agent-response.js";
 import { createId } from "@opensteer/core";
@@ -102,6 +103,47 @@ const readers: Record<string, (tx: Transaction<DatabaseSchema>, f: Fixture) => P
 };
 
 describeStore("Personal readers", (it) => {
+  it("reads profile history and icon bytes in a read-only transaction", async ({
+    storeFixture,
+  }) => {
+    const f = await storeFixture.startRunFixture("history-read-only");
+    await storeFixture.database
+      .updateTable("runners")
+      .set({ allowedModules: sql`'["agents","browser"]'::jsonb` })
+      .where("id", "=", f.runnerId)
+      .execute();
+    const profile = await storeFixture.store.createBrowserProfile({
+      ownerId: f.userId,
+      name: "History",
+      idempotencyKey: "history-profile",
+    });
+    const favicon =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a7i8AAAAASUVORK5CYII=";
+    await storeFixture.store.browserHistory.recordVisit({
+      profileId: profile.id,
+      ownerId: f.userId,
+      url: "https://example.com/",
+      title: "Example",
+      typed: false,
+      favicon,
+    });
+    await storeFixture.database
+      .transaction()
+      .setIsolationLevel("repeatable read")
+      .execute(async (tx) => {
+        await sql`set transaction read only`.execute(tx);
+        const history = new BrowserHistoryStore(tx);
+        const page = await history.list(profile.id, f.userId);
+        expect(page.entries).toMatchObject([{ url: "https://example.com/" }]);
+        expect(
+          await history.icons(
+            profile.id,
+            f.userId,
+            page.icons.map(({ iconRef }) => iconRef),
+          ),
+        ).toEqual({ icons: [{ iconRef: page.icons[0]!.iconRef, favicon }] });
+      });
+  });
   for (const [name, read] of Object.entries(readers)) {
     it(`reads ${name} without taking a mutation lock`, async ({ storeFixture }) => {
       const f = await storeFixture.startRunFixture("read-only");

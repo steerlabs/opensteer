@@ -68,10 +68,7 @@ export class FolderFilesService {
       binary: this.options.helperPath,
       rootPolicy: "managed-local",
     });
-    const identity = await helper.directoryIdentity(
-      { path: admitted.path, root: admitted.path },
-      signal,
-    );
+    const identity = await helper.directoryIdentity({ path: ".", root: admitted.path }, signal);
     return { helper, root: admitted.path, expectedRootIdentity: identity };
   }
   async list(

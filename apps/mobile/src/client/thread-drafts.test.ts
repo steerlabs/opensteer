@@ -7,12 +7,7 @@ import {
 } from "@opensteer/core";
 import { describe, expect, it, vi } from "vitest";
 import { sendPendingMessage } from "../thread/send-pending-message.js";
-import {
-  createThreadDraftStore,
-  newTaskDraftBlank,
-  newTaskDraftKey,
-  sameDraftSummary,
-} from "./thread-drafts.js";
+import { createThreadDraftStore, newTaskDraftKey, sameDraftSummary } from "./thread-drafts.js";
 
 const filePath = "/private/drafts.json";
 const deploymentId = "dep_0192f4a1-1111-4000-8000-000000000001";
@@ -470,36 +465,90 @@ describe("new-task drafts", () => {
   const summary = (store: ReturnType<typeof open>["drafts"]) =>
     store.readDraftSummary(deploymentId, userId);
 
-  it("keeps two drafts apart, each with the folder it starts in, through a restart", async () => {
+  it("persists a folder-chip change after Home's words were already saved", async () => {
     const { drafts, privateFiles } = open();
     await drafts.load();
-    drafts.placeNewTaskDraft(deploymentId, userId, first, folder);
-    drafts.placeNewTaskDraft(deploymentId, userId, second, otherFolder);
-    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(first), "First");
-    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(second), "Second");
-    await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey(second), page);
-
+    await drafts.placeNewTaskDraft(deploymentId, userId, "home", folder);
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Saved words");
+    await drafts.placeNewTaskDraft(deploymentId, userId, "home", otherFolder);
     const relaunched = open(privateFiles).drafts;
     await relaunched.load();
-    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))).toMatchObject({
-      text: "First",
-      folder,
-    });
-    expect(
-      relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))?.page,
-    ).toBeUndefined();
-    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(second))).toMatchObject({
-      page,
-      text: "Second",
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey("home"))).toMatchObject({
+      text: "Saved words",
       folder: otherFolder,
     });
+  });
+
+  it("restores Home in the last chosen folder and drops unreachable new-task drafts and pending files", async () => {
+    const { drafts, privateFiles } = open();
+    await drafts.load();
+    await drafts.placeNewTaskDraft(deploymentId, userId, "home", folder);
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Home words");
+    await drafts.placeNewTaskDraft(deploymentId, userId, "home", otherFolder);
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey(first), "Obsolete");
+    await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey(first), [
+      {
+        attachmentId: null,
+        localUri: "file:///draft-old",
+        mediaType: "image/png",
+        name: "old.png",
+        sizeBytes: 3,
+        status: "staged",
+      },
+    ]);
+    await drafts.claimPending(deploymentId, userId, newTaskDraftKey(second), {
+      idempotencyKey: "pending-old",
+      text: "Obsolete pending",
+      threadId: newTaskDraftKey(second),
+      localUris: ["file:///pending-old"],
+      attachments: [
+        { type: "artifact", artifactId: "art_old", mediaType: "image/png", name: "old.png" },
+      ],
+      start,
+    });
+    await drafts.claimPending(deploymentId, userId, newTaskDraftKey("home"), {
+      idempotencyKey: "pending-home",
+      text: "Held home",
+      threadId: newTaskDraftKey("home"),
+      start: { ...start, folder: otherFolder },
+    });
+    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("home"), "Home words");
+    await drafts.writeDraft(deploymentId, userId, threadId, "Task reply");
+    const forgetDraftFiles = vi.fn();
+    const relaunched = createThreadDraftStore({
+      filePath,
+      now: () => new Date(),
+      privateFiles,
+      forgetDraftFiles,
+    });
+    await relaunched.load();
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey("home"))).toMatchObject({
+      text: "Home words",
+      folder: otherFolder,
+    });
+    expect(
+      relaunched.readPending(deploymentId, userId, newTaskDraftKey("home"))?.idempotencyKey,
+    ).toBe("pending-home");
+    expect(relaunched.readDraft(deploymentId, userId, newTaskDraftKey(first))).toBeNull();
+    expect(relaunched.readPending(deploymentId, userId, newTaskDraftKey(second))).toBeNull();
+    expect(relaunched.readDraft(deploymentId, userId, threadId)?.text).toBe("Task reply");
+    expect(forgetDraftFiles.mock.calls).toEqual([
+      [{ deploymentId, userId, kind: "new-task", draftId: first }, ["file:///draft-old"]],
+      [{ deploymentId, userId, kind: "new-task", draftId: second }, ["file:///pending-old"]],
+    ]);
+    expect(
+      new TextDecoder().decode((await privateFiles.readFile(filePath, 10 * 1024 * 1024))!),
+    ).not.toContain(`new-task:${first}`);
+    expect(
+      new TextDecoder().decode((await privateFiles.readFile(filePath, 10 * 1024 * 1024))!),
+    ).not.toContain(`new-task:${second}`);
   });
 
   it("takes a refused message back into the same draft, in the same folder", async () => {
     const { drafts } = open();
     await drafts.load();
     const key = newTaskDraftKey(first);
-    drafts.placeNewTaskDraft(deploymentId, userId, first, otherFolder);
+    await drafts.placeNewTaskDraft(deploymentId, userId, first, otherFolder);
     await drafts.writeDraft(deploymentId, userId, key, "Refused words");
     await drafts.claimPending(deploymentId, userId, key, {
       idempotencyKey: "message:refused",
@@ -507,15 +556,12 @@ describe("new-task drafts", () => {
       text: "Refused words",
       threadId: key,
     });
-    // Claimed, it has left its draft: the list is the only way back to it.
-    expect(summary(drafts).newTasks).toEqual([
-      { draftId: first, held: true, title: "Refused words", folder: otherFolder },
-    ]);
     await drafts.clearPending(deploymentId, userId, key, "message:refused");
     await drafts.writeDraft(deploymentId, userId, key, "Refused words");
-    expect(summary(drafts).newTasks).toEqual([
-      { draftId: first, held: false, title: "Refused words", folder: otherFolder },
-    ]);
+    expect(drafts.readDraft(deploymentId, userId, key)).toMatchObject({
+      text: "Refused words",
+      folder: otherFolder,
+    });
   });
 
   it("forgets a discarded draft for good, and only that draft", async () => {
@@ -533,7 +579,7 @@ describe("new-task drafts", () => {
 
     await drafts.discardDraft(deploymentId, userId, key);
     expect(drafts.readDraft(deploymentId, userId, key)).toBeNull();
-    expect(summary(drafts).newTasks.map(({ draftId }) => draftId)).toEqual([second]);
+    expect(drafts.readDraft(deploymentId, userId, newTaskDraftKey(second))?.text).toBe("Kept");
   });
 
   it("leaves a message in flight alone when its draft is discarded", async () => {
@@ -551,65 +597,6 @@ describe("new-task drafts", () => {
     expect(drafts.readPending(deploymentId, userId, key)?.idempotencyKey).toBe("message:held");
   });
 
-  it("names each draft by its first line, else what it holds, newest first, and lists no empty one", async () => {
-    let now = "2026-09-14T12:00:00.000Z";
-    const drafts = createThreadDraftStore({
-      filePath,
-      now: () => new Date(now),
-      privateFiles: new MemoryPrivateFilesystem(),
-    });
-    await drafts.load();
-    const attachment = {
-      attachmentId: null,
-      localUri: "file:///photo.draft",
-      mediaType: "image/png",
-      name: "photo.png",
-      sizeBytes: 3,
-      status: "staged",
-    } as const;
-    await drafts.writeDraft(
-      deploymentId,
-      userId,
-      newTaskDraftKey("words"),
-      "\n Book a table\nfor two",
-    );
-    now = "2026-09-14T12:00:01.000Z";
-    await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey("one-file"), [
-      attachment,
-    ]);
-    now = "2026-09-14T12:00:02.000Z";
-    await drafts.writeDraftAttachments(deploymentId, userId, newTaskDraftKey("two-files"), [
-      attachment,
-      { ...attachment, localUri: "file:///other.draft" },
-    ]);
-    now = "2026-09-14T12:00:03.000Z";
-    await drafts.writeDraftPage(deploymentId, userId, newTaskDraftKey("page"), page);
-    await drafts.writeDraft(deploymentId, userId, newTaskDraftKey("spaces"), "  \n ");
-
-    expect(summary(drafts).newTasks.map(({ draftId, title }) => [draftId, title])).toEqual([
-      ["page", "Flights to Tokyo"],
-      ["two-files", "2 files"],
-      ["one-file", "1 file"],
-      ["words", "Book a table"],
-    ]);
-    expect(newTaskDraftBlank(drafts, deploymentId, userId, "spaces")).toBe(true);
-    expect(newTaskDraftBlank(drafts, deploymentId, userId, "page")).toBe(false);
-    expect(newTaskDraftBlank(drafts, deploymentId, userId, "never-written")).toBe(true);
-  });
-
-  it("is not blank while a message is in flight under it", async () => {
-    const { drafts } = open();
-    await drafts.load();
-    const key = newTaskDraftKey(first);
-    await drafts.claimPending(deploymentId, userId, key, {
-      idempotencyKey: "message:held",
-      start,
-      text: "Held",
-      threadId: key,
-    });
-    expect(newTaskDraftBlank(drafts, deploymentId, userId, first)).toBe(false);
-  });
-
   it("shows the sidebar nothing new for a keystroke or another reader", async () => {
     const { drafts } = open();
     await drafts.load();
@@ -620,14 +607,13 @@ describe("new-task drafts", () => {
     await drafts.writeDraft("dep_other", userId, newTaskDraftKey(second), "Elsewhere");
     const before = summary(drafts);
     expect([...before.threadIds]).toEqual([threadId]);
-    expect(before.newTasks.map(({ draftId }) => draftId)).toEqual([first]);
 
     await drafts.writeDraft(deploymentId, userId, threadId, "An unsent reply, longer");
     await drafts.writeDraft(deploymentId, userId, key, "A new task\nwith a second line");
     expect(sameDraftSummary(before, summary(drafts))).toBe(true);
 
     await drafts.writeDraft(deploymentId, userId, key, "A new task, retitled");
-    expect(sameDraftSummary(before, summary(drafts))).toBe(false);
+    expect(sameDraftSummary(before, summary(drafts))).toBe(true);
     await drafts.writeDraft(deploymentId, userId, threadId, "");
     expect(summary(drafts).threadIds.size).toBe(0);
   });

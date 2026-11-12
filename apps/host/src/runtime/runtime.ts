@@ -509,7 +509,7 @@ export async function createHostRuntime(
       Promise<Awaited<ReturnType<typeof initializePersonalState>>> | undefined;
     const initializeFolders = async () => {
       if (initializedFolders) return initializedFolders;
-      initializingFolders ??= initializePersonalState(database, personalConfig)
+      initializingFolders ??= initializePersonalState(database, personalConfig, realtime)
         .then((service) => (initializedFolders = service))
         .finally(() => {
           initializingFolders = undefined;
@@ -2659,7 +2659,7 @@ export async function createHostRuntime(
                 reportAssignmentReturnError(assignmentId, error);
               }
             })(),
-            initializePersonalState(database, personalConfig).then(async (service) => {
+            initializePersonalState(database, personalConfig, realtime).then(async (service) => {
               if (service) await ensureLinks();
             }),
             ...(personalRemoteAccess ? [personalRemoteAccess.purgeExpiredAccountLinkKeys()] : []),

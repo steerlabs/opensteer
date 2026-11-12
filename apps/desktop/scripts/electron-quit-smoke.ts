@@ -213,7 +213,6 @@ async function run(): Promise<void> {
       resolve: async () => ({ HOME: root, PATH: "/usr/bin:/bin", TMPDIR: temporary }),
     },
     releaseDirectory: path.join(resources, "personal-runtime"),
-    workspaceRoot: path.join(root, "workspaces"),
   });
   shutdown.signal.addEventListener("abort", () => supervisor.quiesce(), { once: true });
   shutdown.add({
@@ -346,7 +345,6 @@ async function run(): Promise<void> {
     deploymentId: manifest.deploymentId,
     deploymentShape: {
       kind: "personal" as const,
-      defaultWorkspaceBacking: "local-directory" as const,
     },
     hostUrl: DesktopAccessOriginSchema.parse(origin),
     key: "isolated-quit-proof",
@@ -452,15 +450,11 @@ async function run(): Promise<void> {
         input: { name: "Durable quit proof" },
       }),
     ).profile.id;
-  const bootstrap = z
-    .object({ homeWorkspace: z.object({ id: z.string() }) })
-    .parse(await rpc("bootstrap.get"));
   const pageUrl = `http://127.0.0.1:${address.port}/proof`;
   const opened = z.object({ session: z.object({ id: z.string() }) }).parse(
     await rpc("commands.dispatch", {
       type: "browser.session.start",
       idempotencyKey: randomUUID(),
-      workspaceId: bootstrap.homeWorkspace.id,
       input: { profileId, initialUrl: pageUrl, reuseExisting: false },
     }),
   );
@@ -468,7 +462,6 @@ async function run(): Promise<void> {
   await rpc("commands.dispatch", {
     type: "browser.session.start",
     idempotencyKey: randomUUID(),
-    workspaceId: bootstrap.homeWorkspace.id,
     input: { profileId, initialUrl: normalUrl, reuseExisting: false },
   });
   const normalPage = webContents
@@ -526,7 +519,6 @@ async function run(): Promise<void> {
     await rpc("commands.dispatch", {
       type: "browser.session.start",
       idempotencyKey: randomUUID(),
-      workspaceId: bootstrap.homeWorkspace.id,
       input: { profileId, initialUrl: badUrl, reuseExisting: false },
     });
     const badPage = webContents
@@ -577,7 +569,6 @@ async function run(): Promise<void> {
   await rpc("commands.dispatch", {
     type: "browser.session.start",
     idempotencyKey: randomUUID(),
-    workspaceId: bootstrap.homeWorkspace.id,
     input: { fresh: true, initialUrl: pageUrl, reuseExisting: false },
   });
   // No stream.subscribe: the owner connection is live without requesting capture.

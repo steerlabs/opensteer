@@ -1740,10 +1740,14 @@ integration("Host vertical slice", () => {
       publicKeyFingerprint: runnerPublicKeyFingerprint(seedKeys.publicKey),
       publicKeyPem: canonicalRunnerPublicKeyPem(seedKeys.publicKey),
     });
-    await initializePersonalState(seedStore.database, {
-      environmentId,
-      agentHome: join(dataDirectory, "home"),
-    });
+    await initializePersonalState(
+      seedStore.database,
+      {
+        environmentId,
+        agentHome: join(dataDirectory, "home"),
+      },
+      { sendToUsers: () => undefined },
+    );
     const folder = (await personalSettings(seedStore.database)).agentHome;
     const harness = await seedStore.createHarnessInstance({
       config: { model: "test" },

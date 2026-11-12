@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { arch, homedir, platform, tmpdir } from "node:os";
+import { arch, platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { opensteerNativeClients } from "@opensteer/core";
@@ -127,9 +127,6 @@ describe("desktop configuration", () => {
     expect(loaded.config.hostUrl).toBeNull();
     expect(loaded.config.accountUrl?.href).toBe("https://accounts.example.test/");
     expect(loaded.config.dataDirectory).toBe(`${appDataDirectory}/${durableProductName}`);
-    expect(loaded.config.personal.workspaceRoot).toBe(
-      join(homedir(), durableProductName, "Workspaces"),
-    );
   });
 
   it("requires secure production origins and permits only loopback HTTP outside production", () => {
