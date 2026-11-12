@@ -566,8 +566,9 @@ function TeamRows(props: {
 }): ReactNode {
   const { teams } = useTeamsSnapshot();
   if (teams.length === 0) return null;
+  // Between the nav's rule above and the tabs' rule below: no rule of its own.
   return (
-    <View style={styles.nav}>
+    <View style={styles.teams}>
       {teams.map((team) => (
         <TeamRow
           current={props.openTeamId === team.teamId}
@@ -1047,6 +1048,7 @@ const styles = StyleSheet.create({
     marginTop: space[4],
     paddingTop: space[8],
   },
+  teams: { gap: space[2], marginBottom: space[4], paddingBottom: space[8] },
   nav: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderColor: color.line,
