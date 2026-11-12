@@ -78,7 +78,6 @@
 
 .channel-route-editor {
   border-bottom: 1px solid var(--line);
-  background: var(--fill-quiet);
 }
 
 .channel-route-editor__actions {
@@ -447,19 +446,6 @@
   .status-dot--pulse {
     animation: none;
   }
-}
-
-.status-line {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-6);
-  color: var(--muted);
-  font-size: var(--text-md);
-  white-space: nowrap;
-}
-
-.status-line__qualifier {
-  color: var(--muted-dim);
 }
 
 /* A row's plain trailing value, and the monospace variant addresses wear. */
@@ -1155,12 +1141,10 @@ label.machine-access__grant-head {
 }
 
 .settings-ai-engines__locations {
-  margin-bottom: 14px;
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-md);
-  background: var(--sheen) var(--fill-plate);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--fill-sheet);
   overflow: hidden;
-  box-shadow: var(--edge-plate);
 }
 
 .settings-ai-engine-form {
@@ -1193,30 +1177,25 @@ label.machine-access__grant-head {
   gap: var(--space-10);
   padding: var(--space-12) var(--space-16);
   border-bottom: 1px solid var(--line);
-  background: var(--fill-quiet);
 }
 
 .settings-engine__mark {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
-  border: 1px solid var(--rim-plate);
+  width: 18px;
+  height: 18px;
   color: var(--text-soft);
   flex: none;
-  box-shadow: var(--edge-plate);
 }
 
 .settings-engine__mark svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
 }
 
 .settings-engine__title {
   font-size: var(--text-lg);
-  font-weight: var(--weight-strong);
+  font-weight: var(--weight-medium);
   color: var(--text);
 }
 

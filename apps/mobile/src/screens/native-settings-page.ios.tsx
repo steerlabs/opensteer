@@ -1,15 +1,19 @@
 import {
   BottomSheet,
   Button,
+  Circle,
   ContextMenu,
   SwipeActions,
   Picker,
   DisclosureGroup,
   Host,
   HStack,
+  Image,
+  ProgressView,
   RNHostView,
   Section,
   SecureField,
+  Spacer,
   Text,
   TextField,
   Toggle,
@@ -18,32 +22,66 @@ import {
   NavigationStack,
   Toolbar,
   ToolbarItem,
+  VStack,
 } from "@expo/ui/swift-ui";
 import {
+  accessibilityHidden,
+  accessibilityLabel,
+  buttonBorderShape,
+  buttonStyle,
+  contentShape,
+  controlSize,
   disabled,
+  font,
+  foregroundStyle,
   frame,
+  listStyle,
   searchable,
   navigationTitle,
+  shapes,
   tag,
+  textSelection,
+  tint,
   pickerStyle,
 } from "@expo/ui/swift-ui/modifiers";
 import { useNavigation } from "@react-navigation/native";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
+import { color } from "../theme.js";
 import { IntegrationIcon } from "../ui/integration-icon.js";
-import type { NativeSettingsPageProps, NativeSettingsRow } from "./native-settings-page.types.js";
+import type {
+  NativeSettingsPageProps,
+  NativeSettingsRow,
+  NativeSettingsSection,
+  NativeSettingsStep,
+  NativeSettingsTone,
+} from "./native-settings-page.types.js";
+import { Chevron, IdentityMark, Lines } from "./settings-form-primitives.ios.js";
+
+const toneColor: Record<NativeSettingsTone, string> = {
+  neutral: color.muted,
+  good: color.green,
+  attention: color.amber,
+  bad: color.red,
+};
+const footnote = font({ textStyle: "footnote" });
 export function NativeSettingsPage(props: NativeSettingsPageProps) {
   const query = useNativeState("");
   const navigation = useNavigation();
   const content = (
     <List
-      modifiers={
-        props.search
+      modifiers={[
+        listStyle("insetGrouped"),
+        ...(props.search
           ? [searchable(query, { prompt: "Search plugins", onChange: props.search.onChange })]
-          : []
-      }
+          : []),
+      ]}
     >
       {props.sections.map((section) => (
-        <Section key={section.key} title={section.collapsed ? "" : section.title}>
+        <Section
+          key={section.key}
+          title={section.collapsed ? "" : section.title}
+          {...(section.footer ? { footer: <Footer footer={section.footer} /> } : {})}
+        >
           {section.collapsed ? (
             <DisclosureGroup label={section.title}>
               {section.rows.map((row) => (
@@ -111,16 +149,63 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
         ))}
       </Picker>
     );
-  if (row.kind === "text") return <Text>{row.label}</Text>;
-  if (row.kind === "button") {
-    const plain = (
-      <Button
-        label={row.label}
-        role={row.destructive ? "destructive" : "default"}
-        modifiers={[disabled(row.disabled ?? false), frame({ minHeight: 44 })]}
-        onPress={row.onPress}
-      />
+  if (row.kind === "text")
+    return row.initial === undefined ? (
+      <Lines detail={row.detail ?? null} title={row.label} />
+    ) : (
+      <HStack alignment="center" spacing={12}>
+        <IdentityMark circular initial={row.initial} />
+        <Lines detail={row.detail ?? null} title={row.label} />
+      </HStack>
     );
+  if (row.kind === "status") return <StatusRow row={row} />;
+  if (row.kind === "primary")
+    return (
+      <Button
+        modifiers={[
+          buttonStyle("borderedProminent"),
+          buttonBorderShape("capsule"),
+          controlSize("large"),
+          tint(color.ember),
+          disabled(row.disabled ?? false),
+        ]}
+        onPress={row.onPress}
+      >
+        <Text
+          modifiers={[
+            font({ textStyle: "headline" }),
+            foregroundStyle(color.inkOnEmber),
+            frame({ maxWidth: Infinity }),
+          ]}
+        >
+          {row.label}
+        </Text>
+      </Button>
+    );
+  if (row.kind === "button") {
+    const plain =
+      row.detail === undefined && row.opens !== true ? (
+        <Button
+          label={row.label}
+          role={row.destructive ? "destructive" : "default"}
+          modifiers={[disabled(row.disabled ?? false), frame({ minHeight: 44 })]}
+          onPress={row.onPress}
+        />
+      ) : (
+        <Button
+          modifiers={[
+            disabled(row.disabled ?? false),
+            accessibilityLabel(row.detail ? `${row.label}, ${row.detail}` : row.label),
+          ]}
+          onPress={row.onPress}
+        >
+          <HStack alignment="center" modifiers={[contentShape(shapes.rectangle())]} spacing={12}>
+            <Lines detail={row.detail ?? null} title={row.label} />
+            <Spacer />
+            {row.opens === true ? <Chevron /> : null}
+          </HStack>
+        </Button>
+      );
     const button = row.mark ? (
       <HStack spacing={12}>
         <RNHostView matchContents>
@@ -152,15 +237,105 @@ function Row({ row }: { readonly row: NativeSettingsRow }) {
     );
   }
   if (row.kind === "toggle")
-    return (
+    return row.detail === undefined ? (
       <Toggle
         label={row.label}
         isOn={row.value}
         modifiers={[disabled(row.disabled ?? false)]}
         onIsOnChange={row.onChange}
       />
+    ) : (
+      <Toggle
+        isOn={row.value}
+        modifiers={[disabled(row.disabled ?? false)]}
+        onIsOnChange={row.onChange}
+      >
+        <Lines detail={row.detail} title={row.label} />
+      </Toggle>
     );
   return <Input row={row} />;
+}
+
+function Footer({ footer }: { readonly footer: NonNullable<NativeSettingsSection["footer"]> }) {
+  return (
+    <Text
+      modifiers={[
+        footnote,
+        footer.tone === "danger"
+          ? foregroundStyle(color.red)
+          : foregroundStyle({ type: "hierarchical", style: "secondary" }),
+      ]}
+    >
+      {footer.text}
+    </Text>
+  );
+}
+
+/** A coloured dot, one short state, and while something is under way its steps. */
+function StatusRow({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "status" }> }) {
+  return (
+    <VStack alignment="leading" spacing={8}>
+      <HStack alignment="center" spacing={8}>
+        <Circle
+          modifiers={[
+            foregroundStyle(toneColor[row.tone]),
+            frame({ width: 9, height: 9 }),
+            accessibilityHidden(true),
+          ]}
+        />
+        <Text modifiers={[font({ textStyle: "body", weight: "semibold" })]}>{row.label}</Text>
+      </HStack>
+      {row.detail === undefined ? null : (
+        <Text
+          modifiers={[
+            font({ textStyle: "footnote", design: "monospaced" }),
+            foregroundStyle(color.textSoft),
+            textSelection(true),
+          ]}
+        >
+          {row.detail}
+        </Text>
+      )}
+      {row.steps?.map((step) => (
+        <Step key={step.label} step={step} />
+      ))}
+    </VStack>
+  );
+}
+
+function Step({ step }: { readonly step: NativeSettingsStep }): ReactNode {
+  const mark =
+    step.state === "current" ? (
+      <ProgressView modifiers={[controlSize("small"), frame({ width: 18, height: 18 })]} />
+    ) : (
+      <Image
+        color={
+          step.state === "done" ? color.green : step.state === "failed" ? color.red : color.mutedDim
+        }
+        modifiers={[accessibilityHidden(true), frame({ width: 18, height: 18 })]}
+        size={15}
+        systemName={
+          step.state === "done"
+            ? "checkmark.circle.fill"
+            : step.state === "failed"
+              ? "xmark.circle.fill"
+              : "circle"
+        }
+      />
+    );
+  return (
+    <HStack alignment="center" spacing={10}>
+      {mark}
+      <Text
+        modifiers={[
+          font({ textStyle: "subheadline" }),
+          foregroundStyle(step.state === "pending" ? color.muted : color.text),
+        ]}
+      >
+        {step.label}
+      </Text>
+    </HStack>
+  );
 }
 
 function Input({ row }: { readonly row: Extract<NativeSettingsRow, { kind: "input" }> }) {

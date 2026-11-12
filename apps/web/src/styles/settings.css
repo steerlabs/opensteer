@@ -1,21 +1,17 @@
-/* Settings: a place of its own.
+/* Settings: a place of its own, and a quiet one.
 
-   Entering Settings swaps the conversation sidebar for one settings
-   navigation — a clear way back and a short list of sections. Connection
-   details and the reader's account stay in the footer.
-   The routed section is the one sheet beside it on desktop. Banners, the
-   page topbar and native window chrome share that sheet's ground.
+   The raised plate (--sheen, --edge-plate, --lift-float, --edge-accent,
+   --sheen-accent, --fill-plate, --rim-selected) appears only where you are or
+   what you act on: the selected navigation item, the one primary button on a
+   screen, a switch that is on, and focus. Everything you only read is flat:
+   hairline groups of rows, plain status, quiet secondary buttons.
 
-   Below the shell breakpoint the navigation becomes a drawer rather than a
-   strip, keeping the same destinations and keyboard behavior at every size.
-
-   Every settings page shares one measure and one gutter, declared on the
-   layout, so AI services, Connected apps and Computers start on the same
-   edge. */
+   Below the shell breakpoint the navigation becomes a drawer, with the same
+   destinations and keyboard behavior at every size. */
 
 .settings-layout {
-  --settings-navigation-width: 280px;
-  --settings-measure: 55rem;
+  --settings-navigation-width: 208px;
+  --settings-measure: 40rem;
   --settings-top: var(--space-32);
   --settings-bottom: var(--space-64);
   --settings-gutter-start: var(--space-32);
@@ -46,40 +42,32 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-6);
-  min-height: 54px;
-  padding: var(--space-12) var(--space-12) 0;
+  min-height: 48px;
+  padding: var(--space-12) var(--space-8) var(--space-4);
   flex: none;
 }
 
 .settings-navigation__back {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-8);
-  flex: 1;
-  min-width: 0;
+  gap: var(--space-6);
   min-height: var(--control-height);
-  padding: var(--space-8) var(--space-10);
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
-  color: var(--text);
-  font-weight: var(--weight-medium);
-  font-size: var(--text-lg);
-  transition:
-    background-color var(--duration-fast) var(--ease-out),
-    color var(--duration-fast) var(--ease-out);
-  box-shadow: var(--edge-plate);
+  padding: 0 var(--space-8);
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  transition: color var(--duration-fast) var(--ease-out);
 }
 
 .settings-navigation__back:hover {
   color: var(--text);
-  text-decoration: none;
-  background-color: var(--fill-plate-hover);
 }
 
 .settings-navigation__back svg {
-  width: 15px;
-  height: 15px;
+  width: 13px;
+  height: 13px;
   flex: none;
 }
 
@@ -89,18 +77,9 @@
   flex: none;
 }
 
-.settings-navigation__title {
-  padding: var(--space-24) var(--space-22) var(--space-12);
-  color: var(--text);
-  font-size: var(--display-xs);
-  font-weight: var(--weight-strong);
-  letter-spacing: -0.02em;
-  line-height: 1.3;
-}
-
 /* Surface connection problems even while its details page is closed. */
 .settings-navigation__status {
-  padding: 0 var(--space-10) var(--space-8);
+  padding: var(--space-4) var(--space-8) 0;
   color: var(--amber-text);
   font-size: var(--text-xs);
   line-height: 1.45;
@@ -110,145 +89,101 @@
 .settings-navigation__links {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-4) var(--space-12) var(--space-16);
+  gap: 1px;
+  padding: var(--space-4) var(--space-8) var(--space-16);
 }
 
 .settings-navigation__group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 1px;
 }
 
-/* Names what the links under it are for, so "Computers" reads as the
-   computers agents use before anyone has to open it. */
+/* Names what the links under it are for. */
 .settings-navigation__caption {
-  padding: var(--space-4) var(--space-10) var(--space-6);
-  color: var(--muted-dim);
-  font-size: var(--text-sm);
-  font-weight: var(--weight-medium);
+  padding: var(--space-14) var(--space-10) var(--space-4);
+  color: var(--muted);
+  font-size: var(--text-xs);
   line-height: 1.4;
 }
 
 .settings-navigation__link {
   display: flex;
   align-items: center;
-  gap: var(--space-10);
   min-width: 0;
-  min-height: calc(var(--control-height) + var(--space-2));
-  padding: calc(var(--space-6) - 1px) calc(var(--space-10) - 1px);
-  border-radius: var(--radius-sm);
-  color: var(--text-soft);
-  transition: background-color var(--duration-fast) var(--ease-out);
+  min-height: var(--control-height);
+  padding: 0 calc(var(--space-10) - 1px);
   border: 1px solid transparent;
+  border-radius: var(--radius-xs);
+  color: var(--text-soft);
+  font-size: var(--text-lg);
+  line-height: 1.3;
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .settings-navigation__link:hover {
   text-decoration: none;
   background-color: var(--fill-quiet);
+  color: var(--text);
 }
 
 .settings-navigation__link.is-active {
   border-color: var(--rim-selected);
   background: var(--sheen) var(--fill-plate-hover);
-  box-shadow: var(--edge-plate);
-}
-
-.settings-navigation__link svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: var(--muted);
-}
-
-.settings-navigation__link.is-active svg {
-  color: var(--ember);
-}
-
-.settings-navigation__link > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.settings-navigation__label {
-  color: var(--text-soft);
-  font-size: var(--text-lg);
-  font-weight: var(--weight-medium);
-  line-height: 1.5;
-}
-
-.settings-navigation__link:hover .settings-navigation__label,
-.settings-navigation__link.is-active .settings-navigation__label {
+  box-shadow: var(--edge-plate), var(--lift-float);
   color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+/* The small ember mark that says "you are here". */
+.settings-navigation__link.is-active::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  flex: none;
+  margin-inline-end: var(--space-8);
+  border-radius: 50%;
+  background: var(--ember);
 }
 
 .settings-navigation__account {
   display: flex;
   margin-top: auto;
-  padding: var(--space-10) var(--space-12) var(--space-12);
+  padding: var(--space-10) var(--space-8) var(--space-12);
   flex-direction: column;
-  gap: var(--space-2);
   border-top: 1px solid var(--line);
 }
 
+/* Where this Opensteer is: its name and where that is from here. */
 .settings-navigation__connection {
-  font-size: var(--text-lg);
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-6) var(--space-10);
+  border-radius: var(--radius-xs);
+  font-size: var(--text-sm);
 }
 
-/* Where this Opensteer is: its kind as a picture, its name, and where that
-   is from here. The picture sits in a tile so it reads as the place, not as
-   another navigation icon. */
-.settings-navigation__link > .settings-navigation__place {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  border: 1px solid var(--rim-plate);
-  border-radius: var(--radius-sm);
-  background: var(--sheen) var(--fill-plate);
-  box-shadow: var(--edge-plate);
-}
-
-.settings-navigation__place svg {
-  width: 17px;
-  height: 17px;
-  color: var(--text-soft);
-}
-
-.settings-navigation__link.is-active .settings-navigation__place svg {
-  color: var(--ember);
-}
-
-.settings-navigation__link > .settings-navigation__connection-text {
-  flex: 1;
-  gap: var(--space-2);
+.settings-navigation__connection:hover {
+  text-decoration: none;
+  background-color: var(--fill-quiet);
 }
 
 .settings-navigation__connection-name,
 .settings-navigation__connection-detail {
-  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .settings-navigation__connection-name {
-  color: var(--text);
-  font-weight: var(--weight-medium);
-  line-height: 1.35;
+  color: var(--text-soft);
 }
 
 .settings-navigation__connection-detail {
   color: var(--muted);
-  font-size: var(--text-sm);
-  line-height: 1.35;
-}
-
-.settings-navigation__connection svg:last-child {
-  width: 14px;
-  height: 14px;
+  font-size: var(--text-xs);
 }
 
 .settings-navigation__scrim {
@@ -284,7 +219,7 @@
 .settings-content__inner {
   display: flex;
   flex-direction: column;
-  gap: var(--space-12);
+  gap: var(--space-24);
   animation: rise-in var(--duration-med) var(--ease-out);
 }
 
@@ -293,95 +228,471 @@
 .settings-layout__main .computers-page__content {
   width: 100%;
   max-width: var(--settings-measure);
-  margin-inline: auto;
   padding: var(--settings-top) var(--settings-gutter-end) var(--settings-bottom)
     var(--settings-gutter-start);
 }
 
-/* Settings is chrome, so its titles speak in the chrome face rather than the
-   display serif the conversation surfaces use. */
+@media (min-width: 901px) {
+  .settings-content__inner,
+  .settings-layout__main .page__inner,
+  .settings-layout__main .computers-page__content {
+    max-width: calc(
+      var(--settings-measure) + var(--settings-gutter-start) + var(--settings-gutter-end)
+    );
+  }
+}
+
+/* One serif title per screen; everything under it speaks in the chrome face. */
 .settings-layout .settings-section__title,
 .settings-layout .page__title {
-  font-family: var(--font-sans);
-  font-size: var(--display-sm);
-  font-weight: var(--weight-strong);
-  letter-spacing: -0.022em;
-  line-height: 1.3;
+  font-family: var(--font-display);
+  font-size: var(--display-lg);
+  font-weight: var(--weight-medium);
+  letter-spacing: -0.01em;
+  line-height: 1.25;
 }
 
-@media (min-width: 901px) {
-  .settings-layout {
-    padding: var(--sheet-gutter) var(--sheet-gutter) var(--sheet-gutter) 0;
-  }
-
-  .settings-navigation {
-    border-right: 0;
-  }
-
-  .settings-layout__main {
-    --ground: var(--fill-sheet);
-    overflow: clip;
-    border: 1px solid var(--rim-sheet);
-    border-radius: var(--radius-lg);
-    background:
-      linear-gradient(var(--ground) 0 0) padding-box,
-      var(--light-sheet),
-      var(--ground);
-    box-shadow: var(--edge-sheet);
-  }
-
-  html.electron-shell .settings-layout {
-    app-region: drag;
-  }
-
-  html.electron-shell .settings-layout__main,
-  html.electron-shell .settings-navigation {
-    app-region: no-drag;
-  }
-
-  html.electron-shell .settings-layout__main .topbar {
-    min-height: calc(var(--desktop-titlebar-height) - var(--sheet-gutter) - 1px);
-  }
+.settings-layout .settings-section__header {
+  margin: 0;
 }
 
-.connected-apps__panel {
-  flex: none;
-  min-height: auto;
-  overflow: visible;
+.settings-layout .settings-section__lead {
+  font-size: var(--text-md);
 }
 
-/* ---- Connections ----
-   A calm list of places. The current one is marked by its glyph taking the
-   accent; one that cannot be opened says why in a sentence that wraps. */
-
-.settings-connections .card__row-title {
-  flex-wrap: wrap;
-  overflow-wrap: anywhere;
+/* A group's name: small and quiet, over its hairline group. */
+.settings-layout .settings-group {
+  gap: var(--space-8);
+  margin: 0;
 }
 
-.settings-connections .card__row-detail {
-  overflow: visible;
+.settings-layout .settings-group__title,
+.settings-content__inner > h2,
+.settings-content__inner > section > h2 {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.settings-layout .settings-footnote {
+  margin: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+
+/* ---- Rows: flat, in hairline groups ---- */
+
+.settings-layout .card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--fill-sheet);
+  box-shadow: none;
+}
+
+.settings-layout .card__row {
+  gap: var(--space-12);
+  min-height: 52px;
+  padding: var(--space-12) var(--space-14);
+}
+
+.settings-layout .card__row-title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-normal);
+  line-height: 1.35;
+}
+
+.settings-layout .card__row-detail {
+  color: var(--muted);
+  font-size: var(--text-sm);
   line-height: 1.45;
-  text-overflow: clip;
   white-space: normal;
 }
 
-.settings-connections .card__row.is-current .card__row-glyph {
-  border-color: var(--ember-line);
-  background: var(--ember-wash);
-  color: var(--ember);
+.settings-layout .card__row-detail--error {
+  color: var(--red-text);
 }
 
-.settings-connections__actions,
-.settings-connections__footer {
+/* A row's mark (a provider's logo, a device's kind) sits bare, not on a tile. */
+.settings-layout .card__row-glyph {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+/* Read-only labels are words, not pills. */
+.settings-layout .chip,
+.settings-tag {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-normal);
+}
+
+.settings-layout .chip {
+  margin-inline-start: var(--space-6);
+}
+
+.settings-layout .card__row-title > .chip {
+  margin-inline-start: 0;
+}
+
+.settings-layout .chip--ok {
+  color: var(--green);
+}
+
+.settings-layout .chip--warn {
+  color: var(--amber);
+}
+
+.settings-layout .chip--bad {
+  color: var(--red-text);
+}
+
+/* Secondary buttons are outlines; only `.btn--primary` keeps its plate. */
+.settings-layout .settings-content .btn:not(.btn--primary) {
+  border-color: var(--line-strong);
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-layout .settings-content .btn:not(.btn--primary):hover:not(:disabled) {
+  background-color: var(--fill-quiet);
+}
+
+.settings-layout .settings-content .btn--ghost {
+  border-color: transparent;
+}
+
+.settings-layout .settings-content .btn {
+  font-size: var(--text-md);
+}
+
+/* A choice among several is flat too; the chosen one is only lighter. */
+.settings-layout .settings-segmented {
+  border-color: var(--line);
+  background: transparent;
+}
+
+.settings-layout .settings-segmented > button[aria-pressed="true"] {
+  border-color: transparent;
+  background: var(--fill-plate-hover);
+  box-shadow: none;
+}
+
+.settings-layout .settings-choice.is-selected,
+.settings-layout .settings-choice-group:disabled .settings-choice.is-selected {
+  border-color: transparent;
+  background: var(--fill-quiet);
+  box-shadow: none;
+}
+
+.settings-layout .settings-choice__title {
+  font-weight: var(--weight-normal);
+}
+
+/* The page names itself in its serif title; the narrow topbar only carries the way back. */
+.settings-layout .settings .topbar__title {
+  visibility: hidden;
+}
+
+/* A switch is flat until it is on. */
+.settings-layout .switch:not(:checked) {
+  background: var(--fill-plate);
+  box-shadow: none;
+}
+
+/* Status is a dot and a word. */
+.settings-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-6);
+}
+
+/* Destructive and minor actions are quiet links. */
+.settings-link {
+  padding: var(--space-4) 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+.settings-link:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.settings-link:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.settings-link--danger,
+.settings-link--danger:hover:not(:disabled) {
+  color: var(--red-text);
+}
+
+.settings-footer-link {
+  margin: 0 var(--space-2);
+}
+
+/* A brand mark or avatar in a row's title sits at text size. */
+.settings-layout .card__row-title > .provider-logo {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+/* Section headings inside an embedded page (Messaging) read like row titles. */
+.settings-layout .section__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.settings-layout .section__hint {
+  font-size: var(--text-sm);
+}
+
+/* Devices → Computers: the same flat groups as every other page. */
+.settings-layout__main .computers-page__content {
+  margin: 0;
+  gap: var(--space-24);
+}
+
+.settings-layout :is(.computers-home, .computers-list) {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--fill-sheet);
+  box-shadow: none;
+}
+
+.settings-layout .computers-home__main {
+  gap: var(--space-14);
+  padding: var(--space-14);
+}
+
+.settings-layout .computers-home__name {
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
+}
+
+.settings-layout .computers-home__line {
+  color: var(--muted);
+  font-size: var(--text-sm);
+}
+
+.settings-layout .computers-home .device-art {
+  width: 52px;
+  height: 40px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.settings-layout .computers-home .device-art svg {
+  width: 48px;
+  height: 36px;
+}
+
+.settings-layout .computers-group__title {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.settings-layout .computer-row {
+  padding: var(--space-12) var(--space-14);
+}
+
+.settings-layout .computer-row__glyph {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: var(--muted);
+}
+
+.settings-layout .computer-row__glyph .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-layout .computer-row__name {
+  font-weight: var(--weight-normal);
+}
+
+.settings-layout .computer-row--add {
+  font-weight: var(--weight-normal);
+}
+
+/* ---- Use from anywhere ---- */
+
+.settings-remote {
+  align-items: flex-start;
+}
+
+.settings-remote .card__row-title .status-dot {
+  margin-inline-end: var(--space-2);
+}
+
+.settings-remote__dot--ok {
+  background: var(--green);
+}
+
+.settings-remote__dot--busy {
+  background: var(--amber);
+}
+
+.settings-remote__dot--error {
+  background: var(--red);
+}
+
+.settings-remote__address {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  margin-top: var(--space-4);
+}
+
+.settings-remote__address code {
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+}
+
+.settings-remote__actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.settings-remote__private .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-steps {
+  display: grid;
+  gap: var(--space-6);
+  margin: var(--space-10) 0 var(--space-2);
+  padding: 0;
+  list-style: none;
+}
+
+.settings-steps__step {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.settings-steps__step.is-done {
+  color: var(--text-soft);
+}
+
+.settings-steps__step.is-now {
+  color: var(--text);
+}
+
+.settings-steps__step.is-failed {
+  color: var(--red-text);
+}
+
+.settings-steps__mark {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 50%;
+  font-size: 9px;
+}
+
+.is-done > .settings-steps__mark {
+  border-color: var(--green);
+  background: var(--green);
+  color: var(--ink-on-ember);
+}
+
+.is-failed > .settings-steps__mark {
+  border-color: var(--red);
+  background: var(--red);
+  color: var(--ink-on-ember);
+}
+
+.is-now > .settings-steps__mark {
+  border-color: var(--ember);
+  border-top-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+
+.settings-content__inner .settings-advanced > summary {
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  list-style: none;
+  cursor: pointer;
+}
+
+.settings-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-advanced > summary::before {
+  content: "›";
+  display: inline-block;
+  width: 1em;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.settings-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.settings-advanced > .card {
+  margin-top: var(--space-4);
+}
+
+/* ---- A team's own pages ---- */
+
+.team-settings-nav {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-10);
+  gap: var(--space-2);
 }
 
-.settings-connections__footer {
-  margin-top: var(--space-20);
+.team-settings-nav__link {
+  padding: var(--space-4) var(--space-10);
+  border-radius: var(--radius-xs);
+  color: var(--muted);
+  font-size: var(--text-md);
+}
+
+.team-settings-nav__link:hover {
+  color: var(--text);
+  text-decoration: none;
+  background: var(--fill-quiet);
+}
+
+.team-settings-nav__link[aria-current="page"] {
+  background: var(--fill-plate-hover);
+  color: var(--text);
 }
 
 /* ---- Native window chrome ---- */
@@ -415,15 +726,19 @@ html.electron-shell .settings-navigation__header :is(a, button) {
     --settings-gutter-end: calc(var(--space-16) + env(safe-area-inset-right, 0px));
   }
 
+  .settings-content__inner {
+    max-width: none;
+  }
+
   /* Hidden, not merely off-screen, while closed: a drawer nobody can see must
      not take keyboard focus. Visibility waits for the slide to finish. */
   .settings-navigation {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: var(--layer-drawer);
-    width: min(320px, 86vw);
+    width: min(280px, 82vw);
     border-right-color: var(--rim-plate);
-    background: var(--sheen) var(--surface-elevated);
+    background: var(--surface-elevated);
     padding-left: env(safe-area-inset-left, 0px);
     visibility: hidden;
     transform: translateX(-102%);
@@ -435,14 +750,14 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   .settings-navigation--open {
     visibility: visible;
     transform: translateX(0);
-    box-shadow: var(--edge-plate), var(--lift-float);
+    box-shadow: var(--lift-float);
     transition:
       transform var(--duration-med) var(--ease-out),
       visibility 0s;
   }
 
   .settings-navigation__header {
-    padding-top: calc(var(--space-14) + env(safe-area-inset-top, 0px));
+    padding-top: calc(var(--space-12) + env(safe-area-inset-top, 0px));
   }
 
   .settings-navigation__close {
@@ -472,18 +787,18 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   }
 }
 
-@media (max-width: 680px) {
-  .settings-layout .settings-section__title,
-  .settings-layout .page__title {
-    font-size: var(--display-sm);
+@media (max-width: 600px) {
+  .settings-layout .card__row {
+    padding: var(--space-12);
   }
 
-  .settings-content__inner .card__row-actions .btn {
-    min-height: var(--touch-target);
-  }
-
-  .settings-connections .card__row-actions {
+  .settings-remote {
     flex-wrap: wrap;
+  }
+
+  .settings-remote__actions {
+    flex: 1 1 100%;
+    flex-direction: row;
   }
 }
 
@@ -491,6 +806,17 @@ html.electron-shell .settings-navigation__header :is(a, button) {
   .settings-navigation__back,
   .settings-navigation__link {
     min-height: var(--touch-target);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-navigation,
+  .settings-navigation--open {
+    transition: none;
+  }
+
+  .is-now > .settings-steps__mark {
+    animation: none;
   }
 }
 
@@ -697,14 +1023,8 @@ button.card__row > .card__row-body {
 .settings-content__inner .card__row > .switch {
   flex-shrink: 0;
 }
-.settings-content__inner > section > h2 {
-  font-size: var(--text-lg);
-}
 .settings-content__inner .connected-apps__panel {
   overflow: visible;
-}
-.settings-content__inner .btn {
-  min-height: 44px;
 }
 
 .settings-plugin-overview {
@@ -744,16 +1064,6 @@ button.card__row > .card__row-body {
     padding: var(--space-12);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .settings-navigation,
-  .settings-navigation--open {
-    transition: none;
-  }
-}
-.settings-content__inner > h2 {
-  font-size: var(--text-lg);
-  margin-block: var(--space-24) var(--space-8);
-}
 .settings-content__inner > ul {
   margin: 0;
   padding-inline-start: var(--space-24);
@@ -774,11 +1084,6 @@ button.card__row > .card__row-body {
     padding-inline: var(--space-6);
     list-style: none;
   }
-}
-.settings-navigation__back,
-.settings-navigation__link {
-  min-height: 44px;
-  transition: opacity var(--duration-fast) var(--ease-out);
 }
 .settings-switch-target {
   display: inline-flex;
@@ -840,9 +1145,6 @@ button.card__row > .card__row-body {
 .settings-content__inner .card__row-body {
   flex: 1;
   min-width: 0;
-}
-.settings-content__inner .card__row-detail {
-  color: var(--muted);
 }
 .settings-content__inner .intg-hero__name {
   font-family: var(--font-sans);
@@ -1286,10 +1588,6 @@ button.card__row > .card__row-body {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.settings-add-sheet__places .card__row {
-  min-height: 46px;
-  padding-block: var(--space-8);
-}
 .settings-add-sheet__advanced {
   border-top: 1px solid var(--line);
   padding-top: var(--space-12);
@@ -1400,7 +1698,6 @@ button.card__row > .card__row-body {
 @media (max-width: 600px) {
   .settings-content__inner .card__row--choice .card__row-actions {
     flex: 1 1 100%;
-    padding-left: calc(34px + var(--space-12));
   }
 
   .card__row--choice .settings-segmented {

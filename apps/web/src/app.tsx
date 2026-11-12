@@ -16,7 +16,6 @@ import { LiveRedirect } from "./components/workspace/live-redirect.js";
 import { ThreadRoute } from "./components/thread-view.js";
 import { TeamsProvider, type TeamAttachment } from "./team/team-attachments.js";
 import { TeamRoutes } from "./team/team-routes.js";
-import { TeamSettingsRoute } from "./team/team-settings-route.js";
 import { JoinTeamRoute } from "./team/join-route.js";
 import { AutomationDetailPage } from "./components/automations/automation-detail.js";
 import { AutomationEditorPage } from "./components/automations/automation-editor.js";
@@ -26,6 +25,7 @@ import {
   SettingsShell,
   SettingsSectionRoute,
   SettingsNotFound,
+  SettingsTeamRoute,
 } from "./components/settings/settings-shell.js";
 import { SettingsRedirect } from "./components/settings/settings-redirect.js";
 import { settingsRedirects } from "@opensteer/client/settings";
@@ -577,7 +577,7 @@ export function App({
                     element={<SettingsSectionRoute section={section} />}
                   />
                 ))}
-                <Route path="teams/:teamId/:page" element={<TeamSettingsRoute />} />
+                <Route path="teams/:teamId/:page" element={<SettingsTeamRoute />} />
                 <Route path="devices" element={<SettingsSectionRoute section="devices" />} />
                 <Route path="devices/computers" element={<ComputersPage />} />
                 <Route path="devices/computers/:computerId" element={<ComputerDetailPage />} />

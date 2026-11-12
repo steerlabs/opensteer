@@ -278,6 +278,7 @@ export class NativePersonalHostControl implements PersonalHostControlPort {
     );
     // The process-launch capability bootstraps the desktop's ordinary owner
     // session after every Host start; it grants no extra administrative powers.
+    // The Host keeps the session this partition already holds instead of minting one.
     await this.claimOwner(origin, manifest, claimToken, signal);
     response = await this.#request(
       manifest.deploymentId,
@@ -746,10 +747,7 @@ export class NativePersonalRemoteHostControl {
         await response.body?.cancel();
         throw new Error("Personal Host requests must not redirect.");
       }
-      if (!allowErrorStatus && !response.ok) {
-        await response.body?.cancel();
-        throw new Error(`Personal Host rejected remote access (HTTP ${response.status}).`);
-      }
+      if (!allowErrorStatus && !response.ok) throw await personalHostRefusal(response);
       return response;
     } finally {
       clearTimeout(timeout);
@@ -816,7 +814,45 @@ function accountLinkFailure(
     }
     return new PersonalAccountLinkReservationLostError(reason);
   }
-  return new Error(`Personal Host rejected Account-link ${stage} (HTTP ${response.status}).`);
+  return hostRefusal(body, response.status) ?? new Error(`Account-link ${stage} failed.`);
+}
+
+/** The Host's own refusal: an OpensteerError message, already a sentence a person can read. */
+export class PersonalHostRefusalError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "PersonalHostRefusalError";
+    this.status = status;
+  }
+}
+
+const HostErrorBodySchema = z.object({
+  error: z.object({ code: z.string(), message: z.string().trim().min(1) }),
+});
+
+function hostRefusal(body: unknown, status: number): PersonalHostRefusalError | null {
+  const parsed = HostErrorBodySchema.safeParse(body);
+  // An internal fault's message is not a contract the Host stands behind.
+  if (!parsed.success || parsed.data.error.code === "internal") return null;
+  return new PersonalHostRefusalError(
+    parsed.data.error.message.replace(/\s+/gu, " ").slice(0, 300),
+    status,
+  );
+}
+
+async function personalHostRefusal(response: Response): Promise<Error> {
+  const body = await readBoundedJson(response, personalHostJsonOptions(16 * 1_024)).catch(
+    async () => {
+      await response.body?.cancel().catch(() => undefined);
+      return null;
+    },
+  );
+  return (
+    hostRefusal(body, response.status) ??
+    new Error(`Personal Host answered HTTP ${response.status}.`)
+  );
 }
 
 /**

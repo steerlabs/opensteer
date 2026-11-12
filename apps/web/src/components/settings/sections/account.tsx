@@ -7,46 +7,69 @@ import { accountPortalHref } from "../../../portal/account-portal.js";
 import { actionErrorMessage } from "../../../ui-utils.js";
 import { useShell } from "../../app-shell.js";
 import { deploymentMutationsBlockedReason } from "../../deployment-operation.js";
-import { Icon } from "../../icon.js";
 import { SignOutDialog } from "../../places/place-account.js";
-import { SectionHeader, SettingsError, SettingsRow } from "../primitives.js";
+import {
+  SectionHeader,
+  SettingsError,
+  SettingsGroup,
+  SettingsRow,
+  type SettingsView,
+} from "../primitives.js";
+import { SignedInDevicesSection } from "./devices.js";
+import { RemoteAccessCard } from "./remote-access-card.js";
 
 /**
- * The Opensteer Account: the one thing in the product anybody signs in to.
- * "Sign out" always means leaving that Account, here and in the place menu;
- * a device leaves a place with "Disconnect this device", and someone else's
- * session ends with "Revoke". One verb, one meaning.
+ * The Opensteer Account: the one thing in the product anybody signs in to,
+ * then whether this Opensteer can be used from anywhere, then every device
+ * signed in to it.
  */
-export function AccountSection() {
+export function AccountSection({ view }: { readonly view: SettingsView }) {
   const { deploymentAccess, desktopBridge, snapshot } = useShell();
-  const portalHref = accountPortalHref({
-    desktop: desktopBridge !== null,
-    identityConfig: snapshot.identityConfig,
-  });
+  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
+  const signedIn = deploymentAccess?.account.status === "signed-in";
   return (
     <>
       <SectionHeader title="Account" />
-      {desktopBridge ? (
-        <AccountSessionCard account={deploymentAccess?.account ?? null} />
-      ) : (
-        <BrowserAccountCard portalHref={portalHref} />
-      )}
+      <SettingsGroup heading={null} headingId="settings-account">
+        {desktopBridge ? (
+          <AccountSessionRow account={deploymentAccess?.account ?? null} />
+        ) : (
+          <BrowserAccountRow
+            portalHref={accountPortalHref({
+              desktop: false,
+              identityConfig: snapshot.identityConfig,
+            })}
+          />
+        )}
+      </SettingsGroup>
+      <RemoteAccessCard />
+      <SignedInDevicesSection view={view} />
+      {desktopBridge && signedIn && portalOrigin ? (
+        <p className="settings-footer-link">
+          <a
+            className="settings-link settings-link--danger"
+            href={`${portalOrigin}/account/delete`}
+            rel="noreferrer"
+            target="_blank"
+          >
+            Delete Account…
+          </a>
+        </p>
+      ) : null}
     </>
   );
 }
 
 /**
  * The Account row on Desktop. Signing out ends this app's Account session and
- * leaves every Deployment running exactly where it was — which is why the
- * sentence says so next to the button rather than after it.
+ * leaves every Deployment running exactly where it was.
  */
-function AccountSessionCard({
+function AccountSessionRow({
   account,
 }: {
   readonly account: DeploymentAccessSnapshot["account"] | null;
 }) {
-  const { deploymentAccess, desktopBridge, snapshot } = useShell();
-  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
+  const { deploymentAccess, desktopBridge } = useShell();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
@@ -69,71 +92,29 @@ function AccountSessionCard({
       .finally(() => setPending(false));
   }
 
-  const state = account?.status ?? "unknown";
   const copy =
     account?.available === false && account.status === "signed-out"
-      ? { chip: "", detail: "Opensteer Account sign-in isn’t available yet.", label: "Unavailable" }
-      : accountStateCopy[state];
+      ? { title: "Not signed in", detail: "Opensteer Account sign-in isn’t available yet." }
+      : accountStateCopy[account?.status ?? "unknown"];
   return (
     <>
-      <div className="card">
-        <SettingsRow
-          action={
-            action ? (
-              <button
-                className={
-                  action === "sign-out"
-                    ? "btn btn--ghost btn--small"
-                    : "btn btn--primary btn--small"
-                }
-                disabled={pending || blockedReason !== null}
-                onClick={act}
-                type="button"
-              >
-                {pending
-                  ? action === "sign-out"
-                    ? "Signing out…"
-                    : "Signing in…"
-                  : action === "sign-out"
-                    ? "Sign out"
-                    : "Sign in"}
-              </button>
-            ) : undefined
-          }
-          detail={
-            <>
-              {copy.detail}
-              {blockedReason && action ? (
-                <span className="card__row-reason">{blockedReason}</span>
-              ) : null}
-            </>
-          }
-          icon="user"
-          title={
-            <>
-              {account?.email ?? "Opensteer Account"}
-              <span className={copy.chip ? `chip ${copy.chip}` : "chip"}>{copy.label}</span>
-            </>
-          }
-        />
-        {action === "sign-out" && portalOrigin ? (
-          <SettingsRow
-            action={
-              <a
-                className="btn btn--ghost btn--small"
-                href={`${portalOrigin}/account/delete`}
-                rel="noreferrer"
-                target="_blank"
-              >
-                Delete Account
-              </a>
-            }
-            detail="Permanently delete this Account. You’ll confirm in your browser."
-            icon="user"
-            title="Delete Account"
-          />
-        ) : null}
-      </div>
+      <SettingsRow
+        action={
+          action ? (
+            <button
+              className="btn"
+              disabled={pending || blockedReason !== null}
+              onClick={act}
+              title={blockedReason ?? undefined}
+              type="button"
+            >
+              {action === "sign-out" ? "Sign out" : pending ? "Signing in…" : "Sign in"}
+            </button>
+          ) : undefined
+        }
+        detail={copy.detail}
+        title={account?.status === "signed-in" ? (account.email ?? copy.title) : copy.title}
+      />
       <SettingsError message={error} />
       {signingOut && desktopBridge ? (
         <SignOutDialog
@@ -149,59 +130,38 @@ function AccountSessionCard({
  * A browser session holds Host credentials. Account management opens the
  * Host-advertised Account portal, which owns its own sign-in.
  */
-function BrowserAccountCard({ portalHref }: { readonly portalHref: string | null }) {
-  if (!portalHref) {
-    return (
-      <div className="card">
-        <SettingsRow icon="user" title="Opensteer Account" detail="Account sign-in unavailable" />
-      </div>
-    );
-  }
+function BrowserAccountRow({ portalHref }: { readonly portalHref: string | null }) {
   return (
-    <div className="card">
-      <SettingsRow
-        action={
-          <a className="btn btn--small" href={portalHref} rel="noreferrer">
+    <SettingsRow
+      action={
+        portalHref ? (
+          <a className="btn" href={portalHref} rel="noreferrer">
             Sign in
-            <Icon name="external-link" />
           </a>
-        }
-        detail="Open your Opensteer from any device"
-        icon="user"
-        title="Opensteer Account"
-      />
-    </div>
+        ) : undefined
+      }
+      detail={portalHref ? "Open your Opensteer from any device" : "Account sign-in unavailable"}
+      title="Opensteer Account"
+    />
   );
 }
 
-interface AccountStateCopy {
-  readonly chip: string;
-  readonly detail: string;
-  readonly label: string;
-}
-
-/** One wording per credential state, all five visible together. */
-const accountStateCopy: Readonly<Record<DesktopAccountAuthStatus | "unknown", AccountStateCopy>> = {
+/** One wording per credential state. */
+const accountStateCopy: Readonly<
+  Record<DesktopAccountAuthStatus | "unknown", { readonly title: string; readonly detail: string }>
+> = {
   authorizing: {
-    chip: "chip--warn",
-    detail: "Finish signing in in your browser. This window continues by itself.",
-    label: "Signing in…",
+    title: "Signing in…",
+    detail: "Finish signing in in your browser. This continues by itself.",
   },
   error: {
-    chip: "chip--warn",
-    detail:
-      "You were signed out on this computer. Sign in again to see your other computers and servers. They keep running.",
-    label: "Sign in again",
+    title: "Signed out",
+    detail: "Sign in again to see your other computers. They keep running.",
   },
-  "signed-in": {
-    chip: "chip--ok",
-    detail: "Opensteer Account",
-    label: "Signed in",
-  },
+  "signed-in": { title: "Opensteer Account", detail: "Opensteer Account" },
   "signed-out": {
-    chip: "",
-    detail: "Open your Opensteer from any device",
-    label: "Signed out",
+    title: "Not signed in",
+    detail: "Sign in to open this computer from your phone and see your other computers.",
   },
-  unknown: { chip: "", detail: "Checking your account…", label: "Checking…" },
+  unknown: { title: "Checking…", detail: "Checking your Account…" },
 };

@@ -25,7 +25,6 @@ export function DesktopUpdatesRow() {
     <>
       <SettingsRow
         title={`${resolveDesktopAppBranding(update.currentVersion).displayName} ${update.currentVersion}`}
-        icon="download"
         detail={desktopUpdateMessage(update)}
         action={
           <button
@@ -40,7 +39,6 @@ export function DesktopUpdatesRow() {
       />
       <SettingsRow
         title="Get Beta updates"
-        icon="download"
         detail={
           error
             ? "Couldn’t change updates. Try again."

@@ -39,7 +39,7 @@ export function ExternalAgentsSettingsController(): ReactNode {
   const openRemoteAccess = () => {
     setGuide(null);
     if (selection.deploymentId)
-      navigation.navigate("SettingsRemoteAccess", { deploymentId: selection.deploymentId });
+      navigation.navigate("SettingsAccount", { deploymentId: selection.deploymentId });
   };
   const remove = (connectionId: string) => {
     const connection = connections?.find((row) => row.id === connectionId);
@@ -75,12 +75,12 @@ export function ExternalAgentsSettingsController(): ReactNode {
         }
       : reach.kind === "needs-remote"
         ? {
-            title: "Remote access is off",
+            title: "Use from anywhere is off",
             detail: externalAgentsNeedsRemote,
-            action: { label: "Open Remote access", onPress: openRemoteAccess },
+            action: { label: "Open Account", onPress: openRemoteAccess },
           }
         : reach.kind === "unavailable"
-          ? { title: "Remote access couldn’t be checked", detail: reach.detail, action: null }
+          ? { title: "Couldn’t check Use from anywhere", detail: reach.detail, action: null }
           : null;
   return (
     <>

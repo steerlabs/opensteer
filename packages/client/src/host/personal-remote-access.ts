@@ -1,5 +1,5 @@
 import { mutationIdempotencyKey, unwrapRpcResult } from "./host-session-client.js";
-import type { HostClient } from "./client.js";
+import { HostClientRequestError, type HostClient } from "./client.js";
 import type {
   PersonalRemoteAdministrationIntent,
   PersonalRemoteAdministrationStatus,
@@ -9,7 +9,7 @@ import type { AccountDeploymentDirectoryService } from "../connections/account-d
 import { PersonalHostAccountLinkOperationIdSchema } from "@opensteer/control-plane-protocol";
 
 export const remoteAccessDisconnectWarning =
-  "Changing remote access or unlinking the Account can sign out this device and other connected devices. You may need to return to the computer to connect again.";
+  "Devices that open this computer from elsewhere will be signed out, and you may need to be at the computer to connect them again.";
 
 export async function requestPersonalRemoteAccess(
   client: Pick<HostClient, "dispatch">,
@@ -72,9 +72,24 @@ export async function linkPersonalHostAccount(
   });
 }
 
+/** Finishes an `activating` link through the Host; a fresh challenge would be refused. */
+export async function resumePersonalHostAccountLink(
+  client: Pick<HostClient, "dispatch">,
+): Promise<void> {
+  const resumed = await client.dispatch({
+    type: "personal.accountLink.resume",
+    idempotencyKey: mutationIdempotencyKey("account-link-resume"),
+  });
+  if (resumed.type !== "personal.accountLink.resume")
+    throw new Error("Unexpected Account link response");
+}
+
 export interface PersonalRemoteAccessClientSnapshot {
   readonly status: PersonalRemoteAdministrationStatus | null;
+  /** Reading the status failed. */
   readonly error: string | null;
+  /** The last request or pairing failed, in a sentence a person can read. */
+  readonly actionError: string | null;
   readonly pairing: IssuePersonalPairingCodeResponse | null;
   readonly working: boolean;
 }
@@ -85,6 +100,7 @@ export class PersonalRemoteAccessClient {
   #snapshot: PersonalRemoteAccessClientSnapshot = {
     status: null,
     error: null,
+    actionError: null,
     pairing: null,
     working: false,
   };
@@ -168,11 +184,16 @@ export class PersonalRemoteAccessClient {
 
   async #run(operation: () => Promise<void>): Promise<void> {
     if (this.#snapshot.working) return;
-    this.#set({ working: true, error: null });
+    this.#set({ working: true, actionError: null });
     try {
       await operation();
     } catch (error) {
-      this.#set({ error: error instanceof Error ? error.message : "Remote access change failed." });
+      this.#set({
+        actionError:
+          error instanceof HostClientRequestError
+            ? error.message
+            : "Something went wrong. Try again.",
+      });
     } finally {
       this.#set({ working: false });
     }

@@ -374,9 +374,13 @@ export function GroupsAdmin({
                         Remove
                       </button>
                     }
-                    icon={<PersonAvatar person={member.person} size={28} />}
                     key={member.person.id}
-                    title={member.person.name}
+                    title={
+                      <>
+                        <PersonAvatar person={member.person} size={20} />
+                        {member.person.name}
+                      </>
+                    }
                   />
                 ) : (
                   <SettingsRow
@@ -390,7 +394,6 @@ export function GroupsAdmin({
                       </button>
                     }
                     detail={`Group · ${plural(member.group.peopleCount, "person", "people")}`}
-                    icon="users"
                     key={member.group.id}
                     title={member.group.name}
                   />
@@ -473,7 +476,6 @@ export function InvitesAdmin({
             <SettingsSwitch checked={invite.enabled} label="Invite link" onChange={onToggle} />
           }
           detail="One person can join with it, as a member."
-          icon="link"
           title="Invite link"
         />
         {invite.enabled ? (
@@ -566,12 +568,15 @@ export function TeamSettings({
               Change photo
             </button>
           }
-          icon={<PersonAvatar person={me} size={28} />}
-          title={<NameField name={me.name} onSave={actions.onRename} />}
+          title={
+            <>
+              <PersonAvatar person={me} size={20} />
+              <NameField name={me.name} onSave={actions.onRename} />
+            </>
+          }
         />
         <SettingsRow
           detail={`Your agent is @${me.handle}-agent. Handles are given when you join and don’t change.`}
-          icon="at"
           title={`@${me.handle}`}
         />
       </SettingsGroup>
@@ -586,7 +591,6 @@ export function TeamSettings({
             />
           }
           detail="A channel can change this in its Details."
-          icon="hash"
           title="Channels"
         />
         <SettingsRow
@@ -598,7 +602,6 @@ export function TeamSettings({
               value={notify.dms}
             />
           }
-          icon="message"
           title="Direct messages"
         />
       </SettingsGroup>
@@ -607,19 +610,21 @@ export function TeamSettings({
         headingId="team-about"
         note={`Admins can see what agents read, searched and posted in ${team.name}. Never anyone’s private task.`}
       >
-        <SettingsRow detail={webAddress} icon="globe" title="Web address" />
-        <SettingsRow detail="Opensteer Account" icon="key" title="Sign-in" />
+        <SettingsRow detail={webAddress} title="Web address" />
+        <SettingsRow detail="Opensteer Account" title="Sign-in" />
       </SettingsGroup>
       {admin ? (
         <SettingsGroup heading="Team" headingId="team-team">
           <SettingsRow
-            icon={<TeamTile size={28} tile={team} />}
             title={
-              actions.onTeamName ? (
-                <NameField name={team.name} onSave={actions.onTeamName} />
-              ) : (
-                team.name
-              )
+              <>
+                <TeamTile size={20} tile={team} />
+                {actions.onTeamName ? (
+                  <NameField name={team.name} onSave={actions.onTeamName} />
+                ) : (
+                  team.name
+                )}
+              </>
             }
           />
           {actions.onTeamColor ? (
@@ -657,7 +662,6 @@ export function TeamSettings({
             </button>
           }
           detail="Tasks your agent did for this team stay on your computer."
-          icon="log-out"
           title={`Leave ${team.name}`}
         />
       </SettingsGroup>

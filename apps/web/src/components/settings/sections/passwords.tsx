@@ -62,7 +62,6 @@ export function PasswordsSection({ view }: { readonly view: SettingsView }) {
         <div className="card">
           <SettingsRow
             detail={passwordsElsewhere({ homeName: home.name ?? view.name, personal: true })}
-            icon={home.icon}
             title={home.name ?? view.name}
           />
         </div>
@@ -243,7 +242,6 @@ function StateBody({
                 </span>
               }
               detail={passwordsAgentSignInsDetail}
-              icon="key"
               title={passwordsAgentSignInsLabel}
             />
             {state.personFill !== null ? (
@@ -254,7 +252,6 @@ function StateBody({
                   </span>
                 }
                 detail={passwordsAgentSignInsDetail}
-                icon="user"
                 title={passwordsPersonFillLabel}
               />
             ) : null}
@@ -266,7 +263,6 @@ function StateBody({
                   </span>
                 }
                 detail={passwordsAgentSignInsDetail}
-                icon="key"
                 title={passwordsPersonSaveLabel}
               />
             ) : null}
@@ -283,7 +279,6 @@ function StateBody({
                   </button>
                 }
                 detail={passwordsWaitingDetail(waiting)}
-                icon="clock"
                 title={passwordsWaitingLabel}
               />
             ) : null}
@@ -299,7 +294,6 @@ function StateBody({
                 </button>
               }
               detail={passwordsSavedDetail}
-              icon="shield"
               title={passwordsSavedLabel}
             />
           </div>

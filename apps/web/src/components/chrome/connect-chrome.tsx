@@ -521,7 +521,7 @@ function ElsewhereRow({
               Open it in that Chrome within 15 minutes; it works once.
               {state.remote
                 ? ""
-                : " It only works on this computer. To connect Chrome on another computer, turn on Remote access in Settings."}
+                : " It only works on this computer. To connect Chrome on another computer, turn on Use from anywhere in Settings › Account."}
             </p>
             {state.copied ? null : <LinkField link={state.link} />}
           </>

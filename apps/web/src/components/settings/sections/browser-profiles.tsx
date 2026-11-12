@@ -33,10 +33,9 @@ export function BrowserProfilesSection() {
   const [creating, setCreating] = useState(() => params.has("new"));
   return (
     <>
-      <h2 className="settings-group__title">Opensteer browsers</h2>
       <section aria-labelledby="browser-profiles-title" className="settings-group">
         <h2 className="settings-group__title" id="browser-profiles-title">
-          Your profiles
+          Opensteer browsers
         </h2>
         <div className="card">
           {rows.length === 0 && deletions.length === 0 ? (

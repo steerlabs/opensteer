@@ -76,6 +76,7 @@ export * from "./run-page-memory.js";
 
 export * from "./request-settlement.js";
 export * from "./personal-remote-access.js";
+export * from "./remote-access.js";
 export * from "./browser-cursor.js";
 export * from "./plugins.js";
 export * from "./connected-agents.js";

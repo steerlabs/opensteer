@@ -1064,7 +1064,7 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
       if (!replaces)
         throw new OpensteerError({
           code: "conflict",
-          message: "An Account change is awaiting acknowledgement. Use Recover to resume it.",
+          message: "An earlier change to your Opensteer Account hasn’t finished. Try again.",
         });
     }
     const accountOperation: AccountOperation = { ...input, id: randomUUID() };
@@ -1097,7 +1097,10 @@ export class PersonalRemoteAccessService implements PersonalRemoteSessionAuthent
     if (running) return running;
     const execution = this.#runAccountOperation(link, afterResponse).catch(
       async (error: unknown) => {
-        const accountError = error instanceof OpensteerError ? error.cause : error;
+        const accountError =
+          error instanceof OpensteerError && !(error instanceof AccountRequestError)
+            ? error.cause
+            : error;
         const operation = link.accountOperation;
         if (
           operation &&

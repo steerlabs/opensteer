@@ -436,7 +436,7 @@ export function MessagingPage({ embedded = false }: { readonly embedded?: boolea
             title="Messaging"
             action={
               <button
-                className="btn btn--primary"
+                className="btn"
                 disabled={
                   !dashboard?.providers.some(({ availability }) => availability === "available")
                 }
@@ -1257,7 +1257,7 @@ export function LinkIdentityForm({
               </span>
             ) : null}
             <button
-              className="btn btn--primary btn--small"
+              className="btn btn--small"
               disabled={pending || code.length !== linkCodeLength}
               type="submit"
             >

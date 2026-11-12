@@ -210,13 +210,7 @@ const exceptions: Record<string, { counts: Record<string, number>; reason: strin
   },
   "apps/web/src/components/settings/copy.ts": {
     counts: {
-      "input.kind": 3,
-    },
-    reason: "The boundary distinguishes team data from personal resource scope.",
-  },
-  "apps/web/src/components/settings/primitives.tsx": {
-    counts: {
-      kind: 1,
+      "input.kind": 1,
     },
     reason: "The boundary distinguishes team data from personal resource scope.",
   },

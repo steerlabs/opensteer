@@ -1,5 +1,7 @@
 import { contactSupport } from "../report-mail.js";
-import { Button, Form, Host, Section } from "@expo/ui/swift-ui";
+import { Form, Host, Section } from "@expo/ui/swift-ui";
+import { listStyle } from "@expo/ui/swift-ui/modifiers";
+import { NavRow } from "./settings-form-primitives.ios.js";
 import { settingsDestinations, type SettingsHomeTeam } from "./settings-home-model.js";
 export function SettingsHomeForm({
   onOpen,
@@ -10,25 +12,25 @@ export function SettingsHomeForm({
 }) {
   return (
     <Host style={{ flex: 1 }} useViewportSizeMeasurement>
-      <Form>
+      <Form modifiers={[listStyle("insetGrouped")]}>
         {["", "For your agents"].map((group) => (
           <Section key={group} title={group}>
             {settingsDestinations
               .filter((item) => item.group === group)
               .map((item) => (
-                <Button key={item.route} label={item.title} onPress={() => onOpen(item.route)} />
+                <NavRow key={item.route} onPress={() => onOpen(item.route)} title={item.title} />
               ))}
           </Section>
         ))}
         {team ? (
           <Section title={team.name}>
             {team.rows.map((row) => (
-              <Button key={row.title} label={row.title} onPress={row.onPress} />
+              <NavRow key={row.title} onPress={row.onPress} title={row.title} />
             ))}
           </Section>
         ) : null}
         <Section>
-          <Button label="Contact support" onPress={() => contactSupport()} />
+          <NavRow onPress={() => contactSupport()} title="Contact support" />
         </Section>
       </Form>
     </Host>

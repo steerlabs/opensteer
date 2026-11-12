@@ -54,6 +54,18 @@ executor leaves a visible pending operation. A request persists before it is ack
 remove the current route starts only after that response, under the supervisor's process capability.
 Unlink never needs another request from the session it revokes. Revoked credentials stop
 authenticating before success; their live connections close after the response.
+The Host's admission is the only gate: Connect and key resets (recovered ones too) are refused
+unless the Account link is active with no unlink pending, so no client or executor checks it again.
+Recover names the failed operation its device saw and is refused (`remote-access-changed`) once
+another change follows it, so one device never replays another device's intent.
+Every surface shows remote access through one
+[view model and step runner](../packages/client/src/host/remote-access.ts), which treats a change
+the Host accepted, from any device, as in progress. The latest operation, once failed, stands until
+the Host records a newer one, even when the mode already matches: enable commits the route before
+Account publication and disable commits Off before cleanup. An operation's `detail` is always a
+sentence a person can read; raw failures go only to the redacting log. The desktop's link journal
+acts only on its own personal deployment; a desktop window viewing another computer links that
+Host through the challenge commands, with the desktop's Account as courier.
 
 Account steps are journaled on the exact link before network I/O, and no Account request holds a
 Host transaction or session lock. Recovery replays the idempotent step with the same external

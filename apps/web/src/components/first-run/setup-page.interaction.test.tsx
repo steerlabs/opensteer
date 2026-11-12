@@ -3,7 +3,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ThreadPlacementOption } from "@opensteer/client/host";
+import { HostClientRequestError, type ThreadPlacementOption } from "@opensteer/client/host";
 import type { AddHarnessAccount } from "../account-sign-in-dialog.js";
 import { SetupPage } from "./setup-page.js";
 
@@ -281,9 +281,11 @@ function desktopBridge(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function onThisMac(bridge: unknown, access: unknown) {
+function onThisMac(bridge: unknown, access: object) {
   shell.desktopBridge = bridge;
   shell.desktopDeployment = { kind: "personal", name: "Studio Mac", onThisComputer: true };
+  // The deployment this window views is the desktop's own personal one.
+  Object.assign(access, { personalSetup: { deploymentId: shell.snapshot.deploymentId } });
   shell.deploymentAccess = access;
 }
 
@@ -459,7 +461,7 @@ it("connects a phone through Opensteer Connect and names the phone that signed i
   // that gap must never start a second browser sign-in.
   for (let flush = 0; flush < 5; flush += 1) await act(async () => undefined);
   expect(bridge.linkPersonal).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain("Adding this computer to your account");
+  expect(container.textContent).toContain("Adding Studio Mac to your account");
 
   const linked = { ...access, personalAccountLink: { status: "linked" } };
   shell.deploymentAccess = linked;
@@ -482,7 +484,11 @@ it("connects a phone through Opensteer Connect and names the phone that signed i
   vi.useFakeTimers();
   await remoteChanged({
     ...remoteStatus,
-    access: { ...(remoteStatus.access as object), mode: "connect", route: {} },
+    access: {
+      ...(remoteStatus.access as object),
+      mode: "connect",
+      route: { document: { route: { origin: "https://studio.connect.test" } } },
+    },
     operation: { id: operationId, state: "succeeded" },
     revision: 3,
   });
@@ -590,7 +596,11 @@ it("never undoes a mode another device chose after Connect came on", async () =>
   expect(shell.hostClient.dispatch).toHaveBeenCalledTimes(1);
   await remoteChanged({
     ...remoteStatus,
-    access: { ...(remoteStatus.access as object), mode: "connect", route: {} },
+    access: {
+      ...(remoteStatus.access as object),
+      mode: "connect",
+      route: { document: { route: { origin: "https://studio.connect.test" } } },
+    },
     revision: 2,
   });
   expect(container.querySelector(".setup-scan__svg")).not.toBeNull();
@@ -629,7 +639,12 @@ it("offers to try again when the phone's code could not be made", async () => {
   localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
   let failing = true;
   shell.hostClient.dispatch.mockImplementation(async () => {
-    if (failing) throw new Error("Opensteer is offline.");
+    if (failing)
+      throw new HostClientRequestError({
+        code: "unavailable",
+        message: "Opensteer is offline.",
+        status: 503,
+      });
     return {
       pairing: {
         code: `osp_${"b".repeat(43)}`,
@@ -664,7 +679,7 @@ it("asks before replacing a way phones already connect", async () => {
       accountLink: { state: "active" },
       generation: 1,
       mode: "connect",
-      route: {},
+      route: { document: { route: { origin: "https://studio.connect.test" } } },
       schemaVersion: 2,
     },
   };
@@ -804,7 +819,7 @@ it.each(["fails", "succeeds"])(
         ...(remoteStatus.access as object),
         accountLink: { state: "active" },
         mode: "connect",
-        route: {},
+        route: { document: { route: { origin: "https://studio.connect.test" } } },
       },
     };
     localStorage.setItem(`opensteer.setup.v1:${shell.snapshot.deploymentId}`, "phone");
@@ -822,14 +837,24 @@ it.each(["fails", "succeeds"])(
     await remoteChanged({
       ...remoteStatus,
       access: { ...(remoteStatus.access as object), generation: 2, mode: "off", route: null },
-      operation: { detail: null, id: operationId, state: "running" },
+      operation: {
+        intent: { action: "configure", mode: "private", privateOrigin: origin },
+        detail: null,
+        id: operationId,
+        state: "running",
+      },
       revision: 2,
     });
     expect(button("Turning on…").disabled).toBe(true);
     if (outcome === "fails") {
       await remoteChanged({
         ...remoteStatus,
-        operation: { detail: "The address didn’t answer.", id: operationId, state: "failed" },
+        operation: {
+          intent: { action: "configure", mode: "private", privateOrigin: origin },
+          detail: "The address didn’t answer.",
+          id: operationId,
+          state: "failed",
+        },
         revision: 3,
       });
       expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -845,7 +870,12 @@ it.each(["fails", "succeeds"])(
         mode: "private",
         route: { document: { route: { origin } } },
       },
-      operation: { detail: null, id: operationId, state: "succeeded" },
+      operation: {
+        intent: { action: "configure", mode: "private", privateOrigin: origin },
+        detail: null,
+        id: operationId,
+        state: "succeeded",
+      },
       revision: 3,
     });
     expect(container.querySelector(".setup-manual")?.textContent).toContain(origin);

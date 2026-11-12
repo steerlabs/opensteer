@@ -2209,7 +2209,8 @@ export async function createHostServer(
       }
       case "personal.remoteAccess.pairing.create":
       case "personal.accountLink.approve":
-      case "personal.accountLink.complete": {
+      case "personal.accountLink.complete":
+      case "personal.accountLink.resume": {
         const service = dependencies.personalRemoteAccess?.service;
         if (!service)
           throw new OpensteerError({
@@ -2224,6 +2225,11 @@ export async function createHostServer(
             type: command.type,
             proof: await service.approveAccountLink(caller, command.challenge),
           };
+        if (command.type === "personal.accountLink.resume") {
+          const access = await service.resumeAccountLink(caller, { schemaVersion: 1 });
+          service.administration.changed();
+          return { type: command.type, access };
+        }
         const access = await service.consumeAccountLink(caller, command.completion);
         service.administration.changed();
         return { type: command.type, access };

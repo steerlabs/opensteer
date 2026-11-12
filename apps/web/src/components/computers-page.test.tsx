@@ -147,7 +147,7 @@ describe("ComputersPage", () => {
       expect(steps(off.container)[0]).toContain("Turn on remote access for Mac mini"),
     );
     expect(
-      off.container.querySelector('.add-computer__steps a[href="/settings/account/remote-access"]'),
+      off.container.querySelector('.add-computer__steps a[href="/settings/account"]'),
     ).not.toBeNull();
     await vi.waitFor(() => expect(steps(on.container)).toHaveLength(2));
     expect(steps(on.container)[0]).toContain(

@@ -175,7 +175,7 @@ export function usePrivatePhoneSetup(input: {
     ) {
       setPhase({
         kind: "failed",
-        message: operation.detail ?? "Remote access couldn’t be turned on. Try again.",
+        message: operation.detail ?? "Couldn’t turn on. Try again.",
       });
     }
   }, [activeOrigin, operation, phase]);
@@ -210,7 +210,7 @@ export function usePrivatePhoneSetup(input: {
     pairing === null &&
     askedGeneration === generation &&
     !remote.working &&
-    remote.error !== null;
+    remote.actionError !== null;
 
   const link =
     activeOrigin !== null && pairing !== null
@@ -222,7 +222,7 @@ export function usePrivatePhoneSetup(input: {
     code: activeOrigin !== null ? (pairing?.code ?? null) : null,
     expiresAt: pairing?.expiresAt ?? null,
     link,
-    pairingError: pairingFailed ? remote.error : null,
+    pairingError: pairingFailed ? remote.actionError : null,
     phase,
     renew,
     reset,

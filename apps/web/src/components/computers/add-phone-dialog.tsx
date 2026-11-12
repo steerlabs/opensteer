@@ -403,12 +403,8 @@ export function AddPhoneDialog({
           actions: (
             <>
               {remoteAccessOff ? (
-                <Link
-                  className="btn btn--primary"
-                  onClick={closeSetup}
-                  to="/settings/account/remote-access"
-                >
-                  Open Remote access
+                <Link className="btn btn--primary" onClick={closeSetup} to="/settings/account">
+                  Open Account settings
                 </Link>
               ) : null}
               <button
@@ -588,7 +584,7 @@ function readyStage({
         </details>
         <p>
           Needs remote access on for {homeName}.{" "}
-          <Link to="/settings/account/remote-access">Open Remote access</Link>
+          <Link to="/settings/account">Open Account settings</Link>
         </p>
       </div>
     ),

@@ -1,5 +1,4 @@
 import { NavLink } from "react-router";
-import { Icon } from "../components/icon.js";
 import { useTeams } from "./team-attachments.js";
 
 /** Settings gets one group per team this computer joined, then a way to join another. */
@@ -21,20 +20,14 @@ export function TeamSettingsNavigation() {
           key={team.teamId}
           to={`/settings/teams/${encodeURIComponent(team.teamId)}/profile`}
         >
-          <Icon name="users" />
-          <span>
-            <span className="settings-navigation__label">{team.name}</span>
-          </span>
+          {team.name}
         </NavLink>
       ))}
       <NavLink
         className={({ isActive }) => `settings-navigation__link${isActive ? " is-active" : ""}`}
         to="/join"
       >
-        <Icon name="plus" />
-        <span>
-          <span className="settings-navigation__label">Join a team</span>
-        </span>
+        Join a team
       </NavLink>
     </div>
   );

@@ -4,14 +4,11 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import type { AuthSessionSummary } from "@opensteer/core";
 import type { DesktopTailscaleStatus, OpensteerDesktopBridge } from "@opensteer/protocol/desktop";
 import { remoteAccessDisconnectWarning } from "@opensteer/client/host";
-import { usePersonalRemoteAccess } from "@opensteer/client/react";
-import {
-  supportsPersonalAccountLink,
-  usePersonalAccountLink,
-} from "../../account/use-personal-account-link.js";
+import { usePersonalRemoteAccess, type RemoteAccessController } from "@opensteer/client/react";
+import { useWebRemoteAccess } from "../../account/remote-access-port.js";
 import { useShell } from "../app-shell.js";
 import { Icon } from "../icon.js";
-import { phoneStepDetail, useNewPhoneSignIn, usePhoneSetup } from "./phone-setup.js";
+import { phoneConnectUrl, useNewPhoneSignIn } from "./phone-setup.js";
 import {
   initialPhoneMode,
   sameOrigin,
@@ -43,21 +40,17 @@ export function SetupPhoneStep({
   readonly onFinish: () => void;
   readonly progress: { readonly count: number; readonly index: number };
 }) {
-  const { deploymentAccess, desktopBridge, hostClient, snapshot } = useShell();
+  const { deploymentAccess, hostClient, snapshot } = useShell();
   const remote = usePersonalRemoteAccess(hostClient);
-  const link = usePersonalAccountLink(
-    supportsPersonalAccountLink(desktopBridge) ? desktopBridge : null,
-    deploymentAccess,
-  );
-  const connect = usePhoneSetup({
-    deploymentAccess,
-    deploymentId: snapshot.deploymentId,
-    hostClient,
-    link,
-    portalOrigin: snapshot.identityConfig?.portalOrigin ?? null,
-    remote,
-  });
-  const connectAvailable = connect.reach.kind !== "unavailable";
+  const connect = useWebRemoteAccess(remote);
+  const portalOrigin = snapshot.identityConfig?.portalOrigin ?? null;
+  const connectUrl = phoneConnectUrl(connect.view, portalOrigin, snapshot.deploymentId);
+  const connectAvailable =
+    (deploymentAccess?.account.available ?? false) &&
+    portalOrigin !== null &&
+    snapshot.deploymentId !== null &&
+    connect.view.state !== "unreadable" &&
+    connect.view.state !== "connect-unavailable";
   const { refresh: refreshTailscale, status: tailscale } = useTailscaleStatus(bridge);
   const share = useCallback(
     () => bridge.tailscaleShare().finally(refreshTailscale),
@@ -102,12 +95,12 @@ export function SetupPhoneStep({
   };
 
   const scanning =
-    (chosen === "connect" && connect.reach.kind === "reachable") ||
+    (chosen === "connect" && connectUrl !== null) ||
     (chosen !== "connect" && privately.link !== null && isActive(chosen));
   const arrived = useNewPhoneSignIn(hostClient, scanning);
 
   function isActive(choice: PhoneConnectionMode): boolean {
-    if (choice === "connect") return connect.reach.kind === "reachable";
+    if (choice === "connect") return connectUrl !== null;
     if (choice === "tailscale") return tailscaleActive;
     return privately.activeOrigin !== null && !tailscaleActive;
   }
@@ -115,7 +108,7 @@ export function SetupPhoneStep({
   const choose = (next: PhoneConnectionMode) => {
     setMode(next);
     privately.reset();
-    if (connect.started) connect.cancel();
+    connect.stop();
   };
 
   return (
@@ -184,10 +177,10 @@ export function SetupPhoneStep({
       ) : chosen === "connect" ? (
         <ConnectPanel
           connect={connect}
-          onStart={() => {
-            if (confirmReplacing("connect")) connect.start();
+          onTurnOn={() => {
+            if (confirmReplacing("connect")) connect.act("turn-on");
           }}
-          account={deploymentAccess?.account.status ?? null}
+          url={connectUrl}
         />
       ) : chosen === "tailscale" ? (
         <TailscalePanel
@@ -364,16 +357,16 @@ function ActionPanel({
 }
 
 function ConnectPanel({
-  account,
   connect,
-  onStart,
+  onTurnOn,
+  url,
 }: {
-  readonly account: string | null;
-  readonly connect: ReturnType<typeof usePhoneSetup>;
-  readonly onStart: () => void;
+  readonly connect: RemoteAccessController;
+  readonly onTurnOn: () => void;
+  readonly url: string | null;
 }) {
-  const { phase, reach } = connect;
-  if (reach.kind === "reachable") {
+  const { view } = connect;
+  if (url) {
     return (
       <ScanPanel
         label="Code that opens this computer on your phone"
@@ -381,43 +374,42 @@ function ConnectPanel({
           "Scan this code with your phone’s camera.",
           "Get the Opensteer app and sign in with the same account as this computer.",
         ]}
-        value={reach.url}
+        value={url}
       />
     );
   }
-  if (phase.kind === "failed") {
+  if (view.tone === "busy" || view.state === "loading") {
     return (
-      <ActionPanel
-        action={
-          <button className="btn btn--small" onClick={onStart} type="button">
-            Try again
-          </button>
-        }
-        tone="attention"
-      >
-        {phase.message}
-      </ActionPanel>
+      <ActionPanel action={<span aria-hidden className="spinner" />}>{view.sentence}</ActionPanel>
     );
   }
-  if (reach.kind === "blocked") {
-    return <ActionPanel tone="attention">{reach.message}</ActionPanel>;
-  }
-  if (connect.started || reach.kind === "checking" || reach.kind === "publishing") {
-    return (
-      <ActionPanel action={<span aria-hidden className="spinner" />}>
-        {phoneStepDetail(connect, account)}
-      </ActionPanel>
-    );
-  }
+  // A private network in use is replaced only because the person chose
+  // Connect and confirmed it; Turn on here is that choice.
+  const primary =
+    view.state === "on-private" || view.state === "off" || view.state === "off-signed-out"
+      ? { confirm: null, id: "turn-on" as const, label: "Turn on" }
+      : view.primary;
   return (
     <ActionPanel
       action={
-        <button className="btn btn--small btn--primary" onClick={onStart} type="button">
-          Turn on
-        </button>
+        primary ? (
+          <button
+            className={view.tone === "attention" ? "btn btn--small" : "btn btn--small btn--primary"}
+            onClick={() => {
+              if (primary.id === "turn-on") onTurnOn();
+              else if (!primary.confirm || window.confirm(primary.confirm)) connect.act(primary.id);
+            }}
+            type="button"
+          >
+            {primary.label}
+          </button>
+        ) : undefined
       }
+      tone={view.tone === "attention" ? "attention" : "idle"}
     >
-      Sign in to your Opensteer account in your browser to turn this on.
+      {view.state === "on-private"
+        ? "Turn on Opensteer Connect to open this computer from anywhere."
+        : view.sentence}
     </ActionPanel>
   );
 }

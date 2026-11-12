@@ -1,4 +1,5 @@
 import { HostClientRequestError } from "../host/client.js";
+import { formatRelativeTime } from "../host/thread-list-model.js";
 export * from "./plugin-add-consent.js";
 export * from "./catalog.js";
 export * from "./other-devices.js";
@@ -28,15 +29,17 @@ export const settingsPages = [
   "sign-ins",
 ] as const;
 export const settingsRedirects = [
-  ["/settings/devices/remote-access", "/settings/account/remote-access"],
-  ["/settings/devices/sessions", "/settings/account/sessions"],
+  ["/settings/account/remote-access", "/settings/account"],
+  ["/settings/account/sessions", "/settings/account"],
+  ["/settings/devices/remote-access", "/settings/account"],
+  ["/settings/devices/sessions", "/settings/account"],
   ["/settings/apps/messaging", "/settings/messaging"],
   ["/settings/apps/tools", "/settings/plugins"],
   ["/settings/ai-engines", "/settings/ai"],
   ["/settings/connections", "/settings/account"],
   ["/settings/integrations", "/settings/plugins"],
   ["/settings/computers", "/settings/devices/computers"],
-  ["/settings/remote-access", "/settings/account/remote-access"],
+  ["/settings/remote-access", "/settings/account"],
   ["/settings/this-device", "/settings/devices"],
   ["/settings/browser-profiles", "/settings/sign-ins/browsers"],
   ["/settings/passwords", "/settings/sign-ins/passwords"],
@@ -45,6 +48,10 @@ export const settingsRedirects = [
   ["/computers", "/settings/devices/computers"],
   ["/channels", "/settings/messaging"],
 ] as const;
+const pagesWithoutChildren: ReadonlySet<string> = new Set([
+  "/settings/plugins",
+  "/settings/account",
+]);
 export function redirectSettingsPath(path: string): string | null {
   const cut = path.search(/[?#]/u);
   const pathname = cut < 0 ? path : path.slice(0, cut);
@@ -55,8 +62,9 @@ export function redirectSettingsPath(path: string): string | null {
   );
   if (!match) return null;
   const [from, to] = match;
-  // Old integrations used local view state, not routable target identities.
-  return `${to}${to === "/settings/plugins" ? "" : pathname.slice(from.length)}${tail}`;
+  // Neither page has children: old integrations used local view state, and
+  // Account's remote-access and session pages folded into Account itself.
+  return `${to}${pagesWithoutChildren.has(to) ? "" : pathname.slice(from.length)}${tail}`;
 }
 export function pluginTargetKey(target: PluginTarget): string {
   switch (target.kind) {
@@ -235,4 +243,22 @@ export async function addPluginService(
     expectedRevision: revision,
     idempotencyKey: mutationIdempotencyKey("plugin-add"),
   });
+}
+
+/** How long ago a signed-in device was last used, in the same words everywhere. */
+export function sessionActivityLine(
+  session: { readonly current: boolean; readonly lastSeenAt: string },
+  now: Date,
+): string {
+  if (session.current) return "This device";
+  const elapsed = Math.max(0, now.getTime() - Date.parse(session.lastSeenAt));
+  const minutes = Math.floor(elapsed / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const plural = (count: number, unit: string) => `${count} ${unit}${count === 1 ? "" : "s"} ago`;
+  if (!Number.isFinite(elapsed) || minutes < 1) return "Active now";
+  if (hours < 1) return `Active ${plural(minutes, "minute")}`;
+  if (days < 1) return `Active ${plural(hours, "hour")}`;
+  if (days < 7) return `Active ${plural(days, "day")}`;
+  return `Active ${formatRelativeTime(session.lastSeenAt, now)}`;
 }

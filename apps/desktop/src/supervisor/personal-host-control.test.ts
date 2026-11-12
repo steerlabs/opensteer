@@ -12,6 +12,7 @@ import {
   NativePersonalHostControl,
   NativePersonalRemoteHostControl,
   personalHostBootstrapUrl,
+  PersonalHostRefusalError,
 } from "./personal-host-control.js";
 import { testPersonalHostRuntime } from "./personal-host-runtime-test-support.js";
 
@@ -478,13 +479,18 @@ describe("NativePersonalRemoteHostControl Account-link failures", () => {
     });
   });
 
-  it("keeps an unreasoned Host refusal a plain transport failure", async () => {
+  it("passes on the Host's own refusal and keeps an internal fault's message out", async () => {
     await expect(
-      control({ error: { code: "internal", message: "boom" } }, 500).consumeAccountLink(
+      control({ error: { code: "conflict", message: "Already linked." } }, 409).consumeAccountLink(
         runtime,
         consumeInput,
       ),
-    ).rejects.toThrow(/Account-link completion \(HTTP 500\)/);
+    ).rejects.toThrow(new PersonalHostRefusalError("Already linked.", 409));
+    const internal = control({ error: { code: "internal", message: "boom" } }, 500)
+      .consumeAccountLink(runtime, consumeInput)
+      .catch((error: unknown) => error);
+    await expect(internal).resolves.not.toBeInstanceOf(PersonalHostRefusalError);
+    await expect(internal).resolves.toMatchObject({ message: "Account-link completion failed." });
   });
 });
 
